@@ -1,0 +1,10 @@
+PHASE4_5_FILE_TREE.txt
+docs/36-phase4-5-real-provider-smoke.md
+docs/37-api-key-and-env-safety.md
+docs/38-demo-data-and-smoke-flow.md
+prompts/codex_phase4_5_next.md
+prompts/codex_phase4_5_start.md
+tasks/038-real-vision-provider-smoke.md
+tasks/039-demo-data-and-local-runbook.md
+tasks/040-phase4-5-smoke-review.md
+tasks/README_PHASE4_5.md

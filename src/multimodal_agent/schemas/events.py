@@ -1,0 +1,43 @@
+"""Agent event schemas."""
+
+from datetime import datetime, timezone
+from typing import Any, Literal
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+
+EventType = Literal[
+    "task_started",
+    "graph_node_started",
+    "graph_node_finished",
+    "tool_started",
+    "tool_progress",
+    "tool_completed",
+    "tool_finished",
+    "tool_failed",
+    "memory_loaded",
+    "memory_saved",
+    "response_delta",
+    "agent_response",
+    "agent_error",
+    "final_response",
+    "task_failed",
+]
+
+
+class AgentEvent(BaseModel):
+    """Structured event emitted by the agent runtime and sent over WebSocket."""
+
+    event_id: str = Field(default_factory=lambda: f"event_{uuid4().hex}")
+    type: EventType
+    session_id: str = Field(min_length=1)
+    run_id: str | None = None
+    node_name: str | None = None
+    tool_name: str | None = None
+    progress: float | None = Field(default=None, ge=0.0, le=1.0)
+    output_ref: str | None = None
+    text: str | None = None
+    error: str | dict[str, Any] | None = None
+    payload: dict = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

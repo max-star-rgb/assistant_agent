@@ -1,0 +1,14 @@
+[project]
+name = "multimodal-agent"
+version = "0.1.0"
+description = "A multimodal autonomous tool-calling agent scaffold."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.115.0", "pydantic>=2.0"]
+
+[project.optional-dependencies]
+dev = ["httpx2>=0.0.1", "pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
