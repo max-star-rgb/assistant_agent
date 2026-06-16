@@ -161,3 +161,31 @@ Provider Safety / Retry / Cost / Trace Query 相关任务优先阅读：
 - `docs/97-phase5h-provider-safety-review-checklist.md`
 - `docs/98-phase5h-provider-safety-review.md`
 - `tasks/README_PHASE5H.md`
+
+## Phase 5I 文档入口
+
+Memory Hardening 相关任务优先阅读：
+
+- `docs/99-phase5i-memory-hardening-roadmap.md`
+- `docs/100-memory-data-model-and-store-boundary.md`
+- `docs/101-memory-retrieval-ranking-context.md`
+- `docs/102-memory-write-policy-and-lifecycle.md`
+- `docs/103-memory-privacy-user-isolation.md`
+- `docs/104-memory-eval-api-demo-plan.md`
+- `docs/105-phase5i-memory-hardening-review-checklist.md`
+- `docs/106-phase5i-memory-hardening-review.md`
+- `tasks/README_PHASE5I.md`
+
+## Phase 5J 文档入口
+
+MCP / Skills Packaging 相关任务优先阅读：
+
+- `docs/107-phase5j-mcp-skills-packaging-roadmap.md`
+- `docs/108-mcp-tool-boundary-contract-inventory.md`
+- `docs/109-mcp-server-skeleton.md`
+- `docs/110-skills-packaging-structure.md`
+- `docs/111-skill-runbooks-and-demo-flow-packaging.md`
+- `docs/112-mcp-skills-safety-eval-plan.md`
+- `docs/113-phase5j-mcp-skills-review-checklist.md`
+- `docs/114-phase5j-mcp-skills-review.md`
+- `tasks/README_PHASE5J.md`

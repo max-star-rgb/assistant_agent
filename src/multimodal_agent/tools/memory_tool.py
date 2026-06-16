@@ -8,12 +8,14 @@ from pydantic import BaseModel, Field
 from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.tools import ToolResult
 from multimodal_agent.schemas.capability_output import build_capability_output_contract
+from multimodal_agent.memory.write_policy import build_explicit_memory_item
 from multimodal_agent.tools.base import MockTool, ToolContext
 
 
 class MemoryInput(BaseModel):
     action: Literal["retrieve", "save"]
     user_id: str = Field(min_length=1)
+    session_id: str | None = None
     query: str | None = None
     content: dict = Field(default_factory=dict)
 
@@ -78,16 +80,15 @@ class MemoryTool(MockTool):
                 contract=contract,
             )
 
-        item = MemoryItem(
+        item = build_explicit_memory_item(
             memory_id="m_saved_1",
             user_id=input.user_id,
-            memory_type="preference",
+            session_id=input.session_id or str(input.content.get("session_id") or "default"),
+            text=str(input.query or input.content.get("text") or input.content.get("summary") or "用户显式保存了一条记忆。"),
             content=input.content,
-            summary="已保存用户偏好。",
-            relevance=None,
-            reason="用户显式要求保存",
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
+        item = item.model_copy(update={"summary": "已保存用户偏好。"})
         data = item.model_dump()
         contract = build_capability_output_contract(
             capability="memory_save",

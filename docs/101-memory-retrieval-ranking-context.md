@@ -35,13 +35,18 @@ task relevance
 
 ## Ranking Strategy
 
-建议实现：
+当前实现采用本地轻量排序，不调用外部服务：
 
 ```text
-score = keyword_score + type_score + tag_score + recency_score + session_score
+sort = keyword relevance
+     + capability-specific memory type priority
+     + artifact_ref availability
+     + recency
 ```
 
 不需要复杂 ML 模型。
+
+`MemoryQuery.capability` 可用于指定当前能力，从而应用不同类型优先级。`session_id`、`memory_types`、`tags` 和 `since` 作为过滤条件先执行，排序只在过滤后的候选集内完成。
 
 ## Memory Context Builder
 
@@ -62,6 +67,8 @@ score = keyword_score + type_score + tag_score + recency_score + session_score
 MULTIMODAL_AGENT_MEMORY_CONTEXT_MAX_ITEMS=5
 MULTIMODAL_AGENT_MEMORY_CONTEXT_MAX_CHARS=1200
 ```
+
+当前 `MemoryQuery.max_context_chars` 控制单次 context 输出长度，`top_k` 控制进入 context 的最大条数。
 
 ## 类型优先级
 
@@ -123,6 +130,8 @@ recent artifact memory
 ```text
 preference memory
 ```
+
+Context builder 只输出摘要和安全 artifact refs，例如 `mock://image/...`、`provider://vision/...`，不会把原始媒体、完整 base64 或 provider raw response 塞入 prompt。
 
 ## 验收标准
 

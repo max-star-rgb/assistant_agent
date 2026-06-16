@@ -19,7 +19,7 @@
 
 ## Memory Write Policy
 
-建议新增：
+已新增本地策略对象：
 
 ```python
 class MemoryWritePolicy(BaseModel):
@@ -29,7 +29,10 @@ class MemoryWritePolicy(BaseModel):
     auto_save_raw_user_text: bool = False
     auto_save_media_raw: bool = False
     require_explicit_save_for_sensitive: bool = True
+    ttl_days_by_type: dict[MemoryType, int | None]
 ```
+
+默认策略只允许保存摘要、结构化安全字段和 artifact refs。自动任务摘要不保存 raw user text、raw media、raw provider response、API Key、Authorization、Bearer token、cookie、password 或 secret。
 
 ## 自动保存什么
 
@@ -95,6 +98,14 @@ video/image summary: 中期
 
 Phase 5I 不需要复杂 TTL 系统，但应有字段和基础清理函数。
 
+当前实现提供：
+
+```text
+MemoryWritePolicy.expires_at_for(memory_type)
+MemoryQuery.include_expired
+MemoryRetrievalStrategy 默认过滤 expired memory
+```
+
 ## 删除
 
 应支持：
@@ -105,6 +116,15 @@ delete_by_session(session_id, user_id)
 ```
 
 至少要保证不会跨 user 删除。
+
+当前 `InMemoryStore` / `JsonlMemoryStore` 均支持：
+
+```text
+delete(user_id, memory_id)
+delete_by_session(user_id, session_id)
+```
+
+删除按 `user_id` 约束，不会删除其他用户同名 `memory_id` 或同名 `session_id` 的记忆。
 
 ## 保存时机
 
@@ -117,6 +137,17 @@ save_memory_node
 或在 runtime 结束后统一写入摘要。
 
 不要在每个 tool 内部随意写 memory。
+
+当前 runtime 的 `save_memory_node` 使用 write policy 保存 task summary，只保留：
+
+```text
+summary
+intent
+selected_tools
+output_refs
+artifact_refs
+expires_at
+```
 
 ## 验收标准
 

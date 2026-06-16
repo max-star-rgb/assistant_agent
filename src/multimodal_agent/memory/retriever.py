@@ -49,6 +49,8 @@ class KeywordMemoryRetriever:
             item.memory_type,
             item.summary,
             item.reason or "",
+            " ".join(item.tags),
+            " ".join(item.artifact_refs),
             self._flatten_content(item.content),
         ]
         return " ".join(parts).lower()

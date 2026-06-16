@@ -45,7 +45,13 @@ def build_tool_input(
     if action == "retrieve_memory":
         return {"action": "retrieve", "user_id": request.user_id, "query": request.text}
     if action == "save_memory":
-        return {"action": "save", "user_id": request.user_id, "content": build_memory_save_content(request, outputs_by_step)}
+        return {
+            "action": "save",
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "query": request.text,
+            "content": build_memory_save_content(request, outputs_by_step),
+        }
     return {}
 
 
@@ -100,6 +106,10 @@ def build_render_request_input(
     memory_items = latest_memory_items(outputs_by_step)
     if memory_items:
         _merge_memory_render_context(payload, memory_items)
+    else:
+        summaries = request.metadata.get("memory_context_summaries")
+        if isinstance(summaries, list):
+            payload["memory_context"] = [summary for summary in summaries if isinstance(summary, str)]
 
     output_ref = latest_output_ref(outputs_by_step)
     if output_ref and not payload.get("image_ref") and not payload.get("video_ref"):

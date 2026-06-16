@@ -2,7 +2,7 @@
 
 本项目用于构建一个多模态自主工具调用 Agent。Agent 负责理解文本、图片、视频、语音等输入，识别用户真实意图，并编排视觉理解、商品搜索、比价、图片生成、3D 渲染、记忆检索等能力。
 
-当前已完成 Phase 5H Provider Safety / Retry / Cost / Trace Query。默认仍使用本地 Mock/Local 能力：
+当前已完成 Phase 5J MCP / Skills Packaging。默认仍使用本地 Mock/Local 能力：
 
 - Pydantic 领域 schema 和 AgentState。
 - 规则版意图识别与 Tool Router。
@@ -198,6 +198,49 @@ Phase 5H 只聚焦：
 - Phase 5H 路线：`docs/91-phase5h-provider-safety-roadmap.md`
 - Phase 5H 任务：`tasks/README_PHASE5H.md`
 - Phase 5H 审计：`docs/98-phase5h-provider-safety-review.md`
+
+## Phase 5I 状态
+
+Phase 5I 已完成 Memory Hardening 阶段。该阶段不新增真实 Provider，不接外部 memory service，不接 Vector DB，不做复杂 RAG 平台，不做 MCP / Skills。
+
+Phase 5I 只聚焦：
+
+- MemoryItem / MemoryQuery / MemorySearchResult
+- MemoryStore boundary
+- Retrieval ranking
+- Memory context builder
+- Memory write policy
+- Lifecycle / delete
+- Privacy / user isolation
+- Memory eval / API / demo coverage
+- Phase 5I review
+
+默认运行、默认 pytest、默认 eval 和默认 demo runner 必须继续使用 InMemoryStore / JsonlMemoryStore / MockAdapter / LocalJsonAdapter。Memory、trace、日志和 API 输出不得包含 API Key、Authorization header、Bearer token、完整 base64、完整 provider raw response、原始媒体或敏感文件路径。
+
+- Phase 5I 路线：`docs/99-phase5i-memory-hardening-roadmap.md`
+- Phase 5I 任务：`tasks/README_PHASE5I.md`
+- Phase 5I 审计：`docs/106-phase5i-memory-hardening-review.md`
+
+## Phase 5J 状态
+
+Phase 5J 已完成 MCP / Skills Packaging 阶段。该阶段不新增业务能力，不新增真实 Provider，不默认调用真实外部 Provider，不发布远程 MCP 服务，不实现复杂 OAuth / 权限系统。
+
+Phase 5J 只聚焦：
+
+- MCP tool boundary
+- MCP tool contract inventory
+- MCP server skeleton
+- offline MCP smoke
+- Skills packaging structure
+- skill runbooks
+- MCP / Skills safety validation
+- Phase 5J review
+
+默认运行、默认 pytest、默认 eval、默认 demo runner、默认 MCP smoke 和默认 skills validation 必须继续使用 MockAdapter / LocalJsonAdapter / InMemoryStore / JsonlMemoryStore，离线运行。
+
+- Phase 5J 路线：`docs/107-phase5j-mcp-skills-packaging-roadmap.md`
+- Phase 5J 任务：`tasks/README_PHASE5J.md`
+- Phase 5J 审计：`docs/114-phase5j-mcp-skills-review.md`
 
 ## 目录
 

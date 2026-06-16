@@ -269,5 +269,56 @@
       "补充",
       "目标"
     ]
+  },
+  {
+    "scenario_id": "memory_product_to_render",
+    "title": "商品记忆进入 3D 渲染",
+    "user_query": "把上次那个包放到客厅里渲染。",
+    "metadata": {
+      "input_type": "text",
+      "mock_only": true,
+      "uses_memory": true
+    },
+    "expected_tools": [
+      "memory_retrieval",
+      "render_3d"
+    ],
+    "expected_response_contains": [
+      "记忆",
+      "渲染"
+    ]
+  },
+  {
+    "scenario_id": "memory_task_resume",
+    "title": "任务恢复记忆检索",
+    "user_query": "继续上次任务。",
+    "metadata": {
+      "input_type": "text",
+      "mock_only": true,
+      "uses_memory": true
+    },
+    "expected_tools": [
+      "memory_retrieval"
+    ],
+    "expected_response_contains": [
+      "记忆"
+    ]
+  },
+  {
+    "scenario_id": "memory_user_isolation",
+    "title": "用户隔离记忆检索演示",
+    "user_query": "我喜欢的风格是什么？",
+    "metadata": {
+      "input_type": "text",
+      "mock_only": true,
+      "uses_memory": true,
+      "privacy_case": "user_isolation"
+    },
+    "expected_tools": [
+      "memory_retrieval"
+    ],
+    "expected_response_contains": [
+      "记忆"
+    ]
   }
 ]

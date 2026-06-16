@@ -6,7 +6,7 @@
 
 ## MemoryItem
 
-建议定义或整理：
+已整理为稳定 Pydantic schema：
 
 ```python
 class MemoryItem(BaseModel):
@@ -24,6 +24,8 @@ class MemoryItem(BaseModel):
     expires_at: datetime | None = None
     sensitivity: str = "normal"
 ```
+
+`content`、`tags`、`artifact_refs` 和 `summary` 会拒绝敏感密钥、Authorization/Bearer/cookie/password/secret/token、完整 base64、raw media、raw provider response 等字段或内联媒体 data URL。
 
 ## memory_type
 
@@ -58,7 +60,7 @@ class MemoryQuery(BaseModel):
 
 ## MemorySearchResult
 
-建议字段：
+统一返回结构：
 
 ```text
 items
@@ -87,6 +89,8 @@ class MemoryStore(Protocol):
     def delete(self, memory_id: str, user_id: str) -> bool:
         ...
 ```
+
+`InMemoryStore` 和 `JsonlMemoryStore` 均实现该接口。`JsonlMemoryStore` 仅保留旧式 `search(user_id=..., query=...) -> list[MemoryItem]` 作为兼容入口，新代码应使用 `search(MemoryQuery(...)) -> MemorySearchResult`。
 
 ## 当前 Store 边界
 
@@ -131,6 +135,19 @@ artifact_refs
 ```
 
 memory_retrieval 返回 memory_context，供 planner / prompt_builder / response_composer 使用。
+
+从 capability contract 写入 memory 时，只保存公开摘要字段：
+
+```text
+capability
+status
+output_ref
+summary
+artifact_refs
+tags
+```
+
+不保存 provider raw response、完整媒体、完整 base64 或密钥。
 
 ## 验收标准
 

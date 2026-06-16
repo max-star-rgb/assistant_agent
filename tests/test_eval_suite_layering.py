@@ -6,27 +6,26 @@ from pathlib import Path
 from scripts.run_evals import filter_cases_by_suite, load_cases, run_evals
 
 
+EXPECTED_SUITES = {"routing", "e2e", "provider_safety", "memory", "packaging"}
+
+
 def test_eval_cases_have_suite_and_category_fields() -> None:
     cases = load_cases(Path("tests/evals/eval_cases.json"))
 
-    assert all(case["suite"] in {"routing", "e2e", "provider_safety"} for case in cases)
+    assert all(case["suite"] in EXPECTED_SUITES for case in cases)
     assert all(case["category"] for case in cases)
-    assert any(case["suite"] == "routing" for case in cases)
-    assert any(case["suite"] == "e2e" for case in cases)
-    assert any(case["suite"] == "provider_safety" for case in cases)
+    for suite in EXPECTED_SUITES:
+        assert any(case["suite"] == suite for case in cases)
 
 
 def test_eval_runner_returns_suite_level_summary() -> None:
     summary = run_evals(load_cases(Path("tests/evals/eval_cases.json")))
 
     assert "suites" in summary
-    assert {"routing", "e2e", "provider_safety"}.issubset(set(summary["suites"]))
+    assert EXPECTED_SUITES.issubset(set(summary["suites"]))
     assert summary["suites"]["routing"]["total"] > 0
     assert summary["suites"]["e2e"]["total"] > 0
-    assert summary["total"] == (
-        summary["suites"]["routing"]["total"] + summary["suites"]["e2e"]["total"]
-        + summary["suites"]["provider_safety"]["total"]
-    )
+    assert summary["total"] == sum(suite["total"] for suite in summary["suites"].values())
 
 
 def test_eval_cases_can_be_filtered_by_suite() -> None:
@@ -34,13 +33,19 @@ def test_eval_cases_can_be_filtered_by_suite() -> None:
     routing_cases = filter_cases_by_suite(cases, "routing")
     e2e_cases = filter_cases_by_suite(cases, "e2e")
     provider_safety_cases = filter_cases_by_suite(cases, "provider_safety")
+    memory_cases = filter_cases_by_suite(cases, "memory")
+    packaging_cases = filter_cases_by_suite(cases, "packaging")
 
     assert routing_cases
     assert e2e_cases
     assert provider_safety_cases
+    assert memory_cases
+    assert packaging_cases
     assert all(case["suite"] == "routing" for case in routing_cases)
     assert all(case["suite"] == "e2e" for case in e2e_cases)
     assert all(case["suite"] == "provider_safety" for case in provider_safety_cases)
+    assert all(case["suite"] == "memory" for case in memory_cases)
+    assert all(case["suite"] == "packaging" for case in packaging_cases)
 
 
 def test_e2e_eval_cases_reference_demo_scenario_matrix() -> None:

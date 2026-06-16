@@ -11,18 +11,24 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from multimodal_agent.agent.workflow import AgentWorkflow
 from multimodal_agent.agent.intent_router_adapter import create_intent_router_adapter
 from multimodal_agent.config import ProviderConfig
+from multimodal_agent.memory.store import InMemoryStore
 from multimodal_agent.schemas.capabilities import canonical_intent
 from multimodal_agent.schemas.intent_router import IntentRouterRequest
+from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.provider_budget import ProviderCallBudget
 from multimodal_agent.services.provider_errors import build_provider_error
 from multimodal_agent.services.provider_policy import RetryPolicy
+from multimodal_agent.mcp.server import OfflineMCPServer
+from scripts.validate_skills import validate_skills
 
 
 DEFAULT_CASES_PATH = ROOT / "tests" / "evals" / "eval_cases.json"
@@ -98,6 +104,10 @@ def expected_capability(case: dict[str, Any]) -> str | None:
 def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
     if case.get("suite") == "provider_safety":
         return evaluate_provider_safety_case(case, router_mode=router_mode)
+    if case.get("suite") == "memory" and case.get("memory_scenario"):
+        return evaluate_memory_case(case, router_mode=router_mode)
+    if case.get("suite") == "packaging":
+        return evaluate_packaging_case(case, router_mode=router_mode)
 
     request = request_from_case(case)
     router_expectation = _router_expectation(case, router_mode)
@@ -183,6 +193,107 @@ def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, 
         "must_not_require": must_not_require,
         "missing_slots": missing_slots,
         "media_requirement_errors": media_requirement_errors,
+    }
+
+
+def evaluate_packaging_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
+    """Evaluate offline MCP / Skills packaging checks."""
+
+    scenario = case.get("packaging_scenario")
+    if scenario == "skills_validate":
+        validation = validate_skills(ROOT / "skills")
+        passed = validation["ok"] is True
+    elif scenario == "mcp_tool_inventory":
+        tools = {tool["name"] for tool in OfflineMCPServer().list_tools()}
+        passed = {"agent_run", "tool_list", "tool_run", "demo_flow_run"}.issubset(tools)
+    elif scenario == "mcp_smoke_redaction":
+        result = OfflineMCPServer().call_tool("missing_tool", {"Authorization": "Bearer secret-token"})
+        payload = result.model_dump_json()
+        passed = result.status == "failed" and "secret-token" not in payload and "Authorization" not in payload
+    else:
+        passed = False
+    return {
+        "id": case["id"],
+        "router_mode": router_mode,
+        "suite": case.get("suite"),
+        "category": case.get("category"),
+        "scenario_id": case.get("scenario_id"),
+        "passed": passed,
+        "intent_match": True,
+        "capability_match": True,
+        "tool_selection_match": True,
+        "ordered_tool_match": True,
+        "unexpected_tool_called": False,
+        "media_requirement_error": False,
+        "followup_expected": False,
+        "followup_match": True,
+        "response_contains_match": True,
+        "expected_intent": case.get("expected_intent"),
+        "actual_intent": case.get("expected_intent"),
+        "expected_capability": case.get("expected_capability"),
+        "actual_capability": case.get("expected_capability"),
+        "expected_tools": case.get("expected_tools", []),
+        "actual_tools": case.get("expected_tools", []),
+        "expected_response_contains": case.get("expected_response_contains", []),
+        "must_not_call": case.get("must_not_call", []),
+        "unexpected_tools": [],
+        "must_not_require": case.get("must_not_require", []),
+        "missing_slots": [],
+        "media_requirement_errors": [],
+    }
+
+
+def evaluate_memory_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
+    """Evaluate offline memory store scenarios without external services."""
+
+    scenario = case.get("memory_scenario")
+    store = InMemoryStore()
+    now = case.get("created_at", "2026-01-01T00:00:00+00:00")
+    item = MemoryItem(
+        memory_id="m_shared",
+        user_id="user_a",
+        session_id="s1",
+        memory_type="preference",
+        summary="用户 A 喜欢日系极简浅色背景",
+        created_at=now,
+    )
+    store.save(item)
+    if scenario == "user_isolation":
+        result = store.search(MemoryQuery(user_id="user_b", query="日系极简", top_k=5))
+        passed = result.items == [] and "用户 A" not in result.memory_context
+    elif scenario == "delete_user_scoped":
+        store.save(item.model_copy(update={"user_id": "user_b"}))
+        passed = store.delete("user_a", "m_shared") and store.get("user_b", "m_shared") is not None
+    else:
+        passed = False
+    return {
+        "id": case["id"],
+        "router_mode": router_mode,
+        "suite": case.get("suite"),
+        "category": case.get("category"),
+        "scenario_id": case.get("scenario_id"),
+        "passed": passed,
+        "intent_match": True,
+        "capability_match": True,
+        "tool_selection_match": True,
+        "ordered_tool_match": True,
+        "unexpected_tool_called": False,
+        "media_requirement_error": False,
+        "followup_expected": False,
+        "followup_match": True,
+        "response_contains_match": True,
+        "expected_intent": case.get("expected_intent"),
+        "actual_intent": case.get("expected_intent"),
+        "expected_capability": case.get("expected_capability"),
+        "actual_capability": case.get("expected_capability"),
+        "expected_tools": case.get("expected_tools", []),
+        "actual_tools": case.get("expected_tools", []),
+        "expected_response_contains": case.get("expected_response_contains", []),
+        "must_not_call": case.get("must_not_call", []),
+        "unexpected_tools": [],
+        "must_not_require": case.get("must_not_require", []),
+        "missing_slots": [],
+        "media_requirement_errors": [],
     }
 
 

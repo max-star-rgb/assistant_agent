@@ -14,6 +14,7 @@ from multimodal_agent.agent.tool_executor import ToolExecutor
 from multimodal_agent.agent.tool_input_builder import build_tool_input
 from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy, format_memory_context
 from multimodal_agent.memory.store import MemoryStore
+from multimodal_agent.memory.write_policy import build_task_summary_memory_item
 from multimodal_agent.schemas.capabilities import canonical_intent
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
 from multimodal_agent.schemas.planning import TaskPlan
@@ -53,6 +54,10 @@ def load_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
         state.memory_context,
         max_chars=query.max_context_chars,
     )
+    state.request.metadata["memory_context_summaries"] = [item.summary for item in state.memory_context]
+    state.request.metadata["memory_context_refs"] = [
+        ref for item in state.memory_context for ref in item.artifact_refs
+    ]
     return graph_state
 
 
@@ -267,23 +272,26 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
 def save_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
     state = graph_state["state"]
     if state.status == "completed" and state.response is not None:
-        graph_state["memory_store"].save(_memory_from_state(state))
+        memory = _memory_from_state(state)
+        if memory is not None:
+            graph_state["memory_store"].save(memory)
     return graph_state
 
 
-def _memory_from_state(state: AgentState) -> MemoryItem:
-    return MemoryItem(
+def _memory_from_state(state: AgentState) -> MemoryItem | None:
+    output_refs = [
+        ref
+        for result in state.tool_results
+        for ref in ([result.output_ref] if result.output_ref else [])
+    ]
+    return build_task_summary_memory_item(
         memory_id=f"run_memory_{uuid4().hex}",
         user_id=state.user_id,
-        memory_type="task",
+        session_id=state.session_id,
         summary=state.response.message if state.response else "Agent run completed.",
-        content={
-            "session_id": state.session_id,
-            "query": state.request.text,
-            "intent": state.intent.intent if state.intent else None,
-            "selected_tools": [tool.tool_name for tool in state.selected_tools],
-            "final_response": state.response.message if state.response else None,
-        },
+        intent=state.intent.intent if state.intent else None,
+        selected_tools=[tool.tool_name for tool in state.selected_tools],
+        output_refs=output_refs,
         created_at=datetime.now(timezone.utc),
     )
 

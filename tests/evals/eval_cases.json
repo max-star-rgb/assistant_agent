@@ -1289,5 +1289,118 @@
     "expected_capability": "provider_safety",
     "expected_tools": [],
     "must_not_call": []
+  },
+  {
+    "id": "memory_preference_to_image_generation_001",
+    "category": "memory",
+    "suite": "memory",
+    "scenario_id": "memory_preference_to_image_generation",
+    "text": "根据上次那个包，按我喜欢的风格生成一张宣传图",
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "memory_retrieval",
+      "image_generation"
+    ],
+    "expected_response_contains": [
+      "图片"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "video_understanding",
+      "product_search",
+      "price_compare"
+    ]
+  },
+  {
+    "id": "memory_product_to_render_001",
+    "category": "memory",
+    "suite": "memory",
+    "scenario_id": "memory_product_to_render",
+    "text": "把上次那个包放到客厅里渲染",
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "memory_retrieval",
+      "render_3d"
+    ],
+    "expected_response_contains": [
+      "渲染"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "video_understanding",
+      "product_search",
+      "price_compare",
+      "image_generation"
+    ]
+  },
+  {
+    "id": "memory_task_resume_001",
+    "category": "memory",
+    "suite": "memory",
+    "scenario_id": "memory_task_resume",
+    "text": "继续上次任务",
+    "expected_intent": "memory_retrieval",
+    "expected_tools": [
+      "memory_retrieval"
+    ],
+    "expected_response_contains": [
+      "记忆"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "video_understanding",
+      "product_search",
+      "price_compare",
+      "image_generation",
+      "render_3d"
+    ]
+  },
+  {
+    "id": "memory_user_isolation_001",
+    "category": "memory",
+    "suite": "memory",
+    "scenario_id": "memory_user_isolation",
+    "memory_scenario": "user_isolation",
+    "expected_intent": "memory_retrieval",
+    "expected_tools": []
+  },
+  {
+    "id": "memory_delete_user_scoped_001",
+    "category": "memory",
+    "suite": "memory",
+    "scenario_id": "memory_delete",
+    "memory_scenario": "delete_user_scoped",
+    "expected_intent": "memory_delete",
+    "expected_tools": []
+  },
+  {
+    "id": "packaging_skills_validate_001",
+    "category": "packaging",
+    "suite": "packaging",
+    "scenario_id": "skills_validate",
+    "packaging_scenario": "skills_validate",
+    "expected_intent": "packaging",
+    "expected_capability": "packaging",
+    "expected_tools": []
+  },
+  {
+    "id": "packaging_mcp_tool_inventory_001",
+    "category": "packaging",
+    "suite": "packaging",
+    "scenario_id": "mcp_tool_inventory",
+    "packaging_scenario": "mcp_tool_inventory",
+    "expected_intent": "packaging",
+    "expected_capability": "packaging",
+    "expected_tools": []
+  },
+  {
+    "id": "packaging_mcp_smoke_redaction_001",
+    "category": "packaging",
+    "suite": "packaging",
+    "scenario_id": "mcp_smoke_redaction",
+    "packaging_scenario": "mcp_smoke_redaction",
+    "expected_intent": "packaging",
+    "expected_capability": "packaging",
+    "expected_tools": []
   }
 ]

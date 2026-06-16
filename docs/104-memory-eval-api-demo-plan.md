@@ -6,7 +6,7 @@
 
 ## Eval 分类
 
-建议新增 suite：
+已新增 suite：
 
 ```text
 memory
@@ -25,6 +25,14 @@ memory_user_isolation
 memory_missing_context_followup
 memory_delete
 ```
+
+`scripts/run_evals.py --suite memory` 覆盖：
+
+- `memory_preference_to_image_generation_001`
+- `memory_product_to_render_001`
+- `memory_task_resume_001`
+- `memory_user_isolation_001`
+- `memory_delete_user_scoped_001`
 
 ## Eval 示例
 
@@ -84,6 +92,15 @@ DELETE /memory/{memory_id}
 
 如果当前 API 不适合新增 endpoint，可以先测试 runtime-level memory behavior。
 
+当前阶段采用 runtime-level 覆盖，不新增 API surface：
+
+```text
+InMemoryStore.save
+InMemoryStore.search
+InMemoryStore.get
+InMemoryStore.delete
+```
+
 ## Demo Runner 覆盖
 
 新增 demo scenarios：
@@ -94,6 +111,13 @@ memory_product_to_render
 memory_task_resume
 memory_user_isolation
 ```
+
+当前 `demo_data/scenarios/e2e_demo_scenarios.json` 包含：
+
+- `memory_to_image_generation`
+- `memory_product_to_render`
+- `memory_task_resume`
+- `memory_user_isolation`
 
 ## 默认安全
 

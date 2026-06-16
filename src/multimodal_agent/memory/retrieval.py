@@ -1,5 +1,7 @@
 """Local memory retrieval strategy and formatting."""
 
+from datetime import datetime, timezone
+
 from multimodal_agent.memory.retriever import KeywordMemoryRetriever
 from multimodal_agent.memory.store import MemoryStore
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
@@ -9,10 +11,38 @@ TYPE_PRIORITY = {
     "preference": 0,
     "product": 1,
     "generation": 2,
-    "render": 3,
-    "task": 4,
-    "conversation": 5,
-    "video": 6,
+    "image": 3,
+    "video": 4,
+    "render": 5,
+    "artifact": 6,
+    "task": 7,
+    "conversation": 8,
+}
+
+CAPABILITY_TYPE_PRIORITY = {
+    "image_generation": {
+        "preference": 0,
+        "artifact": 1,
+        "image": 2,
+        "product": 3,
+        "conversation": 4,
+    },
+    "product_search": {
+        "preference": 0,
+        "product": 1,
+        "conversation": 2,
+    },
+    "render_3d": {
+        "preference": 0,
+        "product": 1,
+        "artifact": 2,
+        "render": 3,
+        "image": 4,
+    },
+    "direct_chat": {
+        "conversation": 0,
+        "preference": 1,
+    },
 }
 
 
@@ -42,17 +72,25 @@ class MemoryRetrievalStrategy:
 
         filtered = []
         for item in items:
-            if query.session_id is not None and item.content.get("session_id") != query.session_id:
+            item_session_id = item.session_id or item.content.get("session_id")
+            if query.session_id is not None and item_session_id != query.session_id:
+                continue
+            if query.tags and not set(query.tags).issubset(set(item.tags)):
                 continue
             if query.since is not None and item.created_at < query.since:
                 continue
+            if not query.include_expired and item.expires_at is not None:
+                now = datetime.now(tz=item.expires_at.tzinfo or timezone.utc)
+                if item.expires_at < now:
+                    continue
             filtered.append(item)
 
         deduped = _dedupe(filtered)
         deduped.sort(
             key=lambda item: (
                 item.relevance if item.relevance is not None else 0.0,
-                -TYPE_PRIORITY.get(item.memory_type, 99),
+                -_type_priority(item, query.capability),
+                _artifact_score(item),
                 item.created_at,
             ),
             reverse=True,
@@ -68,7 +106,8 @@ def format_memory_context(items: list[MemoryItem], max_chars: int = 500) -> str:
 
     lines = ["相关历史："]
     for index, item in enumerate(items, start=1):
-        line = f"{index}. [{item.memory_type}] {item.summary}"
+        ref_text = f" 引用：{item.artifact_refs[0]}" if item.artifact_refs else ""
+        line = f"{index}. [{item.memory_type}] {item.summary}{ref_text}"
         candidate = "\n".join(lines + [line])
         if len(candidate) > max_chars:
             break
@@ -76,6 +115,18 @@ def format_memory_context(items: list[MemoryItem], max_chars: int = 500) -> str:
 
     context = "\n".join(lines)
     return context[:max_chars]
+
+
+def _type_priority(item: MemoryItem, capability: str | None) -> int:
+    if capability:
+        priorities = CAPABILITY_TYPE_PRIORITY.get(capability, {})
+        if item.memory_type in priorities:
+            return priorities[item.memory_type]
+    return TYPE_PRIORITY.get(item.memory_type, 99)
+
+
+def _artifact_score(item: MemoryItem) -> float:
+    return 0.1 if item.artifact_refs else 0.0
 
 
 def _dedupe(items: list[MemoryItem]) -> list[MemoryItem]:

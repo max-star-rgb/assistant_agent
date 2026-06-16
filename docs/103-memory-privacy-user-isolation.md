@@ -47,6 +47,12 @@ secret
 
 Phase 5I 可以先复用 Phase 5H 的 redaction policy。
 
+当前实现复用 `sanitize_error_message()`：
+
+- `MemoryItem.summary`、`reason`、`content` 字符串值、`tags` 会做脱敏。
+- 危险 key 仍直接拒绝写入，例如 `api_key`、`authorization`、`bearer`、`cookie`、`password`、`secret`、`token`、`base64`、`raw_*`、`provider_response`。
+- 内联 `data:image/...`、`data:video/...`、`data:audio/...` 会被拒绝。
+
 ## Sensitivity
 
 MemoryItem 建议包含：
@@ -67,6 +73,11 @@ normal
 require explicit save
 or skip save
 ```
+
+当前策略：
+
+- 显式保存中如果文本被脱敏，`MemoryItem.sensitivity` 标记为 `sensitive`。
+- 自动 task summary 如果包含可脱敏敏感内容，默认不保存。
 
 ## 查询权限
 
@@ -99,6 +110,8 @@ summary preview
 tags
 count
 ```
+
+当前 trace state summary 只输出状态、intent、plan/tool/result/error 计数和 step index，不展开 `memory_context` 或 memory `content`。
 
 ## 验收标准
 
