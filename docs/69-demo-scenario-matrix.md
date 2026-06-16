@@ -36,14 +36,14 @@ expected_response_contains
 
 ## 默认场景
 
-当前矩阵至少覆盖以下 12 个场景：
+当前矩阵覆盖以下 17 个场景：
 
 | scenario_id | 场景 | expected_tools |
 | --- | --- | --- |
 | `text_chat` | 纯文本聊天 | `[]` |
 | `text_image_generation` | 纯文本图片生成 | `image_generation` |
 | `image_understanding` | 图片理解 | `vision_understanding` |
-| `video_understanding` | 视频理解 | `vision_understanding` |
+| `video_understanding` | 视频理解 | `video_understanding -> render_3d` |
 | `product_search_compare` | 文本商品搜索和比价 | `product_search -> price_compare` |
 | `image_to_product_search_compare` | 图片找同款并比价 | `vision_understanding -> product_search -> price_compare` |
 | `product_search_to_image_generation` | 商品搜索后生成海报 | `product_search -> image_generation` |
@@ -51,7 +51,12 @@ expected_response_contains
 | `image_to_render` | 图片进入 3D 渲染 | `vision_understanding -> render_3d` |
 | `memory_to_image_generation` | 结合记忆生成图片 | `memory_retrieval -> image_generation` |
 | `full_multistep_image_search_compare_generate` | 完整多步图片找同款、比价并生成海报 | `vision_understanding -> product_search -> price_compare -> image_generation` |
+| `video_to_product_search` | 视频找商品 | `video_understanding -> product_search` |
+| `video_to_render` | 视频进入 3D 渲染 | `video_understanding -> render_3d` |
 | `ambiguous_followup` | 歧义输入触发追问 | `[]` |
+| `memory_product_to_render` | 商品记忆进入 3D 渲染 | `memory_retrieval -> render_3d` |
+| `memory_task_resume` | 任务恢复记忆检索 | `memory_retrieval` |
+| `memory_user_isolation` | 用户隔离记忆检索演示 | `memory_retrieval` |
 
 ## 离线输入约定
 

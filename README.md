@@ -2,7 +2,7 @@
 
 本项目用于构建一个多模态自主工具调用 Agent。Agent 负责理解文本、图片、视频、语音等输入，识别用户真实意图，并编排视觉理解、商品搜索、比价、图片生成、3D 渲染、记忆检索等能力。
 
-当前已完成 Phase 5J MCP / Skills Packaging。默认仍使用本地 Mock/Local 能力：
+当前已完成 Phase 6B FastAPI Demo & Simple Web Console。默认仍使用本地 Mock/Local 能力：
 
 - Pydantic 领域 schema 和 AgentState。
 - 规则版意图识别与 Tool Router。
@@ -21,6 +21,7 @@ python scripts/check_env.py
 python -m pytest
 python scripts/run_evals.py
 python scripts/run_demo_flows.py
+python scripts/run_assistant_cli.py --text "帮我写一段商品介绍"
 ```
 
 单独运行端到端 Demo 验收：
@@ -241,6 +242,46 @@ Phase 5J 只聚焦：
 - Phase 5J 路线：`docs/107-phase5j-mcp-skills-packaging-roadmap.md`
 - Phase 5J 任务：`tasks/README_PHASE5J.md`
 - Phase 5J 审计：`docs/114-phase5j-mcp-skills-review.md`
+
+## Phase 6A 状态
+
+Phase 6A 已完成 Local Demo Entry / CLI 阶段。该阶段不新增核心 capability，不默认调用真实 Provider，不要求 API Key，不提交真实媒体或生成产物。
+
+Phase 6A 只聚焦：
+
+- 本地 Assistant CLI
+- demo scenario polish
+- 离线 demo runner 可用性
+- local quickstart / CLI docs
+- Phase 6A review
+
+默认运行、默认 pytest 和默认 demo runner 必须继续使用 MockAdapter / LocalJsonAdapter / InMemoryStore / JsonlMemoryStore，离线运行。
+
+- Phase 6 总路线：`docs/115-phase6-productization-overall-roadmap.md`
+- Phase 6A 路线：`docs/116-phase6a-local-demo-entry-roadmap.md`
+- Local quickstart：`docs/quickstart-local.md`
+- Demo CLI：`docs/demo-cli.md`
+- Phase 6A 审计：`docs/121-phase6a-local-demo-entry-review.md`
+
+## Phase 6B 状态
+
+Phase 6B 已完成 FastAPI Demo & Simple Web Console 阶段。该阶段不新增核心 capability，不实现登录或生产权限系统，不默认调用真实 Provider。
+
+Phase 6B 只聚焦：
+
+- FastAPI demo contract stabilization
+- `GET /demo/scenarios`
+- `POST /agent/run` demo-ready response
+- `GET /runs/{run_id}` / `GET /traces/{trace_id}` 查询
+- minimal static web console
+- Phase 6B review
+
+默认运行、默认 pytest、默认 API demo 和默认 Web Console 必须继续使用 MockAdapter / LocalJsonAdapter / InMemoryStore / JsonlMemoryStore，离线运行。
+
+- Phase 6B 路线：`docs/117-phase6b-api-web-console-roadmap.md`
+- Web Console 文档：`docs/demo-web-console.md`
+- Web Console 入口：`/demo/console`
+- Phase 6B 审计：`docs/122-phase6b-api-web-console-review.md`
 
 ## 目录
 

@@ -189,3 +189,17 @@ MCP / Skills Packaging 相关任务优先阅读：
 - `docs/113-phase5j-mcp-skills-review-checklist.md`
 - `docs/114-phase5j-mcp-skills-review.md`
 - `tasks/README_PHASE5J.md`
+
+## Phase 6 文档入口
+
+Productization / Usable Demo 相关任务优先阅读：
+
+- `docs/115-phase6-productization-overall-roadmap.md`
+- `docs/116-phase6a-local-demo-entry-roadmap.md`
+- `docs/117-phase6b-api-web-console-roadmap.md`
+- `docs/118-phase6c-real-provider-opt-in-roadmap.md`
+- `docs/119-phase6d-local-deployment-observability-roadmap.md`
+- `docs/120-phase6e-docs-release-roadmap.md`
+- `docs/121-phase6a-local-demo-entry-review.md`
+- `docs/122-phase6b-api-web-console-review.md`
+- `tasks/README_PHASE6.md`

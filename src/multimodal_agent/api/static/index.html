@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Assistant Demo Console</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f6f7f9;
+        color: #20242c;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 28px 0;
+      }
+
+      h1 {
+        margin: 0 0 20px;
+        font-size: 24px;
+        font-weight: 650;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+        gap: 16px;
+        align-items: start;
+      }
+
+      section {
+        background: #ffffff;
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+        padding: 16px;
+      }
+
+      label {
+        display: block;
+        margin: 0 0 6px;
+        font-size: 13px;
+        font-weight: 600;
+        color: #374151;
+      }
+
+      textarea,
+      input,
+      select {
+        box-sizing: border-box;
+        width: 100%;
+        border: 1px solid #c7ced9;
+        border-radius: 6px;
+        padding: 9px 10px;
+        font: inherit;
+        background: #ffffff;
+        color: #20242c;
+      }
+
+      textarea {
+        min-height: 132px;
+        resize: vertical;
+      }
+
+      .field {
+        margin-bottom: 14px;
+      }
+
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 6px;
+        padding: 10px 12px;
+        font: inherit;
+        font-weight: 650;
+        background: #205493;
+        color: #ffffff;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        background: #8a96a8;
+        cursor: wait;
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      .metric {
+        border: 1px solid #e1e6ef;
+        border-radius: 6px;
+        padding: 10px;
+        background: #fbfcfe;
+        min-width: 0;
+      }
+
+      .metric span {
+        display: block;
+        font-size: 12px;
+        color: #667085;
+      }
+
+      .metric strong {
+        display: block;
+        overflow-wrap: anywhere;
+        margin-top: 4px;
+        font-size: 13px;
+      }
+
+      pre {
+        overflow: auto;
+        min-height: 112px;
+        max-height: 360px;
+        margin: 0;
+        border: 1px solid #e1e6ef;
+        border-radius: 6px;
+        padding: 12px;
+        background: #101828;
+        color: #f8fafc;
+        font-size: 13px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+      }
+
+      @media (max-width: 760px) {
+        .layout,
+        .summary {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Assistant Demo Console</h1>
+      <div class="layout">
+        <section>
+          <div class="field">
+            <label for="scenario">Demo scenario</label>
+            <select id="scenario">
+              <option value="">Custom text prompt</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="text">Text</label>
+            <textarea id="text">帮我写一段商品介绍</textarea>
+          </div>
+          <div class="field">
+            <label for="image-ref">Image ref</label>
+            <input id="image-ref" placeholder="demo_image_product_1" />
+          </div>
+          <div class="field">
+            <label for="video-ref">Video ref</label>
+            <input id="video-ref" placeholder="demo_video_product_1" />
+          </div>
+          <button id="run" type="button">Run</button>
+        </section>
+
+        <section>
+          <div class="summary">
+            <div class="metric">
+              <span>Status</span>
+              <strong id="status">idle</strong>
+            </div>
+            <div class="metric">
+              <span>Trace</span>
+              <strong id="trace-id">-</strong>
+            </div>
+            <div class="metric">
+              <span>Run</span>
+              <strong id="run-id">-</strong>
+            </div>
+            <div class="metric">
+              <span>Tools</span>
+              <strong id="tools">-</strong>
+            </div>
+          </div>
+          <div class="field">
+            <label for="response">Response</label>
+            <pre id="response"></pre>
+          </div>
+          <div class="field">
+            <label for="errors">Errors</label>
+            <pre id="errors">[]</pre>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const scenarioSelect = document.querySelector("#scenario");
+      const textInput = document.querySelector("#text");
+      const imageInput = document.querySelector("#image-ref");
+      const videoInput = document.querySelector("#video-ref");
+      const runButton = document.querySelector("#run");
+      const statusOutput = document.querySelector("#status");
+      const traceOutput = document.querySelector("#trace-id");
+      const runOutput = document.querySelector("#run-id");
+      const toolsOutput = document.querySelector("#tools");
+      const responseOutput = document.querySelector("#response");
+      const errorsOutput = document.querySelector("#errors");
+      let scenarios = [];
+
+      async function loadScenarios() {
+        const response = await fetch("/demo/scenarios");
+        const payload = await response.json();
+        scenarios = payload.scenarios || [];
+        for (const scenario of scenarios) {
+          const option = document.createElement("option");
+          option.value = scenario.scenario_id;
+          option.textContent = `${scenario.scenario_id} - ${scenario.title}`;
+          scenarioSelect.appendChild(option);
+        }
+      }
+
+      scenarioSelect.addEventListener("change", () => {
+        const scenario = scenarios.find((item) => item.scenario_id === scenarioSelect.value);
+        if (scenario) {
+          textInput.value = scenario.user_query;
+        }
+      });
+
+      runButton.addEventListener("click", async () => {
+        runButton.disabled = true;
+        statusOutput.textContent = "running";
+        responseOutput.textContent = "";
+        errorsOutput.textContent = "[]";
+        const scenario = scenarios.find((item) => item.scenario_id === scenarioSelect.value);
+        const body = {
+          user_id: "web_demo_user",
+          session_id: scenario ? `web_demo_${scenario.scenario_id}` : "web_demo_custom",
+          text: textInput.value,
+          image_ids: imageInput.value ? [imageInput.value] : [],
+          video_ids: videoInput.value ? [videoInput.value] : [],
+          metadata: { source: "web_console", offline: true, scenario_id: scenarioSelect.value || null },
+        };
+
+        try {
+          const response = await fetch("/agent/run", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const payload = await response.json();
+          statusOutput.textContent = payload.status || "unknown";
+          traceOutput.textContent = payload.trace_id || "-";
+          runOutput.textContent = payload.run_id || "-";
+          toolsOutput.textContent = (payload.tool_calls || []).map((call) => call.tool_name).join(", ") || "(none)";
+          responseOutput.textContent = payload.response_text || "";
+          errorsOutput.textContent = JSON.stringify(payload.errors || [], null, 2);
+        } catch (error) {
+          statusOutput.textContent = "failed";
+          errorsOutput.textContent = JSON.stringify([{ message: String(error) }], null, 2);
+        } finally {
+          runButton.disabled = false;
+        }
+      });
+
+      loadScenarios().catch((error) => {
+        statusOutput.textContent = "failed";
+        errorsOutput.textContent = JSON.stringify([{ message: String(error) }], null, 2);
+      });
+    </script>
+  </body>
+</html>

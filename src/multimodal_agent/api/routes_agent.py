@@ -1,18 +1,28 @@
 """Agent HTTP routes."""
 
+import json
+from pathlib import Path
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.schemas.api import AgentRunResponse, agent_run_response_from_state
+from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION, agent_run_response_from_state
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.trace_query import RunSummary, ToolCallSummary, TraceQueryService, TraceSummary
 
 
 router = APIRouter()
+_RUNTIME: AgentGraphRuntime | None = None
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
 
 
 def get_agent_runtime() -> AgentGraphRuntime:
-    return AgentGraphRuntime()
+    global _RUNTIME
+    if _RUNTIME is None:
+        _RUNTIME = AgentGraphRuntime()
+    return _RUNTIME
 
 
 @router.post("/agent/run", response_model=AgentRunResponse)
@@ -21,12 +31,36 @@ def run_agent(request: UserRequest) -> AgentRunResponse:
     return agent_run_response_from_state(state)
 
 
+@router.get("/demo/scenarios")
+def list_demo_scenarios() -> dict[str, Any]:
+    scenarios = json.loads(_SCENARIO_PATH.read_text(encoding="utf-8"))
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "offline": True,
+        "total": len(scenarios),
+        "scenarios": [_public_scenario(scenario) for scenario in scenarios],
+    }
+
+
 @router.get("/runs/{run_id}", response_model=RunSummary)
 def get_run_summary(run_id: str) -> RunSummary:
     summary = TraceQueryService(get_agent_runtime().trace_store).run_summary(run_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="run not found")
     return summary
+
+
+def _public_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(scenario.get("metadata", {}))
+    return {
+        "scenario_id": scenario["scenario_id"],
+        "title": scenario["title"],
+        "user_query": scenario["user_query"],
+        "input_type": metadata.get("input_type", "text"),
+        "expected_tools": list(scenario.get("expected_tools", [])),
+        "expected_response_contains": list(scenario.get("expected_response_contains", [])),
+        "mock_only": bool(metadata.get("mock_only") or metadata.get("mock_media")),
+    }
 
 
 @router.get("/traces/{trace_id}", response_model=TraceSummary)
