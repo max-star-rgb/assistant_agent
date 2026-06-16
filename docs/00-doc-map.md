@@ -201,5 +201,9 @@ Productization / Usable Demo 相关任务优先阅读：
 - `docs/119-phase6d-local-deployment-observability-roadmap.md`
 - `docs/120-phase6e-docs-release-roadmap.md`
 - `docs/121-phase6a-local-demo-entry-review.md`
+- `docs/121-phase6-productization-review.md`
 - `docs/122-phase6b-api-web-console-review.md`
+- `docs/123-phase6c-real-provider-opt-in-review.md`
+- `docs/124-phase6d-deployment-config-review.md`
+- `docs/release-checklist.md`
 - `tasks/README_PHASE6.md`
