@@ -60,3 +60,104 @@
 4. 任务文件中的 `Read first` 列出的文档
 
 不要阅读无关任务，不要提前实现未来功能。
+
+## Phase 5A 文档入口
+
+Assistant Capability Routing Baseline 相关任务优先阅读：
+
+- `docs/41-phase5a-assistant-capability-routing-roadmap.md`
+- `docs/42-assistant-capability-routing-baseline.md`
+- `docs/44-assistant-routing-eval-plan.md`
+- `docs/47-phase5a-assistant-routing-review.md`
+
+## Phase 5B 文档入口
+
+Text-first Capabilities 相关任务优先阅读：
+
+- `docs/48-phase5b-text-first-capabilities-roadmap.md`
+- `docs/43-direct-chat-and-text-only-capabilities.md`
+- `docs/49-direct-chat-provider-design.md`
+- `docs/50-image-generation-provider-design.md`
+- `docs/51-prompt-and-output-contracts.md`
+- `docs/52-text-capability-smoke-and-safety.md`
+- `docs/53-phase5b-release-checklist.md`
+- `docs/54-phase5b-text-first-capabilities-review.md`
+- `tasks/README_PHASE5B.md`
+
+## Phase 5C 文档入口
+
+Product Search / Price Compare Provider Baseline 相关任务优先阅读：
+
+- `docs/55-phase5c-product-search-price-compare-roadmap.md`
+- `docs/56-product-search-provider-design.md`
+- `docs/57-price-compare-provider-design.md`
+- `docs/58-product-result-and-ranking-contracts.md`
+- `docs/59-product-search-smoke-and-safety.md`
+- `docs/60-phase5c-release-checklist.md`
+- `docs/61-phase5c-product-search-price-compare-review.md`
+- `tasks/README_PHASE5C.md`
+
+## Phase 5D 文档入口
+
+Render / 3D 渲染能力基线相关任务优先阅读：
+
+- `docs/62-phase5d-render-capability-roadmap.md`
+- `docs/63-render-capability-contract.md`
+- `docs/64-render-input-and-multistep-design.md`
+- `docs/65-render-smoke-eval-api-plan.md`
+- `docs/66-phase5d-render-review-checklist.md`
+- `docs/67-phase5d-render-capability-review.md`
+- `tasks/README_PHASE5D.md`
+
+## Phase 5E 文档入口
+
+End-to-End Demo Flow & Response Quality 相关任务优先阅读：
+
+- `docs/68-phase5e-e2e-demo-flow-roadmap.md`
+- `docs/69-demo-scenario-matrix.md`
+- `docs/70-capability-output-contract-unification.md`
+- `docs/71-response-composer-quality.md`
+- `docs/72-eval-suite-layering.md`
+- `docs/73-e2e-demo-runner.md`
+- `docs/75-phase5e-e2e-demo-flow-review.md`
+- `tasks/README_PHASE5E.md`
+
+## Phase 5F 文档入口
+
+Hybrid Intent Router & Planner Quality 相关任务优先阅读：
+
+- `docs/76-phase5f-hybrid-intent-router-roadmap.md`
+- `docs/77-intent-decision-schema-and-validator.md`
+- `docs/78-rule-router-confidence-refactor.md`
+- `docs/79-llm-intent-router-adapter.md`
+- `docs/80-planner-quality-and-slot-filling.md`
+- `docs/81-intent-router-eval-comparison.md`
+- `docs/83-phase5f-hybrid-intent-router-review.md`
+- `tasks/README_PHASE5F.md`
+
+## Phase 5G 文档入口
+
+Video Understanding as External MLLM Capability 相关任务优先阅读：
+
+- `docs/84-phase5g-video-understanding-roadmap.md`
+- `docs/85-video-understanding-contract.md`
+- `docs/86-video-provider-adapter-and-safety.md`
+- `docs/87-video-multistep-integration.md`
+- `docs/88-video-smoke-eval-api-plan.md`
+- `docs/89-phase5g-video-understanding-review-checklist.md`
+- `docs/90-phase5g-video-understanding-review.md`
+- `tasks/README_PHASE5G.md`
+
+## Phase 5H 文档入口
+
+Provider Safety / Retry / Cost / Trace Query 相关任务优先阅读：
+
+- `docs/91-phase5h-provider-safety-roadmap.md`
+- `docs/92-provider-error-taxonomy-and-safety-policy.md`
+- `docs/93-retry-fallback-timeout-policy.md`
+- `docs/94-provider-call-budget-and-cost-guard.md`
+- `docs/95-trace-query-and-redaction.md`
+- `docs/96-provider-safety-eval-api-plan.md`
+- `docs/97-phase5h-provider-safety-review-checklist.md`
+- `docs/98-phase5h-provider-safety-review.md`
+- `tasks/README_PHASE5H.md`

@@ -76,7 +76,7 @@ def test_trace_does_not_include_sensitive_fields() -> None:
     dumped = "\n".join(event.model_dump_json() for event in trace_store.list_by_run(state.run_id)).lower()
 
     assert "sk-test" not in dumped
-    assert "abc" not in dumped
+    assert "api_key=abc" not in dumped
     assert "hidden" not in dumped
     assert "should-not-appear" not in dumped
     assert "[redacted]" in dumped

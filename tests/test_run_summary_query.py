@@ -1,0 +1,66 @@
+from multimodal_agent.services.trace_query import TraceQueryService
+from multimodal_agent.services.trace_store import InMemoryTraceStore, TraceEvent
+
+
+def test_run_summary_query_returns_debug_summary() -> None:
+    trace_store = InMemoryTraceStore()
+    trace_store.append(
+        TraceEvent(trace_id="trace_1", run_id="run_1", node_name="detect_intent", event_type="node_finished")
+    )
+    trace_store.append(
+        TraceEvent(
+            trace_id="trace_1",
+            run_id="run_1",
+            node_name="search_node",
+            event_type="tool_failed",
+            capability="product_search",
+            tool_name="product_search",
+            provider="mock",
+            status="failed",
+            error_code="provider_call_limit_exceeded",
+            error={"code": "provider_call_limit_exceeded", "retry_count": 0},
+        )
+    )
+
+    summary = TraceQueryService(trace_store).run_summary("run_1")
+
+    assert summary is not None
+    assert summary.run_id == "run_1"
+    assert summary.trace_id == "trace_1"
+    assert summary.node_path == ["detect_intent"]
+    assert summary.tools == ["product_search"]
+    assert summary.providers == ["mock"]
+    assert summary.error_count == 1
+    assert summary.budget_exceeded is True
+
+
+def test_trace_summary_query_returns_events_without_raw_payloads() -> None:
+    trace_store = InMemoryTraceStore()
+    trace_store.append(
+        TraceEvent(
+            trace_id="trace_1",
+            run_id="run_1",
+            node_name="vision_node",
+            event_type="tool_failed",
+            capability="image_understanding",
+            tool_name="vision_understanding",
+            provider="qwen",
+            input_summary={"prompt": "hello", "Authorization": "Bearer sk-test"},
+            output_summary={"raw_response": "x" * 500},
+            error={"code": "provider_bad_response", "message": "Bearer sk-test"},
+        )
+    )
+
+    summary = TraceQueryService(trace_store).trace_summary("trace_1")
+
+    assert summary is not None
+    dumped = summary.model_dump_json()
+    assert "sk-test" not in dumped
+    assert "raw_response" not in dumped
+    assert summary.events[0]["tool_name"] == "vision_understanding"
+
+
+def test_tool_calls_query_returns_none_for_missing_run() -> None:
+    trace_store = InMemoryTraceStore()
+
+    assert TraceQueryService(trace_store).tool_calls_by_run("missing") is None

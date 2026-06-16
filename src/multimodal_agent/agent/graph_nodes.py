@@ -1,12 +1,14 @@
 """Reusable LangGraph node functions for agent execution."""
 
 from datetime import datetime, timezone
+from inspect import signature
 from uuid import uuid4
 from typing import NotRequired, TypedDict
 
 from multimodal_agent.agent.intent import IntentDetector
+from multimodal_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from multimodal_agent.agent.router import ToolRouter
-from multimodal_agent.agent.state import AgentState
+from multimodal_agent.agent.state import AgentError, AgentState
 from multimodal_agent.agent.response_composer import compose_response, save_demo_memory
 from multimodal_agent.agent.tool_executor import ToolExecutor
 from multimodal_agent.agent.tool_input_builder import build_tool_input
@@ -14,8 +16,10 @@ from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy, format_me
 from multimodal_agent.memory.store import MemoryStore
 from multimodal_agent.schemas.capabilities import canonical_intent
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
-from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.schemas.planning import TaskPlan
+from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.schemas.tools import ToolResult
+from multimodal_agent.services.chat_adapter import ChatAdapter
 from multimodal_agent.services.trace_store import TraceStore
 
 
@@ -27,6 +31,7 @@ class AgentGraphState(TypedDict):
     intent_detector: IntentDetector
     router: ToolRouter
     tool_executor: ToolExecutor
+    chat_adapter: ChatAdapter
     memory_store: MemoryStore
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
@@ -62,9 +67,9 @@ def route_tools_node(graph_state: AgentGraphState) -> AgentGraphState:
     if state.intent is None:
         raise ValueError("Cannot route tools before intent detection")
     router = graph_state["router"]
-    plan = router.route(state.intent)
+    plan = _route_with_optional_request(router, state.intent, graph_state["request"])
     state.set_plan(plan)
-    state.selected_tools = router.select_tools(state.intent)
+    state.selected_tools = _select_tools_with_optional_request(router, state.intent, graph_state["request"])
     return graph_state
 
 
@@ -152,6 +157,98 @@ def run_first_tool_node(graph_state: AgentGraphState) -> AgentGraphState:
 
 def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
     route_tools_node(graph_state)
+    state = graph_state["state"]
+    intent = state.intent
+    if intent is not None and canonical_intent(intent.intent) == "direct_chat":
+        input_size_bytes = len((graph_state["request"].text or "").encode("utf-8"))
+        budget_error = state.provider_budget.check_before_call(
+            capability="direct_chat",
+            input_size_bytes=input_size_bytes,
+        )
+        if budget_error is not None:
+            errors = [budget_error.model_dump(mode="json")]
+            contract = build_text_capability_output(
+                capability="direct_chat",
+                status="failed",
+                errors=errors,
+            )
+            state.errors.append(
+                AgentError(
+                    message=budget_error.message,
+                    source="direct_chat",
+                    details={
+                        "code": budget_error.code,
+                        "recovery_action": "stop_with_error",
+                        "retryable": False,
+                        "provider_budget": state.provider_budget.summary(),
+                    },
+                )
+            )
+            state.response = AgentResponse(
+                message=f"处理失败：{budget_error.code}: {budget_error.message}",
+                data={
+                    "intent": state.intent.intent if state.intent else None,
+                    "tool_count": len(state.tool_calls),
+                    "errors": errors,
+                    "contract": contract,
+                    "provider_budget": state.provider_budget.summary(),
+                },
+            )
+            state.status = "failed"
+            return graph_state
+        memory_summaries = [item.summary for item in state.memory_context]
+        memory_context_text = state.request.metadata.get("memory_context_text", "")
+        result = graph_state["chat_adapter"].chat(
+            build_direct_chat_request(
+                graph_state["request"],
+                memory_context=memory_summaries,
+                system_instruction="You are a helpful text-first assistant.",
+            )
+        )
+        state.provider_budget.record_call(
+            run_id=state.run_id,
+            capability="direct_chat",
+            provider=result.provider,
+            model=result.model,
+            input_size_bytes=input_size_bytes,
+            latency_ms=result.latency_ms,
+            status="succeeded" if result.success else "failed",
+        )
+        message = (
+            result.response_text
+            if result.success
+            else f"处理失败：{result.errors[0].code}: {result.errors[0].message}"
+        )
+        if result.success and memory_summaries:
+            message = f"{message}；参考记忆：{memory_summaries[0]}"
+        errors = [error.model_dump(mode="json") for error in result.errors]
+        contract = build_text_capability_output(
+            capability="direct_chat",
+            status="succeeded" if result.success else "failed",
+            output_ref=result.output_ref,
+            data={"response_text": result.response_text, "provider": result.provider, "model": result.model},
+            errors=errors,
+        )
+        state.set_response(
+            AgentResponse(
+                message=message,
+                data={
+                    "intent": state.intent.intent if state.intent else None,
+                    "tool_count": len(state.tool_calls),
+                    "provider": result.provider,
+                    "model": result.model,
+                    "usage": result.usage,
+                    "output_ref": result.output_ref,
+                    "memory_context_count": len(state.memory_context),
+                    "memory_context_summaries": memory_summaries,
+                    "memory_context_text": memory_context_text,
+                    "errors": errors,
+                    "contract": contract,
+                    "provider_budget": state.provider_budget.summary(),
+                },
+                output_refs=[result.output_ref] if result.output_ref else [],
+            )
+        )
     return graph_state
 
 
@@ -220,3 +317,15 @@ def _run_planned_tools(graph_state: AgentGraphState, stop_after_first: bool) -> 
         if stop_after_first:
             break
     return graph_state
+
+
+def _route_with_optional_request(router: ToolRouter, intent, request: UserRequest) -> TaskPlan:
+    if len(signature(router.route).parameters) >= 2:
+        return router.route(intent, request)
+    return router.route(intent)
+
+
+def _select_tools_with_optional_request(router: ToolRouter, intent, request: UserRequest):
+    if len(signature(router.select_tools).parameters) >= 2:
+        return router.select_tools(intent, request)
+    return router.select_tools(intent)

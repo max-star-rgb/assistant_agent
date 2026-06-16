@@ -43,6 +43,45 @@ def test_websocket_emits_structured_error_event_for_failed_tool() -> None:
     assert events[-1]["error"]
 
 
+def test_websocket_emits_render_tool_events() -> None:
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/ws/agent/s3?text=把浅灰色沙发放到北欧风客厅看看") as websocket:
+        events = [websocket.receive_json() for _ in range(6)]
+
+    assert [event["type"] for event in events] == [
+        "task_started",
+        "graph_node_started",
+        "tool_started",
+        "tool_finished",
+        "graph_node_finished",
+        "final_response",
+    ]
+    assert events[2]["tool_name"] == "render_3d"
+    assert events[3]["tool_name"] == "render_3d"
+    assert events[3]["output_ref"] == "mock://render/preview.png"
+
+
+def test_websocket_emits_video_understanding_events() -> None:
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/ws/agent/s4?text=总结这个视频&video_id=video_ws_1") as websocket:
+        events = [websocket.receive_json() for _ in range(6)]
+
+    assert [event["type"] for event in events] == [
+        "task_started",
+        "graph_node_started",
+        "tool_started",
+        "tool_finished",
+        "graph_node_finished",
+        "final_response",
+    ]
+    assert events[2]["tool_name"] == "video_understanding"
+    assert events[3]["tool_name"] == "video_understanding"
+    assert events[3]["output_ref"] == "mock://video/understanding/video_ws_1"
+    assert events[3]["payload"]["contract"]["capability"] == "video_understanding"
+
+
 def test_mock_websocket_helper_remains_available_for_fallback_tests() -> None:
     events = mock_agent_events("fallback")
 

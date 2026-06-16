@@ -2,10 +2,12 @@
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from multimodal_agent.schemas.planning import TaskStep
 from multimodal_agent.schemas.tools import ToolResult
+from multimodal_agent.services.provider_errors import normalize_provider_error_code, sanitize_error_message
+from multimodal_agent.services.provider_policy import FallbackPolicy, RetryPolicy
 
 
 RecoveryAction = Literal[
@@ -36,6 +38,8 @@ class RecoveryPolicy(BaseModel):
     allow_skip_optional_steps: bool = True
     allow_partial_response: bool = True
     fallback_to_mock: bool = False
+    retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
+    fallback_policy: FallbackPolicy = Field(default_factory=FallbackPolicy)
 
     def decide(self, result: ToolResult, step: TaskStep | None = None) -> RecoveryDecision:
         """Return a recovery decision for a failed tool result."""
@@ -44,6 +48,7 @@ class RecoveryPolicy(BaseModel):
         error = result.error or "工具执行失败"
         error_code = classify_error(error)
         sanitized = sanitize_error_message(error)
+        retryable = self.retry_policy.is_retryable(error_code)
 
         if optional_step and self.allow_skip_optional_steps and self.allow_partial_response:
             return RecoveryDecision(
@@ -51,7 +56,7 @@ class RecoveryPolicy(BaseModel):
                 message=sanitized,
                 action="continue_with_partial_result",
                 optional_step=True,
-                retryable=error_code in {"provider_timeout", "provider_rate_limited"},
+                retryable=retryable,
             )
 
         return RecoveryDecision(
@@ -59,7 +64,7 @@ class RecoveryPolicy(BaseModel):
             message=sanitized,
             action="stop_with_error",
             optional_step=optional_step,
-            retryable=error_code in {"provider_timeout", "provider_rate_limited"},
+            retryable=retryable,
         )
 
 
@@ -67,6 +72,10 @@ def classify_error(error: str) -> str:
     """Map raw tool error text to a stable recovery error code."""
 
     normalized = error.strip().lower()
+    prefix = normalized.split(":", maxsplit=1)[0]
+    provider_code = normalize_provider_error_code(prefix)
+    if provider_code.startswith("provider_") and provider_code != "provider_unknown_error":
+        return provider_code
     if normalized.startswith("provider_unconfigured:"):
         return "provider_unconfigured"
     if "timeout" in normalized or "timed out" in normalized:
@@ -82,24 +91,3 @@ def classify_error(error: str) -> str:
     if normalized.startswith("provider_bad_response:"):
         return "provider_bad_response"
     return "unknown_error"
-
-
-def sanitize_error_message(error: str) -> str:
-    """Keep useful failure context while removing obvious secret material."""
-
-    message = " ".join(error.strip().split())
-    secret_markers = ("api_key", "apikey", "authorization", "bearer", "secret", "token", "password")
-    parts = []
-    redact_next = False
-    for word in message.split(" "):
-        lowered = word.lower()
-        if redact_next or lowered.startswith(("sk-", "pk-")) or any(marker in lowered for marker in secret_markers):
-            parts.append("[redacted]")
-            redact_next = lowered in {"bearer", "authorization", "token", "password"}
-        else:
-            parts.append(word)
-            redact_next = False
-    sanitized = " ".join(parts)
-    if len(sanitized) > 300:
-        return f"{sanitized[:297]}..."
-    return sanitized or "工具执行失败"

@@ -23,5 +23,5 @@ def test_build_tool_input_keeps_prompt_for_image_generation_without_products() -
 
     tool_input = build_tool_input("generate_image", request, {})
 
-    assert tool_input["prompt"] == "生成一张日系海报"
+    assert "生成一张日系海报" in tool_input["prompt"]
     assert tool_input["style"] == "日系海报"

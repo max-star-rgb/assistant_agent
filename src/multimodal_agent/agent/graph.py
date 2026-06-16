@@ -20,6 +20,7 @@ from multimodal_agent.agent.tool_executor import ToolExecutor
 from multimodal_agent.memory.factory import create_memory_store
 from multimodal_agent.agent.workflow import AgentWorkflow
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services.chat_adapter import create_chat_adapter
 from multimodal_agent.tools.registry import create_default_registry
 
 
@@ -54,6 +55,7 @@ def run_agent_graph(request: UserRequest, workflow: AgentWorkflow | None = None)
         "intent_detector": workflow.intent_detector if workflow is not None else IntentDetector(),
         "router": workflow.router if workflow is not None else ToolRouter(),
         "tool_executor": ToolExecutor(registry=registry, tool_history=tool_history),
+        "chat_adapter": create_chat_adapter(),
         "memory_store": create_memory_store(),
         "outputs_by_step": {},
         "current_step_index": 0,

@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from multimodal_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+
 
 TraceEventType = Literal["node_started", "node_finished", "tool_failed"]
 GraphStateT = TypeVar("GraphStateT", bound=dict[str, Any])
@@ -23,7 +25,15 @@ class TraceEvent(BaseModel):
     event_type: TraceEventType
     before_state_summary: dict[str, Any] = Field(default_factory=dict)
     after_state_summary: dict[str, Any] = Field(default_factory=dict)
+    capability: str | None = None
     tool_name: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    status: str | None = None
+    latency_ms: int | None = Field(default=None, ge=0)
+    error_code: str | None = None
+    input_summary: dict[str, Any] = Field(default_factory=dict)
+    output_summary: dict[str, Any] = Field(default_factory=dict)
     error: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -37,6 +47,9 @@ class TraceStore(Protocol):
     def list_by_run(self, run_id: str) -> list[TraceEvent]:
         """Return trace events for a run in insertion order."""
 
+    def list_by_trace(self, trace_id: str) -> list[TraceEvent]:
+        """Return trace events for a trace in insertion order."""
+
     def node_path(self, run_id: str) -> list[str]:
         """Return finished graph node names for a run."""
 
@@ -48,10 +61,13 @@ class InMemoryTraceStore:
         self.events: list[TraceEvent] = []
 
     def append(self, event: TraceEvent) -> None:
-        self.events.append(event)
+        self.events.append(redact_trace_event(event))
 
     def list_by_run(self, run_id: str) -> list[TraceEvent]:
         return [event for event in self.events if event.run_id == run_id]
+
+    def list_by_trace(self, trace_id: str) -> list[TraceEvent]:
+        return [event for event in self.events if event.trace_id == trace_id]
 
     def node_path(self, run_id: str) -> list[str]:
         return [event.node_name for event in self.list_by_run(run_id) if event.event_type == "node_finished"]
@@ -65,6 +81,7 @@ class JsonlTraceStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def append(self, event: TraceEvent) -> None:
+        event = redact_trace_event(event)
         with self.path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n")
 
@@ -77,6 +94,18 @@ class JsonlTraceStore:
                 if line.strip():
                     event = TraceEvent.model_validate_json(line)
                     if event.run_id == run_id:
+                        events.append(event)
+        return events
+
+    def list_by_trace(self, trace_id: str) -> list[TraceEvent]:
+        if not self.path.exists():
+            return []
+        events: list[TraceEvent] = []
+        with self.path.open("r", encoding="utf-8") as file:
+            for line in file:
+                if line.strip():
+                    event = TraceEvent.model_validate_json(line)
+                    if event.trace_id == trace_id:
                         events.append(event)
         return events
 
@@ -178,19 +207,89 @@ def latest_error_summary(graph_state: dict[str, Any]) -> dict[str, Any] | None:
 def sanitize_trace_value(value: str) -> str:
     """Remove obvious secret material and cap trace text size."""
 
-    secret_markers = ("api_key", "apikey", "authorization", "bearer", "secret", "token", "password")
-    compact = " ".join(value.strip().split())
-    words = []
-    redact_next = False
-    for word in compact.split(" "):
-        lowered = word.lower()
-        if redact_next or lowered.startswith(("sk-", "pk-")) or any(marker in lowered for marker in secret_markers):
-            words.append("[redacted]")
-            redact_next = lowered in {"bearer", "authorization", "token", "password"}
-        else:
-            words.append(word)
-            redact_next = False
-    sanitized = " ".join(words)
-    if len(sanitized) > 300:
-        return f"{sanitized[:297]}..."
-    return sanitized
+    return sanitize_error_message(value)
+
+
+def redact_trace_event(event: TraceEvent) -> TraceEvent:
+    """Return a copy of a trace event with all public payloads sanitized."""
+
+    payload = event.model_dump(mode="python")
+    for key in (
+        "before_state_summary",
+        "after_state_summary",
+        "input_summary",
+        "output_summary",
+        "error",
+    ):
+        value = payload.get(key)
+        payload[key] = sanitize_error_detail(value) if value is not None else value
+    for key in ("provider", "model", "status", "error_code", "tool_name", "capability", "node_name"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            payload[key] = sanitize_trace_value(value)
+    return TraceEvent.model_validate(payload)
+
+
+def trace_debug_summary(events: list[TraceEvent]) -> dict[str, Any]:
+    """Build a compact, redacted trace summary for API/debug use."""
+
+    if not events:
+        return {
+            "run_id": None,
+            "trace_id": None,
+            "node_path": [],
+            "tools": [],
+            "providers": [],
+            "error_count": 0,
+            "budget_exceeded": False,
+            "retry_count": 0,
+            "events": [],
+        }
+    providers = sorted({event.provider for event in events if event.provider})
+    tools = sorted({event.tool_name for event in events if event.tool_name})
+    errors = [event for event in events if event.error or event.error_code]
+    return {
+        "run_id": events[0].run_id,
+        "trace_id": events[0].trace_id,
+        "node_path": [event.node_name for event in events if event.event_type == "node_finished"],
+        "tools": tools,
+        "providers": providers,
+        "error_count": len(errors),
+        "budget_exceeded": any(
+            (event.error_code or (event.error or {}).get("code")) in {"provider_budget_exceeded", "provider_call_limit_exceeded"}
+            for event in events
+        ),
+        "retry_count": sum(_retry_count(event) for event in events),
+        "events": [trace_event_summary(event) for event in events],
+    }
+
+
+def trace_event_summary(event: TraceEvent) -> dict[str, Any]:
+    """Return a redacted public event summary."""
+
+    error = event.error or {}
+    error_code = event.error_code or error.get("code")
+    error_message = error.get("message")
+    return {
+        "trace_id": event.trace_id,
+        "run_id": event.run_id,
+        "node_name": event.node_name,
+        "event_type": event.event_type,
+        "capability": event.capability,
+        "tool_name": event.tool_name,
+        "provider": event.provider,
+        "model": event.model,
+        "status": event.status,
+        "latency_ms": event.latency_ms,
+        "error_code": error_code,
+        "error_message": sanitize_trace_value(error_message) if isinstance(error_message, str) else None,
+        "input_summary": event.input_summary,
+        "output_summary": event.output_summary,
+        "created_at": event.created_at,
+    }
+
+
+def _retry_count(event: TraceEvent) -> int:
+    error = event.error or {}
+    value = error.get("retry_count")
+    return value if isinstance(value, int) else 0

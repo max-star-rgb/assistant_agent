@@ -19,10 +19,10 @@ def test_demo_flow_runs_multitool_task_and_saves_memory() -> None:
     assert response.status_code == 200
     payload = response.json()
 
-    assert payload["intent"] == "multi_tool_task"
+    assert payload["intent"] == "multi_step_orchestration"
 
     tool_names = [call["tool_name"] for call in payload["tool_calls"]]
-    assert "vision_understanding" in tool_names
+    assert "video_understanding" in tool_names
     assert "product_search" in tool_names
     assert "price_compare" in tool_names
     assert "image_generation" in tool_names

@@ -37,7 +37,7 @@ def test_canonical_intents_are_valid_intent_results(intent_name: str) -> None:
         ("direct_chat", None),
         ("image_generation", "image_generation"),
         ("image_understanding", "vision_understanding"),
-        ("video_understanding", "vision_understanding"),
+        ("video_understanding", "video_understanding"),
         ("product_search", "product_search"),
         ("price_compare", "price_compare"),
         ("render_3d", "render_3d"),
@@ -57,7 +57,7 @@ def test_router_accepts_multi_step_orchestration_canonical_intent() -> None:
     )
 
     assert [step.tool_name for step in plan.steps] == [
-        "vision_understanding",
+        "video_understanding",
         "product_search",
         "price_compare",
         "image_generation",

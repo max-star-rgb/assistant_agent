@@ -1,0 +1,36 @@
+{
+  "items": [
+    {
+      "product_id": "demo-p1",
+      "title": "本地白色低帮运动鞋",
+      "brand": "Demo",
+      "category": "shoes",
+      "price": 199.0,
+      "currency": "CNY",
+      "platform": "local-demo",
+      "shop": "local-demo-shop",
+      "product_url": "local://products/demo-p1",
+      "image_url": "local://images/demo-p1.png",
+      "similarity_score": 0.91,
+      "rating": 4.6,
+      "reason": "本地 demo 商品，适合验证搜索和比价数据流。",
+      "source": "local_json"
+    },
+    {
+      "product_id": "demo-p2",
+      "title": "本地简约白色板鞋",
+      "brand": "Demo",
+      "category": "shoes",
+      "price": 229.0,
+      "currency": "CNY",
+      "platform": "local-demo",
+      "shop": "local-demo-shop",
+      "product_url": "local://products/demo-p2",
+      "image_url": "local://images/demo-p2.png",
+      "similarity_score": 0.86,
+      "rating": 4.4,
+      "reason": "价格适中，标题匹配白色板鞋。",
+      "source": "local_json"
+    }
+  ]
+}

@@ -11,7 +11,8 @@
       "image_generation",
       "render_3d",
       "vision_understanding"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "intent_followup_001",
@@ -25,7 +26,8 @@
       "image_generation",
       "render_3d",
       "vision_understanding"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "intent_save_memory_001",
@@ -38,7 +40,8 @@
     "must_not_call": [
       "product_search",
       "price_compare"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "intent_retrieve_memory_001",
@@ -51,7 +54,8 @@
     "must_not_call": [
       "image_generation",
       "render_3d"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "intent_render_001",
@@ -64,7 +68,8 @@
     "must_not_call": [
       "image_generation",
       "price_compare"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "routing_search_001",
@@ -77,7 +82,8 @@
     "must_not_call": [
       "price_compare",
       "image_generation"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "routing_search_002",
@@ -90,7 +96,8 @@
     "must_not_call": [
       "price_compare",
       "render_3d"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "routing_compare_001",
@@ -103,7 +110,8 @@
     "must_not_call": [
       "product_search",
       "image_generation"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "routing_image_001",
@@ -116,7 +124,8 @@
     "must_not_call": [
       "render_3d",
       "price_compare"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "routing_render_001",
@@ -129,7 +138,8 @@
     "must_not_call": [
       "image_generation",
       "product_search"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "multistep_001",
@@ -140,13 +150,19 @@
     ],
     "expected_intent": "multi_tool_task",
     "expected_tools": [
-      "vision_understanding",
+      "video_understanding",
       "product_search",
       "price_compare",
       "image_generation"
     ],
     "must_not_call": [
       "render_3d"
+    ],
+    "suite": "e2e",
+    "scenario_id": "full_multistep_image_search_compare_generate",
+    "expected_response_contains": [
+      "价格",
+      "图片"
     ]
   },
   {
@@ -158,14 +174,15 @@
     ],
     "expected_intent": "multi_tool_task",
     "expected_tools": [
-      "vision_understanding",
+      "video_understanding",
       "product_search",
       "price_compare",
       "image_generation"
     ],
     "must_not_call": [
       "render_3d"
-    ]
+    ],
+    "suite": "e2e"
   },
   {
     "id": "multistep_003",
@@ -178,12 +195,12 @@
     "expected_tools": [
       "vision_understanding",
       "product_search",
-      "price_compare",
-      "image_generation"
+      "price_compare"
     ],
     "must_not_call": [
       "render_3d"
-    ]
+    ],
+    "suite": "e2e"
   },
   {
     "id": "multistep_004",
@@ -201,7 +218,8 @@
     ],
     "must_not_call": [
       "render_3d"
-    ]
+    ],
+    "suite": "e2e"
   },
   {
     "id": "multistep_005",
@@ -212,14 +230,15 @@
     ],
     "expected_intent": "multi_tool_task",
     "expected_tools": [
-      "vision_understanding",
+      "video_understanding",
       "product_search",
       "price_compare",
       "image_generation"
     ],
     "must_not_call": [
       "render_3d"
-    ]
+    ],
+    "suite": "e2e"
   },
   {
     "id": "multistep_006",
@@ -237,7 +256,8 @@
     ],
     "must_not_call": [
       "render_3d"
-    ]
+    ],
+    "suite": "e2e"
   },
   {
     "id": "multistep_007",
@@ -248,14 +268,15 @@
     ],
     "expected_intent": "multi_tool_task",
     "expected_tools": [
-      "vision_understanding",
+      "video_understanding",
       "product_search",
       "price_compare",
       "image_generation"
     ],
     "must_not_call": [
       "render_3d"
-    ]
+    ],
+    "suite": "e2e"
   },
   {
     "id": "multistep_008",
@@ -273,7 +294,8 @@
     ],
     "must_not_call": [
       "render_3d"
-    ]
+    ],
+    "suite": "e2e"
   },
   {
     "id": "memory_001",
@@ -285,7 +307,8 @@
     ],
     "must_not_call": [
       "product_search"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "memory_002",
@@ -297,7 +320,8 @@
     ],
     "must_not_call": [
       "image_generation"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "memory_003",
@@ -309,7 +333,8 @@
     ],
     "must_not_call": [
       "product_search"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "memory_004",
@@ -321,7 +346,8 @@
     ],
     "must_not_call": [
       "price_compare"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "failure_001",
@@ -335,7 +361,8 @@
       "image_generation",
       "render_3d",
       "vision_understanding"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "failure_002",
@@ -349,7 +376,8 @@
       "image_generation",
       "render_3d",
       "vision_understanding"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "failure_003",
@@ -366,7 +394,8 @@
       "image_generation",
       "render_3d",
       "vision_understanding"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "failure_004",
@@ -383,7 +412,8 @@
       "image_generation",
       "render_3d",
       "vision_understanding"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "multimodal_001",
@@ -399,7 +429,8 @@
     "must_not_call": [
       "product_search",
       "price_compare"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "multimodal_002",
@@ -410,12 +441,13 @@
     ],
     "expected_intent": "understand_video",
     "expected_tools": [
-      "vision_understanding"
+      "video_understanding"
     ],
     "must_not_call": [
       "image_generation",
       "render_3d"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "multimodal_003",
@@ -431,7 +463,8 @@
     "must_not_call": [
       "price_compare",
       "render_3d"
-    ]
+    ],
+    "suite": "routing"
   },
   {
     "id": "multimodal_004",
@@ -442,11 +475,819 @@
     ],
     "expected_intent": "understand_video",
     "expected_tools": [
-      "vision_understanding"
+      "video_understanding"
     ],
     "must_not_call": [
       "product_search",
       "image_generation"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "direct_chat_002",
+    "category": "direct_chat",
+    "text": "帮我写一段商品介绍",
+    "expected_intent": "direct_chat",
+    "expected_tools": [],
+    "must_not_call": [
+      "vision_understanding",
+      "product_search",
+      "price_compare",
+      "image_generation",
+      "render_3d"
+    ],
+    "suite": "e2e",
+    "scenario_id": "text_chat",
+    "expected_response_contains": [
+      "商品介绍"
     ]
+  },
+  {
+    "id": "direct_chat_003",
+    "category": "direct_chat",
+    "text": "给我三个搭配建议",
+    "inputs": {
+      "has_image": true,
+      "has_video": false
+    },
+    "expected_intent": "direct_chat",
+    "expected_tools": [],
+    "must_not_call": [
+      "vision_understanding"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "direct_chat_004",
+    "category": "direct_chat",
+    "text": "解释一下 Agent 和 Tool 的区别",
+    "expected_intent": "direct_chat",
+    "expected_tools": [],
+    "must_not_call": [
+      "vision_understanding",
+      "product_search",
+      "price_compare",
+      "image_generation",
+      "render_3d"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "direct_chat_005",
+    "category": "direct_chat",
+    "text": "给我三个营销文案方向",
+    "expected_intent": "direct_chat",
+    "expected_tools": [],
+    "must_not_call": [
+      "vision_understanding",
+      "product_search",
+      "price_compare",
+      "image_generation",
+      "render_3d"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_image_generation_001",
+    "category": "text_only_image_generation",
+    "text": "生成一张赛博朋克风格海报",
+    "expected_intent": "image_generation",
+    "expected_tools": [
+      "image_generation"
+    ],
+    "must_not_require": [
+      "image",
+      "video"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_image_generation_002",
+    "category": "text_only_image_generation",
+    "text": "帮我生成一张日系极简商品图",
+    "expected_intent": "image_generation",
+    "expected_tools": [
+      "image_generation"
+    ],
+    "must_not_require": [
+      "image",
+      "video"
+    ],
+    "suite": "e2e",
+    "scenario_id": "text_image_generation",
+    "expected_response_contains": [
+      "图片",
+      "生成"
+    ]
+  },
+  {
+    "id": "text_image_generation_003",
+    "category": "text_only_image_generation",
+    "text": "做一张适合小红书的封面",
+    "expected_intent": "image_generation",
+    "expected_tools": [
+      "image_generation"
+    ],
+    "must_not_require": [
+      "image",
+      "video"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_image_generation_004",
+    "category": "text_only_image_generation",
+    "text": "生成一张未来感科技发布会主视觉",
+    "expected_intent": "image_generation",
+    "expected_tools": [
+      "image_generation"
+    ],
+    "must_not_require": [
+      "image",
+      "video"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_product_search_001",
+    "category": "text_only_product_search",
+    "text": "帮我找 500 元以内的白色运动鞋",
+    "expected_intent": "product_search",
+    "expected_tools": [
+      "product_search"
+    ],
+    "must_not_call": [
+      "vision_understanding"
+    ],
+    "suite": "e2e",
+    "scenario_id": "product_search_compare",
+    "expected_response_contains": [
+      "商品"
+    ]
+  },
+  {
+    "id": "text_product_search_002",
+    "category": "text_only_product_search",
+    "text": "搜索 300 元以内的白色板鞋",
+    "expected_intent": "product_search",
+    "expected_tools": [
+      "product_search"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "price_compare"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_product_search_003",
+    "category": "text_only_product_search",
+    "text": "帮我找日系白色休闲鞋",
+    "expected_intent": "product_search",
+    "expected_tools": [
+      "product_search"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "price_compare"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_price_compare_001",
+    "category": "text_only_price_compare",
+    "text": "比较一下 iPhone 15 和 iPhone 16 的价格",
+    "expected_intent": "price_compare",
+    "expected_tools": [
+      "price_compare"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "image_generation"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_price_compare_002",
+    "category": "text_only_price_compare",
+    "text": "哪个平台更便宜",
+    "expected_intent": "price_compare",
+    "expected_tools": [
+      "price_compare"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "product_search"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_price_compare_003",
+    "category": "text_only_price_compare",
+    "text": "比较价格，预算 300 元",
+    "expected_intent": "price_compare",
+    "expected_tools": [
+      "price_compare"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "image_generation"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_render_001",
+    "category": "text_only_render",
+    "text": "把浅灰色沙发放到北欧风客厅看看",
+    "expected_intent": "render_3d",
+    "expected_tools": [
+      "render_3d"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "image_generation"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "image_understanding_001",
+    "category": "image_understanding",
+    "text": "看看图里有什么",
+    "inputs": {
+      "has_image": true,
+      "has_video": false
+    },
+    "expected_intent": "image_understanding",
+    "expected_tools": [
+      "vision_understanding"
+    ],
+    "must_not_call": [
+      "product_search",
+      "price_compare"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "media_search_001",
+    "category": "media_plus_search",
+    "text": "找这张图里的鞋子",
+    "inputs": {
+      "has_image": true,
+      "has_video": false
+    },
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "vision_understanding",
+      "product_search"
+    ],
+    "must_not_call": [
+      "price_compare",
+      "image_generation"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "video_understanding_001",
+    "category": "video_understanding",
+    "text": "总结这个视频",
+    "inputs": {
+      "has_image": false,
+      "has_video": true
+    },
+    "expected_intent": "video_understanding",
+    "expected_tools": [
+      "video_understanding"
+    ],
+    "must_not_call": [
+      "product_search",
+      "image_generation"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "media_generation_001",
+    "category": "media_plus_generation",
+    "text": "用这张图生成一张电商海报",
+    "inputs": {
+      "has_image": true,
+      "has_video": false
+    },
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "vision_understanding",
+      "image_generation"
+    ],
+    "must_not_call": [
+      "product_search",
+      "price_compare"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "media_search_compare_001",
+    "category": "media_plus_search_compare",
+    "text": "找这张图里的鞋子，比较价格",
+    "inputs": {
+      "has_image": true,
+      "has_video": false
+    },
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "vision_understanding",
+      "product_search",
+      "price_compare"
+    ],
+    "must_not_call": [
+      "image_generation",
+      "render_3d"
+    ],
+    "suite": "e2e",
+    "scenario_id": "image_to_product_search_compare",
+    "expected_response_contains": [
+      "图片",
+      "价格"
+    ]
+  },
+  {
+    "id": "media_video_search_001",
+    "category": "media_plus_search",
+    "text": "找这个视频里的商品",
+    "inputs": {
+      "has_image": false,
+      "has_video": true
+    },
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "video_understanding",
+      "product_search"
+    ],
+    "must_not_call": [
+      "price_compare",
+      "image_generation"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "memory_retrieval_001",
+    "category": "memory_retrieval",
+    "text": "上次那个黑色包还在吗",
+    "expected_intent": "memory_retrieval",
+    "expected_tools": [
+      "memory_retrieval"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "product_search"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "multi_step_orchestration_001",
+    "category": "multi_step_orchestration",
+    "text": "根据上次那个包，生成一张宣传图",
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "memory_retrieval",
+      "image_generation"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "product_search"
+    ],
+    "suite": "e2e",
+    "scenario_id": "memory_to_image_generation",
+    "expected_response_contains": [
+      "图片"
+    ]
+  },
+  {
+    "id": "search_compare_text_001",
+    "category": "product_search_price_compare",
+    "text": "帮我找 500 元以内的白鞋，再比较价格",
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "product_search",
+      "price_compare"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "image_generation"
+    ],
+    "suite": "e2e"
+  },
+  {
+    "id": "search_compare_text_002",
+    "category": "product_search_price_compare",
+    "text": "搜索白色运动鞋，然后比较价格",
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "product_search",
+      "price_compare"
+    ],
+    "must_not_call": [
+      "vision_understanding",
+      "image_generation"
+    ],
+    "suite": "e2e"
+  },
+  {
+    "id": "ambiguous_followup_001",
+    "category": "ambiguous_followup",
+    "text": "看看图里有什么",
+    "expected_intent": "ask_followup",
+    "expected_tools": [],
+    "must_not_call": [
+      "vision_understanding",
+      "product_search",
+      "price_compare",
+      "image_generation",
+      "render_3d"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "ambiguous_followup_002",
+    "category": "ambiguous_followup",
+    "text": "这个",
+    "inputs": {
+      "has_image": true,
+      "has_video": false
+    },
+    "expected_intent": "ask_followup",
+    "expected_tools": [],
+    "must_not_call": [
+      "vision_understanding",
+      "product_search",
+      "price_compare",
+      "image_generation",
+      "render_3d"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "text_only_render",
+    "category": "render_3d",
+    "text": "把一把浅灰色沙发放到北欧风客厅里看看",
+    "expected_intent": "render_3d",
+    "expected_tools": [
+      "render_3d"
+    ],
+    "must_not_call": [
+      "product_search",
+      "price_compare",
+      "image_generation",
+      "vision_understanding"
+    ],
+    "suite": "routing"
+  },
+  {
+    "id": "product_search_to_render",
+    "category": "render_3d",
+    "text": "帮我找一款黑色办公椅，然后放到现代办公室里看看",
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "product_search",
+      "render_3d"
+    ],
+    "must_not_call": [
+      "price_compare",
+      "image_generation"
+    ],
+    "suite": "e2e",
+    "scenario_id": "product_search_to_render",
+    "expected_response_contains": [
+      "3D"
+    ]
+  },
+  {
+    "id": "image_understanding_to_render",
+    "category": "render_3d",
+    "text": "把图里的这个商品放到卧室里渲染一下",
+    "inputs": {
+      "has_image": true,
+      "has_video": false
+    },
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "vision_understanding",
+      "render_3d"
+    ],
+    "must_not_call": [
+      "product_search",
+      "price_compare",
+      "image_generation"
+    ],
+    "suite": "e2e"
+  },
+  {
+    "id": "video_understanding_to_render",
+    "category": "render_3d",
+    "text": "把视频里的商品做一个展厅 3D 展示",
+    "inputs": {
+      "has_image": false,
+      "has_video": true
+    },
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "video_understanding",
+      "render_3d"
+    ],
+    "must_not_call": [
+      "product_search",
+      "price_compare",
+      "image_generation"
+    ],
+    "suite": "e2e"
+  },
+  {
+    "id": "memory_to_render",
+    "category": "render_3d",
+    "text": "把上次那个黑色包放到极简客厅里看看",
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "memory_retrieval",
+      "render_3d"
+    ],
+    "must_not_call": [
+      "product_search",
+      "price_compare",
+      "image_generation",
+      "vision_understanding"
+    ],
+    "suite": "e2e"
+  },
+  {
+    "id": "router_ambiguous_sales_001",
+    "category": "router_comparison",
+    "suite": "routing",
+    "text": "帮我把这个东西弄得更适合卖",
+    "expected_intent": "direct_chat",
+    "expected_tools": [],
+    "router_expectations": {
+      "mock_llm": {
+        "expected_intent": "multi_step_orchestration",
+        "expected_tools": [
+          "product_search",
+          "image_generation"
+        ]
+      },
+      "hybrid": {
+        "expected_intent": "multi_step_orchestration",
+        "expected_tools": [
+          "product_search",
+          "image_generation"
+        ]
+      }
+    }
+  },
+  {
+    "id": "router_ambiguous_sales_002",
+    "category": "router_comparison",
+    "suite": "routing",
+    "text": "帮我处理一下这个商品，让它更有吸引力",
+    "expected_intent": "direct_chat",
+    "expected_tools": [],
+    "router_expectations": {
+      "mock_llm": {
+        "expected_intent": "ask_followup",
+        "expected_tools": []
+      },
+      "hybrid": {
+        "expected_intent": "ask_followup",
+        "expected_tools": []
+      }
+    }
+  },
+  {
+    "id": "router_multiturn_price_image_001",
+    "category": "router_comparison",
+    "suite": "routing",
+    "text": "看看这个有没有便宜点的，顺便做个图",
+    "expected_intent": "price_compare",
+    "expected_tools": [
+      "price_compare"
+    ],
+    "router_expectations": {
+      "mock_llm": {
+        "expected_intent": "ask_followup",
+        "expected_tools": []
+      },
+      "hybrid": {
+        "expected_intent": "multi_step_orchestration",
+        "expected_tools": [
+          "product_search",
+          "price_compare"
+        ]
+      }
+    }
+  },
+  {
+    "id": "router_memory_render_001",
+    "category": "router_comparison",
+    "suite": "routing",
+    "text": "按我之前喜欢的风格，给这个做个展示",
+    "expected_intent": "memory_retrieval",
+    "expected_tools": [
+      "memory_retrieval"
+    ],
+    "router_expectations": {
+      "mock_llm": {
+        "expected_intent": "ask_followup",
+        "expected_tools": []
+      },
+      "hybrid": {
+        "expected_intent": "memory_retrieval",
+        "expected_tools": [
+          "memory_retrieval"
+        ]
+      }
+    }
+  },
+  {
+    "id": "router_missing_image_001",
+    "category": "router_comparison",
+    "suite": "routing",
+    "text": "看看图里有什么",
+    "expected_intent": "ask_followup",
+    "expected_tools": [],
+    "router_expectations": {
+      "mock_llm": {
+        "expected_intent": "ask_followup",
+        "expected_tools": []
+      },
+      "hybrid": {
+        "expected_intent": "ask_followup",
+        "expected_tools": []
+      }
+    }
+  },
+  {
+    "id": "video_to_price_compare_001",
+    "category": "video_understanding",
+    "suite": "e2e",
+    "text": "找视频里的商品并比较价格",
+    "inputs": {
+      "has_image": false,
+      "has_video": true
+    },
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "video_understanding",
+      "product_search",
+      "price_compare"
+    ],
+    "must_not_call": [
+      "image_generation",
+      "render_3d"
+    ],
+    "expected_response_contains": [
+      "视频",
+      "价格"
+    ]
+  },
+  {
+    "id": "video_to_image_generation_001",
+    "category": "video_understanding",
+    "suite": "e2e",
+    "text": "根据这个视频里的商品生成一张宣传海报",
+    "inputs": {
+      "has_image": false,
+      "has_video": true
+    },
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "video_understanding",
+      "image_generation"
+    ],
+    "must_not_call": [
+      "product_search",
+      "price_compare",
+      "render_3d"
+    ],
+    "expected_response_contains": [
+      "视频",
+      "图片"
+    ]
+  },
+  {
+    "id": "video_to_memory_save_001",
+    "category": "video_understanding",
+    "suite": "e2e",
+    "text": "记住这个视频里的商品风格",
+    "inputs": {
+      "has_image": false,
+      "has_video": true
+    },
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "video_understanding",
+      "memory_save"
+    ],
+    "must_not_call": [
+      "product_search",
+      "price_compare",
+      "image_generation",
+      "render_3d"
+    ],
+    "expected_response_contains": [
+      "视频",
+      "记忆"
+    ]
+  },
+  {
+    "id": "video_missing_input_followup_001",
+    "category": "video_understanding",
+    "suite": "routing",
+    "text": "总结这个视频",
+    "inputs": {
+      "has_image": false,
+      "has_video": false
+    },
+    "expected_intent": "ask_followup",
+    "expected_tools": [],
+    "must_not_call": [
+      "video_understanding",
+      "vision_understanding",
+      "product_search",
+      "price_compare",
+      "image_generation"
+    ],
+    "must_not_require": [
+      "image"
+    ]
+  },
+  {
+    "id": "video_present_but_text_chat_001",
+    "category": "video_understanding",
+    "suite": "routing",
+    "text": "帮我写一段商品介绍",
+    "inputs": {
+      "has_image": false,
+      "has_video": true
+    },
+    "expected_intent": "direct_chat",
+    "expected_tools": [],
+    "must_not_call": [
+      "video_understanding",
+      "vision_understanding",
+      "product_search",
+      "price_compare",
+      "image_generation"
+    ]
+  },
+  {
+    "id": "provider_safety_timeout_001",
+    "category": "provider_safety",
+    "suite": "provider_safety",
+    "safety_scenario": "provider_timeout",
+    "expected_error_code": "provider_timeout",
+    "expected_intent": "provider_safety",
+    "expected_capability": "provider_safety",
+    "expected_tools": [],
+    "must_not_call": []
+  },
+  {
+    "id": "provider_safety_bad_response_001",
+    "category": "provider_safety",
+    "suite": "provider_safety",
+    "safety_scenario": "provider_bad_response",
+    "expected_error_code": "provider_bad_response",
+    "expected_intent": "provider_safety",
+    "expected_capability": "provider_safety",
+    "expected_tools": [],
+    "must_not_call": []
+  },
+  {
+    "id": "provider_safety_unconfigured_001",
+    "category": "provider_safety",
+    "suite": "provider_safety",
+    "safety_scenario": "provider_unconfigured",
+    "expected_error_code": "provider_unconfigured",
+    "expected_intent": "provider_safety",
+    "expected_capability": "provider_safety",
+    "expected_tools": [],
+    "must_not_call": []
+  },
+  {
+    "id": "provider_safety_budget_exceeded_001",
+    "category": "provider_safety",
+    "suite": "provider_safety",
+    "safety_scenario": "provider_budget_exceeded",
+    "expected_error_code": "provider_call_limit_exceeded",
+    "expected_intent": "provider_safety",
+    "expected_capability": "provider_safety",
+    "expected_tools": [],
+    "must_not_call": []
+  },
+  {
+    "id": "provider_safety_rate_limited_001",
+    "category": "provider_safety",
+    "suite": "provider_safety",
+    "safety_scenario": "provider_rate_limited",
+    "expected_error_code": "provider_rate_limited",
+    "expected_intent": "provider_safety",
+    "expected_capability": "provider_safety",
+    "expected_tools": [],
+    "must_not_call": []
   }
 ]

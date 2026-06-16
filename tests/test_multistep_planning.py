@@ -14,7 +14,7 @@ def test_rule_based_planner_builds_expected_multistep_order() -> None:
     plan = RuleBasedTaskPlanner().plan(request)
 
     assert [step.tool_name for step in plan.steps] == [
-        "vision_understanding",
+        "video_understanding",
         "product_search",
         "price_compare",
         "image_generation",
@@ -36,15 +36,15 @@ def test_multistep_request_writes_each_tool_result_to_agent_state() -> None:
     state = AgentWorkflow().run(request)
 
     assert state.intent is not None
-    assert state.intent.intent == "multi_tool_task"
+    assert state.intent.intent == "multi_step_orchestration"
     assert [call.tool_name for call in state.tool_calls[:4]] == [
-        "vision_understanding",
+        "video_understanding",
         "product_search",
         "price_compare",
         "image_generation",
     ]
     assert [result.tool_name for result in state.tool_results[:4]] == [
-        "vision_understanding",
+        "video_understanding",
         "product_search",
         "price_compare",
         "image_generation",

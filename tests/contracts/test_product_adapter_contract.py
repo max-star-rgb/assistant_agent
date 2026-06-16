@@ -7,16 +7,18 @@ from multimodal_agent.tools.product_search_tool import ProductSearchTool
 
 
 def test_mock_product_adapter_search_returns_product_schema_list() -> None:
-    products = MockProductSearchAdapter().search(ProductSearchInput(query="白色低帮运动鞋"))
+    result = MockProductSearchAdapter().search(ProductSearchInput(query="白色低帮运动鞋"))
 
-    assert products
-    assert all(isinstance(product, ProductResult) for product in products)
-    assert all(product.product_id for product in products)
+    assert result.success is True
+    assert result.items
+    assert result.provider == "mock"
+    assert all(isinstance(product, ProductResult) for product in result.items)
+    assert all(product.product_id for product in result.items)
 
 
 def test_mock_product_adapter_compare_returns_price_compare_schema() -> None:
     adapter = MockProductSearchAdapter()
-    products = adapter.search(ProductSearchInput(query="白色低帮运动鞋"))
+    products = adapter.search(ProductSearchInput(query="白色低帮运动鞋")).items
 
     result = adapter.compare(PriceCompareInput(items=products, query="白色低帮运动鞋"))
 
@@ -26,8 +28,11 @@ def test_mock_product_adapter_compare_returns_price_compare_schema() -> None:
 
 
 def test_mock_product_adapter_rejects_missing_search_query() -> None:
-    with pytest.raises(ValueError, match="缺少商品描述"):
-        MockProductSearchAdapter().search(ProductSearchInput())
+    result = MockProductSearchAdapter().search(ProductSearchInput())
+
+    assert result.success is False
+    assert result.errors[0].code == "product_query_empty"
+    assert "缺少商品描述" in result.errors[0].message
 
 
 def test_product_tools_return_structured_results_without_provider_details() -> None:

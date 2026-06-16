@@ -78,15 +78,15 @@ def test_render_tool_returns_preview_and_model_urls() -> None:
 
     assert result.success is True
     assert result.data is not None
-    assert result.data["preview_url"] == "local://render/preview.png"
-    assert result.data["model_url"] == "local://render/model.glb"
+    assert result.data["preview_url"] == "mock://render/preview.png"
+    assert result.data["model_url"] == "mock://render/model.glb"
 
 
-def test_render_tool_fails_without_product_or_image() -> None:
+def test_render_tool_supports_text_only_scene() -> None:
     result = Render3DTool().run({"scene": "客厅"})
 
-    assert result.success is False
-    assert result.error == "缺少商品或图片输入，无法渲染"
+    assert result.success is True
+    assert result.output_ref == "mock://render/preview.png"
 
 
 def test_memory_tool_retrieves_and_saves_stable_items() -> None:

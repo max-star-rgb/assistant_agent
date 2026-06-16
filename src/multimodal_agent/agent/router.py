@@ -1,7 +1,9 @@
 """Intent to tool route mapping."""
 
+from multimodal_agent.agent.planner import RuleBasedTaskPlanner
 from multimodal_agent.schemas.capabilities import canonical_intent
 from multimodal_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
+from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.schemas.tools import ToolSelection
 
 
@@ -10,7 +12,7 @@ class ToolRouter:
 
     tool_by_intent = {
         "image_understanding": "vision_understanding",
-        "video_understanding": "vision_understanding",
+        "video_understanding": "video_understanding",
         "image_generation": "image_generation",
         "memory_retrieval": "memory_retrieval",
         "product_search": "product_search",
@@ -18,7 +20,7 @@ class ToolRouter:
         "multi_step_orchestration": None,
         "direct_chat": None,
         "understand_image": "vision_understanding",
-        "understand_video": "vision_understanding",
+        "understand_video": "video_understanding",
         "search_product": "product_search",
         "compare_price": "price_compare",
         "generate_image": "image_generation",
@@ -46,7 +48,7 @@ class ToolRouter:
         "save_memory": "save_memory",
     }
 
-    def route(self, intent: IntentResult) -> TaskPlan:
+    def route(self, intent: IntentResult, request: UserRequest | None = None) -> TaskPlan:
         canonical = canonical_intent(intent.intent)
         if intent.intent == "ask_followup":
             return TaskPlan(
@@ -63,13 +65,17 @@ class ToolRouter:
             )
 
         if canonical == "multi_step_orchestration":
+            if request is not None:
+                plan = RuleBasedTaskPlanner().plan(request)
+                if plan.steps:
+                    return plan
             return TaskPlan(
                 goal="理解媒体中的商品，搜索相似款，比价并生成海报",
                 steps=[
                     TaskStep(
                         step_id="step_1",
                         action="understand_video",
-                        tool_name="vision_understanding",
+                        tool_name="video_understanding",
                     ),
                     TaskStep(
                         step_id="step_2",
@@ -107,8 +113,8 @@ class ToolRouter:
             ],
         )
 
-    def select_tools(self, intent: IntentResult) -> list[ToolSelection]:
-        plan = self.route(intent)
+    def select_tools(self, intent: IntentResult, request: UserRequest | None = None) -> list[ToolSelection]:
+        plan = self.route(intent, request)
         return [
             ToolSelection(
                 tool_name=step.tool_name,

@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from multimodal_agent.schemas.capability_output import CapabilityOutputContract
+
 
 class ToolSelection(BaseModel):
     """A tool chosen by the agent for a planned step."""
@@ -24,6 +26,7 @@ class ToolResult(BaseModel):
     error: str | None = None
     output_ref: str | None = None
     latency_ms: int | None = Field(default=None, ge=0)
+    contract: CapabilityOutputContract | None = None
 
 
 class ToolCallRecord(BaseModel):

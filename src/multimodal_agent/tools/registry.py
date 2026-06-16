@@ -10,7 +10,12 @@ from multimodal_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTo
 from multimodal_agent.tools.price_compare_tool import PriceCompareTool
 from multimodal_agent.tools.product_search_tool import ProductSearchTool
 from multimodal_agent.tools.render_tool import Render3DTool
+from multimodal_agent.services.image_generation_adapter import create_image_generation_adapter
+from multimodal_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
 from multimodal_agent.services.provider_selection import create_vision_adapter
+from multimodal_agent.services.render_adapter import create_render_adapter
+from multimodal_agent.services.video_adapter import create_video_understanding_adapter
+from multimodal_agent.tools.video_tool import VideoUnderstandingTool
 from multimodal_agent.tools.vision_tool import VisionUnderstandingTool
 
 
@@ -47,10 +52,11 @@ def create_default_registry(config: ProviderConfig | None = None) -> ToolRegistr
     registry = ToolRegistry()
     for tool in (
         VisionUnderstandingTool(adapter=create_vision_adapter(config)),
-        ProductSearchTool(),
-        PriceCompareTool(),
-        ImageGenerationTool(),
-        Render3DTool(),
+        VideoUnderstandingTool(adapter=create_video_understanding_adapter(config)),
+        ProductSearchTool(adapter=create_product_search_adapter(config)),
+        PriceCompareTool(adapter=create_price_compare_adapter(config)),
+        ImageGenerationTool(adapter=create_image_generation_adapter(config)),
+        Render3DTool(adapter=create_render_adapter(config)),
         MemoryTool(),
         MemoryRetrievalTool(),
         MemorySaveTool(),

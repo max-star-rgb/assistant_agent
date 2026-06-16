@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.tools import ToolResult
+from multimodal_agent.schemas.capability_output import build_capability_output_contract
 from multimodal_agent.tools.base import MockTool, ToolContext
 
 
@@ -26,10 +27,16 @@ class MemoryTool(MockTool):
     def _run(self, input: MemoryInput, context: ToolContext) -> ToolResult:
         if input.action == "retrieve":
             if not input.query:
+                contract = build_capability_output_contract(
+                    capability="memory_retrieval",
+                    status="failed",
+                    errors=[{"code": "missing_required_input", "message": "缺少检索 query，无法检索记忆", "recoverable": True}],
+                )
                 return ToolResult(
                     tool_name=self.name,
                     success=False,
                     error="缺少检索 query，无法检索记忆",
+                    contract=contract,
                 )
             item = MemoryItem(
                 memory_id="m1",
@@ -41,19 +48,34 @@ class MemoryTool(MockTool):
                 reason="query 命中历史商品描述",
                 created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             )
+            data = {"items": [item.model_dump()]}
+            contract = build_capability_output_contract(
+                capability="memory_retrieval",
+                status="succeeded",
+                output_ref="mock://memory/m1",
+                data={"items": [item.model_dump(mode="json")], "memory_context": item.summary},
+                metadata={"provider": "mock", "source": "memory"},
+            )
             return ToolResult(
                 tool_name=self.name,
                 success=True,
-                data={"items": [item.model_dump()]},
+                data={**data, "contract": contract.model_dump(mode="json")},
                 output_ref="mock://memory/m1",
                 latency_ms=1,
+                contract=contract,
             )
 
         if not input.content:
+            contract = build_capability_output_contract(
+                capability="memory_save",
+                status="failed",
+                errors=[{"code": "missing_required_input", "message": "缺少保存内容，无法写入记忆", "recoverable": True}],
+            )
             return ToolResult(
                 tool_name=self.name,
                 success=False,
                 error="缺少保存内容，无法写入记忆",
+                contract=contract,
             )
 
         item = MemoryItem(
@@ -66,12 +88,21 @@ class MemoryTool(MockTool):
             reason="用户显式要求保存",
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
+        data = item.model_dump()
+        contract = build_capability_output_contract(
+            capability="memory_save",
+            status="succeeded",
+            output_ref="mock://memory/m_saved_1",
+            data={"memory_id": item.memory_id, "summary": item.summary, "memory_type": item.memory_type},
+            metadata={"provider": "mock", "source": "memory"},
+        )
         return ToolResult(
             tool_name=self.name,
             success=True,
-            data=item.model_dump(),
+            data={**data, "contract": contract.model_dump(mode="json")},
             output_ref="mock://memory/m_saved_1",
             latency_ms=1,
+            contract=contract,
         )
 
 

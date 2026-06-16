@@ -12,7 +12,7 @@ def intent(name: str) -> IntentResult:
     ("intent_name", "tool_name"),
     [
         ("understand_image", "vision_understanding"),
-        ("understand_video", "vision_understanding"),
+        ("understand_video", "video_understanding"),
         ("search_product", "product_search"),
         ("compare_price", "price_compare"),
         ("generate_image", "image_generation"),
@@ -56,7 +56,7 @@ def test_routes_multi_tool_task_in_required_order() -> None:
     plan = ToolRouter().route(intent("multi_tool_task"))
 
     assert [step.tool_name for step in plan.steps] == [
-        "vision_understanding",
+        "video_understanding",
         "product_search",
         "price_compare",
         "image_generation",
@@ -70,7 +70,7 @@ def test_select_tools_returns_tool_selections_for_plan_steps() -> None:
     selections = ToolRouter().select_tools(intent("multi_tool_task"))
 
     assert [selection.tool_name for selection in selections] == [
-        "vision_understanding",
+        "video_understanding",
         "product_search",
         "price_compare",
         "image_generation",

@@ -45,7 +45,9 @@ class TaskStep(BaseModel):
     tool_name: str | None = None
     input_refs: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
+    required_inputs: list[str] = Field(default_factory=list)
     optional: bool = False
+    reason: str = ""
 
 
 class TaskPlan(BaseModel):

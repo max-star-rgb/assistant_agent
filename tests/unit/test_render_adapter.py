@@ -1,5 +1,5 @@
 from multimodal_agent.schemas.generation import RenderResult
-from multimodal_agent.services.render_adapter import MockRenderAdapter, RenderInput
+from multimodal_agent.services.render_adapter import MockRenderAdapter, RenderInput, RenderRequest
 from multimodal_agent.tools.render_tool import Render3DTool
 
 
@@ -18,8 +18,22 @@ def test_mock_render_adapter_creates_living_room_render_task() -> None:
 
     assert isinstance(result, RenderResult)
     assert result.task_id == "mock_render_task_1"
+    assert result.render_id == "mock_render_task_1"
     assert result.status == "succeeded"
-    assert result.preview_url == "local://render/preview.png"
+    assert result.provider == "mock"
+    assert result.preview_url == "mock://render/preview.png"
+    assert result.output_ref == "mock://render/preview.png"
+
+
+def test_mock_render_adapter_supports_text_only_scene() -> None:
+    adapter = MockRenderAdapter()
+
+    result = adapter.render(RenderRequest(scene_description="北欧风客厅，浅灰色沙发"))
+
+    assert result.status == "succeeded"
+    assert result.output_ref == "mock://render/preview.png"
+    assert result.scene_description == "北欧风客厅，浅灰色沙发"
+    assert result.used_inputs["scene_description"] == "北欧风客厅，浅灰色沙发"
 
 
 def test_render_tool_returns_preview_url_and_task_status() -> None:
@@ -36,8 +50,8 @@ def test_render_tool_returns_preview_url_and_task_status() -> None:
     assert result.data is not None
     assert result.data["task_id"] == "mock_render_task_1"
     assert result.data["status"] == "succeeded"
-    assert result.data["preview_url"] == "local://render/preview.png"
-    assert result.output_ref == "local://render/preview.png"
+    assert result.data["preview_url"] == "mock://render/preview.png"
+    assert result.output_ref == "mock://render/preview.png"
 
 
 def test_render_tool_supports_image_url_input() -> None:
@@ -48,19 +62,19 @@ def test_render_tool_supports_image_url_input() -> None:
     assert result.data["status"] == "succeeded"
 
 
-def test_render_tool_returns_structured_error_without_product_or_image() -> None:
-    result = Render3DTool().run({"scene": "客厅"})
+def test_render_tool_returns_structured_error_without_scene() -> None:
+    result = Render3DTool().run({"product_id": "p1"})
 
     assert result.success is False
-    assert result.error == "缺少商品或图片输入，无法渲染"
+    assert result.data is not None
+    assert result.data["errors"][0]["code"] == "render_missing_scene"
+    assert result.error == "render_missing_scene: Render request requires scene_description or scene."
 
 
-def test_mock_render_adapter_requires_product_or_image() -> None:
+def test_mock_render_adapter_requires_scene() -> None:
     adapter = MockRenderAdapter()
 
-    try:
-        adapter.create_render(RenderInput(scene="客厅"))
-    except ValueError as exc:
-        assert str(exc) == "缺少商品或图片输入，无法渲染"
-    else:
-        raise AssertionError("expected ValueError")
+    result = adapter.render(RenderRequest(product_ref="p1"))
+
+    assert result.status == "failed"
+    assert result.errors[0]["code"] == "render_missing_scene"

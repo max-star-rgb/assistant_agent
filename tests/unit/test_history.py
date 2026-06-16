@@ -28,7 +28,7 @@ def test_history_records_successful_agent_run_and_tool_calls(tmp_path) -> None:
     assert state.run_id
     assert [record.status for record in run_records] == ["started", "completed"]
     assert run_records[-1].run_id == state.run_id
-    assert run_records[-1].intent == "multi_tool_task"
+    assert run_records[-1].intent == "multi_step_orchestration"
     assert run_records[-1].latency_ms is not None
 
     completed_tools = [record for record in tool_records if record.status == "succeeded"]

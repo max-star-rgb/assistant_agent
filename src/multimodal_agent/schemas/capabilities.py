@@ -90,8 +90,8 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
     "video_understanding": CapabilityContract(
         name="video_understanding",
         input_requirements=["video"],
-        output_contract="VisualUnderstandingResult",
-        tool_name="vision_understanding",
+        output_contract="VideoUnderstandingResult",
+        tool_name="video_understanding",
         video_required=True,
         media_optional=False,
     ),

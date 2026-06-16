@@ -5,6 +5,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field, ValidationError
 
 from multimodal_agent.schemas.tools import ToolResult
+from multimodal_agent.services.provider_errors import sanitize_error_message
 
 
 class ToolContext(BaseModel):
@@ -47,7 +48,7 @@ class MockTool:
                 error=f"Invalid input: {exc.errors()[0]['msg']}",
             )
         except Exception as exc:  # pragma: no cover - defensive boundary
-            return ToolResult(tool_name=self.name, success=False, error=str(exc))
+            return ToolResult(tool_name=self.name, success=False, error=sanitize_error_message(exc))
 
     def _validate_input(self, input: BaseModel | dict[str, Any]) -> BaseModel:
         if isinstance(input, self.input_schema):

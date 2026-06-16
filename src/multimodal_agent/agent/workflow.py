@@ -58,9 +58,9 @@ class AgentWorkflow:
 
         intent = self.intent_detector.detect(request)
         state.set_intent(intent)
-        plan = self.router.route(intent)
+        plan = self.router.route(intent, request)
         state.set_plan(plan)
-        state.selected_tools = self.router.select_tools(intent)
+        state.selected_tools = self.router.select_tools(intent, request)
 
         outputs_by_step: dict[str, ToolResult] = {}
         for step in plan.steps:

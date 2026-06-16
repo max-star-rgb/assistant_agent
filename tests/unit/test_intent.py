@@ -17,14 +17,14 @@ def request(text: str, image_ids: list[str] | None = None, video_ids: list[str] 
 @pytest.mark.parametrize(
     ("user_request", "expected_intent"),
     [
-        (request("图里是什么", image_ids=["img1"]), "understand_image"),
-        (request("视频里发生了什么", video_ids=["video1"]), "understand_video"),
+        (request("图里是什么", image_ids=["img1"]), "image_understanding"),
+        (request("视频里发生了什么", video_ids=["video1"]), "video_understanding"),
         (request("找相似款"), "product_search"),
         (request("哪个便宜"), "price_compare"),
         (request("生成海报"), "image_generation"),
         (request("放到客厅看看"), "render_3d"),
         (request("上次那个黑色包"), "memory_retrieval"),
-        (request("找视频里的鞋子，比价，再生成海报", video_ids=["video1"]), "multi_tool_task"),
+        (request("找视频里的鞋子，比价，再生成海报", video_ids=["video1"]), "multi_step_orchestration"),
     ],
 )
 def test_detects_acceptance_intents(user_request: UserRequest, expected_intent: str) -> None:

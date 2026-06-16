@@ -21,7 +21,7 @@ def test_langgraph_workflow_handles_simple_query() -> None:
 
     assert state.status == "completed"
     assert state.intent is not None
-    assert state.intent.intent == "understand_image"
+    assert state.intent.intent == "image_understanding"
     assert state.response is not None
     assert state.tool_calls[0].tool_name == "vision_understanding"
 

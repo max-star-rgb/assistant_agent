@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query, WebSocket
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.agent.state import AgentState
 from multimodal_agent.schemas.api import api_error_from_agent_error
+from multimodal_agent.schemas.capability_output import contract_summary
 from multimodal_agent.schemas.events import AgentEvent
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.event_sink import ListEventSink
@@ -41,7 +42,7 @@ def mock_agent_events(session_id: str) -> list[AgentEvent]:
             session_id=session_id,
             run_id=run_id,
             tool_name="render_3d",
-            output_ref="local://render/preview.png",
+            output_ref="mock://render/preview.png",
         ),
         AgentEvent(
             type="agent_response",
@@ -85,6 +86,7 @@ def graph_runtime_events(state: AgentState) -> list[AgentEvent]:
                             "recoverable": False,
                         }
                     ),
+                    payload={"contract": contract_summary(result.contract if result else None)},
                 )
             )
         else:
@@ -95,6 +97,7 @@ def graph_runtime_events(state: AgentState) -> list[AgentEvent]:
                     run_id=state.run_id,
                     tool_name=call.tool_name,
                     output_ref=call.output_ref or (result.output_ref if result else None),
+                    payload={"contract": contract_summary(result.contract if result else None)},
                 )
             )
     if state.status == "failed":
@@ -128,9 +131,10 @@ async def agent_websocket(
     session_id: str,
     text: str = Query(default="渲染到客厅场景"),
     user_id: str = Query(default="u1"),
+    video_id: str | None = Query(default=None),
 ) -> None:
     await websocket.accept()
-    request = UserRequest(user_id=user_id, session_id=session_id, text=text)
+    request = UserRequest(user_id=user_id, session_id=session_id, text=text, video_ids=[video_id] if video_id else [])
     event_sink = ListEventSink()
     get_agent_runtime(event_sink=event_sink).run_state(request)
     for event in event_sink.events:

@@ -14,6 +14,7 @@ from multimodal_agent.schemas.api import api_error_from_agent_error
 from multimodal_agent.schemas.events import AgentEvent
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.services.event_sink import EventSink
+from multimodal_agent.services.chat_adapter import ChatAdapter, create_chat_adapter
 from multimodal_agent.services.run_history import RunHistoryStore
 from multimodal_agent.services.tool_history import ToolHistoryStore
 from multimodal_agent.services.trace_store import InMemoryTraceStore, TraceStore
@@ -34,6 +35,7 @@ class AgentGraphRuntime:
         tool_history: ToolHistoryStore | None = None,
         event_sink: EventSink | None = None,
         trace_store: TraceStore | None = None,
+        chat_adapter: ChatAdapter | None = None,
     ) -> None:
         self.config = config or ProviderConfig.from_env()
         self.registry = registry or create_default_registry(self.config)
@@ -44,6 +46,7 @@ class AgentGraphRuntime:
         self.tool_history = tool_history
         self.event_sink = event_sink
         self.trace_store = trace_store or InMemoryTraceStore()
+        self.chat_adapter = chat_adapter or create_chat_adapter(self.config)
         self.tool_executor = ToolExecutor(registry=self.registry, tool_history=self.tool_history, event_sink=self.event_sink)
         self._graph = build_conditional_agent_graph()
 
@@ -69,6 +72,7 @@ class AgentGraphRuntime:
             "intent_detector": self.intent_detector,
             "router": self.router,
             "tool_executor": self.tool_executor,
+            "chat_adapter": self.chat_adapter,
             "memory_store": self.memory_store,
             "outputs_by_step": {},
             "current_step_index": 0,

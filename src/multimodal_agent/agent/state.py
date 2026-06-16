@@ -12,6 +12,7 @@ from multimodal_agent.schemas.perception import PerceptionBundle
 from multimodal_agent.schemas.planning import IntentResult, TaskPlan
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.schemas.tools import ToolCallRecord, ToolResult, ToolSelection
+from multimodal_agent.services.provider_budget import ProviderCallBudget
 
 
 AgentStatus = Literal["created", "running", "waiting_user", "completed", "failed"]
@@ -55,6 +56,7 @@ class AgentState(BaseModel):
     selected_tools: list[ToolSelection] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
+    provider_budget: ProviderCallBudget = Field(default_factory=ProviderCallBudget)
 
     response: AgentResponse | None = None
     errors: list[AgentError] = Field(default_factory=list)
