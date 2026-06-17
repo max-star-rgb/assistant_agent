@@ -12,31 +12,14 @@ def create_vision_adapter(config: ProviderConfig | None = None) -> VisionUnderst
     """
 
     resolved_config = config or ProviderConfig.from_env()
-    if resolved_config.vision_provider == "openai":
+    provider = resolved_config.resolved_vision_provider()
+    if provider.spec.adapter_kind == "openai_compatible":
         return HttpVisionProviderAdapter(
             RealVisionProviderConfig(
-                provider="openai",
-                api_key=resolved_config.openai_api_key,
-                base_url=resolved_config.openai_vision_base_url,
-                model=resolved_config.openai_vision_model,
-            )
-        )
-    if resolved_config.vision_provider == "qwen":
-        return HttpVisionProviderAdapter(
-            RealVisionProviderConfig(
-                provider="qwen",
-                api_key=resolved_config.qwen_api_key,
-                base_url=resolved_config.qwen_vision_base_url,
-                model=resolved_config.qwen_vision_model,
-            )
-        )
-    if resolved_config.vision_provider == "seed":
-        return HttpVisionProviderAdapter(
-            RealVisionProviderConfig(
-                provider="seed",
-                api_key=resolved_config.seed_api_key,
-                base_url=resolved_config.seed_vision_base_url,
-                model=resolved_config.seed_vision_model,
+                provider=provider.provider,
+                api_key=provider.api_key,
+                base_url=provider.base_url or "",
+                model=provider.model or "",
             )
         )
     return MockVisionUnderstandingAdapter()

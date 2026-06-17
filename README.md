@@ -57,7 +57,17 @@ Offline demo runner:
 
 ```bash
 python scripts/run_demo_flows.py
+python scripts/run_demo_flows.py --scenario image_generation_basic
 python scripts/run_demo_flows.py --scenario full_multistep_image_search_compare_generate
+```
+
+Manual Qwen image generation smoke is opt-in and uses DashScope only when you explicitly select the provider:
+
+```bash
+export MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
+export MULTIMODAL_AGENT_IMAGE_PROVIDER=qwen
+export DASHSCOPE_API_KEY=<your-local-key>
+python scripts/smoke_text_image_generation.py --prompt "生成一张白色运动鞋的电商主图"
 ```
 
 API:

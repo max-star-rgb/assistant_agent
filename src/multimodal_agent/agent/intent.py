@@ -24,13 +24,40 @@ class IntentDetector:
 
     memory_keywords = ("上次", "刚才", "之前", "以前", "我喜欢")
     save_memory_keywords = ("记住", "帮我记", "保存偏好")
-    image_understanding_keywords = ("图里", "图片里", "照片里", "看图", "图中", "图上", "图像", "是什么", "有什么")
+    image_understanding_keywords = (
+        "图里",
+        "图片里",
+        "图片中",
+        "照片里",
+        "看图",
+        "图中",
+        "图上",
+        "图像",
+        "画面",
+        "是什么",
+        "有什么",
+        "描述",
+        "分析",
+    )
     video_understanding_keywords = ("视频", "发生了什么", "里面有什么", "总结这个视频", "总结这段视频")
     search_keywords = ("找", "找相似", "相似款", "同款", "找一下", "帮我找", "搜索")
     compare_keywords = ("比价", "比较价格", "哪个便宜", "便宜", "价格", "平台")
     generation_keywords = ("生成", "海报", "换背景", "风格图", "出图", "封面")
-    render_keywords = ("客厅", "放到", "场景", "3d", "3D", "渲染", "模型", "看看效果")
-    media_reference_keywords = ("这张图", "这张图片", "这张照片", "图里", "图片里", "照片里", "视频里", "这个视频", "这段视频")
+    render_keywords = ("客厅", "放到", "放进", "放入", "3d", "3D", "三维", "渲染", "建模", "模型", "看看效果")
+    render_target_spaces = ("客厅", "展厅", "办公室", "卧室", "空间", "商品展示", "展示空间")
+    media_reference_keywords = (
+        "这张图",
+        "这张图片",
+        "这张照片",
+        "图里",
+        "图片里",
+        "图片中",
+        "照片里",
+        "画面",
+        "视频里",
+        "这个视频",
+        "这段视频",
+    )
     vague_references = ("这个", "那个", "它")
 
     def __init__(self, validator: CapabilityValidator | None = None) -> None:
@@ -135,18 +162,18 @@ class IntentDetector:
                 rationale="用户要求查找同款或相似商品。",
             )
 
+        if self._has_render_intent(text):
+            return IntentResult(
+                intent="render_3d",
+                confidence=0.85,
+                rationale="用户要求放入场景、3D 渲染或查看效果。",
+            )
+
         if self._contains(text, self.generation_keywords):
             return IntentResult(
                 intent="image_generation",
                 confidence=0.85,
                 rationale="用户要求生成图片或海报。",
-            )
-
-        if self._contains(text, self.render_keywords):
-            return IntentResult(
-                intent="render_3d",
-                confidence=0.85,
-                rationale="用户要求放入场景、3D 渲染或查看效果。",
             )
 
         return IntentResult(
@@ -204,11 +231,11 @@ class IntentDetector:
             matches.append(
                 RuleMatch("price_compare_keywords", "price_compare", 0.9, "用户询问价格、便宜程度或平台比较。")
             )
-        if self._contains(text, self.generation_keywords):
+        if self._contains(text, self.generation_keywords) and not self._has_render_intent(text):
             matches.append(
                 RuleMatch("generate_image_keywords", "image_generation", 0.95, "用户明确要求生成图片。")
             )
-        if self._contains(text, self.render_keywords):
+        if self._has_render_intent(text):
             matches.append(
                 RuleMatch("render_scene_keywords", "render_3d", 0.9, "用户要求放入场景、3D 渲染或查看效果。")
             )
@@ -345,7 +372,7 @@ class IntentDetector:
         has_sequence_marker = any(marker in text for marker in ("再", "然后", "并", "，", ","))
         if matched_groups >= 2 and has_sequence_marker:
             return True
-        if self._contains(text, self.memory_keywords) and self._contains(text, self.render_keywords):
+        if self._contains(text, self.memory_keywords) and self._has_render_intent(text):
             return True
 
         has_media = bool(request.image_ids or request.video_ids)
@@ -365,7 +392,7 @@ class IntentDetector:
             return True
         if self._contains(text, self.memory_keywords) and self._contains(text, self.generation_keywords):
             return True
-        if self._contains(text, self.render_keywords) and self._contains(text, self.media_reference_keywords):
+        if self._has_render_intent(text) and self._contains(text, self.media_reference_keywords):
             return True
         return False
 
@@ -377,3 +404,19 @@ class IntentDetector:
     @staticmethod
     def _contains(text: str, keywords: tuple[str, ...]) -> bool:
         return any(keyword in text for keyword in keywords)
+
+    def _has_render_intent(self, text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        if any(keyword in text for keyword in ("3D", "三维", "渲染", "建模")) or "3d" in lowered:
+            return True
+        if "模型" in text and not any(phrase in text for phrase in ("模型识别", "模型判断", "语言模型")):
+            return True
+        if any(verb in text for verb in ("放到", "放进", "放入")) and any(
+            space in text for space in self.render_target_spaces + ("场景",)
+        ):
+            return True
+        if any(phrase in text for phrase in ("创建场景预览", "创建一个场景预览", "生成场景预览", "创建 3D 场景预览")):
+            return True
+        return False

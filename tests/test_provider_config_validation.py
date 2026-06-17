@@ -1,0 +1,131 @@
+from multimodal_agent.config import ProviderConfig
+from multimodal_agent.services.provider_config_validation import (
+    validate_provider_config,
+    validation_issue_to_provider_error,
+)
+
+
+def test_default_provider_config_validation_is_valid_and_offline() -> None:
+    result = validate_provider_config(ProviderConfig.from_env({}))
+
+    assert result.valid is True
+    assert result.runtime_profile == "local_demo"
+    assert result.issues == []
+
+
+def test_provider_smoke_validation_reports_missing_explicit_real_config() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http",
+        }
+    )
+
+    result = validate_provider_config(config)
+
+    assert result.valid is False
+    assert {(issue.capability, issue.provider) for issue in result.issues} == {
+        ("image_understanding", "qwen"),
+        ("product_search", "http"),
+    }
+    missing = {name for issue in result.issues for name in issue.missing}
+    assert {"QWEN_API_KEY", "PRODUCT_SEARCH_BASE_URL", "PRODUCT_SEARCH_API_KEY"}.issubset(missing)
+
+
+def test_provider_smoke_validation_accepts_explicit_qwen_vision_config() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "QWEN_API_KEY": "test-qwen-key",
+        }
+    )
+
+    result = validate_provider_config(config)
+
+    assert result.valid is True
+    assert result.issues == []
+
+
+def test_provider_smoke_validation_reports_missing_deepseek_chat_key() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+        }
+    )
+
+    result = validate_provider_config(config)
+
+    assert result.valid is False
+    assert result.issues[0].capability == "direct_chat"
+    assert result.issues[0].provider == "deepseek"
+    assert result.issues[0].missing == ["DEEPSEEK_API_KEY"]
+
+
+def test_chat_validation_uses_provider_spec_defaults_for_deepseek() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
+        }
+    )
+
+    result = validate_provider_config(config)
+
+    assert result.valid is True
+    assert result.issues == []
+    assert config.chat_base_url == "https://api.deepseek.com/v1"
+    assert config.chat_model == "deepseek-chat"
+
+
+def test_seed_validation_requires_explicit_base_url_not_placeholder() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "seed",
+            "SEED_API_KEY": "test-seed-key",
+        }
+    )
+
+    result = validate_provider_config(config)
+
+    assert result.valid is False
+    assert result.issues[0].missing == ["SEED_VISION_BASE_URL"]
+
+
+def test_image_generation_validation_uses_provider_spec_for_qwen() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "qwen",
+        }
+    )
+
+    result = validate_provider_config(config)
+
+    assert result.valid is False
+    assert result.issues[0].capability == "image_generation"
+    assert result.issues[0].provider == "qwen"
+    assert result.issues[0].missing == ["DASHSCOPE_API_KEY"]
+
+
+def test_validation_issue_provider_error_is_redacted() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "openai",
+        }
+    )
+    issue = validate_provider_config(config).issues[0]
+
+    error = validation_issue_to_provider_error(issue)
+
+    assert error.code == "provider_unconfigured"
+    assert error.provider == "openai"
+    assert error.capability == "image_generation"
+    assert error.detail["missing"] == ["OPENAI_API_KEY"]
+    assert "sk-" not in error.message
+    assert "Bearer" not in error.message

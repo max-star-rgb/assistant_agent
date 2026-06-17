@@ -4,6 +4,7 @@ from multimodal_agent.schemas.generation import ImageGenerationResult
 from multimodal_agent.schemas.tools import ToolResult
 from multimodal_agent.agent.prompt_builder import build_text_capability_output
 from multimodal_agent.schemas.capability_output import CapabilityOutputContract
+from multimodal_agent.services.provider_errors import ProviderAdapterError
 from multimodal_agent.services.image_generation_adapter import (
     ImageGenerationAdapter,
     ImageGenerationInput,
@@ -24,6 +25,9 @@ class ImageGenerationTool(MockTool):
     def _run(self, input: ImageGenerationInput, context: ToolContext) -> ToolResult:
         try:
             result = self.adapter.generate(input)
+        except ProviderAdapterError as exc:
+            data, contract = _image_generation_provider_error_contract(exc)
+            return ToolResult(tool_name=self.name, success=False, error=str(exc), data=data, contract=contract)
         except ValueError as exc:
             data, contract = _image_generation_error_contract(str(exc))
             return ToolResult(tool_name=self.name, success=False, error=str(exc), data=data, contract=contract)
@@ -53,6 +57,8 @@ def _image_generation_output_contract(result: ImageGenerationResult) -> tuple[di
     data = {
         "task_id": result.task_id,
         "image_url": result.image_url,
+        "image_urls": result.image_urls or ([result.image_url] if result.image_url else []),
+        "request_id": result.request_id,
         "prompt": result.prompt,
         "prompt_used": result.prompt_used or result.prompt,
         "provider": result.provider,
@@ -80,5 +86,14 @@ def _image_generation_error_contract(message: str) -> tuple[dict, CapabilityOutp
         capability="image_generation",
         status="failed",
         errors=[{"code": "missing_required_input", "message": message, "recoverable": True}],
+    )
+    return {"status": "failed", "errors": public["errors"], "contract": public}, CapabilityOutputContract.model_validate(public)
+
+
+def _image_generation_provider_error_contract(error: ProviderAdapterError) -> tuple[dict, CapabilityOutputContract]:
+    public = build_text_capability_output(
+        capability="image_generation",
+        status="failed",
+        errors=[{"code": error.code, "message": error.message, "recoverable": False}],
     )
     return {"status": "failed", "errors": public["errors"], "contract": public}, CapabilityOutputContract.model_validate(public)

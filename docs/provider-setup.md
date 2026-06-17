@@ -17,6 +17,7 @@ python -m pytest
 Default values:
 
 ```text
+MULTIMODAL_AGENT_RUNTIME_PROFILE=local_demo
 MULTIMODAL_AGENT_VISION_PROVIDER=mock
 MULTIMODAL_AGENT_CHAT_PROVIDER=mock
 MULTIMODAL_AGENT_IMAGE_PROVIDER=mock
@@ -25,6 +26,23 @@ MULTIMODAL_AGENT_PRICE_PROVIDER=mock
 MULTIMODAL_AGENT_RENDER_PROVIDER=mock
 MULTIMODAL_AGENT_VIDEO_PROVIDER=mock
 RUN_INTEGRATION_TESTS=0
+```
+
+## Runtime Profile Gate
+
+Real/network Provider selectors only take effect under an explicit runtime profile:
+
+```bash
+export MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
+```
+
+Use `provider_smoke` for manual smoke checks. `pilot` is reserved for later controlled real usage. In default `local_demo` and `offline_eval`, real/network Provider selectors are ignored by `ProviderConfig.from_env()` so CLI, API, Web Console, tests, evals, and demo flows stay offline.
+
+Setting an API key alone never enables a real Provider. A manual smoke run needs both:
+
+```text
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
+MULTIMODAL_AGENT_<CAPABILITY>_PROVIDER=<explicit-provider>
 ```
 
 ## Vision Provider
@@ -38,6 +56,7 @@ Supported opt-in providers:
 Environment variables:
 
 ```text
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
 MULTIMODAL_AGENT_VISION_PROVIDER=openai|qwen|seed
 OPENAI_API_KEY
 OPENAI_VISION_BASE_URL
@@ -67,14 +86,19 @@ Supported opt-in providers:
 
 - `openai`
 - `qwen`
+- `deepseek`
 - `local`
 
 Environment variables:
 
 ```text
-MULTIMODAL_AGENT_CHAT_PROVIDER=openai|qwen|local
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
+MULTIMODAL_AGENT_CHAT_PROVIDER=openai|qwen|deepseek|local
 OPENAI_API_KEY
 QWEN_API_KEY
+DEEPSEEK_API_KEY
+DEEPSEEK_CHAT_BASE_URL
+DEEPSEEK_CHAT_MODEL
 LOCAL_CHAT_BASE_URL
 ```
 
@@ -100,9 +124,13 @@ Supported opt-in providers:
 Environment variables:
 
 ```text
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
 MULTIMODAL_AGENT_IMAGE_PROVIDER=openai|qwen|comfyui|local
 OPENAI_API_KEY
-QWEN_API_KEY
+DASHSCOPE_API_KEY
+QWEN_IMAGE_BASE_URL
+QWEN_IMAGE_MODEL
+QWEN_IMAGE_DEFAULT_SIZE
 COMFYUI_BASE_URL
 LOCAL_IMAGE_BASE_URL
 ```
@@ -110,7 +138,7 @@ LOCAL_IMAGE_BASE_URL
 Smoke command:
 
 ```bash
-python scripts/smoke_text_image_generation.py --text "生成一张日系极简商品海报"
+python scripts/smoke_text_image_generation.py --prompt "生成一张日系极简商品海报"
 ```
 
 Missing configuration behavior:
@@ -129,6 +157,7 @@ Supported providers:
 Environment variables:
 
 ```text
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
 MULTIMODAL_AGENT_PRODUCT_PROVIDER=mock|local_json|http
 PRODUCT_SEARCH_LOCAL_PATH
 PRODUCT_SEARCH_BASE_URL
@@ -158,6 +187,7 @@ Supported providers:
 Environment variables:
 
 ```text
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
 MULTIMODAL_AGENT_PRICE_PROVIDER=mock|local|http
 PRICE_COMPARE_BASE_URL
 PRICE_COMPARE_API_KEY
@@ -183,6 +213,7 @@ Supported opt-in providers:
 Environment variables:
 
 ```text
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
 MULTIMODAL_AGENT_RENDER_PROVIDER=mock|http
 RENDER_BASE_URL
 RENDER_API_KEY
@@ -209,6 +240,7 @@ Supported opt-in providers:
 Environment variables:
 
 ```text
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
 MULTIMODAL_AGENT_VIDEO_PROVIDER=mock|http
 VIDEO_UNDERSTANDING_BASE_URL
 VIDEO_UNDERSTANDING_API_KEY

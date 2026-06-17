@@ -1402,5 +1402,139 @@
     "expected_intent": "packaging",
     "expected_capability": "packaging",
     "expected_tools": []
+  },
+  {
+    "id": "routing_scene_description_image_001",
+    "category": "routing",
+    "suite": "routing",
+    "text": "图里是什么？请简要描述主要物体、颜色、材质和场景。",
+    "image_ids": [
+      "img1"
+    ],
+    "expected_intent": "image_understanding",
+    "expected_tools": [
+      "vision_understanding"
+    ],
+    "must_not_call": [
+      "render_3d"
+    ]
+  },
+  {
+    "id": "routing_scene_description_image_002",
+    "category": "routing",
+    "suite": "routing",
+    "text": "请描述这张图片的场景。",
+    "image_ids": [
+      "img1"
+    ],
+    "expected_intent": "image_understanding",
+    "expected_tools": [
+      "vision_understanding"
+    ],
+    "must_not_call": [
+      "render_3d"
+    ]
+  },
+  {
+    "id": "routing_scene_description_video_001",
+    "category": "routing",
+    "suite": "routing",
+    "text": "这个视频里的场景发生了什么？",
+    "video_ids": [
+      "video1"
+    ],
+    "expected_intent": "video_understanding",
+    "expected_tools": [
+      "video_understanding"
+    ],
+    "must_not_call": [
+      "render_3d"
+    ]
+  },
+  {
+    "id": "routing_scene_description_image_003",
+    "category": "routing",
+    "suite": "routing",
+    "text": "画面中的主要场景是什么？",
+    "image_ids": [
+      "img1"
+    ],
+    "expected_intent": "image_understanding",
+    "expected_tools": [
+      "vision_understanding"
+    ],
+    "must_not_call": [
+      "render_3d"
+    ]
+  },
+  {
+    "id": "routing_scene_description_image_004",
+    "category": "routing",
+    "suite": "routing",
+    "text": "分析一下图片中的物体和场景。",
+    "image_ids": [
+      "img1"
+    ],
+    "expected_intent": "image_understanding",
+    "expected_tools": [
+      "vision_understanding"
+    ],
+    "must_not_call": [
+      "render_3d"
+    ]
+  },
+  {
+    "id": "routing_render_strong_image_001",
+    "category": "routing",
+    "suite": "routing",
+    "text": "根据这张图创建一个 3D 场景预览。",
+    "image_ids": [
+      "img1"
+    ],
+    "expected_intent": "multi_step_orchestration",
+    "expected_tools": [
+      "vision_understanding",
+      "render_3d"
+    ]
+  },
+  {
+    "id": "routing_render_strong_001",
+    "category": "routing",
+    "suite": "routing",
+    "text": "把这个商品放进一个客厅场景里渲染。",
+    "expected_intent": "render_3d",
+    "expected_tools": [
+      "render_3d"
+    ]
+  },
+  {
+    "id": "routing_render_strong_002",
+    "category": "routing",
+    "suite": "routing",
+    "text": "生成一个三维商品展示场景。",
+    "expected_intent": "render_3d",
+    "expected_tools": [
+      "render_3d"
+    ]
+  },
+  {
+    "id": "routing_render_strong_003",
+    "category": "routing",
+    "suite": "routing",
+    "text": "请用 3D 方式建模这个场景。",
+    "expected_intent": "render_3d",
+    "expected_tools": [
+      "render_3d"
+    ]
+  },
+  {
+    "id": "routing_render_strong_004",
+    "category": "routing",
+    "suite": "routing",
+    "text": "渲染一个包含这个商品的展示空间。",
+    "expected_intent": "render_3d",
+    "expected_tools": [
+      "render_3d"
+    ]
   }
 ]

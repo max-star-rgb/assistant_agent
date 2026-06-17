@@ -20,16 +20,14 @@ from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.api import api_error_from_agent_error
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services.provider_specs import (
+    resolve_image_generation_provider,
+    supported_image_generation_providers,
+)
 
 
 GENERATED_DIR = REPO_ROOT / ".local" / "generated"
 GENERATED_DIR_PUBLIC = ".local/generated"
-REAL_PROVIDER_REQUIREMENTS = {
-    "openai": "OPENAI_API_KEY",
-    "qwen": "QWEN_API_KEY",
-    "comfyui": "COMFYUI_BASE_URL",
-    "local": "LOCAL_IMAGE_BASE_URL",
-}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,11 +80,12 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
 
 
 def _missing_provider_config(provider: str, source: Mapping[str, str]) -> str | None:
-    key = REAL_PROVIDER_REQUIREMENTS.get(provider)
-    if key and not source.get(key):
-        return f"missing {key}"
-    if provider not in {"mock", *REAL_PROVIDER_REQUIREMENTS}:
-        return "MULTIMODAL_AGENT_IMAGE_PROVIDER must be mock, openai, qwen, comfyui, or local."
+    if provider not in supported_image_generation_providers():
+        supported = ", ".join(supported_image_generation_providers())
+        return f"MULTIMODAL_AGENT_IMAGE_PROVIDER must be one of: {supported}."
+    missing = resolve_image_generation_provider(provider, source).missing_required_env()
+    if missing:
+        return f"missing {', '.join(missing)}"
     return None
 
 

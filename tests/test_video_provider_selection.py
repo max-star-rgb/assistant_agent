@@ -23,6 +23,7 @@ def test_create_video_adapter_returns_http_skeleton_when_selected() -> None:
 def test_provider_config_reads_video_provider_environment() -> None:
     config = ProviderConfig.from_env(
         {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_VIDEO_PROVIDER": "http",
             "VIDEO_UNDERSTANDING_BASE_URL": "http://video.local",
             "VIDEO_UNDERSTANDING_API_KEY": "test-video-key",

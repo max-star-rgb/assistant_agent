@@ -13,12 +13,17 @@ class ImageGenerationInput(BaseModel):
     """Input for image generation."""
 
     prompt: str | None = None
+    size: str = "2048*2048"
+    n: int = Field(default=1, ge=1, le=4)
+    prompt_extend: bool = True
+    watermark: bool = False
     style: str | None = None
     product_id: str | None = None
     product_title: str | None = None
     product_info: dict[str, Any] = Field(default_factory=dict)
     reference_image_ids: list[str] = Field(default_factory=list)
     negative_prompt: str | None = None
+    seed: int | None = Field(default=None, ge=0)
     width: int | None = Field(default=None, ge=1)
     height: int | None = Field(default=None, ge=1)
     memory_context: list[str] = Field(default_factory=list)
@@ -69,6 +74,8 @@ class MockImageGenerationAdapter:
             task_id="mock_image_task_1",
             status="succeeded",
             image_url="local://generated/poster.png",
+            image_urls=["local://generated/poster.png"],
+            request_id="mock_image_request_1",
             prompt=prompt,
             provider=self.provider,
             model=self.model,
@@ -114,12 +121,22 @@ def create_image_generation_adapter(config: ProviderConfig | None = None) -> Ima
     """Create an image generation adapter without initializing real provider clients."""
 
     resolved = config or ProviderConfig.from_env()
-    if resolved.image_generation_provider == "openai" and not resolved.openai_api_key:
-        return UnconfiguredImageGenerationAdapter("openai", "OPENAI_API_KEY")
-    if resolved.image_generation_provider == "qwen" and not resolved.qwen_api_key:
-        return UnconfiguredImageGenerationAdapter("qwen", "QWEN_API_KEY")
-    if resolved.image_generation_provider == "comfyui" and not resolved.comfyui_base_url:
-        return UnconfiguredImageGenerationAdapter("comfyui", "COMFYUI_BASE_URL")
-    if resolved.image_generation_provider == "local" and not resolved.local_image_base_url:
-        return UnconfiguredImageGenerationAdapter("local", "LOCAL_IMAGE_BASE_URL")
+    provider = resolved.resolved_image_generation_provider()
+    missing = provider.missing_required_env()
+    if missing:
+        return UnconfiguredImageGenerationAdapter(provider.provider, ", ".join(missing))
+    if provider.provider == "qwen" and provider.spec.adapter_kind == "dashscope_image":
+        from multimodal_agent.providers.qwen_image_generation import (
+            QwenImageGenerationAdapter,
+            QwenImageGenerationConfig,
+        )
+
+        return QwenImageGenerationAdapter(
+            QwenImageGenerationConfig(
+                api_key=provider.api_key,
+                base_url=provider.base_url or "",
+                model=provider.model or "",
+                default_size=resolved.qwen_image_default_size,
+            )
+        )
     return MockImageGenerationAdapter()

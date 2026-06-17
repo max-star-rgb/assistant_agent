@@ -32,6 +32,23 @@
     ]
   },
   {
+    "scenario_id": "image_generation_basic",
+    "title": "基础文生图",
+    "user_query": "生成一张白色运动鞋的电商主图，干净背景，真实摄影风格",
+    "metadata": {
+      "input_type": "text",
+      "mock_only": true,
+      "expected_output_ref_prefix": "local://generated/"
+    },
+    "expected_tools": [
+      "image_generation"
+    ],
+    "expected_response_contains": [
+      "图片",
+      "生成"
+    ]
+  },
+  {
     "scenario_id": "image_understanding",
     "title": "图片理解",
     "user_query": "看看这张图里有什么商品。",

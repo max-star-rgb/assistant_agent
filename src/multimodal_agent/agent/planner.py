@@ -12,7 +12,8 @@ class RuleBasedTaskPlanner:
     search_keywords = ("找", "搜索", "同款", "相似")
     compare_keywords = ("比价", "价格", "便宜", "比较")
     image_keywords = ("生成", "海报", "风格图", "换背景", "出图")
-    render_keywords = ("渲染", "3d", "3D", "放到", "场景", "客厅", "展厅", "展示")
+    render_keywords = ("渲染", "3d", "3D", "三维", "建模", "模型", "放到", "放进", "放入", "客厅", "展厅", "展示")
+    render_target_spaces = ("客厅", "展厅", "办公室", "卧室", "空间", "商品展示", "展示空间")
     image_understanding_keywords = ("图里", "图片里", "照片里", "看图", "图中", "图上")
     video_understanding_keywords = ("视频", "总结这个视频", "总结这段视频", "视频里")
     vague_render_texts = {"渲染", "渲染一下", "看看效果", "做个展示", "展示一下", "3d", "3D"}
@@ -80,7 +81,7 @@ class RuleBasedTaskPlanner:
                 reason="用户要求生成图片或海报。",
             )
 
-        if self._contains(text, self.render_keywords):
+        if self._has_render_intent(text):
             self._append_step(
                 steps,
                 action="render_3d",
@@ -115,7 +116,7 @@ class RuleBasedTaskPlanner:
                 requires_followup=True,
                 followup_question="请补充要理解的视频，或说明你想处理的具体对象。",
             )
-        if self._contains(text, self.render_keywords) and text in self.vague_render_texts:
+        if self._has_render_intent(text) and text in self.vague_render_texts:
             return TaskPlan(
                 goal="补充渲染场景",
                 steps=[],
@@ -160,3 +161,19 @@ class RuleBasedTaskPlanner:
 
     def _contains(self, text: str, keywords: tuple[str, ...]) -> bool:
         return any(keyword in text for keyword in keywords)
+
+    def _has_render_intent(self, text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        if any(keyword in text for keyword in ("3D", "三维", "渲染", "建模")) or "3d" in lowered:
+            return True
+        if "模型" in text and not any(phrase in text for phrase in ("模型识别", "模型判断", "语言模型")):
+            return True
+        if any(verb in text for verb in ("放到", "放进", "放入")) and any(
+            space in text for space in self.render_target_spaces + ("场景",)
+        ):
+            return True
+        if any(phrase in text for phrase in ("创建场景预览", "创建一个场景预览", "生成场景预览", "创建 3D 场景预览")):
+            return True
+        return False

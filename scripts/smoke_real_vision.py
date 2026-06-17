@@ -20,13 +20,7 @@ from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.api import api_error_from_agent_error
 from multimodal_agent.schemas.requests import UserRequest
-
-
-REAL_PROVIDER_KEYS = {
-    "openai": "OPENAI_API_KEY",
-    "seed": "SEED_API_KEY",
-    "qwen": "QWEN_API_KEY",
-}
+from multimodal_agent.services.provider_specs import resolve_vision_provider, supported_vision_providers
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,13 +43,14 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     source = os.environ if env is None else env
     provider = source.get("MULTIMODAL_AGENT_VISION_PROVIDER", "mock")
 
-    if provider not in REAL_PROVIDER_KEYS:
-        _print_provider_unconfigured("MULTIMODAL_AGENT_VISION_PROVIDER must be set to openai, qwen, or seed.")
+    if provider not in supported_vision_providers() or provider == "mock":
+        supported = ", ".join(name for name in supported_vision_providers() if name != "mock")
+        _print_provider_unconfigured(f"MULTIMODAL_AGENT_VISION_PROVIDER must be set to one of: {supported}.")
         return 2
 
-    key_name = REAL_PROVIDER_KEYS[provider]
-    if not source.get(key_name):
-        _print_provider_unconfigured(f"missing {key_name}")
+    missing = resolve_vision_provider(provider, source).missing_required_env()
+    if missing:
+        _print_provider_unconfigured(f"missing {', '.join(missing)}")
         return 2
 
     image_path = Path(args.image)

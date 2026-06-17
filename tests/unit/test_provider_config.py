@@ -4,6 +4,7 @@ from multimodal_agent.config import ProviderConfig, should_run_integration_tests
 def test_provider_config_allows_empty_environment() -> None:
     config = ProviderConfig.from_env({})
 
+    assert config.runtime_profile.name == "local_demo"
     assert config.openai_api_key is None
     assert config.qwen_api_key is None
     assert config.seed_api_key is None
@@ -21,8 +22,10 @@ def test_provider_config_allows_empty_environment() -> None:
 def test_provider_config_reads_environment_values() -> None:
     config = ProviderConfig.from_env(
         {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "OPENAI_API_KEY": "test-openai-key",
             "QWEN_API_KEY": "test-qwen-key",
+            "DASHSCOPE_API_KEY": "test-dashscope-key",
             "SEED_API_KEY": "test-seed-key",
             "SEED_VISION_BASE_URL": "https://seed.local/vision",
             "SEED_VISION_MODEL": "seed-test-model",
@@ -32,9 +35,14 @@ def test_provider_config_reads_environment_values() -> None:
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
             "QWEN_CHAT_BASE_URL": "https://qwen.local/v1",
             "QWEN_CHAT_MODEL": "qwen-test-chat",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
+            "DEEPSEEK_CHAT_BASE_URL": "https://deepseek.local/v1",
+            "DEEPSEEK_CHAT_MODEL": "deepseek-test-chat",
             "MULTIMODAL_AGENT_IMAGE_PROVIDER": "comfyui",
             "OPENAI_IMAGE_MODEL": "openai-image-test",
+            "QWEN_IMAGE_BASE_URL": "https://dashscope.local/api/v1",
             "QWEN_IMAGE_MODEL": "qwen-image-test",
+            "QWEN_IMAGE_DEFAULT_SIZE": "1024*1024",
             "LOCAL_IMAGE_BASE_URL": "http://localhost:8189",
             "LOCAL_IMAGE_MODEL": "local-image-test",
             "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http",
@@ -60,8 +68,10 @@ def test_provider_config_reads_environment_values() -> None:
         }
     )
 
+    assert config.runtime_profile.name == "provider_smoke"
     assert config.openai_api_key == "test-openai-key"
     assert config.qwen_api_key == "test-qwen-key"
+    assert config.dashscope_api_key == "test-dashscope-key"
     assert config.seed_api_key == "test-seed-key"
     assert config.seed_vision_base_url == "https://seed.local/vision"
     assert config.seed_vision_model == "seed-test-model"
@@ -69,11 +79,22 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.blender_render_url == "http://localhost:9000"
     assert config.search_api_base_url == "http://localhost:7000"
     assert config.chat_provider == "qwen"
+    assert config.chat_api_key == "test-qwen-key"
+    assert config.chat_base_url == "https://qwen.local/v1"
+    assert config.chat_model == "qwen-test-chat"
+    assert config.chat_adapter_kind == "openai_compatible"
     assert config.qwen_chat_base_url == "https://qwen.local/v1"
     assert config.qwen_chat_model == "qwen-test-chat"
+    assert config.deepseek_api_key == "test-deepseek-key"
+    assert config.deepseek_chat_base_url == "https://deepseek.local/v1"
+    assert config.deepseek_chat_model == "deepseek-test-chat"
     assert config.image_generation_provider == "comfyui"
+    assert config.image_generation_base_url == "http://localhost:8188"
+    assert config.image_generation_adapter_kind == "comfyui"
     assert config.openai_image_model == "openai-image-test"
+    assert config.qwen_image_base_url == "https://dashscope.local/api/v1"
     assert config.qwen_image_model == "qwen-image-test"
+    assert config.qwen_image_default_size == "1024*1024"
     assert config.local_image_base_url == "http://localhost:8189"
     assert config.local_image_model == "local-image-test"
     assert config.product_search_provider == "http"
@@ -99,11 +120,131 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.has_any_real_provider() is True
 
 
+def test_provider_config_offline_eval_defaults_to_mock_local_providers() -> None:
+    config = ProviderConfig.from_env({"MULTIMODAL_AGENT_RUNTIME_PROFILE": "offline_eval"})
+
+    assert config.runtime_profile.name == "offline_eval"
+    assert config.vision_provider == "mock"
+    assert config.chat_provider == "mock"
+    assert config.image_generation_provider == "mock"
+    assert config.product_search_provider == "mock"
+    assert config.price_compare_provider == "mock"
+    assert config.render_provider == "mock"
+    assert config.video_provider == "mock"
+
+
+def test_provider_smoke_does_not_enable_real_provider_from_key_only() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "QWEN_API_KEY": "test-qwen-key",
+        }
+    )
+
+    assert config.runtime_profile.name == "provider_smoke"
+    assert config.qwen_api_key == "test-qwen-key"
+    assert config.vision_provider == "mock"
+    assert config.chat_provider == "mock"
+    assert config.image_generation_provider == "mock"
+
+
+def test_provider_smoke_allows_explicit_provider_selection() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+        }
+    )
+
+    assert config.runtime_profile.name == "provider_smoke"
+    assert config.vision_provider == "qwen"
+    assert config.vision_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config.vision_model == "qwen-vl-plus"
+    assert config.vision_adapter_kind == "openai_compatible"
+
+
+def test_provider_config_reads_deepseek_chat_provider() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
+        }
+    )
+
+    assert config.chat_provider == "deepseek"
+    assert config.deepseek_api_key == "test-deepseek-key"
+    assert config.chat_api_key == "test-deepseek-key"
+    assert config.chat_base_url == "https://api.deepseek.com/v1"
+    assert config.chat_model == "deepseek-chat"
+    assert config.chat_adapter_kind == "openai_compatible"
+    assert config.deepseek_chat_base_url == "https://api.deepseek.com/v1"
+    assert config.deepseek_chat_model == "deepseek-chat"
+
+
 def test_provider_config_reads_openai_compatible_base_urls() -> None:
     config = ProviderConfig.from_env({})
 
     assert config.openai_vision_base_url == "https://api.openai.com/v1"
     assert config.qwen_vision_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
+def test_provider_config_reads_qwen_vision_provider_from_spec() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "QWEN_API_KEY": "test-qwen-key",
+            "QWEN_VISION_BASE_URL": "https://qwen.local/v1",
+            "QWEN_VISION_MODEL": "qwen-vl-test",
+        }
+    )
+
+    assert config.vision_provider == "qwen"
+    assert config.vision_api_key == "test-qwen-key"
+    assert config.vision_base_url == "https://qwen.local/v1"
+    assert config.vision_model == "qwen-vl-test"
+    assert config.vision_adapter_kind == "openai_compatible"
+    assert config.resolved_vision_provider().missing_required_env() == []
+
+
+def test_provider_config_reads_openai_image_generation_provider_from_spec() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "openai",
+            "OPENAI_API_KEY": "test-openai-key",
+            "OPENAI_IMAGE_MODEL": "image-test-model",
+        }
+    )
+
+    assert config.image_generation_provider == "openai"
+    assert config.image_generation_api_key == "test-openai-key"
+    assert config.image_generation_model == "image-test-model"
+    assert config.image_generation_adapter_kind == "openai_image"
+    assert config.resolved_image_generation_provider().missing_required_env() == []
+
+
+def test_provider_config_reads_qwen_image_generation_provider_from_dashscope_spec() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "qwen",
+            "DASHSCOPE_API_KEY": "test-dashscope-key",
+            "QWEN_IMAGE_BASE_URL": "https://dashscope.local/api/v1",
+            "QWEN_IMAGE_MODEL": "qwen-image-test",
+            "QWEN_IMAGE_DEFAULT_SIZE": "1024*1024",
+        }
+    )
+
+    assert config.image_generation_provider == "qwen"
+    assert config.dashscope_api_key == "test-dashscope-key"
+    assert config.image_generation_api_key == "test-dashscope-key"
+    assert config.image_generation_base_url == "https://dashscope.local/api/v1"
+    assert config.image_generation_model == "qwen-image-test"
+    assert config.image_generation_adapter_kind == "dashscope_image"
+    assert config.qwen_image_default_size == "1024*1024"
+    assert config.resolved_image_generation_provider().missing_required_env() == []
 
 
 def test_integration_tests_are_opt_in() -> None:

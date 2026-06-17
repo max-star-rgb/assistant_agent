@@ -1,5 +1,7 @@
 from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.chat_adapter import ChatRequest, MockChatAdapter, create_chat_adapter
+import json
+
+from multimodal_agent.services.chat_adapter import ChatRequest, HttpChatAdapter, MockChatAdapter, create_chat_adapter
 
 
 def chat_request(text: str = "帮我写一段商品介绍") -> ChatRequest:
@@ -35,3 +37,65 @@ def test_real_chat_provider_without_key_returns_provider_unconfigured() -> None:
     assert result.provider == "openai"
     assert result.errors[0].code == "provider_unconfigured"
     assert result.errors[0].recoverable is True
+
+
+def test_deepseek_chat_provider_without_key_returns_provider_unconfigured() -> None:
+    adapter = create_chat_adapter(ProviderConfig(chat_provider="deepseek", deepseek_api_key=None))
+
+    result = adapter.chat(chat_request())
+
+    assert result.success is False
+    assert result.provider == "deepseek"
+    assert result.errors[0].code == "provider_unconfigured"
+    assert "DEEPSEEK_API_KEY" in result.errors[0].message
+
+
+def test_deepseek_chat_provider_uses_openai_compatible_http(monkeypatch) -> None:
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {
+                    "model": "deepseek-chat",
+                    "choices": [{"message": {"content": "真实 DeepSeek 回复"}}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    adapter = create_chat_adapter(
+        ProviderConfig(
+            chat_provider="deepseek",
+            deepseek_api_key="test-deepseek-key",
+            deepseek_chat_base_url="https://api.deepseek.com",
+            deepseek_chat_model="deepseek-chat",
+        )
+    )
+
+    assert isinstance(adapter, HttpChatAdapter)
+    result = adapter.chat(chat_request("请用一句话介绍项目"))
+
+    assert result.success is True
+    assert result.provider == "deepseek"
+    assert result.model == "deepseek-chat"
+    assert result.response_text == "真实 DeepSeek 回复"
+    assert result.output_ref == "provider://chat/deepseek"
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["payload"]["model"] == "deepseek-chat"
+    assert captured["payload"]["messages"][-1]["content"] == "请用一句话介绍项目"

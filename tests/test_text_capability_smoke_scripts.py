@@ -45,6 +45,25 @@ def test_direct_chat_smoke_missing_key_exits_cleanly() -> None:
     assert "Traceback" not in result.stderr
 
 
+def test_direct_chat_smoke_deepseek_missing_key_exits_cleanly() -> None:
+    result = subprocess.run(
+        [sys.executable, str(DIRECT_CHAT_SCRIPT), "--text", "帮我写一段商品介绍"],
+        env={
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "provider_unconfigured" in result.stdout
+    assert "missing DEEPSEEK_API_KEY" in result.stdout
+    assert "Traceback" not in result.stderr
+
+
 def test_text_image_generation_smoke_missing_key_exits_cleanly() -> None:
     result = subprocess.run(
         [sys.executable, str(IMAGE_GENERATION_SCRIPT), "--prompt", "生成一张日系极简商品海报"],
@@ -57,6 +76,25 @@ def test_text_image_generation_smoke_missing_key_exits_cleanly() -> None:
     assert result.returncode == 2
     assert "provider_unconfigured" in result.stdout
     assert "missing OPENAI_API_KEY" in result.stdout
+    assert "Traceback" not in result.stderr
+
+
+def test_text_image_generation_smoke_qwen_missing_dashscope_key_exits_cleanly() -> None:
+    result = subprocess.run(
+        [sys.executable, str(IMAGE_GENERATION_SCRIPT), "--prompt", "生成一张日系极简商品海报"],
+        env={
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "qwen",
+            "DASHSCOPE_API_KEY": "",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "provider_unconfigured" in result.stdout
+    assert "missing DASHSCOPE_API_KEY" in result.stdout
     assert "Traceback" not in result.stderr
 
 
@@ -77,6 +115,44 @@ def test_direct_chat_smoke_default_mock_outputs_json() -> None:
     assert payload["intent"] == "direct_chat"
     assert payload["tool_calls"] == []
     assert payload["contract"]["capability"] == "direct_chat"
+
+
+def test_direct_chat_smoke_uses_explicit_environment(monkeypatch) -> None:
+    module_name = "smoke_direct_chat_dotenv_test"
+    spec = importlib.util.spec_from_file_location(module_name, DIRECT_CHAT_SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    called = {}
+
+    class FakeRuntime:
+        def __init__(self, config):
+            called["chat_provider"] = config.chat_provider
+
+        def run_state(self, request):
+            from multimodal_agent.agent.state import AgentState
+            from multimodal_agent.schemas.planning import IntentResult
+            from multimodal_agent.schemas.requests import AgentResponse
+
+            state = AgentState.from_request(request)
+            state.set_intent(IntentResult(intent="direct_chat", confidence=1.0, rationale="test"))
+            state.set_response(AgentResponse(message="ok", data={"contract": {"capability": "direct_chat"}}))
+            return state
+
+    monkeypatch.setattr(module, "AgentGraphRuntime", FakeRuntime)
+
+    result = module.main(
+        ["--text", "hello"],
+        env={
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "mock",
+        },
+    )
+
+    assert result == 0
+    assert called["chat_provider"] == "mock"
 
 
 def test_text_image_generation_smoke_default_mock_outputs_json() -> None:

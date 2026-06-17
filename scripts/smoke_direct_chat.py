@@ -20,13 +20,7 @@ from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.api import api_error_from_agent_error
 from multimodal_agent.schemas.requests import UserRequest
-
-
-REAL_PROVIDER_REQUIREMENTS = {
-    "openai": "OPENAI_API_KEY",
-    "qwen": "QWEN_API_KEY",
-    "local": "LOCAL_CHAT_BASE_URL",
-}
+from multimodal_agent.services.provider_specs import resolve_chat_provider, supported_chat_providers
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    source = os.environ if env is None else env
+    source = dict(env if env is not None else os.environ)
     provider = source.get("MULTIMODAL_AGENT_CHAT_PROVIDER", "mock")
 
     missing = _missing_provider_config(provider, source)
@@ -77,11 +71,11 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
 
 
 def _missing_provider_config(provider: str, source: Mapping[str, str]) -> str | None:
-    key = REAL_PROVIDER_REQUIREMENTS.get(provider)
-    if key and not source.get(key):
-        return f"missing {key}"
-    if provider not in {"mock", *REAL_PROVIDER_REQUIREMENTS}:
-        return "MULTIMODAL_AGENT_CHAT_PROVIDER must be mock, openai, qwen, or local."
+    if provider not in supported_chat_providers():
+        return f"MULTIMODAL_AGENT_CHAT_PROVIDER must be one of: {', '.join(supported_chat_providers())}."
+    missing = resolve_chat_provider(provider, source).missing_required_env()
+    if missing:
+        return f"missing {', '.join(missing)}"
     return None
 
 

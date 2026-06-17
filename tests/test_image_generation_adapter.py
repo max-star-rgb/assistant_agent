@@ -5,6 +5,7 @@ from multimodal_agent.services.image_generation_adapter import (
     MockImageGenerationAdapter,
     create_image_generation_adapter,
 )
+from multimodal_agent.providers.qwen_image_generation import QwenImageGenerationAdapter
 from multimodal_agent.tools.image_generation_tool import ImageGenerationTool
 
 
@@ -22,6 +23,8 @@ def test_mock_image_generation_adapter_returns_provider_metadata_and_output_ref(
     assert result.provider == "mock"
     assert result.model == "mock-image-generation"
     assert result.output_ref == "local://generated/poster.png"
+    assert result.image_urls == ["local://generated/poster.png"]
+    assert result.request_id == "mock_image_request_1"
     assert result.prompt_used == result.prompt
     assert result.errors == []
 
@@ -45,6 +48,22 @@ def test_real_image_provider_without_config_returns_provider_unconfigured() -> N
     assert result.status == "failed"
     assert result.provider == "openai"
     assert result.errors[0]["code"] == "provider_unconfigured"
+
+
+def test_qwen_image_provider_with_dashscope_config_uses_real_adapter() -> None:
+    adapter = create_image_generation_adapter(
+        ProviderConfig(
+            image_generation_provider="qwen",
+            dashscope_api_key="test-dashscope-key",
+            qwen_image_base_url="https://dashscope.local/api/v1",
+            qwen_image_model="qwen-image-test",
+        )
+    )
+
+    assert isinstance(adapter, QwenImageGenerationAdapter)
+    assert adapter.config.api_key == "test-dashscope-key"
+    assert adapter.config.base_url == "https://dashscope.local/api/v1"
+    assert adapter.config.model == "qwen-image-test"
 
 
 def test_image_generation_tool_maps_unconfigured_provider_to_failed_tool_result() -> None:
