@@ -14,8 +14,8 @@ def configured_real_vision_provider() -> ProviderConfig:
         pytest.skip("set MULTIMODAL_AGENT_VISION_PROVIDER=openai|qwen")
     if config.vision_provider == "openai" and not config.openai_api_key:
         pytest.skip("set OPENAI_API_KEY to run OpenAI vision integration test")
-    if config.vision_provider == "qwen" and not config.qwen_api_key:
-        pytest.skip("set QWEN_API_KEY to run Qwen vision integration test")
+    if config.vision_provider == "qwen" and not config.qwen_vision_api_key:
+        pytest.skip("set QWEN_VISION_API_KEY to run Qwen vision integration test")
     return config
 
 

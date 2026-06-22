@@ -199,8 +199,25 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
     # Check if this is a mock adapter - if so, use our rule-based logic
     is_mock = _is_mock_chat_adapter(chat_adapter)
 
+    _ensure_rule_plan(graph_state)
+    if _uses_chat_adapter_as_final_responder(chat_adapter) and _is_direct_chat_state(state) and not tool_observations and not state.tool_results:
+        decision = AssistantDecision(
+            type="final_answer",
+            message=None,
+            reason="规则路由判定为 direct_chat，直接交给 chat adapter 回复，不进入工具决策循环。",
+        )
+        _set_direct_chat_response(graph_state, decision, iterations, tool_observations)
+        if state.response is not None:
+            decision = decision.model_copy(update={"message": state.response.message})
+        _record_react_decision(graph_state, decision, iterations)
+        state.status = "completed"
+        return {
+            **graph_state,
+            "assistant_decision": decision,
+            "assistant_iterations": iterations + 1,
+        }
+
     if is_mock:
-        _ensure_rule_plan(graph_state)
         # Use mock rule-based decision for predictable testing
         decision = _mock_assistant_decision_from_plan(
             request=request,
@@ -502,6 +519,12 @@ def _is_direct_chat_state(state: AgentState) -> bool:
 
 def _is_mock_chat_adapter(chat_adapter: ChatAdapter) -> bool:
     return getattr(chat_adapter, "provider", "") == "mock" or hasattr(chat_adapter, "MockChatAdapter")
+
+
+def _uses_chat_adapter_as_final_responder(chat_adapter: ChatAdapter) -> bool:
+    """Return true for configured real chat providers that should answer direct_chat directly."""
+
+    return getattr(chat_adapter, "provider", "") in {"openai", "qwen", "deepseek", "local"}
 
 
 def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoopState:

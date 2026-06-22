@@ -42,7 +42,7 @@ class QwenImageGenerationAdapter:
         """Generate images through DashScope and return the stable generation schema."""
 
         if not self.config.api_key:
-            raise ProviderAdapterError("provider_unconfigured", "qwen image provider requires DASHSCOPE_API_KEY")
+            raise ProviderAdapterError("provider_unconfigured", "qwen image provider requires QWEN_IMAGE_API_KEY")
 
         prompt = build_image_prompt(input)
         payload = build_qwen_image_payload(

@@ -28,7 +28,7 @@ def test_provider_smoke_missing_config_is_not_ready() -> None:
     assert report.ready is False
     assert vision.provider == "qwen"
     assert vision.status == "not_ready"
-    assert vision.issues[0].missing == ["QWEN_API_KEY"]
+    assert vision.issues[0].missing == ["QWEN_VISION_API_KEY"]
 
 
 def test_provider_smoke_configured_qwen_vision_is_ready_without_calling_provider() -> None:
@@ -36,7 +36,7 @@ def test_provider_smoke_configured_qwen_vision_is_ready_without_calling_provider
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
-            "QWEN_API_KEY": "test-qwen-key",
+            "QWEN_VISION_API_KEY": "test-qwen-key",
         }
     )
 

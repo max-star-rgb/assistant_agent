@@ -72,7 +72,7 @@ Manual Qwen image generation smoke is opt-in and uses DashScope only when you ex
 ```bash
 export MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
 export MULTIMODAL_AGENT_IMAGE_PROVIDER=qwen
-export DASHSCOPE_API_KEY=<your-local-key>
+export QWEN_IMAGE_API_KEY=<your-local-key>
 python scripts/smoke_text_image_generation.py --prompt "生成一张白色运动鞋的电商主图"
 ```
 

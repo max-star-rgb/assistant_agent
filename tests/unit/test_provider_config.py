@@ -25,7 +25,8 @@ def test_provider_config_reads_environment_values() -> None:
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "OPENAI_API_KEY": "test-openai-key",
             "QWEN_API_KEY": "test-qwen-key",
-            "DASHSCOPE_API_KEY": "test-dashscope-key",
+            "QWEN_VISION_API_KEY": "test-qwen-vision-key",
+            "QWEN_IMAGE_API_KEY": "test-qwen-image-key",
             "SEED_API_KEY": "test-seed-key",
             "SEED_VISION_BASE_URL": "https://seed.local/vision",
             "SEED_VISION_MODEL": "seed-test-model",
@@ -35,7 +36,7 @@ def test_provider_config_reads_environment_values() -> None:
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
             "QWEN_CHAT_BASE_URL": "https://qwen.local/v1",
             "QWEN_CHAT_MODEL": "qwen-test-chat",
-            "DEEPSEEK_API_KEY": "test-deepseek-key",
+            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
             "DEEPSEEK_CHAT_BASE_URL": "https://deepseek.local/v1",
             "DEEPSEEK_CHAT_MODEL": "deepseek-test-chat",
             "MULTIMODAL_AGENT_IMAGE_PROVIDER": "comfyui",
@@ -71,7 +72,9 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.runtime_profile.name == "provider_smoke"
     assert config.openai_api_key == "test-openai-key"
     assert config.qwen_api_key == "test-qwen-key"
-    assert config.dashscope_api_key == "test-dashscope-key"
+    assert config.qwen_vision_api_key == "test-qwen-vision-key"
+    assert config.qwen_image_api_key == "test-qwen-image-key"
+    assert config.dashscope_api_key is None
     assert config.seed_api_key == "test-seed-key"
     assert config.seed_vision_base_url == "https://seed.local/vision"
     assert config.seed_vision_model == "seed-test-model"
@@ -168,7 +171,7 @@ def test_provider_config_reads_deepseek_chat_provider() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_API_KEY": "test-deepseek-key",
+            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
         }
     )
 
@@ -180,6 +183,20 @@ def test_provider_config_reads_deepseek_chat_provider() -> None:
     assert config.chat_adapter_kind == "openai_compatible"
     assert config.deepseek_chat_base_url == "https://api.deepseek.com/v1"
     assert config.deepseek_chat_model == "deepseek-chat"
+
+
+def test_provider_config_accepts_legacy_deepseek_api_key_as_fallback() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "legacy-deepseek-key",
+        }
+    )
+
+    assert config.deepseek_api_key == "legacy-deepseek-key"
+    assert config.chat_api_key == "legacy-deepseek-key"
+    assert config.resolved_chat_provider().missing_required_env() == []
 
 
 def test_provider_config_reads_openai_compatible_base_urls() -> None:
@@ -194,7 +211,7 @@ def test_provider_config_reads_qwen_vision_provider_from_spec() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
-            "QWEN_API_KEY": "test-qwen-key",
+            "QWEN_VISION_API_KEY": "test-qwen-key",
             "QWEN_VISION_BASE_URL": "https://qwen.local/v1",
             "QWEN_VISION_MODEL": "qwen-vl-test",
         }
@@ -205,6 +222,27 @@ def test_provider_config_reads_qwen_vision_provider_from_spec() -> None:
     assert config.vision_base_url == "https://qwen.local/v1"
     assert config.vision_model == "qwen-vl-test"
     assert config.vision_adapter_kind == "openai_compatible"
+    assert config.resolved_vision_provider().missing_required_env() == []
+
+
+def test_provider_config_reads_ark_vision_provider_from_spec() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
+            "ARK_VISION_API_KEY": "test-ark-key",
+            "ARK_VISION_BASE_URL": "https://ark.local/api/v3",
+            "ARK_VISION_MODEL": "ark-vision-test",
+        }
+    )
+
+    assert config.vision_provider == "ark"
+    assert config.vision_api_key == "test-ark-key"
+    assert config.vision_base_url == "https://ark.local/api/v3"
+    assert config.vision_model == "ark-vision-test"
+    assert config.vision_adapter_kind == "ark_responses"
+    assert config.ark_vision_base_url == "https://ark.local/api/v3"
+    assert config.ark_vision_model == "ark-vision-test"
     assert config.resolved_vision_provider().missing_required_env() == []
 
 
@@ -230,7 +268,7 @@ def test_provider_config_reads_qwen_image_generation_provider_from_dashscope_spe
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_IMAGE_PROVIDER": "qwen",
-            "DASHSCOPE_API_KEY": "test-dashscope-key",
+            "QWEN_IMAGE_API_KEY": "test-qwen-image-key",
             "QWEN_IMAGE_BASE_URL": "https://dashscope.local/api/v1",
             "QWEN_IMAGE_MODEL": "qwen-image-test",
             "QWEN_IMAGE_DEFAULT_SIZE": "256*256",
@@ -238,8 +276,8 @@ def test_provider_config_reads_qwen_image_generation_provider_from_dashscope_spe
     )
 
     assert config.image_generation_provider == "qwen"
-    assert config.dashscope_api_key == "test-dashscope-key"
-    assert config.image_generation_api_key == "test-dashscope-key"
+    assert config.qwen_image_api_key == "test-qwen-image-key"
+    assert config.image_generation_api_key == "test-qwen-image-key"
     assert config.image_generation_base_url == "https://dashscope.local/api/v1"
     assert config.image_generation_model == "qwen-image-test"
     assert config.image_generation_adapter_kind == "dashscope_image"
@@ -252,7 +290,7 @@ def test_provider_config_reads_ark_image_generation_provider_from_spec() -> None
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_IMAGE_PROVIDER": "ark",
-            "ARK_API_KEY": "test-ark-key",
+            "ARK_IMAGE_API_KEY": "test-ark-key",
             "ARK_IMAGE_BASE_URL": "https://ark.local/api/v3",
             "ARK_IMAGE_MODEL": "ark-image-test",
             "ARK_IMAGE_DEFAULT_SIZE": "ignored-by-code",
@@ -261,7 +299,7 @@ def test_provider_config_reads_ark_image_generation_provider_from_spec() -> None
     )
 
     assert config.image_generation_provider == "ark"
-    assert config.ark_api_key == "test-ark-key"
+    assert config.ark_image_api_key == "test-ark-key"
     assert config.image_generation_api_key == "test-ark-key"
     assert config.image_generation_base_url == "https://ark.local/api/v3"
     assert config.image_generation_model == "ark-image-test"

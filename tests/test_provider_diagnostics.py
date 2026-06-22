@@ -24,7 +24,7 @@ def test_provider_diagnostics_redacts_notes_and_excludes_secret_values() -> None
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
-            "QWEN_API_KEY": "sk-diagnostic-secret",
+            "QWEN_VISION_API_KEY": "sk-diagnostic-secret",
         }
     )
 

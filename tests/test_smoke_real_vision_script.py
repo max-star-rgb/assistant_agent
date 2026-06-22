@@ -63,7 +63,7 @@ def test_env_example_contains_no_real_secret_patterns() -> None:
     content = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
 
     assert "OPENAI_API_KEY=" in content
-    assert "QWEN_API_KEY=" in content
+    assert "QWEN_VISION_API_KEY=" in content
     assert "SEED_API_KEY=" in content
     assert "MULTIMODAL_AGENT_VISION_PROVIDER=mock" in content
     assert not re.search(r"sk-[A-Za-z0-9_-]{8,}", content)

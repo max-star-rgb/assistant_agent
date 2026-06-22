@@ -14,8 +14,8 @@ def test_optional_real_vision_provider_requires_explicit_env() -> None:
         pytest.skip("set MULTIMODAL_AGENT_VISION_PROVIDER=openai|qwen")
     if config.vision_provider == "openai" and not config.openai_api_key:
         pytest.skip("set OPENAI_API_KEY to run OpenAI vision integration test")
-    if config.vision_provider == "qwen" and not config.qwen_api_key:
-        pytest.skip("set QWEN_API_KEY to run Qwen vision integration test")
+    if config.vision_provider == "qwen" and not config.qwen_vision_api_key:
+        pytest.skip("set QWEN_VISION_API_KEY to run Qwen vision integration test")
 
     result = create_vision_adapter(config).understand(
         VisionUnderstandingInput(image_ids=["integration-image-placeholder"], question="图里是什么")

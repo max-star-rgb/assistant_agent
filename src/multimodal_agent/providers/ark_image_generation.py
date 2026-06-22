@@ -43,7 +43,7 @@ class ArkImageGenerationAdapter:
         """Generate images through Ark and return the stable generation schema."""
 
         if not self.config.api_key:
-            raise ProviderAdapterError("provider_unconfigured", "ark image provider requires ARK_API_KEY")
+            raise ProviderAdapterError("provider_unconfigured", "ark image provider requires ARK_IMAGE_API_KEY")
         _validate_http_header_value("Authorization", f"Bearer {self.config.api_key}")
 
         prompt = build_image_prompt(input)

@@ -19,6 +19,7 @@ from multimodal_agent.services.chat_adapter import ChatAdapter, create_chat_adap
 from multimodal_agent.services.run_history import RunHistoryStore
 from multimodal_agent.services.tool_history import ToolHistoryStore
 from multimodal_agent.services.trace_store import InMemoryTraceStore, TraceStore
+from multimodal_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
 from multimodal_agent.tools.registry import ToolRegistry, create_default_registry
 
 
@@ -37,9 +38,11 @@ class AgentGraphRuntime:
         event_sink: EventSink | None = None,
         trace_store: TraceStore | None = None,
         chat_adapter: ChatAdapter | None = None,
+        video_context_store: VideoContextStore | None = None,
     ) -> None:
         self.config = config or ProviderConfig.from_env()
-        self.registry = registry or create_default_registry(self.config)
+        self.video_context_store = video_context_store or InMemoryVideoContextStore()
+        self.registry = registry or create_default_registry(self.config, video_context_store=self.video_context_store)
         self.memory_store = memory_store or create_memory_store(self.config)
         self.intent_detector = intent_detector or IntentDetector()
         self.router = router or ToolRouter()

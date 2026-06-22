@@ -51,7 +51,7 @@ def test_direct_chat_smoke_deepseek_missing_key_exits_cleanly() -> None:
         env={
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_API_KEY": "",
+            "DEEPSEEK_CHAT_API_KEY": "",
         },
         text=True,
         capture_output=True,
@@ -60,7 +60,7 @@ def test_direct_chat_smoke_deepseek_missing_key_exits_cleanly() -> None:
 
     assert result.returncode == 2
     assert "provider_unconfigured" in result.stdout
-    assert "missing DEEPSEEK_API_KEY" in result.stdout
+    assert "missing DEEPSEEK_CHAT_API_KEY" in result.stdout
     assert "Traceback" not in result.stderr
 
 
@@ -79,13 +79,13 @@ def test_text_image_generation_smoke_missing_key_exits_cleanly() -> None:
     assert "Traceback" not in result.stderr
 
 
-def test_text_image_generation_smoke_qwen_missing_dashscope_key_exits_cleanly() -> None:
+def test_text_image_generation_smoke_qwen_missing_image_key_exits_cleanly() -> None:
     result = subprocess.run(
         [sys.executable, str(IMAGE_GENERATION_SCRIPT), "--prompt", "生成一张日系极简商品海报"],
         env={
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_IMAGE_PROVIDER": "qwen",
-            "DASHSCOPE_API_KEY": "",
+            "QWEN_IMAGE_API_KEY": "",
         },
         text=True,
         capture_output=True,
@@ -94,7 +94,7 @@ def test_text_image_generation_smoke_qwen_missing_dashscope_key_exits_cleanly() 
 
     assert result.returncode == 2
     assert "provider_unconfigured" in result.stdout
-    assert "missing DASHSCOPE_API_KEY" in result.stdout
+    assert "missing QWEN_IMAGE_API_KEY" in result.stdout
     assert "Traceback" not in result.stderr
 
 

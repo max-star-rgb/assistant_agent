@@ -14,6 +14,7 @@ from multimodal_agent.schemas.api import AgentRunResponse, agent_run_response_fr
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.event_sink import EventSink, ListEventSink
 from multimodal_agent.services.trace_store import trace_debug_summary
+from multimodal_agent.services.video_context import load_demo_video_frames
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -181,6 +182,7 @@ def run_assistant_request(
     sink = event_sink or ListEventSink()
     resolved_runtime = runtime or create_runtime(config=config, event_sink=sink, load_env=load_env)
     resolved_store = conversation_store or _DEFAULT_CONVERSATION_STORE
+    _preload_demo_video_context(request, resolved_runtime)
     resolved_request = _prepare_conversation_request(
         request,
         conversation_store=resolved_store,
@@ -195,6 +197,15 @@ def run_assistant_request(
     raw_events = getattr(sink, "events", [])
     events = list(raw_events) if isinstance(raw_events, list) else []
     return AssistantRunArtifacts(runtime=resolved_runtime, state=state, events=events)
+
+
+def _preload_demo_video_context(request: UserRequest, runtime: AgentGraphRuntime) -> None:
+    video_context_store = getattr(runtime, "video_context_store", None)
+    if video_context_store is None:
+        return
+    for video_id in request.video_ids:
+        if isinstance(video_id, str) and video_id:
+            load_demo_video_frames(video_context_store, video_id)
 
 
 def run_assistant_query(

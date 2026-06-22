@@ -43,6 +43,10 @@ class ProviderConfig:
     qwen_api_key: str | None = None
     dashscope_api_key: str | None = None
     ark_api_key: str | None = None
+    qwen_vision_api_key: str | None = None
+    qwen_image_api_key: str | None = None
+    ark_vision_api_key: str | None = None
+    ark_image_api_key: str | None = None
     seed_api_key: str | None = None
     comfyui_base_url: str | None = None
     blender_render_url: str | None = None
@@ -56,6 +60,8 @@ class ProviderConfig:
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_vision_model: str = "qwen-vl-plus"
+    ark_vision_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    ark_vision_model: str = "doubao-seed-2-0-lite-260215"
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
     seed_vision_model: str = "seed-vision"
     memory_backend: Literal["memory", "jsonl"] = "memory"
@@ -115,7 +121,9 @@ class ProviderConfig:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
-        source = os.environ if env is None else env
+        source = dict(os.environ if env is None else env)
+        if not source.get("DEEPSEEK_CHAT_API_KEY") and source.get("DEEPSEEK_API_KEY"):
+            source["DEEPSEEK_CHAT_API_KEY"] = source["DEEPSEEK_API_KEY"]
         runtime_profile = RuntimeProfile.from_env(source)
         allow_real_providers = runtime_profile.allows_real_providers
         chat_provider = _chat_provider(
@@ -139,8 +147,12 @@ class ProviderConfig:
             qwen_api_key=source.get("QWEN_API_KEY"),
             dashscope_api_key=source.get("DASHSCOPE_API_KEY"),
             ark_api_key=source.get("ARK_API_KEY"),
+            qwen_vision_api_key=source.get("QWEN_VISION_API_KEY"),
+            qwen_image_api_key=source.get("QWEN_IMAGE_API_KEY"),
+            ark_vision_api_key=source.get("ARK_VISION_API_KEY"),
+            ark_image_api_key=source.get("ARK_IMAGE_API_KEY"),
             seed_api_key=source.get("SEED_API_KEY"),
-            deepseek_api_key=source.get("DEEPSEEK_API_KEY"),
+            deepseek_api_key=source.get("DEEPSEEK_CHAT_API_KEY") or source.get("DEEPSEEK_API_KEY"),
             comfyui_base_url=source.get("COMFYUI_BASE_URL"),
             blender_render_url=source.get("BLENDER_RENDER_URL"),
             search_api_base_url=source.get("SEARCH_API_BASE_URL"),
@@ -156,6 +168,8 @@ class ProviderConfig:
                 "https://dashscope.aliyuncs.com/compatible-mode/v1",
             ),
             qwen_vision_model=source.get("QWEN_VISION_MODEL", "qwen-vl-plus"),
+            ark_vision_base_url=source.get("ARK_VISION_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+            ark_vision_model=source.get("ARK_VISION_MODEL", "doubao-seed-2-0-lite-260215"),
             seed_vision_base_url=source.get("SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"),
             seed_vision_model=source.get("SEED_VISION_MODEL", "seed-vision"),
             memory_backend=_memory_backend(source.get("MULTIMODAL_AGENT_MEMORY_BACKEND")),
@@ -235,6 +249,10 @@ class ProviderConfig:
                 self.qwen_api_key,
                 self.dashscope_api_key,
                 self.ark_api_key,
+                self.qwen_vision_api_key,
+                self.qwen_image_api_key,
+                self.ark_vision_api_key,
+                self.ark_image_api_key,
                 self.deepseek_api_key,
                 self.seed_api_key,
                 self.comfyui_base_url,
@@ -260,6 +278,7 @@ class ProviderConfig:
                     "QWEN_API_KEY": self.chat_api_key or "",
                     "QWEN_CHAT_BASE_URL": self.chat_base_url or "",
                     "QWEN_CHAT_MODEL": self.chat_model or "",
+                    "DEEPSEEK_CHAT_API_KEY": self.chat_api_key or "",
                     "DEEPSEEK_API_KEY": self.chat_api_key or "",
                     "DEEPSEEK_CHAT_BASE_URL": self.chat_base_url or "",
                     "DEEPSEEK_CHAT_MODEL": self.chat_model or "",
@@ -276,6 +295,7 @@ class ProviderConfig:
                 "QWEN_API_KEY": self.qwen_api_key or "",
                 "QWEN_CHAT_BASE_URL": self.qwen_chat_base_url,
                 "QWEN_CHAT_MODEL": self.qwen_chat_model,
+                "DEEPSEEK_CHAT_API_KEY": self.deepseek_api_key or "",
                 "DEEPSEEK_API_KEY": self.deepseek_api_key or "",
                 "DEEPSEEK_CHAT_BASE_URL": self.deepseek_chat_base_url,
                 "DEEPSEEK_CHAT_MODEL": self.deepseek_chat_model,
@@ -295,8 +315,13 @@ class ProviderConfig:
                     "OPENAI_VISION_BASE_URL": self.vision_base_url or "",
                     "OPENAI_VISION_MODEL": self.vision_model or "",
                     "QWEN_API_KEY": self.vision_api_key or "",
+                    "QWEN_VISION_API_KEY": self.vision_api_key or "",
                     "QWEN_VISION_BASE_URL": self.vision_base_url or "",
                     "QWEN_VISION_MODEL": self.vision_model or "",
+                    "ARK_API_KEY": self.vision_api_key or "",
+                    "ARK_VISION_API_KEY": self.vision_api_key or "",
+                    "ARK_VISION_BASE_URL": self.vision_base_url or "",
+                    "ARK_VISION_MODEL": self.vision_model or "",
                     "SEED_API_KEY": self.vision_api_key or "",
                     "SEED_VISION_BASE_URL": self.vision_base_url or "",
                     "SEED_VISION_MODEL": self.vision_model or "",
@@ -309,8 +334,13 @@ class ProviderConfig:
                 "OPENAI_VISION_BASE_URL": self.openai_vision_base_url,
                 "OPENAI_VISION_MODEL": self.openai_vision_model,
                 "QWEN_API_KEY": self.qwen_api_key or "",
+                "QWEN_VISION_API_KEY": self.qwen_vision_api_key or self.qwen_api_key or "",
                 "QWEN_VISION_BASE_URL": self.qwen_vision_base_url,
                 "QWEN_VISION_MODEL": self.qwen_vision_model,
+                "ARK_API_KEY": self.ark_api_key or "",
+                "ARK_VISION_API_KEY": self.ark_vision_api_key or self.ark_api_key or "",
+                "ARK_VISION_BASE_URL": self.ark_vision_base_url,
+                "ARK_VISION_MODEL": self.ark_vision_model,
                 "SEED_API_KEY": self.seed_api_key or "",
                 "SEED_VISION_BASE_URL": self.seed_vision_base_url,
                 "SEED_VISION_MODEL": self.seed_vision_model,
@@ -327,9 +357,11 @@ class ProviderConfig:
                     "OPENAI_API_KEY": self.image_generation_api_key or "",
                     "OPENAI_IMAGE_MODEL": self.image_generation_model or "",
                     "DASHSCOPE_API_KEY": self.image_generation_api_key or "",
+                    "QWEN_IMAGE_API_KEY": self.image_generation_api_key or "",
                     "QWEN_IMAGE_BASE_URL": self.image_generation_base_url or "",
                     "QWEN_IMAGE_MODEL": self.image_generation_model or "",
                     "ARK_API_KEY": self.image_generation_api_key or "",
+                    "ARK_IMAGE_API_KEY": self.image_generation_api_key or "",
                     "ARK_IMAGE_BASE_URL": self.image_generation_base_url or "",
                     "ARK_IMAGE_MODEL": self.image_generation_model or "",
                     "COMFYUI_BASE_URL": self.image_generation_base_url or "",
@@ -343,9 +375,11 @@ class ProviderConfig:
                 "OPENAI_API_KEY": self.openai_api_key or "",
                 "OPENAI_IMAGE_MODEL": self.openai_image_model,
                 "DASHSCOPE_API_KEY": self.dashscope_api_key or "",
+                "QWEN_IMAGE_API_KEY": self.qwen_image_api_key or self.dashscope_api_key or "",
                 "QWEN_IMAGE_BASE_URL": self.qwen_image_base_url,
                 "QWEN_IMAGE_MODEL": self.qwen_image_model,
                 "ARK_API_KEY": self.ark_api_key or "",
+                "ARK_IMAGE_API_KEY": self.ark_image_api_key or self.ark_api_key or "",
                 "ARK_IMAGE_BASE_URL": self.ark_image_base_url,
                 "ARK_IMAGE_MODEL": self.ark_image_model,
                 "COMFYUI_BASE_URL": self.comfyui_base_url or "",

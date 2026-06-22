@@ -1,6 +1,7 @@
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.services.provider_selection import create_vision_adapter
+from multimodal_agent.providers.ark_vision import ArkVisionProviderAdapter
 from multimodal_agent.services.real_vision_adapter import HttpVisionProviderAdapter
 from multimodal_agent.services.vision_adapter import MockVisionUnderstandingAdapter
 from multimodal_agent.tools.registry import create_default_registry
@@ -57,6 +58,20 @@ def test_seed_vision_provider_switches_adapter_through_registry_config() -> None
 
     assert isinstance(tool.adapter, HttpVisionProviderAdapter)
     assert tool.adapter.config.provider == "seed"
+
+
+def test_ark_vision_provider_switches_to_ark_responses_adapter() -> None:
+    registry = create_default_registry(
+        ProviderConfig(
+            vision_provider="ark",
+            ark_api_key=None,
+        )
+    )
+
+    tool = registry.get("vision_understanding")
+
+    assert isinstance(tool.adapter, ArkVisionProviderAdapter)
+    assert tool.adapter.config.provider == "ark"
 
 
 def test_graph_runtime_uses_explicit_provider_config_for_default_registry() -> None:

@@ -47,7 +47,7 @@ def test_deepseek_chat_provider_without_key_returns_provider_unconfigured() -> N
     assert result.success is False
     assert result.provider == "deepseek"
     assert result.errors[0].code == "provider_unconfigured"
-    assert "DEEPSEEK_API_KEY" in result.errors[0].message
+    assert "DEEPSEEK_CHAT_API_KEY" in result.errors[0].message
 
 
 def test_deepseek_chat_provider_uses_openai_compatible_http(monkeypatch) -> None:

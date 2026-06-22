@@ -1,5 +1,6 @@
 """Video understanding adapter contract and deterministic mock implementation."""
 
+from pathlib import Path
 from typing import Protocol
 
 from multimodal_agent.config import ProviderConfig
@@ -22,9 +23,16 @@ class MockVideoUnderstandingAdapter:
     def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
         if not request.video_ref:
             raise ValueError("video_missing_input: VideoUnderstandingRequest requires video_ref.")
+        frame_refs = list(request.frame_refs)
+        frame_count = len(frame_refs)
 
         return VideoUnderstandingResult(
-            summary="视频中展示了一双白色低帮运动鞋，整体为简约日系商品展示风格。",
+            summary=(
+                f"视频中展示了一双白色低帮运动鞋，整体为简约日系商品展示风格。"
+                f" 已基于最近 {frame_count} 帧上下文进行理解。"
+                if frame_count
+                else "视频中展示了一双白色低帮运动鞋，整体为简约日系商品展示风格。"
+            ),
             objects=["白色低帮运动鞋", "桌面"],
             actions=["商品展示", "鞋身旋转"],
             events=["展示鞋面", "展示鞋底"],
@@ -34,7 +42,7 @@ class MockVideoUnderstandingAdapter:
             colors=["白色"],
             materials=["皮革", "橡胶"],
             text_in_video=[],
-            timestamps=[{"start_ms": 0, "end_ms": 3000, "description": "展示白色低帮运动鞋"}],
+            timestamps=_mock_timestamps(frame_refs),
             style_tags=["简约", "日系"],
             confidence=0.9,
             provider=self.provider,
@@ -148,6 +156,20 @@ def create_video_understanding_adapter(config: ProviderConfig | None = None) -> 
 def _safe_ref_suffix(video_ref: str) -> str:
     suffix = video_ref.rsplit("/", maxsplit=1)[-1].strip() or "demo"
     return "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in suffix)
+
+
+def _mock_timestamps(frame_refs: list[str]) -> list[dict]:
+    if not frame_refs:
+        return [{"start_ms": 0, "end_ms": 3000, "description": "展示白色低帮运动鞋"}]
+    return [
+        {
+            "start_ms": index * 1000,
+            "end_ms": (index + 1) * 1000,
+            "description": f"处理上下文帧 {index + 1}",
+            "frame_ref": Path(frame_ref).name,
+        }
+        for index, frame_ref in enumerate(frame_refs)
+    ]
 
 
 def _number_metadata(request: VideoUnderstandingRequest, *keys: str) -> float | None:

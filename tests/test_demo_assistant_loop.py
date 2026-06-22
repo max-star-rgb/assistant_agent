@@ -17,7 +17,7 @@ def test_demo_assistant_loop_loads_env_file_without_overwriting(tmp_path, monkey
             [
                 "MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke",
                 "MULTIMODAL_AGENT_CHAT_PROVIDER=deepseek",
-                "DEEPSEEK_API_KEY=placeholder",
+                "DEEPSEEK_CHAT_API_KEY=placeholder",
                 "DEEPSEEK_CHAT_MODEL=deepseek-chat",
             ]
         ),
@@ -27,7 +27,7 @@ def test_demo_assistant_loop_loads_env_file_without_overwriting(tmp_path, monkey
     keys = [
         "MULTIMODAL_AGENT_RUNTIME_PROFILE",
         "MULTIMODAL_AGENT_CHAT_PROVIDER",
-        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_CHAT_API_KEY",
         "DEEPSEEK_CHAT_MODEL",
     ]
     previous = {key: os.environ.get(key) for key in keys}
@@ -42,24 +42,24 @@ def test_demo_assistant_loop_loads_env_file_without_overwriting(tmp_path, monkey
                 os.environ[key] = value
 
     assert loaded["MULTIMODAL_AGENT_CHAT_PROVIDER"] == "deepseek"
-    assert "DEEPSEEK_API_KEY" in loaded
+    assert "DEEPSEEK_CHAT_API_KEY" in loaded
 
 
 def test_demo_assistant_loop_env_loader_strips_smart_quotes(tmp_path, monkeypatch) -> None:
     module = _load_demo_module()
     env_file = tmp_path / ".env"
-    env_file.write_text("ARK_API_KEY=“placeholder”\n", encoding="utf-8")
-    previous = os.environ.get("ARK_API_KEY")
-    monkeypatch.delenv("ARK_API_KEY", raising=False)
+    env_file.write_text("ARK_IMAGE_API_KEY=“placeholder”\n", encoding="utf-8")
+    previous = os.environ.get("ARK_IMAGE_API_KEY")
+    monkeypatch.delenv("ARK_IMAGE_API_KEY", raising=False)
     try:
         loaded = module.load_env_file(env_file)
     finally:
         if previous is None:
-            os.environ.pop("ARK_API_KEY", None)
+            os.environ.pop("ARK_IMAGE_API_KEY", None)
         else:
-            os.environ["ARK_API_KEY"] = previous
+            os.environ["ARK_IMAGE_API_KEY"] = previous
 
-    assert loaded["ARK_API_KEY"] == "placeholder"
+    assert loaded["ARK_IMAGE_API_KEY"] == "placeholder"
 
 
 def test_demo_assistant_loop_does_not_load_qwen_image_default_size_from_env(tmp_path, monkeypatch) -> None:
@@ -70,7 +70,7 @@ def test_demo_assistant_loop_does_not_load_qwen_image_default_size_from_env(tmp_
             [
                 "MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke",
                 "MULTIMODAL_AGENT_IMAGE_PROVIDER=qwen",
-                "DASHSCOPE_API_KEY=placeholder",
+                "QWEN_IMAGE_API_KEY=placeholder",
                 "QWEN_IMAGE_DEFAULT_SIZE=256*256",
             ]
         ),
@@ -80,7 +80,7 @@ def test_demo_assistant_loop_does_not_load_qwen_image_default_size_from_env(tmp_
     keys = [
         "MULTIMODAL_AGENT_RUNTIME_PROFILE",
         "MULTIMODAL_AGENT_IMAGE_PROVIDER",
-        "DASHSCOPE_API_KEY",
+        "QWEN_IMAGE_API_KEY",
         "QWEN_IMAGE_DEFAULT_SIZE",
     ]
     previous = {key: os.environ.get(key) for key in keys}
@@ -128,7 +128,7 @@ def test_demo_assistant_loop_mock_run_prints_timeline_by_default() -> None:
     assert "trace |" not in result.stdout
     assert "Decision Trace" not in result.stdout
     assert "thought/decision" not in result.stdout
-    assert "DEEPSEEK_API_KEY" not in result.stdout
+    assert "DEEPSEEK_CHAT_API_KEY" not in result.stdout
     assert "Authorization" not in result.stdout
     assert "Traceback" not in result.stderr
 
@@ -221,10 +221,10 @@ def test_demo_assistant_loop_redacts_signed_image_urls_for_display() -> None:
 
 def test_demo_assistant_loop_does_not_infer_image_provider_from_ark_key(monkeypatch) -> None:
     module = _load_demo_module()
-    keys = ["ARK_API_KEY", "MULTIMODAL_AGENT_IMAGE_PROVIDER", "MULTIMODAL_AGENT_RUNTIME_PROFILE"]
+    keys = ["ARK_IMAGE_API_KEY", "MULTIMODAL_AGENT_IMAGE_PROVIDER", "MULTIMODAL_AGENT_RUNTIME_PROFILE"]
     previous = {key: os.environ.get(key) for key in keys}
     try:
-        monkeypatch.setenv("ARK_API_KEY", "placeholder")
+        monkeypatch.setenv("ARK_IMAGE_API_KEY", "placeholder")
         monkeypatch.delenv("MULTIMODAL_AGENT_IMAGE_PROVIDER", raising=False)
         monkeypatch.delenv("MULTIMODAL_AGENT_RUNTIME_PROFILE", raising=False)
 
@@ -243,10 +243,10 @@ def test_demo_assistant_loop_does_not_infer_image_provider_from_ark_key(monkeypa
 
 def test_demo_assistant_loop_explicit_image_provider_sets_runtime_provider(monkeypatch) -> None:
     module = _load_demo_module()
-    keys = ["ARK_API_KEY", "MULTIMODAL_AGENT_IMAGE_PROVIDER", "MULTIMODAL_AGENT_RUNTIME_PROFILE"]
+    keys = ["ARK_IMAGE_API_KEY", "MULTIMODAL_AGENT_IMAGE_PROVIDER", "MULTIMODAL_AGENT_RUNTIME_PROFILE"]
     previous = {key: os.environ.get(key) for key in keys}
     try:
-        monkeypatch.setenv("ARK_API_KEY", "placeholder")
+        monkeypatch.setenv("ARK_IMAGE_API_KEY", "placeholder")
         monkeypatch.delenv("MULTIMODAL_AGENT_IMAGE_PROVIDER", raising=False)
 
         args = module.build_parser().parse_args(["--image-provider", "mock"])
@@ -355,7 +355,7 @@ def test_demo_assistant_loop_deepseek_missing_key_exits_cleanly() -> None:
 
     assert result.returncode == 2
     assert "provider_unconfigured" in result.stdout
-    assert "DEEPSEEK_API_KEY" in result.stdout
+    assert "DEEPSEEK_CHAT_API_KEY" in result.stdout
     assert "Authorization" not in result.stdout
     assert "Traceback" not in result.stderr
 

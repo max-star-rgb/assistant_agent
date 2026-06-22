@@ -17,6 +17,7 @@ from multimodal_agent.services.product_adapter import create_price_compare_adapt
 from multimodal_agent.services.provider_selection import create_vision_adapter
 from multimodal_agent.services.render_adapter import create_render_adapter
 from multimodal_agent.services.video_adapter import create_video_understanding_adapter
+from multimodal_agent.services.video_context import VideoContextStore
 from multimodal_agent.tools.video_tool import VideoUnderstandingTool
 from multimodal_agent.tools.vision_tool import VisionUnderstandingTool
 
@@ -138,11 +139,15 @@ _ACTION_USAGE: dict[str, dict[str, list[str]]] = {
 }
 
 
-def create_default_registry(config: ProviderConfig | None = None) -> ToolRegistry:
+def create_default_registry(
+    config: ProviderConfig | None = None,
+    *,
+    video_context_store: VideoContextStore | None = None,
+) -> ToolRegistry:
     registry = ToolRegistry()
     for tool in (
         VisionUnderstandingTool(adapter=create_vision_adapter(config)),
-        VideoUnderstandingTool(adapter=create_video_understanding_adapter(config)),
+        VideoUnderstandingTool(adapter=create_video_understanding_adapter(config), context_store=video_context_store),
         ProductSearchTool(adapter=create_product_search_adapter(config)),
         PriceCompareTool(adapter=create_price_compare_adapter(config)),
         ImageGenerationTool(adapter=create_image_generation_adapter(config)),

@@ -30,6 +30,9 @@ class VideoUnderstandingRequest(BaseModel):
     """Structured request for video understanding providers."""
 
     video_ref: str | None = None
+    video_ids: list[str] = Field(default_factory=list)
+    frame_refs: list[str] = Field(default_factory=list)
+    context_id: str | None = None
     user_query: str | None = None
     user_id: str | None = None
     session_id: str | None = None

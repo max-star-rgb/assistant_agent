@@ -7,6 +7,7 @@ from multimodal_agent.services.video_adapter import (
     VideoUnderstandingAdapter,
     create_video_understanding_adapter,
 )
+from multimodal_agent.services.video_context import DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE, VideoContextStore
 from multimodal_agent.tools.base import MockTool, ToolContext
 
 
@@ -16,10 +17,19 @@ class VideoUnderstandingTool(MockTool):
     input_schema = VideoUnderstandingRequest
     output_schema = VideoUnderstandingResult
 
-    def __init__(self, adapter: VideoUnderstandingAdapter | None = None) -> None:
+    def __init__(
+        self,
+        adapter: VideoUnderstandingAdapter | None = None,
+        *,
+        context_store: VideoContextStore | None = None,
+        context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
+    ) -> None:
         self.adapter = adapter or create_video_understanding_adapter()
+        self.context_store = context_store
+        self.context_window_size = context_window_size
 
     def _run(self, input: VideoUnderstandingRequest, context: ToolContext) -> ToolResult:
+        input = self._with_context_frames(input)
         try:
             result = self.adapter.understand_video(input)
         except ValueError as exc:
@@ -53,6 +63,31 @@ class VideoUnderstandingTool(MockTool):
             output_ref=output_ref,
             latency_ms=result.latency_ms,
             contract=contract,
+        )
+
+    def _with_context_frames(self, input: VideoUnderstandingRequest) -> VideoUnderstandingRequest:
+        video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)
+        if not video_ref:
+            return input
+        if input.frame_refs or self.context_store is None:
+            return input.model_copy(update={"video_ref": video_ref})
+        limit = input.max_frames or self.context_window_size
+        frames = self.context_store.get_recent_frames(video_ref, limit=limit)
+        if not frames:
+            return input.model_copy(update={"video_ref": video_ref})
+        metadata = {
+            **input.metadata,
+            "context_window_size": self.context_window_size,
+            "context_frame_count": len(frames),
+            "context_frame_ids": [frame.frame_id for frame in frames],
+        }
+        return input.model_copy(
+            update={
+                "video_ref": video_ref,
+                "context_id": video_ref,
+                "frame_refs": [frame.uri for frame in frames],
+                "metadata": metadata,
+            }
         )
 
 

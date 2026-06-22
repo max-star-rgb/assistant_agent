@@ -17,6 +17,7 @@ def build_tool_input(
     if action == "understand_video":
         return {
             "video_ref": request.video_ids[0] if request.video_ids else None,
+            "video_ids": request.video_ids,
             "user_query": request.text,
             "user_id": request.user_id,
             "session_id": request.session_id,

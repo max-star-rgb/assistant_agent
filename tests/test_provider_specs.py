@@ -17,7 +17,7 @@ from multimodal_agent.services.provider_specs import (
 def test_chat_provider_specs_include_openai_compatible_providers() -> None:
     assert {"mock", "openai", "qwen", "deepseek", "local"}.issubset(supported_chat_providers())
     assert CHAT_PROVIDER_SPECS["deepseek"].adapter_kind == "openai_compatible"
-    assert CHAT_PROVIDER_SPECS["deepseek"].api_key_env == "DEEPSEEK_API_KEY"
+    assert CHAT_PROVIDER_SPECS["deepseek"].api_key_env == "DEEPSEEK_CHAT_API_KEY"
     assert CHAT_PROVIDER_SPECS["deepseek"].base_url_env == "DEEPSEEK_CHAT_BASE_URL"
     assert CHAT_PROVIDER_SPECS["deepseek"].model_env == "DEEPSEEK_CHAT_MODEL"
     assert CHAT_PROVIDER_SPECS["deepseek"].default_base_url == "https://api.deepseek.com/v1"
@@ -36,14 +36,14 @@ def test_resolve_chat_provider_returns_missing_required_env_names() -> None:
     assert resolved.provider == "deepseek"
     assert resolved.base_url == "https://api.deepseek.com/v1"
     assert resolved.model == "deepseek-chat"
-    assert resolved.missing_required_env() == ["DEEPSEEK_API_KEY"]
+    assert resolved.missing_required_env() == ["DEEPSEEK_CHAT_API_KEY"]
 
 
 def test_resolve_chat_provider_accepts_explicit_deepseek_config() -> None:
     resolved = resolve_chat_provider(
         "deepseek",
         {
-            "DEEPSEEK_API_KEY": "test-key",
+            "DEEPSEEK_CHAT_API_KEY": "test-key",
             "DEEPSEEK_CHAT_BASE_URL": "https://deepseek.local/v1",
             "DEEPSEEK_CHAT_MODEL": "deepseek-test",
         },
@@ -56,11 +56,17 @@ def test_resolve_chat_provider_accepts_explicit_deepseek_config() -> None:
 
 
 def test_vision_provider_specs_include_openai_compatible_providers() -> None:
-    assert {"mock", "openai", "qwen", "seed"}.issubset(supported_vision_providers())
+    assert {"mock", "openai", "qwen", "seed", "ark"}.issubset(supported_vision_providers())
     assert VISION_PROVIDER_SPECS["qwen"].adapter_kind == "openai_compatible"
-    assert VISION_PROVIDER_SPECS["qwen"].api_key_env == "QWEN_API_KEY"
+    assert VISION_PROVIDER_SPECS["qwen"].api_key_env == "QWEN_VISION_API_KEY"
     assert VISION_PROVIDER_SPECS["qwen"].base_url_env == "QWEN_VISION_BASE_URL"
     assert VISION_PROVIDER_SPECS["qwen"].model_env == "QWEN_VISION_MODEL"
+    assert VISION_PROVIDER_SPECS["ark"].adapter_kind == "ark_responses"
+    assert VISION_PROVIDER_SPECS["ark"].api_key_env == "ARK_VISION_API_KEY"
+    assert VISION_PROVIDER_SPECS["ark"].base_url_env == "ARK_VISION_BASE_URL"
+    assert VISION_PROVIDER_SPECS["ark"].model_env == "ARK_VISION_MODEL"
+    assert VISION_PROVIDER_SPECS["ark"].default_base_url == "https://ark.cn-beijing.volces.com/api/v3"
+    assert VISION_PROVIDER_SPECS["ark"].default_model == "doubao-seed-2-0-lite-260215"
 
 
 def test_select_vision_provider_obeys_runtime_profile_guard() -> None:
@@ -82,7 +88,7 @@ def test_resolve_vision_provider_accepts_explicit_qwen_config() -> None:
     resolved = resolve_vision_provider(
         "qwen",
         {
-            "QWEN_API_KEY": "test-key",
+            "QWEN_VISION_API_KEY": "test-key",
             "QWEN_VISION_BASE_URL": "https://qwen.local/v1",
             "QWEN_VISION_MODEL": "qwen-vl-test",
         },
@@ -94,17 +100,27 @@ def test_resolve_vision_provider_accepts_explicit_qwen_config() -> None:
     assert resolved.missing_required_env() == []
 
 
+def test_resolve_vision_provider_accepts_ark_defaults() -> None:
+    resolved = resolve_vision_provider("ark", {"ARK_VISION_API_KEY": "test-ark-key"})
+
+    assert resolved.provider == "ark"
+    assert resolved.api_key == "test-ark-key"
+    assert resolved.base_url == "https://ark.cn-beijing.volces.com/api/v3"
+    assert resolved.model == "doubao-seed-2-0-lite-260215"
+    assert resolved.missing_required_env() == []
+
+
 def test_image_generation_provider_specs_include_optional_skeleton_providers() -> None:
     assert {"mock", "openai", "qwen", "ark", "comfyui", "local"}.issubset(supported_image_generation_providers())
     assert IMAGE_GENERATION_PROVIDER_SPECS["openai"].api_key_env == "OPENAI_API_KEY"
     assert IMAGE_GENERATION_PROVIDER_SPECS["openai"].model_env == "OPENAI_IMAGE_MODEL"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].adapter_kind == "dashscope_image"
-    assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].api_key_env == "DASHSCOPE_API_KEY"
+    assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].api_key_env == "QWEN_IMAGE_API_KEY"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].base_url_env == "QWEN_IMAGE_BASE_URL"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].default_base_url == "https://dashscope.aliyuncs.com/api/v1"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].default_model == "qwen-image-2.0-pro"
     assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].adapter_kind == "ark_image"
-    assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].api_key_env == "ARK_API_KEY"
+    assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].api_key_env == "ARK_IMAGE_API_KEY"
     assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].base_url_env == "ARK_IMAGE_BASE_URL"
     assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].default_base_url is None
     assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].default_model is None
@@ -127,7 +143,7 @@ def test_resolve_image_generation_provider_returns_missing_required_env_names() 
 
 
 def test_resolve_ark_image_generation_provider_requires_env_url_and_model() -> None:
-    resolved = resolve_image_generation_provider("ark", {"ARK_API_KEY": "test-key"})
+    resolved = resolve_image_generation_provider("ark", {"ARK_IMAGE_API_KEY": "test-key"})
 
     assert resolved.provider == "ark"
     assert resolved.api_key == "test-key"
@@ -137,7 +153,7 @@ def test_resolve_ark_image_generation_provider_requires_env_url_and_model() -> N
 
 
 def test_resolve_qwen_image_generation_provider_uses_dashscope_key() -> None:
-    resolved = resolve_image_generation_provider("qwen", {"DASHSCOPE_API_KEY": "test-key"})
+    resolved = resolve_image_generation_provider("qwen", {"QWEN_IMAGE_API_KEY": "test-key"})
 
     assert resolved.provider == "qwen"
     assert resolved.api_key == "test-key"
