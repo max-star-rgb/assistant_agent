@@ -74,6 +74,10 @@ class AgentRunResponse(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
+    react_steps: list[dict[str, Any]] = Field(default_factory=list)
+    runtime_info: dict[str, Any] = Field(default_factory=dict)
+    current_stage: str | None = None
+    blocked_reason: str | None = None
     errors: list[ApiError] = Field(default_factory=list)
 
 
@@ -107,7 +111,13 @@ def api_error(
     )
 
 
-def agent_run_response_from_state(state: AgentState) -> AgentRunResponse:
+def agent_run_response_from_state(
+    state: AgentState,
+    *,
+    runtime_info: dict[str, Any] | None = None,
+    current_stage: str | None = None,
+    blocked_reason: str | None = None,
+) -> AgentRunResponse:
     """Convert AgentState into the stable HTTP response shape."""
 
     return AgentRunResponse(
@@ -120,6 +130,10 @@ def agent_run_response_from_state(state: AgentState) -> AgentRunResponse:
         data=state.response.data if state.response and state.response.data else {},
         tool_calls=[call.model_dump(mode="json") for call in state.tool_calls],
         tool_results=[result.model_dump(mode="json") for result in state.tool_results],
+        react_steps=_public_react_steps(state.request.metadata.get("assistant_loop_steps")),
+        runtime_info=runtime_info or {},
+        current_stage=current_stage,
+        blocked_reason=blocked_reason,
         errors=[api_error_from_agent_error(error) for error in state.errors],
     )
 
@@ -138,3 +152,31 @@ def _public_detail(error: AgentError) -> dict[str, Any]:
     if error.source is not None:
         detail.setdefault("source", error.source)
     return detail
+
+
+def _public_react_steps(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    allowed_keys = {
+        "iteration",
+        "decision_type",
+        "tool_name",
+        "tool_input",
+        "message",
+        "reason",
+        "confidence",
+        "status",
+        "observation_tool",
+        "success",
+        "output_ref",
+        "error",
+        "summary",
+        "next_step_hint",
+    }
+    steps: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        public = {key: item[key] for key in allowed_keys if key in item}
+        steps.append(sanitize_error_detail(public))
+    return steps

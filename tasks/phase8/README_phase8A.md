@@ -17,6 +17,7 @@ phase8A_2_xxx
 ```text
 assistant-loop-mvp.md
 phase8A_1_react_action_quality_hardening.md
+phase8A_2_react_final_answer_handoff.md
 ```
 
 ## 推荐顺序
@@ -24,6 +25,7 @@ phase8A_1_react_action_quality_hardening.md
 ```text
 1. assistant-loop-mvp.md
 2. phase8A_1_react_action_quality_hardening.md
+3. phase8A_2_react_final_answer_handoff.md
 ```
 
 ## 职责划分
@@ -38,6 +40,12 @@ phase8A_1_react_action_quality_hardening.md
 
 ```text
 强化 action 质量、tool schema、observation、validator、loop guard、trace explainability
+```
+
+`phase8A_2_react_final_answer_handoff.md`：
+
+```text
+确保真实 assistant 在工具 observation 后给出的 final_answer 不被本地 composer 覆盖
 ```
 
 ## 注意

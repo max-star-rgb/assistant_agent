@@ -44,6 +44,43 @@ def test_demo_assistant_loop_loads_env_file_without_overwriting(tmp_path, monkey
     assert "DEEPSEEK_API_KEY" in loaded
 
 
+def test_demo_assistant_loop_loads_qwen_image_default_size(tmp_path, monkeypatch) -> None:
+    module = _load_demo_module()
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke",
+                "MULTIMODAL_AGENT_IMAGE_PROVIDER=qwen",
+                "DASHSCOPE_API_KEY=placeholder",
+                "QWEN_IMAGE_DEFAULT_SIZE=256*256",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    keys = [
+        "MULTIMODAL_AGENT_RUNTIME_PROFILE",
+        "MULTIMODAL_AGENT_IMAGE_PROVIDER",
+        "DASHSCOPE_API_KEY",
+        "QWEN_IMAGE_DEFAULT_SIZE",
+    ]
+    previous = {key: os.environ.get(key) for key in keys}
+    monkeypatch.delenv("QWEN_IMAGE_DEFAULT_SIZE", raising=False)
+    try:
+        module.load_env_file(env_file)
+        config = module.ProviderConfig.from_env()
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    assert config.image_generation_provider == "qwen"
+    assert config.qwen_image_default_size == "256*256"
+
+
 def test_demo_assistant_loop_mock_run_prints_react_steps() -> None:
     result = subprocess.run(
         [

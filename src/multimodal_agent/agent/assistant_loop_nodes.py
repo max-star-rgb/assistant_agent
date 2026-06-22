@@ -196,7 +196,7 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
     user_query = request.text or ""
 
     # Check if this is a mock adapter - if so, use our rule-based logic
-    is_mock = getattr(chat_adapter, "provider", "") == "mock" or hasattr(chat_adapter, "MockChatAdapter")
+    is_mock = _is_mock_chat_adapter(chat_adapter)
 
     if is_mock:
         _ensure_rule_plan(graph_state)
@@ -207,6 +207,8 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
             state=state,
             outputs_by_step=graph_state["outputs_by_step"],
         )
+        if decision.type == "tool_call" and iterations + 1 >= max_iterations:
+            decision = _max_iteration_final_answer(max_iterations)
     else:
         # Use real LLM adapter
         prompt = _build_assistant_prompt(
@@ -230,14 +232,19 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
         response_text = result.response_text if result.success else ""
 
         decision = AssistantDecision.from_llm_output(response_text)
+        if decision.type == "tool_call" and iterations + 1 >= max_iterations:
+            decision = _request_final_answer_after_tool_limit(
+                chat_adapter=chat_adapter,
+                state=state,
+                request=request,
+                observations=tool_observations,
+                iteration=iterations,
+                max_iterations=max_iterations,
+            )
 
     # Check max iterations - force final answer if exceeded
     if iterations >= max_iterations and decision.type == "tool_call":
-        decision = AssistantDecision(
-            type="final_answer",
-            message=f"已达到最大工具调用次数 ({max_iterations})，这是我能提供的最好回答。",
-            reason="安全限制：防止无限工具调用循环",
-        )
+        decision = _max_iteration_final_answer(max_iterations)
 
     # Update state
     if decision.reason == "Empty or whitespace-only output.":
@@ -265,6 +272,9 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
                     )
                 )
                 state.status = "completed"
+        elif _should_preserve_assistant_final_answer(decision=decision, is_mock=is_mock):
+            _set_assistant_final_answer_response(graph_state, decision, iterations, tool_observations)
+            state.status = "completed"
         elif state.status != "failed":
             state.status = "completed"
 
@@ -280,13 +290,53 @@ def _ensure_rule_plan(graph_state: AssistantLoopState) -> None:
 
     state = graph_state["state"]
     request = graph_state["request"]
+    router = graph_state.get("router") or ToolRouter()
     if state.intent is None:
         detector = graph_state.get("intent_detector") or IntentDetector()
         state.set_intent(detector.detect(request))
     if state.plan is None:
-        router = graph_state.get("router") or ToolRouter()
         state.set_plan(_route_with_optional_request(router, state.intent, request))
-        state.selected_tools = _select_tools_with_optional_request(router, state.intent, request)
+    state.selected_tools = _select_tools_with_optional_request(router, state.intent, request)
+
+
+def _max_iteration_final_answer(max_iterations: int) -> AssistantDecision:
+    return AssistantDecision(
+        type="final_answer",
+        message=f"已达到最大工具调用次数 ({max_iterations})，这是我能提供的最好回答。",
+        reason="安全限制：防止无限工具调用循环",
+    )
+
+
+def _request_final_answer_after_tool_limit(
+    *,
+    chat_adapter: ChatAdapter,
+    state: AgentState,
+    request: UserRequest,
+    observations: list[dict[str, Any]],
+    iteration: int,
+    max_iterations: int,
+) -> AssistantDecision:
+    """Ask the real assistant to summarize instead of issuing another tool call at the limit."""
+
+    prompt = _build_final_only_prompt(
+        request=request,
+        observations=observations,
+        iteration=iteration,
+        max_iterations=max_iterations,
+    )
+    result = chat_adapter.chat(
+        ChatRequest(
+            user_id=state.user_id,
+            session_id=state.session_id,
+            user_query=prompt,
+            temperature=0.2,
+            max_tokens=1024,
+        )
+    )
+    decision = AssistantDecision.from_llm_output(result.response_text if result.success else "")
+    if decision.type == "final_answer" and decision.message:
+        return decision
+    return _max_iteration_final_answer(max_iterations)
 
 
 def _mock_assistant_decision_from_plan(
@@ -393,8 +443,64 @@ def _set_direct_chat_response(
     )
 
 
+def _should_preserve_assistant_final_answer(*, decision: AssistantDecision, is_mock: bool) -> bool:
+    """Return true when an assistant final answer should bypass response composition."""
+
+    return decision.type == "final_answer" and bool(decision.message) and not is_mock
+
+
+def _set_assistant_final_answer_response(
+    graph_state: AssistantLoopState,
+    decision: AssistantDecision,
+    iterations: int,
+    tool_observations: list[dict[str, Any]],
+) -> None:
+    """Persist the real assistant final answer after tool observations."""
+
+    state = graph_state["state"]
+    contracts = [
+        result.contract.model_dump(mode="json")
+        for result in state.tool_results
+        if result.contract is not None
+    ]
+    output_refs = [result.output_ref for result in state.tool_results if result.output_ref]
+    failures = [
+        {
+            "source": error.source,
+            "code": error.details.get("code", "unknown_error"),
+            "message": error.message,
+            "recovery_action": error.details.get("recovery_action", "stop_with_error"),
+            "optional_step": error.details.get("optional_step", False),
+        }
+        for error in state.errors
+    ]
+    state.set_response(
+        AgentResponse(
+            message=decision.message or "已处理请求。",
+            data={
+                "intent": state.intent.intent if state.intent else None,
+                "final_answer_source": "assistant_loop",
+                "assistant_decision": decision.type,
+                "reason": decision.reason,
+                "iterations": iterations,
+                "tool_count": len(state.tool_calls),
+                "tool_observations": len(tool_observations),
+                "contracts": contracts,
+                "output_refs": output_refs,
+                "errors": failures,
+                "provider_budget": state.provider_budget.summary(),
+            },
+            output_refs=output_refs,
+        )
+    )
+
+
 def _is_direct_chat_state(state: AgentState) -> bool:
     return state.intent is not None and canonical_intent(state.intent.intent) == "direct_chat"
+
+
+def _is_mock_chat_adapter(chat_adapter: ChatAdapter) -> bool:
+    return getattr(chat_adapter, "provider", "") == "mock" or hasattr(chat_adapter, "MockChatAdapter")
 
 
 def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoopState:
@@ -594,6 +700,10 @@ def _build_assistant_prompt(
     if request.video_ids:
         prompt += f"\n附带视频 ID：{request.video_ids}"
 
+    conversation_context = request.metadata.get("conversation_context_text")
+    if isinstance(conversation_context, str) and conversation_context.strip():
+        prompt += f"\n\n多轮对话历史：\n{conversation_context.strip()}"
+
     if memory_summaries:
         prompt += f"\n\n相关记忆：{memory_text}"
 
@@ -630,6 +740,44 @@ def _build_assistant_prompt(
 """
 
     return prompt
+
+
+def _build_final_only_prompt(
+    *,
+    request: UserRequest,
+    observations: list[dict[str, Any]],
+    iteration: int,
+    max_iterations: int,
+) -> str:
+    """Build a prompt that forbids more tool calls and requests a final answer."""
+
+    user_query = request.text or ""
+    conversation_context = request.metadata.get("conversation_context_text")
+    history_section = ""
+    if isinstance(conversation_context, str) and conversation_context.strip():
+        history_section = f"\n多轮对话历史：\n{conversation_context.strip()}\n"
+    return f"""你是一个多模态智能助手，正在执行 ReAct 工具调用流程。
+
+用户请求：{user_query}
+{history_section}
+
+当前已经达到工具调用上限附近：
+当前迭代：{iteration + 1}
+最大工具调用次数：{max_iterations}
+
+已执行工具和结果：
+{json.dumps(observations, ensure_ascii=False, indent=2)}
+
+不要继续调用任何工具。请基于已有 observation 给出诚实、清晰的最终回答。
+如果工具结果与用户请求不匹配，请明确说明这一点，并给出你能提供的最佳建议。
+
+必须只输出严格 JSON：
+{{
+    "type": "final_answer",
+    "message": "你的最终回答",
+    "reason": "为什么现在应该停止工具调用并回答"
+}}
+"""
 
 
 def _get_tool_context(state: AgentState) -> Any:

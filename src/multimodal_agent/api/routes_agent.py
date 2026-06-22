@@ -7,8 +7,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION, agent_run_response_from_state
+from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services.assistant_run_service import create_runtime, run_assistant_request, runtime_info
 from multimodal_agent.services.trace_query import RunSummary, ToolCallSummary, TraceQueryService, TraceSummary
 
 
@@ -21,14 +22,13 @@ _SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.js
 def get_agent_runtime() -> AgentGraphRuntime:
     global _RUNTIME
     if _RUNTIME is None:
-        _RUNTIME = AgentGraphRuntime()
+        _RUNTIME = create_runtime()
     return _RUNTIME
 
 
 @router.post("/agent/run", response_model=AgentRunResponse)
 def run_agent(request: UserRequest) -> AgentRunResponse:
-    state = get_agent_runtime().run_state(request)
-    return agent_run_response_from_state(state)
+    return run_assistant_request(request, runtime=get_agent_runtime()).api_response()
 
 
 @router.get("/demo/scenarios")
@@ -39,6 +39,17 @@ def list_demo_scenarios() -> dict[str, Any]:
         "offline": True,
         "total": len(scenarios),
         "scenarios": [_public_scenario(scenario) for scenario in scenarios],
+    }
+
+
+@router.get("/demo/runtime-info")
+def demo_runtime_info() -> dict[str, Any]:
+    """Return a redacted runtime summary for the local Web Console."""
+
+    config = get_agent_runtime().config
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        **runtime_info(config),
     }
 
 

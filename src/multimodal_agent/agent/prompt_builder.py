@@ -21,11 +21,15 @@ def build_direct_chat_request(
 ) -> ChatRequest:
     """Build a provider-neutral direct chat request."""
 
+    contexts = list(memory_context or [])
+    conversation_context = request.metadata.get("conversation_context_text")
+    if isinstance(conversation_context, str) and conversation_context.strip():
+        contexts.append("多轮对话历史：\n" + conversation_context.strip())
     return ChatRequest(
         user_id=request.user_id,
         session_id=request.session_id,
         user_query=_clip(request.text or "", max_prompt_chars),
-        memory_context=_clip_list(memory_context or [], MAX_CONTEXT_CHARS),
+        memory_context=_clip_list(contexts, MAX_CONTEXT_CHARS),
         system_instruction=system_instruction or "You are a helpful text-first assistant.",
     )
 

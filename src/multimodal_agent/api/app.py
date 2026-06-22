@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -13,6 +14,7 @@ from multimodal_agent.schemas.api import PROTOCOL_VERSION, api_error
 
 
 def create_app() -> FastAPI:
+    load_repo_env_file()
     app = FastAPI(title="Multimodal Agent")
     static_dir = Path(__file__).resolve().parent / "static"
 
@@ -45,6 +47,38 @@ def create_app() -> FastAPI:
     app.include_router(agent_router)
     app.include_router(websocket_router)
     return app
+
+
+def load_repo_env_file(path: Path | None = None, *, override: bool = False) -> dict[str, str]:
+    """Load repo `.env` for manual API/Web runs without adding a dependency."""
+
+    if "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("MULTIMODAL_AGENT_DISABLE_DOTENV") == "1":
+        return {}
+    env_path = path or Path(__file__).resolve().parents[3] / ".env"
+    if not env_path.exists():
+        return {}
+    loaded: dict[str, str] = {}
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.removeprefix("export ").strip()
+        if not key:
+            continue
+        loaded[key] = _strip_env_value(value.strip())
+        if override or key not in os.environ:
+            os.environ[key] = loaded[key]
+    return loaded
+
+
+def _strip_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    comment_index = value.find(" #")
+    if comment_index >= 0:
+        return value[:comment_index].strip()
+    return value
 
 
 def _validation_error_summary(item: dict) -> dict[str, str]:

@@ -22,13 +22,9 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.api import api_error_from_agent_error
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.event_sink import ListEventSink
+from multimodal_agent.services.assistant_run_service import load_env_file, run_assistant_query
 from multimodal_agent.services.provider_specs import resolve_chat_provider, supported_chat_providers
-from multimodal_agent.services.trace_store import trace_debug_summary
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,27 +54,6 @@ def print_header() -> None:
     print("=" * 72)
 
 
-def load_env_file(path: Path, *, override: bool = False) -> dict[str, str]:
-    """Load dotenv-style KEY=VALUE pairs without adding a runtime dependency."""
-
-    loaded: dict[str, str] = {}
-    if not path.exists():
-        return loaded
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if not key or key.startswith("export "):
-            key = key.removeprefix("export ").strip()
-        value = _strip_env_value(value.strip())
-        loaded[key] = value
-        if override or key not in os.environ:
-            os.environ[key] = value
-    return loaded
-
-
 def run_single_query(
     query: str,
     *,
@@ -88,46 +63,16 @@ def run_single_query(
     session_id: str = "demo_session",
     config: ProviderConfig | None = None,
 ) -> dict[str, Any]:
-    event_sink = ListEventSink()
-    runtime = AgentGraphRuntime(config=config or ProviderConfig.from_env(), event_sink=event_sink)
-    request = UserRequest(
+    return run_assistant_query(
+        query,
+        image_refs=image_refs,
+        video_refs=video_refs,
         user_id=user_id,
         session_id=session_id,
-        text=query,
-        image_ids=list(image_refs or []),
-        video_ids=list(video_refs or []),
+        config=config or ProviderConfig.from_env(),
+        load_env=False,
         metadata={"source": "demo_assistant_loop"},
-    )
-    state = runtime.run_state(request)
-    trace_summary = trace_debug_summary(runtime.trace_store.list_by_run(state.run_id))
-    return {
-        "status": "success" if state.status != "failed" else "failed",
-        "provider": runtime.config.chat_provider,
-        "model": runtime.config.chat_model,
-        "runtime_profile": runtime.config.runtime_profile.name,
-        "graph_mode": runtime.config.agent_graph_mode,
-        "query": query,
-        "response_text": state.response.message if state.response else "",
-        "tool_sequence": [call.tool_name for call in state.tool_calls],
-        "tool_calls": [
-            {
-                "tool_name": call.tool_name,
-                "status": call.status,
-                "output_ref": call.output_ref,
-                "error": call.error_message,
-            }
-            for call in state.tool_calls
-        ],
-        "react_steps": _safe_steps(state.request.metadata.get("assistant_loop_steps")),
-        "events": [
-            event.model_dump(mode="json", exclude_none=True)
-            for event in event_sink.events
-        ],
-        "trace": trace_summary,
-        "errors": [api_error_from_agent_error(error).model_dump(mode="json") for error in state.errors],
-        "run_id": state.run_id,
-        "trace_id": state.trace_id,
-    }
+    ).cli_payload()
 
 
 def print_config(config: ProviderConfig, *, loaded_env_keys: list[str]) -> None:
@@ -174,6 +119,9 @@ def print_run(payload: dict[str, Any]) -> None:
     print("Runtime")
     print(f"  status: {payload['status']}")
     print(f"  tool_sequence: {', '.join(payload.get('tool_sequence') or []) or '(none)'}")
+    final_answer_source = (payload.get("response_data") or {}).get("final_answer_source")
+    if final_answer_source:
+        print(f"  final_answer_source: {final_answer_source}")
     print(f"  trace_nodes: {', '.join(payload.get('trace', {}).get('node_path') or []) or '(none)'}")
     print(f"  run_id: {payload['run_id']}")
     print(f"  trace_id: {payload['trace_id']}")
@@ -268,25 +216,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 1 if payload.get("status") == "failed" else 0
 
 
-def _strip_env_value(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1]
-    comment_index = value.find(" #")
-    if comment_index >= 0:
-        return value[:comment_index].strip()
-    return value
-
-
 def _redact_url(value: str | None) -> str:
     if not value:
         return "(unset)"
     return value.split("?", 1)[0]
-
-
-def _safe_steps(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
 
 
 def _missing_chat_config(config: ProviderConfig, source: Mapping[str, str]) -> list[str]:

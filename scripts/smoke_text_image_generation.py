@@ -20,6 +20,7 @@ from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.api import api_error_from_agent_error
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services.assistant_run_service import load_env_file
 from multimodal_agent.services.provider_specs import (
     resolve_image_generation_provider,
     supported_image_generation_providers,
@@ -35,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run a manual text-only image_generation smoke test. Defaults use the offline mock adapter.",
     )
     parser.add_argument("--prompt", required=True, help="Text prompt for image generation.")
+    parser.add_argument("--env-file", default=".env", help="Env file to load before running.")
+    parser.add_argument("--no-env-file", action="store_true", help="Do not load an env file.")
     parser.add_argument("--user-id", default="smoke_user", help="Local smoke user id.")
     parser.add_argument("--session-id", default="smoke_session", help="Local smoke session id.")
     return parser
@@ -42,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if env is None and not args.no_env_file:
+        load_env_file(REPO_ROOT / args.env_file)
     source = os.environ if env is None else env
     provider = source.get("MULTIMODAL_AGENT_IMAGE_PROVIDER", "mock")
 
@@ -58,9 +63,11 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         text=args.prompt,
     )
     state = AgentGraphRuntime(config=config).run_state(request)
+    image_result = _image_result_payload(state)
+    status = "success" if state.status != "failed" and image_result is not None else "failed"
 
     output = {
-        "status": "success" if state.status != "failed" else "failed",
+        "status": status,
         "provider": provider,
         "capability": "image_generation",
         "intent": state.intent.intent if state.intent else None,
@@ -69,14 +76,14 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
             {"tool_name": call.tool_name, "status": call.status, "output_ref": call.output_ref}
             for call in state.tool_calls
         ],
-        "image_result": _image_result_payload(state),
+        "image_result": image_result,
         "generated_dir": GENERATED_DIR_PUBLIC,
         "errors": [_api_error_payload(error) for error in state.errors],
         "run_id": state.run_id,
         "trace_id": state.trace_id,
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
-    return 1 if state.status == "failed" else 0
+    return 0 if status == "success" else 1
 
 
 def _missing_provider_config(provider: str, source: Mapping[str, str]) -> str | None:

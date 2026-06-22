@@ -9,9 +9,8 @@ def test_demo_console_page_is_served() -> None:
     response = client.get("/demo/console")
 
     assert response.status_code == 200
-    assert "Assistant Demo Console" in response.text
-    assert "fetch(\"/demo/scenarios\")" in response.text
-    assert "fetch(\"/agent/run\"" in response.text
+    assert "Assistant Chat" in response.text
+    assert 'fetchJson("/agent/run"' in response.text
 
 
 def test_static_console_asset_is_served() -> None:
@@ -20,5 +19,6 @@ def test_static_console_asset_is_served() -> None:
     response = client.get("/static/index.html")
 
     assert response.status_code == 200
-    assert "Demo scenario" in response.text
-    assert "Trace" in response.text
+    assert "Examples" in response.text
+    assert "Conversation History" in response.text
+    assert "Assistant ReAct Process" in response.text

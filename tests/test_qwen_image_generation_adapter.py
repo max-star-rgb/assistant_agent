@@ -9,6 +9,7 @@ from multimodal_agent.providers.qwen_image_generation import (
     QwenImageGenerationAdapter,
     QwenImageGenerationConfig,
     build_qwen_image_payload,
+    normalize_qwen_image_size,
     parse_qwen_image_urls,
     qwen_image_generation_url,
 )
@@ -35,6 +36,14 @@ def test_qwen_image_generation_url_accepts_base_url_or_endpoint() -> None:
 
     assert qwen_image_generation_url("https://dashscope.aliyuncs.com/api/v1") == endpoint
     assert qwen_image_generation_url(endpoint) == endpoint
+
+
+def test_normalize_qwen_image_size_accepts_common_llm_formats() -> None:
+    assert normalize_qwen_image_size("1024x1024") == "1024*1024"
+    assert normalize_qwen_image_size(" 2048X2048 ") == "2048*2048"
+    assert normalize_qwen_image_size("2048*2048") == "2048*2048"
+    assert normalize_qwen_image_size(None) == "2048*2048"
+    assert normalize_qwen_image_size("1024x1024", width=768, height=1024) == "768*1024"
 
 
 def test_parse_qwen_image_urls_reads_output_choices_content_images() -> None:
@@ -97,6 +106,44 @@ def test_qwen_adapter_sets_authorization_header_and_parses_images(monkeypatch) -
     assert result.image_url == "https://example.com/generated.png"
     assert result.request_id == "req_123"
     assert result.raw["request_id"] == "req_123"
+
+
+def test_qwen_adapter_uses_config_default_size_when_input_size_is_unset(monkeypatch) -> None:
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "request_id": "req_size",
+                    "output": {
+                        "choices": [
+                            {"message": {"content": [{"image": "https://example.com/generated.png"}]}}
+                        ]
+                    },
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(qwen_image.urllib.request, "urlopen", fake_urlopen)
+
+    adapter = QwenImageGenerationAdapter(
+        QwenImageGenerationConfig(api_key="test-dashscope-key", default_size="256*256")
+    )
+    adapter.generate(ImageGenerationInput(prompt="生成一张白色运动鞋主图"))
+
+    assert captured["payload"]["parameters"]["size"] == "256*256"
 
 
 def test_qwen_adapter_missing_key_does_not_call_provider(monkeypatch) -> None:

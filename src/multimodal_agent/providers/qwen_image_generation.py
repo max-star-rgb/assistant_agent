@@ -48,7 +48,7 @@ class QwenImageGenerationAdapter:
         payload = build_qwen_image_payload(
             prompt=prompt,
             model=self.config.model,
-            size=input.size or self.config.default_size,
+            size=normalize_qwen_image_size(input.size or self.config.default_size, width=input.width, height=input.height),
             n=input.n,
             negative_prompt=input.negative_prompt,
             prompt_extend=input.prompt_extend,
@@ -132,6 +132,19 @@ def build_qwen_image_payload(
         },
         "parameters": parameters,
     }
+
+
+def normalize_qwen_image_size(size: str | None, *, width: int | None = None, height: int | None = None) -> str:
+    """Normalize common image size formats to DashScope's width*height format."""
+
+    if width is not None and height is not None:
+        return f"{width}*{height}"
+    candidate = (size or DEFAULT_QWEN_IMAGE_SIZE).strip().lower()
+    if "x" in candidate and "*" not in candidate:
+        left, right = candidate.split("x", 1)
+        if left.strip().isdigit() and right.strip().isdigit():
+            return f"{left.strip()}*{right.strip()}"
+    return candidate
 
 
 def qwen_image_generation_url(base_url: str) -> str:

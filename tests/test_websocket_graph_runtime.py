@@ -24,6 +24,17 @@ def test_websocket_uses_graph_runtime_event_sequence() -> None:
     assert events[-1]["run_id"].startswith("run_")
 
 
+def test_websocket_first_event_streams_before_final_response() -> None:
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/ws/agent/live?text=帮我找相似款") as websocket:
+        first = websocket.receive_json()
+        second = websocket.receive_json()
+
+    assert first["type"] == "task_started"
+    assert second["type"] == "graph_node_started"
+
+
 def test_websocket_emits_structured_error_event_for_failed_tool() -> None:
     client = TestClient(create_app())
 

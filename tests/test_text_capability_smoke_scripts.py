@@ -157,7 +157,13 @@ def test_direct_chat_smoke_uses_explicit_environment(monkeypatch) -> None:
 
 def test_text_image_generation_smoke_default_mock_outputs_json() -> None:
     result = subprocess.run(
-        [sys.executable, str(IMAGE_GENERATION_SCRIPT), "--prompt", "生成一张日系极简商品海报"],
+        [
+            sys.executable,
+            str(IMAGE_GENERATION_SCRIPT),
+            "--no-env-file",
+            "--prompt",
+            "生成一张日系极简商品海报",
+        ],
         env={"MULTIMODAL_AGENT_IMAGE_PROVIDER": "mock"},
         text=True,
         capture_output=True,

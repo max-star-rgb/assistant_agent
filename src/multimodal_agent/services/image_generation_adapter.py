@@ -13,7 +13,7 @@ class ImageGenerationInput(BaseModel):
     """Input for image generation."""
 
     prompt: str | None = None
-    size: str = "2048*2048"
+    size: str | None = None
     n: int = Field(default=1, ge=1, le=4)
     prompt_extend: bool = True
     watermark: bool = False

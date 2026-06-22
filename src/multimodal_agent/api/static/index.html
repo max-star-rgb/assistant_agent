@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Assistant Demo Console</title>
+    <title>Assistant Chat</title>
     <style>
       :root {
         color-scheme: light;
@@ -13,71 +13,48 @@
         color: #20242c;
       }
 
+      * {
+        box-sizing: border-box;
+      }
+
       body {
         margin: 0;
       }
 
       main {
-        width: min(1120px, calc(100% - 32px));
+        width: min(1080px, calc(100% - 32px));
         margin: 0 auto;
-        padding: 28px 0;
+        padding: 24px 0;
       }
 
       h1 {
-        margin: 0 0 20px;
+        margin: 0 0 16px;
         font-size: 24px;
-        font-weight: 650;
-      }
-
-      .layout {
-        display: grid;
-        grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
-        gap: 16px;
-        align-items: start;
       }
 
       section {
-        background: #ffffff;
+        margin-bottom: 14px;
         border: 1px solid #d9dee7;
         border-radius: 8px;
+        background: #ffffff;
         padding: 16px;
       }
 
-      label {
-        display: block;
-        margin: 0 0 6px;
-        font-size: 13px;
-        font-weight: 600;
-        color: #374151;
+      h2 {
+        margin: 0 0 12px;
+        font-size: 15px;
       }
 
-      textarea,
-      input,
-      select {
-        box-sizing: border-box;
-        width: 100%;
-        border: 1px solid #c7ced9;
-        border-radius: 6px;
-        padding: 9px 10px;
-        font: inherit;
-        background: #ffffff;
-        color: #20242c;
-      }
-
-      textarea {
-        min-height: 132px;
-        resize: vertical;
-      }
-
-      .field {
-        margin-bottom: 14px;
+      .examples {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
       }
 
       button {
-        width: 100%;
         border: 0;
         border-radius: 6px;
-        padding: 10px 12px;
+        padding: 9px 12px;
         font: inherit;
         font-weight: 650;
         background: #205493;
@@ -85,43 +62,37 @@
         cursor: pointer;
       }
 
+      button.example {
+        background: #eef2f7;
+        color: #344054;
+        border: 1px solid #cfd7e4;
+      }
+
       button:disabled {
         background: #8a96a8;
         cursor: wait;
       }
 
-      .summary {
+      .input-row {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: minmax(0, 1fr) 112px;
         gap: 10px;
-        margin-bottom: 14px;
       }
 
-      .metric {
-        border: 1px solid #e1e6ef;
+      textarea {
+        width: 100%;
+        min-height: 96px;
+        resize: vertical;
+        border: 1px solid #c7ced9;
         border-radius: 6px;
         padding: 10px;
-        background: #fbfcfe;
-        min-width: 0;
-      }
-
-      .metric span {
-        display: block;
-        font-size: 12px;
-        color: #667085;
-      }
-
-      .metric strong {
-        display: block;
-        overflow-wrap: anywhere;
-        margin-top: 4px;
-        font-size: 13px;
+        font: inherit;
       }
 
       pre {
         overflow: auto;
-        min-height: 112px;
-        max-height: 360px;
+        min-height: 120px;
+        max-height: 520px;
         margin: 0;
         border: 1px solid #e1e6ef;
         border-radius: 6px;
@@ -133,9 +104,28 @@
         white-space: pre-wrap;
       }
 
-      @media (max-width: 760px) {
-        .layout,
-        .summary {
+      #final-response {
+        background: #fbfcfe;
+        color: #20242c;
+      }
+
+      .conversation {
+        min-height: 180px;
+      }
+
+      .status {
+        margin-top: 8px;
+        min-height: 20px;
+        color: #667085;
+        font-size: 13px;
+      }
+
+      .error {
+        color: #b42318;
+      }
+
+      @media (max-width: 720px) {
+        .input-row {
           grid-template-columns: 1fr;
         }
       }
@@ -143,134 +133,199 @@
   </head>
   <body>
     <main>
-      <h1>Assistant Demo Console</h1>
-      <div class="layout">
-        <section>
-          <div class="field">
-            <label for="scenario">Demo scenario</label>
-            <select id="scenario">
-              <option value="">Custom text prompt</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="text">Text</label>
-            <textarea id="text">帮我写一段商品介绍</textarea>
-          </div>
-          <div class="field">
-            <label for="image-ref">Image ref</label>
-            <input id="image-ref" placeholder="demo_image_product_1" />
-          </div>
-          <div class="field">
-            <label for="video-ref">Video ref</label>
-            <input id="video-ref" placeholder="demo_video_product_1" />
-          </div>
-          <button id="run" type="button">Run</button>
-        </section>
+      <h1>Assistant Chat</h1>
 
-        <section>
-          <div class="summary">
-            <div class="metric">
-              <span>Status</span>
-              <strong id="status">idle</strong>
-            </div>
-            <div class="metric">
-              <span>Trace</span>
-              <strong id="trace-id">-</strong>
-            </div>
-            <div class="metric">
-              <span>Run</span>
-              <strong id="run-id">-</strong>
-            </div>
-            <div class="metric">
-              <span>Tools</span>
-              <strong id="tools">-</strong>
-            </div>
-          </div>
-          <div class="field">
-            <label for="response">Response</label>
-            <pre id="response"></pre>
-          </div>
-          <div class="field">
-            <label for="errors">Errors</label>
-            <pre id="errors">[]</pre>
-          </div>
-        </section>
-      </div>
+      <section>
+        <h2>Examples</h2>
+        <div class="examples" id="examples">
+          <button class="example" type="button">你好，简单介绍一下你能做什么。</button>
+          <button class="example" type="button">帮我找一款适合通勤的无线蓝牙耳机，并比较一下价格，最后给出推荐理由。</button>
+          <button class="example" type="button">生成一张白色运动鞋的电商主图，干净背景，真实摄影风格。</button>
+          <button class="example" type="button">帮我写一段适合小红书的商品介绍。</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Input</h2>
+        <div class="input-row">
+          <textarea id="message">你好，简单介绍一下你能做什么。</textarea>
+          <button id="send" type="button">Send</button>
+        </div>
+        <div class="status" id="status">ready</div>
+      </section>
+
+      <section>
+        <h2>Conversation History</h2>
+        <pre class="conversation" id="final-response"></pre>
+      </section>
+
+      <section>
+        <h2>Assistant ReAct Process</h2>
+        <pre id="react-process"></pre>
+      </section>
     </main>
 
     <script>
-      const scenarioSelect = document.querySelector("#scenario");
-      const textInput = document.querySelector("#text");
-      const imageInput = document.querySelector("#image-ref");
-      const videoInput = document.querySelector("#video-ref");
-      const runButton = document.querySelector("#run");
+      const messageInput = document.querySelector("#message");
+      const sendButton = document.querySelector("#send");
       const statusOutput = document.querySelector("#status");
-      const traceOutput = document.querySelector("#trace-id");
-      const runOutput = document.querySelector("#run-id");
-      const toolsOutput = document.querySelector("#tools");
-      const responseOutput = document.querySelector("#response");
-      const errorsOutput = document.querySelector("#errors");
-      let scenarios = [];
+      const finalResponse = document.querySelector("#final-response");
+      const reactProcess = document.querySelector("#react-process");
+      let runtimeInfo = null;
+      const conversationHistory = [];
 
-      async function loadScenarios() {
-        const response = await fetch("/demo/scenarios");
-        const payload = await response.json();
-        scenarios = payload.scenarios || [];
-        for (const scenario of scenarios) {
-          const option = document.createElement("option");
-          option.value = scenario.scenario_id;
-          option.textContent = `${scenario.scenario_id} - ${scenario.title}`;
-          scenarioSelect.appendChild(option);
+      document.querySelector("#examples").addEventListener("click", (event) => {
+        if (event.target.matches("button.example")) {
+          messageInput.value = event.target.textContent;
+          messageInput.focus();
+        }
+      });
+
+      sendButton.addEventListener("click", runAssistant);
+      messageInput.addEventListener("keydown", (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+          runAssistant();
+        }
+      });
+
+      async function runAssistant() {
+        const text = messageInput.value.trim();
+        if (!text) {
+          setStatus("请输入消息。", true);
+          return;
+        }
+        sendButton.disabled = true;
+        renderConversationHistory([...conversationHistory, { user: text, assistant: "running..." }]);
+        reactProcess.textContent = "";
+        setStatus("running...");
+        try {
+          const payload = await fetchJson("/agent/run", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              user_id: "web_chat_user",
+              session_id: "web_chat_session",
+              text,
+              metadata: { source: "web_chat", dotenv: true },
+            }),
+          });
+          conversationHistory.push({
+            user: text,
+            assistant: payload.response_text || "(empty response)",
+            status: payload.status || "completed",
+            run_id: payload.run_id,
+            trace_id: payload.trace_id,
+          });
+          renderConversationHistory(conversationHistory);
+          reactProcess.textContent = [formatRuntimeInfo(), formatReactSteps(payload.react_steps || [])]
+            .filter(Boolean)
+            .join("\n\n");
+          setStatus(`done | run_id=${payload.run_id} | trace_id=${payload.trace_id}`);
+        } catch (error) {
+          conversationHistory.push({
+            user: text,
+            assistant: String(error),
+            status: "failed",
+          });
+          renderConversationHistory(conversationHistory);
+          reactProcess.textContent = "";
+          setStatus(String(error), true);
+        } finally {
+          sendButton.disabled = false;
         }
       }
 
-      scenarioSelect.addEventListener("change", () => {
-        const scenario = scenarios.find((item) => item.scenario_id === scenarioSelect.value);
-        if (scenario) {
-          textInput.value = scenario.user_query;
+      function renderConversationHistory(turns) {
+        if (!turns.length) {
+          finalResponse.textContent = "";
+          return;
         }
-      });
+        finalResponse.textContent = turns
+          .map((turn, index) => {
+            const meta = [
+              turn.status ? `status=${turn.status}` : null,
+              turn.run_id ? `run_id=${turn.run_id}` : null,
+              turn.trace_id ? `trace_id=${turn.trace_id}` : null,
+            ]
+              .filter(Boolean)
+              .join(" | ");
+            return [
+              `#${index + 1}`,
+              `User: ${turn.user}`,
+              `Assistant: ${turn.assistant}`,
+              meta ? `(${meta})` : null,
+            ]
+              .filter(Boolean)
+              .join("\n");
+          })
+          .join("\n\n");
+      }
 
-      runButton.addEventListener("click", async () => {
-        runButton.disabled = true;
-        statusOutput.textContent = "running";
-        responseOutput.textContent = "";
-        errorsOutput.textContent = "[]";
-        const scenario = scenarios.find((item) => item.scenario_id === scenarioSelect.value);
-        const body = {
-          user_id: "web_demo_user",
-          session_id: scenario ? `web_demo_${scenario.scenario_id}` : "web_demo_custom",
-          text: textInput.value,
-          image_ids: imageInput.value ? [imageInput.value] : [],
-          video_ids: videoInput.value ? [videoInput.value] : [],
-          metadata: { source: "web_console", offline: true, scenario_id: scenarioSelect.value || null },
-        };
-
-        try {
-          const response = await fetch("/agent/run", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(body),
-          });
-          const payload = await response.json();
-          statusOutput.textContent = payload.status || "unknown";
-          traceOutput.textContent = payload.trace_id || "-";
-          runOutput.textContent = payload.run_id || "-";
-          toolsOutput.textContent = (payload.tool_calls || []).map((call) => call.tool_name).join(", ") || "(none)";
-          responseOutput.textContent = payload.response_text || "";
-          errorsOutput.textContent = JSON.stringify(payload.errors || [], null, 2);
-        } catch (error) {
-          statusOutput.textContent = "failed";
-          errorsOutput.textContent = JSON.stringify([{ message: String(error) }], null, 2);
-        } finally {
-          runButton.disabled = false;
+      function formatReactSteps(steps) {
+        if (!steps.length) {
+          return "(no ReAct steps recorded)";
         }
-      });
+        return steps
+          .map((step) => {
+            if (step.observation_tool) {
+              return [
+                `[${step.iteration}] observation: ${step.observation_tool}`,
+                `success: ${step.success}`,
+                step.summary ? `summary: ${step.summary}` : null,
+                step.output_ref ? `output_ref: ${step.output_ref}` : null,
+                step.error ? `error: ${step.error}` : null,
+              ]
+                .filter(Boolean)
+                .join("\n");
+            }
+            return [
+              `[${step.iteration}] thought/decision: ${step.decision_type}`,
+              step.tool_name ? `action: ${step.tool_name}` : null,
+              step.tool_input ? `action_input: ${JSON.stringify(step.tool_input)}` : null,
+              step.reason ? `reason: ${step.reason}` : null,
+              step.message && step.decision_type !== "tool_call" ? `answer: ${step.message}` : null,
+            ]
+              .filter(Boolean)
+              .join("\n");
+          })
+          .join("\n\n");
+      }
 
-      loadScenarios().catch((error) => {
-        statusOutput.textContent = "failed";
-        errorsOutput.textContent = JSON.stringify([{ message: String(error) }], null, 2);
-      });
+      function formatRuntimeInfo() {
+        if (!runtimeInfo) {
+          return "";
+        }
+        const providers = runtimeInfo.providers || {};
+        return [
+          `runtime_profile: ${runtimeInfo.runtime_profile}`,
+          `graph_mode: ${runtimeInfo.graph_mode}`,
+          `assistant_brain: ${providers.chat || "unknown"}`,
+          `image_provider: ${providers.image_generation || "unknown"}`,
+          `product_search_provider: ${providers.product_search || "unknown"}`,
+        ].join("\n");
+      }
+
+      async function fetchJson(url, options) {
+        const response = await fetch(url, options);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail || payload.message || `HTTP ${response.status}`);
+        }
+        return payload;
+      }
+
+      function setStatus(text, isError = false) {
+        statusOutput.textContent = text;
+        statusOutput.classList.toggle("error", isError);
+      }
+
+      fetchJson("/demo/runtime-info")
+        .then((payload) => {
+          runtimeInfo = payload;
+        })
+        .catch(() => {
+          runtimeInfo = null;
+        });
     </script>
   </body>
 </html>
