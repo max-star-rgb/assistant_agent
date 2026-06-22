@@ -118,6 +118,7 @@ Supported opt-in providers:
 
 - `openai`
 - `qwen`
+- `ark`
 - `comfyui`
 - `local`
 
@@ -125,15 +126,29 @@ Environment variables:
 
 ```text
 MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
-MULTIMODAL_AGENT_IMAGE_PROVIDER=openai|qwen|comfyui|local
+MULTIMODAL_AGENT_IMAGE_PROVIDER=openai|qwen|ark|comfyui|local
 OPENAI_API_KEY
 DASHSCOPE_API_KEY
 QWEN_IMAGE_BASE_URL
 QWEN_IMAGE_MODEL
-QWEN_IMAGE_DEFAULT_SIZE
+ARK_API_KEY
+ARK_IMAGE_BASE_URL
+ARK_IMAGE_MODEL
 COMFYUI_BASE_URL
 LOCAL_IMAGE_BASE_URL
 ```
+
+For CLI development, `scripts/demo_assistant_loop.py` follows
+`MULTIMODAL_AGENT_IMAGE_PROVIDER`. Set it to `ark` in `.env`, or pass
+`--image-provider ark` for one run.
+
+Ark image generation intentionally reads `ARK_API_KEY`, `ARK_IMAGE_BASE_URL`, and
+`ARK_IMAGE_MODEL` from `.env` or the shell. If any of the three is missing, the
+adapter returns `provider_unconfigured` instead of using a hard-coded endpoint or
+model.
+
+Image generation defaults are code-level settings, not environment variables:
+Qwen uses `1024*1024`; Ark uses size `2K` and output format `png`.
 
 Smoke command:
 

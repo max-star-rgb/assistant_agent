@@ -42,6 +42,7 @@ class ProviderConfig:
     openai_api_key: str | None = None
     qwen_api_key: str | None = None
     dashscope_api_key: str | None = None
+    ark_api_key: str | None = None
     seed_api_key: str | None = None
     comfyui_base_url: str | None = None
     blender_render_url: str | None = None
@@ -81,7 +82,11 @@ class ProviderConfig:
     openai_image_model: str = "gpt-image-1"
     qwen_image_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
     qwen_image_model: str = "qwen-image-2.0-pro"
-    qwen_image_default_size: str = "2048*2048"
+    qwen_image_default_size: str = "1024*1024"
+    ark_image_base_url: str | None = None
+    ark_image_model: str | None = None
+    ark_image_default_size: str = "2K"
+    ark_image_output_format: str = "png"
     local_image_base_url: str | None = None
     local_image_model: str = "local-image"
     product_search_provider: ProductSearchProviderName = "mock"
@@ -133,6 +138,7 @@ class ProviderConfig:
             openai_api_key=source.get("OPENAI_API_KEY"),
             qwen_api_key=source.get("QWEN_API_KEY"),
             dashscope_api_key=source.get("DASHSCOPE_API_KEY"),
+            ark_api_key=source.get("ARK_API_KEY"),
             seed_api_key=source.get("SEED_API_KEY"),
             deepseek_api_key=source.get("DEEPSEEK_API_KEY"),
             comfyui_base_url=source.get("COMFYUI_BASE_URL"),
@@ -175,7 +181,11 @@ class ProviderConfig:
             openai_image_model=source.get("OPENAI_IMAGE_MODEL", "gpt-image-1"),
             qwen_image_base_url=source.get("QWEN_IMAGE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"),
             qwen_image_model=source.get("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro"),
-            qwen_image_default_size=source.get("QWEN_IMAGE_DEFAULT_SIZE", "2048*2048"),
+            qwen_image_default_size="1024*1024",
+            ark_image_base_url=source.get("ARK_IMAGE_BASE_URL"),
+            ark_image_model=source.get("ARK_IMAGE_MODEL"),
+            ark_image_default_size="2K",
+            ark_image_output_format="png",
             local_image_base_url=source.get("LOCAL_IMAGE_BASE_URL"),
             local_image_model=source.get("LOCAL_IMAGE_MODEL", "local-image"),
             product_search_provider=_product_search_provider(
@@ -224,6 +234,7 @@ class ProviderConfig:
                 self.openai_api_key,
                 self.qwen_api_key,
                 self.dashscope_api_key,
+                self.ark_api_key,
                 self.deepseek_api_key,
                 self.seed_api_key,
                 self.comfyui_base_url,
@@ -318,6 +329,9 @@ class ProviderConfig:
                     "DASHSCOPE_API_KEY": self.image_generation_api_key or "",
                     "QWEN_IMAGE_BASE_URL": self.image_generation_base_url or "",
                     "QWEN_IMAGE_MODEL": self.image_generation_model or "",
+                    "ARK_API_KEY": self.image_generation_api_key or "",
+                    "ARK_IMAGE_BASE_URL": self.image_generation_base_url or "",
+                    "ARK_IMAGE_MODEL": self.image_generation_model or "",
                     "COMFYUI_BASE_URL": self.image_generation_base_url or "",
                     "LOCAL_IMAGE_BASE_URL": self.image_generation_base_url or "",
                     "LOCAL_IMAGE_MODEL": self.image_generation_model or "",
@@ -331,6 +345,9 @@ class ProviderConfig:
                 "DASHSCOPE_API_KEY": self.dashscope_api_key or "",
                 "QWEN_IMAGE_BASE_URL": self.qwen_image_base_url,
                 "QWEN_IMAGE_MODEL": self.qwen_image_model,
+                "ARK_API_KEY": self.ark_api_key or "",
+                "ARK_IMAGE_BASE_URL": self.ark_image_base_url,
+                "ARK_IMAGE_MODEL": self.ark_image_model,
                 "COMFYUI_BASE_URL": self.comfyui_base_url or "",
                 "LOCAL_IMAGE_BASE_URL": self.local_image_base_url or "",
                 "LOCAL_IMAGE_MODEL": self.local_image_model,

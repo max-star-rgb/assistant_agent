@@ -114,7 +114,9 @@ class AssistantRunArtifacts:
                 }
                 for call in response.tool_calls
             ],
+            "tool_results": response.tool_results,
             "react_steps": response.react_steps,
+            "decision_trace": response.decision_trace,
             "events": [event.model_dump(mode="json", exclude_none=True) for event in self.events],
             "trace": trace_summary,
             "errors": [error.model_dump(mode="json") for error in response.errors],
@@ -190,7 +192,8 @@ def run_assistant_request(
         conversation_store=resolved_store,
         enable_conversation_history=enable_conversation_history,
     )
-    events = sink.events if isinstance(sink, ListEventSink) else []
+    raw_events = getattr(sink, "events", [])
+    events = list(raw_events) if isinstance(raw_events, list) else []
     return AssistantRunArtifacts(runtime=resolved_runtime, state=state, events=events)
 
 
@@ -352,7 +355,8 @@ def _format_conversation_context(history: list[ConversationTurn]) -> str:
 
 
 def _strip_env_value(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+    quote_pairs = {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}
+    if len(value) >= 2 and (value[0], value[-1]) in quote_pairs:
         return value[1:-1]
     comment_index = value.find(" #")
     if comment_index >= 0:

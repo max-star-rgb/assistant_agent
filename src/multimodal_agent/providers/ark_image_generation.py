@@ -1,4 +1,4 @@
-"""DashScope Qwen image generation provider adapter."""
+"""Volcengine Ark image generation provider adapter."""
 
 from __future__ import annotations
 
@@ -13,50 +13,49 @@ from multimodal_agent.services.image_generation_adapter import ImageGenerationIn
 from multimodal_agent.services.provider_errors import ProviderAdapterError, sanitize_error_message
 
 
-DEFAULT_QWEN_IMAGE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
-DEFAULT_QWEN_IMAGE_MODEL = "qwen-image-2.0-pro"
-DEFAULT_QWEN_IMAGE_SIZE = "1024*1024"
-DEFAULT_NEGATIVE_PROMPT = "低分辨率，低画质，肢体畸形，手指畸形，文字模糊，构图混乱"
+DEFAULT_ARK_IMAGE_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+DEFAULT_ARK_IMAGE_MODEL = "doubao-seedream-5-0-260128"
+DEFAULT_ARK_IMAGE_SIZE = "2K"
+DEFAULT_ARK_IMAGE_OUTPUT_FORMAT = "png"
 
 
 @dataclass(frozen=True)
-class QwenImageGenerationConfig:
-    """Configuration for the optional DashScope Qwen image generation adapter."""
+class ArkImageGenerationConfig:
+    """Configuration for the optional Ark image generation adapter."""
 
     api_key: str | None
-    base_url: str = DEFAULT_QWEN_IMAGE_BASE_URL
-    model: str = DEFAULT_QWEN_IMAGE_MODEL
-    default_size: str = DEFAULT_QWEN_IMAGE_SIZE
-    timeout_seconds: float = 60.0
+    base_url: str = DEFAULT_ARK_IMAGE_BASE_URL
+    model: str = DEFAULT_ARK_IMAGE_MODEL
+    default_size: str = DEFAULT_ARK_IMAGE_SIZE
+    output_format: str = DEFAULT_ARK_IMAGE_OUTPUT_FORMAT
+    timeout_seconds: float = 120.0
 
 
-class QwenImageGenerationAdapter:
-    """HTTP adapter for DashScope Qwen text-to-image generation."""
+class ArkImageGenerationAdapter:
+    """HTTP adapter for Volcengine Ark OpenAI-compatible image generation."""
 
-    provider = "qwen"
+    provider = "ark"
 
-    def __init__(self, config: QwenImageGenerationConfig) -> None:
+    def __init__(self, config: ArkImageGenerationConfig) -> None:
         self.config = config
 
     def generate(self, input: ImageGenerationInput) -> ImageGenerationResult:
-        """Generate images through DashScope and return the stable generation schema."""
+        """Generate images through Ark and return the stable generation schema."""
 
         if not self.config.api_key:
-            raise ProviderAdapterError("provider_unconfigured", "qwen image provider requires DASHSCOPE_API_KEY")
+            raise ProviderAdapterError("provider_unconfigured", "ark image provider requires ARK_API_KEY")
+        _validate_http_header_value("Authorization", f"Bearer {self.config.api_key}")
 
         prompt = build_image_prompt(input)
-        payload = build_qwen_image_payload(
+        payload = build_ark_image_payload(
             prompt=prompt,
             model=self.config.model,
-            size=normalize_qwen_image_size(input.size or self.config.default_size, width=input.width, height=input.height),
-            n=input.n,
-            negative_prompt=input.negative_prompt,
-            prompt_extend=input.prompt_extend,
+            size=normalize_ark_image_size(input.size or self.config.default_size, width=input.width, height=input.height),
+            output_format=self.config.output_format,
             watermark=input.watermark,
-            seed=input.seed,
         )
         request = urllib.request.Request(
-            qwen_image_generation_url(self.config.base_url),
+            ark_image_generation_url(self.config.base_url),
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {self.config.api_key}",
@@ -78,13 +77,13 @@ class QwenImageGenerationAdapter:
             raise ProviderAdapterError("provider_bad_response", "response JSON decode failed") from exc
 
         _raise_for_provider_error(response_data, status=status)
-        image_urls = parse_qwen_image_urls(response_data)
+        image_urls = parse_ark_image_urls(response_data)
         if not image_urls:
-            raise ProviderAdapterError("provider_empty_response", "DashScope response did not include image URLs")
+            raise ProviderAdapterError("provider_empty_response", "Ark response did not include image URLs")
 
         request_id = _request_id(response_data)
         return ImageGenerationResult(
-            task_id=request_id or "qwen_image_generation",
+            task_id=request_id or "ark_image_generation",
             status="succeeded",
             image_url=image_urls[0],
             image_urls=image_urls,
@@ -98,85 +97,84 @@ class QwenImageGenerationAdapter:
         )
 
 
-def build_qwen_image_payload(
+def build_ark_image_payload(
     *,
     prompt: str,
-    model: str = DEFAULT_QWEN_IMAGE_MODEL,
-    size: str = DEFAULT_QWEN_IMAGE_SIZE,
-    n: int = 1,
-    negative_prompt: str | None = None,
-    prompt_extend: bool = True,
+    model: str = DEFAULT_ARK_IMAGE_MODEL,
+    size: str = DEFAULT_ARK_IMAGE_SIZE,
+    output_format: str = DEFAULT_ARK_IMAGE_OUTPUT_FORMAT,
     watermark: bool = False,
-    seed: int | None = None,
 ) -> dict[str, Any]:
-    """Build DashScope multimodal-generation request payload."""
+    """Build Ark OpenAI-compatible image generation payload."""
 
-    parameters: dict[str, Any] = {
-        "size": size,
-        "n": n,
-        "prompt_extend": prompt_extend,
-        "watermark": watermark,
-        "negative_prompt": negative_prompt or DEFAULT_NEGATIVE_PROMPT,
-    }
-    if seed is not None:
-        parameters["seed"] = seed
     return {
         "model": model,
-        "input": {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [{"text": prompt}],
-                }
-            ]
-        },
-        "parameters": parameters,
+        "prompt": prompt,
+        "size": size,
+        "output_format": output_format,
+        "response_format": "url",
+        "extra_body": {"watermark": watermark},
     }
 
 
-def normalize_qwen_image_size(size: str | None, *, width: int | None = None, height: int | None = None) -> str:
-    """Normalize common image size formats to DashScope's width*height format."""
+def normalize_ark_image_size(size: str | None, *, width: int | None = None, height: int | None = None) -> str:
+    """Normalize common LLM pixel formats to Ark Seedream size tokens."""
 
     if width is not None and height is not None:
-        return f"{width}*{height}"
-    candidate = (size or DEFAULT_QWEN_IMAGE_SIZE).strip().lower()
-    if "x" in candidate and "*" not in candidate:
-        left, right = candidate.split("x", 1)
-        if left.strip().isdigit() and right.strip().isdigit():
-            return f"{left.strip()}*{right.strip()}"
+        return _pixel_size_to_ark_token(width, height)
+    candidate = (size or DEFAULT_ARK_IMAGE_SIZE).strip()
+    lowered = candidate.lower().replace(" ", "")
+    if lowered in {"1k", "2k", "4k"}:
+        return lowered.upper()
+    separator = "x" if "x" in lowered else "*" if "*" in lowered else None
+    if separator is not None:
+        left, right = lowered.split(separator, 1)
+        if left.isdigit() and right.isdigit():
+            return _pixel_size_to_ark_token(int(left), int(right))
     return candidate
 
 
-def qwen_image_generation_url(base_url: str) -> str:
-    """Return the DashScope image generation endpoint for a base URL or full endpoint."""
+def _pixel_size_to_ark_token(width: int, height: int) -> str:
+    pixels = width * height
+    if pixels >= 4096 * 4096:
+        return "4K"
+    return "2K"
 
-    normalized = (base_url or DEFAULT_QWEN_IMAGE_BASE_URL).rstrip("/")
-    suffix = "/services/aigc/multimodal-generation/generation"
+
+def ark_image_generation_url(base_url: str) -> str:
+    """Return the Ark images generation endpoint for a base URL or full endpoint."""
+
+    normalized = (base_url or DEFAULT_ARK_IMAGE_BASE_URL).rstrip("/")
+    suffix = "/images/generations"
     if normalized.endswith(suffix):
         return normalized
     return f"{normalized}{suffix}"
 
 
-def parse_qwen_image_urls(data: dict[str, Any]) -> list[str]:
-    """Extract image URLs from DashScope output choices."""
+def parse_ark_image_urls(data: dict[str, Any]) -> list[str]:
+    """Extract image URLs from OpenAI-compatible image response data."""
 
-    output = data.get("output") or {}
-    choices = output.get("choices") or []
     image_urls: list[str] = []
-    for choice in choices:
-        if not isinstance(choice, dict):
-            continue
-        message = choice.get("message") or {}
-        content = message.get("content") or []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("image"), str):
-                image_urls.append(item["image"])
+    for item in data.get("data") or []:
+        if isinstance(item, dict) and isinstance(item.get("url"), str):
+            image_urls.append(item["url"])
     return image_urls
 
 
+def _validate_http_header_value(name: str, value: str) -> None:
+    try:
+        value.encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise ProviderAdapterError(
+            "provider_invalid_config",
+            f"{name} header contains non-latin-1 characters; check quotes and hidden characters in .env.",
+        ) from exc
+
+
 def _raise_for_provider_error(data: dict[str, Any], *, status: int) -> None:
-    code = data.get("code")
-    message = data.get("message")
+    error = data.get("error") if isinstance(data.get("error"), dict) else {}
+    code = data.get("code") or error.get("code")
+    message = data.get("message") or error.get("message")
     if status >= 400 or code or message:
         request_id = _request_id(data)
         raise ProviderAdapterError(
@@ -187,8 +185,9 @@ def _raise_for_provider_error(data: dict[str, Any], *, status: int) -> None:
 
 def _provider_error_from_http_error(exc: urllib.error.HTTPError) -> ProviderAdapterError:
     body = _read_http_error_body(exc)
-    code = body.get("code")
-    message = body.get("message") or f"HTTP {exc.code}"
+    error = body.get("error") if isinstance(body.get("error"), dict) else {}
+    code = body.get("code") or error.get("code")
+    message = body.get("message") or error.get("message") or f"HTTP {exc.code}"
     request_id = _request_id(body) or exc.headers.get("X-Request-Id")
     return ProviderAdapterError(
         _http_status_to_error_code(exc.code),
@@ -223,7 +222,7 @@ def _format_provider_error(
 
 
 def _request_id(data: dict[str, Any]) -> str | None:
-    value = data.get("request_id") or data.get("requestId") or (data.get("output") or {}).get("request_id")
+    value = data.get("request_id") or data.get("id")
     return value if isinstance(value, str) else None
 
 

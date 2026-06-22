@@ -95,7 +95,7 @@ def test_resolve_vision_provider_accepts_explicit_qwen_config() -> None:
 
 
 def test_image_generation_provider_specs_include_optional_skeleton_providers() -> None:
-    assert {"mock", "openai", "qwen", "comfyui", "local"}.issubset(supported_image_generation_providers())
+    assert {"mock", "openai", "qwen", "ark", "comfyui", "local"}.issubset(supported_image_generation_providers())
     assert IMAGE_GENERATION_PROVIDER_SPECS["openai"].api_key_env == "OPENAI_API_KEY"
     assert IMAGE_GENERATION_PROVIDER_SPECS["openai"].model_env == "OPENAI_IMAGE_MODEL"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].adapter_kind == "dashscope_image"
@@ -103,6 +103,11 @@ def test_image_generation_provider_specs_include_optional_skeleton_providers() -
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].base_url_env == "QWEN_IMAGE_BASE_URL"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].default_base_url == "https://dashscope.aliyuncs.com/api/v1"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].default_model == "qwen-image-2.0-pro"
+    assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].adapter_kind == "ark_image"
+    assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].api_key_env == "ARK_API_KEY"
+    assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].base_url_env == "ARK_IMAGE_BASE_URL"
+    assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].default_base_url is None
+    assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].default_model is None
     assert IMAGE_GENERATION_PROVIDER_SPECS["comfyui"].base_url_env == "COMFYUI_BASE_URL"
     assert IMAGE_GENERATION_PROVIDER_SPECS["local"].adapter_kind == "local_http"
 
@@ -119,6 +124,16 @@ def test_resolve_image_generation_provider_returns_missing_required_env_names() 
     assert resolved.provider == "local"
     assert resolved.model == "local-image"
     assert resolved.missing_required_env() == ["LOCAL_IMAGE_BASE_URL"]
+
+
+def test_resolve_ark_image_generation_provider_requires_env_url_and_model() -> None:
+    resolved = resolve_image_generation_provider("ark", {"ARK_API_KEY": "test-key"})
+
+    assert resolved.provider == "ark"
+    assert resolved.api_key == "test-key"
+    assert resolved.base_url is None
+    assert resolved.model is None
+    assert resolved.missing_required_env() == ["ARK_IMAGE_BASE_URL", "ARK_IMAGE_MODEL"]
 
 
 def test_resolve_qwen_image_generation_provider_uses_dashscope_key() -> None:

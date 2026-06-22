@@ -18,7 +18,13 @@ python scripts/run_demo_flows.py
 Open the local API/Web Console:
 
 ```bash
-uvicorn multimodal_agent.api.app:app --host 127.0.0.1 --port 8000 --reload
+python scripts/run_web_demo.py
+```
+
+For auto-reload during local development:
+
+```bash
+python scripts/run_web_demo.py --reload
 ```
 
 Then visit:

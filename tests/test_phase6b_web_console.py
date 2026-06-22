@@ -10,7 +10,8 @@ def test_demo_console_page_is_served() -> None:
 
     assert response.status_code == 200
     assert "Assistant Chat" in response.text
-    assert 'fetchJson("/agent/run"' in response.text
+    assert "new WebSocket" in response.text
+    assert "/ws/agent/" in response.text
 
 
 def test_static_console_asset_is_served() -> None:

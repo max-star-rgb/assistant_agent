@@ -29,6 +29,19 @@ def test_api_dotenv_loader_reads_values_without_overriding_existing_env(tmp_path
     assert os.environ["DEEPSEEK_API_KEY"] == "placeholder"
 
 
+def test_api_dotenv_loader_strips_smart_quotes(tmp_path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("ARK_API_KEY=“placeholder”\n", encoding="utf-8")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("MULTIMODAL_AGENT_DISABLE_DOTENV", raising=False)
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
+
+    loaded = load_repo_env_file(env_file)
+
+    assert loaded["ARK_API_KEY"] == "placeholder"
+    assert os.environ["ARK_API_KEY"] == "placeholder"
+
+
 def test_api_dotenv_loader_can_be_disabled(monkeypatch, tmp_path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke\n", encoding="utf-8")

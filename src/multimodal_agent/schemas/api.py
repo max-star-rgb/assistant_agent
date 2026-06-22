@@ -75,6 +75,7 @@ class AgentRunResponse(BaseModel):
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
     react_steps: list[dict[str, Any]] = Field(default_factory=list)
+    decision_trace: list[dict[str, Any]] = Field(default_factory=list)
     runtime_info: dict[str, Any] = Field(default_factory=dict)
     current_stage: str | None = None
     blocked_reason: str | None = None
@@ -131,6 +132,7 @@ def agent_run_response_from_state(
         tool_calls=[call.model_dump(mode="json") for call in state.tool_calls],
         tool_results=[result.model_dump(mode="json") for result in state.tool_results],
         react_steps=_public_react_steps(state.request.metadata.get("assistant_loop_steps")),
+        decision_trace=_public_decision_trace(state.request.metadata.get("decision_trace")),
         runtime_info=runtime_info or {},
         current_stage=current_stage,
         blocked_reason=blocked_reason,
@@ -180,3 +182,29 @@ def _public_react_steps(value: Any) -> list[dict[str, Any]]:
         public = {key: item[key] for key in allowed_keys if key in item}
         steps.append(sanitize_error_detail(public))
     return steps
+
+
+def _public_decision_trace(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    allowed_keys = {
+        "iteration",
+        "event",
+        "decision_type",
+        "decision_summary",
+        "action",
+        "action_input",
+        "success",
+        "output_ref",
+        "output_preview",
+        "error",
+        "recovery_hint",
+        "answer",
+    }
+    trace: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        public = {key: item[key] for key in allowed_keys if key in item}
+        trace.append(sanitize_error_detail(public))
+    return trace

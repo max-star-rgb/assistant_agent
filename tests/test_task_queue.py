@@ -23,15 +23,15 @@ def test_in_memory_task_queue_returns_runtime_events() -> None:
 
     events = queue.get_events(handle.task_id)
 
-    assert [event.type for event in events] == [
-        "task_started",
-        "graph_node_started",
-        "tool_started",
-        "tool_finished",
-        "graph_node_finished",
-        "final_response",
-    ]
-    assert events[2].tool_name == "product_search"
+    event_types = [event.type for event in events]
+    assert event_types[:2] == ["task_started", "graph_node_started"]
+    assert "agent_trace_decision" in event_types
+    assert "tool_started" in event_types
+    assert "tool_finished" in event_types
+    assert "agent_trace_observation" in event_types
+    assert event_types[-2:] == ["graph_node_finished", "final_response"]
+    tool_started = next(event for event in events if event.type == "tool_started")
+    assert tool_started.tool_name == "product_search"
 
 
 def test_task_queue_records_failed_task_status_and_events() -> None:

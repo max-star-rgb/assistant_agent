@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from multimodal_agent.api.routes_agent import router as agent_router
 from multimodal_agent.api.websocket import router as websocket_router
 from multimodal_agent.schemas.api import PROTOCOL_VERSION, api_error
+from multimodal_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
 
 
 def create_app() -> FastAPI:
@@ -44,6 +45,8 @@ def create_app() -> FastAPI:
         return FileResponse(static_dir / "index.html")
 
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    GENERATED_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/artifacts/generated", StaticFiles(directory=GENERATED_ARTIFACT_DIR), name="generated_artifacts")
     app.include_router(agent_router)
     app.include_router(websocket_router)
     return app
@@ -73,7 +76,8 @@ def load_repo_env_file(path: Path | None = None, *, override: bool = False) -> d
 
 
 def _strip_env_value(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+    quote_pairs = {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}
+    if len(value) >= 2 and (value[0], value[-1]) in quote_pairs:
         return value[1:-1]
     comment_index = value.find(" #")
     if comment_index >= 0:

@@ -36,8 +36,13 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "Assistant ReAct Process" in html
     assert "conversationHistory" in html
     assert "renderConversationHistory" in html
-    assert "formatReactSteps" in html
-    assert 'fetchJson("/agent/run"' in html
+    assert "runAssistantStream" in html
+    assert "Live events" in html
+    assert "formatDecisionTrace" in html
+    assert "Final Decision Trace" in html
+    assert "formatReactSteps" not in html
+    assert "new WebSocket" in html
+    assert "/ws/agent/" in html
     assert "Run detail panel" not in html
     assert "Trace detail panel" not in html
     assert "Browser-session request history" not in html
@@ -65,8 +70,11 @@ def test_phase7c_run_trace_detail_endpoints_support_console_flow() -> None:
     assert run_response.status_code == 200
     assert run_payload["errors"] == []
     assert run_payload["react_steps"]
+    assert run_payload["decision_trace"]
     assert any(step.get("decision_type") == "tool_call" for step in run_payload["react_steps"])
     assert any(step.get("observation_tool") == "image_generation" for step in run_payload["react_steps"])
+    assert any(step.get("event") == "decision" for step in run_payload["decision_trace"])
+    assert any(step.get("event") == "observation" for step in run_payload["decision_trace"])
     assert "api_key" not in run_response.text.lower()
     assert "authorization" not in run_response.text.lower()
     assert "bearer" not in run_response.text.lower()

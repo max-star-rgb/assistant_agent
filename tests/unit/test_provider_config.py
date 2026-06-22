@@ -42,7 +42,7 @@ def test_provider_config_reads_environment_values() -> None:
             "OPENAI_IMAGE_MODEL": "openai-image-test",
             "QWEN_IMAGE_BASE_URL": "https://dashscope.local/api/v1",
             "QWEN_IMAGE_MODEL": "qwen-image-test",
-            "QWEN_IMAGE_DEFAULT_SIZE": "1024*1024",
+            "QWEN_IMAGE_DEFAULT_SIZE": "256*256",
             "LOCAL_IMAGE_BASE_URL": "http://localhost:8189",
             "LOCAL_IMAGE_MODEL": "local-image-test",
             "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http",
@@ -233,7 +233,7 @@ def test_provider_config_reads_qwen_image_generation_provider_from_dashscope_spe
             "DASHSCOPE_API_KEY": "test-dashscope-key",
             "QWEN_IMAGE_BASE_URL": "https://dashscope.local/api/v1",
             "QWEN_IMAGE_MODEL": "qwen-image-test",
-            "QWEN_IMAGE_DEFAULT_SIZE": "1024*1024",
+            "QWEN_IMAGE_DEFAULT_SIZE": "256*256",
         }
     )
 
@@ -245,6 +245,29 @@ def test_provider_config_reads_qwen_image_generation_provider_from_dashscope_spe
     assert config.image_generation_adapter_kind == "dashscope_image"
     assert config.qwen_image_default_size == "1024*1024"
     assert config.resolved_image_generation_provider().missing_required_env() == []
+
+
+def test_provider_config_reads_ark_image_generation_provider_from_spec() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "ark",
+            "ARK_API_KEY": "test-ark-key",
+            "ARK_IMAGE_BASE_URL": "https://ark.local/api/v3",
+            "ARK_IMAGE_MODEL": "ark-image-test",
+            "ARK_IMAGE_DEFAULT_SIZE": "ignored-by-code",
+            "ARK_IMAGE_OUTPUT_FORMAT": "ignored-by-code",
+        }
+    )
+
+    assert config.image_generation_provider == "ark"
+    assert config.ark_api_key == "test-ark-key"
+    assert config.image_generation_api_key == "test-ark-key"
+    assert config.image_generation_base_url == "https://ark.local/api/v3"
+    assert config.image_generation_model == "ark-image-test"
+    assert config.image_generation_adapter_kind == "ark_image"
+    assert config.ark_image_default_size == "2K"
+    assert config.ark_image_output_format == "png"
 
 
 def test_integration_tests_are_opt_in() -> None:

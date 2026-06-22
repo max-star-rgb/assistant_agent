@@ -66,7 +66,7 @@ def _summary_for_contract(contract: dict[str, Any]) -> str:
     if capability == "price_compare":
         return _price_compare_summary(data)
     if capability == "image_generation":
-        image_url = data.get("image_url") or output_ref
+        image_url = data.get("download_url") or data.get("image_url") or output_ref
         if image_url:
             return f"已根据你的需求生成图片，图片生成结果为 {image_url}。"
         return "已根据你的需求生成图片。"

@@ -217,6 +217,18 @@ IMAGE_GENERATION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
         requires_base_url=True,
         requires_model=True,
     ),
+    "ark": ProviderSpec(
+        name="ark",
+        capability="image_generation",
+        provider_env=IMAGE_GENERATION_PROVIDER_ENV,
+        adapter_kind="ark_image",
+        api_key_env="ARK_API_KEY",
+        base_url_env="ARK_IMAGE_BASE_URL",
+        model_env="ARK_IMAGE_MODEL",
+        requires_api_key=True,
+        requires_base_url=True,
+        requires_model=True,
+    ),
     "comfyui": ProviderSpec(
         name="comfyui",
         capability="image_generation",

@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from multimodal_agent.api import routes_agent
 from multimodal_agent.api.app import create_app
+from multimodal_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
 
 
 def test_demo_scenarios_endpoint_lists_offline_scenarios() -> None:
@@ -63,3 +64,15 @@ def test_default_api_runtime_keeps_run_and_trace_queryable() -> None:
     assert run_summary.json()["run_id"] == run_payload["run_id"]
     assert trace_summary.json()["trace_id"] == run_payload["trace_id"]
     assert trace_summary.json()["events"]
+
+
+def test_generated_artifacts_are_served_by_backend() -> None:
+    GENERATED_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    artifact = GENERATED_ARTIFACT_DIR / "test-generated-artifact.png"
+    artifact.write_bytes(b"fake-png")
+    client = TestClient(create_app())
+
+    response = client.get("/artifacts/generated/test-generated-artifact.png")
+
+    assert response.status_code == 200
+    assert response.content == b"fake-png"

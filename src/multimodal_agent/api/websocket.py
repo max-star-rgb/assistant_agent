@@ -157,7 +157,17 @@ async def agent_websocket(
 
     def run_agent() -> None:
         try:
-            run_assistant_request(request, event_sink=event_sink)
+            artifacts = run_assistant_request(request, event_sink=event_sink)
+            response = artifacts.api_response()
+            event_sink.emit(
+                AgentEvent(
+                    type="agent_response",
+                    session_id=session_id,
+                    run_id=response.run_id,
+                    text=response.response_text,
+                    payload={"response": response.model_dump(mode="json")},
+                )
+            )
         except Exception as exc:
             event_sink.emit(
                 AgentEvent(

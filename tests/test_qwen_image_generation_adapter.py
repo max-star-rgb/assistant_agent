@@ -23,7 +23,7 @@ def test_build_qwen_image_payload_matches_dashscope_shape() -> None:
     assert payload["model"] == "qwen-image-2.0-pro"
     assert payload["input"]["messages"][0]["role"] == "user"
     assert payload["input"]["messages"][0]["content"] == [{"text": "生成一张白色运动鞋主图"}]
-    assert payload["parameters"]["size"] == "2048*2048"
+    assert payload["parameters"]["size"] == "1024*1024"
     assert payload["parameters"]["n"] == 1
     assert payload["parameters"]["prompt_extend"] is True
     assert payload["parameters"]["watermark"] is False
@@ -42,7 +42,7 @@ def test_normalize_qwen_image_size_accepts_common_llm_formats() -> None:
     assert normalize_qwen_image_size("1024x1024") == "1024*1024"
     assert normalize_qwen_image_size(" 2048X2048 ") == "2048*2048"
     assert normalize_qwen_image_size("2048*2048") == "2048*2048"
-    assert normalize_qwen_image_size(None) == "2048*2048"
+    assert normalize_qwen_image_size(None) == "1024*1024"
     assert normalize_qwen_image_size("1024x1024", width=768, height=1024) == "768*1024"
 
 
@@ -100,7 +100,7 @@ def test_qwen_adapter_sets_authorization_header_and_parses_images(monkeypatch) -
     assert captured["url"].endswith("/services/aigc/multimodal-generation/generation")
     assert captured["headers"]["Authorization"] == "Bearer test-dashscope-key"
     assert captured["payload"]["model"] == "qwen-image-2.0-pro"
-    assert captured["payload"]["parameters"]["size"] == "2048*2048"
+    assert captured["payload"]["parameters"]["size"] == "1024*1024"
     assert captured["timeout"] == 3.0
     assert result.image_urls == ["https://example.com/generated.png"]
     assert result.image_url == "https://example.com/generated.png"

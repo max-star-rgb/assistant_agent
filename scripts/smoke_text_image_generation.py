@@ -105,6 +105,8 @@ def _image_result_payload(state: Any) -> dict[str, Any] | None:
                 "output_ref": result.output_ref,
                 "image_url": data.get("image_url"),
                 "image_urls": data.get("image_urls") or ([data.get("image_url")] if data.get("image_url") else []),
+                "download_url": data.get("download_url"),
+                "download_urls": data.get("download_urls") or [],
                 "request_id": data.get("request_id"),
                 "contract": data.get("contract"),
             }

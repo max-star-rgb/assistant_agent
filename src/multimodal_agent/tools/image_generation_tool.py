@@ -10,6 +10,7 @@ from multimodal_agent.services.image_generation_adapter import (
     ImageGenerationInput,
     MockImageGenerationAdapter,
 )
+from multimodal_agent.services.generated_artifacts import materialize_image_generation_result
 from multimodal_agent.tools.base import MockTool, ToolContext
 
 
@@ -25,6 +26,8 @@ class ImageGenerationTool(MockTool):
     def _run(self, input: ImageGenerationInput, context: ToolContext) -> ToolResult:
         try:
             result = self.adapter.generate(input)
+            if result.status == "succeeded":
+                result = materialize_image_generation_result(result)
         except ProviderAdapterError as exc:
             data, contract = _image_generation_provider_error_contract(exc)
             return ToolResult(tool_name=self.name, success=False, error=str(exc), data=data, contract=contract)
@@ -58,6 +61,8 @@ def _image_generation_output_contract(result: ImageGenerationResult) -> tuple[di
         "task_id": result.task_id,
         "image_url": result.image_url,
         "image_urls": result.image_urls or ([result.image_url] if result.image_url else []),
+        "download_url": result.download_url,
+        "download_urls": result.download_urls,
         "request_id": result.request_id,
         "prompt": result.prompt,
         "prompt_used": result.prompt_used or result.prompt,

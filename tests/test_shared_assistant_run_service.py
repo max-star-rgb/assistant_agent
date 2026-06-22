@@ -19,10 +19,12 @@ def test_shared_assistant_run_service_returns_cli_and_api_shapes() -> None:
 
     assert api_response.response_text
     assert api_response.react_steps
+    assert api_response.decision_trace
     assert api_response.runtime_info["providers"]["chat"] == "mock"
     assert api_response.current_stage in {"final_answer", "final_response"}
     assert cli_payload["response_text"] == api_response.response_text
     assert cli_payload["react_steps"] == api_response.react_steps
+    assert cli_payload["decision_trace"] == api_response.decision_trace
     assert cli_payload["runtime_info"] == api_response.runtime_info
 
 

@@ -14,6 +14,7 @@ from multimodal_agent.agent.tool_executor import ToolExecutor
 from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy, format_memory_context
 from multimodal_agent.schemas.assistant_decision import AssistantDecision
 from multimodal_agent.schemas.capabilities import canonical_intent
+from multimodal_agent.schemas.events import AgentEvent
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.schemas.tool_observation import (
     ToolObservation,
@@ -794,13 +795,17 @@ def _get_tool_context(state: AgentState) -> Any:
 
 
 def _record_react_decision(graph_state: AssistantLoopState, decision: AssistantDecision, iteration: int) -> None:
-    """Keep a compact, redacted ReAct step list for local demo inspection."""
+    """Keep compact decision trace data for local demo inspection."""
 
     state = graph_state["state"]
     steps = state.request.metadata.setdefault("assistant_loop_steps", [])
     if not isinstance(steps, list):
         steps = []
         state.request.metadata["assistant_loop_steps"] = steps
+    trace_event = _decision_trace_event(decision, iteration)
+    decision_trace = state.request.metadata.setdefault("decision_trace", [])
+    if isinstance(decision_trace, list):
+        decision_trace.append(trace_event)
     steps.append(
         {
             "iteration": iteration + 1,
@@ -809,10 +814,12 @@ def _record_react_decision(graph_state: AssistantLoopState, decision: AssistantD
             "tool_input": decision.tool_input or {},
             "message": decision.message,
             "reason": decision.reason,
+            "decision_summary": decision.reason,
             "confidence": decision.confidence,
             "safety_notes": decision.safety_notes,
         }
     )
+    _emit_agent_trace_event(graph_state, trace_event)
     _append_trace(
         graph_state,
         event_type="assistant_decision",
@@ -837,6 +844,10 @@ def _record_react_observation(
     state = graph_state["state"]
     payload = observation.model_dump(mode="json") if isinstance(observation, ToolObservation) else observation
     observations = existing + [payload]
+    trace_event = _observation_trace_event(payload, len(observations))
+    decision_trace = state.request.metadata.setdefault("decision_trace", [])
+    if isinstance(decision_trace, list):
+        decision_trace.append(trace_event)
     steps = state.request.metadata.setdefault("assistant_loop_steps", [])
     if isinstance(steps, list):
         steps.append(
@@ -850,8 +861,10 @@ def _record_react_observation(
                 "error_code": payload.get("error_code"),
                 "error": payload.get("error_message"),
                 "next_step_hint": payload.get("next_step_hint"),
+                "recovery_hint": payload.get("next_step_hint"),
             }
         )
+    _emit_agent_trace_event(graph_state, trace_event)
     _append_trace(
         graph_state,
         event_type="tool_observation",
@@ -865,6 +878,66 @@ def _record_react_observation(
         error={"code": payload.get("error_code"), "message": payload.get("error_message")} if payload.get("error_code") else None,
     )
     return observations
+
+
+def _decision_trace_event(decision: AssistantDecision, iteration: int) -> dict[str, Any]:
+    event_name = "final_answer" if decision.type == "final_answer" else "decision"
+    payload: dict[str, Any] = {
+        "iteration": iteration + 1,
+        "event": event_name,
+        "decision_type": "clarification" if decision.type == "ask_followup" else decision.type,
+        "decision_summary": decision.reason or "",
+    }
+    if decision.type == "tool_call":
+        payload["action"] = decision.tool_name
+        payload["action_input"] = decision.tool_input or {}
+    if decision.type == "final_answer":
+        payload["answer"] = decision.message or ""
+    return payload
+
+
+def _observation_trace_event(payload: dict[str, Any], iteration: int) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "iteration": iteration,
+        "event": "observation",
+        "action": payload.get("tool_name") or "unknown",
+        "success": payload.get("status") == "succeeded",
+        "output_ref": payload.get("output_ref"),
+        "output_preview": payload.get("summary"),
+        "recovery_hint": payload.get("next_step_hint"),
+    }
+    if payload.get("error_message") or payload.get("error_code"):
+        event["error"] = {
+            "code": payload.get("error_code"),
+            "message": payload.get("error_message") or "Tool failed.",
+            "retryable": False,
+        }
+    return {key: value for key, value in event.items() if value is not None}
+
+
+def _emit_agent_trace_event(graph_state: AssistantLoopState, trace_event: dict[str, Any]) -> None:
+    tool_executor = graph_state.get("tool_executor")
+    event_sink = getattr(tool_executor, "event_sink", None)
+    if event_sink is None:
+        return
+    state = graph_state["state"]
+    event_type = {
+        "decision": "agent_trace_decision",
+        "observation": "agent_trace_observation",
+        "final_answer": "agent_trace_final_answer",
+    }.get(str(trace_event.get("event")), "agent_trace_decision")
+    event_sink.emit(
+        AgentEvent(
+            type=cast(Any, event_type),
+            session_id=state.session_id,
+            run_id=state.run_id,
+            tool_name=trace_event.get("action") if isinstance(trace_event.get("action"), str) else None,
+            output_ref=trace_event.get("output_ref") if isinstance(trace_event.get("output_ref"), str) else None,
+            text=trace_event.get("answer") if isinstance(trace_event.get("answer"), str) else None,
+            error=trace_event.get("error"),
+            payload={"decision_trace": trace_event},
+        )
+    )
 
 
 def _guard_final_answer(guard: LoopGuardDecision) -> AssistantDecision:

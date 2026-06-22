@@ -21,6 +21,9 @@ EventType = Literal[
     "response_delta",
     "agent_response",
     "agent_error",
+    "agent_trace_decision",
+    "agent_trace_observation",
+    "agent_trace_final_answer",
     "final_response",
     "task_failed",
 ]

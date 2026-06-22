@@ -199,16 +199,7 @@
         reactProcess.textContent = "";
         setStatus("running...");
         try {
-          const payload = await fetchJson("/agent/run", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              user_id: "web_chat_user",
-              session_id: "web_chat_session",
-              text,
-              metadata: { source: "web_chat", dotenv: true },
-            }),
-          });
+          const payload = await runAssistantStream(text);
           conversationHistory.push({
             user: text,
             assistant: payload.response_text || "(empty response)",
@@ -217,7 +208,7 @@
             trace_id: payload.trace_id,
           });
           renderConversationHistory(conversationHistory);
-          reactProcess.textContent = [formatRuntimeInfo(), formatReactSteps(payload.react_steps || [])]
+          reactProcess.textContent = [formatRuntimeInfo(), formatDecisionTrace(payload.decision_trace || [])]
             .filter(Boolean)
             .join("\n\n");
           setStatus(`done | run_id=${payload.run_id} | trace_id=${payload.trace_id}`);
@@ -233,6 +224,70 @@
         } finally {
           sendButton.disabled = false;
         }
+      }
+
+      function runAssistantStream(text) {
+        const sessionId = "web_chat_session";
+        const userId = "web_chat_user";
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const url = `${protocol}//${window.location.host}/ws/agent/${encodeURIComponent(sessionId)}?user_id=${encodeURIComponent(userId)}&text=${encodeURIComponent(text)}`;
+        const eventLines = [];
+        reactProcess.textContent = formatRuntimeInfo();
+        return new Promise((resolve, reject) => {
+          const socket = new WebSocket(url);
+          let finalPayload = null;
+          socket.onopen = () => {
+            eventLines.push("connected");
+            renderLiveProcess(eventLines, null);
+          };
+          socket.onmessage = (message) => {
+            const event = JSON.parse(message.data);
+            eventLines.push(formatRuntimeEvent(event));
+            if (event.type === "agent_response" && event.payload && event.payload.response) {
+              finalPayload = event.payload.response;
+              renderLiveProcess(eventLines, finalPayload.decision_trace || []);
+            } else {
+              renderLiveProcess(eventLines, null);
+            }
+          };
+          socket.onerror = () => {
+            reject(new Error("WebSocket 连接失败。"));
+          };
+          socket.onclose = () => {
+            if (finalPayload) {
+              resolve(finalPayload);
+            } else {
+              reject(new Error("WebSocket 已关闭，但没有收到最终回复。"));
+            }
+          };
+        });
+      }
+
+      function renderLiveProcess(eventLines, finalDecisionTrace) {
+        const sections = [formatRuntimeInfo(), "Live events", eventLines.join("\n")];
+        if (finalDecisionTrace) {
+          sections.push("Final Decision Trace", formatDecisionTrace(finalDecisionTrace));
+        }
+        reactProcess.textContent = sections.filter(Boolean).join("\n\n");
+      }
+
+      function formatRuntimeEvent(event) {
+        const trace = event.payload && event.payload.decision_trace;
+        if (trace) {
+          return formatDecisionTraceEvent(trace);
+        }
+        const parts = [
+          `[${new Date(event.created_at).toLocaleTimeString()}] ${event.type}`,
+          event.node_name ? `node=${event.node_name}` : null,
+          event.tool_name ? `tool=${event.tool_name}` : null,
+          event.output_ref ? `output_ref=${event.output_ref}` : null,
+          event.text && event.type !== "agent_response" ? `text=${event.text}` : null,
+        ].filter(Boolean);
+        if (event.error) {
+          const message = typeof event.error === "string" ? event.error : event.error.message || JSON.stringify(event.error);
+          parts.push(`error=${message}`);
+        }
+        return parts.join(" | ");
       }
 
       function renderConversationHistory(turns) {
@@ -261,34 +316,36 @@
           .join("\n\n");
       }
 
-      function formatReactSteps(steps) {
+      function formatDecisionTrace(steps) {
         if (!steps.length) {
-          return "(no ReAct steps recorded)";
+          return "(no decision trace recorded)";
         }
-        return steps
-          .map((step) => {
-            if (step.observation_tool) {
-              return [
-                `[${step.iteration}] observation: ${step.observation_tool}`,
-                `success: ${step.success}`,
-                step.summary ? `summary: ${step.summary}` : null,
-                step.output_ref ? `output_ref: ${step.output_ref}` : null,
-                step.error ? `error: ${step.error}` : null,
-              ]
-                .filter(Boolean)
-                .join("\n");
-            }
-            return [
-              `[${step.iteration}] thought/decision: ${step.decision_type}`,
-              step.tool_name ? `action: ${step.tool_name}` : null,
-              step.tool_input ? `action_input: ${JSON.stringify(step.tool_input)}` : null,
-              step.reason ? `reason: ${step.reason}` : null,
-              step.message && step.decision_type !== "tool_call" ? `answer: ${step.message}` : null,
-            ]
-              .filter(Boolean)
-              .join("\n");
-          })
-          .join("\n\n");
+        return steps.map(formatDecisionTraceEvent).join("\n\n");
+      }
+
+      function formatDecisionTraceEvent(step) {
+        if (step.event === "decision") {
+          return [
+            `[${step.iteration}] decision: ${step.decision_type}`,
+            step.decision_summary ? `decision_summary: ${step.decision_summary}` : null,
+            step.action ? `action: ${step.action}` : null,
+            step.action_input ? `action_input: ${JSON.stringify(step.action_input)}` : null,
+          ].filter(Boolean).join("\n");
+        }
+        if (step.event === "observation") {
+          return [
+            `[${step.iteration}] observation: ${step.action}`,
+            `success: ${step.success}`,
+            step.output_ref ? `output_ref: ${step.output_ref}` : null,
+            step.error ? `error: ${JSON.stringify(step.error)}` : null,
+            step.recovery_hint ? `recovery_hint: ${step.recovery_hint}` : null,
+          ].filter(Boolean).join("\n");
+        }
+        return [
+          `[${step.iteration}] final_answer`,
+          step.decision_summary ? `decision_summary: ${step.decision_summary}` : null,
+          step.answer ? `answer: ${step.answer}` : null,
+        ].filter(Boolean).join("\n");
       }
 
       function formatRuntimeInfo() {

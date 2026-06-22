@@ -139,4 +139,19 @@ def create_image_generation_adapter(config: ProviderConfig | None = None) -> Ima
                 default_size=resolved.qwen_image_default_size,
             )
         )
+    if provider.provider == "ark" and provider.spec.adapter_kind == "ark_image":
+        from multimodal_agent.providers.ark_image_generation import (
+            ArkImageGenerationAdapter,
+            ArkImageGenerationConfig,
+        )
+
+        return ArkImageGenerationAdapter(
+            ArkImageGenerationConfig(
+                api_key=provider.api_key,
+                base_url=provider.base_url or "",
+                model=provider.model or "",
+                default_size=resolved.ark_image_default_size,
+                output_format=resolved.ark_image_output_format,
+            )
+        )
     return MockImageGenerationAdapter()
