@@ -24,7 +24,8 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
 
     assert run_summary["run_id"] == run_payload["run_id"]
     assert run_summary["trace_id"] == run_payload["trace_id"]
-    assert "detect_intent" in run_summary["node_path"]
+    assert "assistant" in run_summary["node_path"]
+    assert "execute_tool" in run_summary["node_path"]
     assert trace_summary["trace_id"] == run_payload["trace_id"]
     assert trace_summary["run_id"] == run_payload["run_id"]
     assert trace_summary["events"]

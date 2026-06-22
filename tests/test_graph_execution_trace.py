@@ -39,8 +39,9 @@ def test_trace_store_can_query_node_path() -> None:
 
     assert trace_store.node_path(state.run_id) == [
         "load_memory",
-        "detect_intent",
-        "search_node",
+        "assistant",
+        "execute_tool",
+        "assistant",
         "compose_response",
         "save_memory",
     ]
@@ -56,7 +57,7 @@ def test_tool_failure_is_recorded_in_trace() -> None:
 
     assert state.status == "failed"
     assert len(failed_events) == 1
-    assert failed_events[0].node_name == "search_node"
+    assert failed_events[0].node_name == "execute_tool"
     assert failed_events[0].tool_name == "product_search"
     assert failed_events[0].error is not None
     assert failed_events[0].error["code"] == "provider_timeout"

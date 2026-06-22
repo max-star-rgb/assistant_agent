@@ -12,7 +12,15 @@ from pydantic import BaseModel, Field
 from multimodal_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 
 
-TraceEventType = Literal["node_started", "node_finished", "tool_failed"]
+TraceEventType = Literal[
+    "node_started",
+    "node_finished",
+    "tool_failed",
+    "assistant_decision",
+    "action_rejected",
+    "tool_observation",
+    "loop_guard_triggered",
+]
 GraphStateT = TypeVar("GraphStateT", bound=dict[str, Any])
 
 

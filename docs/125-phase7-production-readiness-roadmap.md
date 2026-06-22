@@ -252,3 +252,13 @@ Phase 7 is complete when:
 - single-server deployment is documented and verified
 - pilot feedback and review workflow exists
 - final Phase 7 review passes
+
+| 阶段 | 主题                 | 解决的问题                     |
+| -- | ------------------ | ------------------------- |
+| 7A | Runtime Profiles   | 当前运行模式是什么，能不能调真实 Provider |
+| 7B | Provider Hardening | 真实 API 怎么安全接入和诊断          |
+| 7C | Web Productization | Web demo 怎么变得可试用          |
+| 7D | Auth / Session     | 小范围试用时怎么隔离用户数据            |
+| 7E | Deployment         | 怎么部署到一台服务器                |
+| 7F | Feedback Loop      | 真实试用后怎么收集问题和评估            |
+| 7G | Release Review     | 是否可以进入 controlled pilot   |

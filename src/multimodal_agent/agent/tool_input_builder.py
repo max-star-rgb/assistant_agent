@@ -20,7 +20,7 @@ def build_tool_input(
             "user_query": request.text,
             "user_id": request.user_id,
             "session_id": request.session_id,
-            "metadata": request.metadata,
+            "metadata": _metadata_snapshot(request.metadata),
         }
     if action == "understand_image":
         return {"image_ids": request.image_ids, "video_ids": request.video_ids, "question": request.text}
@@ -53,6 +53,16 @@ def build_tool_input(
             "content": build_memory_save_content(request, outputs_by_step),
         }
     return {}
+
+
+def _metadata_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return a small copy safe to persist in tool call records."""
+
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in {"assistant_loop_steps"} and isinstance(value, str | int | float | bool | list | dict | type(None))
+    }
 
 
 def latest_success_data(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]:

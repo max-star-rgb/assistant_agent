@@ -1,5 +1,35 @@
 [
   {
+    "scenario_id": "assistant_loop_direct_chat",
+    "title": "Assistant Loop 直接聊天",
+    "user_query": "你好，简单介绍一下你能做什么。",
+    "metadata": {
+      "input_type": "text",
+      "mock_only": true,
+      "notes": "Assistant Loop 模式下的直接对话测试。"
+    },
+    "expected_tools": [],
+    "expected_response_contains": [
+      "已收到你的请求"
+    ]
+  },
+  {
+    "scenario_id": "assistant_loop_image_generation",
+    "title": "Assistant Loop 图片生成",
+    "user_query": "生成一张白色运动鞋的电商主图，干净背景，真实摄影风格。",
+    "metadata": {
+      "input_type": "text",
+      "mock_only": true,
+      "notes": "Assistant Loop 模式下的工具调用测试。"
+    },
+    "expected_tools": [
+      "image_generation"
+    ],
+    "expected_response_contains": [
+      "图片生成结果"
+    ]
+  },
+  {
     "scenario_id": "text_chat",
     "title": "纯文本聊天",
     "user_query": "帮我写一段适合小红书的商品介绍。",

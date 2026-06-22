@@ -1,6 +1,8 @@
 """Tool registry and default mock tool registration."""
 
-from typing import Any
+from typing import Any, List, Dict
+
+from pydantic import BaseModel
 
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.tools import ToolResult
@@ -46,6 +48,94 @@ class ToolRegistry:
         context: ToolContext | None = None,
     ) -> ToolResult:
         return self.get(name).run(input, context)
+
+    def describe_tools(self) -> List[Dict[str, Any]]:
+        """Return descriptions of all registered tools for the assistant."""
+        descriptions = []
+        for name in sorted(self._tools.keys()):
+            tool = self._tools[name]
+            usage = _ACTION_USAGE.get(tool.name, {})
+            descriptions.append({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": _schema_to_dict(tool.input_schema),
+                "required_inputs": _required_inputs(tool.input_schema),
+                "when_to_use": usage.get("when_to_use", []),
+                "when_not_to_use": usage.get("when_not_to_use", []),
+                "runtime_constraints": usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
+            })
+        return descriptions
+
+
+def _schema_to_dict(schema_type):
+    """Convert a Pydantic model to a safe schema description."""
+    try:
+        schema = schema_type.model_json_schema()
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        fields = {}
+        for field_name, field_info in properties.items():
+            fields[field_name] = {
+                "type": field_info.get("type", "string"),
+                "description": field_info.get("description", ""),
+                "required": field_name in required,
+            }
+        return {"fields": fields}
+    except Exception:
+        return {"fields": {}}
+
+
+def _required_inputs(schema_type) -> list[str]:
+    try:
+        schema = schema_type.model_json_schema()
+        required = schema.get("required", [])
+        return [str(item) for item in required if isinstance(item, str)]
+    except Exception:
+        return []
+
+
+_ACTION_USAGE: dict[str, dict[str, list[str]]] = {
+    "vision_understanding": {
+        "when_to_use": ["Describe, analyze, or identify image content.", "User provided image_ids and asks what is in the image."],
+        "when_not_to_use": ["User asks to generate a new image.", "User asks to render or build a 3D scene."],
+        "runtime_constraints": ["Requires image_ids.", "Do not use for video-only requests."],
+    },
+    "video_understanding": {
+        "when_to_use": ["Summarize or analyze video content.", "User provided video_ids and asks what happens in the video."],
+        "when_not_to_use": ["User only asks for image generation.", "User asks for 3D rendering without video context."],
+        "runtime_constraints": ["Requires video_ref or video_ids."],
+    },
+    "image_generation": {
+        "when_to_use": ["Generate an image, poster, product hero image, or visual creative from text."],
+        "when_not_to_use": ["User asks to describe an existing image or video."],
+        "runtime_constraints": ["Prompt must describe the image to generate."],
+    },
+    "render_3d": {
+        "when_to_use": ["User explicitly asks for 3D, rendering, modeling, scene preview, or displaying an object in a space."],
+        "when_not_to_use": ["User only asks to describe the scene in an image or video.", "Do not trigger from the word 场景 alone."],
+        "runtime_constraints": ["Requires explicit render intent."],
+    },
+    "product_search": {
+        "when_to_use": ["Search for products, similar items, or product candidates."],
+        "when_not_to_use": ["User only asks for general chat or image description."],
+        "runtime_constraints": ["Requires query or visual summary."],
+    },
+    "price_compare": {
+        "when_to_use": ["Compare prices, offers, or cheapest options."],
+        "when_not_to_use": ["No product candidates or product query are available."],
+        "runtime_constraints": ["Use product_search first if no candidates are available."],
+    },
+    "memory_retrieval": {
+        "when_to_use": ["User references previous, last, remembered, or preference context."],
+        "when_not_to_use": ["No historical context is needed."],
+        "runtime_constraints": ["Requires user_id and query."],
+    },
+    "memory_save": {
+        "when_to_use": ["User explicitly asks to remember or save preference/task context."],
+        "when_not_to_use": ["Do not save sensitive data or incidental content without intent."],
+        "runtime_constraints": ["Requires user_id and content."],
+    },
+}
 
 
 def create_default_registry(config: ProviderConfig | None = None) -> ToolRegistry:

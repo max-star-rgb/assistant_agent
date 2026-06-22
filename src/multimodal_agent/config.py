@@ -17,6 +17,9 @@ from multimodal_agent.services.provider_specs import (
 )
 
 
+AgentGraphMode = Literal["conditional", "assistant_loop"]
+
+
 VisionProviderName = str
 ChatProviderName = str
 ImageGenerationProviderName = str
@@ -102,6 +105,8 @@ class ProviderConfig:
     max_video_bytes: int = 52_428_800
     max_video_seconds: float = 60.0
     intent_router: IntentRouterName = "rule"
+    agent_graph_mode: AgentGraphMode = "assistant_loop"  # 默认使用新的 ReAct 架构
+    max_tool_iterations: int = 5
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
@@ -209,6 +214,8 @@ class ProviderConfig:
             max_video_bytes=_int_env(source.get("MULTIMODAL_AGENT_MAX_VIDEO_BYTES"), 52_428_800),
             max_video_seconds=_float_env(source.get("MULTIMODAL_AGENT_MAX_VIDEO_SECONDS"), 60.0),
             intent_router=_intent_router(source.get("MULTIMODAL_AGENT_INTENT_ROUTER")),
+            agent_graph_mode=_agent_graph_mode(source.get("AGENT_GRAPH_MODE")),
+            max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 5),
         )
 
     def has_any_real_provider(self) -> bool:
@@ -385,6 +392,12 @@ def _intent_router(value: str | None) -> IntentRouterName:
     if value in {"mock_llm", "hybrid", "llm"}:
         return value
     return "rule"
+
+
+def _agent_graph_mode(value: str | None) -> AgentGraphMode:
+    if value == "conditional":
+        return "conditional"
+    return "assistant_loop"  # 默认改为 assistant_loop
 
 
 def _float_env(value: str | None, default: float) -> float:

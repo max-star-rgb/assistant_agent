@@ -4,6 +4,7 @@ from time import perf_counter
 from typing import Any
 
 from multimodal_agent.agent.conditional_graph import build_conditional_agent_graph
+from multimodal_agent.agent.assistant_loop_graph import build_assistant_loop_graph
 from multimodal_agent.agent.intent import IntentDetector
 from multimodal_agent.agent.router import ToolRouter
 from multimodal_agent.agent.state import AgentState
@@ -48,7 +49,10 @@ class AgentGraphRuntime:
         self.trace_store = trace_store or InMemoryTraceStore()
         self.chat_adapter = chat_adapter or create_chat_adapter(self.config)
         self.tool_executor = ToolExecutor(registry=self.registry, tool_history=self.tool_history, event_sink=self.event_sink)
-        self._graph = build_conditional_agent_graph()
+        if self.config.agent_graph_mode == "assistant_loop":
+            self._graph = build_assistant_loop_graph()
+        else:
+            self._graph = build_conditional_agent_graph()
 
     def run_state(self, request: UserRequest) -> AgentState:
         """Run the graph and return the full state for compatibility callers."""
