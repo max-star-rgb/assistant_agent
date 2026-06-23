@@ -62,6 +62,23 @@ def test_demo_assistant_loop_env_loader_strips_smart_quotes(tmp_path, monkeypatc
     assert loaded["ARK_IMAGE_API_KEY"] == "placeholder"
 
 
+def test_demo_assistant_loop_env_loader_strips_mismatched_trailing_quotes(tmp_path, monkeypatch) -> None:
+    module = _load_demo_module()
+    env_file = tmp_path / ".env"
+    env_file.write_text('ARK_VISION_BASE_URL="https://ark.local/api/v3\'"\n', encoding="utf-8")
+    previous = os.environ.get("ARK_VISION_BASE_URL")
+    monkeypatch.delenv("ARK_VISION_BASE_URL", raising=False)
+    try:
+        loaded = module.load_env_file(env_file)
+    finally:
+        if previous is None:
+            os.environ.pop("ARK_VISION_BASE_URL", None)
+        else:
+            os.environ["ARK_VISION_BASE_URL"] = previous
+
+    assert loaded["ARK_VISION_BASE_URL"] == "https://ark.local/api/v3"
+
+
 def test_demo_assistant_loop_does_not_load_qwen_image_default_size_from_env(tmp_path, monkeypatch) -> None:
     module = _load_demo_module()
     env_file = tmp_path / ".env"
@@ -122,8 +139,9 @@ def test_demo_assistant_loop_mock_run_prints_timeline_by_default() -> None:
     assert "[tool:image_generation] running..." in result.stdout
     assert "[tool:image_generation] succeeded" in result.stdout
     assert "[answer]" in result.stdout
-    assert "Summary" in result.stdout
+    assert "Run" in result.stdout
     assert "tools: image_generation" in result.stdout
+    assert "artifact:" in result.stdout
     assert "event |" not in result.stdout
     assert "trace |" not in result.stdout
     assert "Decision Trace" not in result.stdout
@@ -217,6 +235,17 @@ def test_demo_assistant_loop_redacts_signed_image_urls_for_display() -> None:
     assert redacted == "https://example.com/image.png?[signed-url-redacted]"
     assert "secret" not in redacted
     assert "Signature" not in redacted
+
+
+def test_demo_assistant_loop_omits_duplicate_tool_summary() -> None:
+    module = _load_demo_module()
+
+    summary = module._compact_tool_result_summary(
+        {"summary": "工具摘要和最终回答相同"},
+        response_text="工具摘要和最终回答相同",
+    )
+
+    assert summary == ""
 
 
 def test_demo_assistant_loop_does_not_infer_image_provider_from_ark_key(monkeypatch) -> None:

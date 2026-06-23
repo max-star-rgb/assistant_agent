@@ -46,21 +46,43 @@ class OfflineMCPServer:
             {
                 "name": "agent_run",
                 "description": "Run AgentGraphRuntime with mock/local defaults.",
+                "input_schema": {
+                    "fields": {
+                        "user_id": {"type": "string", "description": "User id for isolation.", "required": False},
+                        "session_id": {"type": "string", "description": "Session id for conversation state.", "required": False},
+                        "text": {"type": "string", "description": "User request text.", "required": False},
+                        "image_ids": {"type": "array", "description": "Optional image references.", "required": False},
+                        "video_ids": {"type": "array", "description": "Optional video references.", "required": False},
+                        "metadata": {"type": "object", "description": "Optional request metadata.", "required": False},
+                    }
+                },
                 "offline": True,
             },
             {
                 "name": "tool_list",
                 "description": "List registered local ToolRegistry tools.",
+                "input_schema": {"fields": {}},
                 "offline": True,
             },
             {
                 "name": "tool_run",
                 "description": "Run one registered mock/local ToolRegistry tool.",
+                "input_schema": {
+                    "fields": {
+                        "tool_name": {"type": "string", "description": "Registered ToolRegistry tool name.", "required": True},
+                        "input": {"type": "object", "description": "Tool input matching the registry tool schema.", "required": False},
+                    }
+                },
                 "offline": True,
             },
             {
                 "name": "demo_flow_run",
                 "description": "Run one offline demo scenario through existing demo flow logic.",
+                "input_schema": {
+                    "fields": {
+                        "scenario_id": {"type": "string", "description": "Optional demo scenario id.", "required": False},
+                    }
+                },
                 "offline": True,
             },
         ]
@@ -121,6 +143,7 @@ class OfflineMCPServer:
             {
                 "mcp_tools": self.list_tools(),
                 "registry_tools": self.registry.list(),
+                "registry_tool_specs": [spec.model_dump(mode="json") for spec in self.registry.list_specs()],
             },
         )
 

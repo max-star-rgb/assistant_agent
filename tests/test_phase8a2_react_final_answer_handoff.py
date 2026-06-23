@@ -37,6 +37,8 @@ def test_non_mock_final_answer_after_tool_observation_is_preserved() -> None:
 
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找一款通勤蓝牙耳机"))
 
+    assert state.intent is None
+    assert state.plan is None
     assert [call.tool_name for call in state.tool_calls] == ["product_search"]
     assert state.response is not None
     assert state.response.message == final_answer

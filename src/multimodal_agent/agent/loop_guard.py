@@ -24,6 +24,10 @@ class LoopGuard:
     invalid_tool_input_limit = 1
     empty_decision_limit = 1
 
+    # Tools that produce a terminal artifact on success and should not be
+    # called again within the same run (the assistant should answer instead).
+    terminal_tools = frozenset({"image_generation", "render_3d"})
+
     def __init__(self, metadata: dict[str, Any]) -> None:
         state = metadata.setdefault("assistant_loop_guard", {})
         if not isinstance(state, dict):
@@ -33,6 +37,26 @@ class LoopGuard:
 
     def record_empty_decision(self) -> LoopGuardDecision:
         return self._increment("empty_decision_count", self.empty_decision_limit, "empty_decision_limit")
+
+    def record_terminal_tool_success(self, tool_name: str) -> None:
+        """Remember that a terminal tool already succeeded in this run."""
+
+        if tool_name not in self.terminal_tools:
+            return
+        succeeded = self.state.get("succeeded_terminal_tools", [])
+        if not isinstance(succeeded, list):
+            succeeded = []
+        if tool_name not in succeeded:
+            succeeded.append(tool_name)
+        self.state["succeeded_terminal_tools"] = succeeded
+
+    def terminal_tool_already_succeeded(self, tool_name: str) -> bool:
+        """Return true when a terminal tool already produced a result this run."""
+
+        if tool_name not in self.terminal_tools:
+            return False
+        succeeded = self.state.get("succeeded_terminal_tools", [])
+        return isinstance(succeeded, list) and tool_name in succeeded
 
     def record_validation_rejection(self, code: str, tool_name: str | None) -> LoopGuardDecision:
         if code == "unknown_tool":

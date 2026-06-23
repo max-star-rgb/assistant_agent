@@ -77,12 +77,12 @@ def load_repo_env_file(path: Path | None = None, *, override: bool = False) -> d
 
 def _strip_env_value(value: str) -> str:
     quote_pairs = {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}
-    if len(value) >= 2 and (value[0], value[-1]) in quote_pairs:
-        return value[1:-1]
     comment_index = value.find(" #")
     if comment_index >= 0:
-        return value[:comment_index].strip()
-    return value
+        value = value[:comment_index].strip()
+    if len(value) >= 2 and (value[0], value[-1]) in quote_pairs:
+        value = value[1:-1]
+    return value.strip().strip('"').strip("'").strip("“”‘’")
 
 
 def _validation_error_summary(item: dict) -> dict[str, str]:

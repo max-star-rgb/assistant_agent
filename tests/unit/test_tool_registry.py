@@ -1,6 +1,6 @@
 import pytest
 
-from multimodal_agent.schemas.tools import ToolResult
+from multimodal_agent.schemas.tools import ToolResult, ToolSpec
 from multimodal_agent.tools.product_search_tool import ProductSearchTool
 from multimodal_agent.tools.registry import ToolRegistry, create_default_registry
 
@@ -41,6 +41,23 @@ def test_default_registry_contains_mock_tools() -> None:
         "render_3d",
         "memory",
     }
+
+
+def test_registry_list_specs_is_the_canonical_tool_description() -> None:
+    registry = create_default_registry()
+
+    specs = registry.list_specs()
+    descriptions = registry.describe_tools()
+
+    assert specs
+    assert all(isinstance(spec, ToolSpec) for spec in specs)
+    assert descriptions == [spec.model_dump(mode="json") for spec in specs]
+
+    video = next(spec for spec in specs if spec.name == "video_understanding")
+    assert video.input_schema["fields"]
+    assert "video_ids" in " ".join(video.runtime_constraints)
+    assert video.when_to_use
+    assert "api_key" not in str(video.model_dump(mode="json")).lower()
 
 
 def test_registry_run_returns_tool_result() -> None:

@@ -246,6 +246,23 @@ def test_provider_config_reads_ark_vision_provider_from_spec() -> None:
     assert config.resolved_vision_provider().missing_required_env() == []
 
 
+def test_provider_config_cleans_mismatched_trailing_quotes() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark",
+            "ARK_VISION_API_KEY": "test-ark-key",
+            "ARK_VISION_BASE_URL": "\"https://ark.local/api/v3'\"",
+            "ARK_VISION_MODEL": "ark-vision-test",
+        }
+    )
+
+    assert config.vision_base_url == "https://ark.local/api/v3"
+    assert config.ark_vision_base_url == "https://ark.local/api/v3"
+    assert config.video_understanding_base_url == "https://ark.local/api/v3"
+
+
 def test_provider_config_reads_openai_image_generation_provider_from_spec() -> None:
     config = ProviderConfig.from_env(
         {

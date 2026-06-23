@@ -26,7 +26,7 @@ ImageGenerationProviderName = str
 ProductSearchProviderName = Literal["mock", "local_json", "http"]
 PriceCompareProviderName = Literal["mock", "local", "http"]
 RenderProviderName = Literal["mock", "http"]
-VideoProviderName = Literal["mock", "http"]
+VideoProviderName = Literal["mock", "http", "ark"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
 
 
@@ -121,7 +121,7 @@ class ProviderConfig:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
-        source = dict(os.environ if env is None else env)
+        source = _clean_env_source(os.environ if env is None else env)
         if not source.get("DEEPSEEK_CHAT_API_KEY") and source.get("DEEPSEEK_API_KEY"):
             source["DEEPSEEK_CHAT_API_KEY"] = source["DEEPSEEK_API_KEY"]
         runtime_profile = RuntimeProfile.from_env(source)
@@ -228,9 +228,9 @@ class ProviderConfig:
                 source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER"),
                 allow_real=allow_real_providers,
             ),
-            video_understanding_base_url=source.get("VIDEO_UNDERSTANDING_BASE_URL"),
-            video_understanding_api_key=source.get("VIDEO_UNDERSTANDING_API_KEY"),
-            video_understanding_model=source.get("VIDEO_UNDERSTANDING_MODEL", "video-understanding"),
+            video_understanding_base_url=_video_base_url(source),
+            video_understanding_api_key=_video_api_key(source),
+            video_understanding_model=_video_model(source),
             video_understanding_timeout_seconds=_float_env(
                 source.get("VIDEO_UNDERSTANDING_TIMEOUT_SECONDS"),
                 60.0,
@@ -436,7 +436,40 @@ def _render_provider(value: str | None, *, allow_real: bool = True) -> RenderPro
 def _video_provider(value: str | None, *, allow_real: bool = True) -> VideoProviderName:
     if allow_real and value == "http":
         return "http"
+    if allow_real and value == "ark":
+        return "ark"
     return "mock"
+
+
+def _clean_env_source(source: Mapping[str, str]) -> dict[str, str]:
+    return {key: _clean_env_value(value) for key, value in source.items()}
+
+
+def _clean_env_value(value: str) -> str:
+    cleaned = value.strip()
+    if " #" in cleaned:
+        cleaned = cleaned.split(" #", 1)[0].strip()
+    if len(cleaned) >= 2 and (cleaned[0], cleaned[-1]) in {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}:
+        cleaned = cleaned[1:-1]
+    return cleaned.strip().strip('"').strip("'").strip("“”‘’")
+
+
+def _video_base_url(source: Mapping[str, str]) -> str | None:
+    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "ark":
+        return source.get("ARK_VISION_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
+    return source.get("VIDEO_UNDERSTANDING_BASE_URL")
+
+
+def _video_api_key(source: Mapping[str, str]) -> str | None:
+    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "ark":
+        return source.get("ARK_VISION_API_KEY")
+    return source.get("VIDEO_UNDERSTANDING_API_KEY")
+
+
+def _video_model(source: Mapping[str, str]) -> str:
+    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "ark":
+        return source.get("ARK_VISION_MODEL") or "doubao-seed-2-0-lite-260215"
+    return source.get("VIDEO_UNDERSTANDING_MODEL", "video-understanding")
 
 
 def _intent_router(value: str | None) -> IntentRouterName:

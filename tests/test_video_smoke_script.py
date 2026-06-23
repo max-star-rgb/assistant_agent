@@ -73,3 +73,19 @@ def test_video_smoke_http_missing_config_exits_cleanly() -> None:
     assert "Bearer" not in result.stdout
     assert "Authorization" not in result.stdout
     assert "base64" not in result.stdout
+
+
+def test_video_smoke_ark_missing_config_exits_cleanly() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--video-ref", "video1"],
+        env={"MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "provider_unconfigured" in result.stdout
+    assert "ARK_VISION_API_KEY" in result.stdout
+    assert "Traceback" not in result.stderr
+    assert "Bearer" not in result.stdout

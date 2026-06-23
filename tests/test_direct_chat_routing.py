@@ -49,20 +49,20 @@ def test_direct_chat_with_media_context_does_not_trigger_vision_understanding() 
     assert state.response.data["provider"] == "mock"
 
 
-def test_real_chat_direct_chat_short_circuits_tool_decision_loop() -> None:
+def test_real_chat_direct_chat_is_decided_by_llm_policy_without_rule_intent() -> None:
     adapter = FakeRealChatAdapter()
     state = AgentGraphRuntime(memory_store=InMemoryStore(), chat_adapter=adapter).run_state(
         UserRequest(user_id="u1", session_id="s1", text="你好，请介绍你自己")
     )
 
     assert state.status == "completed"
-    assert state.intent is not None
-    assert state.intent.intent == "direct_chat"
+    assert state.intent is None
+    assert state.plan is None
     assert state.tool_calls == []
     assert len(adapter.requests) == 1
-    assert adapter.requests[0].user_query == "你好，请介绍你自己"
+    assert "用户请求：你好，请介绍你自己" in adapter.requests[0].user_query
+    assert "可用工具" in adapter.requests[0].user_query
     assert state.response is not None
-    assert state.response.data["provider"] == "deepseek"
     assert "工具调用保护" not in state.response.message
     assert "多模态助手" in state.response.message
     assert state.request.metadata["assistant_loop_steps"][0]["message"] == state.response.message

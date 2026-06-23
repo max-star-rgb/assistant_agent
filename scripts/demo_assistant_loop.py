@@ -108,6 +108,9 @@ def print_config(config: ProviderConfig, *, loaded_env_keys: list[str]) -> None:
     print(f"  image_provider: {config.image_generation_provider}")
     print(f"  image_model: {config.image_generation_model or '(unset)'}")
     print(f"  image_base_url: {_redact_url(config.image_generation_base_url)}")
+    print(f"  video_provider: {config.video_provider}")
+    print(f"  video_model: {config.video_understanding_model or '(unset)'}")
+    print(f"  video_base_url: {_redact_url(config.video_understanding_base_url)}")
     print(f"  provider_ready: {'no, missing ' + ', '.join(missing) if missing else 'yes'}")
     print(f"  max_tool_iterations: {config.max_tool_iterations}")
 
@@ -156,7 +159,7 @@ def _print_decision_trace(payload: dict[str, Any]) -> None:
 
 def _print_run_summary(payload: dict[str, Any]) -> None:
     print()
-    print("Summary")
+    print("Run")
     print(f"  status: {payload['status']}")
     print(f"  tools: {', '.join(payload.get('tool_sequence') or []) or '(none)'}")
     final_answer_source = (payload.get("response_data") or {}).get("final_answer_source")
@@ -170,10 +173,12 @@ def _print_run_summary(payload: dict[str, Any]) -> None:
     tool_calls = payload.get("tool_calls") or []
     if tool_results:
         for index, result in enumerate(tool_results, start=1):
-            print(f"  [{index}] {result.get('tool_name')} | success={result.get('success')}")
+            latency = _format_latency(result.get("latency_ms"))
+            suffix = f" | {latency}" if latency else ""
+            print(f"  [{index}] {result.get('tool_name')} | success={result.get('success')}{suffix}")
             if result.get("output_ref"):
-                print(f"      output: {_safe_display_value(result['output_ref'])}")
-            summary = _compact_tool_result_summary(result.get("data") or {})
+                print(f"      artifact: {_safe_display_value(result['output_ref'])}")
+            summary = _compact_tool_result_summary(result.get("data") or {}, response_text=payload.get("response_text"))
             if summary:
                 print(f"      summary: {summary}")
             if result.get("error"):
@@ -182,7 +187,7 @@ def _print_run_summary(payload: dict[str, Any]) -> None:
         for index, call in enumerate(tool_calls, start=1):
             print(f"  [{index}] {call.get('tool_name')} | status={call.get('status')}")
             if call.get("output_ref"):
-                print(f"      output: {_safe_display_value(call['output_ref'])}")
+                print(f"      artifact: {_safe_display_value(call['output_ref'])}")
             if call.get("error"):
                 print(f"      error: {call['error']}")
     else:
@@ -429,7 +434,7 @@ def _format_timeline_trace(trace: dict[str, Any]) -> str:
     if event_name == "decision":
         lines = [f"[plan] {trace.get('action') or trace.get('decision_type') or 'decision'}"]
         if trace.get("decision_summary"):
-            lines.append(f"       {trace['decision_summary']}")
+            lines.append(f"       reason: {trace['decision_summary']}")
         action_input = trace.get("action_input")
         if isinstance(action_input, dict) and action_input:
             lines.append(f"       input: {_compact_json(_public_action_input(action_input))}")
@@ -439,7 +444,7 @@ def _format_timeline_trace(trace: dict[str, Any]) -> str:
         status = "succeeded" if trace.get("success") else "failed"
         lines = [f"[tool:{action}] {status}"]
         if trace.get("output_ref"):
-            lines.append(f"       output: {_safe_display_value(trace['output_ref'])}")
+            lines.append(f"       artifact: {_safe_display_value(trace['output_ref'])}")
         if trace.get("error"):
             lines.append(f"       error: {_event_error_message(trace['error'])}")
         if trace.get("recovery_hint"):
@@ -544,11 +549,24 @@ def _replay_command_placeholder(payload: dict[str, Any]) -> str:
     return f"python scripts/demo_assistant_loop.py --replay-log .local/demo_runs/{run_id}.json"
 
 
-def _compact_tool_result_summary(data: dict[str, Any]) -> str:
+def _format_latency(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        return f"latency_ms={int(value)}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _compact_tool_result_summary(data: dict[str, Any], *, response_text: object | None = None) -> str:
+    response = _safe_display_value(response_text).strip() if response_text else ""
     for key in ("summary", "response_text", "image_url", "output_ref", "request_id"):
         value = data.get(key)
         if value:
-            return _safe_display_value(str(value))[:240]
+            summary = _safe_display_value(str(value)).strip()
+            if summary and summary != response:
+                return summary[:240]
+            return ""
     image_urls = data.get("image_urls")
     if isinstance(image_urls, list) and image_urls:
         return _safe_display_value(str(image_urls[0]))[:240]

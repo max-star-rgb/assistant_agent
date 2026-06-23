@@ -1,7 +1,17 @@
-"""Assistant loop nodes for ReAct-style reasoning."""
+"""Controlled assistant tool loop nodes.
+
+This module is intentionally not a pure ReAct implementation. The assistant
+proposes the next action, while local policies, validators, ToolExecutor,
+loop guards, and response finalizers own execution safety and state mutation.
+
+Decision paths are explicit:
+- MockPlanAssistantPolicy follows the deterministic rule plan for offline tests.
+- LLMAssistantPolicy asks a real chat adapter to propose ReAct-style actions.
+"""
 
 import json
 from inspect import signature
+from dataclasses import dataclass
 from typing import Any, NotRequired, TypedDict, cast
 
 from multimodal_agent.agent.action_validator import ActionValidator
@@ -46,114 +56,73 @@ class AssistantLoopState(TypedDict):
     current_node_name: NotRequired[str]
 
 
-def _mock_assistant_decision(
-    request: UserRequest,
-    tool_observations: list[dict[str, Any]],
-    available_tools: list[str],
-    iteration: int,
-    max_iterations: int,
-) -> AssistantDecision:
-    """
-    Mock assistant decision logic for testing/demo purposes.
+@dataclass(frozen=True)
+class AssistantDecisionContext:
+    """Read-only inputs used by assistant decision policy."""
 
-    This implements simple rule-based decisions when using mock adapter.
-    """
-    user_query = request.text or ""
-    query_lower = user_query.lower()
+    request: UserRequest
+    memory_summaries: list[str]
+    tool_descriptions: list[dict[str, Any]]
+    tool_observations: list[dict[str, Any]]
+    iterations: int
+    max_iterations: int
+    is_mock: bool
 
-    # If we have tool observations, synthesize a final answer
-    if tool_observations:
-        last_obs = tool_observations[-1]
-        tool_name = last_obs.get("tool_name", "tool")
 
-        if last_obs.get("success"):
-            return AssistantDecision(
-                type="final_answer",
-                message=f"已完成 {tool_name} 调用！结果已准备好。",
-                reason=f"工具 {tool_name} 执行成功，结果足够回答用户问题",
+# Keep policy classes small and local until their interfaces stabilize. They
+# separate decision sources without changing the LangGraph node topology.
+class MockPlanAssistantPolicy:
+    """Deterministic offline policy backed by the rule-generated plan."""
+
+    def decide(self, graph_state: AssistantLoopState, context: AssistantDecisionContext, state: AgentState) -> AssistantDecision:
+        decision = _mock_assistant_decision_from_plan(
+            request=context.request,
+            tool_observations=context.tool_observations,
+            state=state,
+            outputs_by_step=graph_state["outputs_by_step"],
+        )
+        if decision.type == "tool_call" and context.iterations + 1 >= context.max_iterations:
+            return _max_iteration_final_answer(context.max_iterations)
+        return decision
+
+
+class LLMAssistantPolicy:
+    """LLM-backed ReAct policy that proposes the next assistant action."""
+
+    def __init__(self, chat_adapter: ChatAdapter) -> None:
+        self.chat_adapter = chat_adapter
+
+    def decide(self, context: AssistantDecisionContext, state: AgentState) -> AssistantDecision:
+        prompt = _build_assistant_prompt(
+            request=context.request,
+            memory_summaries=context.memory_summaries,
+            memory_text="",
+            observations=context.tool_observations,
+            tools_desc=context.tool_descriptions,
+            iteration=context.iterations,
+        )
+        result = self.chat_adapter.chat(
+            ChatRequest(
+                user_id=state.user_id,
+                session_id=state.session_id,
+                user_query=prompt,
+                temperature=0.2,
+                max_tokens=1024,
             )
-        else:
-            return AssistantDecision(
-                type="final_answer",
-                message=f"{tool_name} 执行遇到问题，但我会尽力回答。",
-                reason=f"工具 {tool_name} 执行失败，提供 fallback 回答",
+        )
+        decision = AssistantDecision.from_llm_output(result.response_text if result.success else "")
+        if decision.type == "tool_call" and context.iterations + 1 >= context.max_iterations:
+            return _request_final_answer_after_tool_limit(
+                chat_adapter=self.chat_adapter,
+                state=state,
+                request=context.request,
+                observations=context.tool_observations,
+                iteration=context.iterations,
+                max_iterations=context.max_iterations,
             )
-
-    # Check for image generation requests
-    image_keywords = ["生成", "图片", "海报", "画图", "image", "generate", "draw"]
-    if any(kw in query_lower for kw in image_keywords) and "image_generation" in available_tools:
-        return AssistantDecision(
-            type="tool_call",
-            tool_name="image_generation",
-            tool_input={"prompt": user_query, "style": "realistic"},
-            reason="用户需要生成图片，调用 image_generation 工具",
-        )
-
-    # Check for product search requests
-    search_keywords = ["搜索", "找", "商品", "search", "product", "find"]
-    if any(kw in query_lower for kw in search_keywords) and "product_search" in available_tools:
-        return AssistantDecision(
-            type="tool_call",
-            tool_name="product_search",
-            tool_input={"query": user_query, "limit": 5},
-            reason="用户需要搜索商品，调用 product_search 工具",
-        )
-
-    # Check for vision understanding requests
-    vision_keywords = ["看", "图片里", "图中", "识别", "vision", "image", "recognize"]
-    has_images = bool(request.image_ids)
-    if (any(kw in query_lower for kw in vision_keywords) or has_images) and "vision_understanding" in available_tools:
-        return AssistantDecision(
-            type="tool_call",
-            tool_name="vision_understanding",
-            tool_input={"prompt": user_query, "image_ids": request.image_ids or []},
-            reason="用户需要理解图片内容，调用 vision_understanding 工具",
-        )
-
-    # Check for video understanding requests
-    has_videos = bool(request.video_ids)
-    if has_videos and "video_understanding" in available_tools:
-        return AssistantDecision(
-            type="tool_call",
-            tool_name="video_understanding",
-            tool_input={"prompt": user_query, "video_ids": request.video_ids or []},
-            reason="用户上传了视频，调用 video_understanding 工具",
-        )
-
-    # Check for price compare requests
-    compare_keywords = ["比价", "比较价格", "compare", "price"]
-    if any(kw in query_lower for kw in compare_keywords) and "price_compare" in available_tools:
-        return AssistantDecision(
-            type="tool_call",
-            tool_name="price_compare",
-            tool_input={"query": user_query},
-            reason="用户需要比较价格，调用 price_compare 工具",
-        )
-
-    # Check for render requests
-    render_keywords = ["渲染", "3d", "render", "展示"]
-    if any(kw in query_lower for kw in render_keywords) and "render_3d" in available_tools:
-        return AssistantDecision(
-            type="tool_call",
-            tool_name="render_3d",
-            tool_input={"prompt": user_query, "scene": "modern"},
-            reason="用户需要 3D 渲染，调用 render_3d 工具",
-        )
-
-    # Check for ambiguous queries that need follow-up
-    if len(user_query.strip()) < 3 or user_query.strip() in ["这个", "那个", "?", "？", "help", "帮助"]:
-        return AssistantDecision(
-            type="ask_followup",
-            message="你需要什么帮助？可以告诉我你想做什么，比如：\n- 生成图片\n- 搜索商品\n- 理解图片/视频内容",
-            reason="用户查询太短或太模糊，需要更多信息",
-        )
-
-    # Default: direct answer
-    return AssistantDecision(
-        type="final_answer",
-        message=f"你好！我是你的 AI 助手。我可以帮你：\n- 生成图片\n- 搜索和比较商品\n- 理解图片和视频内容\n- 3D 渲染展示\n\n你的问题：{user_query}",
-        reason="不需要调用工具，直接回答用户",
-    )
+        if context.iterations >= context.max_iterations and decision.type == "tool_call":
+            return _max_iteration_final_answer(context.max_iterations)
+        return decision
 
 
 def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
@@ -181,126 +150,149 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
             "assistant_iterations": iterations + 1,
         }
 
-    # Get available tools
-    try:
-        tool_descriptions = graph_state["tool_executor"].registry.describe_tools()
-        available_tools = [t["name"] for t in tool_descriptions]
-    except Exception:
-        available_tools = []
-
-    # Get memory context
-    memory_context = state.memory_context
-    memory_summaries = [item.summary for item in memory_context] if memory_context else []
-
-    # Build prompt
     request = graph_state["request"]
-    user_query = request.text or ""
-
-    # Check if this is a mock adapter - if so, use our rule-based logic
     is_mock = _is_mock_chat_adapter(chat_adapter)
 
-    _ensure_rule_plan(graph_state)
-    if _uses_chat_adapter_as_final_responder(chat_adapter) and _is_direct_chat_state(state) and not tool_observations and not state.tool_results:
-        decision = AssistantDecision(
-            type="final_answer",
-            message=None,
-            reason="规则路由判定为 direct_chat，直接交给 chat adapter 回复，不进入工具决策循环。",
-        )
-        _set_direct_chat_response(graph_state, decision, iterations, tool_observations)
-        if state.response is not None:
-            decision = decision.model_copy(update={"message": state.response.message})
-        _record_react_decision(graph_state, decision, iterations)
-        state.status = "completed"
-        return {
-            **graph_state,
-            "assistant_decision": decision,
-            "assistant_iterations": iterations + 1,
-        }
-
     if is_mock:
-        # Use mock rule-based decision for predictable testing
-        decision = _mock_assistant_decision_from_plan(
-            request=request,
-            tool_observations=tool_observations,
-            state=state,
-            outputs_by_step=graph_state["outputs_by_step"],
-        )
-        if decision.type == "tool_call" and iterations + 1 >= max_iterations:
-            decision = _max_iteration_final_answer(max_iterations)
-    else:
-        # Use real LLM adapter
-        prompt = _build_assistant_prompt(
-            request=request,
-            memory_summaries=memory_summaries,
-            memory_text="",
-            observations=tool_observations,
-            tools_desc=tool_descriptions,
-            iteration=iterations,
-        )
+        _ensure_rule_plan(graph_state)
 
-        chat_request = ChatRequest(
-            user_id=state.user_id,
-            session_id=state.session_id,
-            user_query=prompt,
-            temperature=0.2,
-            max_tokens=1024,
-        )
-
-        result = chat_adapter.chat(chat_request)
-        response_text = result.response_text if result.success else ""
-
-        decision = AssistantDecision.from_llm_output(response_text)
-        if decision.type == "tool_call" and iterations + 1 >= max_iterations:
-            decision = _request_final_answer_after_tool_limit(
-                chat_adapter=chat_adapter,
-                state=state,
-                request=request,
-                observations=tool_observations,
-                iteration=iterations,
-                max_iterations=max_iterations,
-            )
-
-    # Check max iterations - force final answer if exceeded
-    if iterations >= max_iterations and decision.type == "tool_call":
-        decision = _max_iteration_final_answer(max_iterations)
-
-    # Update state
-    if decision.reason == "Empty or whitespace-only output.":
-        guard = LoopGuard(state.request.metadata).record_empty_decision()
-        if guard.triggered:
-            decision = _guard_final_answer(guard)
-            _record_loop_guard(graph_state, guard)
+    context = _build_decision_context(
+        graph_state,
+        request=request,
+        tool_observations=tool_observations,
+        iterations=iterations,
+        max_iterations=max_iterations,
+        is_mock=is_mock,
+    )
+    decision = _decide_next_action(
+        graph_state,
+        context=context,
+        chat_adapter=chat_adapter,
+        state=state,
+    )
+    decision = _apply_decision_guards(graph_state, decision)
     _record_react_decision(graph_state, decision, iterations)
-    if decision.type in ("final_answer", "ask_followup"):
-        if decision.type == "ask_followup" or not state.tool_results:
-            if _is_direct_chat_state(state):
-                _set_direct_chat_response(graph_state, decision, iterations, tool_observations)
-            else:
-                state.set_response(
-                    AgentResponse(
-                        message=decision.message or "已处理请求。",
-                        data={
-                            "intent": state.intent.intent if state.intent else None,
-                            "assistant_decision": decision.type,
-                            "reason": decision.reason,
-                            "iterations": iterations,
-                            "tool_observations": len(tool_observations),
-                        },
-                        followup_question=decision.message if decision.type == "ask_followup" else None,
-                    )
-                )
-                state.status = "completed"
-        elif _should_preserve_assistant_final_answer(decision=decision, is_mock=is_mock):
-            _set_assistant_final_answer_response(graph_state, decision, iterations, tool_observations)
-            state.status = "completed"
-        elif state.status != "failed":
-            state.status = "completed"
+    _apply_terminal_decision(graph_state, decision, context)
 
+    return _assistant_node_result(graph_state, decision, iterations)
+
+
+def _assistant_node_result(
+    graph_state: AssistantLoopState,
+    decision: AssistantDecision,
+    iterations: int,
+) -> AssistantLoopState:
     return {
         **graph_state,
         "assistant_decision": decision,
         "assistant_iterations": iterations + 1,
     }
+
+
+def _build_decision_context(
+    graph_state: AssistantLoopState,
+    *,
+    request: UserRequest,
+    tool_observations: list[dict[str, Any]],
+    iterations: int,
+    max_iterations: int,
+    is_mock: bool,
+) -> AssistantDecisionContext:
+    try:
+        tool_descriptions = graph_state["tool_executor"].registry.describe_tools()
+    except Exception:
+        tool_descriptions = []
+    memory_summaries = [item.summary for item in graph_state["state"].memory_context]
+    return AssistantDecisionContext(
+        request=request,
+        memory_summaries=memory_summaries,
+        tool_descriptions=tool_descriptions,
+        tool_observations=tool_observations,
+        iterations=iterations,
+        max_iterations=max_iterations,
+        is_mock=is_mock,
+    )
+
+
+def _decide_next_action(
+    graph_state: AssistantLoopState,
+    *,
+    context: AssistantDecisionContext,
+    chat_adapter: ChatAdapter,
+    state: AgentState,
+) -> AssistantDecision:
+    """Select the next assistant action without mutating response state."""
+
+    if context.is_mock:
+        return MockPlanAssistantPolicy().decide(graph_state, context, state)
+    return LLMAssistantPolicy(chat_adapter).decide(context, state)
+
+
+def _apply_decision_guards(graph_state: AssistantLoopState, decision: AssistantDecision) -> AssistantDecision:
+    """Apply loop/safety guards after a policy proposes an assistant decision."""
+
+    state = graph_state["state"]
+    if decision.reason == "Empty or whitespace-only output.":
+        guard = LoopGuard(state.request.metadata).record_empty_decision()
+        if guard.triggered:
+            _record_loop_guard(graph_state, guard)
+            return _guard_final_answer(guard)
+    if (
+        decision.type == "tool_call"
+        and decision.tool_name
+        and LoopGuard(state.request.metadata).terminal_tool_already_succeeded(decision.tool_name)
+    ):
+        guard = LoopGuardDecision(
+            True,
+            "duplicate_terminal_tool",
+            f"{decision.tool_name} already succeeded in this run; answering with the existing result instead of calling it again.",
+        )
+        _record_loop_guard(graph_state, guard)
+        return AssistantDecision(
+            type="final_answer",
+            message=None,
+            reason=guard.message,
+            safety_notes=[guard.code],
+        )
+    return decision
+
+
+def _apply_terminal_decision(
+    graph_state: AssistantLoopState,
+    decision: AssistantDecision,
+    context: AssistantDecisionContext,
+) -> None:
+    """Persist response state when the assistant decides to stop the loop."""
+
+    if decision.type not in ("final_answer", "ask_followup"):
+        return
+
+    state = graph_state["state"]
+    if decision.type == "ask_followup" or not state.tool_results:
+        if _is_direct_chat_state(state):
+            _set_direct_chat_response(graph_state, decision, context.iterations, context.tool_observations)
+            return
+        state.set_response(
+            AgentResponse(
+                message=decision.message or "已处理请求。",
+                data={
+                    "intent": state.intent.intent if state.intent else None,
+                    "assistant_decision": decision.type,
+                    "reason": decision.reason,
+                    "iterations": context.iterations,
+                    "tool_observations": len(context.tool_observations),
+                },
+                followup_question=decision.message if decision.type == "ask_followup" else None,
+            )
+        )
+        state.status = "completed"
+        return
+
+    if _should_preserve_assistant_final_answer(decision=decision, is_mock=context.is_mock):
+        _set_assistant_final_answer_response(graph_state, decision, context.iterations, context.tool_observations)
+        state.status = "completed"
+    elif state.status != "failed":
+        state.status = "completed"
 
 
 def _ensure_rule_plan(graph_state: AssistantLoopState) -> None:
@@ -367,7 +359,12 @@ def _mock_assistant_decision_from_plan(
     """Return the next deterministic ReAct decision from the rule-based plan."""
 
     if state.plan is None:
-        return _mock_assistant_decision(request, tool_observations, [], 0, 1)
+        return AssistantDecision(
+            type="final_answer",
+            message="离线计划不可用，无法选择下一步工具。",
+            reason="MockPlanAssistantPolicy requires state.plan from the rule router.",
+            safety_notes=["missing_rule_plan"],
+        )
 
     if state.plan.requires_followup:
         return AssistantDecision(
@@ -521,12 +518,6 @@ def _is_mock_chat_adapter(chat_adapter: ChatAdapter) -> bool:
     return getattr(chat_adapter, "provider", "") == "mock" or hasattr(chat_adapter, "MockChatAdapter")
 
 
-def _uses_chat_adapter_as_final_responder(chat_adapter: ChatAdapter) -> bool:
-    """Return true for configured real chat providers that should answer direct_chat directly."""
-
-    return getattr(chat_adapter, "provider", "") in {"openai", "qwen", "deepseek", "local"}
-
-
 def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoopState:
     """
     Execute the tool requested by the assistant.
@@ -600,6 +591,8 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
         )
 
         observation = observation_from_tool_result(result)
+        if result.success:
+            LoopGuard(state.request.metadata).record_terminal_tool_success(tool_name)
         guard = (
             LoopGuardDecision(False, "ok", "Guard not triggered for optional step.")
             if step is not None and step.optional
@@ -761,6 +754,8 @@ def _build_assistant_prompt(
     "tool_input": {"参数名": "参数值"},
     "reason": "为什么调用这个工具"
 }
+
+重要约束：同一个工具成功执行后不要重复调用它。如果需要生成多张图片，请在一次 image_generation 调用中通过 tool_input 的 "n" 参数指定数量（1-4），而不是多次调用。
 """
 
     return prompt

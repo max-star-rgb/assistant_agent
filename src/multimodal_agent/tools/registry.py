@@ -1,11 +1,13 @@
 """Tool registry and default mock tool registration."""
 
+from __future__ import annotations
+
 from typing import Any, List, Dict
 
 from pydantic import BaseModel
 
 from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.tools import ToolResult
+from multimodal_agent.schemas.tools import ToolResult, ToolSpec
 from multimodal_agent.tools.base import BaseTool, ToolContext
 from multimodal_agent.tools.image_generation_tool import ImageGenerationTool
 from multimodal_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool, MemoryTool
@@ -50,22 +52,30 @@ class ToolRegistry:
     ) -> ToolResult:
         return self.get(name).run(input, context)
 
-    def describe_tools(self) -> List[Dict[str, Any]]:
-        """Return descriptions of all registered tools for the assistant."""
-        descriptions = []
+    def list_specs(self) -> list[ToolSpec]:
+        """Return provider-neutral specs for all registered tools."""
+
+        specs: list[ToolSpec] = []
         for name in sorted(self._tools.keys()):
             tool = self._tools[name]
             usage = _ACTION_USAGE.get(tool.name, {})
-            descriptions.append({
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": _schema_to_dict(tool.input_schema),
-                "required_inputs": _required_inputs(tool.input_schema),
-                "when_to_use": usage.get("when_to_use", []),
-                "when_not_to_use": usage.get("when_not_to_use", []),
-                "runtime_constraints": usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
-            })
-        return descriptions
+            specs.append(
+                ToolSpec(
+                    name=tool.name,
+                    description=tool.description,
+                    input_schema=_schema_to_dict(tool.input_schema),
+                    required_inputs=_required_inputs(tool.input_schema),
+                    when_to_use=usage.get("when_to_use", []),
+                    when_not_to_use=usage.get("when_not_to_use", []),
+                    runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
+                )
+            )
+        return specs
+
+    def describe_tools(self) -> List[Dict[str, Any]]:
+        """Return legacy dict descriptions of all registered tools for the assistant."""
+
+        return [spec.model_dump(mode="json") for spec in self.list_specs()]
 
 
 def _schema_to_dict(schema_type):

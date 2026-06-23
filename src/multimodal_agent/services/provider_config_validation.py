@@ -175,9 +175,10 @@ def _video_missing(config: ProviderConfig) -> list[str]:
             ("VIDEO_UNDERSTANDING_BASE_URL", config.video_understanding_base_url),
             ("VIDEO_UNDERSTANDING_API_KEY", config.video_understanding_api_key),
         )
+    if config.video_provider == "ark":
+        return _missing(("ARK_VISION_API_KEY", config.video_understanding_api_key))
     return []
 
 
 def _missing(*items: tuple[str, str | None]) -> list[str]:
     return [name for name, value in items if not value]
-

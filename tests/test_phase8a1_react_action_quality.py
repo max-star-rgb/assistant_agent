@@ -140,3 +140,47 @@ def test_offline_default_uses_mock_provider_without_real_call() -> None:
     assert state.response is not None
     assert state.response.data["provider"] == "mock"
     assert state.tool_calls == []
+
+
+def test_duplicate_terminal_tool_is_blocked_and_answered() -> None:
+    image_call = (
+        '{"type": "tool_call", "tool_name": "image_generation", '
+        '"tool_input": {"prompt": "一张白色运动鞋海报"}, "reason": "生成图片"}'
+    )
+    trace_store = InMemoryTraceStore()
+    runtime = AgentGraphRuntime(
+        chat_adapter=ScriptedChatAdapter([image_call, image_call, image_call]),
+        trace_store=trace_store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="生成一张白色运动鞋海报"))
+
+    image_calls = [call for call in state.tool_calls if call.tool_name == "image_generation"]
+    assert len(image_calls) == 1
+    assert state.status == "completed"
+    assert state.response is not None
+    guard_events = [
+        event for event in trace_store.list_by_run(state.run_id) if event.event_type == "loop_guard_triggered"
+    ]
+    assert any((event.error or {}).get("code") == "duplicate_terminal_tool" for event in guard_events)
+
+
+def test_single_terminal_tool_call_still_succeeds() -> None:
+    runtime = AgentGraphRuntime(
+        chat_adapter=ScriptedChatAdapter(
+            [
+                (
+                    '{"type": "tool_call", "tool_name": "image_generation", '
+                    '"tool_input": {"prompt": "一张白色运动鞋海报"}, "reason": "生成图片"}'
+                ),
+                '{"type": "final_answer", "message": "图片已生成。", "reason": "完成"}',
+            ]
+        )
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="生成一张白色运动鞋海报"))
+
+    image_calls = [call for call in state.tool_calls if call.tool_name == "image_generation"]
+    assert len(image_calls) == 1
+    assert state.status == "completed"
+    assert state.response is not None

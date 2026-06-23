@@ -29,6 +29,18 @@ class ToolResult(BaseModel):
     contract: CapabilityOutputContract | None = None
 
 
+class ToolSpec(BaseModel):
+    """Provider-neutral tool description for prompts, native tool calls, and MCP views."""
+
+    name: str = Field(min_length=1)
+    description: str = Field(default="")
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    required_inputs: list[str] = Field(default_factory=list)
+    when_to_use: list[str] = Field(default_factory=list)
+    when_not_to_use: list[str] = Field(default_factory=list)
+    runtime_constraints: list[str] = Field(default_factory=list)
+
+
 class ToolCallRecord(BaseModel):
     """Persistent record for one tool invocation."""
 

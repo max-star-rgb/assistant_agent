@@ -141,6 +141,19 @@ def create_video_understanding_adapter(config: ProviderConfig | None = None) -> 
     """Create a video understanding adapter without initializing real clients."""
 
     resolved = config or ProviderConfig.from_env()
+    if resolved.video_provider == "ark":
+        from multimodal_agent.providers.ark_video_understanding import (
+            ArkVideoUnderstandingAdapter,
+            ArkVideoUnderstandingConfig,
+        )
+
+        return ArkVideoUnderstandingAdapter(
+            ArkVideoUnderstandingConfig(
+                api_key=resolved.video_understanding_api_key,
+                base_url=resolved.video_understanding_base_url or "https://ark.cn-beijing.volces.com/api/v3",
+                model=resolved.video_understanding_model,
+            )
+        )
     if resolved.video_provider == "http":
         return HttpVideoUnderstandingAdapter(
             base_url=resolved.video_understanding_base_url,

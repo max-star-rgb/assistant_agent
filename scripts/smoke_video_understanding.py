@@ -79,8 +79,11 @@ def _missing_provider_config(provider: str, source: Mapping[str, str]) -> str | 
             missing.append("VIDEO_UNDERSTANDING_API_KEY")
         if missing:
             return f"missing {', '.join(missing)}"
-    if provider not in {"mock", "http"}:
-        return "MULTIMODAL_AGENT_VIDEO_PROVIDER must be mock or http."
+    if provider == "ark":
+        if not source.get("ARK_VISION_API_KEY"):
+            return "missing ARK_VISION_API_KEY"
+    if provider not in {"mock", "http", "ark"}:
+        return "MULTIMODAL_AGENT_VIDEO_PROVIDER must be mock, http, or ark."
     return None
 
 

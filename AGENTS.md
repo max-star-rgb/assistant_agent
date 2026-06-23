@@ -18,12 +18,33 @@
 默认按 Python 后端实现。除非任务文件另有要求，不要引入重型依赖。
 
 - API：FastAPI
-- 状态编排：可先自研轻量状态机；后续可替换/接入 LangGraph
+- 状态编排：当前包含 LangGraph 运行时与 ReAct assistant loop；轻量状态机/本地 mock 路径保留用于离线测试。
 - 数据模型：Pydantic
 - 测试：pytest
 - 服务通信：HTTP；实时状态后续使用 WebSocket
 - 长任务：先用本地任务状态模拟；后续接 Redis / Celery / MQ
 - 存储：开发阶段先用本地文件和 SQLite；后续接 PostgreSQL、对象存储、向量库
+
+## 2.1 本地 Python 环境
+
+本仓库默认使用 conda 环境 `hello_agent`。Codex 执行 Python/pytest/脚本时，优先直接调用该环境解释器，避免每条命令使用 `conda run` 的额外开销：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python
+```
+
+常用命令示例：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/demo_assistant_loop.py --no-env-file --provider mock --image-provider mock "你好"
+```
+
+只有在需要执行非 Python 命令且依赖 conda 激活环境变量时，才使用：
+
+```bash
+conda run -n hello_agent <command>
+```
 
 ## 3. 仓库目标结构
 
@@ -51,15 +72,15 @@ repo-root/
 
 在任何实现前：
 
-1. 先读 `docs/00-doc-map.md`。
-2. 再读当前任务文件，例如 `tasks/003-intent-router.md`。
+1. 先读当前阶段的文档入口：Phase 1-7 读 `docs/phase1-7/00-doc-map.md`；Phase 8 读 `docs/phase8/README.md`。
+2. 再读当前任务文件，例如 `tasks/phase1-7/003-intent-router.md` 或 `tasks/phase8/phase8A_2_react_final_answer_handoff.md`。
 3. 根据任务文件的 `Read first` 只打开必要文档。
 4. 不要一次性读取所有文档。
 5. 不要跨任务提前实现未来阶段。
 
 ## 5. 开发顺序
 
-严格按 `tasks/README.md` 的顺序推进：
+历史 Phase 1-7 任务按 `tasks/phase1-7/README.md` 的顺序推进；当前 Phase 8 任务按 `tasks/phase8/README.md` 和具体任务文件推进。不要跨阶段提前实现未来能力。
 
 1. 项目骨架
 2. 领域 Schema
@@ -82,6 +103,8 @@ repo-root/
 - 所有公共数据结构使用 Pydantic model。
 - 工具调用结果必须结构化，不允许只返回散乱字符串。
 - 外部模型/API 先写 adapter interface 和 mock implementation，不要一开始绑定具体供应商。
+- Phase 8 assistant loop 的长期方向是真实 LLM 自主决策回复/追问/工具调用；不要再让真实 LLM 路径依赖 intent/router/plan 来选择工具。
+- mock/offline 路径只作为稳定测试与本地演示兼容层，后续代码应逐步减少 mock 专用决策逻辑，不要把 mock 行为伪装成真实 LLM 能力。
 - 工具执行失败必须返回可解释错误，不能直接抛出未处理异常给 Agent。
 - 所有核心逻辑必须有单元测试。
 - 修改行为时同步更新对应 `docs/` 或 `tasks/`。
@@ -126,6 +149,8 @@ repo-root/
 下一任务：...
 ```
 
+如果用户请求的是小范围修复、脚本调试或文档更新，且没有明确任务文件，可以说明“未绑定具体任务文件”，但仍需遵守阅读规则、测试规则和 Scope 控制。
+
 ## 10. Codex 权限规则
 
 Codex 可以在不询问用户的情况下执行以下操作：
@@ -140,11 +165,11 @@ Codex 可以在不询问用户的情况下执行以下操作：
 
 允许的命令示例：
 
-    python
-    python -c "..."
-    python -m pytest
-    pytest
-    python scripts/check_env.py
+    /home/lenovo1/miniconda3/envs/hello_agent/bin/python
+    /home/lenovo1/miniconda3/envs/hello_agent/bin/python -c "..."
+    /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest
+    /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
+    conda run -n hello_agent <command>
     Added
     Edited
 
