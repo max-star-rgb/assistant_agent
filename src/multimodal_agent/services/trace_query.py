@@ -14,6 +14,8 @@ class RunSummary(BaseModel):
 
     run_id: str
     trace_id: str | None = None
+    user_id: str | None = None
+    session_id: str | None = None
     node_path: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     providers: list[str] = Field(default_factory=list)
@@ -58,6 +60,8 @@ class TraceQueryService:
         return RunSummary(
             run_id=run_id,
             trace_id=summary["trace_id"],
+            user_id=summary.get("user_id"),
+            session_id=summary.get("session_id"),
             node_path=summary["node_path"],
             tools=summary["tools"],
             providers=summary["providers"],

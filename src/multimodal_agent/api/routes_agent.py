@@ -4,17 +4,31 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
 from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.assistant_run_service import create_runtime, run_assistant_request, runtime_info
+from multimodal_agent.services.assistant_run_service import (
+    clear_user_conversation_history,
+    create_runtime,
+    run_assistant_request,
+    runtime_info,
+)
+from multimodal_agent.services.beta_feedback import (
+    BetaEvaluationExport,
+    BetaEvaluationItem,
+    BetaFeedbackCreate,
+    BetaFeedbackRecord,
+    BetaFeedbackStore,
+    summarize_feedback,
+)
 from multimodal_agent.services.trace_query import RunSummary, ToolCallSummary, TraceQueryService, TraceSummary
 
 
 router = APIRouter()
 _RUNTIME: AgentGraphRuntime | None = None
+_FEEDBACK_STORE: BetaFeedbackStore | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
 
@@ -24,6 +38,13 @@ def get_agent_runtime() -> AgentGraphRuntime:
     if _RUNTIME is None:
         _RUNTIME = create_runtime()
     return _RUNTIME
+
+
+def get_beta_feedback_store() -> BetaFeedbackStore:
+    global _FEEDBACK_STORE
+    if _FEEDBACK_STORE is None:
+        _FEEDBACK_STORE = BetaFeedbackStore()
+    return _FEEDBACK_STORE
 
 
 @router.post("/agent/run", response_model=AgentRunResponse)
@@ -88,3 +109,59 @@ def get_run_tool_calls(run_id: str) -> ToolCallSummary:
     if summary is None:
         raise HTTPException(status_code=404, detail="run not found")
     return summary
+
+
+@router.post("/beta/feedback", response_model=BetaFeedbackRecord)
+def submit_beta_feedback(feedback: BetaFeedbackCreate) -> BetaFeedbackRecord:
+    _assert_run_belongs_to_user(feedback.run_id, feedback.user_id)
+    return get_beta_feedback_store().append(feedback)
+
+
+@router.get("/beta/evaluations", response_model=BetaEvaluationExport)
+def export_beta_evaluations(user_id: str | None = Query(default=None)) -> BetaEvaluationExport:
+    store = get_beta_feedback_store()
+    records = store.list_by_user(user_id) if user_id else store.read_all()
+    trace_service = TraceQueryService(get_agent_runtime().trace_store)
+    items: list[BetaEvaluationItem] = []
+    for record in records:
+        summary = trace_service.run_summary(record.run_id)
+        run_payload = summary.model_dump(mode="json") if summary is not None else {"run_id": record.run_id, "missing": True}
+        items.append(BetaEvaluationItem(feedback=record, run=run_payload))
+    return BetaEvaluationExport(
+        user_id=user_id,
+        summary=summarize_feedback(records, user_id=user_id),
+        items=items,
+    )
+
+
+@router.delete("/beta/users/{user_id}/data")
+def delete_beta_user_data(user_id: str) -> dict[str, Any]:
+    runtime = get_agent_runtime()
+    memory_items = runtime.memory_store.list_by_user(user_id) if hasattr(runtime.memory_store, "list_by_user") else []
+    if hasattr(runtime.memory_store, "clear_user"):
+        runtime.memory_store.clear_user(user_id)
+    run_history_deleted = runtime.run_history.delete_by_user(user_id) if runtime.run_history is not None else 0
+    tool_history_deleted = runtime.tool_history.delete_by_user(user_id) if runtime.tool_history is not None else 0
+    trace_deleted = runtime.trace_store.delete_by_user(user_id)
+    feedback_deleted = get_beta_feedback_store().delete_by_user(user_id)
+    conversation_sessions_deleted = clear_user_conversation_history(user_id)
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "user_id": user_id,
+        "deleted": {
+            "memory_items": len(memory_items),
+            "run_history_records": run_history_deleted,
+            "tool_history_records": tool_history_deleted,
+            "trace_events": trace_deleted,
+            "feedback_records": feedback_deleted,
+            "conversation_sessions": conversation_sessions_deleted,
+        },
+    }
+
+
+def _assert_run_belongs_to_user(run_id: str, user_id: str) -> None:
+    summary = TraceQueryService(get_agent_runtime().trace_store).run_summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if summary.user_id != user_id:
+        raise HTTPException(status_code=403, detail="run does not belong to user")

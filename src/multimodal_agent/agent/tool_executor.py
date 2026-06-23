@@ -92,6 +92,8 @@ class ToolExecutor:
                     TraceEvent(
                         trace_id=trace_id,
                         run_id=state.run_id,
+                        user_id=state.user_id,
+                        session_id=state.session_id,
                         node_name=node_name or "tool_executor",
                         event_type="tool_failed",
                         capability=capability,
@@ -121,7 +123,14 @@ class ToolExecutor:
             )
         )
         if self.tool_history is not None:
-            self.tool_history.record_start(state.run_id, call.call_id, tool_name, tool_input)
+            self.tool_history.record_start(
+                state.run_id,
+                call.call_id,
+                tool_name,
+                tool_input,
+                user_id=state.user_id,
+                session_id=state.session_id,
+            )
         started_at = perf_counter()
         result, retry_count = self._run_with_retry(
             tool_name,
@@ -166,6 +175,8 @@ class ToolExecutor:
                     "succeeded",
                     result.latency_ms or latency_ms,
                     output_ref=result.output_ref,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
                 )
         else:
             decision = self.recovery_policy.decide(result, step)
@@ -215,12 +226,16 @@ class ToolExecutor:
                     "failed",
                     result.latency_ms or latency_ms,
                     error=decision.message,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
                 )
             if trace_store is not None and trace_id is not None:
                 trace_store.append(
                     TraceEvent(
                         trace_id=trace_id,
                         run_id=state.run_id,
+                        user_id=state.user_id,
+                        session_id=state.session_id,
                         node_name=node_name or "tool_executor",
                         event_type="tool_failed",
                         capability=capability,

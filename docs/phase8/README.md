@@ -28,6 +28,7 @@ assistant_node 成为中心大脑
 docs/phase8/
   README.md
   assistant-loop-architecture-upgrade.md
+  beta-trial.md
   planning-and-reflection-roadmap.md
 
 task/phase8/

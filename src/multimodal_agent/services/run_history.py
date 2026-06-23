@@ -81,3 +81,16 @@ class RunHistoryStore:
                 if line.strip():
                     records.append(RunHistoryRecord.model_validate_json(line))
         return records
+
+    def list_by_user(self, user_id: str) -> list[RunHistoryRecord]:
+        return [record for record in self.read_all() if record.user_id == user_id]
+
+    def delete_by_user(self, user_id: str) -> int:
+        records = self.read_all()
+        remaining = [record for record in records if record.user_id != user_id]
+        deleted = len(records) - len(remaining)
+        if deleted:
+            with self.path.open("w", encoding="utf-8") as file:
+                for record in remaining:
+                    file.write(json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n")
+        return deleted

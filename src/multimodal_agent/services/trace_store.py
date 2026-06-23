@@ -29,6 +29,8 @@ class TraceEvent(BaseModel):
 
     trace_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+    user_id: str | None = None
+    session_id: str | None = None
     node_name: str = Field(min_length=1)
     event_type: TraceEventType
     before_state_summary: dict[str, Any] = Field(default_factory=dict)
@@ -61,6 +63,12 @@ class TraceStore(Protocol):
     def node_path(self, run_id: str) -> list[str]:
         """Return finished graph node names for a run."""
 
+    def list_by_user(self, user_id: str) -> list[TraceEvent]:
+        """Return trace events for one user."""
+
+    def delete_by_user(self, user_id: str) -> int:
+        """Delete trace events for one user and return deleted count."""
+
 
 class InMemoryTraceStore:
     """In-memory trace store for tests and local debugging."""
@@ -79,6 +87,14 @@ class InMemoryTraceStore:
 
     def node_path(self, run_id: str) -> list[str]:
         return [event.node_name for event in self.list_by_run(run_id) if event.event_type == "node_finished"]
+
+    def list_by_user(self, user_id: str) -> list[TraceEvent]:
+        return [event for event in self.events if event.user_id == user_id]
+
+    def delete_by_user(self, user_id: str) -> int:
+        before = len(self.events)
+        self.events = [event for event in self.events if event.user_id != user_id]
+        return before - len(self.events)
 
 
 class JsonlTraceStore:
@@ -120,6 +136,37 @@ class JsonlTraceStore:
     def node_path(self, run_id: str) -> list[str]:
         return [event.node_name for event in self.list_by_run(run_id) if event.event_type == "node_finished"]
 
+    def list_by_user(self, user_id: str) -> list[TraceEvent]:
+        if not self.path.exists():
+            return []
+        events: list[TraceEvent] = []
+        with self.path.open("r", encoding="utf-8") as file:
+            for line in file:
+                if line.strip():
+                    event = TraceEvent.model_validate_json(line)
+                    if event.user_id == user_id:
+                        events.append(event)
+        return events
+
+    def delete_by_user(self, user_id: str) -> int:
+        if not self.path.exists():
+            return 0
+        remaining: list[TraceEvent] = []
+        deleted = 0
+        with self.path.open("r", encoding="utf-8") as file:
+            for line in file:
+                if not line.strip():
+                    continue
+                event = TraceEvent.model_validate_json(line)
+                if event.user_id == user_id:
+                    deleted += 1
+                else:
+                    remaining.append(event)
+        with self.path.open("w", encoding="utf-8") as file:
+            for event in remaining:
+                file.write(json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n")
+        return deleted
+
 
 def new_trace_id() -> str:
     """Create a new graph trace identifier."""
@@ -141,6 +188,8 @@ def trace_graph_node(node_name: str, node_func: Callable[[GraphStateT], GraphSta
                 TraceEvent(
                     trace_id=trace_id,
                     run_id=run_id,
+                    user_id=getattr(state, "user_id", None),
+                    session_id=getattr(state, "session_id", None),
                     node_name=node_name,
                     event_type="node_started",
                     before_state_summary=before,
@@ -166,6 +215,8 @@ def trace_graph_node(node_name: str, node_func: Callable[[GraphStateT], GraphSta
                     TraceEvent(
                         trace_id=trace_id,
                         run_id=run_id,
+                        user_id=getattr(state, "user_id", None),
+                        session_id=getattr(state, "session_id", None),
                         node_name=node_name,
                         event_type="node_finished",
                         before_state_summary=before,
@@ -259,6 +310,8 @@ def trace_debug_summary(events: list[TraceEvent]) -> dict[str, Any]:
     return {
         "run_id": events[0].run_id,
         "trace_id": events[0].trace_id,
+        "user_id": events[0].user_id,
+        "session_id": events[0].session_id,
         "node_path": [event.node_name for event in events if event.event_type == "node_finished"],
         "tools": tools,
         "providers": providers,
@@ -281,6 +334,8 @@ def trace_event_summary(event: TraceEvent) -> dict[str, Any]:
     return {
         "trace_id": event.trace_id,
         "run_id": event.run_id,
+        "user_id": event.user_id,
+        "session_id": event.session_id,
         "node_name": event.node_name,
         "event_type": event.event_type,
         "capability": event.capability,

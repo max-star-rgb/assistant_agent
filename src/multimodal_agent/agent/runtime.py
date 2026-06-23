@@ -57,9 +57,22 @@ class AgentGraphRuntime:
         else:
             self._graph = build_conditional_agent_graph()
 
-    def run_state(self, request: UserRequest) -> AgentState:
-        """Run the graph and return the full state for compatibility callers."""
+    def run_state(self, request: UserRequest, event_sink: EventSink | None = None) -> AgentState:
+        """Run the graph and return the full state for compatibility callers.
 
+        ``event_sink`` overrides the runtime-level sink for this run only. The
+        runtime stays shareable across concurrent runs (e.g. one per WebSocket
+        connection) without mutating ``self.event_sink``.
+        """
+
+        run_event_sink = event_sink or self.event_sink
+        # A per-run ToolExecutor binds the run's sink so tool events and agent
+        # trace events emitted via graph_state["tool_executor"] reach it.
+        tool_executor = ToolExecutor(
+            registry=self.registry,
+            tool_history=self.tool_history,
+            event_sink=run_event_sink,
+        )
         state = AgentState.from_request(request)
         run_started_at = perf_counter()
         self._emit(
@@ -68,7 +81,8 @@ class AgentGraphRuntime:
                 session_id=state.session_id,
                 run_id=state.run_id,
                 payload={"user_id": state.user_id},
-            )
+            ),
+            run_event_sink,
         )
         if self.run_history is not None:
             self.run_history.record_start(state.run_id, state.user_id, state.session_id)
@@ -78,7 +92,7 @@ class AgentGraphRuntime:
             "state": state,
             "intent_detector": self.intent_detector,
             "router": self.router,
-            "tool_executor": self.tool_executor,
+            "tool_executor": tool_executor,
             "chat_adapter": self.chat_adapter,
             "memory_store": self.memory_store,
             "outputs_by_step": {},
@@ -86,10 +100,10 @@ class AgentGraphRuntime:
             "trace_id": state.trace_id,
             "trace_store": self.trace_store,
         }
-        self._emit(AgentEvent(type="graph_node_started", session_id=state.session_id, run_id=state.run_id, node_name="agent_graph"))
+        self._emit(AgentEvent(type="graph_node_started", session_id=state.session_id, run_id=state.run_id, node_name="agent_graph"), run_event_sink)
         final_state = self._graph.invoke(initial_state)
         state = final_state["state"]
-        self._emit(AgentEvent(type="graph_node_finished", session_id=state.session_id, run_id=state.run_id, node_name="agent_graph"))
+        self._emit(AgentEvent(type="graph_node_finished", session_id=state.session_id, run_id=state.run_id, node_name="agent_graph"), run_event_sink)
         if self.run_history is not None:
             self.run_history.record_end(
                 state.run_id,
@@ -112,7 +126,8 @@ class AgentGraphRuntime:
                         if state.errors
                         else {"code": "TASK_FAILED", "message": "Agent run failed.", "detail": {}, "recoverable": False}
                     ),
-                )
+                ),
+                run_event_sink,
             )
         else:
             self._emit(
@@ -121,14 +136,15 @@ class AgentGraphRuntime:
                     session_id=state.session_id,
                     run_id=state.run_id,
                     text=state.response.message if state.response else "",
-                )
+                ),
+                run_event_sink,
             )
         return state
 
-    def run(self, request: UserRequest) -> AgentResponse:
+    def run(self, request: UserRequest, event_sink: EventSink | None = None) -> AgentResponse:
         """Run the graph and return the final AgentResponse."""
 
-        state = self.run_state(request)
+        state = self.run_state(request, event_sink=event_sink)
         if state.response is not None:
             return state.response
         return AgentResponse(
@@ -140,6 +156,7 @@ class AgentGraphRuntime:
             },
         )
 
-    def _emit(self, event: AgentEvent) -> None:
-        if self.event_sink is not None:
-            self.event_sink.emit(event)
+    def _emit(self, event: AgentEvent, event_sink: EventSink | None = None) -> None:
+        sink = event_sink or self.event_sink
+        if sink is not None:
+            sink.emit(event)

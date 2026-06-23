@@ -127,7 +127,7 @@ PROVIDER_RECOVERABLE_CODES = frozenset(
 
 _DEFAULT_POLICY = ProviderSafetyPolicy()
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(api[_-]?key|apikey|authorization|bearer|cookie|secret|token|password)\b\s*[:=]\s*([^\s,;]+)"
+    r"(?i)\b(api[_-]?key|apikey|authorization|bearer|cookie|secret(?:[_-]?token)?|token|password)\b\s*[:=]\s*([^\s,;]+)"
 )
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _KEY_PREFIX_RE = re.compile(r"\b(?:sk|pk|qwen|dashscope)-[A-Za-z0-9._-]{4,}\b", flags=re.IGNORECASE)

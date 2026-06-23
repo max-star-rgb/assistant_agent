@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start the local Assistant Web demo.")
     parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind.")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind.")
+    parser.add_argument("--public-url", default=None, help="Optional URL to print for sharing with beta users.")
     parser.add_argument("--reload", action="store_true", help="Enable uvicorn auto-reload for local development.")
     return parser
 
@@ -34,6 +35,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     url = f"http://{args.host}:{args.port}/demo/console"
     print(f"Starting Assistant Web demo: {url}")
+    if args.public_url:
+        print(f"Share this URL with trial users: {args.public_url}")
+    elif args.host in {"0.0.0.0", "::"}:
+        print(f"Share URL format: http://<your-machine-ip>:{args.port}/demo/console")
     print("Press Ctrl+C to stop.")
     uvicorn.run(
         "multimodal_agent.api.app:create_app",

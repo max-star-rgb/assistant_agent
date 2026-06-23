@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,12 @@ class InMemoryConversationStore:
 
     def clear(self, user_id: str, session_id: str) -> None:
         self._turns.pop((user_id, session_id), None)
+
+    def clear_user(self, user_id: str) -> int:
+        keys = [key for key in self._turns if key[0] == user_id]
+        for key in keys:
+            self._turns.pop(key, None)
+        return len(keys)
 
 
 _DEFAULT_CONVERSATION_STORE = InMemoryConversationStore()
@@ -188,7 +195,7 @@ def run_assistant_request(
         conversation_store=resolved_store,
         enable_conversation_history=enable_conversation_history,
     )
-    state = resolved_runtime.run_state(resolved_request)
+    state = _run_state_with_sink(resolved_runtime, resolved_request, sink)
     _record_conversation_turn(
         state,
         conversation_store=resolved_store,
@@ -197,6 +204,18 @@ def run_assistant_request(
     raw_events = getattr(sink, "events", [])
     events = list(raw_events) if isinstance(raw_events, list) else []
     return AssistantRunArtifacts(runtime=resolved_runtime, state=state, events=events)
+
+
+def _run_state_with_sink(runtime: AgentGraphRuntime, request: UserRequest, sink: EventSink) -> AgentState:
+    """Call run_state with a per-run sink, tolerating runtimes/test doubles that omit the param."""
+
+    try:
+        accepts_sink = "event_sink" in inspect.signature(runtime.run_state).parameters
+    except (TypeError, ValueError):
+        accepts_sink = False
+    if accepts_sink:
+        return runtime.run_state(request, event_sink=sink)
+    return runtime.run_state(request)
 
 
 def _preload_demo_video_context(request: UserRequest, runtime: AgentGraphRuntime) -> None:
@@ -308,6 +327,16 @@ def clear_conversation_history(
     """Clear stored multi-turn context for a user/session."""
 
     (conversation_store or _DEFAULT_CONVERSATION_STORE).clear(user_id, session_id)
+
+
+def clear_user_conversation_history(
+    user_id: str,
+    *,
+    conversation_store: InMemoryConversationStore | None = None,
+) -> int:
+    """Clear all process-local multi-turn context for one user."""
+
+    return (conversation_store or _DEFAULT_CONVERSATION_STORE).clear_user(user_id)
 
 
 def _prepare_conversation_request(

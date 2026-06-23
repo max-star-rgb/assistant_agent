@@ -112,4 +112,5 @@ def test_tool_description_failure_is_recorded_for_real_chat() -> None:
         "code": "tool_description_unavailable",
         "message": "registry unavailable",
     }
-    assert "可用工具：[]" in adapter.requests[0].user_query
+    assert "可用工具 ToolSpec 列表（唯一工具契约）" in adapter.requests[0].user_query
+    assert "[]" in adapter.requests[0].user_query

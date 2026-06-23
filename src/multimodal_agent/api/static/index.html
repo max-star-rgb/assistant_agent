@@ -89,6 +89,36 @@
         font: inherit;
       }
 
+      .media-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .trial-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .field label {
+        display: block;
+        margin-bottom: 6px;
+        color: #475467;
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        border: 1px solid #c7ced9;
+        border-radius: 6px;
+        padding: 9px 10px;
+        font: inherit;
+      }
+
       pre {
         overflow: auto;
         min-height: 120px;
@@ -128,12 +158,32 @@
         .input-row {
           grid-template-columns: 1fr;
         }
+
+        .trial-row {
+          grid-template-columns: 1fr;
+        }
+
+        .media-row {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
   <body>
     <main>
       <h1>Assistant Chat</h1>
+
+      <section>
+        <h2>Trial User</h2>
+        <div class="trial-row">
+          <div class="field">
+            <label for="trial-user-id">User ID</label>
+            <input id="trial-user-id" type="text" placeholder="输入你的试用 ID，例如 alice 或 phone-demo-01" autocomplete="username" />
+          </div>
+          <button id="save-user" type="button">Use ID</button>
+        </div>
+        <div class="status" id="user-status">请输入一个 ID 开始体验。</div>
+      </section>
 
       <section>
         <h2>Examples</h2>
@@ -151,6 +201,10 @@
           <textarea id="message">你好，简单介绍一下你能做什么。</textarea>
           <button id="send" type="button">Send</button>
         </div>
+        <div class="media-row">
+          <input id="image-ids" type="text" placeholder="Image IDs（逗号或换行分隔，可选）" />
+          <input id="video-ids" type="text" placeholder="Video IDs（逗号或换行分隔，可选）" />
+        </div>
         <div class="status" id="status">ready</div>
       </section>
 
@@ -167,12 +221,18 @@
 
     <script>
       const messageInput = document.querySelector("#message");
+      const imageIdsInput = document.querySelector("#image-ids");
+      const videoIdsInput = document.querySelector("#video-ids");
+      const trialUserIdInput = document.querySelector("#trial-user-id");
+      const saveUserButton = document.querySelector("#save-user");
+      const userStatus = document.querySelector("#user-status");
       const sendButton = document.querySelector("#send");
       const statusOutput = document.querySelector("#status");
       const finalResponse = document.querySelector("#final-response");
       const reactProcess = document.querySelector("#react-process");
       let runtimeInfo = null;
       const conversationHistory = [];
+      const USER_STORAGE_KEY = "multimodal_agent_trial_user_id";
 
       document.querySelector("#examples").addEventListener("click", (event) => {
         if (event.target.matches("button.example")) {
@@ -181,6 +241,12 @@
         }
       });
 
+      saveUserButton.addEventListener("click", saveTrialUserId);
+      trialUserIdInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          saveTrialUserId();
+        }
+      });
       sendButton.addEventListener("click", runAssistant);
       messageInput.addEventListener("keydown", (event) => {
         if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
@@ -190,6 +256,12 @@
 
       async function runAssistant() {
         const text = messageInput.value.trim();
+        const userId = currentTrialUserId();
+        if (!userId) {
+          setUserStatus("请输入 User ID 后再开始。", true);
+          trialUserIdInput.focus();
+          return;
+        }
         if (!text) {
           setStatus("请输入消息。", true);
           return;
@@ -208,7 +280,12 @@
             trace_id: payload.trace_id,
           });
           renderConversationHistory(conversationHistory);
-          reactProcess.textContent = [formatRuntimeInfo(), formatDecisionTrace(payload.decision_trace || [])]
+          reactProcess.textContent = [
+            formatRuntimeInfo(),
+            formatDecisionTrace(payload.decision_trace || []),
+            formatToolResults(payload.tool_results || []),
+            formatErrors(payload.errors || []),
+          ]
             .filter(Boolean)
             .join("\n\n");
           setStatus(`done | run_id=${payload.run_id} | trace_id=${payload.trace_id}`);
@@ -226,11 +303,27 @@
         }
       }
 
+      function parseIds(value) {
+        return (value || "")
+          .split(/[\n,]/)
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+
       function runAssistantStream(text) {
-        const sessionId = "web_chat_session";
-        const userId = "web_chat_user";
+        const userId = currentTrialUserId();
+        const sessionId = `web_trial_${safeId(userId)}`;
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const url = `${protocol}//${window.location.host}/ws/agent/${encodeURIComponent(sessionId)}?user_id=${encodeURIComponent(userId)}&text=${encodeURIComponent(text)}`;
+        const params = new URLSearchParams();
+        params.set("user_id", userId);
+        params.set("text", text);
+        for (const id of parseIds(imageIdsInput.value)) {
+          params.append("image_id", id);
+        }
+        for (const id of parseIds(videoIdsInput.value)) {
+          params.append("video_id", id);
+        }
+        const url = `${protocol}//${window.location.host}/ws/agent/${encodeURIComponent(sessionId)}?${params.toString()}`;
         const eventLines = [];
         reactProcess.textContent = formatRuntimeInfo();
         return new Promise((resolve, reject) => {
@@ -245,7 +338,7 @@
             eventLines.push(formatRuntimeEvent(event));
             if (event.type === "agent_response" && event.payload && event.payload.response) {
               finalPayload = event.payload.response;
-              renderLiveProcess(eventLines, finalPayload.decision_trace || []);
+              renderLiveProcess(eventLines, finalPayload);
             } else {
               renderLiveProcess(eventLines, null);
             }
@@ -263,10 +356,48 @@
         });
       }
 
-      function renderLiveProcess(eventLines, finalDecisionTrace) {
+      function saveTrialUserId() {
+        const userId = normalizeUserId(trialUserIdInput.value);
+        if (!userId) {
+          setUserStatus("User ID 不能为空。", true);
+          return;
+        }
+        localStorage.setItem(USER_STORAGE_KEY, userId);
+        trialUserIdInput.value = userId;
+        conversationHistory.length = 0;
+        renderConversationHistory(conversationHistory);
+        reactProcess.textContent = "";
+        setUserStatus(`当前 User ID：${userId}`);
+        setStatus("ready");
+      }
+
+      function currentTrialUserId() {
+        return normalizeUserId(trialUserIdInput.value || localStorage.getItem(USER_STORAGE_KEY) || "");
+      }
+
+      function normalizeUserId(value) {
+        return String(value || "")
+          .trim()
+          .replace(/\s+/g, "_")
+          .slice(0, 64);
+      }
+
+      function safeId(value) {
+        return normalizeUserId(value) || "anonymous";
+      }
+
+      function renderLiveProcess(eventLines, finalPayload) {
         const sections = [formatRuntimeInfo(), "Live events", eventLines.join("\n")];
-        if (finalDecisionTrace) {
-          sections.push("Final Decision Trace", formatDecisionTrace(finalDecisionTrace));
+        if (finalPayload) {
+          sections.push("Final Decision Trace", formatDecisionTrace(finalPayload.decision_trace || []));
+          const toolResults = formatToolResults(finalPayload.tool_results || []);
+          if (toolResults) {
+            sections.push(toolResults);
+          }
+          const errors = formatErrors(finalPayload.errors || []);
+          if (errors) {
+            sections.push(errors);
+          }
         }
         reactProcess.textContent = sections.filter(Boolean).join("\n\n");
       }
@@ -323,6 +454,79 @@
         return steps.map(formatDecisionTraceEvent).join("\n\n");
       }
 
+      function formatToolResults(results) {
+        if (!results.length) {
+          return "";
+        }
+        const lines = ["Tool Results"];
+        results.forEach((result, index) => {
+          const latency = result.latency_ms != null ? ` | latency_ms=${result.latency_ms}` : "";
+          lines.push(`[${index + 1}] ${result.tool_name} | success=${result.success}${latency}`);
+          if (result.output_ref) {
+            lines.push(`    artifact: ${result.output_ref}`);
+          }
+          const summary = compactToolResultSummary(result.data || {});
+          if (summary) {
+            lines.push(`    summary: ${summary}`);
+          }
+          if (result.error) {
+            lines.push(`    error: ${result.error}`);
+          }
+        });
+        return lines.join("\n");
+      }
+
+      function compactToolResultSummary(data) {
+        for (const key of ["summary", "response_text", "image_url", "output_ref", "request_id"]) {
+          if (data[key]) {
+            return String(data[key]).slice(0, 240);
+          }
+        }
+        if (Array.isArray(data.image_urls) && data.image_urls.length) {
+          return String(data.image_urls[0]).slice(0, 240);
+        }
+        if (data.contract && typeof data.contract === "object") {
+          return `capability=${data.contract.capability}, status=${data.contract.status}`;
+        }
+        return "";
+      }
+
+      function formatErrors(errors) {
+        if (!errors.length) {
+          return "";
+        }
+        const lines = ["Errors", JSON.stringify(errors, null, 2), "", "Recovery Hints"];
+        for (const hint of recoveryHints(errors)) {
+          lines.push(`- ${hint}`);
+        }
+        return lines.join("\n");
+      }
+
+      function recoveryHints(errors) {
+        const hints = [];
+        for (const error of errors) {
+          const code = String(error.code || "");
+          const message = String(error.message || "").toLowerCase();
+          if (code === "PROVIDER_UNCONFIGURED") {
+            hints.push("检查 .env 中对应 provider 的 API Key、Base URL 和模型名。");
+          } else if (code === "PROVIDER_AUTH_FAILED") {
+            hints.push("检查 API Key 是否属于当前 provider，是否有权限，且没有多余引号或空格。");
+          } else if (code === "PROVIDER_TIMEOUT") {
+            hints.push("真实 Provider 响应超时；可降低生成尺寸、换模型，或稍后重试。");
+          } else if (code === "PROVIDER_RATE_LIMITED") {
+            hints.push("Provider 限流；等待一段时间或降低请求频率。");
+          } else if ((code === "PROVIDER_UNAVAILABLE" || code === "TASK_FAILED") && message.includes("size")) {
+            hints.push("检查图像尺寸格式和模型支持的尺寸，例如 DashScope 使用 1024*1024。");
+          } else if (code === "TOOL_INPUT_INVALID") {
+            hints.push("检查 ReAct action_input 是否缺少工具必需字段。");
+          }
+        }
+        if (!hints.length) {
+          hints.push("查看上方 error code/message、tool input 和 trace_id；必要时保存运行日志后复现。");
+        }
+        return hints;
+      }
+
       function formatDecisionTraceEvent(step) {
         if (step.event === "decision") {
           return [
@@ -376,6 +580,26 @@
         statusOutput.classList.toggle("error", isError);
       }
 
+      function setUserStatus(text, isError = false) {
+        userStatus.textContent = text;
+        userStatus.classList.toggle("error", isError);
+      }
+
+      function initializeTrialUser() {
+        const params = new URLSearchParams(window.location.search);
+        const fromUrl = normalizeUserId(params.get("user_id"));
+        const stored = normalizeUserId(localStorage.getItem(USER_STORAGE_KEY));
+        const initial = fromUrl || stored;
+        if (initial) {
+          trialUserIdInput.value = initial;
+          localStorage.setItem(USER_STORAGE_KEY, initial);
+          setUserStatus(`当前 User ID：${initial}`);
+        } else {
+          sendButton.disabled = false;
+          setUserStatus("请输入一个 ID 开始体验。");
+        }
+      }
+
       fetchJson("/demo/runtime-info")
         .then((payload) => {
           runtimeInfo = payload;
@@ -383,6 +607,7 @@
         .catch(() => {
           runtimeInfo = null;
         });
+      initializeTrialUser();
     </script>
   </body>
 </html>

@@ -34,6 +34,8 @@ def test_history_records_successful_agent_run_and_tool_calls(tmp_path) -> None:
     completed_tools = [record for record in tool_records if record.status == "succeeded"]
     assert completed_tools
     assert all(record.run_id == state.run_id for record in completed_tools)
+    assert all(record.user_id == "u1" for record in completed_tools)
+    assert all(record.session_id == "s1" for record in completed_tools)
     assert all(record.call_id for record in completed_tools)
     assert all(record.tool_name for record in completed_tools)
     assert all(record.latency_ms is not None for record in completed_tools)
@@ -80,3 +82,21 @@ def test_history_records_failed_tool_call(tmp_path) -> None:
     assert failed_record.latency_ms == 7
     assert run_records[-1].status == "failed"
     assert run_records[-1].error == "mock failure"
+
+
+def test_history_can_delete_records_by_user(tmp_path) -> None:
+    run_history = RunHistoryStore(tmp_path / "runs.jsonl")
+    tool_history = ToolHistoryStore(tmp_path / "tool_calls.jsonl")
+    AgentWorkflow(run_history=run_history, tool_history=tool_history).run(
+        UserRequest(user_id="u1", session_id="s1", text="帮我找相似款")
+    )
+    AgentWorkflow(run_history=run_history, tool_history=tool_history).run(
+        UserRequest(user_id="u2", session_id="s1", text="帮我找相似款")
+    )
+
+    assert run_history.delete_by_user("u1") >= 1
+    assert tool_history.delete_by_user("u1") >= 1
+    assert run_history.list_by_user("u1") == []
+    assert tool_history.list_by_user("u1") == []
+    assert run_history.list_by_user("u2")
+    assert tool_history.list_by_user("u2")

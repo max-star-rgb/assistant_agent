@@ -12,6 +12,8 @@ class ToolCallHistoryRecord(BaseModel):
     """Serializable record for one tool call lifecycle event."""
 
     run_id: str = Field(min_length=1)
+    user_id: str | None = None
+    session_id: str | None = None
     call_id: str = Field(min_length=1)
     tool_name: str = Field(min_length=1)
     status: Literal["started", "succeeded", "failed"]
@@ -35,9 +37,13 @@ class ToolHistoryStore:
         call_id: str,
         tool_name: str,
         input_summary: dict[str, Any],
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> ToolCallHistoryRecord:
         record = ToolCallHistoryRecord(
             run_id=run_id,
+            user_id=user_id,
+            session_id=session_id,
             call_id=call_id,
             tool_name=tool_name,
             status="started",
@@ -55,9 +61,13 @@ class ToolHistoryStore:
         latency_ms: int,
         output_ref: str | None = None,
         error: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> ToolCallHistoryRecord:
         record = ToolCallHistoryRecord(
             run_id=run_id,
+            user_id=user_id,
+            session_id=session_id,
             call_id=call_id,
             tool_name=tool_name,
             status=status,
@@ -81,3 +91,16 @@ class ToolHistoryStore:
                 if line.strip():
                     records.append(ToolCallHistoryRecord.model_validate_json(line))
         return records
+
+    def list_by_user(self, user_id: str) -> list[ToolCallHistoryRecord]:
+        return [record for record in self.read_all() if record.user_id == user_id]
+
+    def delete_by_user(self, user_id: str) -> int:
+        records = self.read_all()
+        remaining = [record for record in records if record.user_id != user_id]
+        deleted = len(records) - len(remaining)
+        if deleted:
+            with self.path.open("w", encoding="utf-8") as file:
+                for record in remaining:
+                    file.write(json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n")
+        return deleted

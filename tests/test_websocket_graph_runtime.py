@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from multimodal_agent.api.app import create_app
 from multimodal_agent.api.websocket import mock_agent_events
+from multimodal_agent.api.websocket import mock_agent_events
 
 
 def test_websocket_uses_graph_runtime_event_sequence() -> None:
