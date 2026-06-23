@@ -99,3 +99,60 @@ def test_deepseek_chat_provider_uses_openai_compatible_http(monkeypatch) -> None
     assert captured["url"] == "https://api.deepseek.com/chat/completions"
     assert captured["payload"]["model"] == "deepseek-chat"
     assert captured["payload"]["messages"][-1]["content"] == "请用一句话介绍项目"
+
+
+def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -> None:
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {
+                    "model": "deepseek-chat",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "product_search",
+                                            "arguments": '{"query": "通勤耳机", "limit": 2}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        return FakeResponse()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    adapter = create_chat_adapter(
+        ProviderConfig(
+            chat_provider="deepseek",
+            deepseek_api_key="test-deepseek-key",
+            deepseek_chat_base_url="https://api.deepseek.com",
+            deepseek_chat_model="deepseek-chat",
+        )
+    )
+
+    result = adapter.chat(chat_request("帮我找通勤耳机"))
+
+    assert result.success is True
+    assert result.response_text == ""
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "product_search"
+    assert result.tool_calls[0].arguments == {"query": "通勤耳机", "limit": 2}

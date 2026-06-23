@@ -295,7 +295,7 @@ ToolSpec -> OpenAI-compatible tool/function schema
 ToolSpec -> MCP-style tool schema
 ```
 
-这些 adapter 只负责格式转换。即使未来 provider 返回 native tool call，也必须先转换成内部：
+这些 adapter 只负责格式转换。provider 返回 native tool call 时，也必须先转换成内部：
 
 ```text
 AssistantDecision(type="tool_call", tool_name=..., tool_input=...)
@@ -308,6 +308,19 @@ ActionValidator -> ToolExecutor -> ToolObservation
 ```
 
 不允许 provider 或 MCP 入口绕过本地 validator / executor。
+
+当前支持的 opt-in 闭环：
+
+```text
+OpenAI-compatible message.tool_calls
+  -> NativeToolCall
+  -> AssistantDecision
+  -> ActionValidator
+  -> ToolExecutor
+  -> ToolObservation
+```
+
+默认 prompt JSON ReAct 路径不变。只有 `ChatResult.tool_calls` 非空时，non-mock assistant loop 才优先使用 native tool call。
 
 ---
 

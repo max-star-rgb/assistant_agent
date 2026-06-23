@@ -9,6 +9,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from multimodal_agent.config import ProviderConfig
+from multimodal_agent.schemas.assistant_decision import NativeToolCall, openai_tool_call_to_native_tool_call
 from multimodal_agent.services.provider_errors import ProviderAdapterError, build_provider_error
 
 
@@ -39,6 +40,7 @@ class ChatResult(BaseModel):
     """Structured direct chat result."""
 
     response_text: str = ""
+    tool_calls: list[NativeToolCall] = Field(default_factory=list)
     provider: str = Field(min_length=1)
     model: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
@@ -200,20 +202,37 @@ def _parse_openai_chat_response(
     model: str,
     latency_ms: int,
 ) -> ChatResult:
-    content = data["choices"][0]["message"]["content"]
+    message = data["choices"][0]["message"]
+    content = message.get("content") or ""
     if isinstance(content, list):
         content = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
-    if not isinstance(content, str) or not content.strip():
+    tool_calls = _parse_openai_tool_calls(message.get("tool_calls"))
+    if (not isinstance(content, str) or not content.strip()) and not tool_calls:
         raise ProviderAdapterError("provider_empty_response", "chat provider returned empty content")
     usage = data.get("usage")
     return ChatResult(
-        response_text=content.strip(),
+        response_text=content.strip() if isinstance(content, str) else "",
+        tool_calls=tool_calls,
         provider=provider,
         model=str(data.get("model") or model),
         usage=usage if isinstance(usage, dict) else {},
         latency_ms=latency_ms,
         output_ref=f"provider://chat/{provider}",
     )
+
+
+def _parse_openai_tool_calls(value: Any) -> list[NativeToolCall]:
+    if not isinstance(value, list):
+        return []
+    calls: list[NativeToolCall] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            calls.append(openai_tool_call_to_native_tool_call(item))
+        except ValueError:
+            continue
+    return calls
 
 
 def _chat_completions_url(base_url: str) -> str:

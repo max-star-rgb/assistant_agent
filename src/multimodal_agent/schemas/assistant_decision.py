@@ -126,6 +126,55 @@ class AssistantDecision(BaseModel):
             )
 
 
+class NativeToolCall(BaseModel):
+    """Provider-native tool call normalized at the adapter boundary."""
+
+    id: str | None = None
+    name: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    provider_format: str = "openai_compatible"
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+    def to_assistant_decision(self) -> AssistantDecision:
+        """Convert to the internal decision protocol before validation/execution."""
+
+        return AssistantDecision(
+            type="tool_call",
+            tool_name=self.name,
+            tool_input=self.arguments,
+            reason=f"Provider-native tool call ({self.provider_format}).",
+            safety_notes=["native_tool_call"],
+        )
+
+
+def native_tool_call_to_assistant_decision(call: NativeToolCall) -> AssistantDecision:
+    """Convert a normalized native tool call to AssistantDecision."""
+
+    return call.to_assistant_decision()
+
+
+def openai_tool_call_to_native_tool_call(payload: dict[str, Any]) -> NativeToolCall:
+    """Parse an OpenAI-compatible tool call payload."""
+
+    function = payload.get("function") if isinstance(payload.get("function"), dict) else {}
+    name = function.get("name") or payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("native tool call missing function name")
+    return NativeToolCall(
+        id=str(payload.get("id")) if payload.get("id") is not None else None,
+        name=name,
+        arguments=_parse_native_arguments(function.get("arguments", payload.get("arguments"))),
+        provider_format="openai_compatible",
+        raw=payload,
+    )
+
+
+def openai_tool_call_to_assistant_decision(payload: dict[str, Any]) -> AssistantDecision:
+    """Convert an OpenAI-compatible tool call payload to AssistantDecision."""
+
+    return openai_tool_call_to_native_tool_call(payload).to_assistant_decision()
+
+
 def _extract_json(text: str) -> str | None:
     """Extract JSON object from text, handling code fences."""
     fenced_pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
@@ -147,3 +196,19 @@ def _extract_json(text: str) -> str | None:
                 return text[open_brace : i + 1]
 
     return None
+
+
+def _parse_native_arguments(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value) if value.strip() else {}
+        except json.JSONDecodeError:
+            return {"__native_tool_arguments_error__": "arguments JSON parsing failed"}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"__native_tool_arguments_error__": "arguments JSON was not an object"}
+    return {"__native_tool_arguments_error__": "arguments were not a JSON object"}

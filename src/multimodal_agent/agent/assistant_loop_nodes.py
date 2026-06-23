@@ -22,7 +22,7 @@ from multimodal_agent.agent.router import ToolRouter
 from multimodal_agent.agent.state import AgentError, AgentState
 from multimodal_agent.agent.tool_executor import ToolExecutor
 from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy, format_memory_context
-from multimodal_agent.schemas.assistant_decision import AssistantDecision
+from multimodal_agent.schemas.assistant_decision import AssistantDecision, native_tool_call_to_assistant_decision
 from multimodal_agent.schemas.capabilities import canonical_intent
 from multimodal_agent.schemas.events import AgentEvent
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
@@ -230,7 +230,10 @@ def _decide_with_llm(
         )
     )
     raw_output = result.response_text if result.success else ""
-    decision = AssistantDecision.from_llm_output(raw_output)
+    if result.success and result.tool_calls:
+        decision = native_tool_call_to_assistant_decision(result.tool_calls[0])
+    else:
+        decision = AssistantDecision.from_llm_output(raw_output)
     if _should_repair_llm_decision(raw_output, decision):
         decision = _repair_llm_decision(
             chat_adapter=chat_adapter,
