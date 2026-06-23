@@ -105,6 +105,7 @@ repo-root/
 - 外部模型/API 先写 adapter interface 和 mock implementation，不要一开始绑定具体供应商。
 - Phase 8 assistant loop 的长期方向是真实 LLM 自主决策回复/追问/工具调用；不要再让真实 LLM 路径依赖 intent/router/plan 来选择工具。
 - mock/offline 路径只作为稳定测试与本地演示兼容层，后续代码应逐步减少 mock 专用决策逻辑，不要把 mock 行为伪装成真实 LLM 能力。
+- 后续新增核心 ReAct/assistant loop 测试应优先覆盖非 mock LLM 决策路径（例如 scripted/fake real chat adapter，`provider != "mock"`），不要默认用 mock rule plan 证明新 Agent 行为；真实外部 LLM/provider 网络调用只放在显式 opt-in 的 smoke/integration 测试中。
 - 工具执行失败必须返回可解释错误，不能直接抛出未处理异常给 Agent。
 - 所有核心逻辑必须有单元测试。
 - 修改行为时同步更新对应 `docs/` 或 `tasks/`。

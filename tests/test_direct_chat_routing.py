@@ -1,5 +1,8 @@
+from datetime import datetime, timezone
+
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.memory.store import InMemoryStore
+from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
 
@@ -67,3 +70,46 @@ def test_real_chat_direct_chat_is_decided_by_llm_policy_without_rule_intent() ->
     assert "多模态助手" in state.response.message
     assert state.request.metadata["assistant_loop_steps"][0]["message"] == state.response.message
     assert state.request.metadata["decision_trace"][0]["answer"] == state.response.message
+
+
+def test_real_chat_prompt_includes_memory_summaries() -> None:
+    adapter = FakeRealChatAdapter()
+    store = InMemoryStore()
+    store.save(
+        MemoryItem(
+            memory_id="m1",
+            user_id="u1",
+            session_id="s0",
+            memory_type="preference",
+            summary="用户喜欢日系极简风格。",
+            tags=["日系极简"],
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    state = AgentGraphRuntime(memory_store=store, chat_adapter=adapter).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="继续按日系极简给建议")
+    )
+
+    assert state.intent is None
+    assert len(adapter.requests) == 1
+    assert "相关记忆" in adapter.requests[0].user_query
+    assert "用户喜欢日系极简风格。" in adapter.requests[0].user_query
+
+
+def test_tool_description_failure_is_recorded_for_real_chat() -> None:
+    class BrokenRegistry:
+        def describe_tools(self) -> list[dict[str, object]]:
+            raise RuntimeError("registry unavailable")
+
+    adapter = FakeRealChatAdapter()
+    state = AgentGraphRuntime(registry=BrokenRegistry(), memory_store=InMemoryStore(), chat_adapter=adapter).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="你好")
+    )
+
+    assert state.intent is None
+    assert state.request.metadata["tool_description_error"] == {
+        "code": "tool_description_unavailable",
+        "message": "registry unavailable",
+    }
+    assert "可用工具：[]" in adapter.requests[0].user_query

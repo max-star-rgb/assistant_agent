@@ -1,12 +1,12 @@
-"""Controlled assistant tool loop nodes.
+"""Controlled assistant ReAct loop nodes.
 
-This module is intentionally not a pure ReAct implementation. The assistant
-proposes the next action, while local policies, validators, ToolExecutor,
-loop guards, and response finalizers own execution safety and state mutation.
+In real chat-adapter mode, the LLM proposes the next ReAct action: answer,
+ask a follow-up question, or call a tool with arguments. In mock mode, the
+rule plan provides deterministic decisions for stable offline tests.
 
-Decision paths are explicit:
-- MockPlanAssistantPolicy follows the deterministic rule plan for offline tests.
-- LLMAssistantPolicy asks a real chat adapter to propose ReAct-style actions.
+Local code owns the minimum required guardrails around those decisions:
+tool listing, output parsing, validation, execution, loop limits, trace
+recording, and state mutation.
 """
 
 import json
@@ -62,6 +62,7 @@ class AssistantDecisionContext:
 
     request: UserRequest
     memory_summaries: list[str]
+    memory_text: str
     tool_descriptions: list[dict[str, Any]]
     tool_observations: list[dict[str, Any]]
     iterations: int
@@ -71,7 +72,7 @@ class AssistantDecisionContext:
 
 # Keep policy classes small and local until their interfaces stabilize. They
 # separate decision sources without changing the LangGraph node topology.
-class MockPlanAssistantPolicy:
+class _decide_with_mock_plan:
     """Deterministic offline policy backed by the rule-generated plan."""
 
     def decide(self, graph_state: AssistantLoopState, context: AssistantDecisionContext, state: AgentState) -> AssistantDecision:
@@ -86,7 +87,7 @@ class MockPlanAssistantPolicy:
         return decision
 
 
-class LLMAssistantPolicy:
+class _decide_with_llm:
     """LLM-backed ReAct policy that proposes the next assistant action."""
 
     def __init__(self, chat_adapter: ChatAdapter) -> None:
@@ -96,7 +97,7 @@ class LLMAssistantPolicy:
         prompt = _build_assistant_prompt(
             request=context.request,
             memory_summaries=context.memory_summaries,
-            memory_text="",
+            memory_text=context.memory_text,
             observations=context.tool_observations,
             tools_desc=context.tool_descriptions,
             iteration=context.iterations,
@@ -200,12 +201,15 @@ def _build_decision_context(
 ) -> AssistantDecisionContext:
     try:
         tool_descriptions = graph_state["tool_executor"].registry.describe_tools()
-    except Exception:
+    except Exception as exc:
         tool_descriptions = []
+        _record_tool_description_error(graph_state, exc)
     memory_summaries = [item.summary for item in graph_state["state"].memory_context]
+    memory_text = "\n".join(summary for summary in memory_summaries if summary)
     return AssistantDecisionContext(
         request=request,
         memory_summaries=memory_summaries,
+        memory_text=memory_text,
         tool_descriptions=tool_descriptions,
         tool_observations=tool_observations,
         iterations=iterations,
@@ -224,8 +228,8 @@ def _decide_next_action(
     """Select the next assistant action without mutating response state."""
 
     if context.is_mock:
-        return MockPlanAssistantPolicy().decide(graph_state, context, state)
-    return LLMAssistantPolicy(chat_adapter).decide(context, state)
+        return _decide_with_mock_plan().decide(graph_state, context, state)
+    return _decide_with_llm(chat_adapter).decide(context, state)
 
 
 def _apply_decision_guards(graph_state: AssistantLoopState, decision: AssistantDecision) -> AssistantDecision:
@@ -362,7 +366,7 @@ def _mock_assistant_decision_from_plan(
         return AssistantDecision(
             type="final_answer",
             message="离线计划不可用，无法选择下一步工具。",
-            reason="MockPlanAssistantPolicy requires state.plan from the rule router.",
+            reason="_decide_with_mock_plan(...) requires state.plan from the rule router.",
             safety_notes=["missing_rule_plan"],
         )
 
@@ -988,6 +992,24 @@ def _record_loop_guard(graph_state: AssistantLoopState, guard: LoopGuardDecision
         event_type="loop_guard_triggered",
         status="triggered",
         error={"code": guard.code, "message": guard.message},
+    )
+
+
+def _record_tool_description_error(graph_state: AssistantLoopState, exc: Exception) -> None:
+    """Record a lightweight diagnostic when tool descriptions are unavailable."""
+
+    state = graph_state["state"]
+    error = {
+        "code": "tool_description_unavailable",
+        "message": str(exc) or exc.__class__.__name__,
+    }
+    state.request.metadata["tool_description_error"] = error
+    _append_trace(
+        graph_state,
+        event_type="assistant_decision",
+        status="failed",
+        output_summary={"diagnostic": "tool_description_unavailable"},
+        error=error,
     )
 
 

@@ -31,7 +31,6 @@ tasks/README_PHASE7.md
 
 - Complete one task before starting the next.
 - Do not start the next track.
-- Default mock/local/offline.
 - Do not call real Providers by default.
 - Do not write API keys.
 - Prefer apply_patch.
