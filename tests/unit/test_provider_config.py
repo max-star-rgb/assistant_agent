@@ -16,6 +16,7 @@ def test_provider_config_allows_empty_environment() -> None:
     assert config.render_provider == "mock"
     assert config.video_provider == "mock"
     assert config.intent_router == "rule"
+    assert config.assistant_tool_call_mode == "prompt_json"
     assert config.has_any_real_provider() is False
 
 
@@ -59,6 +60,7 @@ def test_provider_config_reads_environment_values() -> None:
             "RENDER_API_KEY": "test-render-key",
             "RENDER_TIMEOUT_SECONDS": "5.5",
             "MULTIMODAL_AGENT_VIDEO_PROVIDER": "http",
+            "ASSISTANT_TOOL_CALL_MODE": "native_tools",
             "VIDEO_UNDERSTANDING_BASE_URL": "http://localhost:7004",
             "VIDEO_UNDERSTANDING_API_KEY": "test-video-key",
             "VIDEO_UNDERSTANDING_MODEL": "video-test-model",
@@ -120,6 +122,7 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.max_video_bytes == 1024
     assert config.max_video_seconds == 12.5
     assert config.intent_router == "hybrid"
+    assert config.assistant_tool_call_mode == "native_tools"
     assert config.has_any_real_provider() is True
 
 

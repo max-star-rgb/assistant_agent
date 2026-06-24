@@ -156,3 +156,66 @@ def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "product_search"
     assert result.tool_calls[0].arguments == {"query": "通勤耳机", "limit": 2}
+
+
+def test_openai_compatible_chat_payload_sends_native_tools(monkeypatch) -> None:
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {
+                    "model": "deepseek-chat",
+                    "choices": [{"message": {"content": "done"}}],
+                    "usage": {},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    adapter = create_chat_adapter(
+        ProviderConfig(
+            chat_provider="deepseek",
+            deepseek_api_key="test-deepseek-key",
+            deepseek_chat_base_url="https://api.deepseek.com",
+            deepseek_chat_model="deepseek-chat",
+        )
+    )
+
+    adapter.chat(
+        ChatRequest(
+            user_id="u1",
+            session_id="s1",
+            user_query="帮我找通勤耳机",
+            messages=[
+                {"role": "system", "content": "Use tools when needed."},
+                {"role": "user", "content": "帮我找通勤耳机"},
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "product_search",
+                        "description": "Search products.",
+                        "parameters": {"type": "object", "properties": {}, "required": []},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+    )
+
+    assert captured["payload"]["messages"][0]["role"] == "system"
+    assert captured["payload"]["tools"][0]["function"]["name"] == "product_search"
+    assert captured["payload"]["tool_choice"] == "auto"

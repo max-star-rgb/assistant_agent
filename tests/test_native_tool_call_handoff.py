@@ -1,4 +1,5 @@
 from multimodal_agent.agent.runtime import AgentGraphRuntime
+from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.assistant_decision import NativeToolCall
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
@@ -22,7 +23,18 @@ class NativeToolChatAdapter:
 def native_result(name: str, arguments: dict[str, object]) -> ChatResult:
     return ChatResult(
         response_text="",
-        tool_calls=[NativeToolCall(name=name, arguments=arguments)],
+        tool_calls=[
+            NativeToolCall(
+                id="call_1",
+                name=name,
+                arguments=arguments,
+                raw={
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"},
+                },
+            )
+        ],
         provider="scripted-native",
         model="native-test",
     )
@@ -47,10 +59,20 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
             final_result("已根据 native tool call 搜索通勤耳机。"),
         ]
     )
-    runtime = AgentGraphRuntime(chat_adapter=adapter)
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+    )
 
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机"))
 
+    assert adapter.requests[0].tools
+    assert adapter.requests[0].tool_choice == "auto"
+    assert any(message["role"] == "user" for message in adapter.requests[0].messages)
+    tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
+    assert tool_messages
+    assert tool_messages[0]["tool_call_id"] == "call_1"
+    assert "product_search" in tool_messages[0]["content"]
     assert state.intent is None
     assert state.plan is None
     assert [call.tool_name for call in state.tool_calls] == ["product_search"]
@@ -62,7 +84,10 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
 
 def test_native_unknown_tool_is_rejected_by_validator() -> None:
     adapter = NativeToolChatAdapter([native_result("unknown_tool", {})])
-    runtime = AgentGraphRuntime(chat_adapter=adapter)
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+    )
 
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="use native unknown"))
 
@@ -73,13 +98,30 @@ def test_native_unknown_tool_is_rejected_by_validator() -> None:
 
 def test_native_invalid_tool_args_are_rejected_by_validator() -> None:
     adapter = NativeToolChatAdapter([native_result("image_generation", {})])
-    runtime = AgentGraphRuntime(chat_adapter=adapter)
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+    )
 
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="生成图片"))
 
     assert state.tool_calls == []
     assert state.response is not None
     assert state.response.data["validator_result"]["code"] == "invalid_tool_input"
+
+
+def test_prompt_json_mode_does_not_treat_native_tool_calls_as_main_path() -> None:
+    adapter = NativeToolChatAdapter([native_result("product_search", {"query": "通勤耳机"})])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="prompt_json"),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机"))
+
+    assert adapter.requests[0].tools == []
+    assert state.tool_calls == []
+    assert state.response is not None
 
 
 def test_native_tool_call_does_not_change_mock_rule_plan_path() -> None:

@@ -22,6 +22,9 @@ class ChatRequest(BaseModel):
     user_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     user_query: str = Field(min_length=1)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    tool_choice: str | dict[str, Any] | None = None
     memory_context: list[str] = Field(default_factory=list)
     system_instruction: str | None = None
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
@@ -181,18 +184,25 @@ def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
 
 
 def _build_openai_chat_payload(request: ChatRequest, model: str) -> dict[str, Any]:
-    messages: list[dict[str, str]] = []
-    if request.system_instruction:
-        messages.append({"role": "system", "content": request.system_instruction})
-    if request.memory_context:
-        messages.append({"role": "system", "content": "相关记忆：\n" + "\n".join(request.memory_context)})
-    messages.append({"role": "user", "content": request.user_query})
-    return {
+    if request.messages:
+        messages = request.messages
+    else:
+        messages = []
+        if request.system_instruction:
+            messages.append({"role": "system", "content": request.system_instruction})
+        if request.memory_context:
+            messages.append({"role": "system", "content": "相关记忆：\n" + "\n".join(request.memory_context)})
+        messages.append({"role": "user", "content": request.user_query})
+    payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "temperature": request.temperature,
         "max_tokens": request.max_tokens,
     }
+    if request.tools:
+        payload["tools"] = request.tools
+        payload["tool_choice"] = request.tool_choice or "auto"
+    return payload
 
 
 def _parse_openai_chat_response(

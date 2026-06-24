@@ -287,12 +287,24 @@ repair 失败
 
 ### 7.4 Provider / Protocol Schema Adapter
 
-当前阶段只提供轻量转换层，不切换真实 provider 调用方式：
+当前阶段提供轻量转换层，并支持 opt-in native tool calling 模式：
 
 ```text
 ToolSpec -> prompt JSON
 ToolSpec -> OpenAI-compatible tool/function schema
 ToolSpec -> MCP-style tool schema
+```
+
+配置开关：
+
+```text
+ASSISTANT_TOOL_CALL_MODE=prompt_json | native_tools
+```
+
+默认仍是：
+
+```text
+prompt_json
 ```
 
 这些 adapter 只负责格式转换。provider 返回 native tool call 时，也必须先转换成内部：
@@ -312,15 +324,20 @@ ActionValidator -> ToolExecutor -> ToolObservation
 当前支持的 opt-in 闭环：
 
 ```text
-OpenAI-compatible message.tool_calls
+ASSISTANT_TOOL_CALL_MODE=native_tools
+  -> registry.list_specs()
+  -> ToolSpec -> OpenAI-compatible tools payload
+  -> ChatRequest.messages/tools/tool_choice
+  -> OpenAI-compatible message.tool_calls
   -> NativeToolCall
   -> AssistantDecision
   -> ActionValidator
   -> ToolExecutor
   -> ToolObservation
+  -> next ChatRequest tool result message
 ```
 
-默认 prompt JSON ReAct 路径不变。只有 `ChatResult.tool_calls` 非空时，non-mock assistant loop 才优先使用 native tool call。
+默认 prompt JSON ReAct 路径不变。只有 `ASSISTANT_TOOL_CALL_MODE=native_tools` 且 `ChatResult.tool_calls` 非空时，non-mock assistant loop 才优先使用 native tool call。
 
 ---
 

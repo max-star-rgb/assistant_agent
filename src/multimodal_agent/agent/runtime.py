@@ -99,6 +99,7 @@ class AgentGraphRuntime:
             "current_step_index": 0,
             "trace_id": state.trace_id,
             "trace_store": self.trace_store,
+            "assistant_tool_call_mode": self.config.assistant_tool_call_mode,
         }
         self._emit(AgentEvent(type="graph_node_started", session_id=state.session_id, run_id=state.run_id, node_name="agent_graph"), run_event_sink)
         final_state = self._graph.invoke(initial_state)

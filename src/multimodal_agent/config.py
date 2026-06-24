@@ -18,6 +18,7 @@ from multimodal_agent.services.provider_specs import (
 
 
 AgentGraphMode = Literal["conditional", "assistant_loop"]
+AssistantToolCallMode = Literal["prompt_json", "native_tools"]
 
 
 VisionProviderName = str
@@ -117,6 +118,7 @@ class ProviderConfig:
     max_video_seconds: float = 60.0
     intent_router: IntentRouterName = "rule"
     agent_graph_mode: AgentGraphMode = "assistant_loop"  # 默认使用新的 ReAct 架构
+    assistant_tool_call_mode: AssistantToolCallMode = "prompt_json"
     max_tool_iterations: int = 5
 
     @classmethod
@@ -239,6 +241,10 @@ class ProviderConfig:
             max_video_seconds=_float_env(source.get("MULTIMODAL_AGENT_MAX_VIDEO_SECONDS"), 60.0),
             intent_router=_intent_router(source.get("MULTIMODAL_AGENT_INTENT_ROUTER")),
             agent_graph_mode=_agent_graph_mode(source.get("AGENT_GRAPH_MODE")),
+            assistant_tool_call_mode=_assistant_tool_call_mode(
+                source.get("ASSISTANT_TOOL_CALL_MODE")
+                or source.get("MULTIMODAL_AGENT_ASSISTANT_TOOL_CALL_MODE")
+            ),
             max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 5),
         )
 
@@ -482,6 +488,12 @@ def _agent_graph_mode(value: str | None) -> AgentGraphMode:
     if value == "conditional":
         return "conditional"
     return "assistant_loop"  # 默认改为 assistant_loop
+
+
+def _assistant_tool_call_mode(value: str | None) -> AssistantToolCallMode:
+    if value == "native_tools":
+        return "native_tools"
+    return "prompt_json"
 
 
 def _float_env(value: str | None, default: float) -> float:
