@@ -1,4 +1,9 @@
-"""Run the assistant agent from a local offline CLI."""
+"""Run the assistant agent from a local offline CLI.
+
+This runs the agent IN-PROCESS for offline development/smoke. It does NOT
+connect to a backend server. For the remote client that talks to a running
+`scripts/run_server.py`, use `scripts/run_client.py` instead.
+"""
 
 from __future__ import annotations
 

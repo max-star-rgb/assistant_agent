@@ -11,23 +11,46 @@ Phase 6 Productization / Usable Demo is complete. See [Phase 6 Review](docs/121-
 ```bash
 python scripts/check_env.py
 python -m pytest
-python scripts/run_assistant_cli.py --text "帮我写一段商品介绍"
+python scripts/run_assistant_cli.py --text "帮我写一段商品介绍"   # 本地离线直跑，不连服务器
 python scripts/run_demo_flows.py
 ```
 
-Open the local API/Web Console:
+## Server + Clients
 
-```bash
-python scripts/run_web_demo.py
-```
+The assistant runs as **one backend server** that two clients talk to. The
+server owns all provider/env configuration; the clients just send requests.
 
-For auto-reload during local development:
+1. Start the backend server:
 
-```bash
-python scripts/run_web_demo.py --reload
-```
+   ```bash
+   python scripts/run_server.py
+   ```
 
-Then visit:
+   For auto-reload during local development:
+
+   ```bash
+   python scripts/run_server.py --reload
+   ```
+
+   To use a real chat provider, keep credentials in your local shell or
+   untracked `.env` and pass the provider to the **server**:
+
+   ```bash
+   python scripts/run_server.py --provider deepseek
+   ```
+
+2. Use either client against the running server:
+
+   - **Web Console** (browser client): open
+     `http://127.0.0.1:8000/demo/console`
+   - **CLI client** (`scripts/run_client.py`): streams over the same WebSocket
+     endpoint as the Web Console
+
+     ```bash
+     python scripts/run_client.py --server http://127.0.0.1:8000 "你好"
+     ```
+
+Health check and console URLs:
 
 ```text
 http://127.0.0.1:8000/health

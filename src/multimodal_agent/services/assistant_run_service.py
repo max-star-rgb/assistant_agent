@@ -21,6 +21,7 @@ from multimodal_agent.services.video_context import load_demo_video_frames
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ENV_FILE = REPO_ROOT / ".env"
 DEFAULT_MAX_HISTORY_TURNS = 8
+SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 
 
 @dataclass(frozen=True)
@@ -168,7 +169,7 @@ def create_runtime(
     if _is_pytest():
         resolved_config = config or ProviderConfig.from_env({})
     else:
-        if load_env:
+        if load_env and not _skip_dotenv_load():
             load_env_file()
         resolved_config = config or ProviderConfig.from_env()
     return AgentGraphRuntime(config=resolved_config, event_sink=event_sink)
@@ -412,3 +413,7 @@ def _safe_steps(value: Any) -> list[dict[str, Any]]:
 
 def _is_pytest() -> bool:
     return "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("MULTIMODAL_AGENT_DISABLE_DOTENV") == "1"
+
+
+def _skip_dotenv_load() -> bool:
+    return os.environ.get(SKIP_DOTENV_ENV) == "1"

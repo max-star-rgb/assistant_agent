@@ -37,7 +37,10 @@
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/demo_assistant_loop.py --no-env-file --provider mock --image-provider mock "你好"
+# 先起后端服务器（owns provider/env 配置）：
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py --provider mock --image-provider mock
+# 再用 CLI 客户端连它：
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_client.py --server http://127.0.0.1:8000 "你好"
 ```
 
 只有在需要执行非 Python 命令且依赖 conda 激活环境变量时，才使用：

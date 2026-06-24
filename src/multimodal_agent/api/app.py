@@ -13,6 +13,8 @@ from multimodal_agent.api.websocket import router as websocket_router
 from multimodal_agent.schemas.api import PROTOCOL_VERSION, api_error
 from multimodal_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
 
+SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
+
 
 def create_app() -> FastAPI:
     load_repo_env_file()
@@ -55,7 +57,11 @@ def create_app() -> FastAPI:
 def load_repo_env_file(path: Path | None = None, *, override: bool = False) -> dict[str, str]:
     """Load repo `.env` for manual API/Web runs without adding a dependency."""
 
-    if "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("MULTIMODAL_AGENT_DISABLE_DOTENV") == "1":
+    if (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or os.environ.get("MULTIMODAL_AGENT_DISABLE_DOTENV") == "1"
+        or os.environ.get(SKIP_DOTENV_ENV) == "1"
+    ):
         return {}
     env_path = path or Path(__file__).resolve().parents[3] / ".env"
     if not env_path.exists():

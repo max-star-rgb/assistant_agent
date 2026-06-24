@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""Interactive ReAct assistant loop demo.
+"""Remote CLI client for the assistant backend.
 
-This script is intentionally manual-smoke oriented. It can load local `.env`
-configuration and run the LangGraph Assistant Loop with a real chat provider,
-while keeping default tests offline.
+This script is a thin, pure client of a running FastAPI backend (start it with
+`scripts/run_server.py`). It streams the assistant run over the same WebSocket
+endpoint the Web Console uses (`/ws/agent/{session_id}`), so the CLI and the Web
+UI are both clients of one backend service/API. The server process owns
+provider/env configuration.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
+
+import httpx
+from websockets.sync.client import connect as ws_connect
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,33 +28,25 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.events import AgentEvent
-from multimodal_agent.services.assistant_run_service import load_env_file, run_assistant_query
-from multimodal_agent.services.event_sink import EventSink
-from multimodal_agent.services.provider_specs import (
-    resolve_chat_provider,
-    supported_chat_providers,
-    supported_image_generation_providers,
-)
+
+
+DEFAULT_SERVER = "http://127.0.0.1:8000"
+
+
+class RemoteServerError(RuntimeError):
+    """Raised when the backend server cannot be reached or returns an invalid stream."""
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the ReAct assistant loop. Defaults load .env and keep provider selection explicit.",
+        description="Run the ReAct assistant loop through a running FastAPI server.",
     )
     parser.add_argument("query", nargs="*", help="Optional query. Omit for interactive mode.")
-    parser.add_argument("--env-file", default=".env", help="Env file to load before running.")
-    parser.add_argument("--no-env-file", action="store_true", help="Do not load an env file.")
     parser.add_argument(
-        "--provider",
-        choices=supported_chat_providers(),
-        help="Override MULTIMODAL_AGENT_CHAT_PROVIDER for this process.",
-    )
-    parser.add_argument(
-        "--image-provider",
-        choices=supported_image_generation_providers(),
-        help="Override MULTIMODAL_AGENT_IMAGE_PROVIDER for this process.",
+        "--server",
+        default=DEFAULT_SERVER,
+        help="Backend server base URL, e.g. http://127.0.0.1:8000.",
     )
     parser.add_argument("--image-ref", action="append", default=[], help="Optional image id/ref for the request.")
     parser.add_argument("--video-ref", action="append", default=[], help="Optional video id/ref for the request.")
@@ -78,41 +75,247 @@ def run_single_query(
     video_refs: list[str] | None = None,
     user_id: str = "demo_user",
     session_id: str = "demo_session",
-    config: ProviderConfig | None = None,
-    event_sink: EventSink | None = None,
+    server: str = DEFAULT_SERVER,
+    event_sink: "RecordingConsoleEventSink | None" = None,
+    runtime_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return run_assistant_query(
+    """Run one query against a remote backend and return a cli_payload-shaped dict."""
+
+    final_response, final_error, events = run_remote_assistant_query(
         query,
-        image_refs=image_refs,
-        video_refs=video_refs,
+        image_refs=list(image_refs or []),
+        video_refs=list(video_refs or []),
         user_id=user_id,
         session_id=session_id,
-        config=config or ProviderConfig.from_env(),
+        server=server,
         event_sink=event_sink,
-        load_env=False,
-        metadata={"source": "demo_assistant_loop"},
-    ).cli_payload()
+    )
+    if final_response is not None:
+        return adapt_remote_response_to_cli_payload(
+            final_response, query=query, events=events, runtime_info=runtime_info
+        )
+    return adapt_agent_error_to_cli_payload(
+        final_error, query=query, events=events, runtime_info=runtime_info
+    )
 
 
-def print_config(config: ProviderConfig, *, loaded_env_keys: list[str]) -> None:
-    chat = resolve_chat_provider(config.chat_provider, os.environ)
-    missing = chat.missing_required_env()
+def build_ws_url(
+    server: str,
+    *,
+    session_id: str,
+    query: str,
+    user_id: str,
+    image_refs: list[str],
+    video_refs: list[str],
+) -> str:
+    """Build the ws(s):// URL for /ws/agent/{session_id}, preserving any base path."""
+
+    parts = urlsplit(server)
+    if parts.scheme not in {"http", "https"}:
+        raise RemoteServerError(f"Unsupported server URL scheme: {server!r} (use http/https).")
+    if not parts.netloc:
+        raise RemoteServerError(f"Invalid server URL: {server!r}.")
+    ws_scheme = "wss" if parts.scheme == "https" else "ws"
+    base_path = parts.path.rstrip("/")
+    path = f"{base_path}/ws/agent/{quote(session_id, safe='')}"
+    params: list[tuple[str, str]] = [("text", query), ("user_id", user_id)]
+    params.extend(("image_id", ref) for ref in image_refs)
+    params.extend(("video_id", ref) for ref in video_refs)
+    return urlunsplit((ws_scheme, parts.netloc, path, urlencode(params, doseq=True), ""))
+
+
+def fetch_runtime_info(server: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    """GET {server}/demo/runtime-info. Raise RemoteServerError on any failure."""
+
+    url = server.rstrip("/") + "/demo/runtime-info"
+    try:
+        with httpx.Client(timeout=timeout, trust_env=False) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise RemoteServerError(f"Could not reach Assistant server at {server}: {exc}") from exc
+    return data if isinstance(data, dict) else {}
+
+
+def run_remote_assistant_query(
+    query: str,
+    *,
+    image_refs: list[str],
+    video_refs: list[str],
+    user_id: str,
+    session_id: str,
+    server: str,
+    event_sink: "RecordingConsoleEventSink | None",
+    open_timeout: float = 10.0,
+) -> tuple[dict[str, Any] | None, object | None, list[AgentEvent]]:
+    """Stream a run over the WebSocket endpoint.
+
+    Returns (final_response, final_error, events). Exactly one of final_response /
+    final_error is set on a completed stream.
+    """
+
+    ws_url = build_ws_url(
+        server,
+        session_id=session_id,
+        query=query,
+        user_id=user_id,
+        image_refs=image_refs,
+        video_refs=video_refs,
+    )
+    events: list[AgentEvent] = []
+    final_response: dict[str, Any] | None = None
+    final_error: object | None = None
+    try:
+        with ws_connect(ws_url, open_timeout=open_timeout, proxy=None) as websocket:
+            for raw in websocket:
+                try:
+                    event = AgentEvent.model_validate(json.loads(raw))
+                except (ValueError, TypeError) as exc:
+                    raise RemoteServerError(f"Server sent an invalid event: {exc}") from exc
+                events.append(event)
+                if event_sink is not None:
+                    event_sink.emit(event)
+                if event.type == "agent_response":
+                    response = event.payload.get("response") if isinstance(event.payload, dict) else None
+                    if isinstance(response, dict):
+                        final_response = response
+                    break
+                if event.type == "agent_error":
+                    final_error = event.error
+                    break
+    except (OSError, RemoteServerError) as exc:
+        if isinstance(exc, RemoteServerError):
+            raise
+        raise RemoteServerError(
+            f"Could not connect to Assistant server at {server}: {exc}"
+        ) from exc
+    except Exception as exc:  # websockets raises its own exception hierarchy
+        raise RemoteServerError(
+            f"WebSocket request to {server} failed: {exc}"
+        ) from exc
+    if final_response is None and final_error is None:
+        raise RemoteServerError(
+            f"Server at {server} closed the stream without a final response."
+        )
+    return final_response, final_error, events
+
+
+def _runtime_field(response: dict[str, Any], runtime_info: dict[str, Any] | None, key: str) -> Any:
+    info = response.get("runtime_info") if isinstance(response.get("runtime_info"), dict) else None
+    if info and info.get(key) is not None:
+        return info[key]
+    if runtime_info and runtime_info.get(key) is not None:
+        return runtime_info[key]
+    return ""
+
+
+def _chat_provider(response: dict[str, Any], runtime_info: dict[str, Any] | None) -> str:
+    for source in (response.get("runtime_info"), runtime_info):
+        if isinstance(source, dict):
+            providers = source.get("providers")
+            if isinstance(providers, dict) and providers.get("chat"):
+                return providers["chat"]
+    return ""
+
+
+def adapt_remote_response_to_cli_payload(
+    response: dict[str, Any],
+    *,
+    query: str,
+    events: list[AgentEvent],
+    runtime_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Convert a remote AgentRunResponse + streamed events into the cli_payload shape."""
+
+    tool_calls = response.get("tool_calls") or []
+    failed = response.get("status") == "failed" or bool(response.get("errors"))
+    return {
+        "status": "failed" if failed else "success",
+        "provider": _chat_provider(response, runtime_info),
+        "model": "",
+        "runtime_profile": _runtime_field(response, runtime_info, "runtime_profile"),
+        "graph_mode": _runtime_field(response, runtime_info, "graph_mode"),
+        "query": query,
+        "response_text": response.get("response_text", ""),
+        "response_data": response.get("data") or {},
+        "tool_sequence": [call.get("tool_name") for call in tool_calls if call.get("tool_name")],
+        "tool_calls": [
+            {
+                "tool_name": call.get("tool_name"),
+                "status": call.get("status"),
+                "output_ref": call.get("output_ref"),
+                "error": call.get("error_message"),
+            }
+            for call in tool_calls
+        ],
+        "tool_results": response.get("tool_results") or [],
+        "react_steps": response.get("react_steps") or [],
+        "decision_trace": response.get("decision_trace") or [],
+        "events": [event.model_dump(mode="json", exclude_none=True) for event in events],
+        "trace": {},
+        "errors": response.get("errors") or [],
+        "run_id": response.get("run_id", ""),
+        "trace_id": response.get("trace_id", ""),
+        "runtime_info": response.get("runtime_info") or runtime_info or {},
+        "current_stage": response.get("current_stage"),
+        "blocked_reason": response.get("blocked_reason"),
+    }
+
+
+def adapt_agent_error_to_cli_payload(
+    error: object,
+    *,
+    query: str,
+    events: list[AgentEvent],
+    runtime_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a failed cli_payload from a streamed agent_error (dict or string)."""
+
+    if isinstance(error, dict):
+        errors = [error]
+    elif error:
+        errors = [{"code": "TASK_FAILED", "message": str(error), "detail": {}, "recoverable": False}]
+    else:
+        errors = [{"code": "TASK_FAILED", "message": "run failed", "detail": {}, "recoverable": False}]
+    run_id = next((event.run_id for event in events if event.run_id), "")
+    return {
+        "status": "failed",
+        "provider": (runtime_info or {}).get("providers", {}).get("chat", "") if runtime_info else "",
+        "model": "",
+        "runtime_profile": (runtime_info or {}).get("runtime_profile", ""),
+        "graph_mode": (runtime_info or {}).get("graph_mode", ""),
+        "query": query,
+        "response_text": "",
+        "response_data": {},
+        "tool_sequence": [],
+        "tool_calls": [],
+        "tool_results": [],
+        "react_steps": [],
+        "decision_trace": [],
+        "events": [event.model_dump(mode="json", exclude_none=True) for event in events],
+        "trace": {},
+        "errors": errors,
+        "run_id": run_id,
+        "trace_id": "",
+        "runtime_info": runtime_info or {},
+        "current_stage": "failed",
+        "blocked_reason": errors[0].get("message"),
+    }
+
+
+def print_remote_runtime_info(server: str, info: dict[str, Any]) -> None:
+    providers = info.get("providers") or {}
     print()
     print("Config")
-    print(f"  env_file_keys_loaded: {len(loaded_env_keys)}")
-    print(f"  runtime_profile: {config.runtime_profile.name}")
-    print(f"  graph_mode: {config.agent_graph_mode}")
-    print(f"  chat_provider: {config.chat_provider}")
-    print(f"  chat_model: {config.chat_model or '(unset)'}")
-    print(f"  chat_base_url: {_redact_url(config.chat_base_url)}")
-    print(f"  image_provider: {config.image_generation_provider}")
-    print(f"  image_model: {config.image_generation_model or '(unset)'}")
-    print(f"  image_base_url: {_redact_url(config.image_generation_base_url)}")
-    print(f"  video_provider: {config.video_provider}")
-    print(f"  video_model: {config.video_understanding_model or '(unset)'}")
-    print(f"  video_base_url: {_redact_url(config.video_understanding_base_url)}")
-    print(f"  provider_ready: {'no, missing ' + ', '.join(missing) if missing else 'yes'}")
-    print(f"  max_tool_iterations: {config.max_tool_iterations}")
+    print(f"  server: {server}")
+    print(f"  runtime_profile: {info.get('runtime_profile', '(unknown)')}")
+    print(f"  graph_mode: {info.get('graph_mode', '(unknown)')}")
+    print(f"  chat_provider: {providers.get('chat', '(unknown)')}")
+    print(f"  vision_provider: {providers.get('vision', '(unknown)')}")
+    print(f"  image_provider: {providers.get('image_generation', '(unknown)')}")
+    print(f"  video_provider: {providers.get('video', '(unknown)')}")
+    print(f"  offline_default: {info.get('offline_default', '(unknown)')}")
 
 
 def print_run(payload: dict[str, Any], *, show_trace: bool = False, live_timeline_printed: bool = False) -> None:
@@ -219,7 +422,7 @@ def show_examples() -> None:
         print(f"  - {example}")
 
 
-def interactive_mode(config: ProviderConfig, args: argparse.Namespace) -> int:
+def interactive_mode(args: argparse.Namespace, *, runtime_info: dict[str, Any] | None = None) -> int:
     show_examples()
     print()
     print("Type 'quit'/'exit' to quit, 'examples' to show examples.")
@@ -237,32 +440,50 @@ def interactive_mode(config: ProviderConfig, args: argparse.Namespace) -> int:
             show_examples()
             continue
         event_sink = _event_sink(args)
-        payload = run_single_query(
-            query,
-            image_refs=args.image_ref,
-            video_refs=args.video_ref,
-            user_id=args.user_id,
-            session_id=args.session_id,
-            config=config,
-            event_sink=event_sink,
-        )
+        try:
+            payload = run_single_query(
+                query,
+                image_refs=args.image_ref,
+                video_refs=args.video_ref,
+                user_id=args.user_id,
+                session_id=args.session_id,
+                server=args.server,
+                event_sink=event_sink,
+                runtime_info=runtime_info,
+            )
+        except RemoteServerError as exc:
+            print()
+            print(str(exc))
+            continue
         _attach_replay_metadata(payload, args=args, query=query)
         print_run(payload, show_trace=args.show_trace, live_timeline_printed=event_sink.printed_timeline)
         _maybe_save_log(payload, args.save_log)
 
 
+def _print_server_unreachable(server: str, message: str, *, as_json: bool) -> None:
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error": "server_unavailable",
+                    "message": message,
+                    "server": server,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print()
+        print("server_unavailable")
+        print(f"  {message}")
+        print("  Start the backend first, for example:")
+        print("    python scripts/run_server.py --provider mock --image-provider mock")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    loaded: dict[str, str] = {}
-    if not args.no_env_file:
-        loaded = load_env_file((REPO_ROOT / args.env_file).resolve())
-    if args.provider:
-        os.environ["MULTIMODAL_AGENT_RUNTIME_PROFILE"] = os.environ.get(
-            "MULTIMODAL_AGENT_RUNTIME_PROFILE",
-            "provider_smoke",
-        )
-        os.environ["MULTIMODAL_AGENT_CHAT_PROVIDER"] = args.provider
-    _apply_demo_image_provider_default(args)
 
     if args.replay_log:
         replay = _load_replay_log(args.replay_log)
@@ -272,33 +493,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.user_id = replay.get("user_id", args.user_id)
         args.session_id = replay.get("session_id", args.session_id)
 
-    config = ProviderConfig.from_env()
-    if not args.json:
-        print_header()
-        print_config(config, loaded_env_keys=sorted(loaded))
-    missing = _missing_chat_config(config, os.environ)
-    if missing:
-        if args.json:
-            print(
-                json.dumps(
-                    {
-                        "status": "failed",
-                        "error": "provider_unconfigured",
-                        "missing": missing,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-        else:
-            print()
-            print("provider_unconfigured")
-            print(f"  missing: {', '.join(missing)}")
-            print("  Set the required variables in .env or your shell before running real provider smoke.")
+    runtime_info: dict[str, Any] | None = None
+    try:
+        runtime_info = fetch_runtime_info(args.server)
+    except RemoteServerError as exc:
+        _print_server_unreachable(args.server, str(exc), as_json=args.json)
         return 2
 
+    if not args.json:
+        print_header()
+        print_remote_runtime_info(args.server, runtime_info)
+
     if not args.query:
-        return interactive_mode(config, args)
+        return interactive_mode(args, runtime_info=runtime_info)
 
     query = " ".join(args.query)
     if not args.json:
@@ -306,15 +513,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Query")
         print(f"  {query}")
     event_sink = None if args.json else _event_sink(args)
-    payload = run_single_query(
-        query,
-        image_refs=args.image_ref,
-        video_refs=args.video_ref,
-        user_id=args.user_id,
-        session_id=args.session_id,
-        config=config,
-        event_sink=event_sink,
-    )
+    try:
+        payload = run_single_query(
+            query,
+            image_refs=args.image_ref,
+            video_refs=args.video_ref,
+            user_id=args.user_id,
+            session_id=args.session_id,
+            server=args.server,
+            event_sink=event_sink,
+            runtime_info=runtime_info,
+        )
+    except RemoteServerError as exc:
+        _print_server_unreachable(args.server, str(exc), as_json=args.json)
+        return 2
     _attach_replay_metadata(payload, args=args, query=query)
     if args.json:
         print(_json_dumps(payload))
@@ -326,25 +538,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _maybe_save_log(payload, args.save_log)
     return 1 if payload.get("status") == "failed" else 0
-
-
-def _redact_url(value: str | None) -> str:
-    if not value:
-        return "(unset)"
-    return value.split("?", 1)[0]
-
-
-def _missing_chat_config(config: ProviderConfig, source: Mapping[str, str]) -> list[str]:
-    return resolve_chat_provider(config.chat_provider, source).missing_required_env()
-
-
-def _apply_demo_image_provider_default(args: argparse.Namespace) -> None:
-    if args.image_provider:
-        os.environ["MULTIMODAL_AGENT_RUNTIME_PROFILE"] = os.environ.get(
-            "MULTIMODAL_AGENT_RUNTIME_PROFILE",
-            "provider_smoke",
-        )
-        os.environ["MULTIMODAL_AGENT_IMAGE_PROVIDER"] = args.image_provider
 
 
 class RecordingConsoleEventSink:
@@ -502,7 +695,8 @@ def _event_error_message(error: object) -> str:
 def _attach_replay_metadata(payload: dict[str, Any], *, args: argparse.Namespace, query: str) -> None:
     payload["demo_metadata"] = {
         "saved_at": datetime.now(timezone.utc).isoformat(),
-        "script": "scripts/demo_assistant_loop.py",
+        "script": "scripts/run_client.py",
+        "server": getattr(args, "server", DEFAULT_SERVER),
         "replay_command": _replay_command_placeholder(payload),
         "request": {
             "query": query,
@@ -526,7 +720,7 @@ def _maybe_save_log(payload: dict[str, Any], path_value: str | None) -> None:
     target.write_text(_json_dumps(payload) + "\n", encoding="utf-8")
     print()
     print(f"Saved run log: {target}")
-    print(f"Replay command: python scripts/demo_assistant_loop.py --replay-log {target}")
+    print(f"Replay command: python scripts/run_client.py --replay-log {target}")
 
 
 def _load_replay_log(path_value: str) -> dict[str, Any]:
@@ -546,7 +740,7 @@ def _load_replay_log(path_value: str) -> dict[str, Any]:
 
 def _replay_command_placeholder(payload: dict[str, Any]) -> str:
     run_id = payload.get("run_id") or "<run_id>"
-    return f"python scripts/demo_assistant_loop.py --replay-log .local/demo_runs/{run_id}.json"
+    return f"python scripts/run_client.py --replay-log .local/demo_runs/{run_id}.json"
 
 
 def _format_latency(value: object) -> str:
