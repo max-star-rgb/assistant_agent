@@ -24,14 +24,14 @@ Stop condition
 
 ```text
 assistant-loop-mvp.md
-planning-followup.md
+planning-followup.md  # ReAct plan mode, not parallel plan_and_solve strategy
 reflection-followup.md
 ```
 
 先只执行：
 
 ```text
-task/phase8/assistant-loop-mvp.md
+tasks/phase8/assistant-loop-mvp.md
 ```
 
 不要一开始执行 planning/reflection。

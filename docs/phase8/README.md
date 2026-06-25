@@ -32,13 +32,13 @@ docs/phase8/
   memory-manager-boundary.md
   planning-and-reflection-roadmap.md
 
-task/phase8/
+tasks/phase8/
   README.md
   assistant-loop-mvp.md
   planning-followup.md
   reflection-followup.md
 
-prompt/phase8/
+prompts/phase8/
   run-assistant-loop-mvp.md
   run-planning-followup.md
   run-reflection-followup.md
@@ -62,7 +62,7 @@ Read first / Scope / Requirements / Acceptance / Stop condition
 必须写在：
 
 ```text
-task/phase8/*.md
+tasks/phase8/*.md
 ```
 
 而不是写在 prompt 里。
@@ -80,43 +80,45 @@ prompt 只应该告诉 Codex / Claude Code：
 ```text
 Phase 8A Assistant Loop MVP
   ↓
-Phase 8B Parallel Execution Strategies
+Phase 8B ReAct Plan Mode
   ↓
 Phase 8C Reflection Follow-up
 ```
 
 先只执行 Phase 8A。不要在第一轮同时实现 planning 和 reflection。
 
-## Phase 8B Strategy Boundary
+## Phase 8B Plan Mode Boundary
 
-Phase 8B 将 `plan_and_solve` 定义为与 ReAct 平行的显式执行策略，而不是 ReAct 内部的 `plan` action。
+Phase 8B 将 planning 定义为同一个 ReAct assistant loop 内部的受控 plan mode，而不是与 ReAct 平行的 `plan_and_solve` 执行策略。
 
 ```text
 START
   ↓
 load_memory
   ↓
-resolve_execution_strategy
-  ├─ react_subgraph
-  └─ plan_and_solve_subgraph
-  ↓
-response_handoff / compose_response
+assistant_node
+  ├─ enter_plan_mode / exit_plan_mode → assistant_node
+  ├─ tool_call → execute_tool → assistant_node
+  └─ final_answer / ask_followup → compose_response
   ↓
 save_memory
   ↓
 END
 ```
 
-第一版只支持用户或调用方显式选择：
+Plan mode 只是 ReAct loop 的状态和 action：
 
 ```text
-execution_strategy = "react" | "plan_and_solve"
-默认 react
+plan_mode.active
+current_plan
+current_step_id
+plan_revision_count
+plan_status
 ```
 
-暂不实现 `auto`，避免重新长出规则式 strategy router。
+LLM 可以通过结构化 `AssistantDecision` 进入、更新或退出 plan mode；代码只负责 schema、工具白名单、预算、状态、trace 和安全边界。
 
-两种策略只负责“谁决定下一步”。它们必须共享：
+所有计划内工具执行仍必须走同一条 ReAct 工具路径：
 
 ```text
 ToolSpec
@@ -129,20 +131,23 @@ MemoryManager / MemoryContext
 AgentState / AgentResponse contract
 ```
 
-Plan-and-Solve 约束：
+Plan mode 约束：
 
 ```text
-planner_llm -> validate_plan -> plan_controller_llm -> execute exactly one step
-execute_step -> ToolObservation -> plan_controller_llm
-controller 可 continue / replan / ask_followup / final_answer
+assistant_node -> enter_plan_mode -> assistant_node
+assistant_node -> tool_call -> ToolObservation -> assistant_node
+assistant_node -> exit_plan_mode -> final_answer / ask_followup / continue tool loop
 ```
 
-离线评估使用 `strategy` suite 覆盖显式策略选择、多步计划、计划拒绝和失败后重规划。该 suite 通过 scripted chat adapter 模拟 LLM 结构化输出，不调用真实 Provider，也不复用旧规则 planner 生成真实路径计划。
+离线评估使用 `plan_mode` suite 覆盖进入计划、计划更新、按计划单步工具调用、工具失败后修订计划、退出计划并交付最终回答。该 suite 通过 scripted chat adapter 模拟 LLM 结构化输出，不调用真实 Provider，也不复用旧规则 planner 生成真实路径计划。
 
 不要实现：
 
 ```text
+独立 plan_and_solve graph / subgraph
+execution_strategy router
 planner_llm -> 本地 for-loop 自动跑完整 plan -> response composer
+把旧规则 planner 伪装成真实 LLM planning
 ```
 
 ## ReAct Trace Visibility Boundary
@@ -156,6 +161,8 @@ decision reason -> action -> observation -> final_answer
 其中 `decision reason` 对应 `AssistantDecision.reason` 或 API/Web Console 中的 `decision_summary`，只能是简短、高层、可审计的决策理由。模型内部推理、完整 chain-of-thought、`Thought:` 前缀内容、分析草稿和思维链都不应进入 prompt 输出要求、trace、API 响应或 Web Console 展示。
 
 兼容 parser 可以从 markdown/code fence 或非 JSON 前缀中提取合法 JSON decision，但前缀文本不能被当作公开 trace 字段保存。API 保持兼容字段 `reason` / `decision_summary`，不新增 `thought` 字段。
+
+真实 non-mock chat provider 的推荐工具调用路径是 provider-native tool calling：`ToolSpec` 转成 provider tools schema，模型返回 `tool_calls`，本地系统再转换为 `AssistantDecision` 并执行 validator / executor / observation。`prompt_json` 只作为 mock/offline、显式 fallback 和兼容路径。
 
 ## LangGraph Thread Boundary
 

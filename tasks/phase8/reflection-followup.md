@@ -11,8 +11,8 @@ AGENTS.md
 docs/phase8/README.md
 docs/phase8/assistant-loop-architecture-upgrade.md
 docs/phase8/planning-and-reflection-roadmap.md
-task/phase8/assistant-loop-mvp.md
-task/phase8/planning-followup.md
+tasks/phase8/assistant-loop-mvp.md
+tasks/phase8/planning-followup.md
 src/multimodal_agent/agent/assistant_loop_graph.py
 src/multimodal_agent/agent/assistant_loop_nodes.py
 tests/

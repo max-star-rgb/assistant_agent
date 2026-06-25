@@ -3,6 +3,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
+from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.assistant_decision import AssistantDecision
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.schemas.tools import ToolResult
@@ -52,7 +53,7 @@ def test_action_spec_view_includes_usage_guidance() -> None:
 
 def test_real_llm_prompt_uses_tool_specs_as_contract() -> None:
     adapter = ScriptedChatAdapter(['{"type": "final_answer", "message": "ok", "reason": "enough"}'])
-    runtime = AgentGraphRuntime(chat_adapter=adapter)
+    runtime = AgentGraphRuntime(config=ProviderConfig(assistant_tool_call_mode="prompt_json"), chat_adapter=adapter)
 
     runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="你好"))
 

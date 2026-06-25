@@ -27,6 +27,7 @@ class ChatRequest(BaseModel):
     tool_choice: str | dict[str, Any] | None = None
     memory_context: list[str] = Field(default_factory=list)
     system_instruction: str | None = None
+    response_format: dict[str, Any] | None = None
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     max_tokens: int = Field(default=512, ge=1)
 
@@ -44,6 +45,9 @@ class ChatResult(BaseModel):
 
     response_text: str = ""
     tool_calls: list[NativeToolCall] = Field(default_factory=list)
+    finish_reason: str | None = None
+    refusal: str | None = None
+    message_kind: str | None = None
     provider: str = Field(min_length=1)
     model: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
@@ -202,6 +206,8 @@ def _build_openai_chat_payload(request: ChatRequest, model: str) -> dict[str, An
     if request.tools:
         payload["tools"] = request.tools
         payload["tool_choice"] = request.tool_choice or "auto"
+    if request.response_format:
+        payload["response_format"] = request.response_format
     return payload
 
 
@@ -212,23 +218,39 @@ def _parse_openai_chat_response(
     model: str,
     latency_ms: int,
 ) -> ChatResult:
-    message = data["choices"][0]["message"]
+    choice = data["choices"][0]
+    message = choice["message"]
     content = message.get("content") or ""
     if isinstance(content, list):
         content = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
     tool_calls = _parse_openai_tool_calls(message.get("tool_calls"))
-    if (not isinstance(content, str) or not content.strip()) and not tool_calls:
+    refusal = message.get("refusal") if isinstance(message.get("refusal"), str) else None
+    if (not isinstance(content, str) or not content.strip()) and not tool_calls and not refusal:
         raise ProviderAdapterError("provider_empty_response", "chat provider returned empty content")
     usage = data.get("usage")
+    finish_reason = choice.get("finish_reason")
     return ChatResult(
         response_text=content.strip() if isinstance(content, str) else "",
         tool_calls=tool_calls,
+        finish_reason=str(finish_reason) if finish_reason is not None else None,
+        refusal=refusal,
+        message_kind=_chat_message_kind(tool_calls=tool_calls, refusal=refusal, content=content),
         provider=provider,
         model=str(data.get("model") or model),
         usage=usage if isinstance(usage, dict) else {},
         latency_ms=latency_ms,
         output_ref=f"provider://chat/{provider}",
     )
+
+
+def _chat_message_kind(*, tool_calls: list[NativeToolCall], refusal: str | None, content: Any) -> str:
+    if tool_calls:
+        return "tool_call"
+    if refusal:
+        return "refusal"
+    if isinstance(content, str) and content.strip():
+        return "final_answer"
+    return "empty"
 
 
 def _parse_openai_tool_calls(value: Any) -> list[NativeToolCall]:

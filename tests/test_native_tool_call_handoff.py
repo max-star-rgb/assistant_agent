@@ -35,6 +35,8 @@ def native_result(name: str, arguments: dict[str, object]) -> ChatResult:
                 },
             )
         ],
+        finish_reason="tool_calls",
+        message_kind="tool_call",
         provider="scripted-native",
         model="native-test",
     )
@@ -47,6 +49,29 @@ def final_result(message: str) -> ChatResult:
             f'"message": "{message}", '
             '"reason": "已有 native tool observation"}'
         ),
+        finish_reason="stop",
+        message_kind="final_answer",
+        provider="scripted-native",
+        model="native-test",
+    )
+
+
+def plain_final_result(message: str) -> ChatResult:
+    return ChatResult(
+        response_text=message,
+        finish_reason="stop",
+        message_kind="final_answer",
+        provider="scripted-native",
+        model="native-test",
+    )
+
+
+def refusal_result(message: str) -> ChatResult:
+    return ChatResult(
+        response_text="",
+        refusal=message,
+        finish_reason="stop",
+        message_kind="refusal",
         provider="scripted-native",
         model="native-test",
     )
@@ -80,6 +105,50 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
     assert state.response.message == "已根据 native tool call 搜索通勤耳机。"
     assert state.request.metadata["assistant_loop_steps"][0]["safety_notes"] == ["native_tool_call"]
     assert any(step.get("observation_tool") == "product_search" for step in state.request.metadata["assistant_loop_steps"])
+
+
+def test_auto_tool_call_mode_uses_native_tools_for_non_mock_adapter() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            plain_final_result("已根据 native tool observation 完成回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(chat_adapter=adapter)
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机"))
+
+    assert adapter.requests[0].tools
+    assert adapter.requests[0].tool_choice == "auto"
+    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert state.response is not None
+    assert state.response.message == "已根据 native tool observation 完成回答。"
+    assert "finish_reason=stop" in state.request.metadata["assistant_loop_steps"][-1]["reason"]
+
+
+def test_native_plain_text_final_answer_uses_finish_reason_without_json_contract() -> None:
+    adapter = NativeToolChatAdapter([plain_final_result("这是原生 final answer 文本。")])
+    runtime = AgentGraphRuntime(chat_adapter=adapter)
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="你好"))
+
+    assert adapter.requests[0].tools
+    assert state.tool_calls == []
+    assert state.response is not None
+    assert state.response.message == "这是原生 final answer 文本。"
+    assert "finish_reason=stop" in state.response.data["reason"]
+
+
+def test_native_provider_refusal_becomes_terminal_answer() -> None:
+    adapter = NativeToolChatAdapter([refusal_result("我不能帮助完成这个请求。")])
+    runtime = AgentGraphRuntime(chat_adapter=adapter)
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="敏感请求"))
+
+    assert state.tool_calls == []
+    assert state.response is not None
+    assert state.response.message == "我不能帮助完成这个请求。"
+    assert "provider_refusal" in state.request.metadata["assistant_loop_steps"][0]["safety_notes"]
 
 
 def test_native_unknown_tool_is_rejected_by_validator() -> None:

@@ -103,9 +103,9 @@ load_memory
 assistant_node
   ↓
 route_after_assistant
-  ├─ execute_tool    → assistant_node
-  ├─ plan_node       → assistant_node
-  ├─ reflection_node → assistant_node
+  ├─ execute_tool               → assistant_node
+  ├─ apply_plan_mode_transition → assistant_node
+  ├─ reflection_node            → assistant_node
   └─ compose_response → save_memory → END
 ```
 
@@ -271,7 +271,8 @@ class AssistantDecisionType(str, Enum):
     FINAL_ANSWER = "final_answer"
     TOOL_CALL = "tool_call"
     ASK_FOLLOWUP = "ask_followup"
-    PLAN = "plan"
+    ENTER_PLAN_MODE = "enter_plan_mode"
+    EXIT_PLAN_MODE = "exit_plan_mode"
     REFLECT = "reflect"
 
 
@@ -299,7 +300,7 @@ tool_call
 ask_followup
 ```
 
-`plan` / `reflect` 可以保留枚举，但不实现复杂行为。
+`enter_plan_mode` / `exit_plan_mode` / `reflect` 可以保留枚举，但不实现复杂行为。
 
 ---
 
@@ -369,6 +370,7 @@ src/multimodal_agent/agent/assistant_loop_graph.py
 from langgraph.graph import END, START, StateGraph
 
 from multimodal_agent.agent.assistant_loop_nodes import (
+    apply_plan_mode_transition_node,
     assistant_node,
     compose_assistant_response_node,
     execute_requested_tool_node,
@@ -386,6 +388,7 @@ def build_assistant_loop_graph():
     graph.add_node("load_memory", trace_graph_node("load_memory", load_memory_node))
     graph.add_node("assistant", trace_graph_node("assistant", assistant_node))
     graph.add_node("execute_tool", trace_graph_node("execute_tool", execute_requested_tool_node))
+    graph.add_node("apply_plan_mode_transition", trace_graph_node("apply_plan_mode_transition", apply_plan_mode_transition_node))
     graph.add_node("compose_response", trace_graph_node("compose_response", compose_assistant_response_node))
     graph.add_node("save_memory", trace_graph_node("save_memory", save_memory_node))
 
@@ -397,11 +400,13 @@ def build_assistant_loop_graph():
         route_after_assistant,
         {
             "execute_tool": "execute_tool",
+            "apply_plan_mode_transition": "apply_plan_mode_transition",
             "finish": "compose_response",
         },
     )
 
     graph.add_edge("execute_tool", "assistant")
+    graph.add_edge("apply_plan_mode_transition", "assistant")
     graph.add_edge("compose_response", "save_memory")
     graph.add_edge("save_memory", END)
 
@@ -430,6 +435,9 @@ def route_after_assistant(graph_state):
 
     if decision.type == "tool_call":
         return "execute_tool"
+
+    if decision.type in {"enter_plan_mode", "exit_plan_mode"}:
+        return "apply_plan_mode_transition"
 
     return "finish"
 ```
@@ -626,14 +634,16 @@ tests / demo / eval
 范围：
 
 ```text
-plan_node
+enter_plan_mode / exit_plan_mode action
+apply_plan_mode_transition
 PlanStep
 current_plan
-current_step_index
-assistant 可选择 plan action
+current_step_id
+plan_revision_count
+assistant 可进入、修订和退出 plan mode
 ```
 
-注意：Planner 不能重新变成中心 router。Planning 只是 assistant 可调用的内部 action。
+注意：Planner 不能重新变成中心 router。Planning 只是 assistant loop 内部的受控状态转换，不新增与 ReAct 平行的 `plan_and_solve` graph/subgraph。
 
 ### Phase 8C：Reflection Follow-up
 

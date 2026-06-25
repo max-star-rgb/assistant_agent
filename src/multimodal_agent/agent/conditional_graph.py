@@ -1,5 +1,6 @@
 """LangGraph workflow with intent-based conditional routing."""
 
+from dataclasses import replace
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -19,17 +20,10 @@ from multimodal_agent.agent.graph_nodes import (
     should_continue,
 )
 from multimodal_agent.agent.graph_runtime import GraphRuntimeContext, bind_runtime_node
-from multimodal_agent.agent.intent import IntentDetector
-from multimodal_agent.agent.router import ToolRouter
 from multimodal_agent.agent.state import AgentState
-from multimodal_agent.agent.tool_executor import ToolExecutor
-from multimodal_agent.memory.factory import create_memory_store
-from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.agent.workflow import AgentWorkflow
+from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.chat_adapter import create_chat_adapter
-from multimodal_agent.services.trace_store import InMemoryTraceStore
-from multimodal_agent.tools.registry import create_default_registry
 
 
 def build_conditional_agent_graph(
@@ -99,38 +93,16 @@ def build_conditional_agent_graph(
 
 
 def run_conditional_agent_graph(request: UserRequest, workflow: AgentWorkflow | None = None) -> AgentState:
-    """Run the conditional LangGraph workflow and return the final AgentState."""
+    """Run the conditional graph through AgentGraphRuntime-owned dependencies."""
 
-    registry = workflow.registry if workflow is not None else create_default_registry()
-    tool_history = workflow.tool_history if workflow is not None else None
-    memory_manager = MemoryManager(create_memory_store())
-    state = AgentState.from_request(request)
-    initial_state: AgentGraphState = {
-        "request": request,
-        "state": state,
-        "intent_detector": workflow.intent_detector if workflow is not None else IntentDetector(),
-        "router": workflow.router if workflow is not None else ToolRouter(),
-        "tool_executor": ToolExecutor(
-            registry=registry,
-            tool_history=tool_history,
-            context_metadata={"memory_manager": memory_manager},
-        ),
-        "chat_adapter": create_chat_adapter(),
-        "memory_manager": memory_manager,
-        "outputs_by_step": {},
-        "current_step_index": 0,
-        "trace_id": state.trace_id,
-        "trace_store": InMemoryTraceStore(),
-    }
-    final_state = build_conditional_agent_graph().invoke(
-        initial_state,
-        config={
-            "configurable": {
-                "thread_id": state.run_id,
-                "session_id": request.session_id,
-                "user_id": request.user_id,
-                "run_id": state.run_id,
-            }
-        },
-    )
-    return final_state["state"]
+    from multimodal_agent.agent.runtime import AgentGraphRuntime
+
+    config = replace(ProviderConfig.from_env(), agent_graph_mode="conditional")
+    return AgentGraphRuntime(
+        config=config,
+        registry=workflow.registry if workflow is not None else None,
+        intent_detector=workflow.intent_detector if workflow is not None else None,
+        router=workflow.router if workflow is not None else None,
+        run_history=workflow.run_history if workflow is not None else None,
+        tool_history=workflow.tool_history if workflow is not None else None,
+    ).run_state(request)

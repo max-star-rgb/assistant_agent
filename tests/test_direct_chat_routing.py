@@ -24,6 +24,10 @@ class FakeRealChatAdapter:
         )
 
 
+def request_message_text(request: ChatRequest) -> str:
+    return "\n".join(str(message.get("content") or "") for message in request.messages)
+
+
 def test_direct_chat_uses_chat_adapter_without_tool_calls() -> None:
     state = AgentGraphRuntime(memory_store=InMemoryStore()).run_state(
         UserRequest(user_id="u1", session_id="s1", text="帮我写一段商品介绍")
@@ -63,8 +67,9 @@ def test_real_chat_direct_chat_is_decided_by_llm_policy_without_rule_intent() ->
     assert state.plan is None
     assert state.tool_calls == []
     assert len(adapter.requests) == 1
-    assert "用户请求：你好，请介绍你自己" in adapter.requests[0].user_query
-    assert "可用工具" in adapter.requests[0].user_query
+    assert adapter.requests[0].user_query == "你好，请介绍你自己"
+    assert "用户请求：你好，请介绍你自己" in request_message_text(adapter.requests[0])
+    assert adapter.requests[0].tools
     assert state.response is not None
     assert "工具调用保护" not in state.response.message
     assert "多模态助手" in state.response.message
@@ -93,8 +98,9 @@ def test_real_chat_prompt_includes_memory_summaries() -> None:
 
     assert state.intent is None
     assert len(adapter.requests) == 1
-    assert "相关记忆" in adapter.requests[0].user_query
-    assert "用户喜欢日系极简风格。" in adapter.requests[0].user_query
+    message_text = request_message_text(adapter.requests[0])
+    assert "相关记忆" in message_text
+    assert "用户喜欢日系极简风格。" in message_text
 
 
 def test_tool_description_failure_is_recorded_for_real_chat() -> None:
@@ -112,5 +118,5 @@ def test_tool_description_failure_is_recorded_for_real_chat() -> None:
         "code": "tool_description_unavailable",
         "message": "registry unavailable",
     }
-    assert "可用工具 ToolSpec 列表（唯一工具契约）" in adapter.requests[0].user_query
-    assert "[]" in adapter.requests[0].user_query
+    assert adapter.requests[0].user_query == "你好"
+    assert adapter.requests[0].tools == []

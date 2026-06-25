@@ -21,7 +21,6 @@ from multimodal_agent.agent.prompt_builder import build_direct_chat_request, bui
 from multimodal_agent.agent.router import ToolRouter
 from multimodal_agent.agent.state import AgentError, AgentState
 from multimodal_agent.agent.tool_executor import ToolExecutor
-from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy, format_memory_context
 from multimodal_agent.schemas.assistant_decision import AssistantDecision, native_tool_call_to_assistant_decision
 from multimodal_agent.schemas.capabilities import canonical_intent
 from multimodal_agent.schemas.events import AgentEvent
@@ -33,7 +32,7 @@ from multimodal_agent.schemas.tool_observation import (
 )
 from multimodal_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from multimodal_agent.schemas.tools import ToolResult, ToolSpec
-from multimodal_agent.services.chat_adapter import ChatAdapter, ChatRequest
+from multimodal_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult
 from multimodal_agent.services.trace_store import TraceEvent, sanitize_trace_value
 
 
@@ -228,6 +227,8 @@ def _decide_with_llm(
     if _use_native_tool_calling(context) and result.success and result.tool_calls:
         _record_native_tool_call(state, result.tool_calls[0])
         decision = native_tool_call_to_assistant_decision(result.tool_calls[0])
+    elif _use_native_tool_calling(context) and result.success:
+        decision = _native_final_decision(result)
     else:
         decision = AssistantDecision.from_llm_output(raw_output)
     if _should_repair_llm_decision(raw_output, decision):
@@ -254,11 +255,52 @@ def _decide_with_llm(
 
 def _assistant_tool_call_mode(graph_state: AssistantLoopState) -> str:
     mode = graph_state.get("assistant_tool_call_mode") or graph_state["request"].metadata.get("assistant_tool_call_mode")
-    return "native_tools" if mode == "native_tools" else "prompt_json"
+    if mode in {"native_tools", "prompt_json"}:
+        return str(mode)
+    return "auto"
 
 
 def _use_native_tool_calling(context: AssistantDecisionContext) -> bool:
-    return context.tool_call_mode == "native_tools" and not context.is_mock
+    return context.tool_call_mode in {"auto", "native_tools"} and not context.is_mock
+
+
+def _native_final_decision(result: ChatResult) -> AssistantDecision:
+    """Convert a native provider non-tool response into an internal terminal decision."""
+
+    if result.refusal:
+        return AssistantDecision(
+            type="final_answer",
+            message=result.refusal,
+            reason=_native_finish_reason(result, fallback="Provider returned a refusal instead of a tool call."),
+            safety_notes=["provider_refusal"],
+        )
+    raw_output = result.response_text.strip()
+    if _looks_like_assistant_decision_json(raw_output):
+        return AssistantDecision.from_llm_output(raw_output)
+    if raw_output:
+        return AssistantDecision(
+            type="final_answer",
+            message=raw_output,
+            reason=_native_finish_reason(result, fallback="Provider finished without requesting another tool."),
+        )
+    return AssistantDecision(
+        type="final_answer",
+        message="模型没有返回可用回答。",
+        reason=_native_finish_reason(result, fallback="Provider finished without content or tool calls."),
+        safety_notes=["empty_native_final_answer"],
+    )
+
+
+def _looks_like_assistant_decision_json(text: str) -> bool:
+    return "{" in text and '"type"' in text
+
+
+def _native_finish_reason(result: ChatResult, *, fallback: str) -> str:
+    if result.finish_reason:
+        return f"{fallback} finish_reason={result.finish_reason}."
+    if result.message_kind:
+        return f"{fallback} message_kind={result.message_kind}."
+    return fallback
 
 
 def _build_prompt_json_chat_request(context: AssistantDecisionContext, state: AgentState) -> ChatRequest:

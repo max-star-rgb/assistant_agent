@@ -64,7 +64,7 @@ def test_deepseek_chat_provider_uses_openai_compatible_http(monkeypatch) -> None
             return json.dumps(
                 {
                     "model": "deepseek-chat",
-                    "choices": [{"message": {"content": "真实 DeepSeek 回复"}}],
+                    "choices": [{"message": {"content": "真实 DeepSeek 回复"}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 4, "completion_tokens": 3},
                 }
             ).encode("utf-8")
@@ -95,6 +95,8 @@ def test_deepseek_chat_provider_uses_openai_compatible_http(monkeypatch) -> None
     assert result.provider == "deepseek"
     assert result.model == "deepseek-chat"
     assert result.response_text == "真实 DeepSeek 回复"
+    assert result.finish_reason == "stop"
+    assert result.message_kind == "final_answer"
     assert result.output_ref == "provider://chat/deepseek"
     assert captured["url"] == "https://api.deepseek.com/chat/completions"
     assert captured["payload"]["model"] == "deepseek-chat"
@@ -127,7 +129,8 @@ def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -
                                         },
                                     }
                                 ],
-                            }
+                            },
+                            "finish_reason": "tool_calls",
                         }
                     ],
                     "usage": {"prompt_tokens": 4, "completion_tokens": 3},
@@ -153,6 +156,8 @@ def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -
 
     assert result.success is True
     assert result.response_text == ""
+    assert result.finish_reason == "tool_calls"
+    assert result.message_kind == "tool_call"
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "product_search"
     assert result.tool_calls[0].arguments == {"query": "通勤耳机", "limit": 2}
@@ -213,9 +218,57 @@ def test_openai_compatible_chat_payload_sends_native_tools(monkeypatch) -> None:
                 }
             ],
             tool_choice="auto",
+            response_format={"type": "json_object"},
         )
     )
 
     assert captured["payload"]["messages"][0]["role"] == "system"
     assert captured["payload"]["tools"][0]["function"]["name"] == "product_search"
     assert captured["payload"]["tool_choice"] == "auto"
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
+
+
+def test_openai_compatible_chat_response_parses_refusal(monkeypatch) -> None:
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {
+                    "model": "deepseek-chat",
+                    "choices": [
+                        {
+                            "message": {"content": None, "refusal": "我不能帮助完成这个请求。"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        return FakeResponse()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    adapter = create_chat_adapter(
+        ProviderConfig(
+            chat_provider="deepseek",
+            deepseek_api_key="test-deepseek-key",
+            deepseek_chat_base_url="https://api.deepseek.com",
+            deepseek_chat_model="deepseek-chat",
+        )
+    )
+
+    result = adapter.chat(chat_request("敏感请求"))
+
+    assert result.success is True
+    assert result.response_text == ""
+    assert result.refusal == "我不能帮助完成这个请求。"
+    assert result.finish_reason == "stop"
+    assert result.message_kind == "refusal"

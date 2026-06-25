@@ -1,8 +1,8 @@
-# Phase 8B Task：Parallel Execution Strategies
+# Phase 8B Task：ReAct Plan Mode
 
 ## Goal
 
-在 Assistant Loop MVP 稳定后，新增与 ReAct 平行的 `plan_and_solve` 显式执行策略。
+在 Assistant Loop MVP 稳定后，在同一个 ReAct assistant loop 中新增 plan mode。Plan mode 通过受控 `AssistantDecision` action 进入和退出，不新增与 ReAct 平行的 `plan_and_solve` 执行分支。
 
 ## Read first
 
@@ -11,7 +11,7 @@ AGENTS.md
 docs/phase8/README.md
 docs/phase8/assistant-loop-architecture-upgrade.md
 docs/phase8/planning-and-reflection-roadmap.md
-task/phase8/assistant-loop-mvp.md
+tasks/phase8/assistant-loop-mvp.md
 src/multimodal_agent/agent/assistant_loop_graph.py
 src/multimodal_agent/agent/assistant_loop_nodes.py
 src/multimodal_agent/agent/runtime.py
@@ -23,26 +23,30 @@ tests/
 新增或修改：
 
 ```text
-execution_strategy request/state contract
-plan_and_solve_graph
-plan_and_solve_nodes
-plan_validator
+AssistantDecision plan-mode action contract
+assistant_loop_nodes plan-mode state transitions
+plan validator / plan state validator
+plan_mode state
+current_plan
 plan_status
 current_step_id
 plan_revision_count
 tests / demo scenarios
-strategy eval / review cases
+plan_mode eval / review cases
 ```
 
 ## Requirements
 
-- `plan_and_solve` 是与 ReAct 平行的执行策略，不是 ReAct 内部 action。
-- 第一版只支持显式选择，默认 strategy 仍为 `react`，不做 `auto`。
+- Plan mode 是 ReAct 内部 action/state，不是独立 graph strategy。
+- 不新增 `plan_and_solve_graph`、`plan_and_solve_nodes` 或新的 runtime graph selector。
+- 不新增 `execution_strategy = "plan_and_solve"` 作为推荐路径；如仓库已有历史兼容字段，后续实现只能把它视为 legacy/compat 入口，内部仍回到 assistant loop。
 - Planner 不能重新变成中心 router。
 - 真实 LLM 路径不要复用旧 `RuleBasedTaskPlanner`。
-- Planner / controller 由 LLM 输出结构化 JSON；代码只做 schema、工具白名单、预算、依赖、状态、trace 和调度。
-- execute step 一次只能执行一个步骤，完成后必须回到 controller LLM。
-- ReAct 和 Plan-and-Solve 必须共享 `ToolSpec` / `ActionValidator` / `ToolExecutor` / `ToolObservation` / trace / budget / memory 底座。
+- LLM 通过结构化 JSON 输出 `enter_plan_mode` / `exit_plan_mode` / `tool_call` / `ask_followup` / `final_answer`。
+- `enter_plan_mode` 负责创建或修订当前计划，必须经过本地 schema、步骤数量、依赖、工具白名单和预算校验。
+- `exit_plan_mode` 负责退出计划状态，并明确下一步是继续 ReAct、追问，还是交付最终回答。
+- 工具执行一次只能执行一个 `tool_call`，完成后必须把 `ToolObservation` 返回同一个 `assistant_node`。
+- 所有计划内工具执行必须共享 `ToolSpec` / `ActionValidator` / `ToolExecutor` / `ToolObservation` / trace / budget / memory 底座。
 - 不删除旧 assistant loop。
 - 不调用真实 Provider。
 - 不写 API Key。
@@ -55,18 +59,19 @@ strategy eval / review cases
 
 至少覆盖：
 
-- 默认 strategy 是 `react`。
-- 显式 `plan_and_solve` 才进入规划分支。
-- planner 可以生成 plan。
-- plan controller 可以驱动一个或多个 tool_call。
-- 每次只执行一个步骤，工具 observation 返回 controller。
-- plan 失败时可以安全停止或 ask_followup。
-- 工具失败后可以 replan。
+- 默认仍进入 assistant loop，不进入独立 planning graph。
+- assistant 可以通过 `enter_plan_mode` 生成 plan。
+- plan-mode 状态会记录 `current_plan` / `plan_status` / `current_step_id` / `plan_revision_count`。
+- assistant 可以在 plan mode 中驱动一个或多个普通 `tool_call`。
+- 每次只执行一个工具调用，工具 observation 返回同一个 assistant loop。
+- plan 校验失败时可以安全停止或 ask_followup。
+- 工具失败后可以修订当前计划。
+- assistant 可以通过 `exit_plan_mode` 退出计划并生成最终回答或追问。
 - 未知工具、循环依赖、步骤数量超限会被拒绝。
-- ReAct 和 Plan-and-Solve 使用同一个 ToolExecutor。
+- plan mode 和普通 ReAct tool_call 使用同一个 ToolExecutor。
 - offline_eval 下不调用真实 Provider。
-- `strategy` eval suite 覆盖默认 ReAct、显式 Plan-and-Solve、多步工具执行、计划拒绝和失败后重规划。
-- strategy eval 必须使用 scripted chat adapter 模拟 LLM contract，不能复用旧规则 planner。
+- `plan_mode` eval suite 覆盖进入计划、多步工具执行、计划拒绝、失败后修订计划、退出计划。
+- plan-mode eval 必须使用 scripted chat adapter 模拟 LLM contract，不能复用旧规则 planner。
 
 ## Acceptance
 

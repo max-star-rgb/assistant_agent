@@ -19,7 +19,7 @@ from multimodal_agent.schemas.provider_specs import (
 
 
 AgentGraphMode = Literal["conditional", "assistant_loop"]
-AssistantToolCallMode = Literal["prompt_json", "native_tools"]
+AssistantToolCallMode = Literal["auto", "prompt_json", "native_tools"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
 
@@ -127,7 +127,7 @@ class ProviderConfig:
     max_video_seconds: float = 60.0
     intent_router: IntentRouterName = "rule"
     agent_graph_mode: AgentGraphMode = "assistant_loop"  # 默认使用新的 ReAct 架构
-    assistant_tool_call_mode: AssistantToolCallMode = "prompt_json"
+    assistant_tool_call_mode: AssistantToolCallMode = "auto"
     langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
     max_tool_iterations: int = 5
     max_plan_steps: int = 8
@@ -553,7 +553,11 @@ def _agent_graph_mode(value: str | None) -> AgentGraphMode:
 def _assistant_tool_call_mode(value: str | None) -> AssistantToolCallMode:
     if value == "native_tools":
         return "native_tools"
-    return "prompt_json"
+    if value == "prompt_json":
+        return "prompt_json"
+    if value == "auto":
+        return "auto"
+    return "auto"
 
 
 def _float_env(value: str | None, default: float) -> float:

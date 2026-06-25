@@ -13,7 +13,7 @@ AGENTS.md
 docs/phase8/README.md
 docs/phase8/assistant-loop-architecture-upgrade.md
 docs/phase8/phase8A_1_react_action_quality_hardening.md
-task/phase8/assistant-loop-mvp.md
+tasks/phase8/assistant-loop-mvp.md
 src/multimodal_agent/agent/assistant_loop_graph.py
 src/multimodal_agent/agent/assistant_loop_nodes.py
 src/multimodal_agent/schemas/assistant_decision.py

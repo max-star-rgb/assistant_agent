@@ -18,11 +18,11 @@ Planning 和 reflection 是后续增强，不应该和 Phase 8A 一次性混在�
 
 ---
 
-## Phase 8B：Parallel Execution Strategies
+## Phase 8B：ReAct Plan Mode
 
 ### 目标
 
-新增与 ReAct 平行的 `plan_and_solve` 显式执行策略。调用方选择 strategy，默认仍为 ReAct。
+在同一个 ReAct assistant loop 中新增 plan mode，让 LLM 可以通过受控 action 进入计划、修订计划、按计划调用工具，并在合适时退出计划。不要新增与 ReAct 平行的 `plan_and_solve` 执行策略。
 
 ### 图结构
 
@@ -31,36 +31,33 @@ START
   ↓
 load_memory
   ↓
-resolve_execution_strategy
-  ├─ react_subgraph
-  └─ plan_and_solve_subgraph
-  ↓
-response_handoff / compose_response
+assistant_node
+  ├─ enter_plan_mode / exit_plan_mode -> assistant_node
+  ├─ tool_call -> execute_tool -> assistant_node
+  └─ final_answer / ask_followup -> compose_response
   ↓
 save_memory
   ↓
 END
 ```
 
-### Plan-and-Solve 子图
+### Plan Mode 状态
 
 ```text
-planner
-  ↓
-validate_plan
-  ↓
-plan_controller
-  ├─ execute_one_step -> plan_controller
-  ├─ replan -> planner
-  ├─ ask_followup -> response
-  └─ final_answer -> response
+plan_mode.active
+current_plan
+current_step_id
+plan_revision_count
+plan_status
+outputs_by_step
+tool_observations
 ```
 
 ### 推荐字段
 
 ```text
-execution_strategy
-plan
+plan_mode
+current_plan
 plan_status
 current_step_id
 plan_revision_count
@@ -70,11 +67,11 @@ tool_observations
 
 ### 关键原则
 
-ReAct 和 Plan-and-Solve 只负责“谁决定下一步”，不能复制工具执行底座。
+Planning 是 ReAct 内部状态，不是 runtime graph strategy。不要新增 `resolve_execution_strategy`、`plan_and_solve_graph` 或独立 planner/controller 子图。
 
-Plan-and-Solve 中，规划、重规划、下一步选择由 LLM 完成；代码只负责 schema、工具白名单、预算、依赖、状态、trace 和调度。
+规划、修订计划、下一步选择、退出计划都由 LLM 通过结构化 `AssistantDecision` 完成；代码只负责 schema、工具白名单、预算、依赖、状态、trace 和调度。
 
-每次只执行一个步骤。每一步完成后必须把 ToolObservation 交还给 controller LLM。
+每次只执行一个工具调用。每一步完成后必须把 `ToolObservation` 交还给同一个 `assistant_node`，由 assistant 决定继续、修订计划、追问或最终回答。
 
 真实 LLM 路径不要复用旧 `RuleBasedTaskPlanner`。
 
@@ -85,31 +82,31 @@ Plan-and-Solve 中，规划、重规划、下一步选择由 LLM 完成；代码
 不做并发工具执行
 不做自动部署
 不调用真实 Provider
-不做 auto strategy router
-不把 create_plan 伪装成工具
+不做 execution_strategy router
+不新增 plan_and_solve graph / subgraph
+不把 enter_plan_mode / exit_plan_mode 伪装成外部工具
 不本地 for-loop 自动执行完整计划
 ```
 
-### Strategy Eval / Review
+### Plan Mode Eval / Review
 
-Phase 8B 的稳定性评估新增独立 `strategy` suite：
+Phase 8B 的稳定性评估新增独立 `plan_mode` suite：
 
 ```text
-strategy_react_default
-strategy_plan_and_solve_multistep
-strategy_plan_unknown_tool_rejected
-strategy_plan_replan_after_tool_failure
+plan_mode_enter_and_exit
+plan_mode_multistep_tool_loop
+plan_mode_unknown_tool_rejected
+plan_mode_revise_after_tool_failure
 ```
 
-该 suite 使用 scripted chat adapter 模拟 planner/controller 的结构化 LLM 输出，通过正常 `AgentGraphRuntime` 跑图。评估项包括：
+该 suite 使用 scripted chat adapter 模拟 assistant 的结构化 LLM 输出，通过正常 `AgentGraphRuntime` 的 assistant loop 跑图。评估项包括：
 
 ```text
-execution_strategy contract
+AssistantDecision plan-mode contract
 AgentRunResponse contract
 tool sequence
 plan_status
 plan_revision_count
-controller/planner call count
 decision trace
 trace node path
 error code

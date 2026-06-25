@@ -302,13 +302,20 @@ ToolSpec -> MCP-style tool schema
 配置开关：
 
 ```text
-ASSISTANT_TOOL_CALL_MODE=prompt_json | native_tools
+ASSISTANT_TOOL_CALL_MODE=auto | prompt_json | native_tools
 ```
 
-默认仍是：
+默认是：
 
 ```text
-prompt_json
+auto
+```
+
+`auto` 规则：
+
+```text
+mock/offline chat adapter -> prompt_json / rule-plan compatibility path
+non-mock chat adapter -> native_tools preferred path
 ```
 
 这些 adapter 只负责格式转换。provider 返回 native tool call 时，也必须先转换成内部：
@@ -325,10 +332,10 @@ ActionValidator -> ToolExecutor -> ToolObservation
 
 不允许 provider 或 MCP 入口绕过本地 validator / executor。
 
-当前支持的 opt-in 闭环：
+当前支持的 native 闭环：
 
 ```text
-ASSISTANT_TOOL_CALL_MODE=native_tools
+ASSISTANT_TOOL_CALL_MODE=auto 且 non-mock，或 ASSISTANT_TOOL_CALL_MODE=native_tools
   -> registry.list_specs()
   -> ToolSpec -> OpenAI-compatible tools payload
   -> ChatRequest.messages/tools/tool_choice
@@ -341,7 +348,7 @@ ASSISTANT_TOOL_CALL_MODE=native_tools
   -> next ChatRequest tool result message
 ```
 
-默认 prompt JSON ReAct 路径不变。只有 `ASSISTANT_TOOL_CALL_MODE=native_tools` 且 `ChatResult.tool_calls` 非空时，non-mock assistant loop 才优先使用 native tool call。
+native provider 没有返回 `tool_calls` 时，assistant loop 使用 `ChatResult.finish_reason` / `message_kind` / `refusal` 和文本内容形成终止决策。`prompt_json` 保留为显式 fallback，用于调试、兼容旧 provider 或测试 prompt contract。
 
 ---
 
