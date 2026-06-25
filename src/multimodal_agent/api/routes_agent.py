@@ -23,7 +23,13 @@ from multimodal_agent.services.beta_feedback import (
     BetaFeedbackStore,
     summarize_feedback,
 )
+from multimodal_agent.services.demo_examples import get_demo_examples
 from multimodal_agent.services.trace_query import RunSummary, ToolCallSummary, TraceQueryService, TraceSummary
+from multimodal_agent.services.trial_access import (
+    TrialAccessGate,
+    TrialAccessStatus,
+    trial_access_gate_from_env,
+)
 
 
 router = APIRouter()
@@ -47,8 +53,13 @@ def get_beta_feedback_store() -> BetaFeedbackStore:
     return _FEEDBACK_STORE
 
 
+def get_trial_access_gate() -> TrialAccessGate:
+    return trial_access_gate_from_env(base_dir=_REPO_ROOT)
+
+
 @router.post("/agent/run", response_model=AgentRunResponse)
 def run_agent(request: UserRequest) -> AgentRunResponse:
+    _require_trial_access(request.user_id)
     return run_assistant_request(request, runtime=get_agent_runtime()).api_response()
 
 
@@ -63,6 +74,14 @@ def list_demo_scenarios() -> dict[str, Any]:
     }
 
 
+@router.get("/demo/examples")
+def list_demo_examples() -> dict[str, Any]:
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "examples": get_demo_examples(),
+    }
+
+
 @router.get("/demo/runtime-info")
 def demo_runtime_info() -> dict[str, Any]:
     """Return a redacted runtime summary for the local Web Console."""
@@ -72,6 +91,13 @@ def demo_runtime_info() -> dict[str, Any]:
         "protocol_version": PROTOCOL_VERSION,
         **runtime_info(config),
     }
+
+
+@router.get("/demo/access", response_model=TrialAccessStatus)
+def demo_access(user_id: str = Query(...)) -> TrialAccessStatus:
+    """Validate a Web Console trial user id before enabling the demo UI."""
+
+    return get_trial_access_gate().check(user_id)
 
 
 @router.get("/runs/{run_id}", response_model=RunSummary)
@@ -165,3 +191,9 @@ def _assert_run_belongs_to_user(run_id: str, user_id: str) -> None:
         raise HTTPException(status_code=404, detail="run not found")
     if summary.user_id != user_id:
         raise HTTPException(status_code=403, detail="run does not belong to user")
+
+
+def _require_trial_access(user_id: str) -> None:
+    status = get_trial_access_gate().check(user_id)
+    if not status.allowed:
+        raise HTTPException(status_code=403, detail=status.reason or "trial user is not allowed")

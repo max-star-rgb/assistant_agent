@@ -32,6 +32,20 @@ server owns all provider/env configuration; the clients just send requests.
    python scripts/run_server.py --reload
    ```
 
+   To let other devices on the same network try the Web Console, bind the
+   server to all interfaces and share your machine's LAN IP URL:
+
+   ```bash
+   python scripts/run_server.py --host 0.0.0.0 --trial-user-id alice,bob
+   # Share: http://<your-machine-ip>:8000/demo/console
+   ```
+
+   You can also load allowed trial ids from an untracked local file:
+
+   ```bash
+   python scripts/run_server.py --host 0.0.0.0 --trial-user-id-file .local/trial-users.txt
+   ```
+
    To use a real chat provider, keep credentials in your local shell or
    untracked `.env` and pass the provider to the **server**:
 

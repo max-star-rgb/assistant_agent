@@ -109,7 +109,11 @@ def _product_search_summary(data: dict[str, Any]) -> str:
     first = items[0]
     title = first.get("title") or "候选商品"
     source = first.get("source") or "mock"
-    return f"已基于 {source} 数据找到 {total} 个商品候选，优先候选是 {title}。"
+    price = first.get("price")
+    url = first.get("product_url") or first.get("url")
+    price_text = f"，价格 {price} {first.get('currency') or 'CNY'}" if price is not None else ""
+    url_text = f"，链接：{url}" if url else ""
+    return f"已基于 {source} 数据找到 {total} 个商品候选，优先候选是 {title}{price_text}{url_text}。"
 
 
 def _price_compare_summary(data: dict[str, Any]) -> str:
@@ -121,6 +125,8 @@ def _price_compare_summary(data: dict[str, Any]) -> str:
     total = best_offer.get("total_price") or best_offer.get("price")
     currency = best_offer.get("currency") or "CNY"
     platform = best_offer.get("platform") or "mock 平台"
+    url = best_offer.get("product_url") or best_offer.get("url")
+    url_text = f"，链接：{url}" if url else ""
     if total is not None:
-        return f"已完成比价，当前推荐 {title}，最低价格为 {total} {currency}，来源为 {platform}。"
-    return f"已完成比价，当前推荐 {title}，来源为 {platform}。"
+        return f"已完成比价，当前推荐 {title}，最低价格为 {total} {currency}，来源为 {platform}{url_text}。"
+    return f"已完成比价，当前推荐 {title}，来源为 {platform}{url_text}。"

@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from multimodal_agent.api.app import create_app
 from multimodal_agent.schemas.products import PriceOffer, ProductResult, RankingReason
+from multimodal_agent.schemas.tool_observation import observation_from_tool_result
 from multimodal_agent.services.product_adapter import MockPriceCompareAdapter, MockProductSearchAdapter, PriceCompareInput, ProductSearchInput
 from multimodal_agent.tools.product_search_tool import ProductSearchTool
 
@@ -50,6 +51,16 @@ def test_product_search_tool_output_does_not_expose_provider_raw_response() -> N
     assert "provider_response" not in result.data
     assert "items" in result.data
     assert result.data["items"][0]["product_url"] == "mock://shop-a/p1"
+
+
+def test_product_search_observation_includes_user_visible_product_url() -> None:
+    result = ProductSearchTool(adapter=MockProductSearchAdapter()).run({"query": "白色低帮运动鞋"})
+
+    observation = observation_from_tool_result(result)
+
+    assert observation.status == "succeeded"
+    assert "白色低帮运动鞋 A" in observation.summary
+    assert "mock://shop-a/p1" in observation.summary
 
 
 def test_product_search_api_output_contract_is_stable() -> None:

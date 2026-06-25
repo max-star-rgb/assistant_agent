@@ -24,8 +24,8 @@ AssistantToolCallMode = Literal["prompt_json", "native_tools"]
 VisionProviderName = str
 ChatProviderName = str
 ImageGenerationProviderName = str
-ProductSearchProviderName = Literal["mock", "local_json", "http"]
-PriceCompareProviderName = Literal["mock", "local", "http"]
+ProductSearchProviderName = Literal["mock", "local_json", "http", "haodanku"]
+PriceCompareProviderName = Literal["mock", "local", "http", "haodanku"]
 RenderProviderName = Literal["mock", "http"]
 VideoProviderName = Literal["mock", "http", "ark"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
@@ -105,6 +105,9 @@ class ProviderConfig:
     price_compare_base_url: str | None = None
     price_compare_api_key: str | None = None
     price_compare_timeout_seconds: float = 10.0
+    haodanku_api_key: str | None = None
+    haodanku_base_url: str = "https://v3.api.haodanku.com"
+    haodanku_timeout_seconds: float = 10.0
     render_provider: RenderProviderName = "mock"
     render_base_url: str | None = None
     render_api_key: str | None = None
@@ -219,6 +222,9 @@ class ProviderConfig:
             price_compare_base_url=source.get("PRICE_COMPARE_BASE_URL"),
             price_compare_api_key=source.get("PRICE_COMPARE_API_KEY"),
             price_compare_timeout_seconds=_float_env(source.get("PRICE_COMPARE_TIMEOUT_SECONDS"), 10.0),
+            haodanku_api_key=source.get("HAODANKU_API_KEY"),
+            haodanku_base_url=source.get("HAODANKU_BASE_URL") or "https://v3.api.haodanku.com",
+            haodanku_timeout_seconds=_float_env(source.get("HAODANKU_TIMEOUT_SECONDS"), 10.0),
             render_provider=_render_provider(
                 source.get("MULTIMODAL_AGENT_RENDER_PROVIDER"),
                 allow_real=allow_real_providers,
@@ -266,6 +272,7 @@ class ProviderConfig:
                 self.search_api_base_url,
                 self.product_search_api_key,
                 self.price_compare_api_key,
+                self.haodanku_api_key,
                 self.render_api_key,
                 self.video_understanding_api_key,
             )
@@ -418,7 +425,7 @@ def _product_search_provider(value: str | None, *, allow_real: bool = True) -> P
         return "local_json"
     if not allow_real:
         return "mock"
-    if value in {"local_json", "http"}:
+    if value in {"local_json", "http", "haodanku"}:
         return value
     return "mock"
 
@@ -428,7 +435,7 @@ def _price_compare_provider(value: str | None, *, allow_real: bool = True) -> Pr
         return "local"
     if not allow_real:
         return "mock"
-    if value == "http":
+    if value in {"http", "haodanku"}:
         return value
     return "mock"
 

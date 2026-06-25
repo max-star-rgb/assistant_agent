@@ -29,6 +29,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from multimodal_agent.schemas.events import AgentEvent
+from multimodal_agent.services.demo_examples import get_demo_examples
 
 
 DEFAULT_SERVER = "http://127.0.0.1:8000"
@@ -118,7 +119,7 @@ def build_ws_url(
     ws_scheme = "wss" if parts.scheme == "https" else "ws"
     base_path = parts.path.rstrip("/")
     path = f"{base_path}/ws/agent/{quote(session_id, safe='')}"
-    params: list[tuple[str, str]] = [("text", query), ("user_id", user_id)]
+    params: list[tuple[str, str]] = [("text", query), ("user_id", user_id), ("client", "cli")]
     params.extend(("image_id", ref) for ref in image_refs)
     params.extend(("video_id", ref) for ref in video_refs)
     return urlunsplit((ws_scheme, parts.netloc, path, urlencode(params, doseq=True), ""))
@@ -383,7 +384,10 @@ def _print_run_summary(payload: dict[str, Any]) -> None:
                 print(f"      artifact: {_safe_display_value(result['output_ref'])}")
             summary = _compact_tool_result_summary(result.get("data") or {}, response_text=payload.get("response_text"))
             if summary:
-                print(f"      summary: {summary}")
+                summary_lines = summary.splitlines()
+                print(f"      summary: {summary_lines[0]}")
+                for line in summary_lines[1:]:
+                    print(f"        {line}")
             if result.get("error"):
                 print(f"      error: {result['error']}")
     elif tool_calls:
@@ -412,13 +416,7 @@ def _print_run_summary(payload: dict[str, Any]) -> None:
 def show_examples() -> None:
     print()
     print("Examples")
-    for example in [
-        "你好，请用两句话介绍你能做什么",
-        "帮我写一段白色运动鞋的电商卖点文案",
-        "生成一张白色运动鞋的电商主图，干净背景，真实摄影风格",
-        "帮我找一款无线蓝牙耳机并比较价格",
-        "图里是什么？请简要描述主要物体、颜色、材质和场景。",
-    ]:
+    for example in get_demo_examples():
         print(f"  - {example}")
 
 
@@ -754,6 +752,9 @@ def _format_latency(value: object) -> str:
 
 def _compact_tool_result_summary(data: dict[str, Any], *, response_text: object | None = None) -> str:
     response = _safe_display_value(response_text).strip() if response_text else ""
+    product_summary = _compact_product_result_summary(data)
+    if product_summary:
+        return product_summary
     for key in ("summary", "response_text", "image_url", "output_ref", "request_id"):
         value = data.get(key)
         if value:
@@ -768,6 +769,39 @@ def _compact_tool_result_summary(data: dict[str, Any], *, response_text: object 
     if isinstance(contract, dict):
         return f"capability={contract.get('capability')}, status={contract.get('status')}"
     return ""
+
+
+def _compact_product_result_summary(data: dict[str, Any]) -> str:
+    items = data.get("items")
+    if isinstance(items, list) and items:
+        lines = []
+        total = data.get("total")
+        for index, item in enumerate(items[:5], start=1):
+            if isinstance(item, dict):
+                lines.append(_format_compact_product_item(item, index=index))
+        if lines:
+            header = f"showing {len(lines)} of {total}" if total is not None else f"showing {len(lines)}"
+            return "\n".join([header, *lines])
+    best_offer = data.get("best_offer")
+    if isinstance(best_offer, dict) and best_offer:
+        return _format_compact_product_item(best_offer, prefix="best")
+    return ""
+
+
+def _format_compact_product_item(
+    item: dict[str, Any],
+    *,
+    index: int | None = None,
+    prefix: str = "top",
+) -> str:
+    title = _safe_display_value(item.get("title") or "candidate")
+    price = item.get("total_price") or item.get("price")
+    currency = item.get("currency") or "CNY"
+    url = item.get("product_url") or item.get("url")
+    label = f"{index}" if index is not None else prefix
+    price_part = f", price={price} {currency}" if price is not None else ""
+    url_part = f", url={_safe_display_value(url)}" if url else ""
+    return f"{label}: {title}{price_part}{url_part}"
 
 
 def recovery_hints(errors: list[dict[str, Any]]) -> list[str]:

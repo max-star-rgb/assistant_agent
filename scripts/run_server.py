@@ -10,6 +10,7 @@ PyCharm can launch it without a module-based uvicorn run configuration.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -27,6 +28,11 @@ from multimodal_agent.services.provider_specs import (
     supported_chat_providers,
     supported_image_generation_providers,
 )
+from multimodal_agent.services.trial_access import (
+    TRIAL_USER_IDS_ENV,
+    parse_trial_user_ids,
+    trial_access_gate_from_env,
+)
 
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
@@ -40,6 +46,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reload", action="store_true", help="Enable uvicorn auto-reload for local development.")
     parser.add_argument("--env-file", default=".env", help="Env file to load before starting.")
     parser.add_argument("--no-env-file", action="store_true", help="Do not load a dotenv file before starting.")
+    parser.add_argument(
+        "--trial-user-id",
+        action="append",
+        default=[],
+        help="Allowed Web Console trial user id(s). Repeat or comma-separate to allow multiple ids.",
+    )
+    parser.add_argument(
+        "--trial-user-id-file",
+        default=None,
+        help="Text file of allowed Web Console trial user ids, one per line or comma separated.",
+    )
     parser.add_argument(
         "--provider",
         choices=supported_chat_providers(),
@@ -68,6 +85,7 @@ def _prepare_environment(args: argparse.Namespace) -> dict[str, str]:
     if args.image_provider:
         _allow_real_provider_if_needed(args.image_provider)
         os.environ["MULTIMODAL_AGENT_IMAGE_PROVIDER"] = args.image_provider
+    _configure_trial_user_allowlist(args)
     return loaded
 
 
@@ -76,18 +94,55 @@ def _allow_real_provider_if_needed(provider: str) -> None:
         os.environ.setdefault("MULTIMODAL_AGENT_RUNTIME_PROFILE", "provider_smoke")
 
 
+def _configure_trial_user_allowlist(args: argparse.Namespace) -> None:
+    ids = _trial_user_ids_from_args(args)
+    if ids:
+        existing = parse_trial_user_ids(os.environ.get(TRIAL_USER_IDS_ENV))
+        combined = sorted({*existing, *ids})
+        os.environ[TRIAL_USER_IDS_ENV] = ",".join(combined)
+
+
+def _trial_user_ids_from_args(args: argparse.Namespace) -> list[str]:
+    ids: set[str] = set()
+    for value in args.trial_user_id:
+        ids.update(parse_trial_user_ids(value))
+    if args.trial_user_id_file:
+        path = Path(args.trial_user_id_file).expanduser()
+        if not path.is_absolute():
+            path = REPO_ROOT / path
+        if not path.exists():
+            raise FileNotFoundError(f"--trial-user-id-file does not exist: {path}")
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            ids.update(parse_trial_user_ids(line))
+    return sorted(item for item in ids if item)
+
+
 def _print_runtime_summary(config: ProviderConfig, *, loaded_env_keys: list[str]) -> None:
     info = runtime_info(config)
     providers = info["providers"]
+    trial_access = trial_access_gate_from_env(base_dir=REPO_ROOT)
     print("Runtime configuration:")
     print(f"  env_file_keys_loaded: {len(loaded_env_keys)}")
     print(f"  runtime_profile: {info['runtime_profile']}")
     print(f"  graph_mode: {info['graph_mode']}")
     print(f"  chat_provider: {providers['chat']}")
     print(f"  chat_model: {config.chat_model or '(unset)'}")
+    print(f"  vision_provider: {providers['vision']}")
     print(f"  image_provider: {providers['image_generation']}")
+    print(f"  product_search_provider: {providers['product_search']}")
+    print(f"  price_compare_provider: {providers['price_compare']}")
+    print(f"  render_provider: {providers['render']}")
     print(f"  video_provider: {providers['video']}")
     print(f"  offline_default: {info['offline_default']}")
+    print(
+        "  trial_access: "
+        + (
+            f"restricted ({trial_access.allowed_user_count} allowed user ids)"
+            if trial_access.access_required
+            else "open"
+        )
+    )
     missing = config.resolved_chat_provider().missing_required_env()
     if missing:
         print(f"  chat_provider_ready: no, missing {', '.join(missing)}")
@@ -116,6 +171,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = ProviderConfig.from_env()
 
     import uvicorn
+
+    # Surface multimodal_agent INFO logs (e.g. WebSocket request/response lines).
+    # uvicorn does not configure the root logger, so attach our own handler
+    # instead of relying on propagation.
+    pkg_logger = logging.getLogger("multimodal_agent")
+    pkg_logger.setLevel(logging.INFO)
+    if not pkg_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(message)s"))
+        pkg_logger.addHandler(handler)
+        pkg_logger.propagate = False
 
     base = f"http://{args.host}:{args.port}"
     url = f"{base}/demo/console"

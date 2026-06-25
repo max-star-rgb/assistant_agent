@@ -69,12 +69,40 @@ def _summary_from_result(result: ToolResult, data: Any, error_message: str | Non
     if not result.success:
         return error_message or "Tool execution failed."
     if isinstance(data, dict):
+        product_summary = _shopping_summary(result.tool_name, data)
+        if product_summary:
+            return product_summary
         summary = data.get("summary") or data.get("message")
         if isinstance(summary, str) and summary.strip():
             return sanitize_error_message(summary)
         if result.output_ref:
             return f"{result.tool_name} succeeded with output {result.output_ref}."
     return f"{result.tool_name} succeeded."
+
+
+def _shopping_summary(tool_name: str, data: dict[str, Any]) -> str:
+    if tool_name == "product_search":
+        items = data.get("items")
+        if isinstance(items, list) and items:
+            item = items[0]
+            if isinstance(item, dict):
+                return _format_product_item_summary(item, total=data.get("total"))
+    if tool_name == "price_compare":
+        best_offer = data.get("best_offer")
+        if isinstance(best_offer, dict) and best_offer:
+            return _format_product_item_summary(best_offer, prefix="Best offer")
+    return ""
+
+
+def _format_product_item_summary(item: dict[str, Any], *, total: Any = None, prefix: str = "Top product") -> str:
+    title = item.get("title") or "candidate"
+    price = item.get("total_price") or item.get("price")
+    currency = item.get("currency") or "CNY"
+    url = item.get("product_url") or item.get("url")
+    total_part = f" of {total}" if total is not None else ""
+    price_part = f", price {price} {currency}" if price is not None else ""
+    url_part = f", url {url}" if url else ""
+    return sanitize_error_message(f"{prefix}{total_part}: {title}{price_part}{url_part}.")
 
 
 def _error_code(error: str | None) -> str | None:

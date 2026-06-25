@@ -109,42 +109,12 @@ class MockPriceCompareAdapter:
     provider = "mock"
 
     def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
-        if not request.items:
-            return _failed_price_result(
-                provider=self.provider,
-                query=request.query,
-                code="price_no_products",
-                message="缺少商品候选列表，无法比价",
-                recoverable=True,
-            )
-
-        offers = [_offer_from_product(item) for item in request.items if item.price is not None]
-        offers = _filter_offers(offers, request)
-        if not offers:
-            return _failed_price_result(
-                provider=self.provider,
-                query=request.query,
-                code="price_no_offers",
-                message="没有符合预算或平台条件的报价。",
-                recoverable=True,
-            )
-
-        offers = _sort_offers(offers, request.sort_by)[: request.top_k]
-        best_offer = offers[0]
-        items_by_id = {item.product_id: item for item in request.items}
-        sorted_items = [items_by_id[offer.product_id] for offer in offers if offer.product_id in items_by_id]
-        ranking_reason = _ranking_reason(best_offer, request.sort_by)
-        return PriceCompareResult(
-            query=request.query,
-            items=sorted_items,
-            best_value_product_id=best_offer.product_id,
-            summary=f"{best_offer.title} 当前综合最优，总价 {best_offer.total_price:.2f} {best_offer.currency}。",
-            offers=offers,
-            best_offer=best_offer,
-            ranking_reason=ranking_reason,
+        return _compare_products(
+            request.items,
+            request,
             provider=self.provider,
-            latency_ms=1,
             output_ref="mock://compare/white-low-top-sneaker",
+            latency_ms=1,
         )
 
 
@@ -305,6 +275,21 @@ def create_product_search_adapter(config: ProviderConfig | None = None) -> Produ
         if not resolved.product_search_local_path:
             return UnconfiguredProductSearchAdapter("local_json", "PRODUCT_SEARCH_LOCAL_PATH")
         return LocalJsonProductSearchAdapter(resolved.product_search_local_path)
+    if resolved.product_search_provider == "haodanku":
+        if not resolved.haodanku_api_key:
+            return UnconfiguredProductSearchAdapter("haodanku", "HAODANKU_API_KEY")
+        from multimodal_agent.providers.haodanku_product_search import (
+            HaodankuConfig,
+            HaodankuProductSearchAdapter,
+        )
+
+        return HaodankuProductSearchAdapter(
+            HaodankuConfig(
+                api_key=resolved.haodanku_api_key,
+                base_url=resolved.haodanku_base_url,
+                timeout_seconds=resolved.haodanku_timeout_seconds,
+            )
+        )
     if resolved.product_search_provider == "http":
         return HttpProductSearchAdapter(
             base_url=resolved.product_search_base_url,
@@ -320,6 +305,19 @@ def create_price_compare_adapter(config: ProviderConfig | None = None) -> PriceC
     resolved = config or ProviderConfig.from_env()
     if resolved.price_compare_provider == "local":
         return LocalPriceCompareAdapter()
+    if resolved.price_compare_provider == "haodanku":
+        from multimodal_agent.providers.haodanku_product_search import (
+            HaodankuConfig,
+            HaodankuPriceCompareAdapter,
+        )
+
+        return HaodankuPriceCompareAdapter(
+            HaodankuConfig(
+                api_key=resolved.haodanku_api_key,
+                base_url=resolved.haodanku_base_url,
+                timeout_seconds=resolved.haodanku_timeout_seconds,
+            )
+        )
     if resolved.price_compare_provider == "http":
         return HttpPriceCompareAdapter(
             base_url=resolved.price_compare_base_url,
@@ -493,6 +491,59 @@ def _failed_search_result(
         provider=provider,
         errors=[ProductProviderError(code=error.code, message=error.message, recoverable=error.recoverable)],
         total=0,
+    )
+
+
+def _compare_products(
+    items: list[ProductResult],
+    request: PriceCompareRequest,
+    *,
+    provider: str,
+    output_ref: str | None = None,
+    latency_ms: int | None = None,
+) -> PriceCompareResult:
+    """Rank product candidates into a structured price comparison result.
+
+    Shared by the mock/local adapters and the Haodanku adapter so every
+    provider produces an identical, explainable ranking.
+    """
+
+    if not items:
+        return _failed_price_result(
+            provider=provider,
+            query=request.query,
+            code="price_no_products",
+            message="缺少商品候选列表，无法比价",
+            recoverable=True,
+        )
+
+    offers = [_offer_from_product(item) for item in items if item.price is not None]
+    offers = _filter_offers(offers, request)
+    if not offers:
+        return _failed_price_result(
+            provider=provider,
+            query=request.query,
+            code="price_no_offers",
+            message="没有符合预算或平台条件的报价。",
+            recoverable=True,
+        )
+
+    offers = _sort_offers(offers, request.sort_by)[: request.top_k]
+    best_offer = offers[0]
+    items_by_id = {item.product_id: item for item in items}
+    sorted_items = [items_by_id[offer.product_id] for offer in offers if offer.product_id in items_by_id]
+    ranking_reason = _ranking_reason(best_offer, request.sort_by)
+    return PriceCompareResult(
+        query=request.query,
+        items=sorted_items,
+        best_value_product_id=best_offer.product_id,
+        summary=f"{best_offer.title} 当前综合最优，总价 {best_offer.total_price:.2f} {best_offer.currency}。",
+        offers=offers,
+        best_offer=best_offer,
+        ranking_reason=ranking_reason,
+        provider=provider,
+        latency_ms=latency_ms,
+        output_ref=output_ref,
     )
 
 

@@ -134,13 +134,142 @@
         white-space: pre-wrap;
       }
 
-      #final-response {
+      .conversation {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 180px;
+      }
+
+      .turn {
+        display: flex;
+        width: 100%;
+      }
+
+      .turn.user {
+        justify-content: flex-end;
+      }
+
+      .turn.assistant {
+        justify-content: flex-start;
+      }
+
+      .bubble {
+        max-width: min(78%, 720px);
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+        padding: 10px 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .turn.user .bubble {
+        background: #e8f1fb;
+        border-color: #b9cfe8;
+        color: #183b61;
+      }
+
+      .turn.assistant .bubble {
         background: #fbfcfe;
+        border-color: #d9dee7;
         color: #20242c;
       }
 
-      .conversation {
-        min-height: 180px;
+      .artifact-gallery {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+
+      .artifact-card {
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #ffffff;
+      }
+
+      .artifact-card img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        object-fit: contain;
+        background: #f2f4f7;
+      }
+
+      .artifact-actions {
+        display: flex;
+        gap: 8px;
+        padding: 10px;
+      }
+
+      .artifact-actions a {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
+        border-radius: 6px;
+        padding: 7px 10px;
+        background: #eef2f7;
+        color: #243b53;
+        font-size: 13px;
+        font-weight: 650;
+        text-decoration: none;
+        border: 1px solid #cfd7e4;
+      }
+
+      .product-gallery {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+      }
+
+      .product-card {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .product-card.recommended {
+        border-color: #205493;
+      }
+
+      .product-title {
+        margin: 0;
+        font-size: 14px;
+        line-height: 1.35;
+      }
+
+      .product-price {
+        color: #175cd3;
+        font-size: 18px;
+        font-weight: 750;
+      }
+
+      .product-meta,
+      .product-reason {
+        color: #667085;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .product-actions a {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
+        border-radius: 6px;
+        padding: 7px 10px;
+        background: #eef2f7;
+        color: #243b53;
+        font-size: 13px;
+        font-weight: 650;
+        text-decoration: none;
+        border: 1px solid #cfd7e4;
       }
 
       .status {
@@ -174,32 +303,27 @@
       <h1>Assistant Chat</h1>
 
       <section>
-        <h2>Trial User</h2>
+        <h2>试用入口</h2>
         <div class="trial-row">
           <div class="field">
-            <label for="trial-user-id">User ID</label>
-            <input id="trial-user-id" type="text" placeholder="输入你的试用 ID，例如 alice 或 phone-demo-01" autocomplete="username" />
+            <label for="trial-user-id">工号</label>
+            <input id="trial-user-id" type="text" placeholder="请输入你的工号：00xxxx" autocomplete="username" />
           </div>
-          <button id="save-user" type="button">Use ID</button>
+          <button id="save-user" type="button">确认</button>
         </div>
-        <div class="status" id="user-status">请输入一个 ID 开始体验。</div>
+        <div class="status" id="user-status">请输入你的工号：00xxxx</div>
       </section>
 
-      <section>
+      <section data-requires-access hidden>
         <h2>Examples</h2>
-        <div class="examples" id="examples">
-          <button class="example" type="button">你好，简单介绍一下你能做什么。</button>
-          <button class="example" type="button">帮我找一款适合通勤的无线蓝牙耳机，并比较一下价格，最后给出推荐理由。</button>
-          <button class="example" type="button">生成一张白色运动鞋的电商主图，干净背景，真实摄影风格。</button>
-          <button class="example" type="button">帮我写一段适合小红书的商品介绍。</button>
-        </div>
+        <div class="examples" id="examples"></div>
       </section>
 
-      <section>
+      <section data-requires-access hidden>
         <h2>Input</h2>
         <div class="input-row">
           <textarea id="message">你好，简单介绍一下你能做什么。</textarea>
-          <button id="send" type="button">Send</button>
+          <button id="send" type="button" disabled>Send</button>
         </div>
         <div class="media-row">
           <input id="image-ids" type="text" placeholder="Image IDs（逗号或换行分隔，可选）" />
@@ -208,12 +332,22 @@
         <div class="status" id="status">ready</div>
       </section>
 
-      <section>
+      <section data-requires-access hidden>
         <h2>Conversation History</h2>
-        <pre class="conversation" id="final-response"></pre>
+        <div class="conversation" id="final-response"></div>
       </section>
 
-      <section>
+      <section id="products-section" hidden>
+        <h2>Product Results</h2>
+        <div class="product-gallery" id="product-gallery"></div>
+      </section>
+
+      <section id="artifacts-section" hidden>
+        <h2>Generated Images</h2>
+        <div class="artifact-gallery" id="artifact-gallery"></div>
+      </section>
+
+      <section data-requires-access hidden>
         <h2>Assistant ReAct Process</h2>
         <pre id="react-process"></pre>
       </section>
@@ -230,7 +364,14 @@
       const statusOutput = document.querySelector("#status");
       const finalResponse = document.querySelector("#final-response");
       const reactProcess = document.querySelector("#react-process");
+      const productsSection = document.querySelector("#products-section");
+      const productGallery = document.querySelector("#product-gallery");
+      const artifactsSection = document.querySelector("#artifacts-section");
+      const artifactGallery = document.querySelector("#artifact-gallery");
+      const accessSections = document.querySelectorAll("[data-requires-access]");
+      const examplesContainer = document.querySelector("#examples");
       let runtimeInfo = null;
+      let verifiedTrialUserId = "";
       const conversationHistory = [];
       const USER_STORAGE_KEY = "multimodal_agent_trial_user_id";
 
@@ -241,10 +382,13 @@
         }
       });
 
-      saveUserButton.addEventListener("click", saveTrialUserId);
+      saveUserButton.addEventListener("click", () => {
+        void saveTrialUserId();
+      });
+      trialUserIdInput.addEventListener("input", handleTrialUserInputChanged);
       trialUserIdInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
-          saveTrialUserId();
+          void saveTrialUserId();
         }
       });
       sendButton.addEventListener("click", runAssistant);
@@ -258,7 +402,7 @@
         const text = messageInput.value.trim();
         const userId = currentTrialUserId();
         if (!userId) {
-          setUserStatus("请输入 User ID 后再开始。", true);
+          setUserStatus("请先验证工号。", true);
           trialUserIdInput.focus();
           return;
         }
@@ -272,22 +416,21 @@
         setStatus("running...");
         try {
           const payload = await runAssistantStream(text);
+          const artifacts = collectImageArtifacts(payload);
+          const products = collectProductResults(payload);
           conversationHistory.push({
             user: text,
             assistant: payload.response_text || "(empty response)",
             status: payload.status || "completed",
             run_id: payload.run_id,
             trace_id: payload.trace_id,
+            artifacts,
+            products,
           });
           renderConversationHistory(conversationHistory);
-          reactProcess.textContent = [
-            formatRuntimeInfo(),
-            formatDecisionTrace(payload.decision_trace || []),
-            formatToolResults(payload.tool_results || []),
-            formatErrors(payload.errors || []),
-          ]
-            .filter(Boolean)
-            .join("\n\n");
+          renderProductGallery(conversationHistory.flatMap((turn) => turn.products || []));
+          renderArtifactGallery(conversationHistory.flatMap((turn) => turn.artifacts || []));
+          reactProcess.textContent = formatReactProcess(payload, payload._timeline_lines || null);
           setStatus(`done | run_id=${payload.run_id} | trace_id=${payload.trace_id}`);
         } catch (error) {
           conversationHistory.push({
@@ -296,6 +439,8 @@
             status: "failed",
           });
           renderConversationHistory(conversationHistory);
+          renderProductGallery(conversationHistory.flatMap((turn) => turn.products || []));
+          renderArtifactGallery(conversationHistory.flatMap((turn) => turn.artifacts || []));
           reactProcess.textContent = "";
           setStatus(String(error), true);
         } finally {
@@ -329,17 +474,22 @@
         return new Promise((resolve, reject) => {
           const socket = new WebSocket(url);
           let finalPayload = null;
-          socket.onopen = () => {
-            eventLines.push("connected");
-            renderLiveProcess(eventLines, null);
-          };
+          let finalError = null;
+          socket.onopen = () => renderLiveProcess(eventLines, null);
           socket.onmessage = (message) => {
             const event = JSON.parse(message.data);
-            eventLines.push(formatRuntimeEvent(event));
+            const timelineLine = formatTimelineEvent(event);
+            if (timelineLine) {
+              eventLines.push(timelineLine);
+            }
             if (event.type === "agent_response" && event.payload && event.payload.response) {
               finalPayload = event.payload.response;
+              finalPayload._timeline_lines = eventLines.slice();
               renderLiveProcess(eventLines, finalPayload);
             } else {
+              if (event.type === "agent_error") {
+                finalError = event.error || "WebSocket 运行失败。";
+              }
               renderLiveProcess(eventLines, null);
             }
           };
@@ -349,6 +499,8 @@
           socket.onclose = () => {
             if (finalPayload) {
               resolve(finalPayload);
+            } else if (finalError) {
+              reject(new Error(errorMessage(finalError)));
             } else {
               reject(new Error("WebSocket 已关闭，但没有收到最终回复。"));
             }
@@ -356,23 +508,61 @@
         });
       }
 
-      function saveTrialUserId() {
+      async function saveTrialUserId() {
         const userId = normalizeUserId(trialUserIdInput.value);
         if (!userId) {
-          setUserStatus("User ID 不能为空。", true);
+          setUserStatus("工号不能为空。", true);
           return;
         }
-        localStorage.setItem(USER_STORAGE_KEY, userId);
-        trialUserIdInput.value = userId;
-        conversationHistory.length = 0;
-        renderConversationHistory(conversationHistory);
-        reactProcess.textContent = "";
-        setUserStatus(`当前 User ID：${userId}`);
-        setStatus("ready");
+        saveUserButton.disabled = true;
+        setUserStatus("正在验证工号...");
+        try {
+          const access = await validateTrialUserId(userId);
+          verifiedTrialUserId = access.user_id || userId;
+          localStorage.setItem(USER_STORAGE_KEY, verifiedTrialUserId);
+          trialUserIdInput.value = verifiedTrialUserId;
+          conversationHistory.length = 0;
+          renderConversationHistory(conversationHistory);
+          renderProductGallery([]);
+          renderArtifactGallery([]);
+          reactProcess.textContent = "";
+          setExperienceEnabled(true);
+          setUserStatus(
+            access.access_required ? `已验证工号：${verifiedTrialUserId}` : `当前工号：${verifiedTrialUserId}`,
+          );
+          setStatus("ready");
+        } catch (error) {
+          verifiedTrialUserId = "";
+          localStorage.removeItem(USER_STORAGE_KEY);
+          setExperienceEnabled(false);
+          setUserStatus(errorMessage(error), true);
+        } finally {
+          saveUserButton.disabled = false;
+        }
       }
 
       function currentTrialUserId() {
-        return normalizeUserId(trialUserIdInput.value || localStorage.getItem(USER_STORAGE_KEY) || "");
+        return verifiedTrialUserId;
+      }
+
+      async function validateTrialUserId(userId) {
+        const params = new URLSearchParams();
+        params.set("user_id", userId);
+        const access = await fetchJson(`/demo/access?${params.toString()}`);
+        if (!access.allowed) {
+          throw new Error(access.reason || "该工号不在服务器试用名单中。");
+        }
+        return access;
+      }
+
+      function handleTrialUserInputChanged() {
+        const typed = normalizeUserId(trialUserIdInput.value);
+        if (!verifiedTrialUserId || typed === verifiedTrialUserId) {
+          return;
+        }
+        verifiedTrialUserId = "";
+        setExperienceEnabled(false);
+        setUserStatus("工号已修改，请重新验证。");
       }
 
       function normalizeUserId(value) {
@@ -387,64 +577,350 @@
       }
 
       function renderLiveProcess(eventLines, finalPayload) {
-        const sections = [formatRuntimeInfo(), "Live events", eventLines.join("\n")];
         if (finalPayload) {
-          sections.push("Final Decision Trace", formatDecisionTrace(finalPayload.decision_trace || []));
-          const toolResults = formatToolResults(finalPayload.tool_results || []);
-          if (toolResults) {
-            sections.push(toolResults);
-          }
-          const errors = formatErrors(finalPayload.errors || []);
-          if (errors) {
-            sections.push(errors);
-          }
+          reactProcess.textContent = formatReactProcess(finalPayload, eventLines);
+          return;
         }
-        reactProcess.textContent = sections.filter(Boolean).join("\n\n");
+        reactProcess.textContent = eventLines.length ? ["Timeline", eventLines.join("\n")].join("\n\n") : "";
       }
 
-      function formatRuntimeEvent(event) {
+      function formatTimelineEvent(event) {
         const trace = event.payload && event.payload.decision_trace;
+        if (event.type === "task_started") {
+          return `[run] started ${event.run_id}`;
+        }
+        if (event.type === "tool_started" && event.tool_name) {
+          return `[tool:${event.tool_name}] running...`;
+        }
         if (trace) {
-          return formatDecisionTraceEvent(trace);
+          return formatTimelineTrace(trace);
         }
-        const parts = [
-          `[${new Date(event.created_at).toLocaleTimeString()}] ${event.type}`,
-          event.node_name ? `node=${event.node_name}` : null,
-          event.tool_name ? `tool=${event.tool_name}` : null,
-          event.output_ref ? `output_ref=${event.output_ref}` : null,
-          event.text && event.type !== "agent_response" ? `text=${event.text}` : null,
-        ].filter(Boolean);
-        if (event.error) {
-          const message = typeof event.error === "string" ? event.error : event.error.message || JSON.stringify(event.error);
-          parts.push(`error=${message}`);
+        if (event.type === "task_failed") {
+          const message = eventErrorMessage(event.error);
+          return message ? `[run] failed\n       error: ${message}` : "[run] failed";
         }
-        return parts.join(" | ");
+        if (event.type === "agent_error") {
+          const message = eventErrorMessage(event.error);
+          return message ? `[error] ${message}` : "[error] agent failed";
+        }
+        return "";
+      }
+
+      function formatReactProcess(payload, timelineLines = null) {
+        const sections = [];
+        const timeline = timelineLines && timelineLines.length ? timelineLines.join("\n") : timelineFromPayload(payload).join("\n");
+        if (timeline) {
+          sections.push("Timeline", timeline);
+        }
+        sections.push(formatRunSummary(payload));
+        const toolResults = formatToolResults(payload.tool_results || []);
+        if (toolResults) {
+          sections.push(toolResults);
+        }
+        const errors = formatErrors(payload.errors || []);
+        if (errors) {
+          sections.push(errors);
+        }
+        return sections.filter(Boolean).join("\n\n");
+      }
+
+      function timelineFromPayload(payload) {
+        const lines = [];
+        for (const step of payload.decision_trace || []) {
+          const formatted = formatTimelineTrace(step);
+          if (formatted) {
+            lines.push(formatted);
+          }
+        }
+        if (!lines.length && payload.response_text) {
+          lines.push(`[answer]\n${safeDisplayValue(payload.response_text)}`);
+        }
+        return lines;
+      }
+
+      function formatTimelineTrace(trace) {
+        if (trace.event === "decision") {
+          const lines = [`[plan] ${trace.action || trace.decision_type || "decision"}`];
+          if (trace.decision_summary) {
+            lines.push(`       reason: ${trace.decision_summary}`);
+          }
+          const actionInput = publicActionInput(trace.action_input || {});
+          if (Object.keys(actionInput).length) {
+            lines.push(`       input: ${compactJson(actionInput)}`);
+          }
+          return lines.join("\n");
+        }
+        if (trace.event === "observation") {
+          const action = trace.action || "tool";
+          const status = trace.success ? "succeeded" : "failed";
+          const lines = [`[tool:${action}] ${status}`];
+          if (trace.output_ref) {
+            lines.push(`       artifact: ${safeDisplayValue(trace.output_ref)}`);
+          }
+          if (trace.error) {
+            lines.push(`       error: ${eventErrorMessage(trace.error)}`);
+          }
+          if (trace.recovery_hint) {
+            lines.push(`       recovery: ${trace.recovery_hint}`);
+          }
+          return lines.join("\n");
+        }
+        if (trace.event === "final_answer") {
+          const answer = safeDisplayValue(trace.answer || "");
+          return answer ? `[answer]\n${answer}` : "[answer]";
+        }
+        return "";
+      }
+
+      function formatRunSummary(payload) {
+        const data = payload.data || {};
+        const toolNames = (payload.tool_calls || [])
+          .map((call) => call.tool_name)
+          .filter(Boolean);
+        if (!toolNames.length) {
+          (payload.tool_results || []).forEach((result) => {
+            if (result.tool_name) {
+              toolNames.push(result.tool_name);
+            }
+          });
+        }
+        const status = payload.status === "failed" || (payload.errors || []).length ? "failed" : "success";
+        const lines = [
+          "Run",
+          `  status: ${status}`,
+          `  tools: ${toolNames.length ? toolNames.join(", ") : "(none)"}`,
+        ];
+        if (data.final_answer_source) {
+          lines.push(`  final_answer_source: ${data.final_answer_source}`);
+        }
+        lines.push(`  run_id: ${payload.run_id || ""}`);
+        lines.push(`  trace_id: ${payload.trace_id || ""}`);
+        return lines.join("\n");
+      }
+
+      function compactJson(value, maxLength = 360) {
+        const text = JSON.stringify(value);
+        return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
+      }
+
+      function publicActionInput(value) {
+        const result = {};
+        for (const [key, item] of Object.entries(value || {})) {
+          if (
+            item == null ||
+            item === "" ||
+            (Array.isArray(item) && !item.length) ||
+            (typeof item === "object" && !Array.isArray(item) && !Object.keys(item).length)
+          ) {
+            continue;
+          }
+          if (["memory_context", "user_id", "session_id", "product_info", "reference_image_ids"].includes(key)) {
+            continue;
+          }
+          result[key] = item;
+        }
+        return result;
+      }
+
+      function eventErrorMessage(error) {
+        if (error && typeof error === "object") {
+          return safeDisplayValue(String(error.message || error.code || JSON.stringify(error)));
+        }
+        return error ? safeDisplayValue(String(error)) : "";
       }
 
       function renderConversationHistory(turns) {
+        finalResponse.textContent = "";
         if (!turns.length) {
-          finalResponse.textContent = "";
           return;
         }
-        finalResponse.textContent = turns
-          .map((turn, index) => {
-            const meta = [
-              turn.status ? `status=${turn.status}` : null,
-              turn.run_id ? `run_id=${turn.run_id}` : null,
-              turn.trace_id ? `trace_id=${turn.trace_id}` : null,
-            ]
-              .filter(Boolean)
-              .join(" | ");
-            return [
-              `#${index + 1}`,
-              `User: ${turn.user}`,
-              `Assistant: ${turn.assistant}`,
-              meta ? `(${meta})` : null,
-            ]
-              .filter(Boolean)
-              .join("\n");
-          })
-          .join("\n\n");
+        for (const turn of turns) {
+          appendConversationBubble("user", turn.user);
+          appendConversationBubble("assistant", turn.assistant);
+        }
+      }
+
+      function appendConversationBubble(role, text) {
+        const row = document.createElement("div");
+        row.className = `turn ${role}`;
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        bubble.textContent = text || "";
+        row.appendChild(bubble);
+        finalResponse.appendChild(row);
+      }
+
+      function collectImageArtifacts(payload) {
+        const artifacts = [];
+        const seen = new Set();
+        for (const result of payload.tool_results || []) {
+          const data = result.data || {};
+          const candidates = [
+            ...(Array.isArray(data.download_urls) ? data.download_urls : []),
+            data.download_url,
+            ...(Array.isArray(data.image_urls) ? data.image_urls : []),
+            data.image_url,
+            result.output_ref,
+          ];
+          for (const candidate of candidates) {
+            const url = normalizeArtifactUrl(candidate);
+            if (!url || seen.has(url)) {
+              continue;
+            }
+            seen.add(url);
+            artifacts.push({
+              url,
+              title: data.prompt_used || data.prompt || result.tool_name || "generated image",
+            });
+          }
+        }
+        return artifacts;
+      }
+
+      function normalizeArtifactUrl(value) {
+        const raw = String(value || "").trim();
+        if (!raw) {
+          return null;
+        }
+        if (/^https?:\/\//i.test(raw)) {
+          return raw;
+        }
+        if (raw.startsWith("/artifacts/")) {
+          return raw;
+        }
+        if (raw.startsWith("artifacts/")) {
+          return `/${raw}`;
+        }
+        return null;
+      }
+
+      function renderArtifactGallery(artifacts) {
+        artifactGallery.textContent = "";
+        artifactsSection.hidden = artifacts.length === 0;
+        for (const artifact of artifacts) {
+          const card = document.createElement("div");
+          card.className = "artifact-card";
+
+          const image = document.createElement("img");
+          image.src = artifact.url;
+          image.alt = artifact.title;
+          image.loading = "lazy";
+          card.appendChild(image);
+
+          const actions = document.createElement("div");
+          actions.className = "artifact-actions";
+
+          const openLink = document.createElement("a");
+          openLink.href = artifact.url;
+          openLink.target = "_blank";
+          openLink.rel = "noopener";
+          openLink.textContent = "Open";
+          actions.appendChild(openLink);
+
+          const downloadLink = document.createElement("a");
+          downloadLink.href = artifact.url;
+          downloadLink.download = "";
+          downloadLink.textContent = "Download";
+          actions.appendChild(downloadLink);
+
+          card.appendChild(actions);
+          artifactGallery.appendChild(card);
+        }
+      }
+
+      function collectProductResults(payload) {
+        const productsByKey = new Map();
+        const addProduct = (item, options = {}) => {
+          if (!item || typeof item !== "object") {
+            return;
+          }
+          const title = item.title || "候选商品";
+          const price = item.total_price ?? item.price;
+          const currency = item.currency || "CNY";
+          const url = item.product_url || item.url;
+          const key = url || item.product_id || `${title}:${price ?? ""}`;
+          const existing = productsByKey.get(key) || {};
+          productsByKey.set(key, {
+            ...existing,
+            title,
+            price,
+            currency,
+            url,
+            platform: item.platform || existing.platform,
+            shop: item.shop || existing.shop,
+            reason:
+              item.reason ||
+              (item.ranking_reason && item.ranking_reason.explanation) ||
+              existing.reason ||
+              "",
+            recommended: Boolean(options.recommended || existing.recommended),
+          });
+        };
+
+        for (const result of payload.tool_results || []) {
+          const data = result.data || {};
+          if (result.tool_name === "price_compare") {
+            addProduct(data.best_offer, { recommended: true });
+            (Array.isArray(data.offers) ? data.offers : []).slice(0, 5).forEach((item) => addProduct(item));
+          }
+        }
+        for (const result of payload.tool_results || []) {
+          const data = result.data || {};
+          (Array.isArray(data.items) ? data.items : []).slice(0, 5).forEach((item) => addProduct(item));
+        }
+        return Array.from(productsByKey.values())
+          .sort((a, b) => Number(b.recommended) - Number(a.recommended))
+          .slice(0, 8);
+      }
+
+      function renderProductGallery(products) {
+        productGallery.textContent = "";
+        productsSection.hidden = products.length === 0;
+        for (const product of products) {
+          const card = document.createElement("div");
+          card.className = `product-card${product.recommended ? " recommended" : ""}`;
+
+          const title = document.createElement("h3");
+          title.className = "product-title";
+          title.textContent = product.recommended ? `推荐：${product.title}` : product.title;
+          card.appendChild(title);
+
+          if (product.price != null) {
+            const price = document.createElement("div");
+            price.className = "product-price";
+            price.textContent = `${product.price} ${product.currency || "CNY"}`;
+            card.appendChild(price);
+          }
+
+          const metaText = [product.platform, product.shop].filter(Boolean).join(" · ");
+          if (metaText) {
+            const meta = document.createElement("div");
+            meta.className = "product-meta";
+            meta.textContent = metaText;
+            card.appendChild(meta);
+          }
+
+          if (product.reason) {
+            const reason = document.createElement("div");
+            reason.className = "product-reason";
+            reason.textContent = product.reason;
+            card.appendChild(reason);
+          }
+
+          if (product.url) {
+            const actions = document.createElement("div");
+            actions.className = "product-actions";
+            const link = document.createElement("a");
+            link.href = product.url;
+            link.target = "_blank";
+            link.rel = "noopener";
+            link.textContent = "Open";
+            actions.appendChild(link);
+            card.appendChild(actions);
+          }
+
+          productGallery.appendChild(card);
+        }
       }
 
       function formatDecisionTrace(steps) {
@@ -463,11 +939,15 @@
           const latency = result.latency_ms != null ? ` | latency_ms=${result.latency_ms}` : "";
           lines.push(`[${index + 1}] ${result.tool_name} | success=${result.success}${latency}`);
           if (result.output_ref) {
-            lines.push(`    artifact: ${result.output_ref}`);
+            lines.push(`    artifact: ${safeDisplayValue(result.output_ref)}`);
           }
           const summary = compactToolResultSummary(result.data || {});
           if (summary) {
-            lines.push(`    summary: ${summary}`);
+            const summaryLines = summary.split("\n");
+            lines.push(`    summary: ${summaryLines[0]}`);
+            summaryLines.slice(1).forEach((line) => {
+              lines.push(`      ${line}`);
+            });
           }
           if (result.error) {
             lines.push(`    error: ${result.error}`);
@@ -477,6 +957,10 @@
       }
 
       function compactToolResultSummary(data) {
+        const productSummary = compactProductResultSummary(data);
+        if (productSummary) {
+          return productSummary;
+        }
         for (const key of ["summary", "response_text", "image_url", "output_ref", "request_id"]) {
           if (data[key]) {
             return String(data[key]).slice(0, 240);
@@ -489,6 +973,36 @@
           return `capability=${data.contract.capability}, status=${data.contract.status}`;
         }
         return "";
+      }
+
+      function compactProductResultSummary(data) {
+        if (Array.isArray(data.items) && data.items.length) {
+          const lines = [];
+          data.items.slice(0, 5).forEach((item, index) => {
+            if (item && typeof item === "object") {
+              lines.push(formatCompactProductItem(item, `${index + 1}`));
+            }
+          });
+          if (lines.length) {
+            const header = data.total != null ? `showing ${lines.length} of ${data.total}` : `showing ${lines.length}`;
+            return [header, ...lines].join("\n");
+          }
+        }
+        if (data.best_offer && typeof data.best_offer === "object") {
+          return formatCompactProductItem(data.best_offer, "best");
+        }
+        return "";
+      }
+
+      function formatCompactProductItem(item, prefix, total) {
+        const title = item.title || "candidate";
+        const price = item.total_price || item.price;
+        const currency = item.currency || "CNY";
+        const url = item.product_url || item.url;
+        const totalPart = total != null ? ` of ${total}` : "";
+        const pricePart = price != null ? `, price=${price} ${currency}` : "";
+        const urlPart = url ? `, url=${url}` : "";
+        return `${prefix}${totalPart}: ${title}${pricePart}${urlPart}`;
       }
 
       function formatErrors(errors) {
@@ -566,13 +1080,32 @@
         ].join("\n");
       }
 
+      function safeDisplayValue(value) {
+        const text = String(value);
+        const sensitiveParams = ["X-Tos-Credential=", "X-Tos-Signature=", "X-Tos-Algorithm="];
+        if (sensitiveParams.some((param) => text.includes(param))) {
+          return `${text.split("?", 1)[0]}?[signed-url-redacted]`;
+        }
+        return text;
+      }
+
       async function fetchJson(url, options) {
         const response = await fetch(url, options);
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-          throw new Error(payload.detail || payload.message || `HTTP ${response.status}`);
+          throw new Error(errorMessage(payload.detail || payload.message || `HTTP ${response.status}`));
         }
         return payload;
+      }
+
+      function errorMessage(error) {
+        if (error && typeof error === "object" && "message" in error) {
+          return String(error.message);
+        }
+        if (error && typeof error === "object") {
+          return JSON.stringify(error);
+        }
+        return String(error || "请求失败。");
       }
 
       function setStatus(text, isError = false) {
@@ -590,13 +1123,35 @@
         const fromUrl = normalizeUserId(params.get("user_id"));
         const stored = normalizeUserId(localStorage.getItem(USER_STORAGE_KEY));
         const initial = fromUrl || stored;
+        setExperienceEnabled(false);
         if (initial) {
           trialUserIdInput.value = initial;
-          localStorage.setItem(USER_STORAGE_KEY, initial);
-          setUserStatus(`当前 User ID：${initial}`);
+          void saveTrialUserId();
         } else {
-          sendButton.disabled = false;
-          setUserStatus("请输入一个 ID 开始体验。");
+          setUserStatus("请输入你的工号：00xxxx");
+        }
+      }
+
+      function setExperienceEnabled(enabled) {
+        for (const section of accessSections) {
+          section.hidden = !enabled;
+        }
+        sendButton.disabled = !enabled;
+        if (!enabled) {
+          productsSection.hidden = true;
+          artifactsSection.hidden = true;
+          setStatus("请先验证工号。");
+        }
+      }
+
+      function renderExamples(examples) {
+        examplesContainer.textContent = "";
+        for (const example of examples || []) {
+          const button = document.createElement("button");
+          button.className = "example";
+          button.type = "button";
+          button.textContent = example;
+          examplesContainer.appendChild(button);
         }
       }
 
@@ -606,6 +1161,13 @@
         })
         .catch(() => {
           runtimeInfo = null;
+        });
+      fetchJson("/demo/examples")
+        .then((payload) => {
+          renderExamples(payload.examples || []);
+        })
+        .catch(() => {
+          renderExamples([]);
         });
       initializeTrialUser();
     </script>

@@ -97,6 +97,3 @@ def _validation_error_summary(item: dict) -> dict[str, str]:
         "message": str(item.get("msg", "Invalid value")),
         "type": str(item.get("type", "value_error")),
     }
-
-
-app = create_app()

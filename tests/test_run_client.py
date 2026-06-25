@@ -43,6 +43,56 @@ def test_run_client_omits_duplicate_tool_summary() -> None:
     assert summary == ""
 
 
+def test_run_client_compact_product_summary_includes_url() -> None:
+    module = _load_demo_module()
+
+    summary = module._compact_tool_result_summary(
+        {
+            "total": 1,
+            "items": [
+                {
+                    "title": "小米17 手机",
+                    "price": 3999,
+                    "currency": "CNY",
+                    "product_url": "https://item.example/xiaomi17",
+                }
+            ],
+        }
+    )
+
+    assert "showing 1 of 1" in summary
+    assert "1: 小米17 手机" in summary
+    assert "3999 CNY" in summary
+    assert "https://item.example/xiaomi17" in summary
+
+
+def test_run_client_product_summary_lists_multiple_items_without_240_char_cutoff() -> None:
+    module = _load_demo_module()
+    long_title = "超长标题" * 40
+
+    summary = module._compact_tool_result_summary(
+        {
+            "total": 6,
+            "items": [
+                {
+                    "title": long_title,
+                    "price": 10 + index,
+                    "currency": "CNY",
+                    "product_url": f"https://item.example/{index}",
+                }
+                for index in range(6)
+            ],
+        }
+    )
+
+    assert "showing 5 of 6" in summary
+    assert "1: " in summary
+    assert "5: " in summary
+    assert "https://item.example/4" in summary
+    assert "https://item.example/5" not in summary
+    assert long_title in summary
+
+
 def test_build_ws_url_maps_http_scheme_and_encodes_params() -> None:
     module = _load_demo_module()
 
@@ -58,6 +108,7 @@ def test_build_ws_url_maps_http_scheme_and_encodes_params() -> None:
     assert url.startswith("ws://127.0.0.1:8000/ws/agent/demo%20session?")
     assert "text=%E4%BD%A0%E5%A5%BD" in url
     assert "user_id=demo_user" in url
+    assert "client=cli" in url
     assert url.count("image_id=") == 2
 
 
@@ -75,6 +126,16 @@ def test_build_ws_url_maps_https_and_preserves_base_path() -> None:
 
     assert url.startswith("wss://example.com/api/ws/agent/s1?")
     assert url.count("video_id=") == 2
+
+
+def test_run_client_examples_share_demo_examples(capsys) -> None:
+    module = _load_demo_module()
+
+    module.show_examples()
+    output = capsys.readouterr().out
+
+    for example in module.get_demo_examples():
+        assert example in output
 
 
 def test_build_ws_url_rejects_non_http_scheme() -> None:
