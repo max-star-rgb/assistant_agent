@@ -145,6 +145,56 @@ controller 可 continue / replan / ask_followup / final_answer
 planner_llm -> 本地 for-loop 自动跑完整 plan -> response composer
 ```
 
+## ReAct Trace Visibility Boundary
+
+Phase 8 ReAct 对外只暴露结构化运行过程：
+
+```text
+decision reason -> action -> observation -> final_answer
+```
+
+其中 `decision reason` 对应 `AssistantDecision.reason` 或 API/Web Console 中的 `decision_summary`，只能是简短、高层、可审计的决策理由。模型内部推理、完整 chain-of-thought、`Thought:` 前缀内容、分析草稿和思维链都不应进入 prompt 输出要求、trace、API 响应或 Web Console 展示。
+
+兼容 parser 可以从 markdown/code fence 或非 JSON 前缀中提取合法 JSON decision，但前缀文本不能被当作公开 trace 字段保存。API 保持兼容字段 `reason` / `decision_summary`，不新增 `thought` 字段。
+
+## LangGraph Thread Boundary
+
+本项目将 `session_id` 明确定义为业务会话 thread：
+
+```text
+UserRequest.session_id == SessionStore.thread_id == conversation/memory session key
+```
+
+当前 LangGraph 图仍是“一次请求一次运行”的执行图，不是可从上一次结束节点继续恢复的多轮对话图。因此 checkpointer 的 `thread_id` 使用 run scoped id，避免同一个 `session_id` 的新请求复用上一次已完成的 graph state：
+
+```python
+config = {
+    "configurable": {
+        "thread_id": state.run_id,
+        "session_id": request.session_id,
+        "user_id": request.user_id,
+        "run_id": state.run_id,
+    }
+}
+```
+
+`SessionStore` 只记录 thread 元数据和索引，例如 title、last_run_id、last_trace_id、run_count。默认使用内存；当 conversation history 配置为 JSONL 时，session index 会落到同目录 `sessions.jsonl`。长期用户记忆继续走 `MemoryManager`。
+
+LangGraph checkpointer 接入口已经保留：
+
+```text
+LANGGRAPH_CHECKPOINTER_BACKEND=none | memory
+```
+
+当前默认 `memory`。Runtime 已把 graph state 拆成：
+
+```text
+checkpoint state: 纯数据，允许序列化
+runtime context: 工具、模型、store、manager 等运行时依赖
+```
+
+运行期依赖通过 `GraphRuntimeContext` 在节点执行时注入，节点返回给 LangGraph 前会移除 `IntentDetector`、`ToolExecutor`、`ChatAdapter`、`MemoryManager`、`TraceStore` 等不可 checkpoint 的对象。后续如果需要跨进程恢复，再在 `services/checkpointer.py` 后面接 SQLite/Postgres checkpointer。
+
 ## Memory Boundary
 
 Phase 8 memory 通过 `MemoryManager` 收拢边界：
@@ -161,6 +211,20 @@ Agent / Assistant Loop / Memory Tools
 Graph state、memory tools、memory audit API 和 beta 用户数据删除都只依赖 `MemoryManager`；`MemoryStore` 保留为 runtime 内部构造细节和底层持久化接口。
 
 Embedding / 向量检索不是当前默认依赖。后续应作为可选 adapter 接到 `MemoryManager` / `MemoryStore` 后面，测试默认继续使用本地 deterministic 行为，真实 embedding provider 只通过显式配置启用。
+
+### Conversation History
+
+多轮对话历史属于 session-scoped context，不等同于长期 `MemoryStore`。默认是进程内存储；当 `MULTIMODAL_AGENT_MEMORY_BACKEND=jsonl` 且未显式配置 conversation backend 时，会自动使用同目录 JSONL：
+
+```text
+MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND=memory | jsonl
+MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH=.local/memory/conversation_history.jsonl
+MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS=8
+```
+
+本地 JSONL 的相对路径按仓库根目录解析，不按启动命令的当前工作目录解析。
+
+这解决“同一 session 重启服务后丢失最近对话上下文”的本地开发问题。长期偏好仍应通过显式记忆保存进入 `MemoryManager`，避免把完整聊天流水误当成用户画像。
 
 ### Memory Audit
 

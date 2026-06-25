@@ -1,5 +1,7 @@
 """Product search and price comparison schemas."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -63,6 +65,30 @@ class ProductSearchResult(BaseModel):
         return not self.errors
 
 
+class ProductSearchRequest(BaseModel):
+    """Input for product search providers."""
+
+    query: str | None = None
+    visual_summary: str | None = None
+    video_summary: str | None = None
+    objects: list[str] = Field(default_factory=list)
+    colors: list[str] = Field(default_factory=list)
+    materials: list[str] = Field(default_factory=list)
+    brand: str | None = None
+    category: str | None = None
+    budget_min: float | None = Field(default=None, ge=0)
+    budget_max: float | None = Field(default=None, ge=0)
+    budget: float | None = Field(default=None, ge=0)
+    platforms: list[str] = Field(default_factory=list)
+    top_k: int = Field(default=5, ge=1)
+    user_id: str | None = None
+    session_id: str | None = None
+    memory_context: list[str] = Field(default_factory=list)
+
+
+ProductSearchInput = ProductSearchRequest
+
+
 class PriceOffer(BaseModel):
     """A normalized offer used by price comparison."""
 
@@ -102,3 +128,21 @@ class PriceCompareResult(BaseModel):
     @property
     def success(self) -> bool:
         return not self.errors
+
+
+class PriceCompareRequest(BaseModel):
+    """Input for price comparison providers."""
+
+    items: list[ProductResult] = Field(default_factory=list)
+    query: str = "白色低帮运动鞋"
+    budget_min: float | None = Field(default=None, ge=0)
+    budget_max: float | None = Field(default=None, ge=0)
+    platforms: list[str] = Field(default_factory=list)
+    sort_by: Literal["price", "similarity", "rating", "value"] = "value"
+    currency: str = "CNY"
+    top_k: int = Field(default=5, ge=1)
+    user_id: str | None = None
+    session_id: str | None = None
+
+
+PriceCompareInput = PriceCompareRequest

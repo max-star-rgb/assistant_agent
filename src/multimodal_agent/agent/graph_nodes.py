@@ -24,11 +24,11 @@ class AgentGraphState(TypedDict):
 
     request: UserRequest
     state: AgentState
-    intent_detector: IntentDetector
-    router: ToolRouter
-    tool_executor: ToolExecutor
-    chat_adapter: ChatAdapter
-    memory_manager: MemoryManager
+    intent_detector: NotRequired[IntentDetector]
+    router: NotRequired[ToolRouter]
+    tool_executor: NotRequired[ToolExecutor]
+    chat_adapter: NotRequired[ChatAdapter]
+    memory_manager: NotRequired[MemoryManager]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
     trace_id: NotRequired[str]

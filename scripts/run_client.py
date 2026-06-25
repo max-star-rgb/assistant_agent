@@ -41,7 +41,7 @@ class RemoteServerError(RuntimeError):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the ReAct assistant loop through a running FastAPI server.",
+        description="Run the assistant through a running FastAPI server.",
     )
     parser.add_argument("query", nargs="*", help="Optional query. Omit for interactive mode.")
     parser.add_argument(
@@ -53,6 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video-ref", action="append", default=[], help="Optional video id/ref for the request.")
     parser.add_argument("--user-id", default="demo_user", help="User id for this demo run.")
     parser.add_argument("--session-id", default="demo_session", help="Session id for this demo run.")
+    parser.add_argument(
+        "--execution-strategy",
+        choices=["react", "plan_and_solve"],
+        default="react",
+        help="Per-request strategy: react for fast ReAct, plan_and_solve for explicit planning.",
+    )
     parser.add_argument("--json", action="store_true", help="Print a machine-readable JSON payload.")
     parser.add_argument("--no-live-events", action="store_true", help="Do not print live runtime events.")
     parser.add_argument("--show-trace", action="store_true", help="Print the full Decision Trace after the run.")
@@ -65,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
 def print_header() -> None:
     print()
     print("=" * 72)
-    print("ReAct Assistant Loop - Runtime Demo")
+    print("Assistant Runtime Demo")
     print("=" * 72)
 
 
@@ -77,6 +83,7 @@ def run_single_query(
     user_id: str = "demo_user",
     session_id: str = "demo_session",
     server: str = DEFAULT_SERVER,
+    execution_strategy: str = "react",
     event_sink: "RecordingConsoleEventSink | None" = None,
     runtime_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -89,6 +96,7 @@ def run_single_query(
         user_id=user_id,
         session_id=session_id,
         server=server,
+        execution_strategy=execution_strategy,
         event_sink=event_sink,
     )
     if final_response is not None:
@@ -96,7 +104,11 @@ def run_single_query(
             final_response, query=query, events=events, runtime_info=runtime_info
         )
     return adapt_agent_error_to_cli_payload(
-        final_error, query=query, events=events, runtime_info=runtime_info
+        final_error,
+        query=query,
+        events=events,
+        runtime_info=runtime_info,
+        execution_strategy=execution_strategy,
     )
 
 
@@ -108,6 +120,7 @@ def build_ws_url(
     user_id: str,
     image_refs: list[str],
     video_refs: list[str],
+    execution_strategy: str = "react",
 ) -> str:
     """Build the ws(s):// URL for /ws/agent/{session_id}, preserving any base path."""
 
@@ -119,7 +132,12 @@ def build_ws_url(
     ws_scheme = "wss" if parts.scheme == "https" else "ws"
     base_path = parts.path.rstrip("/")
     path = f"{base_path}/ws/agent/{quote(session_id, safe='')}"
-    params: list[tuple[str, str]] = [("text", query), ("user_id", user_id), ("client", "cli")]
+    params: list[tuple[str, str]] = [
+        ("text", query),
+        ("user_id", user_id),
+        ("client", "cli"),
+        ("execution_strategy", _execution_strategy(execution_strategy)),
+    ]
     params.extend(("image_id", ref) for ref in image_refs)
     params.extend(("video_id", ref) for ref in video_refs)
     return urlunsplit((ws_scheme, parts.netloc, path, urlencode(params, doseq=True), ""))
@@ -147,7 +165,8 @@ def run_remote_assistant_query(
     user_id: str,
     session_id: str,
     server: str,
-    event_sink: "RecordingConsoleEventSink | None",
+    execution_strategy: str = "react",
+    event_sink: "RecordingConsoleEventSink | None" = None,
     open_timeout: float = 10.0,
 ) -> tuple[dict[str, Any] | None, object | None, list[AgentEvent]]:
     """Stream a run over the WebSocket endpoint.
@@ -163,6 +182,7 @@ def run_remote_assistant_query(
         user_id=user_id,
         image_refs=image_refs,
         video_refs=video_refs,
+        execution_strategy=execution_strategy,
     )
     events: list[AgentEvent] = []
     final_response: dict[str, Any] | None = None
@@ -237,6 +257,11 @@ def adapt_remote_response_to_cli_payload(
         "model": "",
         "runtime_profile": _runtime_field(response, runtime_info, "runtime_profile"),
         "graph_mode": _runtime_field(response, runtime_info, "graph_mode"),
+        "execution_strategy": (
+            response.get("execution_strategy")
+            or (response.get("data") or {}).get("execution_strategy")
+            or "react"
+        ),
         "query": query,
         "response_text": response.get("response_text", ""),
         "response_data": response.get("data") or {},
@@ -270,6 +295,7 @@ def adapt_agent_error_to_cli_payload(
     query: str,
     events: list[AgentEvent],
     runtime_info: dict[str, Any] | None = None,
+    execution_strategy: str = "react",
 ) -> dict[str, Any]:
     """Build a failed cli_payload from a streamed agent_error (dict or string)."""
 
@@ -286,6 +312,7 @@ def adapt_agent_error_to_cli_payload(
         "model": "",
         "runtime_profile": (runtime_info or {}).get("runtime_profile", ""),
         "graph_mode": (runtime_info or {}).get("graph_mode", ""),
+        "execution_strategy": _execution_strategy(execution_strategy),
         "query": query,
         "response_text": "",
         "response_data": {},
@@ -365,6 +392,7 @@ def _print_run_summary(payload: dict[str, Any]) -> None:
     print()
     print("Run")
     print(f"  status: {payload['status']}")
+    print(f"  strategy: {payload.get('execution_strategy') or 'react'}")
     print(f"  tools: {', '.join(payload.get('tool_sequence') or []) or '(none)'}")
     final_answer_source = (payload.get("response_data") or {}).get("final_answer_source")
     if final_answer_source:
@@ -423,7 +451,8 @@ def show_examples() -> None:
 def interactive_mode(args: argparse.Namespace, *, runtime_info: dict[str, Any] | None = None) -> int:
     show_examples()
     print()
-    print("Type 'quit'/'exit' to quit, 'examples' to show examples.")
+    print("Type 'quit'/'exit' to quit, 'examples' to show examples, '/strategy react|plan_and_solve' to switch strategy.")
+    print(f"Current strategy: {_execution_strategy(args.execution_strategy)}")
     while True:
         try:
             query = input("\nQuery> ").strip()
@@ -437,6 +466,8 @@ def interactive_mode(args: argparse.Namespace, *, runtime_info: dict[str, Any] |
         if query.lower() in {"examples", "example", "e"}:
             show_examples()
             continue
+        if _handle_strategy_command(args, query):
+            continue
         event_sink = _event_sink(args)
         try:
             payload = run_single_query(
@@ -446,6 +477,7 @@ def interactive_mode(args: argparse.Namespace, *, runtime_info: dict[str, Any] |
                 user_id=args.user_id,
                 session_id=args.session_id,
                 server=args.server,
+                execution_strategy=args.execution_strategy,
                 event_sink=event_sink,
                 runtime_info=runtime_info,
             )
@@ -456,6 +488,21 @@ def interactive_mode(args: argparse.Namespace, *, runtime_info: dict[str, Any] |
         _attach_replay_metadata(payload, args=args, query=query)
         print_run(payload, show_trace=args.show_trace, live_timeline_printed=event_sink.printed_timeline)
         _maybe_save_log(payload, args.save_log)
+
+
+def _handle_strategy_command(args: argparse.Namespace, query: str) -> bool:
+    parts = query.strip().split()
+    if not parts or parts[0].lower() != "/strategy":
+        return False
+    if len(parts) == 1:
+        print(f"Current strategy: {_execution_strategy(args.execution_strategy)}")
+        return True
+    if len(parts) == 2 and parts[1] in {"react", "plan_and_solve"}:
+        args.execution_strategy = parts[1]
+        print(f"Strategy switched to: {args.execution_strategy}")
+        return True
+    print("Usage: /strategy react | /strategy plan_and_solve")
+    return True
 
 
 def _print_server_unreachable(server: str, message: str, *, as_json: bool) -> None:
@@ -490,6 +537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.video_ref = replay.get("video_refs", [])
         args.user_id = replay.get("user_id", args.user_id)
         args.session_id = replay.get("session_id", args.session_id)
+        args.execution_strategy = replay.get("execution_strategy", args.execution_strategy)
 
     runtime_info: dict[str, Any] | None = None
     try:
@@ -519,6 +567,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             user_id=args.user_id,
             session_id=args.session_id,
             server=args.server,
+            execution_strategy=args.execution_strategy,
             event_sink=event_sink,
             runtime_info=runtime_info,
         )
@@ -702,6 +751,7 @@ def _attach_replay_metadata(payload: dict[str, Any], *, args: argparse.Namespace
             "video_refs": list(args.video_ref or []),
             "user_id": args.user_id,
             "session_id": args.session_id,
+            "execution_strategy": _execution_strategy(args.execution_strategy),
         },
     }
 
@@ -733,12 +783,17 @@ def _load_replay_log(path_value: str) -> dict[str, Any]:
         "video_refs": list(request.get("video_refs") or []),
         "user_id": str(request.get("user_id") or "demo_user"),
         "session_id": str(request.get("session_id") or "demo_session"),
+        "execution_strategy": _execution_strategy(str(request.get("execution_strategy") or "react")),
     }
 
 
 def _replay_command_placeholder(payload: dict[str, Any]) -> str:
     run_id = payload.get("run_id") or "<run_id>"
     return f"python scripts/run_client.py --replay-log .local/demo_runs/{run_id}.json"
+
+
+def _execution_strategy(value: str) -> str:
+    return "plan_and_solve" if value == "plan_and_solve" else "react"
 
 
 def _format_latency(value: object) -> str:

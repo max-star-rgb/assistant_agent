@@ -1,4 +1,4 @@
-"""Assistant decision schema for ReAct-style reasoning."""
+"""Assistant decision schema for the public ReAct decision protocol."""
 
 import json
 import re
@@ -17,7 +17,7 @@ class AssistantDecision(BaseModel):
     message: str | None = Field(default=None, description="Response message for final_answer or ask_followup")
     tool_name: str | None = Field(default=None, description="Tool name for tool_call")
     tool_input: dict[str, Any] | None = Field(default=None, description="Tool input for tool_call")
-    reason: str | None = Field(default=None, description="Explanation of the decision")
+    reason: str | None = Field(default=None, description="Brief high-level decision reason, not chain-of-thought")
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     missing_slots: list[str] = Field(default_factory=list)
     safety_notes: list[str] = Field(default_factory=list)

@@ -3,10 +3,11 @@
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from multimodal_agent.runtime_profile import RuntimeProfile
-from multimodal_agent.services.provider_specs import (
+from multimodal_agent.schemas.provider_specs import (
     ResolvedProviderSpec,
     resolve_chat_provider,
     resolve_image_generation_provider,
@@ -19,6 +20,8 @@ from multimodal_agent.services.provider_specs import (
 
 AgentGraphMode = Literal["conditional", "assistant_loop"]
 AssistantToolCallMode = Literal["prompt_json", "native_tools"]
+ConversationHistoryBackend = Literal["memory", "jsonl"]
+LangGraphCheckpointerBackend = Literal["none", "memory"]
 
 
 VisionProviderName = str
@@ -67,6 +70,9 @@ class ProviderConfig:
     seed_vision_model: str = "seed-vision"
     memory_backend: Literal["memory", "jsonl"] = "memory"
     memory_path: str = ".local/memory/memories.jsonl"
+    conversation_history_backend: ConversationHistoryBackend = "memory"
+    conversation_history_path: str = ".local/memory/conversation_history.jsonl"
+    max_conversation_history_turns: int = 8
     chat_provider: ChatProviderName = "mock"
     chat_api_key: str | None = None
     chat_base_url: str | None = None
@@ -122,6 +128,7 @@ class ProviderConfig:
     intent_router: IntentRouterName = "rule"
     agent_graph_mode: AgentGraphMode = "assistant_loop"  # 默认使用新的 ReAct 架构
     assistant_tool_call_mode: AssistantToolCallMode = "prompt_json"
+    langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
     max_tool_iterations: int = 5
     max_plan_steps: int = 8
     max_plan_revisions: int = 2
@@ -148,6 +155,15 @@ class ProviderConfig:
             allow_real=allow_real_providers,
         )
         image_generation_settings = resolve_image_generation_provider(image_generation_provider, source)
+        memory_backend = _memory_backend(source.get("MULTIMODAL_AGENT_MEMORY_BACKEND"))
+        memory_path = source.get("MULTIMODAL_AGENT_MEMORY_PATH", ".local/memory/memories.jsonl")
+        conversation_history_backend = _conversation_history_backend(
+            source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND"),
+            memory_backend=memory_backend,
+        )
+        conversation_history_path = source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH") or (
+            _default_conversation_history_path(memory_path)
+        )
         return cls(
             runtime_profile=runtime_profile,
             openai_api_key=source.get("OPENAI_API_KEY"),
@@ -179,8 +195,15 @@ class ProviderConfig:
             ark_vision_model=source.get("ARK_VISION_MODEL", "doubao-seed-2-0-lite-260215"),
             seed_vision_base_url=source.get("SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"),
             seed_vision_model=source.get("SEED_VISION_MODEL", "seed-vision"),
-            memory_backend=_memory_backend(source.get("MULTIMODAL_AGENT_MEMORY_BACKEND")),
-            memory_path=source.get("MULTIMODAL_AGENT_MEMORY_PATH", ".local/memory/memories.jsonl"),
+            memory_backend=memory_backend,
+            memory_path=memory_path,
+            conversation_history_backend=conversation_history_backend,
+            conversation_history_path=conversation_history_path,
+            max_conversation_history_turns=_int_env(
+                source.get("MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS")
+                or source.get("MULTIMODAL_AGENT_MAX_CONVERSATION_TURNS"),
+                8,
+            ),
             chat_provider=chat_provider,
             chat_api_key=chat_settings.api_key,
             chat_base_url=chat_settings.base_url,
@@ -252,6 +275,10 @@ class ProviderConfig:
             assistant_tool_call_mode=_assistant_tool_call_mode(
                 source.get("ASSISTANT_TOOL_CALL_MODE")
                 or source.get("MULTIMODAL_AGENT_ASSISTANT_TOOL_CALL_MODE")
+            ),
+            langgraph_checkpointer_backend=_langgraph_checkpointer_backend(
+                source.get("LANGGRAPH_CHECKPOINTER_BACKEND")
+                or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
             ),
             max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 5),
             max_plan_steps=_int_env(source.get("MAX_PLAN_STEPS"), 8),
@@ -410,6 +437,28 @@ def _memory_backend(value: str | None) -> Literal["memory", "jsonl"]:
     if value == "jsonl":
         return "jsonl"
     return "memory"
+
+
+def _conversation_history_backend(
+    value: str | None,
+    *,
+    memory_backend: Literal["memory", "jsonl"],
+) -> ConversationHistoryBackend:
+    if value == "jsonl":
+        return "jsonl"
+    if value == "memory":
+        return "memory"
+    return "jsonl" if memory_backend == "jsonl" else "memory"
+
+
+def _langgraph_checkpointer_backend(value: str | None) -> LangGraphCheckpointerBackend:
+    if value == "none":
+        return "none"
+    return "memory"
+
+
+def _default_conversation_history_path(memory_path: str) -> str:
+    return str(Path(memory_path).with_name("conversation_history.jsonl"))
 
 
 def _vision_provider(value: str | None, *, allow_real: bool = True) -> VisionProviderName:

@@ -5,8 +5,10 @@
 在真实 chat provider 驱动的 assistant loop 中，LLM 会按以下路径工作：
 
 ```text
-Reason -> Action -> Observation -> Final Answer
+Decision Reason -> Action -> Observation -> Final Answer
 ```
+
+`Decision Reason` 只对应公开结构化字段 `AssistantDecision.reason`，用于记录高层决策理由；不展示完整 chain-of-thought、`Thought:` 内容或思维链。
 
 当前实现中，LLM 在工具 observation 之后返回 `final_answer` 时，assistant 节点只把状态标记为完成，没有把该回答写入 `AgentState.response`。随后图继续进入 `compose_response`，本地响应合成器会根据 mock/local 工具结果重新生成最终文本，导致真实 LLM 的最终回答被覆盖。
 

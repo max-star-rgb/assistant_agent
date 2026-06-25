@@ -78,12 +78,20 @@ def test_run_server_runtime_summary_prints_product_providers(monkeypatch, capsys
     config = module.ProviderConfig(
         product_search_provider="haodanku",
         price_compare_provider="haodanku",
+        memory_backend="jsonl",
+        memory_path=".local/memory/memories.jsonl",
+        conversation_history_backend="jsonl",
+        conversation_history_path=".local/memory/conversation_history.jsonl",
+        langgraph_checkpointer_backend="none",
     )
     module._print_runtime_summary(config, loaded_env_keys=[])
     output = capsys.readouterr().out
 
     assert "product_search_provider: haodanku" in output
     assert "price_compare_provider: haodanku" in output
+    assert "memory_backend: jsonl" in output
+    assert "conversation_history_backend: jsonl" in output
+    assert "langgraph_checkpointer_backend: none" in output
 
 
 def test_run_server_configures_trial_user_allowlist(monkeypatch, tmp_path) -> None:

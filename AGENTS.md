@@ -78,9 +78,10 @@ repo-root/
 1. 先读当前阶段的文档入口：Phase 1-7 读 `docs/phase1-7/00-doc-map.md`；Phase 8 读 `docs/phase8/README.md`。
 2. 再读当前任务文件，例如 `tasks/phase1-7/003-intent-router.md` 或 `tasks/phase8/phase8A_2_react_final_answer_handoff.md`。
 3. 根据任务文件的 `Read first` 只打开必要文档。
-4. 开发好单库相关功能时，先读取 `haodanku-openapi-docs/AI使用说明.md` 和 `haodanku-openapi-docs/接口目录.md`，按意图路由到对应分类文档再编码。
-5. 不要一次性读取所有文档。
-6. 不要跨任务提前实现未来阶段。
+4. 涉及架构分层、模块归属、治理边界或重构判断时，读取 `docs/architecture-layers.md`，并保持 Agent/tool/provider/memory 调用不绕过本地 validator、executor、policy、audit 边界。
+5. 开发好单库相关功能时，先读取 `haodanku-openapi-docs/AI使用说明.md` 和 `haodanku-openapi-docs/接口目录.md`，按意图路由到对应分类文档再编码。
+6. 不要一次性读取所有文档。
+7. 不要跨任务提前实现未来阶段。
 
 ## 5. 开发顺序
 

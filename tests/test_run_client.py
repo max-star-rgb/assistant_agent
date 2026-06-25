@@ -109,6 +109,7 @@ def test_build_ws_url_maps_http_scheme_and_encodes_params() -> None:
     assert "text=%E4%BD%A0%E5%A5%BD" in url
     assert "user_id=demo_user" in url
     assert "client=cli" in url
+    assert "execution_strategy=react" in url
     assert url.count("image_id=") == 2
 
 
@@ -126,6 +127,22 @@ def test_build_ws_url_maps_https_and_preserves_base_path() -> None:
 
     assert url.startswith("wss://example.com/api/ws/agent/s1?")
     assert url.count("video_id=") == 2
+
+
+def test_build_ws_url_accepts_plan_and_solve_strategy() -> None:
+    module = _load_demo_module()
+
+    url = module.build_ws_url(
+        "http://127.0.0.1:8000",
+        session_id="s1",
+        query="q",
+        user_id="u",
+        image_refs=[],
+        video_refs=[],
+        execution_strategy="plan_and_solve",
+    )
+
+    assert "execution_strategy=plan_and_solve" in url
 
 
 def test_run_client_examples_share_demo_examples(capsys) -> None:
@@ -171,6 +188,7 @@ def test_adapt_remote_response_to_cli_payload_maps_fields() -> None:
             "graph_mode": "assistant_loop",
             "providers": {"chat": "mock"},
         },
+        "execution_strategy": "plan_and_solve",
         "current_stage": "final_answer",
         "blocked_reason": None,
     }
@@ -190,6 +208,7 @@ def test_adapt_remote_response_to_cli_payload_maps_fields() -> None:
     assert payload["provider"] == "mock"
     assert payload["runtime_profile"] == "local_demo"
     assert payload["graph_mode"] == "assistant_loop"
+    assert payload["execution_strategy"] == "plan_and_solve"
     assert payload["run_id"] == "run_1"
     assert payload["events"] == []
 
@@ -213,10 +232,14 @@ def test_adapt_agent_error_to_cli_payload_wraps_string_error() -> None:
     module_event = module.AgentEvent(type="agent_error", session_id="s", run_id="run_9")
 
     payload = module.adapt_agent_error_to_cli_payload(
-        "connection lost", query="hi", events=[module_event]
+        "connection lost",
+        query="hi",
+        events=[module_event],
+        execution_strategy="plan_and_solve",
     )
 
     assert payload["status"] == "failed"
+    assert payload["execution_strategy"] == "plan_and_solve"
     assert payload["errors"][0]["code"] == "TASK_FAILED"
     assert payload["errors"][0]["message"] == "connection lost"
     assert payload["run_id"] == "run_9"
@@ -228,8 +251,50 @@ def test_run_client_parser_drops_local_provider_flags() -> None:
     args = module.build_parser().parse_args(["--server", "http://localhost:9999", "你好"])
 
     assert args.server == "http://localhost:9999"
+    assert args.execution_strategy == "react"
     assert not hasattr(args, "provider")
     assert not hasattr(args, "env_file")
+
+
+def test_run_client_parser_accepts_execution_strategy() -> None:
+    module = _load_demo_module()
+
+    args = module.build_parser().parse_args(["--execution-strategy", "plan_and_solve", "你好"])
+
+    assert args.execution_strategy == "plan_and_solve"
+
+
+def test_interactive_strategy_command_switches_strategy(capsys) -> None:
+    module = _load_demo_module()
+    args = module.build_parser().parse_args([])
+
+    handled = module._handle_strategy_command(args, "/strategy plan_and_solve")
+
+    assert handled is True
+    assert args.execution_strategy == "plan_and_solve"
+    assert "Strategy switched to: plan_and_solve" in capsys.readouterr().out
+
+
+def test_interactive_strategy_command_reports_current_strategy(capsys) -> None:
+    module = _load_demo_module()
+    args = module.build_parser().parse_args(["--execution-strategy", "plan_and_solve"])
+
+    handled = module._handle_strategy_command(args, "/strategy")
+
+    assert handled is True
+    assert args.execution_strategy == "plan_and_solve"
+    assert "Current strategy: plan_and_solve" in capsys.readouterr().out
+
+
+def test_interactive_strategy_command_rejects_auto(capsys) -> None:
+    module = _load_demo_module()
+    args = module.build_parser().parse_args([])
+
+    handled = module._handle_strategy_command(args, "/strategy auto")
+
+    assert handled is True
+    assert args.execution_strategy == "react"
+    assert "Usage: /strategy react | /strategy plan_and_solve" in capsys.readouterr().out
 
 
 # --------------------------------------------------------------------------- #
@@ -338,6 +403,7 @@ def test_run_client_json_mode_does_not_print_live_events(live_server) -> None:
     payload = json.loads(result.stdout)
     assert payload["status"] == "success"
     assert payload["query"] == "你好"
+    assert payload["execution_strategy"] == "react"
     assert payload["events"]
     assert "response_data" in payload
     assert "Traceback" not in result.stderr
@@ -357,6 +423,7 @@ def test_run_client_saves_replayable_run_log(live_server, tmp_path) -> None:
     assert len(saved_logs) == 1
     payload = json.loads(saved_logs[0].read_text(encoding="utf-8"))
     assert payload["demo_metadata"]["request"]["query"] == "生成一张白色运动鞋的电商主图"
+    assert payload["demo_metadata"]["request"]["execution_strategy"] == "react"
     assert payload["demo_metadata"]["server"] == live_server
     assert payload["events"]
     assert "Replay command" in result.stdout
@@ -375,6 +442,7 @@ def test_run_client_replays_saved_log(live_server, tmp_path) -> None:
                         "video_refs": [],
                         "user_id": "replay_user",
                         "session_id": "replay_session",
+                        "execution_strategy": "react",
                     }
                 },
             },

@@ -6,10 +6,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from multimodal_agent.agent.action_validator import ActionValidator
 from multimodal_agent.agent.runtime import AgentGraphRuntime
+from multimodal_agent.agent.state import AgentState
 from multimodal_agent.config import ProviderConfig
+from multimodal_agent.schemas.assistant_decision import AssistantDecision
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+from multimodal_agent.agent.tool_executor import ToolExecutor
 from multimodal_agent.tools.registry import ToolRegistry, create_default_registry
 
 
@@ -151,14 +155,60 @@ class OfflineMCPServer:
         name = str(args.get("tool_name") or "")
         if not name:
             return self._failed("tool_run", "mcp_missing_tool_name", "tool_name is required")
-        result = self.registry.run(name, dict(args.get("input") or {}))
+        request = UserRequest(
+            user_id=str(args.get("user_id") or "mcp_user"),
+            session_id=str(args.get("session_id") or "mcp_session"),
+            text=args.get("text") or f"MCP tool_run: {name}",
+            image_ids=list(args.get("image_ids") or []),
+            video_ids=list(args.get("video_ids") or []),
+            metadata=dict(args.get("metadata") or {}),
+        )
+        state = AgentState.from_request(request)
+        decision = AssistantDecision(type="tool_call", tool_name=name, tool_input=dict(args.get("input") or {}))
+        validation = ActionValidator().validate(
+            decision=decision,
+            registry=self.registry,
+            request=request,
+            state=state,
+        )
+        if not validation.accepted:
+            return MCPToolEnvelope(
+                status="failed",
+                tool="tool_run",
+                data={
+                    "validator_result": validation.model_dump(mode="json"),
+                    "run_id": state.run_id,
+                    "trace_id": state.trace_id,
+                },
+                errors=[{"code": validation.code, "message": sanitize_error_message(validation.message)}],
+                metadata={"offline": True, "registry_tool": name},
+            )
+        result = ToolExecutor(
+            registry=self.registry,
+            context_metadata={"memory_manager": self.runtime.memory_manager},
+        ).run_tool(
+            state,
+            "mcp_tool_run",
+            name,
+            dict(args.get("input") or {}),
+            trace_store=self.runtime.trace_store,
+            trace_id=state.trace_id,
+            node_name="mcp_tool_run",
+        )
         payload = result.model_dump(mode="json")
         status = "succeeded" if result.success else "failed"
         errors = [] if result.success else [{"code": "tool_failed", "message": sanitize_error_message(result.error)}]
         return MCPToolEnvelope(
             status=status,
             tool="tool_run",
-            data=_sanitize_payload(payload),
+            data=_sanitize_payload(
+                {
+                    **payload,
+                    "run_id": state.run_id,
+                    "trace_id": state.trace_id,
+                    "provider_budget": state.provider_budget.summary(),
+                }
+            ),
             errors=errors,
             metadata={"offline": True, "registry_tool": name},
         )

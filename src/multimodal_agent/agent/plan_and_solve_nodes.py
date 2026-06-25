@@ -35,8 +35,8 @@ class PlanAndSolveState(TypedDict):
 
     request: UserRequest
     state: AgentState
-    tool_executor: ToolExecutor
-    chat_adapter: ChatAdapter
+    tool_executor: NotRequired[ToolExecutor]
+    chat_adapter: NotRequired[ChatAdapter]
     memory_manager: NotRequired[Any]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int

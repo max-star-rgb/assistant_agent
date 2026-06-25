@@ -1,4 +1,5 @@
 from multimodal_agent.agent.runtime import AgentGraphRuntime
+from multimodal_agent.schemas.api import agent_run_response_from_state
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
 
@@ -47,6 +48,41 @@ def test_non_mock_final_answer_after_tool_observation_is_preserved() -> None:
     assert state.response.data["tool_observations"] == 1
     assert state.response.data["contracts"]
     assert "白色低帮运动鞋" not in state.response.message
+
+
+def test_thought_prefixed_decisions_do_not_expose_thought_in_public_trace() -> None:
+    final_answer = "已根据工具结果完成总结。"
+    runtime = AgentGraphRuntime(
+        chat_adapter=ScriptedChatAdapter(
+            [
+                (
+                    'Thought: private reasoning should not be public.\n'
+                    '{"type": "tool_call", "tool_name": "product_search", '
+                    '"tool_input": {"query": "无线蓝牙耳机", "limit": 3}, '
+                    '"reason": "需要搜索商品候选"}'
+                ),
+                (
+                    'Thought: private final reasoning should not be public.\n'
+                    '{"type": "final_answer", '
+                    f'"message": "{final_answer}", '
+                    '"reason": "已有 observation，可以回答"}'
+                ),
+            ]
+        )
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找一款通勤蓝牙耳机"))
+    public_response = agent_run_response_from_state(state)
+
+    assert state.response is not None
+    assert state.response.message == final_answer
+    assert public_response.react_steps
+    assert public_response.decision_trace
+    assert all("thought" not in key.lower() for step in public_response.react_steps for key in step)
+    assert all("thought" not in key.lower() for step in public_response.decision_trace for key in step)
+    assert "Thought:" not in public_response.model_dump_json()
+    assert any(step.get("reason") for step in public_response.react_steps)
+    assert any(step.get("decision_summary") for step in public_response.decision_trace)
 
 
 def test_mock_rule_plan_still_uses_response_composer_after_tools() -> None:

@@ -8,6 +8,31 @@ from pydantic import BaseModel, Field
 GenerationStatus = Literal["pending", "running", "succeeded", "failed"]
 
 
+class ImageGenerationInput(BaseModel):
+    """Input for image generation tools and provider adapters."""
+
+    prompt: str | None = None
+    size: str | None = None
+    n: int = Field(default=1, ge=1, le=4)
+    prompt_extend: bool = True
+    watermark: bool = False
+    style: str | None = None
+    product_id: str | None = None
+    product_title: str | None = None
+    product_info: dict[str, Any] = Field(default_factory=dict)
+    reference_image_ids: list[str] = Field(default_factory=list)
+    negative_prompt: str | None = None
+    seed: int | None = Field(default=None, ge=0)
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
+    memory_context: list[str] = Field(default_factory=list)
+    user_id: str | None = None
+    session_id: str | None = None
+
+
+ImageGenerationRequest = ImageGenerationInput
+
+
 class ImageGenerationResult(BaseModel):
     """Result returned by an image generation adapter or tool."""
 

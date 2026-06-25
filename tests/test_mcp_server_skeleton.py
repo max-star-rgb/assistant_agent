@@ -45,6 +45,17 @@ def test_offline_mcp_tool_run_uses_registry() -> None:
     assert result.metadata["registry_tool"] == "product_search"
 
 
+def test_offline_mcp_tool_run_uses_action_validator() -> None:
+    result = OfflineMCPServer().call_tool(
+        "tool_run",
+        {"tool_name": "product_search", "input": {}},
+    )
+
+    assert result.status == "failed"
+    assert result.errors[0]["code"] == "invalid_tool_input"
+    assert result.data["validator_result"]["accepted"] is False
+
+
 def test_offline_mcp_errors_are_redacted() -> None:
     result = OfflineMCPServer().call_tool("missing_tool", {"Authorization": "Bearer secret-token"})
 

@@ -134,6 +134,13 @@ def _print_runtime_summary(config: ProviderConfig, *, loaded_env_keys: list[str]
     print(f"  price_compare_provider: {providers['price_compare']}")
     print(f"  render_provider: {providers['render']}")
     print(f"  video_provider: {providers['video']}")
+    print(f"  memory_backend: {config.memory_backend}")
+    if config.memory_backend == "jsonl":
+        print(f"  memory_path: {config.memory_path}")
+    print(f"  conversation_history_backend: {config.conversation_history_backend}")
+    if config.conversation_history_backend == "jsonl":
+        print(f"  conversation_history_path: {config.conversation_history_path}")
+    print(f"  langgraph_checkpointer_backend: {config.langgraph_checkpointer_backend}")
     print(f"  offline_default: {info['offline_default']}")
     print(
         "  trial_access: "

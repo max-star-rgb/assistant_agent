@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-from multimodal_agent.services.image_generation_adapter import ImageGenerationInput
+from multimodal_agent.schemas.generation import ImageGenerationInput
 from multimodal_agent.tools.image_generation_tool import ImageGenerationTool
 
 

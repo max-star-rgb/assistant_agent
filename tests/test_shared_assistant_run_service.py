@@ -1,7 +1,12 @@
+from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services import assistant_run_service as run_service
 from multimodal_agent.services.assistant_run_service import (
+    ConversationTurn,
     InMemoryConversationStore,
+    JsonlConversationStore,
     clear_conversation_history,
+    clear_user_conversation_history,
     run_assistant_query,
     run_assistant_request,
 )
@@ -113,3 +118,104 @@ def test_shared_assistant_run_service_can_clear_multi_turn_history() -> None:
     )
 
     assert next_turn.state.request.metadata["conversation_history"] == []
+
+
+def test_shared_assistant_run_service_persists_multi_turn_history_to_jsonl(tmp_path) -> None:
+    path = tmp_path / "conversation_history.jsonl"
+    first_store = JsonlConversationStore(path)
+
+    first = run_assistant_query(
+        "我喜欢白色低帮运动鞋",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=first_store,
+    )
+
+    restarted_store = JsonlConversationStore(path)
+    second = run_assistant_query(
+        "基于刚才的信息，生成一句商品标题",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=restarted_store,
+    )
+
+    history = second.state.request.metadata["conversation_history"]
+    context_text = second.state.request.metadata["conversation_context_text"]
+
+    assert path.exists()
+    assert len(history) == 1
+    assert history[0]["user_text"] == "我喜欢白色低帮运动鞋"
+    assert history[0]["assistant_text"] == first.api_response().response_text
+    assert "我喜欢白色低帮运动鞋" in context_text
+    assert second.state.request.metadata["conversation_turn_index"] == 2
+
+
+def test_shared_assistant_run_service_uses_configured_jsonl_conversation_store(tmp_path) -> None:
+    path = tmp_path / "configured_conversation_history.jsonl"
+    config = ProviderConfig(
+        conversation_history_backend="jsonl",
+        conversation_history_path=str(path),
+        max_conversation_history_turns=2,
+    )
+
+    run_assistant_query(
+        "第一轮",
+        user_id="u1",
+        session_id="s1",
+        config=config,
+        load_env=False,
+    )
+    second = run_assistant_query(
+        "第二轮",
+        user_id="u1",
+        session_id="s1",
+        config=config,
+        load_env=False,
+    )
+
+    assert path.exists()
+    assert second.state.request.metadata["conversation_turn_index"] == 2
+    assert second.state.request.metadata["conversation_history"][0]["user_text"] == "第一轮"
+
+
+def test_shared_assistant_run_service_clears_configured_jsonl_user_history(tmp_path) -> None:
+    path = tmp_path / "clear_conversation_history.jsonl"
+    config = ProviderConfig(conversation_history_backend="jsonl", conversation_history_path=str(path))
+
+    run_assistant_query("s1 第一轮", user_id="u1", session_id="s1", config=config, load_env=False)
+    run_assistant_query("s2 第一轮", user_id="u1", session_id="s2", config=config, load_env=False)
+
+    assert clear_user_conversation_history("u1", config=config) == 2
+
+    next_turn = run_assistant_query(
+        "清空后的一轮",
+        user_id="u1",
+        session_id="s1",
+        config=config,
+        load_env=False,
+    )
+    assert next_turn.state.request.metadata["conversation_history"] == []
+
+
+def test_configured_jsonl_conversation_store_resolves_relative_path_from_repo_root(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_service, "REPO_ROOT", tmp_path)
+    config = ProviderConfig(
+        conversation_history_backend="jsonl",
+        conversation_history_path="relative/conversation_history.jsonl",
+    )
+
+    store = run_service.get_default_conversation_store(config)
+    store.append(
+        "u1",
+        "s1",
+        ConversationTurn(
+            user_text="第一轮",
+            assistant_text="收到",
+            run_id="run_1",
+            trace_id="trace_1",
+        ),
+    )
+
+    assert (tmp_path / "relative" / "conversation_history.jsonl").exists()

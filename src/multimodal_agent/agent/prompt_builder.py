@@ -4,13 +4,16 @@ from typing import Any
 
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.schemas.capability_output import build_capability_output_contract
 from multimodal_agent.services.chat_adapter import ChatRequest
 from multimodal_agent.services.image_generation_adapter import ImageGenerationRequest
-
-
-MAX_PROMPT_CHARS = 1200
-MAX_CONTEXT_CHARS = 500
+from multimodal_agent.services.prompt_builder import (
+    MAX_CONTEXT_CHARS,
+    MAX_PROMPT_CHARS,
+    build_image_prompt_text,
+    build_text_capability_output,
+    clip_list,
+    clip_text,
+)
 
 
 def build_direct_chat_request(
@@ -28,8 +31,8 @@ def build_direct_chat_request(
     return ChatRequest(
         user_id=request.user_id,
         session_id=request.session_id,
-        user_query=_clip(request.text or "", max_prompt_chars),
-        memory_context=_clip_list(contexts, MAX_CONTEXT_CHARS),
+        user_query=clip_text(request.text or "", max_prompt_chars),
+        memory_context=clip_list(contexts, MAX_CONTEXT_CHARS),
         system_instruction=system_instruction or "You are a helpful text-first assistant.",
     )
 
@@ -71,50 +74,6 @@ def build_image_generation_request(
         user_id=request.user_id,
         session_id=request.session_id,
     )
-
-
-def build_image_prompt_text(
-    user_query: str,
-    style: str | None = None,
-    product_context: str | None = None,
-    visual_summary: str | None = None,
-    memory_context: list[str] | None = None,
-    max_chars: int = MAX_PROMPT_CHARS,
-) -> str:
-    """Build a bounded prompt for image generation."""
-
-    parts = [f"用户需求：{user_query.strip()}"]
-    if style:
-        parts.append(f"风格：{style}")
-    if product_context:
-        parts.append(f"商品上下文：{product_context}")
-    if visual_summary:
-        parts.append(f"视觉摘要：{visual_summary}")
-    if memory_context:
-        parts.append(f"记忆上下文：{'；'.join(_clip_list(memory_context, MAX_CONTEXT_CHARS))}")
-    parts.append("输出要求：突出商品主体，构图清晰，适合营销展示。")
-    return _clip("\n".join(part for part in parts if part), max_chars)
-
-
-def build_text_capability_output(
-    capability: str,
-    status: str,
-    output_ref: str | None = None,
-    data: dict[str, Any] | None = None,
-    errors: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Build a stable public output contract without provider raw payloads."""
-
-    payload = build_capability_output_contract(
-        capability=capability,
-        status=status,  # type: ignore[arg-type]
-        output_ref=output_ref,
-        data=data,
-        errors=errors,
-    ).model_dump(mode="json")
-    if not payload.get("metadata"):
-        payload.pop("metadata", None)
-    return payload
 
 
 def _latest_product(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]:
@@ -171,19 +130,8 @@ def _compact_context(value: dict[str, Any]) -> str | None:
 
 
 def _clip(value: str, max_chars: int) -> str:
-    if len(value) <= max_chars:
-        return value
-    return value[: max_chars - 1] + "…"
+    return clip_text(value, max_chars)
 
 
 def _clip_list(values: list[str], max_chars: int) -> list[str]:
-    clipped: list[str] = []
-    total = 0
-    for value in values:
-        if total >= max_chars:
-            break
-        remaining = max_chars - total
-        item = _clip(value, remaining)
-        clipped.append(item)
-        total += len(item)
-    return clipped
+    return clip_list(values, max_chars)

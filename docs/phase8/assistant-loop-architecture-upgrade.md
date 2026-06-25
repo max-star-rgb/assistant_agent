@@ -289,6 +289,8 @@ class AssistantDecision(BaseModel):
     safety_notes: list[str] = Field(default_factory=list)
 ```
 
+公开 ReAct trace 只记录结构化 `AssistantDecision`、`ToolObservation` 和最终回答。`reason` 是简短、高层、可审计的决策理由，不等同于完整模型推理链；不要要求或展示 `Thought:`、chain-of-thought 或思维链，也不要在 API 中新增 `thought` 字段。
+
 Phase 8A 只实现：
 
 ```text

@@ -47,7 +47,12 @@ class WebSocketEventSink:
         self.queue = queue
 
     def emit(self, event: AgentEvent) -> None:
-        self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
+        if self.loop.is_closed():
+            return
+        try:
+            self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
+        except RuntimeError:
+            logger.debug("websocket event loop closed before event could be emitted", exc_info=True)
 
 
 def mock_agent_events(session_id: str) -> list[AgentEvent]:
@@ -139,7 +144,11 @@ async def agent_websocket(
                 )
             )
         finally:
-            loop.call_soon_threadsafe(queue.put_nowait, None)
+            if not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+                except RuntimeError:
+                    logger.debug("websocket event loop closed before completion signal", exc_info=True)
 
     worker = Thread(target=run_agent, daemon=True)
     worker.start()

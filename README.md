@@ -137,6 +137,7 @@ Start here:
 
 - [Quickstart](docs/quickstart.md)
 - [Architecture](docs/architecture.md)
+- [Architecture Layers](docs/architecture-layers.md)
 - [Capabilities](docs/capabilities.md)
 - [Configuration](docs/configuration.md)
 - [Provider Setup](docs/provider-setup.md)

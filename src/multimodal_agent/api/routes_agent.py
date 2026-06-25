@@ -16,7 +16,9 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryDeleteResult,
 )
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.schemas.sessions import SessionCreate, SessionDeleteResult, SessionList, SessionRecord
 from multimodal_agent.services.assistant_run_service import (
+    clear_conversation_history,
     clear_user_conversation_history,
     create_runtime,
     run_assistant_request,
@@ -106,6 +108,39 @@ def demo_access(user_id: str = Query(...)) -> TrialAccessStatus:
     """Validate a Web Console trial user id before enabling the demo UI."""
 
     return get_trial_access_gate().check(user_id)
+
+
+@router.post("/sessions", response_model=SessionRecord)
+def create_session(session: SessionCreate) -> SessionRecord:
+    _require_trial_access(session.user_id)
+    return get_agent_runtime().session_store.create(session)
+
+
+@router.get("/sessions", response_model=SessionList)
+def list_sessions(user_id: str = Query(...)) -> SessionList:
+    _require_trial_access(user_id)
+    sessions = get_agent_runtime().session_store.list_by_user(user_id)
+    return SessionList(user_id=user_id, total=len(sessions), sessions=sessions)
+
+
+@router.get("/sessions/{session_id}", response_model=SessionRecord)
+def get_session(session_id: str, user_id: str = Query(...)) -> SessionRecord:
+    _require_trial_access(user_id)
+    record = get_agent_runtime().session_store.get(user_id, session_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return record
+
+
+@router.delete("/sessions/{session_id}", response_model=SessionDeleteResult)
+def delete_session(session_id: str, user_id: str = Query(...)) -> SessionDeleteResult:
+    _require_trial_access(user_id)
+    runtime = get_agent_runtime()
+    deleted = 1 if runtime.session_store.delete(user_id, session_id) else 0
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="session not found")
+    clear_conversation_history(user_id, session_id, config=runtime.config)
+    return SessionDeleteResult(user_id=user_id, deleted={"sessions": deleted})
 
 
 @router.get("/runs/{run_id}", response_model=RunSummary)
@@ -229,7 +264,8 @@ def delete_beta_user_data(user_id: str) -> dict[str, Any]:
     tool_history_deleted = runtime.tool_history.delete_by_user(user_id) if runtime.tool_history is not None else 0
     trace_deleted = runtime.trace_store.delete_by_user(user_id)
     feedback_deleted = get_beta_feedback_store().delete_by_user(user_id)
-    conversation_sessions_deleted = clear_user_conversation_history(user_id)
+    conversation_sessions_deleted = clear_user_conversation_history(user_id, config=runtime.config)
+    session_records_deleted = runtime.session_store.delete_by_user(user_id)
     return {
         "protocol_version": PROTOCOL_VERSION,
         "user_id": user_id,
@@ -240,6 +276,7 @@ def delete_beta_user_data(user_id: str) -> dict[str, Any]:
             "trace_events": trace_deleted,
             "feedback_records": feedback_deleted,
             "conversation_sessions": conversation_sessions_deleted,
+            "session_records": session_records_deleted,
         },
     }
 

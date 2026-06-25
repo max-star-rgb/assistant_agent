@@ -20,9 +20,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from multimodal_agent.schemas.products import (
+    PriceCompareRequest,
     PriceCompareResult,
     ProductResult,
+    ProductSearchRequest,
     ProductSearchResult,
+)
+from multimodal_agent.utils.product_matching import (
+    compare_products,
+    failed_price_result,
+    failed_search_result,
+    filter_products,
+    filters_used,
+    query_text,
 )
 
 
@@ -50,18 +60,18 @@ class HaodankuProductSearchAdapter:
     def __init__(self, config: HaodankuConfig) -> None:
         self.config = config
 
-    def search(self, request: "ProductSearchRequest") -> ProductSearchResult:
+    def search(self, request: ProductSearchRequest) -> ProductSearchResult:
         if not self.config.api_key:
-            return _failed_search_result(
+            return failed_search_result(
                 provider=self.provider,
                 code="provider_unconfigured",
                 message="haodanku product search provider is missing HAODANKU_API_KEY.",
                 recoverable=True,
             )
 
-        keyword = _query_text(request)
+        keyword = query_text(request)
         if not keyword:
-            return _failed_search_result(
+            return failed_search_result(
                 provider=self.provider,
                 code="product_query_empty",
                 message="缺少商品描述，无法搜索",
@@ -80,28 +90,28 @@ class HaodankuProductSearchAdapter:
             with urllib.request.urlopen(http_request, timeout=self.config.timeout_seconds) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except TimeoutError as exc:
-            return _failed_search_result(
+            return failed_search_result(
                 provider=self.provider,
                 code="provider_timeout",
                 message=str(exc),
                 recoverable=True,
             )
         except urllib.error.HTTPError as exc:
-            return _failed_search_result(
+            return failed_search_result(
                 provider=self.provider,
                 code=_http_status_to_error_code(exc.code),
                 message=f"HTTP {exc.code}",
                 recoverable=False,
             )
         except urllib.error.URLError as exc:
-            return _failed_search_result(
+            return failed_search_result(
                 provider=self.provider,
                 code="provider_network_error",
                 message=str(exc.reason),
                 recoverable=True,
             )
         except json.JSONDecodeError:
-            return _failed_search_result(
+            return failed_search_result(
                 provider=self.provider,
                 code="provider_bad_response",
                 message="haodanku response JSON decode failed",
@@ -110,7 +120,7 @@ class HaodankuProductSearchAdapter:
 
         error_message = _haodanku_error_message(payload)
         if error_message is not None:
-            return _failed_search_result(
+            return failed_search_result(
                 provider=self.provider,
                 code="provider_bad_response",
                 message=error_message,
@@ -118,17 +128,17 @@ class HaodankuProductSearchAdapter:
             )
 
         items = map_haodanku_items(payload)
-        filtered = _filter_products(items, request)
+        filtered = filter_products(items, request)
         return ProductSearchResult(
             items=filtered,
             provider=self.provider,
             query_used=keyword,
-            filters_used=_filters_used(request),
+            filters_used=filters_used(request),
             total=len(filtered),
             output_ref=f"haodanku://search/{urllib.parse.quote(keyword)}",
         )
 
-    def compare(self, request: "PriceCompareRequest") -> PriceCompareResult:
+    def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
         return HaodankuPriceCompareAdapter(self.config, search_adapter=self).compare(request)
 
 
@@ -150,11 +160,11 @@ class HaodankuPriceCompareAdapter:
         self.config = config
         self._search_adapter = search_adapter or HaodankuProductSearchAdapter(config)
 
-    def compare(self, request: "PriceCompareRequest") -> PriceCompareResult:
+    def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
         items = list(request.items)
         if not items:
             if not request.query:
-                return _failed_price_result(
+                return failed_price_result(
                     provider=self.provider,
                     query=request.query,
                     code="price_no_products",
@@ -166,7 +176,7 @@ class HaodankuPriceCompareAdapter:
             )
             if search_result.errors:
                 error = search_result.errors[0]
-                return _failed_price_result(
+                return failed_price_result(
                     provider=self.provider,
                     query=request.query,
                     code=error.code,
@@ -175,7 +185,7 @@ class HaodankuPriceCompareAdapter:
                 )
             items = search_result.items
 
-        return _compare_products(items, request, provider=self.provider)
+        return compare_products(items, request, provider=self.provider)
 
 
 def build_haodanku_search_url(
@@ -360,16 +370,3 @@ def _http_status_to_error_code(status: int) -> str:
         return "provider_bad_response"
     return "provider_execution_failed"
 
-
-# Imported at module end to avoid a circular import with product_adapter, which
-# imports nothing from this module at definition time.
-from multimodal_agent.services.product_adapter import (  # noqa: E402
-    PriceCompareRequest,
-    ProductSearchRequest,
-    _compare_products,
-    _failed_price_result,
-    _failed_search_result,
-    _filter_products,
-    _filters_used,
-    _query_text,
-)

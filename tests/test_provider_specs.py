@@ -1,4 +1,4 @@
-from multimodal_agent.services.provider_specs import (
+from multimodal_agent.schemas.provider_specs import (
     CHAT_PROVIDER_SPECS,
     IMAGE_GENERATION_PROVIDER_SPECS,
     VISION_PROVIDER_SPECS,

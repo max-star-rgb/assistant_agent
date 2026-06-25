@@ -17,8 +17,10 @@ assistant_node + ReAct + tools as actions
 也就是说，DeepSeek 或其他 chat provider 不再只是 `chat_node` 的回答模型，而是中心大脑：
 
 ```text
-Reason -> Action -> Observation -> Reason -> Final Answer
+Decision Reason -> Action -> Observation -> Decision Reason -> Final Answer
 ```
+
+这里的 `Decision Reason` 指 `AssistantDecision.reason` 中简短、可审计的高层决策理由，不是完整思维链。模型内部推理不对外展示，prompt、trace、Web Console 和 API 都不应要求或暴露 `Thought:` / chain-of-thought / 思维链。
 
 这带来的核心变化是：
 
@@ -146,6 +148,8 @@ confidence
 missing_slots
 safety_notes
 ```
+
+`reason` 只允许承载一句简短的高层决策理由，用于审计和调试；不能写完整推理链、分析草稿或 `Thought:` 风格内容，也不能新增公开 `thought` 字段。
 
 其中：
 

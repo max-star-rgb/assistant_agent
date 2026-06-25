@@ -60,6 +60,9 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "Conversation History" in html
     assert "Product Results" in html
     assert "Assistant ReAct Process" in html
+    assert "Thought" not in html
+    assert "thought" not in html
+    assert "思维链" not in html
     assert "conversationHistory" in html
     assert "renderConversationHistory" in html
     assert "renderProductGallery" in html
@@ -107,6 +110,10 @@ def test_phase7c_run_trace_detail_endpoints_support_console_flow() -> None:
     assert any(step.get("observation_tool") == "image_generation" for step in run_payload["react_steps"])
     assert any(step.get("event") == "decision" for step in run_payload["decision_trace"])
     assert any(step.get("event") == "observation" for step in run_payload["decision_trace"])
+    assert any(step.get("reason") for step in run_payload["react_steps"])
+    assert any(step.get("decision_summary") for step in run_payload["decision_trace"])
+    assert all("thought" not in key.lower() for step in run_payload["react_steps"] for key in step)
+    assert all("thought" not in key.lower() for step in run_payload["decision_trace"] for key in step)
     assert "api_key" not in run_response.text.lower()
     assert "authorization" not in run_response.text.lower()
     assert "bearer" not in run_response.text.lower()

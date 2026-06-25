@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.agent.state import AgentState
@@ -42,6 +43,51 @@ class ConversationTurn:
         }
 
 
+@dataclass(frozen=True)
+class ConversationHistoryRecord:
+    """One persisted conversation turn with user/session isolation keys."""
+
+    user_id: str
+    session_id: str
+    turn: ConversationTurn
+
+    def model_dump(self) -> dict[str, str]:
+        return {
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            **self.turn.model_dump(),
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "ConversationHistoryRecord":
+        return cls(
+            user_id=str(payload.get("user_id") or ""),
+            session_id=str(payload.get("session_id") or ""),
+            turn=ConversationTurn(
+                user_text=str(payload.get("user_text") or ""),
+                assistant_text=str(payload.get("assistant_text") or ""),
+                run_id=str(payload.get("run_id") or ""),
+                trace_id=str(payload.get("trace_id") or ""),
+            ),
+        )
+
+
+class ConversationStore(Protocol):
+    """Storage boundary for session-scoped conversation context."""
+
+    def get(self, user_id: str, session_id: str) -> list[ConversationTurn]:
+        """Return recent turns for a user/session."""
+
+    def append(self, user_id: str, session_id: str, turn: ConversationTurn) -> None:
+        """Persist one completed turn."""
+
+    def clear(self, user_id: str, session_id: str) -> None:
+        """Clear one user/session history."""
+
+    def clear_user(self, user_id: str) -> int:
+        """Clear all histories for one user and return deleted session count."""
+
+
 class InMemoryConversationStore:
     """Small process-local conversation store keyed by user/session."""
 
@@ -67,7 +113,64 @@ class InMemoryConversationStore:
         return len(keys)
 
 
+class JsonlConversationStore:
+    """Small JSONL-backed conversation store keyed by user/session."""
+
+    def __init__(self, path: Path | str, *, max_turns: int = DEFAULT_MAX_HISTORY_TURNS) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.max_turns = max_turns
+
+    def get(self, user_id: str, session_id: str) -> list[ConversationTurn]:
+        turns = [
+            record.turn
+            for record in self._read_all()
+            if record.user_id == user_id and record.session_id == session_id
+        ]
+        return turns[-self.max_turns :]
+
+    def append(self, user_id: str, session_id: str, turn: ConversationTurn) -> None:
+        records = [*self._read_all(), ConversationHistoryRecord(user_id=user_id, session_id=session_id, turn=turn)]
+        self._write_all(_trim_session_records(records, user_id, session_id, self.max_turns))
+
+    def clear(self, user_id: str, session_id: str) -> None:
+        self._write_all(
+            [
+                record
+                for record in self._read_all()
+                if not (record.user_id == user_id and record.session_id == session_id)
+            ]
+        )
+
+    def clear_user(self, user_id: str) -> int:
+        records = self._read_all()
+        deleted_sessions = {record.session_id for record in records if record.user_id == user_id}
+        if deleted_sessions:
+            self._write_all([record for record in records if record.user_id != user_id])
+        return len(deleted_sessions)
+
+    def _read_all(self) -> list[ConversationHistoryRecord]:
+        if not self.path.exists():
+            return []
+        records: list[ConversationHistoryRecord] = []
+        with self.path.open("r", encoding="utf-8") as file:
+            for line in file:
+                if line.strip():
+                    record = ConversationHistoryRecord.from_payload(json.loads(line))
+                    if record.user_id and record.session_id:
+                        records.append(record)
+        return records
+
+    def _write_all(self, records: list[ConversationHistoryRecord]) -> None:
+        with self.path.open("w", encoding="utf-8") as file:
+            for record in records:
+                file.write(json.dumps(record.model_dump(), ensure_ascii=False) + "\n")
+
+
 _DEFAULT_CONVERSATION_STORE = InMemoryConversationStore()
+_DEFAULT_CONVERSATION_STORES: dict[tuple[str, str, int], ConversationStore] = {
+    ("memory", "", DEFAULT_MAX_HISTORY_TURNS): _DEFAULT_CONVERSATION_STORE,
+}
 
 
 @dataclass
@@ -183,14 +286,15 @@ def run_assistant_request(
     event_sink: EventSink | None = None,
     runtime: AgentGraphRuntime | None = None,
     load_env: bool = True,
-    conversation_store: InMemoryConversationStore | None = None,
+    conversation_store: ConversationStore | None = None,
     enable_conversation_history: bool = True,
 ) -> AssistantRunArtifacts:
     """Run one request and return shared artifacts."""
 
     sink = event_sink or ListEventSink()
     resolved_runtime = runtime or create_runtime(config=config, event_sink=sink, load_env=load_env)
-    resolved_store = conversation_store or _DEFAULT_CONVERSATION_STORE
+    runtime_config = getattr(resolved_runtime, "config", config)
+    resolved_store = conversation_store or get_default_conversation_store(runtime_config)
     _preload_demo_video_context(request, resolved_runtime)
     resolved_request = _prepare_conversation_request(
         request,
@@ -240,7 +344,7 @@ def run_assistant_query(
     event_sink: EventSink | None = None,
     load_env: bool = True,
     metadata: dict[str, Any] | None = None,
-    conversation_store: InMemoryConversationStore | None = None,
+    conversation_store: ConversationStore | None = None,
     enable_conversation_history: bool = True,
 ) -> AssistantRunArtifacts:
     """Run a text query through the shared assistant backend."""
@@ -324,27 +428,48 @@ def clear_conversation_history(
     user_id: str,
     session_id: str,
     *,
-    conversation_store: InMemoryConversationStore | None = None,
+    conversation_store: ConversationStore | None = None,
+    config: ProviderConfig | None = None,
 ) -> None:
     """Clear stored multi-turn context for a user/session."""
 
-    (conversation_store or _DEFAULT_CONVERSATION_STORE).clear(user_id, session_id)
+    (conversation_store or get_default_conversation_store(config)).clear(user_id, session_id)
 
 
 def clear_user_conversation_history(
     user_id: str,
     *,
-    conversation_store: InMemoryConversationStore | None = None,
+    conversation_store: ConversationStore | None = None,
+    config: ProviderConfig | None = None,
 ) -> int:
-    """Clear all process-local multi-turn context for one user."""
+    """Clear all multi-turn context for one user."""
 
-    return (conversation_store or _DEFAULT_CONVERSATION_STORE).clear_user(user_id)
+    return (conversation_store or get_default_conversation_store(config)).clear_user(user_id)
+
+
+def get_default_conversation_store(config: ProviderConfig | None = None) -> ConversationStore:
+    """Return the configured process-wide conversation store."""
+
+    resolved_config = config or ProviderConfig.from_env({})
+    backend = resolved_config.conversation_history_backend
+    path = str(_repo_relative_path(resolved_config.conversation_history_path)) if backend == "jsonl" else ""
+    max_turns = resolved_config.max_conversation_history_turns
+    key = (backend, path, max_turns)
+    store = _DEFAULT_CONVERSATION_STORES.get(key)
+    if store is None:
+        store = (
+            JsonlConversationStore(path, max_turns=max_turns)
+            if backend == "jsonl"
+            else InMemoryConversationStore(max_turns=max_turns)
+        )
+        _DEFAULT_CONVERSATION_STORES[key] = store
+    return store
 
 
 def _prepare_conversation_request(
     request: UserRequest,
     *,
-    conversation_store: InMemoryConversationStore,
+    conversation_store: ConversationStore,
     enable_conversation_history: bool,
 ) -> UserRequest:
     if not enable_conversation_history:
@@ -367,7 +492,7 @@ def _prepare_conversation_request(
 def _record_conversation_turn(
     state: AgentState,
     *,
-    conversation_store: InMemoryConversationStore,
+    conversation_store: ConversationStore,
     enable_conversation_history: bool,
 ) -> None:
     if not enable_conversation_history or state.response is None or state.status == "failed":
@@ -394,6 +519,33 @@ def _format_conversation_context(history: list[ConversationTurn]) -> str:
         lines.append(f"{index}. 用户：{turn.user_text}")
         lines.append(f"   助手：{turn.assistant_text}")
     return "\n".join(lines)
+
+
+def _trim_session_records(
+    records: list[ConversationHistoryRecord],
+    user_id: str,
+    session_id: str,
+    max_turns: int,
+) -> list[ConversationHistoryRecord]:
+    overflow = sum(
+        1 for record in records if record.user_id == user_id and record.session_id == session_id
+    ) - max_turns
+    if overflow <= 0:
+        return records
+    trimmed: list[ConversationHistoryRecord] = []
+    for record in records:
+        if record.user_id == user_id and record.session_id == session_id and overflow > 0:
+            overflow -= 1
+            continue
+        trimmed.append(record)
+    return trimmed
+
+
+def _repo_relative_path(path: str) -> Path:
+    resolved = Path(path).expanduser()
+    if resolved.is_absolute():
+        return resolved
+    return REPO_ROOT / resolved
 
 
 def _strip_env_value(value: str) -> str:

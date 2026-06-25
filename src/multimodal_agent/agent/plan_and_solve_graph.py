@@ -4,6 +4,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from multimodal_agent.agent.graph_runtime import GraphRuntimeContext, bind_runtime_node
 from multimodal_agent.agent.graph_nodes import compose_response_node, load_memory_node, save_memory_node
 from multimodal_agent.agent.plan_and_solve_nodes import (
     PlanAndSolveState,
@@ -15,21 +16,24 @@ from multimodal_agent.agent.plan_and_solve_nodes import (
     route_after_validate_plan,
     validate_plan_node,
 )
-from multimodal_agent.services.trace_store import trace_graph_node
 
 
-def build_plan_and_solve_graph() -> Any:
+def build_plan_and_solve_graph(
+    *,
+    checkpointer: Any | None = None,
+    runtime_context: GraphRuntimeContext | None = None,
+) -> Any:
     """Build and compile the explicit plan-and-solve strategy graph."""
 
     graph = StateGraph(PlanAndSolveState)
 
-    graph.add_node("load_memory", trace_graph_node("load_memory", load_memory_node))
-    graph.add_node("planner", trace_graph_node("planner", planner_node))
-    graph.add_node("validate_plan", trace_graph_node("validate_plan", validate_plan_node))
-    graph.add_node("plan_controller", trace_graph_node("plan_controller", plan_controller_node))
-    graph.add_node("execute_plan_step", trace_graph_node("execute_plan_step", execute_plan_step_node))
-    graph.add_node("compose_response", trace_graph_node("compose_response", compose_response_node))
-    graph.add_node("save_memory", trace_graph_node("save_memory", save_memory_node))
+    graph.add_node("load_memory", bind_runtime_node("load_memory", load_memory_node, runtime_context))
+    graph.add_node("planner", bind_runtime_node("planner", planner_node, runtime_context))
+    graph.add_node("validate_plan", bind_runtime_node("validate_plan", validate_plan_node, runtime_context))
+    graph.add_node("plan_controller", bind_runtime_node("plan_controller", plan_controller_node, runtime_context))
+    graph.add_node("execute_plan_step", bind_runtime_node("execute_plan_step", execute_plan_step_node, runtime_context))
+    graph.add_node("compose_response", bind_runtime_node("compose_response", compose_response_node, runtime_context))
+    graph.add_node("save_memory", bind_runtime_node("save_memory", save_memory_node, runtime_context))
 
     graph.add_edge(START, "load_memory")
     graph.add_edge("load_memory", "planner")
@@ -62,4 +66,4 @@ def build_plan_and_solve_graph() -> Any:
     graph.add_edge("compose_response", "save_memory")
     graph.add_edge("save_memory", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

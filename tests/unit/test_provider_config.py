@@ -17,7 +17,22 @@ def test_provider_config_allows_empty_environment() -> None:
     assert config.video_provider == "mock"
     assert config.intent_router == "rule"
     assert config.assistant_tool_call_mode == "prompt_json"
+    assert config.conversation_history_backend == "memory"
+    assert config.langgraph_checkpointer_backend == "memory"
     assert config.has_any_real_provider() is False
+
+
+def test_provider_config_auto_persists_conversation_history_with_jsonl_memory() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_MEMORY_BACKEND": "jsonl",
+            "MULTIMODAL_AGENT_MEMORY_PATH": ".local/memory/demo_memories.jsonl",
+        }
+    )
+
+    assert config.memory_backend == "jsonl"
+    assert config.conversation_history_backend == "jsonl"
+    assert config.conversation_history_path == ".local/memory/conversation_history.jsonl"
 
 
 def test_provider_config_reads_environment_values() -> None:
@@ -68,6 +83,10 @@ def test_provider_config_reads_environment_values() -> None:
             "MULTIMODAL_AGENT_MAX_VIDEO_BYTES": "1024",
             "MULTIMODAL_AGENT_MAX_VIDEO_SECONDS": "12.5",
             "MULTIMODAL_AGENT_INTENT_ROUTER": "hybrid",
+            "MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND": "jsonl",
+            "MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH": ".local/test/conversation.jsonl",
+            "MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS": "3",
+            "LANGGRAPH_CHECKPOINTER_BACKEND": "memory",
         }
     )
 
@@ -122,6 +141,10 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.max_video_bytes == 1024
     assert config.max_video_seconds == 12.5
     assert config.intent_router == "hybrid"
+    assert config.conversation_history_backend == "jsonl"
+    assert config.conversation_history_path == ".local/test/conversation.jsonl"
+    assert config.max_conversation_history_turns == 3
+    assert config.langgraph_checkpointer_backend == "memory"
     assert config.assistant_tool_call_mode == "native_tools"
     assert config.has_any_real_provider() is True
 

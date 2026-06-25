@@ -1,16 +1,15 @@
 """Image generation tool backed by an adapter."""
 
-from multimodal_agent.schemas.generation import ImageGenerationResult
+from multimodal_agent.schemas.generation import ImageGenerationInput, ImageGenerationResult
 from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.agent.prompt_builder import build_text_capability_output
 from multimodal_agent.schemas.capability_output import CapabilityOutputContract
 from multimodal_agent.services.provider_errors import ProviderAdapterError
 from multimodal_agent.services.image_generation_adapter import (
     ImageGenerationAdapter,
-    ImageGenerationInput,
     MockImageGenerationAdapter,
 )
 from multimodal_agent.services.generated_artifacts import materialize_image_generation_result
+from multimodal_agent.services.prompt_builder import build_text_capability_output
 from multimodal_agent.tools.base import MockTool, ToolContext
 
 

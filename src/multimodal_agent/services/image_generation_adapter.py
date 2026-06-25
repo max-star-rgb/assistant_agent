@@ -1,37 +1,11 @@
 """Image generation adapter interface and mock implementation."""
 
-from typing import Any, Protocol
-
-from pydantic import BaseModel, Field
+from typing import Protocol
 
 from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.generation import ImageGenerationResult
+from multimodal_agent.schemas.generation import ImageGenerationInput, ImageGenerationRequest, ImageGenerationResult
 from multimodal_agent.services.provider_errors import build_provider_error
-
-
-class ImageGenerationInput(BaseModel):
-    """Input for image generation."""
-
-    prompt: str | None = None
-    size: str | None = None
-    n: int = Field(default=1, ge=1, le=4)
-    prompt_extend: bool = True
-    watermark: bool = False
-    style: str | None = None
-    product_id: str | None = None
-    product_title: str | None = None
-    product_info: dict[str, Any] = Field(default_factory=dict)
-    reference_image_ids: list[str] = Field(default_factory=list)
-    negative_prompt: str | None = None
-    seed: int | None = Field(default=None, ge=0)
-    width: int | None = Field(default=None, ge=1)
-    height: int | None = Field(default=None, ge=1)
-    memory_context: list[str] = Field(default_factory=list)
-    user_id: str | None = None
-    session_id: str | None = None
-
-
-ImageGenerationRequest = ImageGenerationInput
+from multimodal_agent.utils.prompting import build_image_prompt
 
 
 class ImageGenerationAdapter(Protocol):
@@ -39,27 +13,6 @@ class ImageGenerationAdapter(Protocol):
 
     def generate(self, input: ImageGenerationInput) -> ImageGenerationResult:
         """Generate an image and return structured task output."""
-
-
-def build_image_prompt(input: ImageGenerationInput) -> str:
-    """Build a deterministic prompt from product information and style."""
-
-    from multimodal_agent.agent.prompt_builder import build_image_prompt_text
-
-    product = input.product_title or input.product_info.get("title") or input.product_id
-    style = input.style or ("日系海报" if product else None)
-    product_context = product
-    if input.product_info:
-        product_context = product_context or input.product_info.get("summary")
-    if not product and not input.prompt:
-        raise ValueError("缺少生成 prompt 或商品信息，无法生成图片")
-
-    return build_image_prompt_text(
-        user_query=input.prompt or "",
-        style=style,
-        product_context=product_context,
-        memory_context=input.memory_context,
-    )
 
 
 class MockImageGenerationAdapter:

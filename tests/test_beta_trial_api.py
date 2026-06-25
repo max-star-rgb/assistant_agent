@@ -95,8 +95,11 @@ def test_beta_delete_user_data_clears_only_target_user(monkeypatch) -> None:
 
     assert deleted.status_code == 200
     assert deleted.json()["deleted"]["memory_items"] >= 1
+    assert deleted.json()["deleted"]["session_records"] >= 1
     assert not runtime.trace_store.list_by_user("u1")
     assert runtime.trace_store.list_by_user("u2")
+    assert runtime.session_store.list_by_user("u1") == []
+    assert runtime.session_store.list_by_user("u2")
     assert feedback_store.list_by_user("u1") == []
     assert len(feedback_store.list_by_user("u2")) == 1
     assert memory_store.list_by_user("u1") == []

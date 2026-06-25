@@ -56,7 +56,7 @@ def test_assistant_decision_parsing_tool_call() -> None:
 
 def test_assistant_decision_parsing_with_code_fence() -> None:
     """Verify AssistantDecision can extract JSON from markdown code fence."""
-    output_with_fence = """思考过程...
+    output_with_fence = """模型前缀文本...
 ```json
 {
     "type": "final_answer",
@@ -67,6 +67,20 @@ def test_assistant_decision_parsing_with_code_fence() -> None:
     decision = AssistantDecision.from_llm_output(output_with_fence)
     assert decision.type == "final_answer"
     assert "从 code fence 中提取的回答" in decision.message
+
+
+def test_assistant_decision_extracts_json_after_thought_prefix_without_exposing_it() -> None:
+    """Verify non-JSON Thought prefixes are ignored and only the JSON decision is used."""
+    output = """Thought: I should not expose this reasoning.
+{"type": "tool_call", "tool_name": "product_search", "tool_input": {"query": "耳机"}, "reason": "需要搜索商品候选"}"""
+
+    decision = AssistantDecision.from_llm_output(output)
+
+    assert decision.type == "tool_call"
+    assert decision.tool_name == "product_search"
+    assert decision.tool_input == {"query": "耳机"}
+    assert decision.reason == "需要搜索商品候选"
+    assert "Thought" not in (decision.reason or "")
 
 
 def test_assistant_decision_falls_back_to_final_answer_on_invalid_json() -> None:

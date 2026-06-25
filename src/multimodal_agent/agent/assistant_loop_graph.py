@@ -11,10 +11,14 @@ from multimodal_agent.agent.assistant_loop_nodes import (
     route_after_assistant,
 )
 from multimodal_agent.agent.graph_nodes import compose_response_node, load_memory_node, save_memory_node
-from multimodal_agent.services.trace_store import trace_graph_node
+from multimodal_agent.agent.graph_runtime import GraphRuntimeContext, bind_runtime_node
 
 
-def build_assistant_loop_graph() -> Any:
+def build_assistant_loop_graph(
+    *,
+    checkpointer: Any | None = None,
+    runtime_context: GraphRuntimeContext | None = None,
+) -> Any:
     """
     Build and compile the assistant loop graph.
 
@@ -24,11 +28,11 @@ def build_assistant_loop_graph() -> Any:
     """
     graph = StateGraph(AssistantLoopState)
 
-    graph.add_node("load_memory", trace_graph_node("load_memory", load_memory_node))
-    graph.add_node("assistant", trace_graph_node("assistant", assistant_node))
-    graph.add_node("execute_tool", trace_graph_node("execute_tool", execute_requested_tool_node))
-    graph.add_node("compose_response", trace_graph_node("compose_response", compose_response_node))
-    graph.add_node("save_memory", trace_graph_node("save_memory", save_memory_node))
+    graph.add_node("load_memory", bind_runtime_node("load_memory", load_memory_node, runtime_context))
+    graph.add_node("assistant", bind_runtime_node("assistant", assistant_node, runtime_context))
+    graph.add_node("execute_tool", bind_runtime_node("execute_tool", execute_requested_tool_node, runtime_context))
+    graph.add_node("compose_response", bind_runtime_node("compose_response", compose_response_node, runtime_context))
+    graph.add_node("save_memory", bind_runtime_node("save_memory", save_memory_node, runtime_context))
 
     graph.add_edge(START, "load_memory")
     graph.add_edge("load_memory", "assistant")
@@ -46,4 +50,4 @@ def build_assistant_loop_graph() -> Any:
     graph.add_edge("compose_response", "save_memory")
     graph.add_edge("save_memory", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

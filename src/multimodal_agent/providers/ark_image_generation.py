@@ -8,9 +8,9 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-from multimodal_agent.schemas.generation import ImageGenerationResult
-from multimodal_agent.services.image_generation_adapter import ImageGenerationInput, build_image_prompt
+from multimodal_agent.schemas.generation import ImageGenerationInput, ImageGenerationResult
 from multimodal_agent.services.provider_errors import ProviderAdapterError, sanitize_error_message
+from multimodal_agent.utils.prompting import build_image_prompt
 
 
 DEFAULT_ARK_IMAGE_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
