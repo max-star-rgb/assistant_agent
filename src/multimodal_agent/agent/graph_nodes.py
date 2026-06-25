@@ -1,8 +1,6 @@
 """Reusable LangGraph node functions for agent execution."""
 
-from datetime import datetime, timezone
 from inspect import signature
-from uuid import uuid4
 from typing import NotRequired, TypedDict
 
 from multimodal_agent.agent.intent import IntentDetector
@@ -12,11 +10,8 @@ from multimodal_agent.agent.state import AgentError, AgentState
 from multimodal_agent.agent.response_composer import compose_response, save_demo_memory
 from multimodal_agent.agent.tool_executor import ToolExecutor
 from multimodal_agent.agent.tool_input_builder import build_tool_input
-from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy, format_memory_context
-from multimodal_agent.memory.store import MemoryStore
-from multimodal_agent.memory.write_policy import build_task_summary_memory_item
+from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.schemas.capabilities import canonical_intent
-from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
 from multimodal_agent.schemas.planning import TaskPlan
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.schemas.tools import ToolResult
@@ -33,7 +28,7 @@ class AgentGraphState(TypedDict):
     router: ToolRouter
     tool_executor: ToolExecutor
     chat_adapter: ChatAdapter
-    memory_store: MemoryStore
+    memory_manager: MemoryManager
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
     trace_id: NotRequired[str]
@@ -42,22 +37,7 @@ class AgentGraphState(TypedDict):
 
 
 def load_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
-    state = graph_state["state"]
-    query = MemoryQuery(
-        user_id=state.user_id,
-        query=graph_state["request"].text or "",
-        top_k=5,
-        max_context_chars=500,
-    )
-    state.memory_context = MemoryRetrievalStrategy(graph_state["memory_store"]).retrieve(query)
-    state.request.metadata["memory_context_text"] = format_memory_context(
-        state.memory_context,
-        max_chars=query.max_context_chars,
-    )
-    state.request.metadata["memory_context_summaries"] = [item.summary for item in state.memory_context]
-    state.request.metadata["memory_context_refs"] = [
-        ref for item in state.memory_context for ref in item.artifact_refs
-    ]
+    _memory_manager(graph_state).load_into_state(graph_state["state"], graph_state["request"])
     return graph_state
 
 
@@ -270,30 +250,12 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
 
 
 def save_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
-    state = graph_state["state"]
-    if state.status == "completed" and state.response is not None:
-        memory = _memory_from_state(state)
-        if memory is not None:
-            graph_state["memory_store"].save(memory)
+    _memory_manager(graph_state).save_from_run(graph_state["state"])
     return graph_state
 
 
-def _memory_from_state(state: AgentState) -> MemoryItem | None:
-    output_refs = [
-        ref
-        for result in state.tool_results
-        for ref in ([result.output_ref] if result.output_ref else [])
-    ]
-    return build_task_summary_memory_item(
-        memory_id=f"run_memory_{uuid4().hex}",
-        user_id=state.user_id,
-        session_id=state.session_id,
-        summary=state.response.message if state.response else "Agent run completed.",
-        intent=state.intent.intent if state.intent else None,
-        selected_tools=[tool.tool_name for tool in state.selected_tools],
-        output_refs=output_refs,
-        created_at=datetime.now(timezone.utc),
-    )
+def _memory_manager(graph_state: AgentGraphState) -> MemoryManager:
+    return graph_state["memory_manager"]
 
 
 def _run_planned_tools(graph_state: AgentGraphState, stop_after_first: bool) -> AgentGraphState:

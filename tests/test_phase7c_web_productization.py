@@ -1,7 +1,22 @@
 from fastapi.testclient import TestClient
 
+from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.api import routes_agent
 from multimodal_agent.api.app import create_app
+from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
+
+
+class ScriptedChatAdapter:
+    provider = "scripted"
+
+    def __init__(self, outputs: list[str]) -> None:
+        self.outputs = outputs
+        self.calls = 0
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        index = min(self.calls, len(self.outputs) - 1)
+        self.calls += 1
+        return ChatResult(response_text=self.outputs[index], provider=self.provider, model="scripted")
 
 
 def test_demo_runtime_info_is_redacted_and_offline_by_default() -> None:
@@ -30,22 +45,35 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
 
     assert response.status_code == 200
     assert "Assistant Chat" in html
-    assert "Trial User" in html
+    assert "试用入口" in html
+    assert "请输入你的工号：00xxxx" in html
+    assert ">确认<" in html
     assert "trial-user-id" in html
     assert "multimodal_agent_trial_user_id" in html
     assert "Examples" in html
     assert "Input" in html
+    assert "执行策略" in html
+    assert "快速执行" in html
+    assert "计划执行" in html
+    assert 'name="execution-strategy"' in html
+    assert 'value="plan_and_solve"' in html
     assert "Conversation History" in html
+    assert "Product Results" in html
     assert "Assistant ReAct Process" in html
     assert "conversationHistory" in html
     assert "renderConversationHistory" in html
+    assert "renderProductGallery" in html
     assert "runAssistantStream" in html
-    assert "Live events" in html
-    assert "formatDecisionTrace" in html
-    assert "Final Decision Trace" in html
+    assert "formatReactProcess" in html
+    assert "formatTimelineEvent" in html
+    assert "[plan]" in html
+    assert "[tool:" in html
+    assert "Final Decision Trace" not in html
+    assert "Live events" not in html
     assert "formatReactSteps" not in html
     assert "new WebSocket" in html
     assert "params.set(\"user_id\", userId)" in html
+    assert "params.set(\"execution_strategy\", currentExecutionStrategy())" in html
     assert "/ws/agent/" in html
     assert "Run detail panel" not in html
     assert "Trace detail panel" not in html
@@ -88,6 +116,46 @@ def test_phase7c_run_trace_detail_endpoints_support_console_flow() -> None:
     assert trace_detail["events"]
     assert tool_detail["run_id"] == run_payload["run_id"]
     assert "image_generation" in [call["tool_name"] for call in tool_detail["tool_calls"]]
+
+
+def test_agent_run_accepts_explicit_plan_and_solve_strategy() -> None:
+    try:
+        routes_agent._RUNTIME = AgentGraphRuntime(
+            chat_adapter=ScriptedChatAdapter(
+                [
+                    (
+                        '{"goal": "search", "steps": ['
+                        '{"step_id": "step_1", "action": "search_product", "tool_name": "product_search", '
+                        '"input_refs": [], "depends_on": [], "required_inputs": ["query"], '
+                        '"optional": false, "reason": "search first"}]}'
+                    ),
+                    (
+                        '{"type": "execute_step", "step_id": "step_1", '
+                        '"tool_input": {"query": "白色运动鞋", "top_k": 2}, "reason": "execute search"}'
+                    ),
+                    '{"type": "final_answer", "message": "plan complete", "reason": "search observed"}',
+                ]
+            )
+        )
+        client = TestClient(create_app())
+
+        response = client.post(
+            "/agent/run",
+            json={
+                "user_id": "web_demo_user",
+                "session_id": "web_demo_plan_strategy",
+                "text": "找白色运动鞋",
+                "execution_strategy": "plan_and_solve",
+            },
+        )
+    finally:
+        routes_agent._RUNTIME = None
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["execution_strategy"] == "plan_and_solve"
+    assert payload["data"]["final_answer_source"] == "plan_and_solve"
+    assert [call["tool_name"] for call in payload["tool_calls"]] == ["product_search"]
 
 
 def test_phase7c_websocket_run_is_queryable_via_shared_http_runtime() -> None:

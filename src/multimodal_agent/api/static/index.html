@@ -89,12 +89,69 @@
         font: inherit;
       }
 
-      .media-row {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
-        margin-top: 10px;
-      }
+	      .media-row {
+	        display: grid;
+	        grid-template-columns: 1fr 1fr;
+	        gap: 10px;
+	        margin-top: 10px;
+	      }
+
+	      .strategy-row {
+	        display: flex;
+	        align-items: center;
+	        justify-content: space-between;
+	        gap: 12px;
+	        margin: 12px 0 0;
+	        padding: 0;
+	        border: 0;
+	      }
+
+	      .strategy-row legend {
+	        padding: 0;
+	        color: #475467;
+	        font-size: 13px;
+	        font-weight: 650;
+	      }
+
+	      .strategy-options {
+	        display: inline-grid;
+	        grid-template-columns: repeat(2, minmax(112px, 1fr));
+	        gap: 2px;
+	        padding: 2px;
+	        border: 1px solid #cfd7e4;
+	        border-radius: 8px;
+	        background: #eef2f7;
+	      }
+
+	      .strategy-options label {
+	        min-width: 0;
+	      }
+
+	      .strategy-options input {
+	        position: absolute;
+	        opacity: 0;
+	        pointer-events: none;
+	      }
+
+	      .strategy-options span {
+	        display: flex;
+	        align-items: center;
+	        justify-content: center;
+	        min-height: 34px;
+	        border-radius: 6px;
+	        padding: 7px 10px;
+	        color: #344054;
+	        font-size: 13px;
+	        font-weight: 650;
+	        white-space: nowrap;
+	        cursor: pointer;
+	      }
+
+	      .strategy-options input:checked + span {
+	        background: #ffffff;
+	        color: #175cd3;
+	        box-shadow: 0 1px 2px rgb(16 24 40 / 10%);
+	      }
 
       .trial-row {
         display: grid;
@@ -292,10 +349,15 @@
           grid-template-columns: 1fr;
         }
 
-        .media-row {
-          grid-template-columns: 1fr;
-        }
-      }
+	        .media-row {
+	          grid-template-columns: 1fr;
+	        }
+
+	        .strategy-row {
+	          align-items: stretch;
+	          flex-direction: column;
+	        }
+	      }
     </style>
   </head>
   <body>
@@ -325,12 +387,25 @@
           <textarea id="message">你好，简单介绍一下你能做什么。</textarea>
           <button id="send" type="button" disabled>Send</button>
         </div>
-        <div class="media-row">
-          <input id="image-ids" type="text" placeholder="Image IDs（逗号或换行分隔，可选）" />
-          <input id="video-ids" type="text" placeholder="Video IDs（逗号或换行分隔，可选）" />
-        </div>
-        <div class="status" id="status">ready</div>
-      </section>
+	        <div class="media-row">
+	          <input id="image-ids" type="text" placeholder="Image IDs（逗号或换行分隔，可选）" />
+	          <input id="video-ids" type="text" placeholder="Video IDs（逗号或换行分隔，可选）" />
+	        </div>
+	        <fieldset class="strategy-row">
+	          <legend>执行策略</legend>
+	          <div class="strategy-options" role="radiogroup" aria-label="执行策略">
+	            <label>
+	              <input type="radio" name="execution-strategy" value="react" checked />
+	              <span>快速执行</span>
+	            </label>
+	            <label>
+	              <input type="radio" name="execution-strategy" value="plan_and_solve" />
+	              <span>计划执行</span>
+	            </label>
+	          </div>
+	        </fieldset>
+	        <div class="status" id="status">ready</div>
+	      </section>
 
       <section data-requires-access hidden>
         <h2>Conversation History</h2>
@@ -355,9 +430,10 @@
 
     <script>
       const messageInput = document.querySelector("#message");
-      const imageIdsInput = document.querySelector("#image-ids");
-      const videoIdsInput = document.querySelector("#video-ids");
-      const trialUserIdInput = document.querySelector("#trial-user-id");
+	      const imageIdsInput = document.querySelector("#image-ids");
+	      const videoIdsInput = document.querySelector("#video-ids");
+	      const executionStrategyInputs = document.querySelectorAll('input[name="execution-strategy"]');
+	      const trialUserIdInput = document.querySelector("#trial-user-id");
       const saveUserButton = document.querySelector("#save-user");
       const userStatus = document.querySelector("#user-status");
       const sendButton = document.querySelector("#send");
@@ -460,9 +536,10 @@
         const sessionId = `web_trial_${safeId(userId)}`;
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
         const params = new URLSearchParams();
-        params.set("user_id", userId);
-        params.set("text", text);
-        for (const id of parseIds(imageIdsInput.value)) {
+	        params.set("user_id", userId);
+	        params.set("text", text);
+	        params.set("execution_strategy", currentExecutionStrategy());
+	        for (const id of parseIds(imageIdsInput.value)) {
           params.append("image_id", id);
         }
         for (const id of parseIds(videoIdsInput.value)) {
@@ -572,9 +649,14 @@
           .slice(0, 64);
       }
 
-      function safeId(value) {
-        return normalizeUserId(value) || "anonymous";
-      }
+	      function safeId(value) {
+	        return normalizeUserId(value) || "anonymous";
+	      }
+
+	      function currentExecutionStrategy() {
+	        const selected = Array.from(executionStrategyInputs).find((input) => input.checked);
+	        return selected && selected.value === "plan_and_solve" ? "plan_and_solve" : "react";
+	      }
 
       function renderLiveProcess(eventLines, finalPayload) {
         if (finalPayload) {
@@ -685,11 +767,12 @@
           });
         }
         const status = payload.status === "failed" || (payload.errors || []).length ? "failed" : "success";
-        const lines = [
-          "Run",
-          `  status: ${status}`,
-          `  tools: ${toolNames.length ? toolNames.join(", ") : "(none)"}`,
-        ];
+	        const lines = [
+	          "Run",
+	          `  status: ${status}`,
+	          `  strategy: ${payload.execution_strategy || data.execution_strategy || "react"}`,
+	          `  tools: ${toolNames.length ? toolNames.join(", ") : "(none)"}`,
+	        ];
         if (data.final_answer_source) {
           lines.push(`  final_answer_source: ${data.final_answer_source}`);
         }
@@ -1071,10 +1154,11 @@
           return "";
         }
         const providers = runtimeInfo.providers || {};
-        return [
-          `runtime_profile: ${runtimeInfo.runtime_profile}`,
-          `graph_mode: ${runtimeInfo.graph_mode}`,
-          `assistant_brain: ${providers.chat || "unknown"}`,
+	        return [
+	          `runtime_profile: ${runtimeInfo.runtime_profile}`,
+	          `graph_mode: ${runtimeInfo.graph_mode}`,
+	          `execution_strategy: ${currentExecutionStrategy()}`,
+	          `assistant_brain: ${providers.chat || "unknown"}`,
           `image_provider: ${providers.image_generation || "unknown"}`,
           `product_search_provider: ${providers.product_search || "unknown"}`,
         ].join("\n");

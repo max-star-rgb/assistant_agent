@@ -3,10 +3,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.run_evals import filter_cases_by_suite, load_cases, run_evals
+from scripts.run_evals import evaluate_case, filter_cases_by_suite, load_cases, run_evals
 
 
-EXPECTED_SUITES = {"routing", "e2e", "provider_safety", "memory", "packaging"}
+EXPECTED_SUITES = {"routing", "e2e", "provider_safety", "memory", "packaging", "strategy"}
 
 
 def test_eval_cases_have_suite_and_category_fields() -> None:
@@ -35,17 +35,20 @@ def test_eval_cases_can_be_filtered_by_suite() -> None:
     provider_safety_cases = filter_cases_by_suite(cases, "provider_safety")
     memory_cases = filter_cases_by_suite(cases, "memory")
     packaging_cases = filter_cases_by_suite(cases, "packaging")
+    strategy_cases = filter_cases_by_suite(cases, "strategy")
 
     assert routing_cases
     assert e2e_cases
     assert provider_safety_cases
     assert memory_cases
     assert packaging_cases
+    assert strategy_cases
     assert all(case["suite"] == "routing" for case in routing_cases)
     assert all(case["suite"] == "e2e" for case in e2e_cases)
     assert all(case["suite"] == "provider_safety" for case in provider_safety_cases)
     assert all(case["suite"] == "memory" for case in memory_cases)
     assert all(case["suite"] == "packaging" for case in packaging_cases)
+    assert all(case["suite"] == "strategy" for case in strategy_cases)
 
 
 def test_e2e_eval_cases_reference_demo_scenario_matrix() -> None:
@@ -89,3 +92,28 @@ def test_run_evals_cli_supports_suite_filter_offline() -> None:
     assert summary["total"] > 0
     assert set(summary["suites"]) == {"routing"}
     assert summary["failed"] == 0
+
+
+def test_strategy_eval_suite_runs_scripted_strategies_offline() -> None:
+    cases = filter_cases_by_suite(load_cases(Path("tests/evals/eval_cases.json")), "strategy")
+
+    summary = run_evals(cases)
+
+    assert summary["total"] >= 4
+    assert summary["failed"] == 0
+    assert set(summary["suites"]) == {"strategy"}
+    assert summary["suites"]["strategy"]["passed"] == summary["total"]
+
+
+def test_strategy_eval_detail_exposes_review_checks() -> None:
+    cases = filter_cases_by_suite(load_cases(Path("tests/evals/eval_cases.json")), "strategy")
+    case = next(item for item in cases if item["id"] == "strategy_plan_replan_after_tool_failure_001")
+
+    detail = evaluate_case(case)
+
+    assert detail["passed"] is True
+    assert detail["execution_strategy"] == "plan_and_solve"
+    assert detail["plan_revision_count"] == 1
+    assert detail["strategy_checks"]["api_contract_match"] is True
+    assert detail["strategy_checks"]["controller_calls_match"] is True
+    assert detail["error_codes"] == ["tool_input_invalid"]

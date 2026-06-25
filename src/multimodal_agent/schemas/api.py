@@ -69,6 +69,7 @@ class AgentRunResponse(BaseModel):
     run_id: str
     trace_id: str
     status: str
+    execution_strategy: str = "react"
     intent: str | None
     response_text: str
     data: dict[str, Any] = Field(default_factory=dict)
@@ -126,6 +127,7 @@ def agent_run_response_from_state(
         run_id=state.run_id,
         trace_id=state.trace_id,
         status=state.status,
+        execution_strategy=state.execution_strategy,
         intent=state.intent.intent if state.intent else None,
         response_text=state.response.message if state.response else "",
         data=state.response.data if state.response and state.response.data else {},
@@ -174,6 +176,10 @@ def _public_react_steps(value: Any) -> list[dict[str, Any]]:
         "error",
         "summary",
         "next_step_hint",
+        "step_id",
+        "plan_step_count",
+        "plan_status",
+        "execution_strategy",
     }
     steps: list[dict[str, Any]] = []
     for item in value:
@@ -200,6 +206,8 @@ def _public_decision_trace(value: Any) -> list[dict[str, Any]]:
         "error",
         "recovery_hint",
         "answer",
+        "step_id",
+        "plan_step_count",
     }
     trace: list[dict[str, Any]] = []
     for item in value:

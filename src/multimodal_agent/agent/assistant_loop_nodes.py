@@ -46,7 +46,7 @@ class AssistantLoopState(TypedDict):
     router: NotRequired[ToolRouter]
     tool_executor: ToolExecutor
     chat_adapter: ChatAdapter
-    memory_store: Any
+    memory_manager: NotRequired[Any]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
     trace_id: NotRequired[str]

@@ -101,3 +101,35 @@ def test_non_mock_tool_limit_requests_final_answer_instead_of_composer() -> None
     assert state.response.message == final_answer
     assert state.response.data["final_answer_source"] == "assistant_loop"
     assert "白色低帮运动鞋" not in state.response.message
+
+
+def test_compare_request_continues_from_search_to_price_compare_and_hides_parser_message() -> None:
+    parser_message = "原始输出格式不完整，无法正常解析。"
+    runtime = AgentGraphRuntime(
+        chat_adapter=ScriptedChatAdapter(
+            [
+                (
+                    '{"type": "tool_call", "tool_name": "product_search", '
+                    '"tool_input": {"query": "适合通勤的无线蓝牙耳机", "top_k": 5}, '
+                    '"reason": "先搜索商品候选"}'
+                ),
+                parser_message,
+                parser_message,
+            ]
+        )
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="帮我找一款Cinnamoroll的玉桂狗，并比较一下价格，最后给出推荐理由。",
+        )
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    assert state.response is not None
+    assert parser_message not in state.response.message
+    assert "已完成比价" in state.response.message
+    assert "链接：" in state.response.message
+    assert state.response.data.get("final_answer_source") is None

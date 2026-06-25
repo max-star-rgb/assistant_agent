@@ -1,8 +1,25 @@
 from fastapi.testclient import TestClient
 
+from multimodal_agent.agent.runtime import AgentGraphRuntime
+from multimodal_agent.api import routes_agent
 from multimodal_agent.api.app import create_app
 from multimodal_agent.api.websocket import mock_agent_events
-from multimodal_agent.api.websocket import mock_agent_events
+from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
+
+
+class ScriptedChatAdapter:
+    provider = "scripted"
+
+    def __init__(self, outputs: list[str]) -> None:
+        self.outputs = outputs
+        self.calls = 0
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        index = min(self.calls, len(self.outputs) - 1)
+        self.calls += 1
+        return ChatResult(response_text=self.outputs[index], provider=self.provider, model="scripted")
 
 
 def test_websocket_uses_graph_runtime_event_sequence() -> None:
@@ -58,6 +75,41 @@ def test_websocket_final_agent_response_includes_full_run_payload() -> None:
     assert response["decision_trace"]
     assert any(step.get("tool_name") == "image_generation" for step in response["react_steps"])
     assert any(step.get("action") == "image_generation" for step in response["decision_trace"])
+
+
+def test_websocket_accepts_explicit_plan_and_solve_strategy() -> None:
+    try:
+        routes_agent._RUNTIME = AgentGraphRuntime(
+            chat_adapter=ScriptedChatAdapter(
+                [
+                    (
+                        '{"goal": "search", "steps": ['
+                        '{"step_id": "step_1", "action": "search_product", "tool_name": "product_search", '
+                        '"input_refs": [], "depends_on": [], "required_inputs": ["query"], '
+                        '"optional": false, "reason": "search first"}]}'
+                    ),
+                    (
+                        '{"type": "execute_step", "step_id": "step_1", '
+                        '"tool_input": {"query": "白色运动鞋", "top_k": 2}, "reason": "execute search"}'
+                    ),
+                    '{"type": "final_answer", "message": "plan complete", "reason": "search observed"}',
+                ]
+            )
+        )
+        client = TestClient(create_app())
+
+        with client.websocket_connect(
+            "/ws/agent/plan-ws?text=找白色运动鞋&execution_strategy=plan_and_solve"
+        ) as websocket:
+            events = _receive_until(websocket, "agent_response", limit=30)
+    finally:
+        routes_agent._RUNTIME = None
+
+    response = events[-1]["payload"]["response"]
+    assert response["execution_strategy"] == "plan_and_solve"
+    assert response["data"]["final_answer_source"] == "plan_and_solve"
+    assert [call["tool_name"] for call in response["tool_calls"]] == ["product_search"]
+    assert any(step.get("decision_type") == "plan_validated" for step in response["react_steps"])
 
 
 def test_websocket_emits_structured_error_event_for_failed_tool() -> None:

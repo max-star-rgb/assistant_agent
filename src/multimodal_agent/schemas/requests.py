@@ -1,6 +1,6 @@
 """Request and response schemas."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -14,6 +14,7 @@ class UserRequest(BaseModel):
     image_ids: list[str] = Field(default_factory=list)
     video_ids: list[str] = Field(default_factory=list)
     audio_id: str | None = None
+    execution_strategy: Literal["react", "plan_and_solve"] = "react"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

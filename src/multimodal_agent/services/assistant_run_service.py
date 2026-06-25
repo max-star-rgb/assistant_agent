@@ -110,6 +110,7 @@ class AssistantRunArtifacts:
             "model": self.runtime.config.chat_model,
             "runtime_profile": self.runtime.config.runtime_profile.name,
             "graph_mode": self.runtime.config.agent_graph_mode,
+            "execution_strategy": self.state.execution_strategy,
             "query": self.state.request.text or "",
             "response_text": response.response_text,
             "response_data": response.data,

@@ -30,12 +30,14 @@ class ToolExecutor:
         event_sink: EventSink | None = None,
         recovery_policy: RecoveryPolicy | None = None,
         execution_policy: ProviderExecutionPolicy | None = None,
+        context_metadata: dict[str, Any] | None = None,
     ) -> None:
         self.registry = registry or create_default_registry()
         self.tool_history = tool_history
         self.event_sink = event_sink
         self.recovery_policy = recovery_policy or RecoveryPolicy()
         self.execution_policy = execution_policy or ProviderExecutionPolicy.from_env()
+        self.context_metadata = dict(context_metadata or {})
 
     def run_tool(
         self,
@@ -135,7 +137,12 @@ class ToolExecutor:
         result, retry_count = self._run_with_retry(
             tool_name,
             tool_input,
-            ToolContext(run_id=state.run_id, user_id=state.user_id, session_id=state.session_id),
+            ToolContext(
+                run_id=state.run_id,
+                user_id=state.user_id,
+                session_id=state.session_id,
+                metadata=dict(self.context_metadata),
+            ),
         )
         latency_ms = int((perf_counter() - started_at) * 1000)
         if result.latency_ms is None:

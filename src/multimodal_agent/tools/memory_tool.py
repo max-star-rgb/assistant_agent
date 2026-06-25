@@ -2,10 +2,13 @@
 
 from datetime import datetime, timezone
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.schemas.memory import MemoryItem
+from multimodal_agent.schemas.memory import MemoryQuery
 from multimodal_agent.schemas.tools import ToolResult
 from multimodal_agent.schemas.capability_output import build_capability_output_contract
 from multimodal_agent.memory.write_policy import build_explicit_memory_item
@@ -40,6 +43,11 @@ class MemoryTool(MockTool):
                     error="缺少检索 query，无法检索记忆",
                     contract=contract,
                 )
+            manager = _manager_from_context(context)
+            if manager is not None:
+                result = _retrieve_with_manager(input, manager, self.name)
+                if result is not None:
+                    return result
             item = MemoryItem(
                 memory_id="m1",
                 user_id=input.user_id,
@@ -79,6 +87,10 @@ class MemoryTool(MockTool):
                 error="缺少保存内容，无法写入记忆",
                 contract=contract,
             )
+
+        manager = _manager_from_context(context)
+        if manager is not None:
+            return _save_with_manager(input, context, manager, self.name)
 
         item = build_explicit_memory_item(
             memory_id="m_saved_1",
@@ -121,3 +133,90 @@ class MemorySaveTool(MemoryTool):
     def _run(self, input: MemoryInput, context: ToolContext) -> ToolResult:
         payload = input.model_copy(update={"action": "save"})
         return super()._run(payload, context)
+
+
+def _manager_from_context(context: ToolContext) -> MemoryManager | None:
+    manager = context.metadata.get("memory_manager")
+    return manager if isinstance(manager, MemoryManager) else None
+
+
+def _retrieve_with_manager(input: MemoryInput, manager: MemoryManager, tool_name: str) -> ToolResult | None:
+    query = MemoryQuery(
+        user_id=input.user_id,
+        query=input.query or "",
+        capability=str(input.content.get("capability") or "") or None,
+        top_k=_int_content(input.content, "top_k", default=5),
+        max_context_chars=_int_content(input.content, "max_context_chars", default=500),
+    )
+    result = manager.search(query)
+    if not result.items:
+        return None
+
+    output_ref = f"local://memory/{result.items[0].memory_id}"
+    data = {
+        "items": [item.model_dump(mode="json") for item in result.items],
+        "memory_context": result.memory_context,
+        "total": result.total,
+    }
+    contract = build_capability_output_contract(
+        capability="memory_retrieval",
+        status="succeeded",
+        output_ref=output_ref,
+        data=data,
+        metadata={"provider": "local", "source": "memory_manager"},
+    )
+    return ToolResult(
+        tool_name=tool_name,
+        success=True,
+        data={**data, "contract": contract.model_dump(mode="json")},
+        output_ref=output_ref,
+        latency_ms=1,
+        contract=contract,
+    )
+
+
+def _save_with_manager(
+    input: MemoryInput,
+    context: ToolContext,
+    manager: MemoryManager,
+    tool_name: str,
+) -> ToolResult:
+    session_id = input.session_id or context.session_id or str(input.content.get("session_id") or "default")
+    text = str(
+        input.query
+        or input.content.get("text")
+        or input.content.get("summary")
+        or "用户显式保存了一条记忆。"
+    )
+    item = manager.save_explicit(
+        memory_id=f"explicit_memory_{uuid4().hex}",
+        user_id=input.user_id,
+        session_id=session_id,
+        text=text,
+        content=input.content,
+    )
+    display_item = item.model_copy(update={"summary": "已保存用户偏好。"})
+    data = display_item.model_dump(mode="json")
+    output_ref = f"local://memory/{item.memory_id}"
+    contract = build_capability_output_contract(
+        capability="memory_save",
+        status="succeeded",
+        output_ref=output_ref,
+        data={"memory_id": item.memory_id, "summary": display_item.summary, "memory_type": item.memory_type},
+        metadata={"provider": "local", "source": "memory_manager"},
+    )
+    return ToolResult(
+        tool_name=tool_name,
+        success=True,
+        data={**data, "contract": contract.model_dump(mode="json")},
+        output_ref=output_ref,
+        latency_ms=1,
+        contract=contract,
+    )
+
+
+def _int_content(content: dict, key: str, *, default: int) -> int:
+    value = content.get(key)
+    if isinstance(value, int):
+        return value
+    return default

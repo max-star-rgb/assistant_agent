@@ -8,6 +8,13 @@ from fastapi import APIRouter, HTTPException, Query
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
+from multimodal_agent.schemas.memory import MemoryType
+from multimodal_agent.schemas.memory_audit import (
+    MemoryAuditItem,
+    MemoryAuditList,
+    MemoryAuditReport,
+    MemoryDeleteResult,
+)
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.assistant_run_service import (
     clear_user_conversation_history,
@@ -24,6 +31,7 @@ from multimodal_agent.services.beta_feedback import (
     summarize_feedback,
 )
 from multimodal_agent.services.demo_examples import get_demo_examples
+from multimodal_agent.services.memory_audit import MemoryAuditService
 from multimodal_agent.services.trace_query import RunSummary, ToolCallSummary, TraceQueryService, TraceSummary
 from multimodal_agent.services.trial_access import (
     TrialAccessGate,
@@ -137,6 +145,58 @@ def get_run_tool_calls(run_id: str) -> ToolCallSummary:
     return summary
 
 
+@router.get("/memory/users/{user_id}/items", response_model=MemoryAuditList)
+def list_memory_items(
+    user_id: str,
+    memory_type: MemoryType | None = Query(default=None),
+    include_content: bool = Query(default=False),
+) -> MemoryAuditList:
+    _require_trial_access(user_id)
+    return _memory_audit_service().list_items(
+        user_id=user_id,
+        memory_type=memory_type,
+        include_content=include_content,
+    )
+
+
+@router.get("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryAuditItem)
+def get_memory_item(
+    user_id: str,
+    memory_id: str,
+    include_content: bool = Query(default=True),
+) -> MemoryAuditItem:
+    _require_trial_access(user_id)
+    item = _memory_audit_service().get_item(
+        user_id=user_id,
+        memory_id=memory_id,
+        include_content=include_content,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory item not found")
+    return item
+
+
+@router.get("/memory/users/{user_id}/audit", response_model=MemoryAuditReport)
+def audit_memory(user_id: str) -> MemoryAuditReport:
+    _require_trial_access(user_id)
+    return _memory_audit_service().audit(user_id=user_id)
+
+
+@router.delete("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryDeleteResult)
+def delete_memory_item(user_id: str, memory_id: str) -> MemoryDeleteResult:
+    _require_trial_access(user_id)
+    result = _memory_audit_service().delete_item(user_id=user_id, memory_id=memory_id)
+    if result.deleted.get("memory_items", 0) == 0:
+        raise HTTPException(status_code=404, detail="memory item not found")
+    return result
+
+
+@router.delete("/memory/users/{user_id}/sessions/{session_id}", response_model=MemoryDeleteResult)
+def delete_memory_session(user_id: str, session_id: str) -> MemoryDeleteResult:
+    _require_trial_access(user_id)
+    return _memory_audit_service().delete_session(user_id=user_id, session_id=session_id)
+
+
 @router.post("/beta/feedback", response_model=BetaFeedbackRecord)
 def submit_beta_feedback(feedback: BetaFeedbackCreate) -> BetaFeedbackRecord:
     _assert_run_belongs_to_user(feedback.run_id, feedback.user_id)
@@ -163,9 +223,8 @@ def export_beta_evaluations(user_id: str | None = Query(default=None)) -> BetaEv
 @router.delete("/beta/users/{user_id}/data")
 def delete_beta_user_data(user_id: str) -> dict[str, Any]:
     runtime = get_agent_runtime()
-    memory_items = runtime.memory_store.list_by_user(user_id) if hasattr(runtime.memory_store, "list_by_user") else []
-    if hasattr(runtime.memory_store, "clear_user"):
-        runtime.memory_store.clear_user(user_id)
+    memory_items = runtime.memory_manager.list_by_user(user_id)
+    runtime.memory_manager.clear_user(user_id)
     run_history_deleted = runtime.run_history.delete_by_user(user_id) if runtime.run_history is not None else 0
     tool_history_deleted = runtime.tool_history.delete_by_user(user_id) if runtime.tool_history is not None else 0
     trace_deleted = runtime.trace_store.delete_by_user(user_id)
@@ -191,6 +250,10 @@ def _assert_run_belongs_to_user(run_id: str, user_id: str) -> None:
         raise HTTPException(status_code=404, detail="run not found")
     if summary.user_id != user_id:
         raise HTTPException(status_code=403, detail="run does not belong to user")
+
+
+def _memory_audit_service() -> MemoryAuditService:
+    return MemoryAuditService(get_agent_runtime().memory_manager)
 
 
 def _require_trial_access(user_id: str) -> None:

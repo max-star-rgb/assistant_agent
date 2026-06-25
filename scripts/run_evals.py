@@ -18,15 +18,19 @@ if str(SRC) not in sys.path:
 
 from multimodal_agent.agent.workflow import AgentWorkflow
 from multimodal_agent.agent.intent_router_adapter import create_intent_router_adapter
+from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.memory.store import InMemoryStore
+from multimodal_agent.schemas.api import agent_run_response_from_state
 from multimodal_agent.schemas.capabilities import canonical_intent
 from multimodal_agent.schemas.intent_router import IntentRouterRequest
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
 from multimodal_agent.services.provider_budget import ProviderCallBudget
 from multimodal_agent.services.provider_errors import build_provider_error
 from multimodal_agent.services.provider_policy import RetryPolicy
+from multimodal_agent.services.trace_store import InMemoryTraceStore
 from multimodal_agent.mcp.server import OfflineMCPServer
 from scripts.validate_skills import validate_skills
 
@@ -34,6 +38,30 @@ from scripts.validate_skills import validate_skills
 DEFAULT_CASES_PATH = ROOT / "tests" / "evals" / "eval_cases.json"
 ALL_SUITES = "all"
 ROUTER_MODES = {"rule", "mock_llm", "hybrid"}
+
+
+class ScriptedStrategyChatAdapter:
+    """Deterministic chat adapter for strategy evals.
+
+    The eval case owns planner/controller outputs. This adapter only replays
+    them through the same runtime contract used by real chat providers.
+    """
+
+    provider = "scripted"
+
+    def __init__(self, outputs: list[str]) -> None:
+        self.outputs = outputs
+        self.calls = 0
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        if not self.outputs:
+            output = '{"type": "final_answer", "message": "scripted output missing", "reason": "eval setup"}'
+        else:
+            output = self.outputs[min(self.calls, len(self.outputs) - 1)]
+        self.calls += 1
+        return ChatResult(response_text=output, provider=self.provider, model="strategy-eval")
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[dict[str, Any]]:
@@ -92,7 +120,8 @@ def request_from_case(case: dict[str, Any]) -> UserRequest:
         image_ids=image_ids or [],
         video_ids=video_ids or [],
         audio_id=case.get("audio_id"),
-        metadata=case.get("metadata", {}),
+        metadata=dict(case.get("metadata", {})),
+        execution_strategy=case.get("execution_strategy", "react"),
     )
 
 
@@ -102,6 +131,8 @@ def expected_capability(case: dict[str, Any]) -> str | None:
 
 
 def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
+    if case.get("suite") == "strategy":
+        return evaluate_strategy_case(case, router_mode=router_mode)
     if case.get("suite") == "provider_safety":
         return evaluate_provider_safety_case(case, router_mode=router_mode)
     if case.get("suite") == "memory" and case.get("memory_scenario"):
@@ -193,6 +224,161 @@ def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, 
         "must_not_require": must_not_require,
         "missing_slots": missing_slots,
         "media_requirement_errors": media_requirement_errors,
+    }
+
+
+def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
+    """Evaluate explicit ReAct / Plan-and-Solve strategy behavior offline."""
+
+    expected_tools = case.get("expected_tools", [])
+    must_not_call = case.get("must_not_call", [])
+    expected_response_contains = case.get("expected_response_contains", [])
+    expected_strategy = case.get("execution_strategy", "react")
+    expected_plan_status = case.get("expected_plan_status")
+    expected_final_answer_source = case.get("expected_final_answer_source")
+    expected_plan_revision_count = case.get("expected_plan_revision_count")
+    expected_decision_types = case.get("expected_decision_types", [])
+    expected_observation_tools = case.get("expected_observation_tools", [])
+    expected_trace_nodes = case.get("expected_trace_nodes", [])
+    expected_error_codes = case.get("expected_error_codes", [])
+    expected_chat_calls = case.get("expected_chat_calls")
+    expected_planner_calls = case.get("expected_planner_calls")
+    expected_controller_calls = case.get("expected_controller_calls")
+
+    adapter = ScriptedStrategyChatAdapter(_strategy_chat_outputs(case))
+    trace_store = InMemoryTraceStore()
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(agent_graph_mode="assistant_loop"),
+        chat_adapter=adapter,
+        trace_store=trace_store,
+    )
+    state = runtime.run_state(request_from_case(case))
+    api_response = agent_run_response_from_state(state)
+
+    actual_tools = [call.tool_name for call in state.tool_calls]
+    response_text = state.response.message if state.response else ""
+    unexpected_tools = [tool for tool in actual_tools if tool in must_not_call]
+    decision_types = [
+        step.get("decision_type")
+        for step in api_response.react_steps
+        if step.get("decision_type")
+    ]
+    observation_tools = [
+        step.get("observation_tool")
+        for step in api_response.react_steps
+        if step.get("observation_tool")
+    ]
+    error_codes = [
+        str(error.details.get("code", "unknown_error"))
+        for error in state.errors
+    ]
+    trace_nodes = trace_store.node_path(state.run_id)
+    planner_calls = sum("planner" in request.user_query for request in adapter.requests)
+    controller_calls = sum("plan-and-solve controller" in request.user_query for request in adapter.requests)
+
+    strategy_match = state.execution_strategy == expected_strategy == api_response.execution_strategy
+    plan_status_match = expected_plan_status is None or state.plan_status == expected_plan_status
+    final_answer_source_match = (
+        expected_final_answer_source is None
+        or api_response.data.get("final_answer_source") == expected_final_answer_source
+    )
+    plan_revision_match = (
+        expected_plan_revision_count is None
+        or state.plan_revision_count == expected_plan_revision_count
+    )
+    decision_types_match = all(item in decision_types for item in expected_decision_types)
+    observation_tools_match = tools_contain_expected(
+        [str(item) for item in observation_tools],
+        expected_observation_tools,
+    )
+    trace_nodes_match = all(node in trace_nodes for node in expected_trace_nodes)
+    error_codes_match = all(code in error_codes for code in expected_error_codes)
+    chat_calls_match = expected_chat_calls is None or adapter.calls == expected_chat_calls
+    planner_calls_match = expected_planner_calls is None or planner_calls == expected_planner_calls
+    controller_calls_match = expected_controller_calls is None or controller_calls == expected_controller_calls
+    api_contract_match = (
+        api_response.run_id == state.run_id
+        and api_response.trace_id == state.trace_id
+        and api_response.execution_strategy == state.execution_strategy
+        and isinstance(api_response.react_steps, list)
+        and isinstance(api_response.decision_trace, list)
+    )
+    tool_selection_match = set(expected_tools).issubset(set(actual_tools))
+    ordered_tool_match = tools_contain_expected(actual_tools, expected_tools)
+    response_contains_match = all(expected in response_text for expected in expected_response_contains)
+
+    passed = (
+        strategy_match
+        and plan_status_match
+        and final_answer_source_match
+        and plan_revision_match
+        and decision_types_match
+        and observation_tools_match
+        and trace_nodes_match
+        and error_codes_match
+        and chat_calls_match
+        and planner_calls_match
+        and controller_calls_match
+        and api_contract_match
+        and tool_selection_match
+        and ordered_tool_match
+        and not unexpected_tools
+        and response_contains_match
+    )
+    expected_capability_name = expected_capability(case)
+    actual_capability = expected_capability_name if strategy_match else None
+    return {
+        "id": case["id"],
+        "router_mode": router_mode,
+        "suite": case.get("suite"),
+        "category": case.get("category"),
+        "scenario_id": case.get("scenario_id"),
+        "passed": passed,
+        "intent_match": strategy_match,
+        "capability_match": strategy_match,
+        "tool_selection_match": tool_selection_match,
+        "ordered_tool_match": ordered_tool_match,
+        "unexpected_tool_called": bool(unexpected_tools),
+        "media_requirement_error": False,
+        "followup_expected": False,
+        "followup_match": True,
+        "response_contains_match": response_contains_match,
+        "expected_intent": case.get("expected_intent"),
+        "actual_intent": state.execution_strategy,
+        "expected_capability": expected_capability_name,
+        "actual_capability": actual_capability,
+        "expected_tools": expected_tools,
+        "actual_tools": actual_tools,
+        "expected_response_contains": expected_response_contains,
+        "must_not_call": must_not_call,
+        "unexpected_tools": unexpected_tools,
+        "must_not_require": case.get("must_not_require", []),
+        "missing_slots": [],
+        "media_requirement_errors": [],
+        "strategy_checks": {
+            "strategy_match": strategy_match,
+            "plan_status_match": plan_status_match,
+            "final_answer_source_match": final_answer_source_match,
+            "plan_revision_match": plan_revision_match,
+            "decision_types_match": decision_types_match,
+            "observation_tools_match": observation_tools_match,
+            "trace_nodes_match": trace_nodes_match,
+            "error_codes_match": error_codes_match,
+            "chat_calls_match": chat_calls_match,
+            "planner_calls_match": planner_calls_match,
+            "controller_calls_match": controller_calls_match,
+            "api_contract_match": api_contract_match,
+        },
+        "execution_strategy": state.execution_strategy,
+        "plan_status": state.plan_status,
+        "plan_revision_count": state.plan_revision_count,
+        "decision_types": decision_types,
+        "observation_tools": observation_tools,
+        "error_codes": error_codes,
+        "trace_nodes": trace_nodes,
+        "chat_calls": adapter.calls,
+        "planner_calls": planner_calls,
+        "controller_calls": controller_calls,
     }
 
 
@@ -373,6 +559,17 @@ def _provider_safety_result(scenario: str | None) -> dict[str, Any]:
         error = build_provider_error("provider_rate_limited", "provider rate limit reached")
         return {"code": error.code, "message": error.message, "retryable": policy.is_retryable(error.code)}
     return {"code": "unknown_error", "message": "unknown provider safety scenario", "retryable": False}
+
+
+def _strategy_chat_outputs(case: dict[str, Any]) -> list[str]:
+    outputs = case.get("scripted_chat_outputs", [])
+    rendered: list[str] = []
+    for output in outputs:
+        if isinstance(output, (dict, list)):
+            rendered.append(json.dumps(output, ensure_ascii=False))
+        else:
+            rendered.append(str(output))
+    return rendered
 
 
 def _router_expectation(case: dict[str, Any], router_mode: str) -> dict[str, Any]:

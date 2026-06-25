@@ -123,6 +123,8 @@ class ProviderConfig:
     agent_graph_mode: AgentGraphMode = "assistant_loop"  # 默认使用新的 ReAct 架构
     assistant_tool_call_mode: AssistantToolCallMode = "prompt_json"
     max_tool_iterations: int = 5
+    max_plan_steps: int = 8
+    max_plan_revisions: int = 2
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
@@ -252,6 +254,8 @@ class ProviderConfig:
                 or source.get("MULTIMODAL_AGENT_ASSISTANT_TOOL_CALL_MODE")
             ),
             max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 5),
+            max_plan_steps=_int_env(source.get("MAX_PLAN_STEPS"), 8),
+            max_plan_revisions=_int_env(source.get("MAX_PLAN_REVISIONS"), 2),
         )
 
     def has_any_real_provider(self) -> bool:

@@ -16,6 +16,8 @@ from multimodal_agent.services.provider_budget import ProviderCallBudget
 
 
 AgentStatus = Literal["created", "running", "waiting_user", "completed", "failed"]
+ExecutionStrategyName = Literal["react", "plan_and_solve"]
+PlanStatus = Literal["none", "active", "replanning", "completed", "failed"]
 
 
 class AgentError(BaseModel):
@@ -47,11 +49,15 @@ class AgentState(BaseModel):
     user_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     request: UserRequest
+    execution_strategy: ExecutionStrategyName = "react"
 
     memory_context: list[MemoryItem] = Field(default_factory=list)
     perception: PerceptionBundle | None = None
     intent: IntentResult | None = None
     plan: TaskPlan | None = None
+    plan_status: PlanStatus = "none"
+    current_step_id: str | None = None
+    plan_revision_count: int = Field(default=0, ge=0)
 
     selected_tools: list[ToolSelection] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
@@ -71,6 +77,7 @@ class AgentState(BaseModel):
             user_id=request.user_id,
             session_id=request.session_id,
             request=request,
+            execution_strategy=request.execution_strategy,
         )
 
     def add_tool_call(
@@ -147,6 +154,7 @@ class AgentState(BaseModel):
         """Set the current task plan."""
 
         self.plan = plan
+        self.plan_status = "active"
         self.status = "waiting_user" if plan.requires_followup else "running"
 
     def set_response(self, response: AgentResponse) -> None:

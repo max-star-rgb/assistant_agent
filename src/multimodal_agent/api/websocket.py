@@ -70,6 +70,7 @@ async def agent_websocket(
     client_kind: str = Query(default="web", alias="client"),
     image_id: list[str] | None = Query(default=None),
     video_id: list[str] | None = Query(default=None),
+    execution_strategy: str = Query(default="react"),
 ) -> None:
     access = get_trial_access_gate().check(user_id)
     if not access.allowed and not _can_bypass_trial_access(websocket, client_kind):
@@ -96,7 +97,12 @@ async def agent_websocket(
         text=text,
         image_ids=list(image_id or []),
         video_ids=list(video_id or []),
-        metadata={"source": _request_source(client_kind), "transport": "websocket"},
+        execution_strategy=_execution_strategy(execution_strategy),
+        metadata={
+            "source": _request_source(client_kind),
+            "transport": "websocket",
+            "execution_strategy": _execution_strategy(execution_strategy),
+        },
     )
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[Any] = asyncio.Queue()
@@ -164,3 +170,7 @@ def _is_local_client_host(host: str) -> bool:
 
 def _request_source(client_kind: str) -> str:
     return "cli_client" if client_kind == "cli" else "web_console"
+
+
+def _execution_strategy(value: str) -> str:
+    return "plan_and_solve" if value == "plan_and_solve" else "react"
