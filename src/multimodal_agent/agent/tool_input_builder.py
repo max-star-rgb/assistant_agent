@@ -44,10 +44,9 @@ def build_tool_input(
     if action == "render_3d":
         return build_render_request_input(request, outputs_by_step)
     if action == "retrieve_memory":
-        return {"action": "retrieve", "user_id": request.user_id, "query": request.text}
+        return {"user_id": request.user_id, "query": request.text}
     if action == "save_memory":
         return {
-            "action": "save",
             "user_id": request.user_id,
             "session_id": request.session_id,
             "query": request.text,

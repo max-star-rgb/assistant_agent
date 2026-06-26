@@ -1,0 +1,77 @@
+# Documentation Index
+
+This index records the current documentation status after a read-only architecture and repository audit. It does not delete files. Historical phase/task/skill material is preserved unless a later human-reviewed cleanup task decides otherwise.
+
+Status values:
+
+- `canonical`: current authoritative entry or policy document
+- `reference`: useful supporting reference, not the first entry point
+- `historical`: completed planning/task history
+- `archive-candidate`: should be moved out of the default reading path later
+- `delete-candidate`: should be deleted only after human review
+- `unknown`: cannot be judged from current context
+
+| path | status | reason | action |
+| --- | --- | --- | --- |
+| `README.md` | canonical | Human-facing project entry; accurately describes default mock/local/offline mode and main commands. Contains one stale Phase 6 link that should be fixed separately or during entry-link update. | update |
+| `AGENTS.md` | canonical | Agent behavior constraints and repository workflow rules. It should point Codex to the new guide and index. | update |
+| `docs/CODEX_PROJECT_GUIDE.md` | canonical | Current authoritative Codex project guide created from code/config/docs audit. | keep |
+| `docs/DOCS_INDEX.md` | canonical | Current authoritative documentation inventory and cleanup status. | keep |
+| `docs/TESTS_REVIEW.md` | canonical | Current tests directory read-only review for future cleanup planning. | keep |
+| `docs/architecture.md` | canonical | Current concise runtime architecture overview; matches assistant-loop and provider-native tool calling direction. | link-from-index |
+| `docs/architecture-layers.md` | canonical | Current layer ownership and governance boundary document; required for architecture/rework decisions. | link-from-index |
+| `docs/capabilities.md` | canonical | Current capability list and default provider boundary. | link-from-index |
+| `docs/configuration.md` | canonical | Current runtime profile and provider selector policy. | link-from-index |
+| `docs/provider-setup.md` | canonical | Current real-provider opt-in setup and missing-config behavior. | link-from-index |
+| `docs/security.md` | canonical | Current safety defaults, secret handling, and real-provider opt-in policy. | link-from-index |
+| `docs/quickstart.md` | canonical | Current local mock/offline quickstart. | link-from-index |
+| `docs/development.md` | canonical | Current development commands and coding constraints. | link-from-index |
+| `docs/demo-flows.md` | canonical | Current offline demo-flow guide. | link-from-index |
+| `docs/deployment-local.md` | reference | Local deployment support documentation. | keep |
+| `docs/observability-local.md` | reference | Local run/trace/tool-call observability reference. | keep |
+| `docs/release-checklist.md` | reference | Release validation checklist; useful but not the first project guide. | keep |
+| `docs/troubleshooting.md` | reference | Operational troubleshooting reference. | keep |
+| `docs/real-provider-smoke-runbook.md` | reference | Manual real-provider smoke runbook; real provider use remains explicit opt-in only. | keep |
+| `docs/real-provider-smoke-matrix.md` | reference | Real-provider smoke coverage matrix; not default execution guidance. | keep |
+| `docs/phase8/README.md` | reference | Important Phase 8 architecture background, but some early statements must be checked against current code. | keep |
+| `docs/phase8/assistant-loop-architecture-upgrade.md` | reference | Background design for assistant-loop upgrade; useful for ReAct reasoning and boundaries. | keep |
+| `docs/phase8/planning-and-reflection-roadmap.md` | reference | Future/extended ReAct plan-mode and reflection background. | keep |
+| `docs/phase8/memory-manager-boundary.md` | reference | MemoryManager boundary background for Phase 8 memory behavior. | keep |
+| `docs/phase8/beta-trial.md` | reference | Beta trial/productization reference, not global architecture entry. | keep |
+| `docs/phase8/phase8A_1_react_action_quality_hardening.md` | historical | Completed/current Phase 8A hardening task design and audit trail. | archive-later |
+| `docs/phase8/phase8A_2_react_final_answer_handoff.md` | historical | Completed/current Phase 8A handoff task design and audit trail. | archive-later |
+| `docs/phase1-7/**` | historical | Large phase history, reviews, roadmaps, and older consolidated docs. Valuable for traceability but not a current entry point. | archive-later |
+| `tasks/phase8/**` | historical | Phase 8 task specifications. Useful when continuing a specific task, but not a global project guide. | archive-later |
+| `tasks/phase1-7/**` | historical | Completed historical task specifications and phase indexes. Keep for audit trail; do not delete by default. | archive-later |
+| `prompts/phase8/*.md` | historical | Prompt-only execution starters. They contain task path typos such as `task/phase8/...` instead of `tasks/phase8/...`; task docs are the real boundary. | archive-later |
+| `prompts/phase1-7/**` | archive-candidate | Old Codex startup/task/review prompts for earlier phases. They are useful as history but should not be in the default reading path. | archive-later |
+| `skills/assistant-demo-flow/**` | reference | Offline demo-flow skill remains conceptually useful, but some doc paths reference old Phase 1-7 locations. | update |
+| `skills/offline-mcp-tools/**` | reference | Offline MCP smoke and inventory skill remains useful for packaging checks. | keep |
+| `skills/phase5i-runner/**` | historical | Historical phase runner skill and prompts. | archive-later |
+| `skills/phase5j-runner/**` | historical | Historical phase runner skill and prompts. | archive-later |
+| `skills/phase6*-runner/**` | historical | Historical phase runner skills and prompts. | archive-later |
+| `skills/phase7*-runner/**` | historical | Historical phase runner skills and prompts. | archive-later |
+| `skills/phase8-runner/SKILL.md` | archive-candidate | Stale runner: it references non-current paths such as `docs/phase8_A1_react_assistant_loop.md` and says conditional graph remains default, while current code defaults to `assistant_loop`. | archive-later |
+| `skills/README_USE_PHASE6.md` | historical | Historical instructions for Phase 6 skill usage. | archive-later |
+| `skills/README_USE_PHASE7.md` | historical | Historical instructions for Phase 7 skill usage. | archive-later |
+| `haodanku-openapi-docs/AI使用说明.md` | reference | Required entry for Haodanku-related development. | keep |
+| `haodanku-openapi-docs/接口目录.md` | reference | Required interface category map for Haodanku-related development. | keep |
+| `haodanku-openapi-docs/平台接入规则与接口选择.md` | reference | Haodanku auth and interface selection reference. | keep |
+| `haodanku-openapi-docs/错误码与状态码.md` | reference | Haodanku error handling reference. | keep |
+| `haodanku-openapi-docs/interfaces/*.md` | reference | Category-specific Haodanku interface references. Read only when implementing related provider behavior. | keep |
+| `demo_data/README.md` | reference | Safe local demo media/data policy. | keep |
+| `.env.example` | reference | Placeholder-only local configuration template; not a real env file. | keep |
+| `pyproject.toml` | reference | Package/test configuration rather than prose docs; needed for validation commands. | keep |
+| `hello_agent_latest.docx` | archive-candidate | Long 2026-06-10 design document. It has background value, but current architecture is better represented by code plus `docs/CODEX_PROJECT_GUIDE.md`. Binary format makes diff/review poor. | archive-later |
+| `FILE_TREE.txt` | delete-candidate | Stale template tree for an earlier guide package. It is duplicated and superseded by `docs/CODEX_PROJECT_GUIDE.md` repository map and current `find`/git state; it does not reflect current `src`, `docs/phase8`, or tests layout. | delete-after-human-review |
+| `prompts/phase8/.~lock.run-assistant-loop-mvp.md#` | delete-candidate | OnlyOffice lock metadata, not project documentation. The real prompt is `prompts/phase8/run-assistant-loop-mvp.md`; current entry guidance is absorbed by `tasks/phase8/**` and `docs/CODEX_PROJECT_GUIDE.md`. | delete-after-human-review |
+| `src/multimodal_agent/api/readme.md` | delete-candidate | Two-line API startup note duplicated by `README.md` and `docs/quickstart.md`; it lives under `src/**`, so do not touch it in this task. | delete-after-human-review |
+| `.pytest_cache/README.md` | delete-candidate | Pytest-generated cache documentation, not repository docs. It is generated and should not be maintained as project documentation. | delete-after-human-review |
+| `.local/memory/readme_memory.md` | unknown | Local memory note under `.local`; likely generated/local-only and not part of committed documentation. Needs human confirmation before any action. | keep |
+
+## Cleanup Rules
+
+- Do not delete phase/task/skill documents directly. Move them to archive only after a dedicated cleanup task.
+- Every `delete-candidate` requires human review before deletion.
+- If a stale document still contains unique implementation history, archive it rather than delete it.
+- Keep README, AGENTS, `docs/CODEX_PROJECT_GUIDE.md`, and `docs/DOCS_INDEX.md` synchronized.

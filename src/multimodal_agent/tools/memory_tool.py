@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.schemas.memory import MemoryItem
@@ -17,6 +17,28 @@ from multimodal_agent.tools.base import MockTool, ToolContext
 
 class MemoryInput(BaseModel):
     action: Literal["retrieve", "save"]
+    user_id: str = Field(min_length=1)
+    session_id: str | None = None
+    query: str | None = None
+    content: dict = Field(default_factory=dict)
+
+
+class MemoryRetrievalInput(BaseModel):
+    """Public input for the dedicated memory retrieval tool."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    user_id: str = Field(min_length=1)
+    session_id: str | None = None
+    query: str | None = None
+    content: dict = Field(default_factory=dict)
+
+
+class MemorySaveInput(BaseModel):
+    """Public input for the dedicated memory save tool."""
+
+    model_config = ConfigDict(extra="ignore")
+
     user_id: str = Field(min_length=1)
     session_id: str | None = None
     query: str | None = None
@@ -75,19 +97,6 @@ class MemoryTool(MockTool):
                 contract=contract,
             )
 
-        if not input.content:
-            contract = build_capability_output_contract(
-                capability="memory_save",
-                status="failed",
-                errors=[{"code": "missing_required_input", "message": "缺少保存内容，无法写入记忆", "recoverable": True}],
-            )
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                error="缺少保存内容，无法写入记忆",
-                contract=contract,
-            )
-
         text = _explicit_save_text(input)
         if not text:
             return _missing_memory_save_content(self.name)
@@ -125,17 +134,19 @@ class MemoryTool(MockTool):
 
 class MemoryRetrievalTool(MemoryTool):
     name = "memory_retrieval"
+    input_schema = MemoryRetrievalInput
 
-    def _run(self, input: MemoryInput, context: ToolContext) -> ToolResult:
-        payload = input.model_copy(update={"action": "retrieve"})
+    def _run(self, input: MemoryRetrievalInput, context: ToolContext) -> ToolResult:
+        payload = MemoryInput(action="retrieve", **input.model_dump())
         return super()._run(payload, context)
 
 
 class MemorySaveTool(MemoryTool):
     name = "memory_save"
+    input_schema = MemorySaveInput
 
-    def _run(self, input: MemoryInput, context: ToolContext) -> ToolResult:
-        payload = input.model_copy(update={"action": "save"})
+    def _run(self, input: MemorySaveInput, context: ToolContext) -> ToolResult:
+        payload = MemoryInput(action="save", **input.model_dump())
         return super()._run(payload, context)
 
 

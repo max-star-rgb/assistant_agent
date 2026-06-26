@@ -4,7 +4,7 @@ An assistant-driven multimodal agent that routes text, image, video, product, re
 
 The default project mode is mock/local/offline. You can run the CLI, API, Web Console, tests, evals, demo flows, MCP smoke, and skill validation without API keys or real external Providers.
 
-Phase 6 Productization / Usable Demo is complete. See [Phase 6 Review](docs/121-phase6-productization-review.md) for the final release audit.
+Phase 6 Productization / Usable Demo is complete. See [Phase 6 Review](docs/phase1-7/121-phase6-productization-review.md) for the final release audit.
 
 ## Quick Start
 
@@ -167,6 +167,7 @@ docker compose up --build
 
 Start here:
 
+- Codex docs: [Project Guide](docs/CODEX_PROJECT_GUIDE.md), [Docs Index](docs/DOCS_INDEX.md), [Tests Review](docs/TESTS_REVIEW.md)
 - [Quickstart](docs/quickstart.md)
 - [Architecture](docs/architecture.md)
 - [Architecture Layers](docs/architecture-layers.md)

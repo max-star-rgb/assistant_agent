@@ -15,7 +15,10 @@ htmlcov/
 .env.*
 !.env.example
 .idea/
-/docs/
+/docs/*
+!/docs/CODEX_PROJECT_GUIDE.md
+!/docs/DOCS_INDEX.md
+!/docs/TESTS_REVIEW.md
 /prompts/
 /skills/
 /demo_data/

@@ -93,7 +93,20 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
         return _reject("invalid_tool_input", "product_search requires query or visual_summary.")
     if tool_name == "price_compare" and not (tool_input.get("query") or tool_input.get("items")):
         return _reject("invalid_tool_input", "price_compare requires query or items.")
+    if tool_name == "memory_retrieval" and not tool_input.get("query"):
+        return _reject("invalid_tool_input", "memory_retrieval requires query.")
+    if tool_name == "memory_save" and not _has_memory_save_text(tool_input):
+        return _reject("invalid_tool_input", "memory_save requires query, content.text, or content.summary.")
     return None
+
+
+def _has_memory_save_text(tool_input: dict[str, Any]) -> bool:
+    if tool_input.get("query"):
+        return True
+    content = tool_input.get("content")
+    if not isinstance(content, dict):
+        return False
+    return bool(content.get("text") or content.get("summary"))
 
 
 def _has_explicit_render_intent(text: str, tool_input: dict[str, Any]) -> bool:

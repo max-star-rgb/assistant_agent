@@ -25,3 +25,17 @@ def test_build_tool_input_keeps_prompt_for_image_generation_without_products() -
 
     assert "生成一张日系海报" in tool_input["prompt"]
     assert tool_input["style"] == "日系海报"
+
+
+def test_memory_tool_inputs_do_not_include_internal_action() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="上次那个黑色包")
+
+    retrieve = build_tool_input("retrieve_memory", request, {})
+    save = build_tool_input("save_memory", request, {})
+
+    assert retrieve == {"user_id": "u1", "query": "上次那个黑色包"}
+    assert save["user_id"] == "u1"
+    assert save["session_id"] == "s1"
+    assert save["query"] == "上次那个黑色包"
+    assert "action" not in retrieve
+    assert "action" not in save

@@ -86,7 +86,6 @@ def test_memory_save_tool_uses_manager_store_when_available() -> None:
 
     result = MemorySaveTool().run(
         {
-            "action": "save",
             "user_id": "u1",
             "session_id": "s1",
             "content": {"summary": "用户喜欢浅色日系海报。", "style": "日系"},
@@ -98,6 +97,37 @@ def test_memory_save_tool_uses_manager_store_when_available() -> None:
     assert result.data is not None
     assert result.data["summary"] == "已保存用户偏好。"
     assert store.search(MemoryQuery(user_id="u1", query="浅色日系")).items
+
+
+def test_memory_save_tool_accepts_legacy_action_field() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+
+    result = MemorySaveTool().run(
+        {
+            "action": "save",
+            "user_id": "u1",
+            "session_id": "s1",
+            "content": {"summary": "用户喜欢浅色日系海报。", "style": "日系"},
+        },
+        ToolContext(user_id="u1", session_id="s1", metadata={"memory_manager": manager}),
+    )
+
+    assert result.success is True
+    assert store.search(MemoryQuery(user_id="u1", query="浅色日系")).items
+
+
+def test_memory_save_tool_accepts_query_as_explicit_text() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+
+    result = MemorySaveTool().run(
+        {"user_id": "u1", "session_id": "s1", "query": "记住我喜欢黑色通勤包"},
+        ToolContext(user_id="u1", session_id="s1", metadata={"memory_manager": manager}),
+    )
+
+    assert result.success is True
+    assert store.search(MemoryQuery(user_id="u1", query="黑色通勤包")).items
 
 
 def test_memory_save_tool_rejects_missing_explicit_text() -> None:
@@ -174,7 +204,7 @@ def test_memory_retrieval_tool_uses_manager_store_when_available() -> None:
     manager = MemoryManager(store)
 
     result = MemoryRetrievalTool().run(
-        {"action": "retrieve", "user_id": "u1", "query": "黑色通勤包"},
+        {"user_id": "u1", "query": "黑色通勤包"},
         ToolContext(user_id="u1", session_id="s1", metadata={"memory_manager": manager}),
     )
 
@@ -183,3 +213,25 @@ def test_memory_retrieval_tool_uses_manager_store_when_available() -> None:
     assert result.data["items"][0]["memory_id"] == "m1"
     assert result.contract is not None
     assert result.contract.metadata["provider"] == "local"
+
+
+def test_memory_retrieval_tool_ignores_noncanonical_action_field() -> None:
+    store = InMemoryStore()
+    store.save(memory_item("m1", "product", "用户上次关注了一个黑色通勤包。"))
+    manager = MemoryManager(store)
+
+    result = MemoryRetrievalTool().run(
+        {"action": "get", "user_id": "u1", "query": "黑色通勤包"},
+        ToolContext(user_id="u1", session_id="s1", metadata={"memory_manager": manager}),
+    )
+
+    assert result.success is True
+    assert result.data is not None
+    assert result.data["items"][0]["memory_id"] == "m1"
+
+
+def test_memory_retrieval_tool_still_returns_missing_query_error() -> None:
+    result = MemoryRetrievalTool().run({"action": "get", "user_id": "u1"})
+
+    assert result.success is False
+    assert result.error == "缺少检索 query，无法检索记忆"

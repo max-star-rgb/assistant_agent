@@ -1,6 +1,8 @@
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
+from multimodal_agent.memory.store import InMemoryStore
 from multimodal_agent.schemas.assistant_decision import NativeToolCall
+from multimodal_agent.schemas.memory import MemoryQuery
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
 
@@ -141,6 +143,72 @@ def test_native_plain_text_final_answer_uses_finish_reason_without_json_contract
     assert state.response is not None
     assert state.response.message == "这是原生 final answer 文本。"
     assert "finish_reason=stop" in state.response.data["reason"]
+
+
+def test_native_copywriting_answer_does_not_force_memory_lookup_or_save() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter([plain_final_result("这是一段小红书薯片文案。")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我生成一段小红书乐事薯片文案")
+    )
+
+    system_message = adapter.requests[0].messages[0]["content"]
+    assert "Use memory_retrieval only when the user explicitly refers to prior chats" in system_message
+    assert state.tool_calls == []
+    assert state.response is not None
+    assert state.response.message == "这是一段小红书薯片文案。"
+    assert state.request.metadata["auto_task_summary_memory"]["skipped"] is True
+    assert store.list_by_user("u1") == []
+
+
+def test_native_memory_save_only_when_llm_selects_tool() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "memory_save",
+                {"user_id": "u1", "session_id": "s1", "query": "记住我喜欢小红书轻松口吻"},
+            ),
+            final_result("已记住你喜欢小红书轻松口吻。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="记住我喜欢小红书轻松口吻"))
+
+    assert [call.tool_name for call in state.tool_calls] == ["memory_save"]
+    assert state.response is not None
+    assert state.response.message == "已记住你喜欢小红书轻松口吻。"
+    persisted = store.list_by_user("u1")
+    assert {item.source for item in persisted} == {"explicit_user_request", "user_profile"}
+    assert store.search(MemoryQuery(user_id="u1", query="小红书轻松口吻")).items
+
+
+def test_native_empty_memory_save_is_rejected_before_execution() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter([native_result("memory_save", {"user_id": "u1", "content": {"style": "日系"}})])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="记住我的风格"))
+
+    assert state.tool_calls == []
+    assert state.response is not None
+    assert state.response.data["validator_result"]["code"] == "invalid_tool_input"
+    assert store.list_by_user("u1") == []
 
 
 def test_native_provider_refusal_becomes_terminal_answer() -> None:

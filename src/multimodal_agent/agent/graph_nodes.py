@@ -250,12 +250,27 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
 
 
 def save_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
+    if _is_assistant_loop_state(graph_state) and not _uses_mock_chat_adapter(graph_state):
+        graph_state["state"].request.metadata["auto_task_summary_memory"] = {
+            "skipped": True,
+            "reason": "assistant_loop_memory_writes_are_llm_tool_calls",
+        }
+        return graph_state
     _memory_manager(graph_state).save_from_run(graph_state["state"])
     return graph_state
 
 
 def _memory_manager(graph_state: AgentGraphState) -> MemoryManager:
     return graph_state["memory_manager"]
+
+
+def _is_assistant_loop_state(graph_state: AgentGraphState) -> bool:
+    return "assistant_iterations" in graph_state or "assistant_decision" in graph_state
+
+
+def _uses_mock_chat_adapter(graph_state: AgentGraphState) -> bool:
+    chat_adapter = graph_state.get("chat_adapter")
+    return getattr(chat_adapter, "provider", "") == "mock"
 
 
 def _run_planned_tools(graph_state: AgentGraphState, stop_after_first: bool) -> AgentGraphState:

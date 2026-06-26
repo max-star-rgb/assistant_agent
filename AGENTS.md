@@ -2,6 +2,10 @@
 
 本文件是给 Codex / coding agent 的仓库级指导。保持简短、稳定、可自动加载。详细设计在 `docs/`，可执行任务在 `tasks/`。
 
+## 0. 当前文档入口
+
+后续 Codex 快速理解项目时，先阅读 `docs/CODEX_PROJECT_GUIDE.md` 和 `docs/DOCS_INDEX.md`。执行当前文档审计/整理任务时，`src/**` 禁止修改，`tests/**` 只读评估；真实 Provider 默认禁止调用，除非任务明确要求并使用显式 opt-in 配置。
+
 ## 1. 项目目标
 
 构建一个多模态自主工具调用 Agent。Agent 能理解用户的文本、图片、视频、语音等输入，识别用户真实意图，并自主决定使用以下能力：

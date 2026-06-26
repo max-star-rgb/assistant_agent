@@ -63,7 +63,7 @@ def test_video_result_feeds_render_request() -> None:
 def test_video_result_feeds_memory_save_content() -> None:
     payload = build_tool_input("save_memory", _request("记住这个视频里的商品风格"), {"step_1": _video_result()})
 
-    assert payload["action"] == "save"
+    assert "action" not in payload
     assert payload["content"]["summary"] == VIDEO_DATA["summary"]
     assert payload["content"]["products"] == ["白色低帮运动鞋"]
     assert payload["content"]["video_ref"] == "mock://video/understanding/video1"

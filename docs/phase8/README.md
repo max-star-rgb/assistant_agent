@@ -166,6 +166,10 @@ decision reason -> action -> observation -> final_answer
 
 真实 non-mock chat provider 的推荐工具调用路径是 provider-native tool calling：`ToolSpec` 转成 provider tools schema，模型返回 `tool_calls`，本地系统再转换为 `AssistantDecision` 并执行 validator / executor / observation。`prompt_json` 只作为 mock/offline、显式 fallback 和兼容路径。
 
+专用 memory 工具的 provider-native public schema 不暴露内部 `action` 字段：`memory_retrieval` 只表达检索输入，`memory_save` 只表达保存输入；历史通用 `memory(action=retrieve|save)` 工具保留用于兼容 mock/offline 路径。若旧链路或模型多传 `action`，专用工具会忽略该额外字段，并由工具运行时继续检查 `query` / `content.text` / `content.summary` 等语义必需输入。
+
+真实 ReAct / provider-native 路径中，是否调用 `memory_retrieval` / `memory_save` 是 assistant 的语义决策：普通首次文案、搜索、生成或建议任务应直接处理；只有用户明确引用上次、之前、历史对话、已保存记忆、继续之前任务或“按我的已保存偏好”时才检索记忆。写入记忆同样由 assistant 选择 `memory_save` 作为候选 action，本地 `ActionValidator` / `MemoryWritePolicy` / `MemoryManager` 负责必填字段、敏感信息、去重、profile 更新和审计边界。assistant loop 图尾不再自动把每次运行总结写入长期记忆；mock/offline 和旧 conditional demo 路径可保留规则化 memory 行为用于稳定测试。
+
 ### Prompt Tool Catalog Boundary
 
 `prompt_json` 路径可以按用户请求只渲染相关 `ToolSpec`，降低 prompt 噪声和上下文成本。该召回只影响 prompt 文本中的工具说明，不是权限系统：

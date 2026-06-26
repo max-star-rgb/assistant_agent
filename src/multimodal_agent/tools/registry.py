@@ -137,14 +137,30 @@ _ACTION_USAGE: dict[str, dict[str, list[str]]] = {
         "runtime_constraints": ["Use product_search first if no candidates are available."],
     },
     "memory_retrieval": {
-        "when_to_use": ["User references previous, last, remembered, or preference context."],
-        "when_not_to_use": ["No historical context is needed."],
-        "runtime_constraints": ["Requires user_id and query."],
+        "when_to_use": [
+            "User explicitly asks to use prior chats, saved memory, remembered preferences, or previous/last context.",
+            "User asks to continue a prior task or says to follow their saved preferences.",
+        ],
+        "when_not_to_use": [
+            "No historical context is needed.",
+            "User asks for a first-pass answer, copywriting, product search, image generation, or general advice without referencing saved context.",
+            "Do not infer memory need from broad words like preference/style/tone unless the user refers to their own saved preference or prior conversation.",
+        ],
+        "runtime_constraints": ["Requires user_id and query.", "Return final_answer directly when the current request can be answered without prior context."],
     },
     "memory_save": {
-        "when_to_use": ["User explicitly asks to remember or save preference/task context."],
-        "when_not_to_use": ["Do not save sensitive data or incidental content without intent."],
-        "runtime_constraints": ["Requires user_id and content."],
+        "when_to_use": [
+            "User explicitly asks to remember or save a preference, project fact, or task context.",
+            "After completing a task, the assistant may save a stable, non-sensitive user preference or project fact that is likely useful in future sessions.",
+        ],
+        "when_not_to_use": [
+            "Do not save sensitive data or incidental content without intent.",
+            "Do not save ordinary one-off task outputs, generated copy, search results, or transient wording unless the user asks to remember them.",
+        ],
+        "runtime_constraints": [
+            "Requires user_id and query, content.text, or content.summary.",
+            "Memory writes must remain concise, auditable, and about long-term user/project value.",
+        ],
     },
 }
 

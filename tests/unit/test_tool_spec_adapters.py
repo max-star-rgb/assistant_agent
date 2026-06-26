@@ -100,3 +100,16 @@ def test_default_registry_specs_convert_without_secrets() -> None:
     assert "api_key" not in payload
     assert "authorization" not in payload
     assert "bearer" not in payload
+
+
+def test_memory_dedicated_openai_schemas_do_not_expose_action() -> None:
+    specs = {spec.name: spec for spec in create_default_registry().list_specs()}
+    retrieval = tool_spec_to_openai_tool(specs["memory_retrieval"])["function"]["parameters"]
+    save = tool_spec_to_openai_tool(specs["memory_save"])["function"]["parameters"]
+
+    assert "action" not in retrieval["properties"]
+    assert "action" not in save["properties"]
+    assert retrieval["required"] == ["user_id"]
+    assert save["required"] == ["user_id"]
+    assert "query" in retrieval["properties"]
+    assert "content" in save["properties"]
