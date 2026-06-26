@@ -354,6 +354,93 @@
         white-space: pre-wrap;
       }
 
+      /* Results Tabs */
+      .results-tabs {
+        display: flex;
+        gap: 8px;
+        border-bottom: 1px solid #e5e7eb;
+        margin-bottom: 16px;
+      }
+
+      .results-tab {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 16px;
+        border: none;
+        background: transparent;
+        color: #6b7280;
+        cursor: pointer;
+        font-weight: 500;
+        font-size: 14px;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        transition: all 0.15s;
+      }
+
+      .results-tab:hover {
+        color: #175cd3;
+        background: #f3f4f6;
+      }
+
+      .results-tab.active {
+        color: #175cd3;
+        border-bottom-color: #175cd3;
+        background: transparent;
+      }
+
+      .results-tab span {
+        font-size: 16px;
+      }
+
+      .results-content {
+        min-height: 100px;
+      }
+
+      .results-panel {
+        display: none;
+      }
+
+      .results-panel.active {
+        display: block;
+      }
+
+      /* Search round tabs - bottom centered */
+      .search-round-tabs {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        padding: 16px 0 0;
+        margin-top: 16px;
+        border-top: 1px solid #e5e7eb;
+      }
+
+      .round-tab {
+        padding: 6px 14px;
+        border: 1px solid #d1d5db;
+        background: white;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        color: #374151;
+        transition: all 0.15s;
+      }
+
+      .round-tab:hover:not(.active) {
+        background: #f3f4f6;
+        border-color: #9ca3af;
+      }
+
+      .round-tab.active {
+        background: #175cd3;
+        border-color: #175cd3;
+        color: white;
+      }
+
+      /* Search Round Navigation */
+
+
       .conversation {
         display: flex;
         flex-direction: column;
@@ -597,6 +684,135 @@
         margin-bottom: 3px;
       }
 
+      .memory-row-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .memory-labels {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .memory-label {
+        display: inline-flex;
+        max-width: 100%;
+        min-height: 24px;
+        align-items: center;
+        border: 1px solid #d9dee7;
+        border-radius: 6px;
+        padding: 3px 6px;
+        background: #fbfcfe;
+        color: #344054;
+        font-size: 12px;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+      }
+
+      .memory-label strong {
+        margin-right: 4px;
+        color: #667085;
+        font-weight: 650;
+      }
+
+      .memory-summary {
+        margin-top: 6px;
+      }
+
+      .memory-recall {
+        margin-top: 5px;
+        color: #667085;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
+      .memory-delete {
+        flex: 0 0 auto;
+        min-height: 28px;
+        padding: 4px 8px;
+        border: 1px solid #f4b7ae;
+        border-radius: 6px;
+        background: #fff7f5;
+        color: #b42318;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .memory-delete:hover:not(:disabled) {
+        background: #fee4e2;
+      }
+
+      .memory-delete:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .memory-confirm {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 8px;
+        border: 1px solid #f4b7ae;
+        border-radius: 6px;
+        padding: 8px;
+        background: #fff7f5;
+        color: #7a271a;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
+      .memory-confirm-actions {
+        display: inline-flex;
+        flex: 0 0 auto;
+        gap: 6px;
+      }
+
+      .memory-confirm button {
+        min-height: 28px;
+        padding: 4px 8px;
+        font-size: 12px;
+      }
+
+      .memory-confirm-primary {
+        border-color: #d92d20;
+        background: #d92d20;
+        color: #ffffff;
+      }
+
+      .memory-confirm-secondary {
+        border-color: #d0d5dd;
+        background: #ffffff;
+        color: #344054;
+      }
+
+      .memory-note {
+        border: 1px solid #d9e8fb;
+        border-radius: 6px;
+        padding: 10px;
+        background: #f5f9ff;
+        color: #243b53;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .memory-details {
+        border-top: 1px solid #e1e6ef;
+        margin-top: 10px;
+        padding-top: 10px;
+        color: #344054;
+        font-size: 13px;
+      }
+
+      .memory-details summary {
+        cursor: pointer;
+        font-weight: 750;
+      }
+
       .memory-empty {
         color: #667085;
         font-size: 13px;
@@ -716,19 +932,31 @@
             <div class="status" id="status">ready</div>
           </section>
 
+          <!-- Results Tab Section -->
+          <section id="results-section" hidden>
+            <div class="results-tabs">
+              <button class="results-tab active" data-tab="products" type="button">
+                <span>🛒</span> Product Results
+              </button>
+              <button class="results-tab" data-tab="images" type="button">
+                <span>🖼️</span> Generated Images
+              </button>
+            </div>
+            <div class="results-content">
+              <div class="results-panel active" id="products-panel">
+                <div class="product-gallery" id="product-gallery"></div>
+              </div>
+              <div class="results-panel" id="images-panel">
+                <div class="artifact-gallery" id="artifact-gallery"></div>
+              </div>
+              <!-- Search round tabs - bottom centered -->
+              <div class="search-round-tabs" id="search-round-tabs" hidden></div>
+            </div>
+          </section>
+
           <section>
             <h2>Conversation History</h2>
             <div class="conversation" id="final-response" data-state-key="conversationHistory"></div>
-          </section>
-
-          <section id="products-section" hidden>
-            <h2>Product Results</h2>
-            <div class="product-gallery" id="product-gallery"></div>
-          </section>
-
-          <section id="artifacts-section" hidden>
-            <h2>Generated Images</h2>
-            <div class="artifact-gallery" id="artifact-gallery"></div>
           </section>
 
           <section>
@@ -751,17 +979,17 @@
           <div class="status" id="memory-status">ready</div>
           <div class="memory-stats" id="memory-stats"></div>
           <div class="memory-block">
-            <div class="memory-block-title">Recalled Layers</div>
+            <div class="memory-block-title">长期记忆</div>
             <div id="memory-layers"></div>
           </div>
           <div class="memory-block">
-            <div class="memory-block-title">Conversation</div>
+            <div class="memory-block-title">短期对话</div>
             <div id="memory-conversation"></div>
           </div>
-          <div class="memory-block">
-            <div class="memory-block-title">Storage</div>
+          <details class="memory-details">
+            <summary>技术信息</summary>
             <div id="memory-storage"></div>
-          </div>
+          </details>
         </aside>
       </div>
     </main>
@@ -778,9 +1006,12 @@
       const statusOutput = document.querySelector("#status");
       const finalResponse = document.querySelector("#final-response");
       const reactProcess = document.querySelector("#react-process");
-      const productsSection = document.querySelector("#products-section");
+      const resultsSection = document.querySelector("#results-section");
       const productGallery = document.querySelector("#product-gallery");
-      const artifactsSection = document.querySelector("#artifacts-section");
+      // Results tab elements
+      const resultsTabs = document.querySelectorAll(".results-tab");
+      const resultsPanels = document.querySelectorAll(".results-panel");
+      const searchRoundTabs = document.querySelector("#search-round-tabs");
       const artifactGallery = document.querySelector("#artifact-gallery");
       const accessSections = document.querySelectorAll("[data-requires-access]");
       const examplesContainer = document.querySelector("#examples");
@@ -823,7 +1054,22 @@
           runAssistant();
         }
       });
-      newChatBtn.addEventListener("click", createNewSession);
+      newChatBtn.addEventListener("click", () => {
+        void createNewSession();
+      });
+      // Results tab switching
+      resultsTabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          const targetTab = tab.dataset.tab;
+          // Update tab styles
+          resultsTabs.forEach((t) => t.classList.remove("active"));
+          tab.classList.add("active");
+          // Show/hide panels
+          resultsPanels.forEach((panel) => panel.classList.remove("active"));
+          document.getElementById(`${targetTab}-panel`).classList.add("active");
+        });
+      });
+
       memoryRefreshButton.addEventListener("click", () => {
         void refreshMemorySnapshot();
       });
@@ -845,6 +1091,12 @@
           setStatus("请输入消息。", true);
           return;
         }
+        if (!currentSessionId) {
+          const sessionId = await createNewSession();
+          if (!sessionId) {
+            return;
+          }
+        }
         sendButton.disabled = true;
         const currentHistory = currentSessionId && sessions[currentSessionId] 
           ? sessions[currentSessionId].history 
@@ -865,9 +1117,6 @@
             artifacts,
             products,
           };
-          if (!currentSessionId) {
-            createNewSession();
-          }
           sessions[currentSessionId].history.push(turn);
           // Auto-title on first message
           if (sessions[currentSessionId].history.length === 1) {
@@ -876,8 +1125,16 @@
           saveSessionsToStorage();
           renderConversationHistory(sessions[currentSessionId].history);
           renderSessionsList();
-          renderProductGallery(sessions[currentSessionId].history.flatMap((turn) => turn.products || []));
-          renderArtifactGallery(sessions[currentSessionId].history.flatMap((turn) => turn.artifacts || []));
+          // Add to respective results arrays
+          if (products.length > 0) {
+            productResults.push(products);
+            currentProductRound = productResults.length - 1;
+          }
+          if (artifacts.length > 0) {
+            imageResults.push(artifacts);
+            currentImageRound = imageResults.length - 1;
+          }
+          updateResultsDisplay();
           reactProcess.textContent = formatReactProcess(payload, payload._timeline_lines || null);
           memoryQueryInput.value = text;
           void refreshMemorySnapshot({ query: text });
@@ -893,8 +1150,7 @@
             saveSessionsToStorage();
             renderConversationHistory(sessions[currentSessionId].history);
             renderSessionsList();
-            renderProductGallery(sessions[currentSessionId].history.flatMap((turn) => turn.products || []));
-            renderArtifactGallery(sessions[currentSessionId].history.flatMap((turn) => turn.artifacts || []));
+            updateResultsDisplay();
           } else {
             renderConversationHistory([turn]);
           }
@@ -977,21 +1233,33 @@
         return text.slice(0, 28).trim() + '...';
       }
 
-      function createNewSession() {
+      async function createNewSession() {
         if (!verifiedTrialUserId) {
           setUserStatus('请先验证工号。', true);
-          return;
+          return null;
         }
-        const sessionId = generateSessionId();
-        sessions[sessionId] = {
-          id: sessionId,
-          title: '新对话',
-          history: [],
-          createdAt: Date.now()
-        };
-        saveSessionsToStorage();
-        switchToSession(sessionId);
-        renderSessionsList();
+        try {
+          const record = await fetchJson("/sessions", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({user_id: verifiedTrialUserId, title: "新对话"}),
+          });
+          const sessionId = record.session_id;
+          sessions[sessionId] = {
+            id: sessionId,
+            title: record.title || '新对话',
+            history: [],
+            createdAt: Date.parse(record.created_at || "") || Date.now()
+          };
+          saveSessionsToStorage();
+          switchToSession(sessionId);
+          renderSessionsList();
+          setStatus("会话已创建并写入服务端。");
+          return sessionId;
+        } catch (error) {
+          setStatus(`创建会话失败：${errorMessage(error)}`, true);
+          return null;
+        }
       }
 
       function switchToSession(sessionId) {
@@ -999,17 +1267,38 @@
         if (!session) return;
         currentSessionId = sessionId;
         renderConversationHistory(session.history);
-        renderProductGallery(session.history.flatMap((turn) => turn.products || []));
-        renderArtifactGallery(session.history.flatMap((turn) => turn.artifacts || []));
+        // Rebuild and display results by round
+        rebuildSessionResultsFromHistory(session);
+        updateResultsDisplay();
         reactProcess.textContent = '';
         setStatus('ready');
         renderSessionsList();
         void refreshMemorySnapshot();
       }
 
-      function deleteSession(sessionId, event) {
+      async function deleteSession(sessionId, event) {
         if (event) event.stopPropagation();
         if (!confirm('确定要删除这个对话吗？')) return;
+        const userId = currentTrialUserId();
+        if (userId) {
+          const params = new URLSearchParams();
+          params.set("user_id", userId);
+          try {
+            await fetchJson(`/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`, { method: "DELETE" });
+            setStatus("会话已删除，服务端短期对话历史已清理。");
+          } catch (error) {
+            const message = errorMessage(error);
+            if (!message.includes("session not found")) {
+              setStatus(`删除会话失败：${message}`, true);
+              return;
+            }
+            setStatus("本地会话已删除；服务端没有对应 session 记录。");
+          }
+        }
+        removeLocalSession(sessionId);
+      }
+
+      function removeLocalSession(sessionId) {
         delete sessions[sessionId];
         saveSessionsToStorage();
         if (currentSessionId === sessionId) {
@@ -1019,8 +1308,11 @@
           } else {
             currentSessionId = null;
             renderConversationHistory([]);
-            renderProductGallery([]);
-            renderArtifactGallery([]);
+            productResults = [];
+            imageResults = [];
+            currentProductRound = 0;
+            currentImageRound = 0;
+            updateResultsDisplay();
             reactProcess.textContent = '';
             renderMemorySnapshot(null);
           }
@@ -1270,8 +1562,32 @@
         if (data.final_answer_source) {
           lines.push(`  final_answer_source: ${data.final_answer_source}`);
         }
+        const contextSummary = formatContextSummary(payload.context || data.context || null);
+        if (contextSummary) {
+          lines.push(contextSummary);
+        }
         lines.push(`  run_id: ${payload.run_id || ""}`);
         lines.push(`  trace_id: ${payload.trace_id || ""}`);
+        return lines.join("\n");
+      }
+
+      function formatContextSummary(context) {
+        if (!context || typeof context !== "object") {
+          return "";
+        }
+        const lines = [];
+        const budget = context.budget || {};
+        if (budget.total_chars != null) {
+          lines.push(`  context_budget: total=${budget.total_chars} obs=${budget.observations_chars || 0} tools=${budget.tool_spec_chars || 0}`);
+        }
+        const sourceCounts = context.source_counts || {};
+        if (sourceCounts.observations != null || sourceCounts.tool_specs != null) {
+          lines.push(`  context_sources: observations=${sourceCounts.observations || 0} tools=${sourceCounts.tool_specs || 0} memory=${sourceCounts.memory_items || 0}`);
+        }
+        const compaction = context.compaction || {};
+        if (compaction.compacted_observations != null) {
+          lines.push(`  context_compaction: observations=${compaction.compacted_observations} ${compaction.original_observation_chars || 0}->${compaction.compacted_observation_chars || 0}`);
+        }
         return lines.join("\n");
       }
 
@@ -1373,7 +1689,7 @@
 
       function renderArtifactGallery(artifacts) {
         artifactGallery.textContent = "";
-        artifactsSection.hidden = artifacts.length === 0;
+        // resultsSection visibility controlled by updateResultsDisplay
         for (const artifact of artifacts) {
           const card = document.createElement("div");
           card.className = "artifact-card";
@@ -1454,7 +1770,7 @@
 
       function renderProductGallery(products) {
         productGallery.textContent = "";
-        productsSection.hidden = products.length === 0;
+        // resultsSection visibility controlled by updateResultsDisplay
         for (const product of products) {
           const card = document.createElement("div");
           card.className = `product-card${product.recommended ? " recommended" : ""}`;
@@ -1530,8 +1846,10 @@
         try {
           const snapshot = await fetchJson(`/memory/users/${encodeURIComponent(userId)}/snapshot?${params.toString()}`);
           renderMemorySnapshot(snapshot);
+          return true;
         } catch (error) {
           setMemoryStatus(errorMessage(error), true);
+          return false;
         } finally {
           memoryRefreshButton.disabled = false;
         }
@@ -1544,17 +1862,17 @@
         clearElement(memoryStorage);
         if (!snapshot) {
           setMemoryStatus("ready");
-          appendMemoryEmpty(memoryLayers, "No snapshot");
-          appendMemoryEmpty(memoryConversation, "No session");
-          appendMemoryEmpty(memoryStorage, "No runtime");
+          appendMemoryEmpty(memoryLayers, "登录后可以查看当前会话的记忆状态。");
+          appendMemoryEmpty(memoryConversation, "暂无会话。");
+          appendMemoryEmpty(memoryStorage, "暂无运行时信息。");
           return;
         }
         const recalled = snapshot.memory_context || {};
         const audit = snapshot.audit || {};
         const conversation = snapshot.conversation_history || {};
-        setMemoryStatus(`updated | recalled=${recalled.total || 0}`);
+        setMemoryStatus(memoryStatusText(recalled.total || 0, audit.profile_present));
         renderMemoryStats(snapshot);
-        renderMemoryLayers(recalled.blocks || []);
+        renderMemoryLayers(recalled.blocks || [], recalled.query || "");
         renderMemoryConversation(conversation.turns || [], conversation.total || 0);
         renderMemoryStorage(snapshot.storage || {});
       }
@@ -1565,10 +1883,10 @@
         const recalled = snapshot.memory_context || {};
         const audit = snapshot.audit || {};
         const stats = [
-          ["Session Runs", session.run_count != null ? session.run_count : 0],
-          ["Conversation", conversation.total || 0],
-          ["Recalled", recalled.total || 0],
-          ["Profile", audit.profile_present ? "yes" : "no"],
+          ["短期对话", `${conversation.total || 0} 轮`],
+          ["长期记忆", `${recalled.total || 0} 条`],
+          ["用户画像", audit.profile_present ? "已有" : "暂无"],
+          ["会话运行", `${session.run_count != null ? session.run_count : 0} 次`],
         ];
         for (const [label, value] of stats) {
           const item = document.createElement("div");
@@ -1584,36 +1902,36 @@
         }
       }
 
-      function renderMemoryLayers(blocks) {
+      function renderMemoryLayers(blocks, query) {
         if (!blocks.length) {
-          appendMemoryEmpty(memoryLayers, "No recalled memory");
+          appendMemoryNote(
+            memoryLayers,
+            "当前查询没有命中长期记忆。普通聊天会留在短期对话里，不会自动写成长期偏好。",
+          );
           return;
         }
         for (const block of blocks) {
           const title = document.createElement("div");
           title.className = "memory-row-meta";
-          title.textContent = `${block.layer || "layer"} · ${block.total || 0}`;
+          title.textContent = `${memoryLayerLabel(block.layer)} · ${block.total || 0} 条`;
           memoryLayers.appendChild(title);
           for (const item of block.items || []) {
-            appendMemoryRow(
-              memoryLayers,
-              `${item.memory_type || "memory"} / ${item.source || "source"}`,
-              item.summary || "",
-            );
+            appendLongTermMemoryRow(memoryLayers, block.layer, item, query);
           }
         }
       }
 
       function renderMemoryConversation(turns, total) {
         if (!turns.length) {
-          appendMemoryEmpty(memoryConversation, `Turns: ${total || 0}`);
+          appendMemoryEmpty(memoryConversation, "当前 session 还没有短期对话记录。");
           return;
         }
-        turns.slice(-3).forEach((turn, index) => {
+        appendMemoryNote(memoryConversation, `当前 session 有 ${total || 0} 轮短期对话。这里只展示最近 2 轮摘要。`);
+        turns.slice(-2).forEach((turn, index) => {
           appendMemoryRow(
             memoryConversation,
-            `Turn ${Math.max(1, total - turns.slice(-3).length + index + 1)} / ${turn.run_id || ""}`,
-            `${turn.user_text || ""}\n${turn.assistant_text || ""}`,
+            `第 ${Math.max(1, total - turns.slice(-2).length + index + 1)} 轮`,
+            `${clipText(turn.user_text || "", 72)}\n${clipText(turn.assistant_text || "", 120)}`,
           );
         });
       }
@@ -1629,6 +1947,91 @@
         for (const [label, value] of lines) {
           appendMemoryRow(memoryStorage, label, value || "unknown");
         }
+      }
+
+      function appendLongTermMemoryRow(parent, layer, item, query) {
+        const row = document.createElement("div");
+        row.className = "memory-row memory-long-term-row";
+
+        const header = document.createElement("div");
+        header.className = "memory-row-header";
+
+        const labels = document.createElement("div");
+        labels.className = "memory-labels";
+        appendMemoryLabel(labels, "记忆层", memoryLayerLabel(layer));
+        appendMemoryLabel(labels, "来源", memorySourceLabel(item.source), item.source || "unknown");
+        appendMemoryLabel(labels, "底层类型", memoryTypeLabel(item.memory_type), item.memory_type || "unknown");
+        header.appendChild(labels);
+
+        if (item.memory_id) {
+          const deleteButton = document.createElement("button");
+          deleteButton.className = "memory-delete";
+          deleteButton.type = "button";
+          deleteButton.textContent = "删除";
+          deleteButton.setAttribute("aria-label", `删除长期记忆 ${item.memory_id}`);
+          deleteButton.addEventListener("click", () => {
+            showMemoryDeleteConfirm(row, item.memory_id);
+          });
+          header.appendChild(deleteButton);
+        }
+
+        const summary = document.createElement("div");
+        summary.className = "memory-summary";
+        summary.textContent = item.summary || "无摘要。";
+
+        const recall = document.createElement("div");
+        recall.className = "memory-recall";
+        recall.textContent = memoryRecallText(item, query);
+
+        row.append(header, summary, recall);
+        parent.appendChild(row);
+      }
+
+      function appendMemoryLabel(parent, name, value, title) {
+        const label = document.createElement("span");
+        label.className = "memory-label";
+        if (title && title !== value) {
+          label.title = title;
+        }
+        const nameEl = document.createElement("strong");
+        nameEl.textContent = `${name}:`;
+        const valueEl = document.createElement("span");
+        valueEl.textContent = value || "unknown";
+        label.append(nameEl, valueEl);
+        parent.appendChild(label);
+      }
+
+      function showMemoryDeleteConfirm(row, memoryId) {
+        document.querySelectorAll("[data-memory-delete-confirm]").forEach((element) => element.remove());
+        const confirmBox = document.createElement("div");
+        confirmBox.className = "memory-confirm";
+        confirmBox.dataset.memoryDeleteConfirm = "true";
+
+        const message = document.createElement("span");
+        message.textContent = "确定删除这条长期记忆？删除后不会影响短期对话。";
+
+        const actions = document.createElement("div");
+        actions.className = "memory-confirm-actions";
+
+        const confirmButton = document.createElement("button");
+        confirmButton.className = "memory-confirm-primary";
+        confirmButton.type = "button";
+        confirmButton.textContent = "确认删除";
+        confirmButton.addEventListener("click", () => {
+          void deleteMemoryItem(memoryId);
+        });
+
+        const cancelButton = document.createElement("button");
+        cancelButton.className = "memory-confirm-secondary";
+        cancelButton.type = "button";
+        cancelButton.textContent = "取消";
+        cancelButton.addEventListener("click", () => {
+          confirmBox.remove();
+        });
+
+        actions.append(confirmButton, cancelButton);
+        confirmBox.append(message, actions);
+        row.appendChild(confirmBox);
       }
 
       function appendMemoryRow(parent, meta, text) {
@@ -1650,6 +2053,101 @@
         parent.appendChild(empty);
       }
 
+      function appendMemoryNote(parent, text) {
+        const note = document.createElement("div");
+        note.className = "memory-note";
+        note.textContent = text;
+        parent.appendChild(note);
+      }
+
+      function memoryStatusText(recalledTotal, hasProfile) {
+        if (recalledTotal > 0) {
+          return `已命中长期记忆：${recalledTotal} 条`;
+        }
+        return hasProfile ? "长期记忆未命中；用户画像存在" : "长期记忆未命中；暂无用户画像";
+      }
+
+      function memoryLayerLabel(layer) {
+        const labels = {
+          semantic: "语义记忆",
+          session: "长期化对话",
+          episodic: "情景记忆",
+          artifact: "产物引用",
+          procedural: "过程记忆",
+        };
+        return labels[layer] || layer || "记忆层";
+      }
+
+      function memoryTypeLabel(type) {
+        const labels = {
+          preference: "偏好/画像",
+          task: "任务经历",
+          product: "商品对象",
+          conversation: "对话摘要",
+          image: "图片理解",
+          video: "视频理解",
+          render: "3D 渲染",
+          artifact: "产物引用",
+          generation: "生成结果",
+        };
+        return labels[type] || type || "记忆";
+      }
+
+      function memorySourceLabel(source) {
+        const labels = {
+          explicit_user_request: "用户明确记忆",
+          user_profile: "系统合并画像",
+          agent_task_summary: "任务自动总结",
+          capability_output: "工具结果",
+          agent: "Agent",
+        };
+        return labels[source] || source || "来源";
+      }
+
+      function memoryRecallText(item, query) {
+        if (item.reason) {
+          return `召回原因：${item.reason}`;
+        }
+        if (typeof item.relevance === "number") {
+          return `召回原因：相关度 ${item.relevance.toFixed(2)}`;
+        }
+        return query ? "召回原因：与当前 Query 或上下文相关。" : "召回原因：最近长期记忆浏览。";
+      }
+
+      async function deleteMemoryItem(memoryId) {
+        const userId = currentTrialUserId();
+        if (!userId || !memoryId) {
+          return;
+        }
+        setMemoryDeleteBusy(true);
+        memoryRefreshButton.disabled = true;
+        setMemoryStatus("deleting...");
+        try {
+          await fetchJson(
+            `/memory/users/${encodeURIComponent(userId)}/items/${encodeURIComponent(memoryId)}`,
+            { method: "DELETE" },
+          );
+          const refreshed = await refreshMemorySnapshot();
+          setMemoryStatus(refreshed ? "已删除，snapshot 已刷新。" : "已删除，但 snapshot 刷新失败，请手动刷新。", !refreshed);
+        } catch (error) {
+          setMemoryStatus(errorMessage(error), true);
+        } finally {
+          setMemoryDeleteBusy(false);
+          memoryRefreshButton.disabled = false;
+        }
+      }
+
+      function setMemoryDeleteBusy(isBusy) {
+        document.querySelectorAll(".memory-delete, .memory-confirm button").forEach((button) => {
+          button.disabled = isBusy;
+        });
+      }
+
+      function clipText(value, limit) {
+        const text = String(value || "").replace(/\s+/g, " ").trim();
+        return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+      }
+
       function clearElement(element) {
         element.textContent = "";
       }
@@ -1666,6 +2164,90 @@
           return "链接暂不可达";
         }
         return "链接未验证";
+      }
+
+      // Separate indices for each tab
+      let currentProductRound = 0;
+      let currentImageRound = 0;
+      let productResults = [];  // only rounds with products
+      let imageResults = [];     // only rounds with images
+
+      // Update results display - independent tabs
+      function updateResultsDisplay() {
+        const hasProducts = productResults.length > 0;
+        const hasImages = imageResults.length > 0;
+
+        if (!hasProducts && !hasImages) {
+          resultsSection.hidden = true;
+          return;
+        }
+        resultsSection.hidden = false;
+
+        // Get active tab
+        const activeTab = document.querySelector('.results-tab.active');
+        const activeType = activeTab?.dataset?.tab || 'products';
+
+        // Show/hide round tabs based on which tab is active
+        if (activeType === 'products') {
+          renderRoundTabs(productResults, currentProductRound, 'products');
+          renderProductGallery(productResults[currentProductRound] || []);
+        } else {
+          renderRoundTabs(imageResults, currentImageRound, 'images');
+          renderArtifactGallery(imageResults[currentImageRound] || []);
+        }
+
+        // Update tab badges
+        const productsTab = resultsTabs[0];
+        const imagesTab = resultsTabs[1];
+        if (productsTab) {
+          const count = productResults.length;
+          productsTab.innerHTML = '<span>🛒</span> Product Results' + (count > 0 ? ' (' + count + ')' : '');
+        }
+        if (imagesTab) {
+          const count = imageResults.length;
+          imagesTab.innerHTML = '<span>🖼️</span> Generated Images' + (count > 0 ? ' (' + count + ')' : '');
+        }
+      }
+
+      // Render round number tabs
+      function renderRoundTabs(results, currentIndex, type) {
+        searchRoundTabs.innerHTML = '';
+        searchRoundTabs.hidden = results.length <= 1;
+
+        results.forEach((_, index) => {
+          const tab = document.createElement('button');
+          tab.className = `round-tab${index === currentIndex ? ' active' : ''}`;
+          tab.textContent = index + 1;
+          tab.type = 'button';
+          tab.addEventListener('click', () => {
+            if (type === 'products') {
+              currentProductRound = index;
+            } else {
+              currentImageRound = index;
+            }
+            updateResultsDisplay();
+          });
+          searchRoundTabs.appendChild(tab);
+        });
+      }
+
+      // Rebuild results from session history
+      function rebuildSessionResultsFromHistory(session) {
+        productResults = [];
+        imageResults = [];
+        if (!session || !session.history) return;
+
+        for (const turn of session.history) {
+          if (turn.products && turn.products.length > 0) {
+            productResults.push(turn.products);
+          }
+          if (turn.artifacts && turn.artifacts.length > 0) {
+            imageResults.push(turn.artifacts);
+          }
+        }
+        // Set to last round
+        currentProductRound = Math.max(0, productResults.length - 1);
+        currentImageRound = Math.max(0, imageResults.length - 1);
       }
 
       function formatDecisionTrace(steps) {
@@ -1895,8 +2477,8 @@
         document.querySelector('.menu-toggle').classList.toggle('authenticated', enabled);
         document.getElementById('login-section').hidden = enabled;
         if (!enabled) {
-          productsSection.hidden = true;
-          artifactsSection.hidden = true;
+          
+          
           renderMemorySnapshot(null);
           setStatus("请先验证工号。");
         }

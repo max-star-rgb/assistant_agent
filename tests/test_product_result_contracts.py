@@ -100,6 +100,8 @@ def test_product_search_observation_hints_price_compare_when_requested() -> None
     assert observation.status == "succeeded"
     assert observation.next_step_hint is not None
     assert "Call price_compare next" in observation.next_step_hint
+    assert "structured_output.items as full product objects" in observation.next_step_hint
+    assert "not title strings" in observation.next_step_hint
     assert "do not run product_search again" in observation.next_step_hint
 
 

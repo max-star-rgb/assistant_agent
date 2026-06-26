@@ -155,7 +155,8 @@ def _next_step_hint(
         ):
             return (
                 "The user asked for price comparison and product_search returned candidates. "
-                "Call price_compare next with these items; do not run product_search again unless the candidates are empty."
+                "Call price_compare next with structured_output.items as full product objects, not title strings; "
+                "do not run product_search again unless the candidates are empty."
             )
         if not has_items:
             return "No product candidates were returned; try a narrower shopping query or ask the user for clarification."

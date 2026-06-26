@@ -341,7 +341,7 @@ assistant_node 根据 observation 决定继续调用工具、追问或最终回�
 ```text
 summary / structured_output / error_code / error_message / output_ref 必须由代码从 ToolResult 生成。
 next_step_hint 可以由代码结合用户请求和既有 observations 生成，用于提示下一步动作，但不能覆盖工具事实。
-例如商品搜索成功且用户明确要求比价时，next_step_hint 应提示下一步调用 price_compare，而不是重复 product_search。
+例如商品搜索成功且用户明确要求比价时，next_step_hint 应提示下一步调用 price_compare，并传入 structured_output.items 的完整商品对象，而不是重复 product_search 或只传标题字符串。
 ```
 
 ---

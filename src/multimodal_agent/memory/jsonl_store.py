@@ -9,7 +9,7 @@ from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearc
 class JsonlMemoryStore:
     """Local JSONL memory store isolated by user_id."""
 
-    def __init__(self, path: Path | str = ".data/memories.jsonl") -> None:
+    def __init__(self, path: Path | str = ".data/long_term_memories.jsonl") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -95,8 +95,10 @@ class JsonlMemoryStore:
         items: list[MemoryItem] = []
         with self.path.open("r", encoding="utf-8") as file:
             for line in file:
-                if line.strip():
-                    items.append(MemoryItem.model_validate_json(line))
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                items.append(MemoryItem.model_validate_json(stripped))
         return items
 
     def _write_all(self, items: list[MemoryItem]) -> None:

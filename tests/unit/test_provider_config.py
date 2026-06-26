@@ -26,7 +26,7 @@ def test_provider_config_auto_persists_conversation_history_with_jsonl_memory() 
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_MEMORY_BACKEND": "jsonl",
-            "MULTIMODAL_AGENT_MEMORY_PATH": ".local/memory/demo_memories.jsonl",
+            "MULTIMODAL_AGENT_MEMORY_PATH": ".local/memory/long_term_memories.jsonl",
         }
     )
 

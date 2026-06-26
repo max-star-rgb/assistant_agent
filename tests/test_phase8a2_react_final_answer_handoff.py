@@ -213,3 +213,42 @@ def test_compare_request_rewrites_redundant_search_decision_to_price_compare() -
     )
     assert "Call price_compare next" in second_context
     assert "do not run product_search again" in second_context
+
+
+def test_compare_request_repairs_price_compare_title_items_from_search_result() -> None:
+    adapter = ScriptedChatAdapter(
+        [
+            (
+                '{"type": "tool_call", "tool_name": "product_search", '
+                '"tool_input": {"query": "Cinnamoroll 玉桂狗 公仔", "top_k": 10}, '
+                '"reason": "先搜索商品候选"}'
+            ),
+            (
+                '{"type": "tool_call", "tool_name": "price_compare", '
+                '"tool_input": {"items": ["玉桂狗毛绒公仔", "三丽鸥玉桂狗玩偶"], '
+                '"sort_by": "price_asc", "currency": "CNY"}, '
+                '"reason": "比较价格"}'
+            ),
+            '{"type": "final_answer", "message": "已完成玉桂狗公仔比价。", "reason": "已有比价结果"}',
+        ]
+    )
+    runtime = AgentGraphRuntime(chat_adapter=adapter)
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="帮我找一款Cinnamoroll的玉桂狗，并比较一下价格，最后给出推荐理由。",
+        )
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    repaired_input = state.tool_calls[1].input
+    assert repaired_input["sort_by"] == "price"
+    assert repaired_input["currency"] == "CNY"
+    assert isinstance(repaired_input["items"][0], dict)
+    assert repaired_input["items"][0]["product_id"]
+    assert "title" in repaired_input["items"][0]
+    assert state.response is not None
+    assert state.status == "completed"
+    assert state.response.message == "已完成玉桂狗公仔比价。"

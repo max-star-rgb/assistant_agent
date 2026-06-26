@@ -42,6 +42,9 @@ DEFAULT_HAODANKU_TIMEOUT_SECONDS = 10.0
 DEFAULT_HAODANKU_BACK = 10
 HAODANKU_BACK_VALUES = (1, 2, 5, 10, 20, 50, 100)
 DEFAULT_HAODANKU_SORT = "0"
+HAODANKU_LINKED_MIN_BACK = 20
+HAODANKU_LINKED_MEDIUM_BACK = 50
+HAODANKU_LINKED_BACK_MULTIPLIER = 3
 COUPON_LINK_FIELDS = (
     "couponurl",
     "coupon_url",
@@ -126,8 +129,9 @@ class HaodankuProductSearchAdapter:
                 recoverable=True,
             )
 
+        provider_back_request = _linked_search_back_request(request.top_k)
         limit = normalize_provider_limit(
-            request.top_k,
+            provider_back_request,
             default=DEFAULT_HAODANKU_BACK,
             allowed_values=HAODANKU_BACK_VALUES,
         )
@@ -181,11 +185,18 @@ class HaodankuProductSearchAdapter:
             )
 
         items = map_haodanku_items(payload)
-        filtered = filter_products(items, request)
+        provider_request = request.model_copy(update={"top_k": limit.provider_limit})
+        candidates = filter_products(items, provider_request)
+        linked_candidates = [item for item in candidates if _has_product_url(item)]
+        filtered = linked_candidates[: request.top_k]
         used_filters = filters_used(request)
         used_filters["provider_back"] = limit.provider_limit
+        used_filters["linked_only"] = True
+        used_filters["linked_items_found"] = len(linked_candidates)
+        used_filters["linked_items_returned"] = len(filtered)
+        used_filters["unlinked_items_dropped"] = len(candidates) - len(linked_candidates)
         if limit.normalized:
-            used_filters["requested_top_k"] = limit.requested
+            used_filters["requested_provider_back"] = limit.requested
             used_filters["limit_normalized"] = True
         if limit.capped:
             used_filters["limit_capped"] = True
@@ -269,6 +280,15 @@ def build_haodanku_search_url(
         }
     )
     return f"{normalized}/supersearch?{query}"
+
+
+def _linked_search_back_request(top_k: int | None) -> int:
+    requested = top_k or DEFAULT_HAODANKU_BACK
+    if requested <= 5:
+        return HAODANKU_LINKED_MIN_BACK
+    if requested <= 10:
+        return HAODANKU_LINKED_MEDIUM_BACK
+    return max(requested * HAODANKU_LINKED_BACK_MULTIPLIER, HAODANKU_LINKED_MEDIUM_BACK)
 
 
 def map_haodanku_items(payload: Any) -> list[ProductResult]:
@@ -381,6 +401,10 @@ def _product_link_metadata(raw: dict[str, Any], *, provider_item_id: str) -> Pro
         click_url=None,
         url_status="invalid_id",
     )
+
+
+def _has_product_url(item: ProductResult) -> bool:
+    return bool(item.product_url or item.url)
 
 
 def _first_provider_link(raw: dict[str, Any], fields: tuple[str, ...]) -> str | None:

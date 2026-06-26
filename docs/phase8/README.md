@@ -189,6 +189,8 @@ config = {
 
 `SessionStore` 只记录 thread 元数据和索引，例如 title、last_run_id、last_trace_id、run_count。默认使用内存；当 conversation history 配置为 JSONL 时，session index 会落到同目录 `sessions.jsonl`。长期用户记忆继续走 `MemoryManager`。
 
+Web Console 删除会话必须走 `DELETE /sessions/{session_id}?user_id=...`，由 API 先删除 `sessions.jsonl` 中的 session index，再清理 `conversation_history.jsonl` 中同一 `user_id + session_id` 的短期对话。该操作不删除 `long_term_memories.jsonl`；长期记忆通过 Memory Snapshot / audit 的单条 memory delete 治理。
+
 LangGraph checkpointer 接入口已经保留：
 
 ```text
@@ -219,6 +221,25 @@ Agent / Assistant Loop / Memory Tools
 
 Graph state、memory tools、memory audit API 和 beta 用户数据删除都只依赖 `MemoryManager`；`MemoryStore` 保留为 runtime 内部构造细节和底层持久化接口。
 
+长期记忆对用户展示时按认知层收敛：
+
+```text
+semantic  语义记忆：稳定偏好、事实和用户画像
+episodic  情景记忆：一次任务或经历的摘要
+artifact  产物引用：商品、图片、视频、渲染、生成结果等对象引用
+```
+
+底层 `memory_type` 继续保留 `preference/task/product/image/video/generation/render/artifact/conversation` 等结构化类型；`source` 只表示产生方式，例如 `explicit_user_request`、`user_profile`、`agent_task_summary`。
+
+显式“记住 X”写入规则：
+
+```text
+保存 1 条原始语义记忆 explicit_user_request
+可以更新 1 条派生用户画像 user_profile
+纯 memory_save run 不再额外写 agent_task_summary
+缺少真实 text/summary 时拒绝写入，不落“用户显式保存了一条记忆”占位摘要
+```
+
 检索质量门控：当 `MemoryQuery.query` 非空时，本地检索优先只返回关键词/中文短语片段命中的记忆；具体实体或主题没有命中时返回空结果，不再 fallback 到用户全部历史，避免把无关 task summary 注入 prompt。只有明确承接型 query（例如“继续”“上次”“这个风格”）允许使用最近记忆 fallback。空 query 用于浏览/审计时仍按用户列出最近记忆。
 
 Embedding / 向量检索不是当前默认依赖。后续应作为可选 adapter 接到 `MemoryManager` / `MemoryStore` 后面，测试默认继续使用本地 deterministic 行为，真实 embedding provider 只通过显式配置启用。
@@ -235,7 +256,7 @@ MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS=8
 
 本地 JSONL 的相对路径按仓库根目录解析，不按启动命令的当前工作目录解析。
 
-这解决“同一 session 重启服务后丢失最近对话上下文”的本地开发问题。长期偏好仍应通过显式记忆保存进入 `MemoryManager`，避免把完整聊天流水误当成用户画像。
+这解决“同一 session 重启服务后丢失最近对话上下文”的本地开发问题。长期偏好仍应通过显式记忆保存进入 `MemoryManager`，默认 JSONL 文件名为 `.local/memory/long_term_memories.jsonl`，避免把完整聊天流水误当成用户画像。该 JSONL 只包含 `MemoryItem` 数据行；本地文件说明放在 `.local/memory/readme_memory.md`，不混入数据文件。
 
 ### Memory Audit
 
@@ -261,6 +282,8 @@ Runtime storage boundary names
 ```
 
 它不把 conversation history 写进长期记忆，也不把 LangGraph checkpointer 当作用户记忆；默认只展示摘要和 prompt-safe memory item，只有显式 `include_content=true` 时才返回已通过 `MemoryItem` 校验/脱敏的 content。
+
+Web Console 右侧 Memory Snapshot 使用同一组 API 做治理视图：短期对话来自 conversation history，长期记忆来自本次 query 召回的 layered memory context，技术信息折叠展示 storage/checkpoint/thread 边界。单条长期记忆删除先在面板内确认，再调用 `DELETE /memory/users/{user_id}/items/{memory_id}` 并刷新 snapshot，不提供批量清空入口。
 
 CLI：
 

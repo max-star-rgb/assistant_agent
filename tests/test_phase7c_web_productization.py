@@ -61,11 +61,38 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "Product Results" in html
     assert "Assistant ReAct Process" in html
     assert "Memory Snapshot" in html
+    assert "长期记忆" in html
+    assert "短期对话" in html
+    assert "技术信息" in html
+    assert "memoryStatusText" in html
+    assert "memoryLayerLabel" in html
+    assert "memoryTypeLabel" in html
+    assert "memorySourceLabel" in html
+    assert "memoryRecallText" in html
     assert "memory-query" in html
     assert "refreshMemorySnapshot" in html
     assert "renderMemorySnapshot" in html
+    assert "deleteMemoryItem" in html
+    assert "removeLocalSession" in html
+    assert "/sessions/" in html
+    assert 'method: "POST"' in html
+    assert "会话已创建并写入服务端" in html
+    assert "服务端短期对话历史已清理" in html
+    assert "showMemoryDeleteConfirm" in html
+    assert "setMemoryDeleteBusy" in html
+    assert "确认删除" in html
+    assert "取消" in html
+    assert "已删除，snapshot 已刷新" in html
+    assert 'method: "DELETE"' in html
     assert "/memory/users/" in html
+    assert "/items/" in html
     assert "/snapshot?" in html
+    assert "记忆层" in html
+    assert "语义记忆" in html
+    assert "情景记忆" in html
+    assert "来源" in html
+    assert "底层类型" in html
+    assert "召回原因" in html
     assert "Thought" not in html
     assert "thought" not in html
     assert "思维链" not in html
@@ -75,6 +102,9 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "runAssistantStream" in html
     assert "formatReactProcess" in html
     assert "formatTimelineEvent" in html
+    assert "formatContextSummary" in html
+    assert "context_budget" in html
+    assert "context_compaction" in html
     assert "[plan]" in html
     assert "[tool:" in html
     assert "Final Decision Trace" not in html

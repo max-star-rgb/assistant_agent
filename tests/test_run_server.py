@@ -79,7 +79,7 @@ def test_run_server_runtime_summary_prints_product_providers(monkeypatch, capsys
         product_search_provider="haodanku",
         price_compare_provider="haodanku",
         memory_backend="jsonl",
-        memory_path=".local/memory/memories.jsonl",
+        memory_path=".local/memory/long_term_memories.jsonl",
         conversation_history_backend="jsonl",
         conversation_history_path=".local/memory/conversation_history.jsonl",
         langgraph_checkpointer_backend="none",

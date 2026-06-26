@@ -23,6 +23,8 @@ def test_jsonl_memory_store_creates_file_after_save(tmp_path) -> None:
 
     assert path.exists()
     assert path.read_text(encoding="utf-8").strip()
+    first_line = path.read_text(encoding="utf-8").splitlines()[0]
+    assert MemoryItem.model_validate_json(first_line).memory_id == "m1"
 
 
 def test_jsonl_memory_store_reads_memory_after_recreate(tmp_path) -> None:

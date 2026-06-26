@@ -69,7 +69,7 @@ class ProviderConfig:
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
     seed_vision_model: str = "seed-vision"
     memory_backend: Literal["memory", "jsonl"] = "memory"
-    memory_path: str = ".local/memory/memories.jsonl"
+    memory_path: str = ".local/memory/long_term_memories.jsonl"
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 8
@@ -156,7 +156,7 @@ class ProviderConfig:
         )
         image_generation_settings = resolve_image_generation_provider(image_generation_provider, source)
         memory_backend = _memory_backend(source.get("MULTIMODAL_AGENT_MEMORY_BACKEND"))
-        memory_path = source.get("MULTIMODAL_AGENT_MEMORY_PATH", ".local/memory/memories.jsonl")
+        memory_path = source.get("MULTIMODAL_AGENT_MEMORY_PATH", ".local/memory/long_term_memories.jsonl")
         conversation_history_backend = _conversation_history_backend(
             source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND"),
             memory_backend=memory_backend,

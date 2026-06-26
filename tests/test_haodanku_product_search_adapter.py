@@ -84,6 +84,61 @@ def _sample_payload_with_items(count: int) -> dict:
     }
 
 
+def _sample_payload_with_mixed_link_items() -> dict:
+    return {
+        "code": 1,
+        "data": [
+            {
+                "itemid": "AAE9r8X",
+                "itemtitle": "乐事薯片无链接款 A",
+                "itemprice": "29.90",
+                "itemendprice": "19.90",
+            },
+            {
+                "itemid": "AAE9r8Y",
+                "itemtitle": "乐事薯片有券链接款 B",
+                "itemprice": "39.90",
+                "itemendprice": "29.90",
+                "couponurl": "https://s.click.example/lays-b",
+            },
+            {
+                "itemid": "AAE9r8Z",
+                "itemtitle": "乐事薯片无链接款 C",
+                "itemprice": "49.90",
+                "itemendprice": "39.90",
+            },
+            {
+                "itemid": "AAE9r9A",
+                "itemtitle": "乐事薯片落地链接款 D",
+                "itemprice": "35.90",
+                "itemendprice": "25.90",
+                "itemlink": "https://item.example/lays-d",
+            },
+            {
+                "itemid": "123456",
+                "itemtitle": "乐事薯片数字 ID 款 E",
+                "itemprice": "32.90",
+                "itemendprice": "22.90",
+            },
+        ],
+    }
+
+
+def _sample_payload_with_unlinked_items() -> dict:
+    return {
+        "code": 1,
+        "data": [
+            {
+                "itemid": f"AAE9r8X{index}",
+                "itemtitle": f"乐事薯片无链接款 {index}",
+                "itemprice": "29.90",
+                "itemendprice": "19.90",
+            }
+            for index in range(3)
+        ],
+    }
+
+
 def test_build_haodanku_search_url_contains_apikey_and_keyword() -> None:
     url = build_haodanku_search_url(
         base_url="https://v3.api.haodanku.com/",
@@ -300,13 +355,58 @@ def test_search_normalizes_top_k_to_supported_back_and_truncates(monkeypatch) ->
     result = adapter.search(ProductSearchInput(query="白色运动鞋", top_k=3))
 
     assert result.success is True
-    assert "back=5" in captured["url"]
+    assert "back=20" in captured["url"]
     assert len(result.items) == 3
     assert result.total == 3
     assert result.filters_used["top_k"] == 3
-    assert result.filters_used["requested_top_k"] == 3
-    assert result.filters_used["provider_back"] == 5
-    assert result.filters_used["limit_normalized"] is True
+    assert result.filters_used["provider_back"] == 20
+    assert result.filters_used["linked_only"] is True
+    assert result.filters_used["linked_items_found"] == 5
+    assert result.filters_used["linked_items_returned"] == 3
+    assert result.filters_used["unlinked_items_dropped"] == 0
+
+
+def test_search_overfetches_and_returns_only_linked_items(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def _opener(request, timeout=None):  # noqa: ANN001
+        captured["url"] = request.full_url
+        return io.BytesIO(json.dumps(_sample_payload_with_mixed_link_items()).encode("utf-8"))
+
+    monkeypatch.setattr("urllib.request.urlopen", _opener)
+    adapter = HaodankuProductSearchAdapter(HaodankuConfig(api_key="test-key"))
+
+    result = adapter.search(ProductSearchInput(query="乐事薯片", top_k=2))
+
+    assert result.success is True
+    assert "back=20" in captured["url"]
+    assert [item.title for item in result.items] == [
+        "乐事薯片有券链接款 B",
+        "乐事薯片落地链接款 D",
+    ]
+    assert all(item.product_url for item in result.items)
+    assert result.total == 2
+    assert result.filters_used["linked_only"] is True
+    assert result.filters_used["linked_items_found"] == 3
+    assert result.filters_used["linked_items_returned"] == 2
+    assert result.filters_used["unlinked_items_dropped"] == 2
+
+
+def test_search_drops_unlinked_haodanku_items_without_fake_urls(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        _fake_urlopen(_sample_payload_with_unlinked_items()),
+    )
+    adapter = HaodankuProductSearchAdapter(HaodankuConfig(api_key="test-key"))
+
+    result = adapter.search(ProductSearchInput(query="乐事薯片", top_k=5))
+
+    assert result.success is True
+    assert result.items == []
+    assert result.total == 0
+    assert result.filters_used["linked_items_found"] == 0
+    assert result.filters_used["linked_items_returned"] == 0
+    assert result.filters_used["unlinked_items_dropped"] == 3
 
 
 def test_search_propagates_haodanku_error_envelope(monkeypatch) -> None:

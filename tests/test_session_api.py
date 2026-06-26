@@ -3,7 +3,9 @@ from fastapi.testclient import TestClient
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.api import routes_agent
 from multimodal_agent.api.app import create_app
+from multimodal_agent.config import ProviderConfig
 from multimodal_agent.memory.store import InMemoryStore
+from multimodal_agent.services.assistant_run_service import ConversationTurn, get_default_conversation_store
 from multimodal_agent.services.session_store import InMemorySessionStore
 from multimodal_agent.services.trace_store import InMemoryTraceStore
 
@@ -51,3 +53,42 @@ def test_agent_run_updates_session_index(monkeypatch) -> None:
     assert session["last_run_id"] == run["run_id"]
     assert session["last_trace_id"] == run["trace_id"]
     assert session["last_message_preview"] == "帮我找相似款"
+
+
+def test_delete_session_api_clears_jsonl_conversation_history(monkeypatch, tmp_path) -> None:
+    config = ProviderConfig(
+        conversation_history_backend="jsonl",
+        conversation_history_path=str(tmp_path / "conversation_history.jsonl"),
+    )
+    runtime = AgentGraphRuntime(
+        config=config,
+        memory_store=InMemoryStore(),
+        trace_store=InMemoryTraceStore(),
+    )
+    runtime.session_store.touch_run(
+        user_id="u1",
+        session_id="s1",
+        run_id="run_1",
+        trace_id="trace_1",
+        message_preview="第一轮",
+        status="completed",
+    )
+    conversation_store = get_default_conversation_store(config)
+    conversation_store.append(
+        "u1",
+        "s1",
+        ConversationTurn(
+            user_text="第一轮",
+            assistant_text="已记录。",
+            run_id="run_1",
+            trace_id="trace_1",
+        ),
+    )
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    deleted = client.delete("/sessions/s1", params={"user_id": "u1"})
+
+    assert deleted.status_code == 200
+    assert runtime.session_store.get("u1", "s1") is None
+    assert conversation_store.get("u1", "s1") == []
