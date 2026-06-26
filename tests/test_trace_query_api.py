@@ -33,6 +33,8 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
     assert trace_summary["context"]["budget"]["total_chars"] > 0
     assert "source_counts" in trace_summary["context"]
     assert "compaction" in trace_summary["context"]
+    assert "tool_catalog" in trace_summary["context"]
+    assert trace_summary["context"]["tool_catalog"]["total_tool_count"] >= 1
     assert any(
         event["event_type"] == "assistant_decision" and "context" in event["output_summary"]
         for event in trace_summary["events"]

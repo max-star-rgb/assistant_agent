@@ -1560,6 +1560,7 @@ def _context_trace_summary(context: AssistantDecisionContext | None) -> dict[str
         "budget": pack.budget.model_dump(mode="json"),
         "source_counts": pack.source_counts,
         "compaction": _context_compaction_summary(pack.observations),
+        "tool_catalog": pack.tool_catalog_summary.model_dump(mode="json"),
     }
 
 

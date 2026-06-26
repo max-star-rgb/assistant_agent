@@ -120,6 +120,10 @@ def test_assistant_decision_trace_includes_context_budget_summary() -> None:
     assert context["source_counts"]["memory_blocks"] == 1
     assert context["source_counts"]["memory_items"] == 1
     assert context["source_counts"]["tool_specs"] >= 1
+    assert context["source_counts"]["prompt_tool_specs"] >= 1
+    assert context["tool_catalog"]["total_tool_count"] >= 1
+    assert context["tool_catalog"]["prompt_tool_count"] >= 1
+    assert isinstance(context["tool_catalog"]["selection_reasons"], list)
     assert context["budget"]["conversation_chars"] > 0
     assert context["budget"]["memory_chars"] > 0
     assert context["budget"]["total_chars"] >= context["budget"]["memory_chars"]

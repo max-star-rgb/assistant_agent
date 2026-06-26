@@ -19,7 +19,7 @@ def render_prompt_json_context(pack: AssistantContextPack) -> RenderedAssistantC
         render_memory_context(pack.memory_summaries, pack.memory_text),
         render_plan_mode_context(pack),
         render_observations(pack.observations),
-        render_tool_specs(pack.tool_specs),
+        render_tool_specs(_prompt_tool_specs(pack)),
         render_decision_contract(),
     ]
     active_sections = [section for section in sections if section]
@@ -111,6 +111,10 @@ def render_tool_specs(tool_specs: list[ToolSpec]) -> str:
         "可用工具 ToolSpec 列表（唯一工具契约）：\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
+
+
+def _prompt_tool_specs(pack: AssistantContextPack) -> list[ToolSpec]:
+    return pack.prompt_tool_specs if pack.prompt_tool_specs else pack.tool_specs
 
 
 def render_decision_contract() -> str:

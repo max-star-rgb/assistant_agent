@@ -8,6 +8,7 @@ from multimodal_agent.schemas.context import AssistantContextPack, AssistantPlan
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.schemas.tools import ToolSpec
 from multimodal_agent.services.context.compaction import compact_observations_for_context
+from multimodal_agent.services.context.tool_catalog import select_prompt_tool_specs
 
 
 def build_assistant_context_pack(
@@ -35,6 +36,8 @@ def build_assistant_context_pack(
     active_observations = observations or []
     context_observations = compact_observations_for_context(active_observations)
     active_tool_specs = tool_specs or []
+    tool_catalog = select_prompt_tool_specs(active_request, active_tool_specs)
+    prompt_tool_specs = tool_catalog.prompt_tool_specs
     plan_state = build_assistant_plan_context(state)
     return AssistantContextPack(
         request=active_request,
@@ -45,6 +48,8 @@ def build_assistant_context_pack(
         plan_state=plan_state,
         observations=context_observations,
         tool_specs=active_tool_specs,
+        prompt_tool_specs=prompt_tool_specs,
+        tool_catalog_summary=tool_catalog.summary,
         iteration=iteration,
         max_iterations=max_iterations,
         source_counts=_source_counts(
@@ -53,6 +58,7 @@ def build_assistant_context_pack(
             memory_blocks=memory_blocks,
             observations=active_observations,
             tool_specs=active_tool_specs,
+            prompt_tool_specs=prompt_tool_specs,
         ),
         budget=_budget_report(
             request=active_request,
@@ -60,7 +66,7 @@ def build_assistant_context_pack(
             memory_text=text,
             plan_state=plan_state,
             observations=context_observations,
-            tool_specs=active_tool_specs,
+            tool_specs=prompt_tool_specs,
         ),
     )
 
@@ -115,16 +121,20 @@ def _source_counts(
     memory_blocks: list[dict[str, Any]],
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
+    prompt_tool_specs: list[ToolSpec],
 ) -> dict[str, int]:
     conversation_history = request.metadata.get("conversation_history")
     artifact_refs = request.metadata.get("memory_context_refs")
     return {
         "conversation_turns": len(conversation_history) if isinstance(conversation_history, list) else 0,
+        "conversation_recent_turns": _metadata_int(request, "conversation_context_recent_turns"),
+        "conversation_compacted_turns": _metadata_int(request, "conversation_context_compacted_turns"),
         "memory_items": len(memory_summaries),
         "memory_blocks": len(memory_blocks),
         "artifact_refs": len(artifact_refs) if isinstance(artifact_refs, list) else 0,
         "observations": len(observations),
         "tool_specs": len(tool_specs),
+        "prompt_tool_specs": len(prompt_tool_specs),
     }
 
 
@@ -168,3 +178,8 @@ def _has_plan_context(plan_state: AssistantPlanContext) -> bool:
 
 def _json_chars(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _metadata_int(request: UserRequest, key: str) -> int:
+    value = request.metadata.get(key)
+    return value if isinstance(value, int) and value >= 0 else 0

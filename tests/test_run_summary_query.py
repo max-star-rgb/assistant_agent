@@ -44,6 +44,14 @@ def test_run_and_trace_summary_expose_latest_context_summary() -> None:
             "original_observation_chars": 500,
             "compacted_observation_chars": 120,
         },
+        "tool_catalog": {
+            "total_tool_count": 4,
+            "prompt_tool_count": 2,
+            "filtered_tool_count": 2,
+            "selected_tool_names": ["product_search", "price_compare"],
+            "selection_reasons": ["price_compare_keyword"],
+            "fallback_used": False,
+        },
     }
     trace_store.append(
         TraceEvent(

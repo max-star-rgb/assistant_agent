@@ -151,6 +151,33 @@ def test_prompt_json_rendering_keeps_core_context_constraints() -> None:
     assert "tool_name 必须严格等于 ToolSpec.name" in prompt
 
 
+def test_prompt_json_rendering_uses_prompt_tool_specs_subset() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="帮我比价通勤耳机，找最低价")
+    state = AgentState.from_request(request)
+    tool_specs = [
+        ToolSpec(name="product_search", required_inputs=["query"]),
+        ToolSpec(name="price_compare", required_inputs=["items"]),
+        ToolSpec(name="render_3d", required_inputs=["scene_description"]),
+    ]
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=tool_specs,
+        iteration=0,
+        max_iterations=5,
+    )
+
+    rendered = render_prompt_json_context(pack)
+    prompt = rendered.prompt_json or ""
+
+    assert pack.tool_specs == tool_specs
+    assert [spec.name for spec in pack.prompt_tool_specs] == ["product_search", "price_compare"]
+    assert pack.tool_catalog_summary.filtered_tool_count == 1
+    assert '"name": "product_search"' in prompt
+    assert '"name": "price_compare"' in prompt
+    assert '"name": "render_3d"' not in prompt
+
+
 def test_final_only_prompt_forbids_more_tool_calls() -> None:
     request = UserRequest(user_id="u1", session_id="s1", text="总结已有结果")
     state = AgentState.from_request(request)

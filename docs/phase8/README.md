@@ -166,6 +166,18 @@ decision reason -> action -> observation -> final_answer
 
 真实 non-mock chat provider 的推荐工具调用路径是 provider-native tool calling：`ToolSpec` 转成 provider tools schema，模型返回 `tool_calls`，本地系统再转换为 `AssistantDecision` 并执行 validator / executor / observation。`prompt_json` 只作为 mock/offline、显式 fallback 和兼容路径。
 
+### Prompt Tool Catalog Boundary
+
+`prompt_json` 路径可以按用户请求只渲染相关 `ToolSpec`，降低 prompt 噪声和上下文成本。该召回只影响 prompt 文本中的工具说明，不是权限系统：
+
+```text
+tool_specs            # 完整工具列表，供 native tool schema、validator、executor 使用
+prompt_tool_specs     # prompt_json 渲染用的工具说明子集
+tool_catalog_summary  # trace/debug 中的召回数量、选中工具和原因
+```
+
+当召回器无法可靠判断相关工具时，必须回退完整 `tool_specs`。provider-native tool calling 仍向 provider 传递完整工具 schema，本地执行也继续经过 `ActionValidator -> ToolExecutor -> ToolRegistry`。
+
 ## LangGraph Thread Boundary
 
 本项目将 `session_id` 明确定义为业务会话 thread：

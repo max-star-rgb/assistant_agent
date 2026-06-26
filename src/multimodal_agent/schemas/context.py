@@ -30,6 +30,17 @@ class ContextBudgetReport(BaseModel):
     total_chars: int = Field(default=0, ge=0)
 
 
+class ToolCatalogSummary(BaseModel):
+    """Summary of prompt tool-spec recall for trace/debug views."""
+
+    total_tool_count: int = Field(default=0, ge=0)
+    prompt_tool_count: int = Field(default=0, ge=0)
+    filtered_tool_count: int = Field(default=0, ge=0)
+    selected_tool_names: list[str] = Field(default_factory=list)
+    selection_reasons: list[str] = Field(default_factory=list)
+    fallback_used: bool = False
+
+
 class AssistantContextPack(BaseModel):
     """All materials needed to render one assistant loop context."""
 
@@ -41,6 +52,8 @@ class AssistantContextPack(BaseModel):
     plan_state: AssistantPlanContext = Field(default_factory=AssistantPlanContext)
     observations: list[dict[str, Any]] = Field(default_factory=list)
     tool_specs: list[ToolSpec] = Field(default_factory=list)
+    prompt_tool_specs: list[ToolSpec] = Field(default_factory=list)
+    tool_catalog_summary: ToolCatalogSummary = Field(default_factory=ToolCatalogSummary)
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=1, ge=1)
     source_counts: dict[str, int] = Field(default_factory=dict)

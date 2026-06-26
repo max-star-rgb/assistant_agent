@@ -14,6 +14,10 @@ from multimodal_agent.agent.state import AgentState
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.api import AgentRunResponse, agent_run_response_from_state
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services.context.conversation import (
+    conversation_context_metadata,
+    format_conversation_context,
+)
 from multimodal_agent.services.event_sink import EventSink, ListEventSink
 from multimodal_agent.services.trace_store import trace_debug_summary
 from multimodal_agent.services.video_context import load_demo_video_frames
@@ -484,7 +488,8 @@ def _prepare_conversation_request(
         metadata.setdefault("conversation_turn_index", 1)
         return request.model_copy(update={"metadata": metadata}, deep=True)
     metadata["conversation_history"] = [turn.model_dump() for turn in history]
-    metadata["conversation_context_text"] = _format_conversation_context(history)
+    metadata["conversation_context_text"] = format_conversation_context(history)
+    metadata.update(conversation_context_metadata(history))
     metadata["conversation_turn_index"] = len(history) + 1
     return request.model_copy(update={"metadata": metadata}, deep=True)
 
@@ -511,14 +516,6 @@ def _record_conversation_turn(
             trace_id=state.trace_id,
         ),
     )
-
-
-def _format_conversation_context(history: list[ConversationTurn]) -> str:
-    lines: list[str] = []
-    for index, turn in enumerate(history, start=1):
-        lines.append(f"{index}. 用户：{turn.user_text}")
-        lines.append(f"   助手：{turn.assistant_text}")
-    return "\n".join(lines)
 
 
 def _trim_session_records(

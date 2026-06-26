@@ -10,6 +10,7 @@ from multimodal_agent.services.assistant_run_service import (
     run_assistant_query,
     run_assistant_request,
 )
+from multimodal_agent.services.context.builder import build_assistant_context_pack
 
 
 def test_shared_assistant_run_service_returns_cli_and_api_shapes() -> None:
@@ -74,6 +75,49 @@ def test_shared_assistant_run_service_injects_multi_turn_history() -> None:
     assert history[0]["assistant_text"] == first.api_response().response_text
     assert "我喜欢白色低帮运动鞋" in context_text
     assert second.state.request.metadata["conversation_turn_index"] == 2
+
+
+def test_shared_assistant_run_service_compacts_older_conversation_context() -> None:
+    store = InMemoryConversationStore()
+    for index in range(4):
+        store.append(
+            "u1",
+            "s1",
+            ConversationTurn(
+                user_text=f"第 {index + 1} 轮用户说了很多偏好内容" + ("长文本" * 40),
+                assistant_text=f"第 {index + 1} 轮助手回复" + ("详细说明" * 40),
+                run_id=f"run_{index + 1}",
+                trace_id=f"trace_{index + 1}",
+            ),
+        )
+
+    artifacts = run_assistant_query(
+        "请基于最近对话继续",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=store,
+    )
+    metadata = artifacts.state.request.metadata
+    context_text = metadata["conversation_context_text"]
+    pack = build_assistant_context_pack(
+        state=artifacts.state,
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert len(metadata["conversation_history"]) == 4
+    assert metadata["conversation_turn_index"] == 5
+    assert metadata["conversation_context_compacted"] is True
+    assert metadata["conversation_context_compacted_turns"] == 2
+    assert "较早对话摘要" in context_text
+    assert "最近对话原文" in context_text
+    assert "3. 用户：第 3 轮用户" in context_text
+    assert "4. 用户：第 4 轮用户" in context_text
+    assert pack.source_counts["conversation_turns"] == 4
+    assert pack.source_counts["conversation_compacted_turns"] == 2
 
 
 def test_shared_assistant_run_service_keeps_sessions_isolated() -> None:
