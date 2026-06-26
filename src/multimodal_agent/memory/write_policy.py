@@ -98,6 +98,8 @@ def build_explicit_memory_item(
     now = created_at or datetime.now(timezone.utc)
     memory_type = _explicit_memory_type(text, content or {})
     summary = _explicit_summary(text, content or {})
+    if not summary:
+        raise ValueError("explicit memory requires non-empty text or summary")
     redacted_summary = sanitize_error_message(summary)
     safe_content: dict[str, Any] = {"explicit": True}
     for key in ("summary", "style", "budget", "product_ref", "product_id", "item", "output_ref"):
@@ -168,4 +170,4 @@ def _explicit_summary(text: str, content: dict[str, Any]) -> str:
         if cleaned.startswith(prefix):
             cleaned = cleaned[len(prefix) :].strip(" ：:")
             break
-    return cleaned or "用户显式保存了一条记忆。"
+    return cleaned

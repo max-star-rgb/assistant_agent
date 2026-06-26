@@ -43,6 +43,18 @@ def test_explicit_remember_writes_liked_character_as_preference() -> None:
     assert item.summary == "我爱玉桂狗"
 
 
+def test_explicit_memory_requires_real_summary() -> None:
+    with pytest.raises(ValueError):
+        build_explicit_memory_item(
+            memory_id="m1",
+            user_id="u1",
+            session_id="s1",
+            text="记住",
+            content={},
+            created_at=NOW,
+        )
+
+
 def test_task_summary_auto_save_keeps_artifact_output_refs_only() -> None:
     item = build_task_summary_memory_item(
         memory_id="m1",

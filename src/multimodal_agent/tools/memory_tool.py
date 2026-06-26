@@ -88,6 +88,10 @@ class MemoryTool(MockTool):
                 contract=contract,
             )
 
+        text = _explicit_save_text(input)
+        if not text:
+            return _missing_memory_save_content(self.name)
+
         manager = _manager_from_context(context)
         if manager is not None:
             return _save_with_manager(input, context, manager, self.name)
@@ -96,7 +100,7 @@ class MemoryTool(MockTool):
             memory_id="m_saved_1",
             user_id=input.user_id,
             session_id=input.session_id or str(input.content.get("session_id") or "default"),
-            text=str(input.query or input.content.get("text") or input.content.get("summary") or "用户显式保存了一条记忆。"),
+            text=text,
             content=input.content,
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
@@ -182,12 +186,9 @@ def _save_with_manager(
     tool_name: str,
 ) -> ToolResult:
     session_id = input.session_id or context.session_id or str(input.content.get("session_id") or "default")
-    text = str(
-        input.query
-        or input.content.get("text")
-        or input.content.get("summary")
-        or "用户显式保存了一条记忆。"
-    )
+    text = _explicit_save_text(input)
+    if not text:
+        return _missing_memory_save_content(tool_name)
     item = manager.save_explicit(
         memory_id=f"explicit_memory_{uuid4().hex}",
         user_id=input.user_id,
@@ -211,6 +212,24 @@ def _save_with_manager(
         data={**data, "contract": contract.model_dump(mode="json")},
         output_ref=output_ref,
         latency_ms=1,
+        contract=contract,
+    )
+
+
+def _explicit_save_text(input: MemoryInput) -> str:
+    return str(input.query or input.content.get("text") or input.content.get("summary") or "").strip()
+
+
+def _missing_memory_save_content(tool_name: str) -> ToolResult:
+    contract = build_capability_output_contract(
+        capability="memory_save",
+        status="failed",
+        errors=[{"code": "missing_required_input", "message": "缺少保存内容，无法写入记忆", "recoverable": True}],
+    )
+    return ToolResult(
+        tool_name=tool_name,
+        success=False,
+        error="缺少保存内容，无法写入记忆",
         contract=contract,
     )
 

@@ -129,6 +129,8 @@ class MemoryManager:
 
         if state.status != "completed" or state.response is None:
             return None
+        if _is_pure_memory_save_run(state):
+            return None
         output_refs = [
             ref
             for result in state.tool_results
@@ -296,12 +298,21 @@ def _layer_for(item: MemoryItem) -> MemoryLayer:
     return "artifact"
 
 
+def _is_pure_memory_save_run(state: Any) -> bool:
+    successful_tool_names = {
+        result.tool_name
+        for result in getattr(state, "tool_results", [])
+        if getattr(result, "success", False)
+    }
+    return successful_tool_names == {"memory_save"}
+
+
 _LAYER_TITLES: list[tuple[MemoryLayer, str]] = [
-    ("semantic", "用户长期偏好："),
-    ("session", "当前会话记忆："),
-    ("episodic", "相关任务经历："),
-    ("artifact", "可引用产物和对象："),
-    ("procedural", "Agent 过程经验："),
+    ("semantic", "语义记忆："),
+    ("session", "长期化对话："),
+    ("episodic", "情景记忆："),
+    ("artifact", "产物引用："),
+    ("procedural", "过程记忆："),
 ]
 
 

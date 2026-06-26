@@ -94,7 +94,7 @@ def test_memory_tool_retrieves_and_saves_stable_items() -> None:
         {"action": "retrieve", "user_id": "u1", "query": "上次那个黑色包"}
     )
     save = MemoryTool().run(
-        {"action": "save", "user_id": "u1", "content": {"style": "日系"}}
+        {"action": "save", "user_id": "u1", "content": {"summary": "用户喜欢日系风格", "style": "日系"}}
     )
 
     assert retrieve.success is True

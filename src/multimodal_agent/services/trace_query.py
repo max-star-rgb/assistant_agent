@@ -23,6 +23,7 @@ class RunSummary(BaseModel):
     budget_exceeded: bool = False
     retry_count: int = 0
     event_count: int = 0
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class TraceSummary(BaseModel):
@@ -36,6 +37,7 @@ class TraceSummary(BaseModel):
     error_count: int = 0
     budget_exceeded: bool = False
     retry_count: int = 0
+    context: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -69,6 +71,7 @@ class TraceQueryService:
             budget_exceeded=summary["budget_exceeded"],
             retry_count=summary["retry_count"],
             event_count=len(events),
+            context=_latest_context_summary(events),
         )
 
     def trace_summary(self, trace_id: str) -> TraceSummary | None:
@@ -85,6 +88,7 @@ class TraceQueryService:
             error_count=summary["error_count"],
             budget_exceeded=summary["budget_exceeded"],
             retry_count=summary["retry_count"],
+            context=_latest_context_summary(events),
             events=summary["events"],
         )
 
@@ -115,3 +119,11 @@ def _tool_call_summary(event: TraceEvent) -> dict[str, Any]:
         "input_summary": summary["input_summary"],
         "output_summary": summary["output_summary"],
     }
+
+
+def _latest_context_summary(events: list[TraceEvent]) -> dict[str, Any]:
+    for event in reversed(events):
+        context = event.output_summary.get("context") if isinstance(event.output_summary, dict) else None
+        if isinstance(context, dict):
+            return context
+    return {}

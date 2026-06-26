@@ -34,6 +34,39 @@ def test_run_summary_query_returns_debug_summary() -> None:
     assert summary.budget_exceeded is True
 
 
+def test_run_and_trace_summary_expose_latest_context_summary() -> None:
+    trace_store = InMemoryTraceStore()
+    context = {
+        "budget": {"total_chars": 123, "observations_chars": 45},
+        "source_counts": {"observations": 1, "tool_specs": 3},
+        "compaction": {
+            "compacted_observations": 1,
+            "original_observation_chars": 500,
+            "compacted_observation_chars": 120,
+        },
+    }
+    trace_store.append(
+        TraceEvent(
+            trace_id="trace_1",
+            run_id="run_1",
+            node_name="assistant",
+            event_type="assistant_decision",
+            status="final_answer",
+            output_summary={"decision_type": "final_answer", "context": context},
+        )
+    )
+
+    service = TraceQueryService(trace_store)
+    run_summary = service.run_summary("run_1")
+    trace_summary = service.trace_summary("trace_1")
+
+    assert run_summary is not None
+    assert trace_summary is not None
+    assert run_summary.context == context
+    assert trace_summary.context == context
+    assert trace_summary.events[0]["output_summary"]["context"] == context
+
+
 def test_trace_summary_query_returns_events_without_raw_payloads() -> None:
     trace_store = InMemoryTraceStore()
     trace_store.append(
