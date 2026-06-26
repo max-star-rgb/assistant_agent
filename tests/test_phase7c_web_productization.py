@@ -52,9 +52,9 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "multimodal_agent_trial_user_id" in html
     assert "Examples" in html
     assert "Input" in html
-    assert "执行策略" in html
-    assert "快速执行" in html
-    assert "计划执行" in html
+    assert "Plan Mode" in html
+    assert "普通 ReAct" in html
+    assert "计划优先" in html
     assert 'name="execution-strategy"' in html
     assert 'value="plan_and_solve"' in html
     assert "Conversation History" in html
@@ -131,16 +131,19 @@ def test_agent_run_accepts_explicit_plan_and_solve_strategy() -> None:
             chat_adapter=ScriptedChatAdapter(
                 [
                     (
-                        '{"goal": "search", "steps": ['
+                        '{"type": "enter_plan_mode", "plan": {"goal": "search", "steps": ['
                         '{"step_id": "step_1", "action": "search_product", "tool_name": "product_search", '
                         '"input_refs": [], "depends_on": [], "required_inputs": ["query"], '
-                        '"optional": false, "reason": "search first"}]}'
+                        '"optional": false, "reason": "search first"}]}, "reason": "plan search"}'
                     ),
                     (
-                        '{"type": "execute_step", "step_id": "step_1", '
+                        '{"type": "tool_call", "step_id": "step_1", "tool_name": "product_search", '
                         '"tool_input": {"query": "白色运动鞋", "top_k": 2}, "reason": "execute search"}'
                     ),
-                    '{"type": "final_answer", "message": "plan complete", "reason": "search observed"}',
+                    (
+                        '{"type": "exit_plan_mode", "next_action": "final_answer", '
+                        '"message": "plan complete", "reason": "search observed"}'
+                    ),
                 ]
             )
         )
@@ -161,7 +164,7 @@ def test_agent_run_accepts_explicit_plan_and_solve_strategy() -> None:
     payload = response.json()
     assert response.status_code == 200
     assert payload["execution_strategy"] == "plan_and_solve"
-    assert payload["data"]["final_answer_source"] == "plan_and_solve"
+    assert payload["data"]["final_answer_source"] == "assistant_loop"
     assert [call["tool_name"] for call in payload["tool_calls"]] == ["product_search"]
 
 

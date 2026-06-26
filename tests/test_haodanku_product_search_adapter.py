@@ -67,6 +67,23 @@ def _fake_urlopen(payload: dict):
     return _opener
 
 
+def _sample_payload_with_items(count: int) -> dict:
+    return {
+        "code": 1,
+        "data": [
+            {
+                "itemid": str(2000 + index),
+                "itemtitle": f"白色运动鞋 {index}",
+                "itemprice": f"{300 + index}.00",
+                "itemendprice": f"{250 + index}.00",
+                "shoptype": "1",
+                "itemsale": str(100 + index),
+            }
+            for index in range(count)
+        ],
+    }
+
+
 def test_build_haodanku_search_url_contains_apikey_and_keyword() -> None:
     url = build_haodanku_search_url(
         base_url="https://v3.api.haodanku.com/",
@@ -167,6 +184,28 @@ def test_search_success_returns_structured_results(monkeypatch) -> None:
     assert result.provider == "haodanku"
     assert result.query_used == "白色运动鞋"
     assert all(item.source == "haodanku" for item in result.items)
+
+
+def test_search_normalizes_top_k_to_supported_back_and_truncates(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def _opener(request, timeout=None):  # noqa: ANN001
+        captured["url"] = request.full_url
+        return io.BytesIO(json.dumps(_sample_payload_with_items(5)).encode("utf-8"))
+
+    monkeypatch.setattr("urllib.request.urlopen", _opener)
+    adapter = HaodankuProductSearchAdapter(HaodankuConfig(api_key="test-key"))
+
+    result = adapter.search(ProductSearchInput(query="白色运动鞋", top_k=3))
+
+    assert result.success is True
+    assert "back=5" in captured["url"]
+    assert len(result.items) == 3
+    assert result.total == 3
+    assert result.filters_used["top_k"] == 3
+    assert result.filters_used["requested_top_k"] == 3
+    assert result.filters_used["provider_back"] == 5
+    assert result.filters_used["limit_normalized"] is True
 
 
 def test_search_propagates_haodanku_error_envelope(monkeypatch) -> None:

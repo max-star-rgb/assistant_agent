@@ -272,7 +272,7 @@ def test_interactive_strategy_command_switches_strategy(capsys) -> None:
 
     assert handled is True
     assert args.execution_strategy == "plan_and_solve"
-    assert "Strategy switched to: plan_and_solve" in capsys.readouterr().out
+    assert "Plan-mode hint switched to: plan_and_solve" in capsys.readouterr().out
 
 
 def test_interactive_strategy_command_reports_current_strategy(capsys) -> None:
@@ -283,7 +283,7 @@ def test_interactive_strategy_command_reports_current_strategy(capsys) -> None:
 
     assert handled is True
     assert args.execution_strategy == "plan_and_solve"
-    assert "Current strategy: plan_and_solve" in capsys.readouterr().out
+    assert "Current plan-mode hint: plan_and_solve" in capsys.readouterr().out
 
 
 def test_interactive_strategy_command_rejects_auto(capsys) -> None:

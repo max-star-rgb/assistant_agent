@@ -4,11 +4,9 @@ from time import perf_counter
 from typing import Any
 
 from multimodal_agent.agent.conditional_graph import build_conditional_agent_graph
-from multimodal_agent.agent.execution_strategy import resolve_execution_strategy
 from multimodal_agent.agent.assistant_loop_graph import build_assistant_loop_graph
 from multimodal_agent.agent.graph_runtime import GraphRuntimeContext
 from multimodal_agent.agent.intent import IntentDetector
-from multimodal_agent.agent.plan_and_solve_graph import build_plan_and_solve_graph
 from multimodal_agent.agent.router import ToolRouter
 from multimodal_agent.agent.state import AgentState
 from multimodal_agent.agent.tool_executor import ToolExecutor
@@ -70,7 +68,6 @@ class AgentGraphRuntime:
         )
         self._conditional_graph = build_conditional_agent_graph()
         self._react_graph = build_assistant_loop_graph()
-        self._plan_and_solve_graph = build_plan_and_solve_graph()
         self._graph = self._react_graph if self.config.agent_graph_mode == "assistant_loop" else self._conditional_graph
 
     def run_state(self, request: UserRequest, event_sink: EventSink | None = None) -> AgentState:
@@ -188,13 +185,6 @@ class AgentGraphRuntime:
                     runtime_context=runtime_context,
                 )
             return self._conditional_graph
-        if resolve_execution_strategy(request) == "plan_and_solve":
-            if runtime_context is not None:
-                return build_plan_and_solve_graph(
-                    checkpointer=self.checkpointer,
-                    runtime_context=runtime_context,
-                )
-            return self._plan_and_solve_graph
         if runtime_context is not None:
             return build_assistant_loop_graph(
                 checkpointer=self.checkpointer,

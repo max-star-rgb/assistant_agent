@@ -392,15 +392,15 @@
 	          <input id="video-ids" type="text" placeholder="Video IDs（逗号或换行分隔，可选）" />
 	        </div>
 	        <fieldset class="strategy-row">
-	          <legend>执行策略</legend>
-	          <div class="strategy-options" role="radiogroup" aria-label="执行策略">
+	          <legend>Plan Mode</legend>
+	          <div class="strategy-options" role="radiogroup" aria-label="Plan Mode">
 	            <label>
 	              <input type="radio" name="execution-strategy" value="react" checked />
-	              <span>快速执行</span>
+	              <span>普通 ReAct</span>
 	            </label>
 	            <label>
 	              <input type="radio" name="execution-strategy" value="plan_and_solve" />
-	              <span>计划执行</span>
+	              <span>计划优先</span>
 	            </label>
 	          </div>
 	        </fieldset>
@@ -770,7 +770,7 @@
 	        const lines = [
 	          "Run",
 	          `  status: ${status}`,
-	          `  strategy: ${payload.execution_strategy || data.execution_strategy || "react"}`,
+	          `  plan_mode_hint: ${payload.execution_strategy || data.execution_strategy || "react"}`,
 	          `  tools: ${toolNames.length ? toolNames.join(", ") : "(none)"}`,
 	        ];
         if (data.final_answer_source) {
@@ -1157,7 +1157,7 @@
 	        return [
 	          `runtime_profile: ${runtimeInfo.runtime_profile}`,
 	          `graph_mode: ${runtimeInfo.graph_mode}`,
-	          `execution_strategy: ${currentExecutionStrategy()}`,
+	          `plan_mode_hint: ${currentExecutionStrategy()}`,
 	          `assistant_brain: ${providers.chat || "unknown"}`,
           `image_provider: ${providers.image_generation || "unknown"}`,
           `product_search_provider: ${providers.product_search || "unknown"}`,

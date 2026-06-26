@@ -208,6 +208,7 @@ def _public_decision_trace(value: Any) -> list[dict[str, Any]]:
         "answer",
         "step_id",
         "plan_step_count",
+        "plan_status",
     }
     trace: list[dict[str, Any]] = []
     for item in value:

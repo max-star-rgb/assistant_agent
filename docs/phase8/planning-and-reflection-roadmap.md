@@ -24,6 +24,8 @@ Planning 和 reflection 是后续增强，不应该和 Phase 8A 一次性混在�
 
 在同一个 ReAct assistant loop 中新增 plan mode，让 LLM 可以通过受控 action 进入计划、修订计划、按计划调用工具，并在合适时退出计划。不要新增与 ReAct 平行的 `plan_and_solve` 执行策略。
 
+CLI/Web/API 历史字段 `execution_strategy=plan_and_solve` 只作为 plan-mode hint 保留，内部仍使用同一个 ReAct assistant loop。
+
 ### 图结构
 
 ```text

@@ -1,5 +1,8 @@
 """Pure product matching and price-comparison helpers shared by adapters."""
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 from multimodal_agent.schemas.products import (
     PriceCompareRequest,
     PriceCompareResult,
@@ -10,6 +13,47 @@ from multimodal_agent.schemas.products import (
     ProductSearchResult,
     RankingReason,
 )
+
+
+@dataclass(frozen=True)
+class ProviderLimit:
+    """Provider-specific page-size mapping for a provider-neutral top_k request."""
+
+    requested: int
+    provider_limit: int
+    normalized: bool
+    capped: bool = False
+
+
+def normalize_provider_limit(
+    requested: int | None,
+    *,
+    default: int,
+    allowed_values: Sequence[int] | None = None,
+    max_value: int | None = None,
+) -> ProviderLimit:
+    """Map a provider-neutral top_k value onto provider-supported page sizes."""
+
+    requested_limit = requested or default
+    if allowed_values:
+        allowed = sorted({value for value in allowed_values if value >= 1})
+        if not allowed:
+            raise ValueError("allowed_values must contain at least one positive integer.")
+        provider_limit = next((value for value in allowed if value >= requested_limit), allowed[-1])
+        return ProviderLimit(
+            requested=requested_limit,
+            provider_limit=provider_limit,
+            normalized=provider_limit != requested_limit,
+            capped=requested_limit > allowed[-1],
+        )
+
+    provider_limit = min(requested_limit, max_value) if max_value is not None else requested_limit
+    return ProviderLimit(
+        requested=requested_limit,
+        provider_limit=provider_limit,
+        normalized=provider_limit != requested_limit,
+        capped=max_value is not None and requested_limit > max_value,
+    )
 
 
 def filter_products(items: list[ProductResult], request: ProductSearchRequest) -> list[ProductResult]:

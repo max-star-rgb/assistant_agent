@@ -40,10 +40,10 @@ ALL_SUITES = "all"
 ROUTER_MODES = {"rule", "mock_llm", "hybrid"}
 
 
-class ScriptedStrategyChatAdapter:
-    """Deterministic chat adapter for strategy evals.
+class ScriptedPlanModeChatAdapter:
+    """Deterministic chat adapter for plan-mode evals.
 
-    The eval case owns planner/controller outputs. This adapter only replays
+    The eval case owns assistant decision outputs. This adapter only replays
     them through the same runtime contract used by real chat providers.
     """
 
@@ -61,7 +61,7 @@ class ScriptedStrategyChatAdapter:
         else:
             output = self.outputs[min(self.calls, len(self.outputs) - 1)]
         self.calls += 1
-        return ChatResult(response_text=output, provider=self.provider, model="strategy-eval")
+        return ChatResult(response_text=output, provider=self.provider, model="plan-mode-eval")
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[dict[str, Any]]:
@@ -131,8 +131,8 @@ def expected_capability(case: dict[str, Any]) -> str | None:
 
 
 def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
-    if case.get("suite") == "strategy":
-        return evaluate_strategy_case(case, router_mode=router_mode)
+    if case.get("suite") == "plan_mode":
+        return evaluate_plan_mode_case(case, router_mode=router_mode)
     if case.get("suite") == "provider_safety":
         return evaluate_provider_safety_case(case, router_mode=router_mode)
     if case.get("suite") == "memory" and case.get("memory_scenario"):
@@ -227,13 +227,13 @@ def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, 
     }
 
 
-def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
-    """Evaluate explicit ReAct / Plan-and-Solve strategy behavior offline."""
+def evaluate_plan_mode_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
+    """Evaluate ReAct plan-mode behavior offline."""
 
     expected_tools = case.get("expected_tools", [])
     must_not_call = case.get("must_not_call", [])
     expected_response_contains = case.get("expected_response_contains", [])
-    expected_strategy = case.get("execution_strategy", "react")
+    expected_plan_mode_hint = case.get("execution_strategy", "react")
     expected_plan_status = case.get("expected_plan_status")
     expected_final_answer_source = case.get("expected_final_answer_source")
     expected_plan_revision_count = case.get("expected_plan_revision_count")
@@ -242,10 +242,8 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
     expected_trace_nodes = case.get("expected_trace_nodes", [])
     expected_error_codes = case.get("expected_error_codes", [])
     expected_chat_calls = case.get("expected_chat_calls")
-    expected_planner_calls = case.get("expected_planner_calls")
-    expected_controller_calls = case.get("expected_controller_calls")
 
-    adapter = ScriptedStrategyChatAdapter(_strategy_chat_outputs(case))
+    adapter = ScriptedPlanModeChatAdapter(_plan_mode_chat_outputs(case))
     trace_store = InMemoryTraceStore()
     runtime = AgentGraphRuntime(
         config=ProviderConfig(agent_graph_mode="assistant_loop"),
@@ -273,10 +271,12 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
         for error in state.errors
     ]
     trace_nodes = trace_store.node_path(state.run_id)
-    planner_calls = sum("planner" in request.user_query for request in adapter.requests)
-    controller_calls = sum("plan-and-solve controller" in request.user_query for request in adapter.requests)
+    plan_transition_calls = sum(
+        step.get("decision_type") in {"enter_plan_mode", "exit_plan_mode", "plan_rejected"}
+        for step in api_response.react_steps
+    )
 
-    strategy_match = state.execution_strategy == expected_strategy == api_response.execution_strategy
+    plan_mode_hint_match = state.execution_strategy == expected_plan_mode_hint == api_response.execution_strategy
     plan_status_match = expected_plan_status is None or state.plan_status == expected_plan_status
     final_answer_source_match = (
         expected_final_answer_source is None
@@ -294,8 +294,6 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
     trace_nodes_match = all(node in trace_nodes for node in expected_trace_nodes)
     error_codes_match = all(code in error_codes for code in expected_error_codes)
     chat_calls_match = expected_chat_calls is None or adapter.calls == expected_chat_calls
-    planner_calls_match = expected_planner_calls is None or planner_calls == expected_planner_calls
-    controller_calls_match = expected_controller_calls is None or controller_calls == expected_controller_calls
     api_contract_match = (
         api_response.run_id == state.run_id
         and api_response.trace_id == state.trace_id
@@ -308,7 +306,7 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
     response_contains_match = all(expected in response_text for expected in expected_response_contains)
 
     passed = (
-        strategy_match
+        plan_mode_hint_match
         and plan_status_match
         and final_answer_source_match
         and plan_revision_match
@@ -317,8 +315,6 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
         and trace_nodes_match
         and error_codes_match
         and chat_calls_match
-        and planner_calls_match
-        and controller_calls_match
         and api_contract_match
         and tool_selection_match
         and ordered_tool_match
@@ -326,7 +322,7 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
         and response_contains_match
     )
     expected_capability_name = expected_capability(case)
-    actual_capability = expected_capability_name if strategy_match else None
+    actual_capability = expected_capability_name if plan_mode_hint_match else None
     return {
         "id": case["id"],
         "router_mode": router_mode,
@@ -334,8 +330,8 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
         "category": case.get("category"),
         "scenario_id": case.get("scenario_id"),
         "passed": passed,
-        "intent_match": strategy_match,
-        "capability_match": strategy_match,
+        "intent_match": plan_mode_hint_match,
+        "capability_match": plan_mode_hint_match,
         "tool_selection_match": tool_selection_match,
         "ordered_tool_match": ordered_tool_match,
         "unexpected_tool_called": bool(unexpected_tools),
@@ -355,8 +351,8 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
         "must_not_require": case.get("must_not_require", []),
         "missing_slots": [],
         "media_requirement_errors": [],
-        "strategy_checks": {
-            "strategy_match": strategy_match,
+        "plan_mode_checks": {
+            "plan_mode_hint_match": plan_mode_hint_match,
             "plan_status_match": plan_status_match,
             "final_answer_source_match": final_answer_source_match,
             "plan_revision_match": plan_revision_match,
@@ -365,8 +361,6 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
             "trace_nodes_match": trace_nodes_match,
             "error_codes_match": error_codes_match,
             "chat_calls_match": chat_calls_match,
-            "planner_calls_match": planner_calls_match,
-            "controller_calls_match": controller_calls_match,
             "api_contract_match": api_contract_match,
         },
         "execution_strategy": state.execution_strategy,
@@ -377,8 +371,7 @@ def evaluate_strategy_case(case: dict[str, Any], router_mode: str = "rule") -> d
         "error_codes": error_codes,
         "trace_nodes": trace_nodes,
         "chat_calls": adapter.calls,
-        "planner_calls": planner_calls,
-        "controller_calls": controller_calls,
+        "plan_transition_calls": plan_transition_calls,
     }
 
 
@@ -561,7 +554,7 @@ def _provider_safety_result(scenario: str | None) -> dict[str, Any]:
     return {"code": "unknown_error", "message": "unknown provider safety scenario", "retryable": False}
 
 
-def _strategy_chat_outputs(case: dict[str, Any]) -> list[str]:
+def _plan_mode_chat_outputs(case: dict[str, Any]) -> list[str]:
     outputs = case.get("scripted_chat_outputs", [])
     rendered: list[str] = []
     for output in outputs:

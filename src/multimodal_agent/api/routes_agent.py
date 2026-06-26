@@ -15,12 +15,14 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryAuditReport,
     MemoryDeleteResult,
 )
+from multimodal_agent.schemas.memory_snapshot import MemorySnapshot, MemoryStorageSnapshot
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.schemas.sessions import SessionCreate, SessionDeleteResult, SessionList, SessionRecord
 from multimodal_agent.services.assistant_run_service import (
     clear_conversation_history,
     clear_user_conversation_history,
     create_runtime,
+    get_default_conversation_store,
     run_assistant_request,
     runtime_info,
 )
@@ -34,6 +36,7 @@ from multimodal_agent.services.beta_feedback import (
 )
 from multimodal_agent.services.demo_examples import get_demo_examples
 from multimodal_agent.services.memory_audit import MemoryAuditService
+from multimodal_agent.services.memory_snapshot import MemorySnapshotService
 from multimodal_agent.services.trace_query import RunSummary, ToolCallSummary, TraceQueryService, TraceSummary
 from multimodal_agent.services.trial_access import (
     TrialAccessGate,
@@ -217,6 +220,26 @@ def audit_memory(user_id: str) -> MemoryAuditReport:
     return _memory_audit_service().audit(user_id=user_id)
 
 
+@router.get("/memory/users/{user_id}/snapshot", response_model=MemorySnapshot)
+def get_memory_snapshot(
+    user_id: str,
+    session_id: str | None = Query(default=None),
+    query: str = Query(default=""),
+    top_k: int = Query(default=5, ge=1, le=50),
+    max_context_chars: int = Query(default=1000, ge=50, le=4000),
+    include_content: bool = Query(default=False),
+) -> MemorySnapshot:
+    _require_trial_access(user_id)
+    return _memory_snapshot_service().snapshot(
+        user_id=user_id,
+        session_id=session_id,
+        query=query,
+        top_k=top_k,
+        max_context_chars=max_context_chars,
+        include_content=include_content,
+    )
+
+
 @router.delete("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryDeleteResult)
 def delete_memory_item(user_id: str, memory_id: str) -> MemoryDeleteResult:
     _require_trial_access(user_id)
@@ -291,6 +314,22 @@ def _assert_run_belongs_to_user(run_id: str, user_id: str) -> None:
 
 def _memory_audit_service() -> MemoryAuditService:
     return MemoryAuditService(get_agent_runtime().memory_manager)
+
+
+def _memory_snapshot_service() -> MemorySnapshotService:
+    runtime = get_agent_runtime()
+    conversation_store = get_default_conversation_store(runtime.config)
+    return MemorySnapshotService(
+        memory_manager=runtime.memory_manager,
+        session_store=runtime.session_store,
+        conversation_store=conversation_store,
+        storage=MemoryStorageSnapshot(
+            memory_store=type(runtime.memory_store).__name__,
+            session_store=type(runtime.session_store).__name__,
+            conversation_store=type(conversation_store).__name__,
+            checkpointer=type(runtime.checkpointer).__name__ if runtime.checkpointer is not None else "none",
+        ),
+    )
 
 
 def _require_trial_access(user_id: str) -> None:

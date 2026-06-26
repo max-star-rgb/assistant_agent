@@ -57,7 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--execution-strategy",
         choices=["react", "plan_and_solve"],
         default="react",
-        help="Per-request strategy: react for fast ReAct, plan_and_solve for explicit planning.",
+        help=(
+            "Per-request plan-mode hint: react uses the normal assistant loop; "
+            "plan_and_solve is a legacy alias that asks the same loop to plan first."
+        ),
     )
     parser.add_argument("--json", action="store_true", help="Print a machine-readable JSON payload.")
     parser.add_argument("--no-live-events", action="store_true", help="Do not print live runtime events.")
@@ -392,7 +395,7 @@ def _print_run_summary(payload: dict[str, Any]) -> None:
     print()
     print("Run")
     print(f"  status: {payload['status']}")
-    print(f"  strategy: {payload.get('execution_strategy') or 'react'}")
+    print(f"  plan_mode_hint: {payload.get('execution_strategy') or 'react'}")
     print(f"  tools: {', '.join(payload.get('tool_sequence') or []) or '(none)'}")
     final_answer_source = (payload.get("response_data") or {}).get("final_answer_source")
     if final_answer_source:
@@ -451,8 +454,11 @@ def show_examples() -> None:
 def interactive_mode(args: argparse.Namespace, *, runtime_info: dict[str, Any] | None = None) -> int:
     show_examples()
     print()
-    print("Type 'quit'/'exit' to quit, 'examples' to show examples, '/strategy react|plan_and_solve' to switch strategy.")
-    print(f"Current strategy: {_execution_strategy(args.execution_strategy)}")
+    print(
+        "Type 'quit'/'exit' to quit, 'examples' to show examples, "
+        "'/strategy react|plan_and_solve' to switch the plan-mode hint."
+    )
+    print(f"Current plan-mode hint: {_execution_strategy(args.execution_strategy)}")
     while True:
         try:
             query = input("\nQuery> ").strip()
@@ -495,11 +501,11 @@ def _handle_strategy_command(args: argparse.Namespace, query: str) -> bool:
     if not parts or parts[0].lower() != "/strategy":
         return False
     if len(parts) == 1:
-        print(f"Current strategy: {_execution_strategy(args.execution_strategy)}")
+        print(f"Current plan-mode hint: {_execution_strategy(args.execution_strategy)}")
         return True
     if len(parts) == 2 and parts[1] in {"react", "plan_and_solve"}:
         args.execution_strategy = parts[1]
-        print(f"Strategy switched to: {args.execution_strategy}")
+        print(f"Plan-mode hint switched to: {args.execution_strategy}")
         return True
     print("Usage: /strategy react | /strategy plan_and_solve")
     return True

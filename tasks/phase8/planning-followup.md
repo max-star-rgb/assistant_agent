@@ -40,6 +40,7 @@ plan_mode eval / review cases
 - Plan mode 是 ReAct 内部 action/state，不是独立 graph strategy。
 - 不新增 `plan_and_solve_graph`、`plan_and_solve_nodes` 或新的 runtime graph selector。
 - 不新增 `execution_strategy = "plan_and_solve"` 作为推荐路径；如仓库已有历史兼容字段，后续实现只能把它视为 legacy/compat 入口，内部仍回到 assistant loop。
+- CLI/Web/API 可继续发送历史字段 `execution_strategy=plan_and_solve` 作为 plan-mode hint；它只提示同一个 ReAct assistant loop 优先考虑 `enter_plan_mode`。
 - Planner 不能重新变成中心 router。
 - 真实 LLM 路径不要复用旧 `RuleBasedTaskPlanner`。
 - LLM 通过结构化 JSON 输出 `enter_plan_mode` / `exit_plan_mode` / `tool_call` / `ask_followup` / `final_answer`。

@@ -6,17 +6,22 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from multimodal_agent.schemas.planning import TaskPlan
 
-AssistantDecisionType = Literal["final_answer", "tool_call", "ask_followup"]
+
+AssistantDecisionType = Literal["final_answer", "tool_call", "ask_followup", "enter_plan_mode", "exit_plan_mode"]
 
 
 class AssistantDecision(BaseModel):
     """Structured decision from the assistant node."""
 
-    type: AssistantDecisionType = Field(description="Decision type: final_answer, tool_call, or ask_followup")
+    type: AssistantDecisionType = Field(description="Decision type: final_answer, tool_call, ask_followup, enter_plan_mode, or exit_plan_mode")
     message: str | None = Field(default=None, description="Response message for final_answer or ask_followup")
     tool_name: str | None = Field(default=None, description="Tool name for tool_call")
     tool_input: dict[str, Any] | None = Field(default=None, description="Tool input for tool_call")
+    step_id: str | None = Field(default=None, description="Plan step id for plan-mode tool_call")
+    plan: TaskPlan | None = Field(default=None, description="Task plan for enter_plan_mode")
+    next_action: str | None = Field(default=None, description="exit_plan_mode next action: continue, final_answer, or ask_followup")
     reason: str | None = Field(default=None, description="Brief high-level decision reason, not chain-of-thought")
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     missing_slots: list[str] = Field(default_factory=list)
@@ -25,7 +30,7 @@ class AssistantDecision(BaseModel):
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
-        if v not in {"final_answer", "tool_call", "ask_followup"}:
+        if v not in {"final_answer", "tool_call", "ask_followup", "enter_plan_mode", "exit_plan_mode"}:
             return "final_answer"
         return v
 
@@ -48,6 +53,15 @@ class AssistantDecision(BaseModel):
                 raise ValueError("tool_name must be a non-empty string for tool_call")
             if field_name == "tool_input" and v is not None and not isinstance(v, dict):
                 raise ValueError("tool_input must be a dict for tool_call")
+        return v
+
+    @field_validator("next_action")
+    @classmethod
+    def validate_next_action(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if v not in {"continue", "final_answer", "ask_followup"}:
+            return "continue"
         return v
 
     @classmethod
@@ -78,12 +92,15 @@ class AssistantDecision(BaseModel):
                 )
 
             decision_type = parsed.get("type", "final_answer")
-            if decision_type not in {"final_answer", "tool_call", "ask_followup"}:
+            if decision_type not in {"final_answer", "tool_call", "ask_followup", "enter_plan_mode", "exit_plan_mode"}:
                 decision_type = "final_answer"
 
             message = parsed.get("message")
             tool_name = parsed.get("tool_name")
             tool_input = parsed.get("tool_input")
+            step_id = parsed.get("step_id")
+            plan = _parse_plan_payload(parsed.get("plan"))
+            next_action = parsed.get("next_action")
             reason = parsed.get("reason")
             confidence = parsed.get("confidence")
             missing_slots = parsed.get("missing_slots")
@@ -107,12 +124,17 @@ class AssistantDecision(BaseModel):
             if decision_type in {"final_answer", "ask_followup"}:
                 if not message:
                     message = text.strip()
+            if decision_type == "exit_plan_mode" and not next_action:
+                next_action = "continue"
 
             return cls(
                 type=decision_type,
                 message=message,
                 tool_name=tool_name,
                 tool_input=tool_input,
+                step_id=step_id if isinstance(step_id, str) and step_id.strip() else None,
+                plan=plan,
+                next_action=next_action if isinstance(next_action, str) else None,
                 reason=reason,
                 confidence=confidence if isinstance(confidence, int | float) else None,
                 missing_slots=missing_slots if isinstance(missing_slots, list) else [],
@@ -173,6 +195,19 @@ def openai_tool_call_to_assistant_decision(payload: dict[str, Any]) -> Assistant
     """Convert an OpenAI-compatible tool call payload to AssistantDecision."""
 
     return openai_tool_call_to_native_tool_call(payload).to_assistant_decision()
+
+
+def _parse_plan_payload(value: Any) -> TaskPlan | None:
+    if value is None:
+        return None
+    if isinstance(value, TaskPlan):
+        return value
+    if not isinstance(value, dict):
+        return None
+    try:
+        return TaskPlan.model_validate(value)
+    except Exception:
+        return None
 
 
 def _extract_json(text: str) -> str | None:

@@ -1,3 +1,5 @@
+import json
+
 from pydantic import BaseModel
 
 from multimodal_agent.agent.plan_validator import PlanValidator
@@ -32,7 +34,7 @@ class EchoInput(BaseModel):
 
 class EchoTool(MockTool):
     name = "echo"
-    description = "Echo text for plan-and-solve tests."
+    description = "Echo text for plan-mode tests."
     input_schema = EchoInput
     output_schema = EchoInput
 
@@ -46,7 +48,7 @@ class FailingInput(BaseModel):
 
 class AlwaysFailTool(MockTool):
     name = "unstable_search"
-    description = "Always fails for replan tests."
+    description = "Always fails for plan revision tests."
     input_schema = FailingInput
     output_schema = FailingInput
 
@@ -64,57 +66,49 @@ def test_default_execution_strategy_remains_react() -> None:
     assert state.plan is None
     assert state.response is not None
     assert state.response.message == "ok"
-    assert "planner" not in adapter.requests[0].user_query
+    assert "plan-and-solve controller" not in adapter.requests[0].user_query
 
 
-def test_explicit_plan_and_solve_executes_one_step_per_controller_turn() -> None:
+def test_plan_mode_executes_one_tool_call_per_assistant_turn() -> None:
     adapter = ScriptedChatAdapter(
         [
-            _plan_json(
+            _enter_plan_json(
                 [
                     _step_json("step_1", "echo_first", "echo"),
                     _step_json("step_2", "echo_second", "echo", depends_on=["step_1"]),
                 ]
             ),
-            '{"type": "execute_step", "step_id": "step_1", "tool_input": {"text": "first"}, "reason": "run first"}',
-            '{"type": "execute_step", "step_id": "step_2", "tool_input": {"text": "second"}, "reason": "run second"}',
-            '{"type": "final_answer", "message": "done", "reason": "both steps completed"}',
+            _tool_call_json("step_1", "echo", {"text": "first"}),
+            _tool_call_json("step_2", "echo", {"text": "second"}),
+            _exit_plan_json("done"),
         ]
     )
     trace_store = InMemoryTraceStore()
     runtime = AgentGraphRuntime(registry=_registry(EchoTool()), chat_adapter=adapter, trace_store=trace_store)
 
-    state = runtime.run_state(
-        UserRequest(
-            user_id="u1",
-            session_id="s1",
-            text="run two steps",
-            execution_strategy="plan_and_solve",
-        )
-    )
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="run two steps"))
 
-    assert state.execution_strategy == "plan_and_solve"
+    assert state.execution_strategy == "react"
     assert state.plan is not None
     assert state.plan_status == "completed"
+    assert state.current_step_id is None
     assert [call.tool_name for call in state.tool_calls] == ["echo", "echo"]
     assert [call.input for call in state.tool_calls] == [{"text": "first"}, {"text": "second"}]
     assert state.response is not None
-    assert state.response.data["final_answer_source"] == "plan_and_solve"
+    assert state.response.message == "done"
+    assert state.response.data["final_answer_source"] == "assistant_loop"
+    assert state.response.data["plan_status"] == "completed"
     assert adapter.calls == 4
-    assert "planner" in adapter.requests[0].user_query
-    assert "plan-and-solve controller" in adapter.requests[1].user_query
-    assert "plan-and-solve controller" in adapter.requests[2].user_query
-    assert "plan_controller" in trace_store.node_path(state.run_id)
-    assert "execute_plan_step" in trace_store.node_path(state.run_id)
+    assert "plan-and-solve controller" not in " ".join(request.user_query for request in adapter.requests)
+    assert "apply_plan_mode_transition" in trace_store.node_path(state.run_id)
+    assert "execute_tool" in trace_store.node_path(state.run_id)
 
 
-def test_plan_and_solve_rejects_unknown_tool_plan() -> None:
-    adapter = ScriptedChatAdapter([_plan_json([_step_json("step_1", "do_unknown", "unknown_tool")])])
+def test_plan_mode_rejects_unknown_tool_plan() -> None:
+    adapter = ScriptedChatAdapter([_enter_plan_json([_step_json("step_1", "do_unknown", "unknown_tool")])])
     runtime = AgentGraphRuntime(registry=_registry(EchoTool()), chat_adapter=adapter)
 
-    state = runtime.run_state(
-        UserRequest(user_id="u1", session_id="s1", text="use unknown", execution_strategy="plan_and_solve")
-    )
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="use unknown"))
 
     assert state.plan_status == "failed"
     assert state.tool_calls == []
@@ -122,54 +116,74 @@ def test_plan_and_solve_rejects_unknown_tool_plan() -> None:
     assert state.response.data["plan_validation"]["code"] == "unknown_tool"
 
 
-def test_plan_and_solve_rejects_unsatisfied_dependency_without_tool_execution() -> None:
+def test_plan_mode_rejects_unsatisfied_dependency_without_tool_execution() -> None:
     adapter = ScriptedChatAdapter(
         [
-            _plan_json(
+            _enter_plan_json(
                 [
                     _step_json("step_1", "echo_first", "echo"),
                     _step_json("step_2", "echo_second", "echo", depends_on=["step_1"]),
                 ]
             ),
-            '{"type": "execute_step", "step_id": "step_2", "tool_input": {"text": "second"}, "reason": "too early"}',
+            _tool_call_json("step_2", "echo", {"text": "second"}),
             '{"type": "final_answer", "message": "stopped after dependency rejection", "reason": "cannot proceed"}',
         ]
     )
     runtime = AgentGraphRuntime(registry=_registry(EchoTool()), chat_adapter=adapter)
 
-    state = runtime.run_state(
-        UserRequest(user_id="u1", session_id="s1", text="run two steps", execution_strategy="plan_and_solve")
-    )
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="run two steps"))
 
     assert state.tool_calls == []
     assert state.response is not None
     assert state.response.message == "stopped after dependency rejection"
     assert any(step.get("error_code") == "dependency_not_satisfied" for step in state.request.metadata["assistant_loop_steps"])
+    assert any(error.details.get("code") == "dependency_not_satisfied" for error in state.errors)
 
 
-def test_plan_and_solve_can_replan_after_tool_failure() -> None:
+def test_plan_mode_can_revise_after_tool_failure() -> None:
     adapter = ScriptedChatAdapter(
         [
-            _plan_json([_step_json("step_1", "search", "unstable_search")]),
-            '{"type": "execute_step", "step_id": "step_1", "tool_input": {"query": "x"}, "reason": "try search"}',
-            '{"type": "replan", "reason": "search failed"}',
-            _plan_json([_step_json("step_1", "fallback_echo", "echo")]),
-            '{"type": "final_answer", "message": "replanned after failure", "reason": "fallback is enough"}',
+            _enter_plan_json([_step_json("step_1", "search", "unstable_search", required_inputs=["query"])]),
+            _tool_call_json("step_1", "unstable_search", {"query": "x"}),
+            _enter_plan_json([_step_json("step_1", "fallback_echo", "echo")], reason="search failed; revise plan"),
+            _tool_call_json("step_1", "echo", {"text": "fallback"}),
+            _exit_plan_json("revised after failure"),
         ]
     )
     runtime = AgentGraphRuntime(registry=_registry(AlwaysFailTool(), EchoTool()), chat_adapter=adapter)
 
-    state = runtime.run_state(
-        UserRequest(user_id="u1", session_id="s1", text="recover from failure", execution_strategy="plan_and_solve")
-    )
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="recover from failure"))
 
-    assert [call.tool_name for call in state.tool_calls] == ["unstable_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["unstable_search", "echo"]
     assert state.tool_results[0].success is False
     assert state.status == "completed"
     assert state.plan_revision_count == 1
     assert state.plan_status == "completed"
     assert state.response is not None
-    assert state.response.message == "replanned after failure"
+    assert state.response.message == "revised after failure"
+
+
+def test_legacy_plan_and_solve_request_uses_assistant_loop_plan_mode() -> None:
+    adapter = ScriptedChatAdapter(
+        [
+            _enter_plan_json([_step_json("step_1", "echo_first", "echo")]),
+            _tool_call_json("step_1", "echo", {"text": "legacy"}),
+            _exit_plan_json("legacy done"),
+        ]
+    )
+    trace_store = InMemoryTraceStore()
+    runtime = AgentGraphRuntime(registry=_registry(EchoTool()), chat_adapter=adapter, trace_store=trace_store)
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="legacy strategy", execution_strategy="plan_and_solve")
+    )
+
+    assert state.execution_strategy == "plan_and_solve"
+    assert state.response is not None
+    assert state.response.message == "legacy done"
+    assert "plan_controller" not in trace_store.node_path(state.run_id)
+    assert "apply_plan_mode_transition" in trace_store.node_path(state.run_id)
+    assert any("调用方计划模式提示" in message["content"] for message in adapter.requests[0].messages)
 
 
 def test_plan_validator_rejects_cycles_and_step_limits() -> None:
@@ -200,10 +214,40 @@ def _registry(*tools: MockTool) -> ToolRegistry:
     return registry
 
 
-def _plan_json(steps: list[dict[str, object]]) -> str:
-    import json
+def _enter_plan_json(steps: list[dict[str, object]], *, reason: str = "need a plan") -> str:
+    return json.dumps(
+        {
+            "type": "enter_plan_mode",
+            "plan": {"goal": "test goal", "steps": steps},
+            "reason": reason,
+        },
+        ensure_ascii=False,
+    )
 
-    return json.dumps({"goal": "test goal", "steps": steps}, ensure_ascii=False)
+
+def _exit_plan_json(message: str) -> str:
+    return json.dumps(
+        {
+            "type": "exit_plan_mode",
+            "next_action": "final_answer",
+            "message": message,
+            "reason": "plan complete",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _tool_call_json(step_id: str, tool_name: str, tool_input: dict[str, object]) -> str:
+    return json.dumps(
+        {
+            "type": "tool_call",
+            "step_id": step_id,
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            "reason": f"run {step_id}",
+        },
+        ensure_ascii=False,
+    )
 
 
 def _step_json(
@@ -212,6 +256,7 @@ def _step_json(
     tool_name: str,
     *,
     depends_on: list[str] | None = None,
+    required_inputs: list[str] | None = None,
 ) -> dict[str, object]:
     deps = list(depends_on or [])
     return {
@@ -220,7 +265,7 @@ def _step_json(
         "tool_name": tool_name,
         "input_refs": deps,
         "depends_on": deps,
-        "required_inputs": ["text"],
+        "required_inputs": list(required_inputs or ["text"]),
         "optional": False,
         "reason": action,
     }

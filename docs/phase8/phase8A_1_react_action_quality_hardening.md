@@ -291,7 +291,7 @@ repair 失败
 
 ### 7.4 Provider / Protocol Schema Adapter
 
-当前阶段提供轻量转换层，并支持 opt-in native tool calling 模式：
+当前阶段提供轻量转换层，并支持 provider-native tool calling 模式：
 
 ```text
 ToolSpec -> prompt JSON

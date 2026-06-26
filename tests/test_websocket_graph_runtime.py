@@ -1,10 +1,14 @@
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.api import routes_agent
 from multimodal_agent.api.app import create_app
 from multimodal_agent.api.websocket import mock_agent_events
+from multimodal_agent.schemas.tools import ToolResult
 from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
+from multimodal_agent.tools.base import MockTool, ToolContext
+from multimodal_agent.tools.registry import ToolRegistry
 
 
 class ScriptedChatAdapter:
@@ -20,6 +24,20 @@ class ScriptedChatAdapter:
         index = min(self.calls, len(self.outputs) - 1)
         self.calls += 1
         return ChatResult(response_text=self.outputs[index], provider=self.provider, model="scripted")
+
+
+class FailingPriceCompareInput(BaseModel):
+    query: str
+
+
+class FailingPriceCompareTool(MockTool):
+    name = "price_compare"
+    description = "Failing price compare tool for websocket error tests."
+    input_schema = FailingPriceCompareInput
+    output_schema = FailingPriceCompareInput
+
+    def _run(self, input: FailingPriceCompareInput, context: ToolContext) -> ToolResult:
+        return ToolResult(tool_name=self.name, success=False, error="provider_timeout: timeout")
 
 
 def test_websocket_uses_graph_runtime_event_sequence() -> None:
@@ -83,16 +101,19 @@ def test_websocket_accepts_explicit_plan_and_solve_strategy() -> None:
             chat_adapter=ScriptedChatAdapter(
                 [
                     (
-                        '{"goal": "search", "steps": ['
+                        '{"type": "enter_plan_mode", "plan": {"goal": "search", "steps": ['
                         '{"step_id": "step_1", "action": "search_product", "tool_name": "product_search", '
                         '"input_refs": [], "depends_on": [], "required_inputs": ["query"], '
-                        '"optional": false, "reason": "search first"}]}'
+                        '"optional": false, "reason": "search first"}]}, "reason": "plan search"}'
                     ),
                     (
-                        '{"type": "execute_step", "step_id": "step_1", '
+                        '{"type": "tool_call", "step_id": "step_1", "tool_name": "product_search", '
                         '"tool_input": {"query": "白色运动鞋", "top_k": 2}, "reason": "execute search"}'
                     ),
-                    '{"type": "final_answer", "message": "plan complete", "reason": "search observed"}',
+                    (
+                        '{"type": "exit_plan_mode", "next_action": "final_answer", '
+                        '"message": "plan complete", "reason": "search observed"}'
+                    ),
                 ]
             )
         )
@@ -107,16 +128,33 @@ def test_websocket_accepts_explicit_plan_and_solve_strategy() -> None:
 
     response = events[-1]["payload"]["response"]
     assert response["execution_strategy"] == "plan_and_solve"
-    assert response["data"]["final_answer_source"] == "plan_and_solve"
+    assert response["data"]["final_answer_source"] == "assistant_loop"
     assert [call["tool_name"] for call in response["tool_calls"]] == ["product_search"]
-    assert any(step.get("decision_type") == "plan_validated" for step in response["react_steps"])
+    assert any(step.get("decision_type") == "enter_plan_mode" for step in response["react_steps"])
+    assert any(step.get("decision_type") == "exit_plan_mode" for step in response["react_steps"])
 
 
 def test_websocket_emits_structured_error_event_for_failed_tool() -> None:
-    client = TestClient(create_app())
+    registry = ToolRegistry()
+    registry.register(FailingPriceCompareTool())
+    try:
+        routes_agent._RUNTIME = AgentGraphRuntime(
+            registry=registry,
+            chat_adapter=ScriptedChatAdapter(
+                [
+                    (
+                        '{"type": "tool_call", "tool_name": "price_compare", '
+                        '"tool_input": {"query": "耳机"}, "reason": "compare prices"}'
+                    )
+                ]
+            ),
+        )
+        client = TestClient(create_app())
 
-    with client.websocket_connect("/ws/agent/s2?text=哪个便宜") as websocket:
-        events = _receive_until(websocket, "task_failed")
+        with client.websocket_connect("/ws/agent/s2?text=哪个便宜") as websocket:
+            events = _receive_until(websocket, "task_failed")
+    finally:
+        routes_agent._RUNTIME = None
 
     event_types = [event["type"] for event in events]
     assert event_types[:2] == ["task_started", "graph_node_started"]

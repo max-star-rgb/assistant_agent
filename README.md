@@ -1,6 +1,6 @@
 # Multimodal Agent
 
-An intent-driven assistant agent that routes text, image, video, product, render, and memory requests through structured local capabilities.
+An assistant-driven multimodal agent that routes text, image, video, product, render, and memory requests through structured local capabilities.
 
 The default project mode is mock/local/offline. You can run the CLI, API, Web Console, tests, evals, demo flows, MCP smoke, and skill validation without API keys or real external Providers.
 
@@ -87,6 +87,23 @@ Current assistant capabilities:
 
 The agent owns intent routing, planning, tool selection, graph execution, response composition, trace/debug output, and safety boundaries. Specific capabilities are implemented behind adapters and tools.
 
+## Agent Tool Calling Architecture
+
+The modern ReAct path uses provider-native tool calling for non-mock chat providers:
+
+```text
+ToolSpec
+  -> provider tools schema
+  -> model proposes native tool_calls
+  -> AssistantDecision
+  -> ActionValidator / policy / budget
+  -> ToolExecutor
+  -> ToolObservation
+  -> model final_answer
+```
+
+The model proposes actions; local code still owns validation, execution, loop guards, trace redaction, and memory boundaries. `ASSISTANT_TOOL_CALL_MODE=auto` is the default: mock/offline runs keep the deterministic compatibility path, while real chat providers prefer native `tool_calls`. `prompt_json` remains an explicit fallback for debugging and older providers.
+
 ## Main Entry Points
 
 CLI:
@@ -111,6 +128,21 @@ export MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
 export MULTIMODAL_AGENT_IMAGE_PROVIDER=qwen
 export QWEN_IMAGE_API_KEY=<your-local-key>
 python scripts/smoke_text_image_generation.py --prompt "生成一张白色运动鞋的电商主图"
+```
+
+Native tool-calling smoke defaults to a local scripted adapter and does not call real providers:
+
+```bash
+python scripts/smoke_native_tool_calling.py --query "帮我找一款通勤蓝牙耳机"
+```
+
+Real chat provider native tool-calling smoke is opt-in:
+
+```bash
+export MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
+export MULTIMODAL_AGENT_CHAT_PROVIDER=deepseek
+export DEEPSEEK_CHAT_API_KEY=<your-local-key>
+python scripts/smoke_native_tool_calling.py --real-provider --query "帮我找一款通勤蓝牙耳机"
 ```
 
 API:

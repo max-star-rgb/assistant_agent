@@ -118,6 +118,8 @@ plan_status
 
 LLM 可以通过结构化 `AssistantDecision` 进入、更新或退出 plan mode；代码只负责 schema、工具白名单、预算、状态、trace 和安全边界。
 
+历史兼容字段 `execution_strategy=plan_and_solve` 只能作为 CLI/Web/API 的 plan-mode hint：runtime 仍进入同一个 assistant loop，并在 prompt 中提示 LLM 优先考虑 `enter_plan_mode`。它不是 graph selector，也不要求维护第二套执行分支。
+
 所有计划内工具执行仍必须走同一条 ReAct 工具路径：
 
 ```text
@@ -241,9 +243,22 @@ Memory 审计先通过结构化 API 和薄 CLI 完成，而不是引入 Claude C
 GET    /memory/users/{user_id}/items
 GET    /memory/users/{user_id}/items/{memory_id}
 GET    /memory/users/{user_id}/audit
+GET    /memory/users/{user_id}/snapshot?session_id=...&query=...
 DELETE /memory/users/{user_id}/items/{memory_id}
 DELETE /memory/users/{user_id}/sessions/{session_id}
 ```
+
+`snapshot` 是面向调试和学习的只读视图，用来同时观察：
+
+```text
+SessionStore thread index
+ConversationHistory recent turns
+MemoryManager retrieved layered context
+MemoryAudit summary
+Runtime storage boundary names
+```
+
+它不把 conversation history 写进长期记忆，也不把 LangGraph checkpointer 当作用户记忆；默认只展示摘要和 prompt-safe memory item，只有显式 `include_content=true` 时才返回已通过 `MemoryItem` 校验/脱敏的 content。
 
 CLI：
 

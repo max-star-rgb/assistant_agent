@@ -41,6 +41,15 @@ SMOKE_CASES = [
         ["--video-ref", "mock://video/demo"],
         {"MULTIMODAL_AGENT_VIDEO_PROVIDER": "http", "VIDEO_UNDERSTANDING_API_KEY": "sk-provider-safety-test"},
     ),
+    (
+        Path("scripts/smoke_native_tool_calling.py"),
+        ["--real-provider", "--query", "white sneaker"],
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_CHAT_API_KEY": "",
+        },
+    ),
 ]
 
 

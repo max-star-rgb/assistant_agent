@@ -32,6 +32,7 @@ from multimodal_agent.utils.product_matching import (
     failed_search_result,
     filter_products,
     filters_used,
+    normalize_provider_limit,
     query_text,
 )
 
@@ -39,6 +40,7 @@ from multimodal_agent.utils.product_matching import (
 DEFAULT_HAODANKU_BASE_URL = "https://v3.api.haodanku.com"
 DEFAULT_HAODANKU_TIMEOUT_SECONDS = 10.0
 DEFAULT_HAODANKU_BACK = 10
+HAODANKU_BACK_VALUES = (1, 2, 5, 10, 20, 50, 100)
 DEFAULT_HAODANKU_SORT = "0"
 
 
@@ -78,11 +80,16 @@ class HaodankuProductSearchAdapter:
                 recoverable=True,
             )
 
+        limit = normalize_provider_limit(
+            request.top_k,
+            default=DEFAULT_HAODANKU_BACK,
+            allowed_values=HAODANKU_BACK_VALUES,
+        )
         url = build_haodanku_search_url(
             base_url=self.config.base_url,
             api_key=self.config.api_key,
             keyword=keyword,
-            back=request.top_k or DEFAULT_HAODANKU_BACK,
+            back=limit.provider_limit,
             sort=self.config.sort,
         )
         http_request = urllib.request.Request(url, method="GET")
@@ -129,11 +136,18 @@ class HaodankuProductSearchAdapter:
 
         items = map_haodanku_items(payload)
         filtered = filter_products(items, request)
+        used_filters = filters_used(request)
+        used_filters["provider_back"] = limit.provider_limit
+        if limit.normalized:
+            used_filters["requested_top_k"] = limit.requested
+            used_filters["limit_normalized"] = True
+        if limit.capped:
+            used_filters["limit_capped"] = True
         return ProductSearchResult(
             items=filtered,
             provider=self.provider,
             query_used=keyword,
-            filters_used=filters_used(request),
+            filters_used=used_filters,
             total=len(filtered),
             output_ref=f"haodanku://search/{urllib.parse.quote(keyword)}",
         )
@@ -369,4 +383,3 @@ def _http_status_to_error_code(status: int) -> str:
     if status >= 400:
         return "provider_bad_response"
     return "provider_execution_failed"
-
