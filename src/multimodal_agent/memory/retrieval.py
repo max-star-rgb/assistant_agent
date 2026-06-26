@@ -61,7 +61,7 @@ class MemoryRetrievalStrategy:
                 limit=max(query.top_k * 4, query.top_k),
                 memory_types=memory_types,
             )
-            if not items:
+            if not items and _allows_recent_context_fallback(query.query):
                 items = self.store.list_by_user(query.user_id)
                 if memory_types is not None:
                     items = [item for item in items if item.memory_type in memory_types]
@@ -139,3 +139,32 @@ def _dedupe(items: list[MemoryItem]) -> list[MemoryItem]:
         seen.add(key)
         deduped.append(item)
     return deduped
+
+
+def _allows_recent_context_fallback(query: str) -> bool:
+    """Allow recent-memory fallback only for explicit contextual follow-ups."""
+
+    normalized = query.strip().lower()
+    if not normalized:
+        return False
+    markers = (
+        "继续",
+        "接着",
+        "上次",
+        "刚才",
+        "之前",
+        "前面",
+        "上一",
+        "这个",
+        "那个",
+        "这些",
+        "那些",
+        "它",
+        "它们",
+        "这种",
+        "那种",
+        "该",
+        "同款",
+        "相似款",
+    )
+    return any(marker in normalized for marker in markers)

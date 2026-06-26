@@ -42,6 +42,40 @@ DEFAULT_HAODANKU_TIMEOUT_SECONDS = 10.0
 DEFAULT_HAODANKU_BACK = 10
 HAODANKU_BACK_VALUES = (1, 2, 5, 10, 20, 50, 100)
 DEFAULT_HAODANKU_SORT = "0"
+COUPON_LINK_FIELDS = (
+    "couponurl",
+    "coupon_url",
+    "coupon_click_url",
+    "click_url",
+    "clickURL",
+    "shortURL",
+    "short_url",
+    "mobile_url",
+    "mobile_short_url",
+    "schema_url",
+    "share_link",
+    "dy_deeplink",
+    "dy_zlink",
+    "kwaiUrl",
+    "linkUrl",
+    "deeplink",
+    "deeplinkUrl",
+    "deep_link",
+    "trans_url",
+    "referral_link",
+    "tb_scheme_url",
+    "ele_scheme_url",
+    "alipay_mini_url",
+)
+LANDING_LINK_FIELDS = (
+    "itemlink",
+    "item_url",
+    "itemurl",
+    "url",
+    "longUrl",
+    "h5_url",
+    "h5_short_link",
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +86,18 @@ class HaodankuConfig:
     base_url: str = DEFAULT_HAODANKU_BASE_URL
     timeout_seconds: float = DEFAULT_HAODANKU_TIMEOUT_SECONDS
     sort: str = DEFAULT_HAODANKU_SORT
+
+
+@dataclass(frozen=True)
+class ProductLinkMetadata:
+    """Provider link fields after conservative local normalization."""
+
+    product_url: str | None
+    raw_url: str | None
+    landing_url: str | None
+    coupon_url: str | None
+    click_url: str | None
+    url_status: str
 
 
 class HaodankuProductSearchAdapter:
@@ -243,8 +289,8 @@ def _map_single_item(raw: dict[str, Any]) -> ProductResult | None:
     title = _clean_str(raw.get("itemtitle") or raw.get("itemshorttitle"))
     if not title:
         return None
-    product_id = _clean_str(raw.get("itemid")) or _clean_str(raw.get("item_id"))
-    if not product_id:
+    provider_item_id = _clean_str(raw.get("itemid")) or _clean_str(raw.get("item_id"))
+    if not provider_item_id:
         return None
 
     end_price = _to_float(raw.get("itemendprice"))
@@ -262,7 +308,7 @@ def _map_single_item(raw: dict[str, Any]) -> ProductResult | None:
     shop = _clean_str(raw.get("shopname")) or _clean_str(raw.get("itemshorttitle"))
     sales = _to_int(raw.get("itemsale") or raw.get("monthsales") or raw.get("itemsale_str"))
     platform = _platform_from_shoptype(raw.get("shoptype"))
-    url = _product_url(raw, product_id=product_id)
+    link = _product_link_metadata(raw, provider_item_id=provider_item_id)
 
     style_tags: list[str] = []
     reason_parts: list[str] = []
@@ -274,14 +320,21 @@ def _map_single_item(raw: dict[str, Any]) -> ProductResult | None:
     reason = "；".join(reason_parts) if reason_parts else None
 
     return ProductResult(
-        product_id=product_id,
+        product_id=provider_item_id,
+        provider_item_id=provider_item_id,
         title=title,
         category=_clean_str(raw.get("itemtitle_cat")) or None,
         price=price,
         platform=platform,
         shop=shop,
-        url=url,
-        product_url=url,
+        url=link.product_url,
+        product_url=link.product_url,
+        raw_url=link.raw_url,
+        landing_url=link.landing_url,
+        coupon_url=link.coupon_url,
+        click_url=link.click_url,
+        url_status=link.url_status,
+        availability="unknown",
         image_url=image,
         sales=sales,
         style_tags=style_tags,
@@ -297,20 +350,57 @@ def _platform_from_shoptype(value: Any) -> str:
     return "taobao"
 
 
-def _product_url(raw: dict[str, Any], *, product_id: str) -> str:
-    direct = (
-        _clean_str(raw.get("couponurl"))
-        or _clean_str(raw.get("coupon_url"))
-        or _clean_str(raw.get("coupon_click_url"))
-        or _clean_str(raw.get("itemlink"))
-        or _clean_str(raw.get("item_url"))
-        or _clean_str(raw.get("itemurl"))
-        or _clean_str(raw.get("url"))
-    )
+def _product_link_metadata(raw: dict[str, Any], *, provider_item_id: str) -> ProductLinkMetadata:
+    coupon_url = _first_provider_link(raw, COUPON_LINK_FIELDS)
+    landing_url = _first_provider_link(raw, LANDING_LINK_FIELDS)
+    direct = coupon_url or landing_url
     if direct:
-        return direct
-    encoded_id = urllib.parse.quote(product_id, safe="")
-    return f"https://item.taobao.com/item.htm?id={encoded_id}"
+        return ProductLinkMetadata(
+            product_url=direct,
+            raw_url=direct,
+            landing_url=landing_url,
+            coupon_url=coupon_url,
+            click_url=coupon_url,
+            url_status="unverified",
+        )
+    if provider_item_id.isdigit():
+        encoded_id = urllib.parse.quote(provider_item_id, safe="")
+        return ProductLinkMetadata(
+            product_url=f"https://item.taobao.com/item.htm?id={encoded_id}",
+            raw_url=None,
+            landing_url=None,
+            coupon_url=None,
+            click_url=None,
+            url_status="unverified",
+        )
+    return ProductLinkMetadata(
+        product_url=None,
+        raw_url=None,
+        landing_url=None,
+        coupon_url=None,
+        click_url=None,
+        url_status="invalid_id",
+    )
+
+
+def _first_provider_link(raw: dict[str, Any], fields: tuple[str, ...]) -> str | None:
+    for field in fields:
+        value = _normalize_provider_link(raw.get(field))
+        if value:
+            return value
+    return None
+
+
+def _normalize_provider_link(value: Any) -> str | None:
+    text = _clean_str(value)
+    if not text:
+        return None
+    if text.startswith("//"):
+        text = f"https:{text}"
+    parsed = urllib.parse.urlparse(text)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return text
+    return None
 
 
 def _normalize_haodanku_base_url(base_url: str | None) -> str:

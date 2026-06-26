@@ -126,9 +126,35 @@ def build_explicit_memory_item(
 
 def _explicit_memory_type(text: str, content: dict[str, Any]) -> MemoryType:
     joined = f"{text} {' '.join(str(value) for value in content.values())}"
-    if any(keyword in joined for keyword in ("喜欢", "偏好", "风格", "预算", "以后")):
+    if any(
+        keyword in joined
+        for keyword in (
+            "喜欢",
+            "我爱",
+            "最爱",
+            "热爱",
+            "爱好",
+            "偏爱",
+            "中意",
+            "偏好",
+            "风格",
+            "预算",
+            "以后",
+            "优先",
+            "常买",
+            "常用",
+            "关注",
+            "收藏",
+            "想要",
+            "不喜欢",
+            "不要",
+        )
+    ):
         return "preference"
-    if any(keyword in joined for keyword in ("商品", "鞋", "包", "椅子", "产品")):
+    if any(
+        keyword in joined.lower()
+        for keyword in ("商品", "鞋", "包", "椅子", "产品", "玉桂狗", "cinnamoroll", "三丽鸥")
+    ):
         return "product"
     return "task"
 

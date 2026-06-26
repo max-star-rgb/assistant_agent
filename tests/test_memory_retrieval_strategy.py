@@ -49,6 +49,42 @@ def test_memory_retrieval_respects_top_k() -> None:
     assert len(results) == 2
 
 
+def test_query_without_keyword_hit_does_not_fallback_to_unrelated_memories() -> None:
+    store = InMemoryStore()
+    store.save(memory_item("task_hello", "task", "你好，我可以帮你调用多模态工具。"))
+    store.save(memory_item("task_guard", "task", "工具调用保护触发，已停止继续调用。"))
+
+    results = MemoryRetrievalStrategy(store).retrieve(
+        MemoryQuery(user_id="u1", query="玉桂狗", top_k=5)
+    )
+
+    assert results == []
+
+
+def test_contextual_followup_can_use_recent_memory_fallback() -> None:
+    store = InMemoryStore()
+    store.save(memory_item("task_recent", "task", "上次帮用户找过白色相似款。"))
+
+    results = MemoryRetrievalStrategy(store).retrieve(
+        MemoryQuery(user_id="u1", query="继续推荐", top_k=5)
+    )
+
+    assert [item.memory_id for item in results] == ["task_recent"]
+
+
+def test_chinese_phrase_retrieval_matches_relevant_fragments_without_global_fallback() -> None:
+    store = InMemoryStore()
+    store.save(memory_item("pref", "preference", "用户喜欢日系极简风格。"))
+    store.save(memory_item("task", "task", "曾经先搜索商品再比较价格。"))
+    store.save(memory_item("unrelated", "task", "你好，我可以帮你调用多模态工具。"))
+
+    results = MemoryRetrievalStrategy(store).retrieve(
+        MemoryQuery(user_id="u1", query="日系风格商品推荐", top_k=5)
+    )
+
+    assert [item.memory_id for item in results] == ["pref", "task"]
+
+
 def test_jsonl_memory_retrieval_works_across_instances(tmp_path) -> None:
     path = tmp_path / "memories.jsonl"
     JsonlMemoryStore(path).save(memory_item("m1", "product", "用户关注黑色包"))

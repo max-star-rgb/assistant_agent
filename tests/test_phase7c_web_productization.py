@@ -60,6 +60,12 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "Conversation History" in html
     assert "Product Results" in html
     assert "Assistant ReAct Process" in html
+    assert "Memory Snapshot" in html
+    assert "memory-query" in html
+    assert "refreshMemorySnapshot" in html
+    assert "renderMemorySnapshot" in html
+    assert "/memory/users/" in html
+    assert "/snapshot?" in html
     assert "Thought" not in html
     assert "thought" not in html
     assert "思维链" not in html

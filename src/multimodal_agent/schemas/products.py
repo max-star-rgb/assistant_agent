@@ -5,10 +5,15 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+ProductUrlStatus = Literal["unverified", "missing", "invalid_id", "verified", "unreachable"]
+ProductAvailability = Literal["unknown", "available", "unavailable"]
+
+
 class ProductResult(BaseModel):
     """A candidate product returned by product search."""
 
     product_id: str = Field(min_length=1)
+    provider_item_id: str | None = None
     title: str = Field(min_length=1)
     brand: str | None = None
     category: str | None = None
@@ -18,6 +23,12 @@ class ProductResult(BaseModel):
     shop: str | None = None
     url: str | None = None
     product_url: str | None = None
+    raw_url: str | None = None
+    landing_url: str | None = None
+    coupon_url: str | None = None
+    click_url: str | None = None
+    url_status: ProductUrlStatus | None = None
+    availability: ProductAvailability | None = None
     image_url: str | None = None
     similarity: float | None = Field(default=None, ge=0.0, le=1.0)
     similarity_score: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -102,7 +113,8 @@ class PriceOffer(BaseModel):
     shipping_fee: float | None = Field(default=None, ge=0)
     total_price: float = Field(ge=0)
     product_url: str | None = None
-    availability: str | None = None
+    url_status: ProductUrlStatus | None = None
+    availability: ProductAvailability | None = None
     rating: float | None = Field(default=None, ge=0.0, le=5.0)
     sales: int | None = Field(default=None, ge=0)
     similarity_score: float | None = Field(default=None, ge=0.0, le=1.0)

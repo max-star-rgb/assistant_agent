@@ -1,8 +1,10 @@
 from fastapi.testclient import TestClient
 
+from multimodal_agent.agent.response_templates import compose_contract_response
 from multimodal_agent.api.app import create_app
-from multimodal_agent.schemas.products import PriceOffer, ProductResult, RankingReason
+from multimodal_agent.schemas.products import PriceOffer, ProductResult, ProductSearchResult, RankingReason
 from multimodal_agent.schemas.tool_observation import observation_from_tool_result
+from multimodal_agent.schemas.tools import ToolResult
 from multimodal_agent.services.product_adapter import MockPriceCompareAdapter, MockProductSearchAdapter, PriceCompareInput, ProductSearchInput
 from multimodal_agent.tools.product_search_tool import ProductSearchTool
 
@@ -24,6 +26,30 @@ def test_product_result_contract_exposes_stable_fields() -> None:
     assert isinstance(product.ranking_reason, RankingReason)
     assert product.ranking_reason.explanation
     assert product.source == "mock"
+
+
+def test_product_result_serializes_link_status_without_provider_raw_response() -> None:
+    product = ProductResult(
+        product_id="AAE9r8X",
+        provider_item_id="AAE9r8X",
+        title="闲鱼加密 ID 商品",
+        price=79.0,
+        platform="haodanku",
+        product_url=None,
+        url_status="invalid_id",
+        availability="unknown",
+        source="haodanku",
+    )
+
+    payload = product.model_dump(mode="json")
+
+    assert payload["provider_item_id"] == "AAE9r8X"
+    assert payload["product_url"] is None
+    assert payload["raw_url"] is None
+    assert payload["url_status"] == "invalid_id"
+    assert payload["availability"] == "unknown"
+    assert "raw" not in payload
+    assert "provider_response" not in payload
 
 
 def test_price_offer_contract_exposes_stable_fields_and_ranking_reason() -> None:
@@ -61,6 +87,88 @@ def test_product_search_observation_includes_user_visible_product_url() -> None:
     assert observation.status == "succeeded"
     assert "白色低帮运动鞋 A" in observation.summary
     assert "mock://shop-a/p1" in observation.summary
+
+
+def test_product_search_observation_hints_price_compare_when_requested() -> None:
+    result = ProductSearchTool(adapter=MockProductSearchAdapter()).run({"query": "白色低帮运动鞋"})
+
+    observation = observation_from_tool_result(
+        result,
+        request_text="帮我找一款白色低帮运动鞋，并比较一下价格。",
+    )
+
+    assert observation.status == "succeeded"
+    assert observation.next_step_hint is not None
+    assert "Call price_compare next" in observation.next_step_hint
+    assert "do not run product_search again" in observation.next_step_hint
+
+
+def test_repeated_product_search_failure_observation_points_to_prior_success() -> None:
+    failed_result = ToolResult(
+        tool_name="product_search",
+        success=False,
+        error="unknown_error: 数据已获取完毕或获取数据失败!",
+    )
+
+    observation = observation_from_tool_result(
+        failed_result,
+        request_text="帮我找一款商品",
+        prior_observations=[
+            {
+                "tool_name": "product_search",
+                "status": "succeeded",
+                "summary": "Top product: 商品 A.",
+            }
+        ],
+    )
+
+    assert observation.status == "failed"
+    assert observation.next_step_hint is not None
+    assert "previous product_search call already succeeded" in observation.next_step_hint
+    assert "partial results" in observation.next_step_hint
+
+
+def test_product_search_observation_does_not_show_invalid_synthetic_product_url() -> None:
+    product = ProductResult(
+        product_id="AAE9r8X",
+        provider_item_id="AAE9r8X",
+        title="闲鱼加密 ID 商品",
+        price=79.0,
+        platform="haodanku",
+        product_url=None,
+        url_status="invalid_id",
+        availability="unknown",
+        source="haodanku",
+    )
+    search_result = ProductSearchResult(
+        items=[product],
+        provider="haodanku",
+        query_used="闲鱼",
+        total=1,
+    )
+    tool_result = ToolResult(
+        tool_name="product_search",
+        success=True,
+        data=search_result.model_dump(mode="json"),
+    )
+
+    observation = observation_from_tool_result(tool_result)
+    message = compose_contract_response(
+        [
+            {
+                "status": "succeeded",
+                "capability": "product_search",
+                "data": {"items": [product.model_dump(mode="json")], "total": 1},
+            }
+        ],
+        [],
+    )
+
+    assert observation.status == "succeeded"
+    assert "no direct product url" in observation.summary
+    assert "item.taobao.com" not in observation.summary
+    assert "未提供可直接打开的商品链接" in message
+    assert "item.taobao.com" not in message
 
 
 def test_product_search_api_output_contract_is_stable() -> None:

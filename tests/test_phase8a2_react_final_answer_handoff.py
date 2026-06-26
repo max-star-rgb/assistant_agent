@@ -10,8 +10,10 @@ class ScriptedChatAdapter:
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = outputs
         self.calls = 0
+        self.requests: list[ChatRequest] = []
 
     def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
         index = min(self.calls, len(self.outputs) - 1)
         self.calls += 1
         return ChatResult(response_text=self.outputs[index], provider=self.provider, model="scripted")
@@ -169,3 +171,45 @@ def test_compare_request_continues_from_search_to_price_compare_and_hides_parser
     assert "已完成比价" in state.response.message
     assert "链接：" in state.response.message
     assert state.response.data.get("final_answer_source") is None
+
+
+def test_compare_request_rewrites_redundant_search_decision_to_price_compare() -> None:
+    repeated_search = (
+        '{"type": "tool_call", "tool_name": "product_search", '
+        '"tool_input": {"query": "玉桂狗 Cinnamoroll 三丽鸥 毛绒公仔 挂件 周边", "top_k": 20}, '
+        '"reason": "再搜索一次商品候选"}'
+    )
+    adapter = ScriptedChatAdapter(
+        [
+            (
+                '{"type": "tool_call", "tool_name": "product_search", '
+                '"tool_input": {"query": "Cinnamoroll 玉桂狗 毛绒公仔 周边", "top_k": 15}, '
+                '"reason": "先搜索商品候选"}'
+            ),
+            repeated_search,
+            '{"type": "final_answer", "message": "已完成商品搜索和价格比较。", "reason": "已有比价结果"}',
+        ]
+    )
+    runtime = AgentGraphRuntime(chat_adapter=adapter)
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="帮我找一款Cinnamoroll的玉桂狗，并比较一下价格，最后给出推荐理由。",
+        )
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    assert state.tool_calls[1].input["items"]
+    assert state.response is not None
+    assert state.response.message == "已完成商品搜索和价格比较。"
+    assert len(adapter.requests) >= 2
+    second_request = adapter.requests[1]
+    second_context = (
+        second_request.messages[-1]["content"]
+        if second_request.messages
+        else second_request.user_query
+    )
+    assert "Call price_compare next" in second_context
+    assert "do not run product_search again" in second_context

@@ -431,8 +431,11 @@ def _apply_decision_guards(
 
     state = graph_state["state"]
     required_price_compare = _required_price_compare_after_search(state, context)
-    if required_price_compare is not None and decision.type == "final_answer":
-        return required_price_compare
+    if required_price_compare is not None:
+        if decision.type == "final_answer":
+            return required_price_compare
+        if decision.type == "tool_call" and decision.tool_name == "product_search":
+            return required_price_compare
 
     if decision.reason == "Empty or whitespace-only output.":
         guard = LoopGuard(state.request.metadata).record_empty_decision()
@@ -1082,7 +1085,11 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
             node_name=graph_state.get("current_node_name", "execute_tool"),
         )
 
-        observation = observation_from_tool_result(result)
+        observation = observation_from_tool_result(
+            result,
+            request_text=graph_state["request"].text,
+            prior_observations=tool_observations,
+        )
         if _is_plan_mode_active(state) and not result.success and state.status == "failed":
             state.status = "running"
             _mark_plan_mode_status(state, "replanning")
@@ -1476,7 +1483,7 @@ def _render_decision_contract() -> str:
 - 复杂多步骤任务可以先进入 plan mode；plan mode 只是当前 ReAct loop 的状态，不是独立 planner/controller。
 - 进入或修订计划时返回 enter_plan_mode；退出计划时返回 exit_plan_mode。不要输出 execute_step/replan 等旧协议。
 - 如果需要生成多张图片，请在一次 image_generation 调用中通过 tool_input 的 "n" 参数指定数量（1-4），不要多次调用。
-- 商品推荐或比价的 final_answer 必须使用 observation/structured_output 中的商品标题、价格和 URL；URL 存在时必须原样给出，URL 缺失时不要说“点击链接”。
+- 商品推荐或比价的 final_answer 必须使用 observation/structured_output 中的商品标题、价格、URL 和 url_status；URL 存在时必须原样给出，url_status 不是 verified 时注明链接未验证，URL 缺失时不要说“点击链接”。
 - 不要编造商品卖点、店铺、销量、价格或链接；只使用工具结果中明确出现的信息。
 
 情况 1：直接回答用户
@@ -1569,7 +1576,7 @@ def _build_final_only_prompt(
 
 不要继续调用任何工具。请基于已有 observation 给出诚实、清晰的最终回答。
 如果工具结果与用户请求不匹配，请明确说明这一点，并给出你能提供的最佳建议。
-如果回答涉及商品推荐或比价，必须使用 observation/structured_output 中的商品标题、价格和 URL；URL 存在时必须原样给出，URL 缺失时不要说“点击链接”。
+如果回答涉及商品推荐或比价，必须使用 observation/structured_output 中的商品标题、价格、URL 和 url_status；URL 存在时必须原样给出，url_status 不是 verified 时注明链接未验证，URL 缺失时不要说“点击链接”。
 不要编造商品卖点、店铺、销量、价格或链接；只使用工具结果中明确出现的信息。
 
 必须只输出严格 JSON，不要输出 Thought:、思维链、分析过程、markdown 或解释文本；reason 只能是一句简短、高层、可审计的决策理由：

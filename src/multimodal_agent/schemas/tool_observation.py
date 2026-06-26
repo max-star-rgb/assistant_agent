@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -27,7 +28,12 @@ class ToolObservation(BaseModel):
     redacted: bool = True
 
 
-def observation_from_tool_result(result: ToolResult) -> ToolObservation:
+def observation_from_tool_result(
+    result: ToolResult,
+    *,
+    request_text: str | None = None,
+    prior_observations: Sequence[Mapping[str, Any]] | None = None,
+) -> ToolObservation:
     """Build a redacted observation from a ToolResult."""
 
     status: ObservationStatus = "succeeded" if result.success else "failed"
@@ -41,7 +47,13 @@ def observation_from_tool_result(result: ToolResult) -> ToolObservation:
         structured_output=data if isinstance(data, dict) else {},
         error_code=_error_code(result.error),
         error_message=error_message,
-        next_step_hint=_next_step_hint(result.tool_name, status),
+        next_step_hint=_next_step_hint(
+            result.tool_name,
+            status,
+            data=data if isinstance(data, dict) else {},
+            request_text=request_text,
+            prior_observations=prior_observations or (),
+        ),
     )
 
 
@@ -99,9 +111,14 @@ def _format_product_item_summary(item: dict[str, Any], *, total: Any = None, pre
     price = item.get("total_price") or item.get("price")
     currency = item.get("currency") or "CNY"
     url = item.get("product_url") or item.get("url")
+    url_status = item.get("url_status")
     total_part = f" of {total}" if total is not None else ""
     price_part = f", price {price} {currency}" if price is not None else ""
-    url_part = f", url {url}" if url else ""
+    if url:
+        status_part = "" if url_status == "verified" else ", url_status unverified"
+        url_part = f", url {url}{status_part}"
+    else:
+        url_part = ", no direct product url"
     return sanitize_error_message(f"{prefix}{total_part}: {title}{price_part}{url_part}.")
 
 
@@ -112,15 +129,70 @@ def _error_code(error: str | None) -> str | None:
     return prefix if prefix.startswith("provider_") or prefix.endswith("_error") else "tool_failed"
 
 
-def _next_step_hint(tool_name: str, status: ObservationStatus) -> str:
+def _next_step_hint(
+    tool_name: str,
+    status: ObservationStatus,
+    *,
+    data: dict[str, Any],
+    request_text: str | None,
+    prior_observations: Sequence[Mapping[str, Any]],
+) -> str:
     if status != "succeeded":
+        if _has_prior_successful_observation(prior_observations, tool_name):
+            return (
+                f"A previous {tool_name} call already succeeded. Use that earlier observation, "
+                "answer with partial results, or choose a different action instead of failing the run solely on this repeat."
+            )
         return "Explain the failure, use a different action, or ask the user for clarification."
     if tool_name in {"vision_understanding", "video_understanding"}:
         return "If the user only asked for a description, final_answer is likely enough."
-    if tool_name in {"product_search", "price_compare"}:
+    if tool_name == "product_search":
+        items = data.get("items")
+        has_items = isinstance(items, list) and bool(items)
+        if _request_asks_for_price_compare(request_text) and has_items and not _has_prior_successful_observation(
+            prior_observations,
+            "price_compare",
+        ):
+            return (
+                "The user asked for price comparison and product_search returned candidates. "
+                "Call price_compare next with these items; do not run product_search again unless the candidates are empty."
+            )
+        if not has_items:
+            return "No product candidates were returned; try a narrower shopping query or ask the user for clarification."
         return "Use the product candidates or price result in the final answer or next shopping action."
+    if tool_name == "price_compare":
+        return "Use the compared offers and best_offer in the final answer; include URL status when present."
     if tool_name == "image_generation":
         return "Return the generated image reference to the user."
     if tool_name == "render_3d":
         return "Return the 3D preview reference to the user."
     return "Use this observation to decide whether to answer or call another action."
+
+
+def _has_prior_successful_observation(
+    prior_observations: Sequence[Mapping[str, Any]],
+    tool_name: str,
+) -> bool:
+    return any(
+        observation.get("tool_name") == tool_name and observation.get("status") == "succeeded"
+        for observation in prior_observations
+    )
+
+
+def _request_asks_for_price_compare(request_text: str | None) -> bool:
+    text = request_text or ""
+    lowered = text.lower()
+    markers = (
+        "比价",
+        "比较价格",
+        "比较一下价格",
+        "价格比较",
+        "哪个便宜",
+        "哪款便宜",
+        "最低价",
+        "最便宜",
+        "compare price",
+        "price compare",
+        "cheapest",
+    )
+    return any(marker in text or marker in lowered for marker in markers)

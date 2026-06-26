@@ -30,6 +30,19 @@ def test_explicit_remember_writes_preference_memory_without_raw_text() -> None:
     assert "text" not in item.content
 
 
+def test_explicit_remember_writes_liked_character_as_preference() -> None:
+    item = build_explicit_memory_item(
+        memory_id="m1",
+        user_id="u1",
+        session_id="s1",
+        text="记住我爱玉桂狗",
+        created_at=NOW,
+    )
+
+    assert item.memory_type == "preference"
+    assert item.summary == "我爱玉桂狗"
+
+
 def test_task_summary_auto_save_keeps_artifact_output_refs_only() -> None:
     item = build_task_summary_memory_item(
         memory_id="m1",

@@ -219,6 +219,8 @@ Agent / Assistant Loop / Memory Tools
 
 Graph state、memory tools、memory audit API 和 beta 用户数据删除都只依赖 `MemoryManager`；`MemoryStore` 保留为 runtime 内部构造细节和底层持久化接口。
 
+检索质量门控：当 `MemoryQuery.query` 非空时，本地检索优先只返回关键词/中文短语片段命中的记忆；具体实体或主题没有命中时返回空结果，不再 fallback 到用户全部历史，避免把无关 task summary 注入 prompt。只有明确承接型 query（例如“继续”“上次”“这个风格”）允许使用最近记忆 fallback。空 query 用于浏览/审计时仍按用户列出最近记忆。
+
 Embedding / 向量检索不是当前默认依赖。后续应作为可选 adapter 接到 `MemoryManager` / `MemoryStore` 后面，测试默认继续使用本地 deterministic 行为，真实 embedding provider 只通过显式配置启用。
 
 ### Conversation History

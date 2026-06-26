@@ -7,6 +7,9 @@ from multimodal_agent.memory.store import MemoryStore
 from multimodal_agent.schemas.memory import MemoryItem
 
 
+_CHINESE_RE = re.compile(r"[\u4e00-\u9fff]+")
+
+
 class KeywordMemoryRetriever:
     """Retrieve user-isolated memories with simple keyword matching."""
 
@@ -67,5 +70,20 @@ class KeywordMemoryRetriever:
         if not normalized:
             return set()
         tokens = set(re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", normalized))
+        for segment in _CHINESE_RE.findall(normalized):
+            tokens.update(_chinese_ngrams(segment))
         tokens.add(normalized)
         return tokens
+
+
+def _chinese_ngrams(segment: str) -> set[str]:
+    """Return short Chinese phrase candidates for deterministic local recall."""
+
+    if len(segment) < 2:
+        return set()
+    grams: set[str] = set()
+    max_size = min(4, len(segment))
+    for size in range(2, max_size + 1):
+        for index in range(0, len(segment) - size + 1):
+            grams.add(segment[index : index + size])
+    return grams
