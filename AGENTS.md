@@ -1,15 +1,21 @@
 # AGENTS.md
 
-本文件是给 Codex / coding agent 的仓库级指导。它应保持稳定、可自动加载，并只记录当前项目的通用规则。详细架构、文档清单和测试评估在 `docs/`。
+本文件是给 Codex / coding agent 的仓库级指导。它应保持稳定、可自动加载，并只记录当前项目的通用规则。详细架构、记忆服务架构、上下文工程状态、agent 通信路由、文档清单和测试评估在 `docs/`。
 
 ## 1. 当前权威入口
 
-开始任何工作前，优先阅读：
+开始仓库内任何非纯问答/非单条无副作用命令任务前，优先阅读：
 
-1. `docs/CODEX_PROJECT_GUIDE.md`：当前项目架构、运行边界和 Codex 工作入口。
-2. `docs/DOCS_INDEX.md`：文档状态清单，判断哪些文档是 canonical/reference/historical/archive-candidate。
-3. `README.md`：人类入口和常用运行命令。
-4. `docs/architecture-layers.md`：涉及架构分层、模块归属、治理边界或重构判断时必须阅读。
+1. `docs/CODEX_PROJECT_GUIDE.md`：当前项目架构、运行边界和 Codex 工作入口。每个新任务或上下文恢复后默认先读；只有与仓库无关的普通问答，或用户只要求执行单个简单命令时可跳过。
+2. `README.md`：人类入口和常用运行命令。
+
+按任务范围补充阅读：
+
+- 涉及上下文工程、assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 时，必须阅读 `docs/CONTEXT_ENGINEERING_STATUS.md`。
+- 涉及记忆服务设计、`MemoryManager`、memory store/retrieval/write policy/user profile、memory tool、memory API 或长期记忆边界时，必须阅读 `docs/memory-service-architecture.md`。
+- 涉及多 agent 实例、agent directory/gateway、agent-to-agent 通信、A2A/JSON-RPC adapter、跨实例 session/task 路由或 `delegate_to_agent` 类工具时，必须阅读 `docs/agent-communication-routing.md`。
+- 涉及架构分层、模块归属、治理边界或重构判断时，必须阅读 `docs/architecture-layers.md`。
+- 涉及文档盘点、入口路由、归档、删除、清理、新增 canonical/reference 文档，或判断 canonical/reference/historical/archive-candidate 状态时，阅读 `docs/DOCS_INDEX.md`。普通代码实现任务不必默认读取它，除非需要决定应更新哪些文档或文档权威性。
 
 历史 `tasks/`、`prompts/`、`skills/`、phase 文档只在用户明确点名、需要追溯历史决策或执行对应历史任务时阅读。不要把旧 roadmap 当成当前真实架构。
 
@@ -44,7 +50,8 @@ ToolRegistry -> tools -> provider adapters / memory / local services
 - Agent/graph 负责决策编排，不直接绕过工具治理边界调用外部能力。
 - 工具调用必须经过 validator、executor、tool registry、policy/audit 相关边界。
 - Provider adapter 负责真实或 mock 能力接入；默认 profile 必须是 mock/local/offline。
-- Memory 行为应通过 memory service/provider 管理，不把临时状态散落到无关模块。
+- Memory 行为应通过 memory service/provider 管理，不把临时状态散落到无关模块；设计记忆服务前先读 `docs/memory-service-architecture.md`。
+- 多 agent / A2A 行为应通过 agent communication service、gateway/directory、transport adapter 和工具治理边界管理；设计 agent 通信前先读 `docs/agent-communication-routing.md`。
 - API、demo、eval、CLI 应尽量复用同一套 runtime 行为，避免各自实现一套不一致的 Agent 逻辑。
 
 ## 4. 运行与安全规则
@@ -96,6 +103,7 @@ conda run -n hello_agent <command>
 | --- | --- | --- |
 | `src/multimodal_agent/api/` | FastAPI app、routes、server/client integration | 按任务要求修改 |
 | `src/multimodal_agent/agent/` | LangGraph runtime、assistant loop、决策、验证、执行 | 按任务要求修改 |
+| `src/multimodal_agent/services/` | runtime services、context、trace、session、agent communication、provider 管理 | 按任务要求修改 |
 | `src/multimodal_agent/providers/` | Provider adapter、runtime profile、mock/real 边界 | 谨慎修改，默认 mock 优先 |
 | `src/multimodal_agent/tools/` | Tool registry、工具实现、策略、审计 | 按任务要求修改 |
 | `src/multimodal_agent/memory/` | 记忆服务、检索、存储 | 按任务要求修改 |
@@ -115,6 +123,7 @@ conda run -n hello_agent <command>
 - 公共数据结构优先使用 Pydantic model。
 - 工具调用结果必须结构化，不允许只返回散乱字符串。
 - 外部模型/API 先维护 adapter interface 和 mock implementation，不要直接绑定具体供应商。
+- 多 agent 通信先维护内部 message/task/artifact contract 和 transport adapter；A2A JSON-RPC 只作为协议适配层，不作为核心 runtime 内部模型。
 - Phase 8 之后的 assistant loop 方向是真实 LLM 自主决策、追问、工具调用和最终回答；不要让真实 LLM 路径依赖旧 intent/router/plan 来选择工具。
 - mock/offline 路径只作为稳定测试与本地演示兼容层，不要把 mock 行为伪装成真实 LLM 能力。
 - 新增核心 ReAct/assistant loop 测试应优先覆盖非 mock LLM 决策路径，例如 scripted/fake real chat adapter；真实外部网络调用只放在显式 opt-in 的 smoke/integration 测试中。
@@ -127,7 +136,10 @@ conda run -n hello_agent <command>
 - `README.md` 是人类入口，说明项目当前定位、架构、运行方式和常用命令。
 - `AGENTS.md` 是 agent 行为约束入口，应简短稳定，不塞入长篇历史设计。
 - `docs/CODEX_PROJECT_GUIDE.md` 是 Codex 快速理解当前项目的权威指南。
-- `docs/DOCS_INDEX.md` 是文档清单和清理依据。
+- `docs/memory-service-architecture.md` 是记忆服务架构、边界、路由和更新规则的当前权威入口。
+- `docs/CONTEXT_ENGINEERING_STATUS.md` 是上下文工程当前进展、限制和下一步入口。
+- `docs/agent-communication-routing.md` 是多 agent 实例、agent 通信路由、A2A adapter 边界和更新规则的当前权威入口。
+- `docs/DOCS_INDEX.md` 是文档清单和清理依据，只在文档盘点/归档/删除任务中作为入口。
 - `docs/TESTS_REVIEW.md` 是 tests 目录只读评估入口。
 - 历史 phase/task/skill/prompt 文档默认保留或归档，不直接删除。
 - 删除文档必须先进入 `delete-candidate`，写明重复、过期、已吸收位置，并经过人工确认。

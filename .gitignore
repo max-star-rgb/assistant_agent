@@ -17,7 +17,10 @@ htmlcov/
 .idea/
 /docs/*
 !/docs/CODEX_PROJECT_GUIDE.md
+!/docs/agent-communication-routing.md
+!/docs/CONTEXT_ENGINEERING_STATUS.md
 !/docs/DOCS_INDEX.md
+!/docs/memory-service-architecture.md
 !/docs/TESTS_REVIEW.md
 !/docs/archive/
 !/docs/archive/**

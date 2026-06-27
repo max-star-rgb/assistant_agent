@@ -110,7 +110,7 @@ structured observations -> final answer / events / audit logs
 | 修改文档 | `README.md`、`AGENTS.md`、`docs/CODEX_PROJECT_GUIDE.md` | `docs/**`、根目录入口文档 | `python scripts/check_env.py` |
 | 新增 demo 场景 | `scripts/run_demo_flows.py`、`docs/demo-flows.md` | `scripts/**`、`docs/**`、必要时测试 | `python scripts/run_demo_flows.py` |
 | 调整 provider mock | `docs/configuration.md`、`docs/provider-setup.md`、`src/multimodal_agent/providers/` | 按任务范围修改 provider/mock 与测试 | `python -m pytest` |
-| 调整 memory 行为 | `docs/phase8/memory-manager-boundary.md`、`src/multimodal_agent/memory/` | memory 模块和相关测试 | `python -m pytest tests` |
+| 调整 memory 行为 | `docs/memory-service-architecture.md`、`src/multimodal_agent/memory/` | memory 模块和相关测试 | `python -m pytest tests` |
 | 更新 eval | `scripts/run_evals.py`、`tests/evals/eval_cases.json`、`docs/development.md` | eval 用例、脚本、文档 | `python scripts/run_evals.py` |
 | 更新 API 文档 | `docs/quickstart.md`、`docs/observability-local.md`、API routes | `docs/**`，必要时 API 测试 | `python -m pytest tests` |
 
@@ -128,6 +128,7 @@ structured observations -> final answer / events / audit logs
 
 - [Quickstart](docs/quickstart.md)
 - [Architecture](docs/architecture.md)
+- [Memory Service Architecture](docs/memory-service-architecture.md)
 - [Capabilities](docs/capabilities.md)
 - [Configuration](docs/configuration.md)
 - [Provider Setup](docs/provider-setup.md)

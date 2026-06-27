@@ -20,6 +20,8 @@ Status values:
 | `docs/TESTS_REVIEW.md` | canonical | Current tests directory read-only review for future cleanup planning. | keep |
 | `docs/architecture.md` | canonical | Current concise runtime architecture overview; matches assistant-loop and provider-native tool calling direction. | link-from-index |
 | `docs/architecture-layers.md` | canonical | Current layer ownership and governance boundary document; required for architecture/rework decisions. | link-from-index |
+| `docs/memory-service-architecture.md` | canonical | Current authoritative memory service architecture, boundary, routing, and update-rule entry. | keep |
+| `docs/agent-communication-routing.md` | canonical | Current authoritative multi-agent instance routing, agent communication, and A2A adapter boundary entry. | keep |
 | `docs/capabilities.md` | canonical | Current capability list and default provider boundary. | link-from-index |
 | `docs/configuration.md` | canonical | Current runtime profile and provider selector policy. | link-from-index |
 | `docs/provider-setup.md` | canonical | Current real-provider opt-in setup and missing-config behavior. | link-from-index |
@@ -36,7 +38,7 @@ Status values:
 | `docs/phase8/README.md` | reference | Important Phase 8 architecture background, but some early statements must be checked against current code. | keep |
 | `docs/phase8/assistant-loop-architecture-upgrade.md` | reference | Background design for assistant-loop upgrade; useful for ReAct reasoning and boundaries. | keep |
 | `docs/phase8/planning-and-reflection-roadmap.md` | reference | Future/extended ReAct plan-mode and reflection background. | keep |
-| `docs/phase8/memory-manager-boundary.md` | reference | MemoryManager boundary background for Phase 8 memory behavior. | keep |
+| `docs/phase8/memory-manager-boundary.md` | reference | Phase 8 MemoryManager boundary background; use `docs/memory-service-architecture.md` as the current canonical source. | keep |
 | `docs/phase8/beta-trial.md` | reference | Beta trial/productization reference, not global architecture entry. | keep |
 | `docs/phase8/phase8A_1_react_action_quality_hardening.md` | historical | Completed/current Phase 8A hardening task design and audit trail. | archive-later |
 | `docs/phase8/phase8A_2_react_final_answer_handoff.md` | historical | Completed/current Phase 8A handoff task design and audit trail. | archive-later |

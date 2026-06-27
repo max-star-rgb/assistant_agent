@@ -104,7 +104,7 @@ Real provider opt-in:
 | 修改文档 | `README.md`, `AGENTS.md`, `docs/CODEX_PROJECT_GUIDE.md`, `docs/DOCS_INDEX.md` | `docs/**`, `README.md`, `AGENTS.md` | `git diff --stat`, `python scripts/check_env.py` |
 | 新增 demo 场景 | `docs/demo-flows.md`, `demo_data/scenarios/e2e_demo_scenarios.json`, `scripts/run_demo_flows.py` | `demo_data/**`, tests if explicitly requested | `python scripts/run_demo_flows.py`, `python -m pytest tests/test_demo_scenario_matrix.py` |
 | 调整 provider mock | `docs/configuration.md`, `docs/provider-setup.md`, relevant service adapter, provider tests | `src/multimodal_agent/services/**`, `src/multimodal_agent/tools/**`, tests | `python -m pytest tests/test_provider_config.py tests/test_provider_selection.py` |
-| 调整 memory 行为 | `docs/phase8/memory-manager-boundary.md`, `src/multimodal_agent/memory/**`, memory tests | `src/multimodal_agent/memory/**`, memory tools/services, tests | `python -m pytest tests/test_memory_manager.py tests/test_memory_*` |
+| 调整 memory 行为 | `docs/memory-service-architecture.md`, `src/multimodal_agent/memory/**`, memory tools/services, memory tests | `src/multimodal_agent/memory/**`, memory tools/services, tests | `python -m pytest tests/test_memory_manager.py tests/test_memory_*` |
 | 更新 eval | `scripts/run_evals.py`, `tests/evals/eval_cases.json`, `docs/development.md` | `tests/evals/**`, `scripts/run_evals.py` if requested | `python scripts/run_evals.py` |
 | 更新 API 文档 | `docs/observability-local.md`, `src/multimodal_agent/api/routes_agent.py`, API tests | docs first; source only in implementation tasks | `python -m pytest tests/test_api_* tests/test_websocket_*` |
 | Work on Haodanku provider | `haodanku-openapi-docs/AI使用说明.md`, `haodanku-openapi-docs/接口目录.md`, relevant interface doc | provider docs/source only when task asks | `python -m pytest tests/test_haodanku_product_search_adapter.py` |
@@ -150,6 +150,7 @@ If a command is missing or fails during a docs-only task, record the command and
 - `AGENTS.md` is the agent behavior and repository guardrail entry.
 - `docs/CODEX_PROJECT_GUIDE.md` is the current Codex project understanding entry.
 - `docs/DOCS_INDEX.md` is the documentation inventory and cleanup status source.
+- `docs/memory-service-architecture.md` is the current memory service architecture and routing entry.
 - `docs/TESTS_REVIEW.md` is the tests cleanup/readiness audit.
 - Top-level `docs/*.md` are current user/developer references unless the index says otherwise.
 - Historical phase/task/skill docs are retained or archived by default, not deleted directly.
