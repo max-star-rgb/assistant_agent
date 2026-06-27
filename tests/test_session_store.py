@@ -54,6 +54,19 @@ def test_jsonl_session_store_persists_records(tmp_path) -> None:
     assert record.last_message_preview == "第一轮"
 
 
+def test_jsonl_session_store_skips_invalid_records(tmp_path, caplog) -> None:
+    path = tmp_path / "sessions.jsonl"
+    path.write_text('{"user_id": "u1"\n', encoding="utf-8")
+    store = JsonlSessionStore(path)
+
+    record = store.create(SessionCreate(user_id="u2"), session_id="s2")
+
+    assert record.session_id == "s2"
+    assert store.list_by_user("u1") == []
+    assert store.list_by_user("u2") == [record]
+    assert "Skipping invalid session record" in caplog.text
+
+
 def test_session_store_delete_by_user_is_scoped(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path / "sessions.jsonl")
     store.create(SessionCreate(user_id="u1"), session_id="s1")

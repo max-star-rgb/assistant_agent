@@ -109,7 +109,11 @@ def test_memory_dedicated_openai_schemas_do_not_expose_action() -> None:
 
     assert "action" not in retrieval["properties"]
     assert "action" not in save["properties"]
-    assert retrieval["required"] == ["user_id"]
-    assert save["required"] == ["user_id"]
+    assert "user_id" not in retrieval["properties"]
+    assert "user_id" not in save["properties"]
+    assert "session_id" not in retrieval["properties"]
+    assert "session_id" not in save["properties"]
+    assert retrieval["required"] == []
+    assert save["required"] == []
     assert "query" in retrieval["properties"]
     assert "content" in save["properties"]

@@ -28,7 +28,7 @@ class MemoryRetrievalInput(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    user_id: str = Field(min_length=1)
+    user_id: str | None = None
     session_id: str | None = None
     query: str | None = None
     content: dict = Field(default_factory=dict)
@@ -39,7 +39,7 @@ class MemorySaveInput(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    user_id: str = Field(min_length=1)
+    user_id: str | None = None
     session_id: str | None = None
     query: str | None = None
     content: dict = Field(default_factory=dict)
@@ -52,6 +52,7 @@ class MemoryTool(MockTool):
     output_schema = MemoryItem
 
     def _run(self, input: MemoryInput, context: ToolContext) -> ToolResult:
+        input = _bind_context_identity(input, context)
         if input.action == "retrieve":
             if not input.query:
                 contract = build_capability_output_contract(
@@ -137,7 +138,9 @@ class MemoryRetrievalTool(MemoryTool):
     input_schema = MemoryRetrievalInput
 
     def _run(self, input: MemoryRetrievalInput, context: ToolContext) -> ToolResult:
-        payload = MemoryInput(action="retrieve", **input.model_dump())
+        payload = _dedicated_memory_input("retrieve", input, context, self.name)
+        if isinstance(payload, ToolResult):
+            return payload
         return super()._run(payload, context)
 
 
@@ -146,13 +149,42 @@ class MemorySaveTool(MemoryTool):
     input_schema = MemorySaveInput
 
     def _run(self, input: MemorySaveInput, context: ToolContext) -> ToolResult:
-        payload = MemoryInput(action="save", **input.model_dump())
+        payload = _dedicated_memory_input("save", input, context, self.name)
+        if isinstance(payload, ToolResult):
+            return payload
         return super()._run(payload, context)
 
 
 def _manager_from_context(context: ToolContext) -> MemoryManager | None:
     manager = context.metadata.get("memory_manager")
     return manager if isinstance(manager, MemoryManager) else None
+
+
+def _dedicated_memory_input(
+    action: Literal["retrieve", "save"],
+    input: MemoryRetrievalInput | MemorySaveInput,
+    context: ToolContext,
+    tool_name: str,
+) -> MemoryInput | ToolResult:
+    user_id = context.user_id or input.user_id
+    if not user_id:
+        return ToolResult(tool_name=tool_name, success=False, error="缺少用户身份，无法访问记忆")
+    return MemoryInput(
+        action=action,
+        user_id=user_id,
+        session_id=context.session_id or input.session_id,
+        query=input.query,
+        content=input.content,
+    )
+
+
+def _bind_context_identity(input: MemoryInput, context: ToolContext) -> MemoryInput:
+    updates: dict[str, str] = {}
+    if context.user_id:
+        updates["user_id"] = context.user_id
+    if context.session_id:
+        updates["session_id"] = context.session_id
+    return input.model_copy(update=updates) if updates else input
 
 
 def _retrieve_with_manager(input: MemoryInput, manager: MemoryManager, tool_name: str) -> ToolResult | None:

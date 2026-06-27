@@ -112,7 +112,8 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "formatReactSteps" not in html
     assert "new WebSocket" in html
     assert "params.set(\"user_id\", userId)" in html
-    assert "params.set(\"execution_strategy\", currentExecutionStrategy())" in html
+    assert "execution_strategy: currentExecutionStrategy()" in html
+    assert "socket.send(JSON.stringify(requestPayload))" in html
     assert "/ws/agent/" in html
     assert "Run detail panel" not in html
     assert "Trace detail panel" not in html

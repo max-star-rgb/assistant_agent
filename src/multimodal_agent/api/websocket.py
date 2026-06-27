@@ -6,7 +6,7 @@ import logging
 from threading import Thread
 from typing import Any
 
-from fastapi import APIRouter, Query, WebSocket
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.schemas.events import AgentEvent
@@ -70,7 +70,7 @@ def mock_agent_events(session_id: str) -> list[AgentEvent]:
 async def agent_websocket(
     websocket: WebSocket,
     session_id: str,
-    text: str = Query(...),
+    text: str | None = Query(default=None),
     user_id: str = Query(default="web_chat_user"),
     client_kind: str = Query(default="web", alias="client"),
     image_id: list[str] | None = Query(default=None),
@@ -95,18 +95,41 @@ async def agent_websocket(
         await websocket.close(code=1008)
         return
     await websocket.accept()
-    logger.info("[ws] session=%s user=%s 收到: %s", session_id, user_id, _preview(text))
+    try:
+        request_payload = await _read_request_payload(
+            websocket,
+            text=text,
+            image_ids=list(image_id or []),
+            video_ids=list(video_id or []),
+            execution_strategy=execution_strategy,
+        )
+    except WebSocketDisconnect:
+        return
+    except ValueError as exc:
+        await websocket.send_json(
+            AgentEvent(
+                type="agent_error",
+                session_id=session_id,
+                error={"code": "BAD_REQUEST", "message": str(exc), "detail": {}, "recoverable": True},
+            ).model_dump(mode="json", exclude_none=True)
+        )
+        await websocket.close(code=1003)
+        return
+
+    request_text = request_payload["text"]
+    request_execution_strategy = request_payload["execution_strategy"]
+    logger.info("[ws] session=%s user=%s 收到: %s", session_id, user_id, _preview(request_text))
     request = UserRequest(
         user_id=user_id,
         session_id=session_id,
-        text=text,
-        image_ids=list(image_id or []),
-        video_ids=list(video_id or []),
-        execution_strategy=_execution_strategy(execution_strategy),
+        text=request_text,
+        image_ids=request_payload["image_ids"],
+        video_ids=request_payload["video_ids"],
+        execution_strategy=_execution_strategy(request_execution_strategy),
         metadata={
             "source": _request_source(client_kind),
             "transport": "websocket",
-            "execution_strategy": _execution_strategy(execution_strategy),
+            "execution_strategy": _execution_strategy(request_execution_strategy),
         },
     )
     loop = asyncio.get_running_loop()
@@ -159,6 +182,50 @@ async def agent_websocket(
         await websocket.send_json(event.model_dump(mode="json", exclude_none=True))
     worker.join(timeout=1)
     await websocket.close()
+
+
+async def _read_request_payload(
+    websocket: WebSocket,
+    *,
+    text: str | None,
+    image_ids: list[str],
+    video_ids: list[str],
+    execution_strategy: str,
+) -> dict[str, Any]:
+    if text is not None:
+        return {
+            "text": text,
+            "image_ids": image_ids,
+            "video_ids": video_ids,
+            "execution_strategy": execution_strategy,
+        }
+
+    try:
+        payload = await asyncio.wait_for(websocket.receive_json(), timeout=15)
+    except TimeoutError as exc:
+        raise ValueError("WebSocket request payload was not received.") from exc
+    except WebSocketDisconnect:
+        raise
+    except Exception as exc:
+        raise ValueError("Invalid WebSocket request payload.") from exc
+
+    request_text = payload.get("text")
+    if not isinstance(request_text, str) or not request_text.strip():
+        raise ValueError("WebSocket request text is required.")
+    return {
+        "text": request_text,
+        "image_ids": _payload_id_list(payload.get("image_ids"), fallback=image_ids),
+        "video_ids": _payload_id_list(payload.get("video_ids"), fallback=video_ids),
+        "execution_strategy": str(payload.get("execution_strategy") or execution_strategy),
+    }
+
+
+def _payload_id_list(value: Any, *, fallback: list[str]) -> list[str]:
+    if value is None:
+        return fallback
+    if not isinstance(value, list):
+        return fallback
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _can_bypass_trial_access(websocket: WebSocket, client_kind: str) -> bool:

@@ -19,6 +19,8 @@ htmlcov/
 !/docs/CODEX_PROJECT_GUIDE.md
 !/docs/DOCS_INDEX.md
 !/docs/TESTS_REVIEW.md
+!/docs/archive/
+!/docs/archive/**
 /prompts/
 /skills/
 /demo_data/

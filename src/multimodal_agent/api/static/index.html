@@ -142,6 +142,37 @@
         color: #98a2b3;
       }
 
+      .user-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        overflow: hidden;
+      }
+
+      .user-icon {
+        font-size: 14px;
+        flex-shrink: 0;
+      }
+
+      .logout-btn {
+        width: 100%;
+        padding: 6px 12px;
+        border: 1px solid #475467;
+        background: transparent;
+        color: #d0d5dd;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 500;
+        transition: all 0.15s;
+      }
+
+      .logout-btn:hover {
+        background: #344054;
+        border-color: #667085;
+      }
+
       /* Main Content */
       .main-wrapper {
         flex: 1;
@@ -880,7 +911,11 @@
       </div>
       <div class="sessions-list" id="sessions-list"></div>
       <div class="sidebar-footer">
-        <div id="user-display">未登录</div>
+        <div class="user-info">
+          <span class="user-icon">👤</span>
+          <span id="user-display">未登录</span>
+        </div>
+        <button class="logout-btn" type="button" id="logout-btn" hidden>退出登录</button>
       </div>
     </aside>
     <div class="main-wrapper">
@@ -1078,6 +1113,8 @@
           void refreshMemorySnapshot();
         }
       });
+      // Logout button
+      document.getElementById('logout-btn').addEventListener("click", logout);
 
       async function runAssistant() {
         const text = messageInput.value.trim();
@@ -1173,23 +1210,39 @@
         const sessionId = currentSessionId || generateSessionId();
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
         const params = new URLSearchParams();
-	        params.set("user_id", userId);
-	        params.set("text", text);
-	        params.set("execution_strategy", currentExecutionStrategy());
-	        for (const id of parseIds(imageIdsInput.value)) {
-          params.append("image_id", id);
-        }
-        for (const id of parseIds(videoIdsInput.value)) {
-          params.append("video_id", id);
-        }
+        params.set("user_id", userId);
         const url = `${protocol}//${window.location.host}/ws/agent/${encodeURIComponent(sessionId)}?${params.toString()}`;
+        const messagePayload = {
+          text,
+          image_ids: parseIds(imageIdsInput.value),
+          video_ids: parseIds(videoIdsInput.value),
+          execution_strategy: currentExecutionStrategy(),
+        };
+        const agentRequest = {
+          user_id: userId,
+          session_id: sessionId,
+          ...messagePayload,
+        };
+        return runAssistantWebSocket(url, messagePayload).catch((error) => {
+          if (!isWebSocketConnectError(error)) {
+            throw error;
+          }
+          setStatus("WebSocket 不可用，已切换到 HTTP 模式...");
+          return runAssistantHttpFallback(agentRequest);
+        });
+      }
+
+      function runAssistantWebSocket(url, requestPayload) {
         const eventLines = [];
         reactProcess.textContent = formatRuntimeInfo();
         return new Promise((resolve, reject) => {
           const socket = new WebSocket(url);
           let finalPayload = null;
           let finalError = null;
-          socket.onopen = () => renderLiveProcess(eventLines, null);
+          socket.onopen = () => {
+            socket.send(JSON.stringify(requestPayload));
+            renderLiveProcess(eventLines, null);
+          };
           socket.onmessage = (message) => {
             const event = JSON.parse(message.data);
             const timelineLine = formatTimelineEvent(event);
@@ -1220,6 +1273,27 @@
             }
           };
         });
+      }
+
+      async function runAssistantHttpFallback(requestPayload) {
+        const payload = await fetchJson("/agent/run", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...requestPayload,
+            metadata: {
+              source: "web_console",
+              transport: "http_fallback",
+              execution_strategy: requestPayload.execution_strategy,
+            },
+          }),
+        });
+        payload._timeline_lines = ["[transport] WebSocket unavailable; used HTTP fallback."];
+        return payload;
+      }
+
+      function isWebSocketConnectError(error) {
+        return String(error && error.message ? error.message : error).includes("WebSocket 连接失败");
       }
 
       // Session Management Functions
@@ -2476,12 +2550,33 @@
         document.querySelector('.main-wrapper').classList.toggle('authenticated', enabled);
         document.querySelector('.menu-toggle').classList.toggle('authenticated', enabled);
         document.getElementById('login-section').hidden = enabled;
+        document.getElementById('logout-btn').hidden = !enabled;
         if (!enabled) {
-          
-          
+          // Reset all state
+          sessions = {};
+          currentSessionId = null;
+          productResults = [];
+          imageResults = [];
+          currentProductRound = 0;
+          currentImageRound = 0;
+          renderSessionsList();
+          renderConversationHistory([]);
+          updateResultsDisplay();
           renderMemorySnapshot(null);
           setStatus("请先验证工号。");
         }
+      }
+
+      function logout() {
+        // Clear localStorage
+        localStorage.removeItem(USER_STORAGE_KEY);
+        localStorage.removeItem(SESSIONS_STORAGE_KEY + '_' + verifiedTrialUserId);
+        // Reset user state
+        verifiedTrialUserId = "";
+        document.getElementById('user-display').textContent = "未登录";
+        setExperienceEnabled(false);
+        // Clear input field
+        trialUserIdInput.value = "";
       }
 
       function renderExamples(examples) {

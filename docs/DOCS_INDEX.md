@@ -44,14 +44,14 @@ Status values:
 | `tasks/phase8/**` | historical | Phase 8 task specifications. Useful when continuing a specific task, but not a global project guide. | archive-later |
 | `tasks/phase1-7/**` | historical | Completed historical task specifications and phase indexes. Keep for audit trail; do not delete by default. | archive-later |
 | `prompts/phase8/*.md` | historical | Prompt-only execution starters. They contain task path typos such as `task/phase8/...` instead of `tasks/phase8/...`; task docs are the real boundary. | archive-later |
-| `prompts/phase1-7/**` | archive-candidate | Old Codex startup/task/review prompts for earlier phases. They are useful as history but should not be in the default reading path. | archive-later |
+| `docs/archive/2026-06-26/prompts/phase1-7/**` | historical | Archived from `prompts/phase1-7/**`. Old Codex startup/task/review prompts for earlier phases; useful as history but no longer in the default reading path. | keep |
 | `skills/assistant-demo-flow/**` | reference | Offline demo-flow skill remains conceptually useful, but some doc paths reference old Phase 1-7 locations. | update |
 | `skills/offline-mcp-tools/**` | reference | Offline MCP smoke and inventory skill remains useful for packaging checks. | keep |
 | `skills/phase5i-runner/**` | historical | Historical phase runner skill and prompts. | archive-later |
 | `skills/phase5j-runner/**` | historical | Historical phase runner skill and prompts. | archive-later |
 | `skills/phase6*-runner/**` | historical | Historical phase runner skills and prompts. | archive-later |
 | `skills/phase7*-runner/**` | historical | Historical phase runner skills and prompts. | archive-later |
-| `skills/phase8-runner/SKILL.md` | archive-candidate | Stale runner: it references non-current paths such as `docs/phase8_A1_react_assistant_loop.md` and says conditional graph remains default, while current code defaults to `assistant_loop`. | archive-later |
+| `docs/archive/2026-06-26/skills/phase8-runner/SKILL.md` | historical | Archived from `skills/phase8-runner/SKILL.md`. Stale runner: it references non-current paths such as `docs/phase8_A1_react_assistant_loop.md` and says conditional graph remains default, while current code defaults to `assistant_loop`. | keep |
 | `skills/README_USE_PHASE6.md` | historical | Historical instructions for Phase 6 skill usage. | archive-later |
 | `skills/README_USE_PHASE7.md` | historical | Historical instructions for Phase 7 skill usage. | archive-later |
 | `haodanku-openapi-docs/AI使用说明.md` | reference | Required entry for Haodanku-related development. | keep |
@@ -62,9 +62,7 @@ Status values:
 | `demo_data/README.md` | reference | Safe local demo media/data policy. | keep |
 | `.env.example` | reference | Placeholder-only local configuration template; not a real env file. | keep |
 | `pyproject.toml` | reference | Package/test configuration rather than prose docs; needed for validation commands. | keep |
-| `hello_agent_latest.docx` | archive-candidate | Long 2026-06-10 design document. It has background value, but current architecture is better represented by code plus `docs/CODEX_PROJECT_GUIDE.md`. Binary format makes diff/review poor. | archive-later |
-| `FILE_TREE.txt` | delete-candidate | Stale template tree for an earlier guide package. It is duplicated and superseded by `docs/CODEX_PROJECT_GUIDE.md` repository map and current `find`/git state; it does not reflect current `src`, `docs/phase8`, or tests layout. | delete-after-human-review |
-| `prompts/phase8/.~lock.run-assistant-loop-mvp.md#` | delete-candidate | OnlyOffice lock metadata, not project documentation. The real prompt is `prompts/phase8/run-assistant-loop-mvp.md`; current entry guidance is absorbed by `tasks/phase8/**` and `docs/CODEX_PROJECT_GUIDE.md`. | delete-after-human-review |
+| `docs/archive/2026-06-26/hello_agent_latest.docx` | historical | Archived from `hello_agent_latest.docx`. Long 2026-06-10 design document. It has background value, but current architecture is better represented by code plus `docs/CODEX_PROJECT_GUIDE.md`. Binary format makes diff/review poor. | keep |
 | `src/multimodal_agent/api/readme.md` | delete-candidate | Two-line API startup note duplicated by `README.md` and `docs/quickstart.md`; it lives under `src/**`, so do not touch it in this task. | delete-after-human-review |
 | `.pytest_cache/README.md` | delete-candidate | Pytest-generated cache documentation, not repository docs. It is generated and should not be maintained as project documentation. | delete-after-human-review |
 | `.local/memory/readme_memory.md` | unknown | Local memory note under `.local`; likely generated/local-only and not part of committed documentation. Needs human confirmation before any action. | keep |
@@ -75,3 +73,23 @@ Status values:
 - Every `delete-candidate` requires human review before deletion.
 - If a stale document still contains unique implementation history, archive it rather than delete it.
 - Keep README, AGENTS, `docs/CODEX_PROJECT_GUIDE.md`, and `docs/DOCS_INDEX.md` synchronized.
+
+## Cleanup Log
+
+### 2026-06-26
+
+Archived:
+
+- `prompts/phase1-7/**` -> `docs/archive/2026-06-26/prompts/phase1-7/**`
+- `skills/phase8-runner/SKILL.md` -> `docs/archive/2026-06-26/skills/phase8-runner/SKILL.md`
+- `hello_agent_latest.docx` -> `docs/archive/2026-06-26/hello_agent_latest.docx`
+
+Deleted:
+
+- `FILE_TREE.txt`: stale template tree superseded by `docs/CODEX_PROJECT_GUIDE.md`.
+- `prompts/phase8/.~lock.run-assistant-loop-mvp.md#`: editor lock metadata, not project documentation.
+
+Retained:
+
+- `src/multimodal_agent/api/readme.md`: still `delete-candidate`, but `src/**` is out of scope for this cleanup.
+- `.pytest_cache/README.md`: still `delete-candidate`, but its reason does not explicitly say it was absorbed by `docs/CODEX_PROJECT_GUIDE.md` or README/AGENTS.

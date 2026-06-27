@@ -50,6 +50,7 @@ class ToolExecutor:
         trace_id: str | None = None,
         node_name: str | None = None,
     ) -> ToolResult:
+        tool_input = _bind_runtime_identity(tool_name, tool_input, state)
         call = state.add_tool_call(tool_name, tool_input)
         capability = _capability_name(tool_name, step)
         budget = state.provider_budget
@@ -323,6 +324,18 @@ def _capability_name(tool_name: str, step: TaskStep | None) -> str:
         "memory_save": "memory_save",
     }
     return tool_map.get(tool_name, tool_name)
+
+
+def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
+    """Bind memory ownership to the authenticated runtime state, not model arguments."""
+
+    if tool_name not in {"memory", "memory_retrieval", "memory_save"}:
+        return tool_input
+    return {
+        **tool_input,
+        "user_id": state.user_id,
+        "session_id": state.session_id,
+    }
 
 
 def _record_provider_budget_call(

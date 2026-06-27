@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
+
+from pydantic import ValidationError
 
 from multimodal_agent.agent.state import new_session_id
 from multimodal_agent.config import ProviderConfig
@@ -13,6 +16,7 @@ from multimodal_agent.schemas.sessions import SessionCreate, SessionRecord
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+logger = logging.getLogger("multimodal_agent.services.session_store")
 
 
 class SessionStore(Protocol):
@@ -180,9 +184,13 @@ class JsonlSessionStore:
             return []
         records: list[SessionRecord] = []
         with self.path.open("r", encoding="utf-8") as file:
-            for line in file:
-                if line.strip():
+            for lineno, line in enumerate(file, start=1):
+                if not line.strip():
+                    continue
+                try:
                     records.append(SessionRecord.model_validate_json(line))
+                except ValidationError:
+                    logger.warning("Skipping invalid session record in %s at line %s", self.path, lineno)
         return records
 
     def _write_all(self, records: list[SessionRecord]) -> None:

@@ -130,6 +130,22 @@ def test_memory_save_tool_accepts_query_as_explicit_text() -> None:
     assert store.search(MemoryQuery(user_id="u1", query="黑色通勤包")).items
 
 
+def test_memory_save_tool_uses_context_identity_over_model_input() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+
+    result = MemorySaveTool().run(
+        {"user_id": "user_default", "session_id": "model_session", "query": "记住我喜欢黄瓜味薯片"},
+        ToolContext(user_id="00test", session_id="web_session", metadata={"memory_manager": manager}),
+    )
+
+    assert result.success is True
+    assert store.list_by_user("user_default") == []
+    saved = store.search(MemoryQuery(user_id="00test", query="黄瓜味薯片")).items
+    assert saved
+    assert {item.session_id for item in saved} == {"web_session"}
+
+
 def test_memory_save_tool_rejects_missing_explicit_text() -> None:
     store = InMemoryStore()
     manager = MemoryManager(store)

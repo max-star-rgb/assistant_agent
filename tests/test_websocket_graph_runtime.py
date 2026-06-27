@@ -63,6 +63,25 @@ def test_websocket_uses_graph_runtime_event_sequence() -> None:
     assert events[-1]["run_id"].startswith("run_")
 
 
+def test_websocket_accepts_initial_json_request_payload() -> None:
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/ws/agent/json-payload?user_id=web_user") as websocket:
+        websocket.send_json(
+            {
+                "text": "帮我找相似款",
+                "image_ids": [],
+                "video_ids": [],
+                "execution_strategy": "react",
+            }
+        )
+        events = _receive_until(websocket, "agent_response")
+
+    assert events[0]["type"] == "task_started"
+    assert events[-1]["type"] == "agent_response"
+    assert events[-1]["payload"]["response"]["status"] == "completed"
+
+
 def test_websocket_first_event_streams_before_final_response() -> None:
     client = TestClient(create_app())
 

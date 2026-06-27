@@ -63,7 +63,7 @@ class ToolRegistry:
                 ToolSpec(
                     name=tool.name,
                     description=tool.description,
-                    input_schema=_schema_to_dict(tool.input_schema),
+                    input_schema=_schema_to_dict(tool.input_schema, tool_name=tool.name),
                     required_inputs=_required_inputs(tool.input_schema),
                     when_to_use=usage.get("when_to_use", []),
                     when_not_to_use=usage.get("when_not_to_use", []),
@@ -78,7 +78,7 @@ class ToolRegistry:
         return [spec.model_dump(mode="json") for spec in self.list_specs()]
 
 
-def _schema_to_dict(schema_type):
+def _schema_to_dict(schema_type, *, tool_name: str | None = None):
     """Convert a Pydantic model to a safe schema description."""
     try:
         schema = schema_type.model_json_schema()
@@ -86,6 +86,8 @@ def _schema_to_dict(schema_type):
         required = set(schema.get("required", []))
         fields = {}
         for field_name, field_info in properties.items():
+            if _hide_runtime_identity_field(tool_name, field_name):
+                continue
             fields[field_name] = {
                 "type": field_info.get("type", "string"),
                 "description": field_info.get("description", ""),
@@ -94,6 +96,10 @@ def _schema_to_dict(schema_type):
         return {"fields": fields}
     except Exception:
         return {"fields": {}}
+
+
+def _hide_runtime_identity_field(tool_name: str | None, field_name: str) -> bool:
+    return tool_name in {"memory_retrieval", "memory_save"} and field_name in {"user_id", "session_id"}
 
 
 def _required_inputs(schema_type) -> list[str]:

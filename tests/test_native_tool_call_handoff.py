@@ -173,7 +173,7 @@ def test_native_memory_save_only_when_llm_selects_tool() -> None:
         [
             native_result(
                 "memory_save",
-                {"user_id": "u1", "session_id": "s1", "query": "记住我喜欢小红书轻松口吻"},
+                {"query": "记住我喜欢小红书轻松口吻"},
             ),
             final_result("已记住你喜欢小红书轻松口吻。"),
         ]
@@ -194,9 +194,41 @@ def test_native_memory_save_only_when_llm_selects_tool() -> None:
     assert store.search(MemoryQuery(user_id="u1", query="小红书轻松口吻")).items
 
 
+def test_native_memory_save_binds_user_id_from_runtime_not_model_args() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "memory_save",
+                {
+                    "user_id": "user_default",
+                    "session_id": "model_session",
+                    "query": "记住我喜欢黄瓜味薯片",
+                },
+            ),
+            final_result("已记住你喜欢黄瓜味薯片。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="00test", session_id="web_session", text="记住我喜欢黄瓜味薯片"))
+
+    assert [call.tool_name for call in state.tool_calls] == ["memory_save"]
+    assert state.tool_calls[0].input["user_id"] == "00test"
+    assert state.tool_calls[0].input["session_id"] == "web_session"
+    assert store.list_by_user("user_default") == []
+    saved = store.search(MemoryQuery(user_id="00test", query="黄瓜味薯片")).items
+    assert saved
+    assert {item.session_id for item in saved} == {"web_session"}
+
+
 def test_native_empty_memory_save_is_rejected_before_execution() -> None:
     store = InMemoryStore()
-    adapter = NativeToolChatAdapter([native_result("memory_save", {"user_id": "u1", "content": {"style": "日系"}})])
+    adapter = NativeToolChatAdapter([native_result("memory_save", {"content": {"style": "日系"}})])
     runtime = AgentGraphRuntime(
         config=ProviderConfig(assistant_tool_call_mode="native_tools"),
         chat_adapter=adapter,

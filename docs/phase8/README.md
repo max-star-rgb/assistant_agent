@@ -170,6 +170,8 @@ decision reason -> action -> observation -> final_answer
 
 真实 ReAct / provider-native 路径中，是否调用 `memory_retrieval` / `memory_save` 是 assistant 的语义决策：普通首次文案、搜索、生成或建议任务应直接处理；只有用户明确引用上次、之前、历史对话、已保存记忆、继续之前任务或“按我的已保存偏好”时才检索记忆。写入记忆同样由 assistant 选择 `memory_save` 作为候选 action，本地 `ActionValidator` / `MemoryWritePolicy` / `MemoryManager` 负责必填字段、敏感信息、去重、profile 更新和审计边界。assistant loop 图尾不再自动把每次运行总结写入长期记忆；mock/offline 和旧 conditional demo 路径可保留规则化 memory 行为用于稳定测试。
 
+记忆归属必须绑定运行时身份：即使 provider-native tool call 参数中包含 `user_id` / `session_id`，本地执行也使用 `UserRequest.user_id` / `UserRequest.session_id` 写入和检索，避免模型生成的默认值（例如 `user_default`）污染其他用户的长期记忆。
+
 ### Prompt Tool Catalog Boundary
 
 `prompt_json` 路径可以按用户请求只渲染相关 `ToolSpec`，降低 prompt 噪声和上下文成本。该召回只影响 prompt 文本中的工具说明，不是权限系统：
