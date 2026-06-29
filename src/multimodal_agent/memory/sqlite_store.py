@@ -10,10 +10,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
-from multimodal_agent.schemas.memory_audit import MemoryAuditEvent
+from multimodal_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class SQLiteMemoryStore:
@@ -256,6 +256,135 @@ class SQLiteMemoryStore:
             ).fetchall()
         return [MemoryAuditEvent.model_validate_json(str(row["payload"])) for row in rows]
 
+    def save_confirmation(self, confirmation: MemoryPendingConfirmation) -> MemoryPendingConfirmation:
+        """Persist a pending or resolved memory confirmation."""
+
+        payload = json.dumps(confirmation.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_confirmations (
+                    user_id,
+                    confirmation_id,
+                    tenant_id,
+                    project_id,
+                    session_id,
+                    memory_id,
+                    status,
+                    memory_type,
+                    scope,
+                    destination,
+                    sensitivity,
+                    summary,
+                    payload,
+                    created_at,
+                    expires_at,
+                    decided_at,
+                    confirmed_memory_id,
+                    version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(user_id, confirmation_id) DO UPDATE SET
+                    tenant_id = excluded.tenant_id,
+                    project_id = excluded.project_id,
+                    session_id = excluded.session_id,
+                    memory_id = excluded.memory_id,
+                    status = excluded.status,
+                    memory_type = excluded.memory_type,
+                    scope = excluded.scope,
+                    destination = excluded.destination,
+                    sensitivity = excluded.sensitivity,
+                    summary = excluded.summary,
+                    payload = excluded.payload,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at,
+                    decided_at = excluded.decided_at,
+                    confirmed_memory_id = excluded.confirmed_memory_id,
+                    version = memory_confirmations.version + 1
+                """,
+                (
+                    confirmation.user_id,
+                    confirmation.confirmation_id,
+                    confirmation.tenant_id,
+                    confirmation.project_id,
+                    confirmation.session_id,
+                    confirmation.memory_id,
+                    confirmation.status,
+                    confirmation.memory_type,
+                    confirmation.scope,
+                    confirmation.destination,
+                    confirmation.sensitivity,
+                    confirmation.summary,
+                    payload,
+                    confirmation.created_at.isoformat(),
+                    confirmation.expires_at.isoformat() if confirmation.expires_at else None,
+                    confirmation.decided_at.isoformat() if confirmation.decided_at else None,
+                    confirmation.confirmed_memory_id,
+                ),
+            )
+        return confirmation
+
+    def get_confirmation(self, user_id: str, confirmation_id: str) -> MemoryPendingConfirmation | None:
+        """Return one persisted memory confirmation for a user."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload
+                FROM memory_confirmations
+                WHERE user_id = ? AND confirmation_id = ?
+                """,
+                (user_id, confirmation_id),
+            ).fetchone()
+        return MemoryPendingConfirmation.model_validate_json(str(row["payload"])) if row else None
+
+    def list_confirmations(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        include_resolved: bool = True,
+        limit: int = 1000,
+    ) -> list[MemoryPendingConfirmation]:
+        """List persisted memory confirmations visible to one identity."""
+
+        resolved_limit = max(1, min(limit, 1000))
+        clauses = [
+            "user_id = ?",
+            "(tenant_id IS NULL OR tenant_id = ?)",
+            "(project_id IS NULL OR project_id = ?)",
+        ]
+        params: list[object] = [user_id, tenant_id, project_id]
+        if not include_resolved:
+            clauses.append("status = 'pending'")
+        params.append(resolved_limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT payload
+                FROM memory_confirmations
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at DESC, confirmation_id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [MemoryPendingConfirmation.model_validate_json(str(row["payload"])) for row in rows]
+
+    def delete_confirmation(self, user_id: str, confirmation_id: str) -> bool:
+        """Delete one persisted memory confirmation."""
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM memory_confirmations
+                WHERE user_id = ? AND confirmation_id = ?
+                """,
+                (user_id, confirmation_id),
+            )
+            return cursor.rowcount > 0
+
     def backup_to(self, destination: Path | str, *, overwrite: bool = False) -> Path:
         """Create a consistent SQLite backup that includes memories and audit events."""
 
@@ -313,13 +442,14 @@ class SQLiteMemoryStore:
         return [str(row[0]) for row in rows]
 
     def rebuild_indexes(self) -> None:
-        """Rebuild memory and audit indexes without changing stored payload rows."""
+        """Rebuild memory, audit, and confirmation indexes without changing stored payload rows."""
 
         with self._connect() as connection:
             for index_name in _SQLITE_INDEX_NAMES:
                 connection.execute(f"DROP INDEX IF EXISTS {index_name}")
             _ensure_memory_schema(connection)
             _ensure_audit_schema(connection)
+            _ensure_confirmation_schema(connection)
 
     def _initialize(self, *, new_database: bool) -> None:
         with self._connect() as connection:
@@ -327,6 +457,7 @@ class SQLiteMemoryStore:
                 connection.execute("PRAGMA journal_mode=WAL")
                 _ensure_memory_schema(connection)
                 _ensure_audit_schema(connection)
+                _ensure_confirmation_schema(connection)
                 connection.execute(
                     "INSERT INTO memory_schema_version(version) VALUES (?)",
                     (SCHEMA_VERSION,),
@@ -337,6 +468,7 @@ class SQLiteMemoryStore:
             if row is None:
                 _ensure_memory_schema(connection)
                 _ensure_audit_schema(connection)
+                _ensure_confirmation_schema(connection)
                 connection.execute(
                     "INSERT INTO memory_schema_version(version) VALUES (?)",
                     (SCHEMA_VERSION,),
@@ -353,11 +485,13 @@ class SQLiteMemoryStore:
 
             _ensure_memory_schema(connection)
             _ensure_audit_schema(connection)
+            _ensure_confirmation_schema(connection)
             if current_version < SCHEMA_VERSION:
                 self._migrate(connection, current_version)
 
     def _migrate(self, connection: sqlite3.Connection, _current_version: int) -> None:
         _ensure_audit_schema(connection)
+        _ensure_confirmation_schema(connection)
         connection.execute("UPDATE memory_schema_version SET version = ?", (SCHEMA_VERSION,))
 
     @contextmanager
@@ -438,6 +572,10 @@ _SQLITE_INDEX_NAMES = (
     "idx_memory_audit_events_user_type",
     "idx_memory_audit_events_user_session",
     "idx_memory_audit_events_memory",
+    "idx_memory_confirmations_user_status",
+    "idx_memory_confirmations_user_session",
+    "idx_memory_confirmations_user_created",
+    "idx_memory_confirmations_memory",
 )
 
 
@@ -481,6 +619,46 @@ def _ensure_audit_schema(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_audit_events_memory ON memory_audit_events(user_id, memory_id)"
+    )
+
+
+def _ensure_confirmation_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_confirmations (
+            user_id TEXT NOT NULL,
+            confirmation_id TEXT NOT NULL,
+            tenant_id TEXT,
+            project_id TEXT,
+            session_id TEXT,
+            memory_id TEXT,
+            status TEXT NOT NULL,
+            memory_type TEXT NOT NULL,
+            scope TEXT,
+            destination TEXT NOT NULL,
+            sensitivity TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            decided_at TEXT,
+            confirmed_memory_id TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (user_id, confirmation_id)
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_confirmations_user_status ON memory_confirmations(user_id, status)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_confirmations_user_session ON memory_confirmations(user_id, session_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_confirmations_user_created ON memory_confirmations(user_id, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_confirmations_memory ON memory_confirmations(user_id, memory_id)"
     )
 
 

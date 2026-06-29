@@ -571,8 +571,22 @@ class MemoryManager:
     ) -> list[MemoryPendingConfirmation]:
         """List memory confirmations visible to an identity."""
 
-        confirmations: list[MemoryPendingConfirmation] = []
+        confirmations_by_id: dict[str, MemoryPendingConfirmation] = {}
+        list_confirmations = getattr(self.store, "list_confirmations", None)
+        if callable(list_confirmations):
+            for confirmation in list_confirmations(
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                include_resolved=True,
+                limit=1000,
+            ):
+                confirmations_by_id[confirmation.confirmation_id] = confirmation
         for confirmation in self._pending_confirmations.values():
+            confirmations_by_id[confirmation.confirmation_id] = confirmation
+
+        confirmations: list[MemoryPendingConfirmation] = []
+        for confirmation in confirmations_by_id.values():
             if not _identity_allows_confirmation(identity, confirmation):
                 continue
             current = _confirmation_with_expired_status(confirmation)
@@ -588,7 +602,7 @@ class MemoryManager:
     ) -> MemoryPendingConfirmation | None:
         """Return one visible memory confirmation if it exists."""
 
-        confirmation = self._pending_confirmations.get(confirmation_id)
+        confirmation = self._get_confirmation(identity.user_id, confirmation_id)
         if confirmation is None or not _identity_allows_confirmation(identity, confirmation):
             return None
         return _confirmation_with_expired_status(confirmation)
@@ -602,14 +616,14 @@ class MemoryManager:
     ) -> MemoryPendingConfirmation | None:
         """Confirm a pending explicit memory and persist the redacted payload."""
 
-        confirmation = self._pending_confirmations.get(confirmation_id)
+        confirmation = self._get_confirmation(identity.user_id, confirmation_id)
         if confirmation is None or not _identity_allows_confirmation(identity, confirmation):
             return None
         if _confirmation_is_expired(confirmation):
             expired = confirmation.model_copy(
                 update={"status": "expired", "decided_at": datetime.now(timezone.utc)}
             )
-            self._pending_confirmations[confirmation_id] = expired
+            self._save_confirmation(expired)
             self.record_audit_event(
                 "memory_confirmation_decided",
                 user_id=identity.user_id,
@@ -661,7 +675,7 @@ class MemoryManager:
                 "confirmed_memory_id": saved.memory_id,
             }
         )
-        self._pending_confirmations[confirmation_id] = confirmed
+        self._save_confirmation(confirmed)
         self.record_audit_event(
             "memory_explicit_saved",
             user_id=saved.user_id,
@@ -704,7 +718,7 @@ class MemoryManager:
     ) -> MemoryPendingConfirmation | None:
         """Reject a pending explicit-memory confirmation without persisting memory."""
 
-        confirmation = self._pending_confirmations.get(confirmation_id)
+        confirmation = self._get_confirmation(identity.user_id, confirmation_id)
         if confirmation is None or not _identity_allows_confirmation(identity, confirmation):
             return None
         if confirmation.status != "pending":
@@ -713,7 +727,7 @@ class MemoryManager:
         decided = confirmation.model_copy(
             update={"status": status, "decided_at": datetime.now(timezone.utc)}
         )
-        self._pending_confirmations[confirmation_id] = decided
+        self._save_confirmation(decided)
         self.record_audit_event(
             "memory_confirmation_decided",
             user_id=identity.user_id,
@@ -740,13 +754,15 @@ class MemoryManager:
     ) -> int:
         confirmation_ids = [
             confirmation.confirmation_id
-            for confirmation in self._pending_confirmations.values()
+            for confirmation in self.list_confirmations_for_identity(identity, include_resolved=True)
             if _identity_allows_confirmation(identity, confirmation)
             and (session_id is None or confirmation.session_id == session_id)
         ]
+        deleted = 0
         for confirmation_id in confirmation_ids:
-            del self._pending_confirmations[confirmation_id]
-        return len(confirmation_ids)
+            if self._delete_confirmation(identity.user_id, confirmation_id):
+                deleted += 1
+        return deleted
 
     def rebuild_user_profile_for_identity(
         self,
@@ -932,8 +948,34 @@ class MemoryManager:
             created_at=now,
             expires_at=now + timedelta(seconds=self.default_confirmation_ttl_seconds),
         )
+        return self._save_confirmation(confirmation)
+
+    def _save_confirmation(self, confirmation: MemoryPendingConfirmation) -> MemoryPendingConfirmation:
         self._pending_confirmations[confirmation.confirmation_id] = confirmation
+        save_confirmation = getattr(self.store, "save_confirmation", None)
+        if callable(save_confirmation):
+            return save_confirmation(confirmation)
         return confirmation
+
+    def _get_confirmation(self, user_id: str, confirmation_id: str) -> MemoryPendingConfirmation | None:
+        confirmation = self._pending_confirmations.get(confirmation_id)
+        if confirmation is not None and confirmation.user_id == user_id:
+            return confirmation
+        get_confirmation = getattr(self.store, "get_confirmation", None)
+        if callable(get_confirmation):
+            return get_confirmation(user_id, confirmation_id)
+        return None
+
+    def _delete_confirmation(self, user_id: str, confirmation_id: str) -> bool:
+        deleted = False
+        confirmation = self._pending_confirmations.get(confirmation_id)
+        if confirmation is not None and confirmation.user_id == user_id:
+            del self._pending_confirmations[confirmation_id]
+            deleted = True
+        delete_confirmation = getattr(self.store, "delete_confirmation", None)
+        if callable(delete_confirmation):
+            deleted = bool(delete_confirmation(user_id, confirmation_id)) or deleted
+        return deleted
 
     def _merge_or_save(self, item: MemoryItem) -> MemoryItem:
         duplicate = self._find_duplicate(item)

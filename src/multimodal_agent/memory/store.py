@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import Protocol
 
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
+from multimodal_agent.schemas.memory_audit import MemoryPendingConfirmation
 
 
 class MemoryStore(Protocol):
@@ -39,6 +40,7 @@ class InMemoryStore:
 
     def __init__(self) -> None:
         self._items_by_user: dict[str, dict[str, MemoryItem]] = defaultdict(dict)
+        self._confirmations_by_user: dict[str, dict[str, MemoryPendingConfirmation]] = defaultdict(dict)
 
     def save(self, item: MemoryItem) -> MemoryItem:
         self._items_by_user[item.user_id][item.memory_id] = item
@@ -90,3 +92,38 @@ class InMemoryStore:
 
     def clear_user(self, user_id: str) -> None:
         self._items_by_user.pop(user_id, None)
+        self._confirmations_by_user.pop(user_id, None)
+
+    def save_confirmation(self, confirmation: MemoryPendingConfirmation) -> MemoryPendingConfirmation:
+        self._confirmations_by_user[confirmation.user_id][confirmation.confirmation_id] = confirmation
+        return confirmation
+
+    def get_confirmation(self, user_id: str, confirmation_id: str) -> MemoryPendingConfirmation | None:
+        return self._confirmations_by_user.get(user_id, {}).get(confirmation_id)
+
+    def list_confirmations(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        include_resolved: bool = True,
+        limit: int = 1000,
+    ) -> list[MemoryPendingConfirmation]:
+        confirmations = [
+            confirmation
+            for confirmation in self._confirmations_by_user.get(user_id, {}).values()
+            if (confirmation.tenant_id is None or confirmation.tenant_id == tenant_id)
+            and (confirmation.project_id is None or confirmation.project_id == project_id)
+            and (include_resolved or confirmation.status == "pending")
+        ]
+        return sorted(confirmations, key=lambda item: item.created_at, reverse=True)[: max(1, limit)]
+
+    def delete_confirmation(self, user_id: str, confirmation_id: str) -> bool:
+        user_confirmations = self._confirmations_by_user.get(user_id)
+        if not user_confirmations or confirmation_id not in user_confirmations:
+            return False
+        del user_confirmations[confirmation_id]
+        if not user_confirmations:
+            self._confirmations_by_user.pop(user_id, None)
+        return True

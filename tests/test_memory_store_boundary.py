@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 
 from multimodal_agent.memory.jsonl_store import JsonlMemoryStore
-from multimodal_agent.memory.manager import MemoryManager
+from multimodal_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
 from multimodal_agent.memory.sqlite_store import SCHEMA_VERSION, SQLiteMemoryStore
 from multimodal_agent.memory.store import InMemoryStore, MemoryStore
 from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
-from multimodal_agent.schemas.memory_audit import MemoryAuditEvent
+from multimodal_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -132,6 +132,23 @@ def test_sqlite_store_migrates_v1_database_to_audit_log(tmp_path) -> None:
     assert count == 1
 
 
+def test_sqlite_store_migrates_v2_database_to_confirmations(tmp_path) -> None:
+    path = tmp_path / "memories.sqlite3"
+    with _sqlite_connection(path) as connection:
+        connection.execute("CREATE TABLE memory_schema_version (version INTEGER NOT NULL)")
+        connection.execute("INSERT INTO memory_schema_version(version) VALUES (2)")
+
+    store = SQLiteMemoryStore(path)
+    store.save_confirmation(make_confirmation("confirmation_v2"))
+
+    with _sqlite_connection(path) as connection:
+        version = connection.execute("SELECT version FROM memory_schema_version LIMIT 1").fetchone()[0]
+        count = connection.execute("SELECT COUNT(*) FROM memory_confirmations").fetchone()[0]
+
+    assert version == SCHEMA_VERSION
+    assert count == 1
+
+
 def test_sqlite_store_soft_delete_hides_and_save_restores_item(tmp_path) -> None:
     path = tmp_path / "memories.sqlite3"
     store = SQLiteMemoryStore(path)
@@ -201,6 +218,29 @@ def test_sqlite_store_rolls_back_failed_audit_event_transaction(tmp_path) -> Non
     assert count == 0
 
 
+def test_sqlite_store_rolls_back_failed_confirmation_transaction(tmp_path) -> None:
+    path = tmp_path / "memories.sqlite3"
+    store = SQLiteMemoryStore(path)
+    with _sqlite_connection(path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_confirmation_insert
+            AFTER INSERT ON memory_confirmations
+            BEGIN
+                SELECT RAISE(ABORT, 'forced confirmation rollback');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced confirmation rollback"):
+        store.save_confirmation(make_confirmation("confirmation_fail"))
+
+    with _sqlite_connection(path) as connection:
+        count = connection.execute("SELECT COUNT(*) FROM memory_confirmations WHERE user_id = ?", ("u1",)).fetchone()[0]
+
+    assert count == 0
+
+
 def test_sqlite_store_handles_concurrent_store_instances(tmp_path) -> None:
     path = tmp_path / "memories.sqlite3"
     SQLiteMemoryStore(path)
@@ -251,6 +291,37 @@ def test_sqlite_store_persists_audit_events_across_instances(tmp_path) -> None:
     )
 
 
+def test_sqlite_store_persists_memory_confirmations_across_instances(tmp_path) -> None:
+    path = tmp_path / "memories.sqlite3"
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+    manager = MemoryManager(SQLiteMemoryStore(path))
+
+    with pytest.raises(MemoryConfirmationRequired) as raised:
+        manager.save_explicit_for_identity(
+            identity,
+            text="记住我的项目路径是 /home/alice/private/project",
+        )
+    confirmation_id = raised.value.confirmation.confirmation_id
+
+    reloaded = MemoryManager(SQLiteMemoryStore(path))
+    pending = reloaded.list_confirmations_for_identity(identity)
+    confirmed = reloaded.confirm_memory_for_identity(identity, confirmation_id)
+
+    assert [confirmation.confirmation_id for confirmation in pending] == [confirmation_id]
+    assert confirmed is not None
+    assert confirmed.status == "confirmed"
+
+    final_store = SQLiteMemoryStore(path)
+    saved = final_store.get("u1", confirmed.confirmed_memory_id or "")
+    resolved = final_store.get_confirmation("u1", confirmation_id)
+
+    assert saved is not None
+    assert saved.summary == "我的项目路径是 [redacted]"
+    assert resolved is not None
+    assert resolved.status == "confirmed"
+    assert resolved.confirmed_memory_id == saved.memory_id
+
+
 def test_sqlite_store_backup_restore_includes_memories_audit_and_rebuilds_indexes(tmp_path) -> None:
     path = tmp_path / "memories.sqlite3"
     backup_path = tmp_path / "backup" / "memories-backup.sqlite3"
@@ -264,6 +335,12 @@ def test_sqlite_store_backup_restore_includes_memories_audit_and_rebuilds_indexe
         text="记住我喜欢白色运动鞋",
         content={"summary": "用户喜欢白色运动鞋。", "style": "白色运动鞋"},
     )
+    with pytest.raises(MemoryConfirmationRequired) as raised:
+        manager.save_explicit_for_identity(
+            identity,
+            text="记住我的项目路径是 /home/alice/private/project",
+        )
+    confirmation_id = raised.value.confirmation.confirmation_id
     store.backup_to(backup_path)
     restored = SQLiteMemoryStore.restore_backup(backup_path, restored_path)
 
@@ -275,17 +352,23 @@ def test_sqlite_store_backup_restore_includes_memories_audit_and_rebuilds_indexe
         event.event_type == "memory_explicit_saved" and event.memory_id == saved.memory_id
         for event in restored.list_audit_events(user_id="u1")
     )
+    assert [confirmation.confirmation_id for confirmation in restored.list_confirmations(user_id="u1")] == [
+        confirmation_id
+    ]
 
     with _sqlite_connection(restored_path) as connection:
         connection.execute("DROP INDEX IF EXISTS idx_memory_items_user_created")
         connection.execute("DROP INDEX IF EXISTS idx_memory_audit_events_user_time")
+        connection.execute("DROP INDEX IF EXISTS idx_memory_confirmations_user_status")
     assert "idx_memory_items_user_created" not in _sqlite_index_names(restored_path)
     assert "idx_memory_audit_events_user_time" not in _sqlite_index_names(restored_path)
+    assert "idx_memory_confirmations_user_status" not in _sqlite_index_names(restored_path)
 
     restored.rebuild_indexes()
 
     assert "idx_memory_items_user_created" in _sqlite_index_names(restored_path)
     assert "idx_memory_audit_events_user_time" in _sqlite_index_names(restored_path)
+    assert "idx_memory_confirmations_user_status" in _sqlite_index_names(restored_path)
 
 
 def test_sqlite_store_backup_and_restore_overwrite_are_explicit(tmp_path) -> None:
@@ -401,4 +484,22 @@ def make_audit_event(event_id: str, user_id: str = "u1") -> MemoryAuditEvent:
         summary="audit event",
         counts={"memory_items": 1},
         metadata={"include_content": False},
+    )
+
+
+def make_confirmation(confirmation_id: str, user_id: str = "u1") -> MemoryPendingConfirmation:
+    return MemoryPendingConfirmation(
+        confirmation_id=confirmation_id,
+        user_id=user_id,
+        session_id="s1",
+        memory_id="pending_memory",
+        status="pending",
+        memory_type="task",
+        destination="task_checkpoint",
+        sensitivity="high",
+        reason="sensitive explicit memory requires user confirmation",
+        summary="我的项目路径是 [redacted]",
+        redacted_payload={"summary": "我的项目路径是 [redacted]", "memory_type": "task"},
+        content_preview={"summary": "我的项目路径是 [redacted]"},
+        created_at=NOW,
     )

@@ -31,6 +31,7 @@ Status values:
 | `docs/quickstart.md` | canonical | Current local mock/offline quickstart. | link-from-index |
 | `docs/development.md` | canonical | Current development commands and coding constraints. | link-from-index |
 | `docs/development/agent-control-plane-plan.md` | reference | Phased Local Multi-Agent Gateway + inbound/outbound A2A control-plane plan; use for gateway routing, delegation safety, delegation context/budget controls, A2A conformance, outbound pilot, and pilot-readiness work. | keep |
+| `docs/development/agent-production-auth-observability-plan.md` | reference | Planned production-auth-ready and observability-ready Agent Control Plane hardening plan; use for AuthContext production boundary, control-plane observability, audit/replay hygiene, and pilot readiness hardening. | keep |
 | `docs/development/memory-kernel-hardening-plan.md` | reference | Phased Memory Kernel hardening execution plan for future memory engineering; complements `docs/memory-service-architecture.md`. | keep |
 | `docs/development/memory-sqlite-operator-runbook.md` | reference | Local SQLite memory backup, restore, integrity check, index rebuild, migration rollback, and corruption-response runbook for the Memory Kernel. | keep |
 | `docs/development/context-engine-memory-policy-plan.md` | reference | Completed staged Context Engine + Memory Policy implementation log; use for historical decisions and phase traceability, not as the current context-engineering entry. | keep |
