@@ -261,17 +261,19 @@ Selection rules:
 P0 progress:
 
 - 2026-06-29: Added `SQLiteMemoryStore` behind the existing `MemoryStore` contract, with `ProviderConfig(memory_backend="sqlite")` and factory routing. The v1 schema includes `memory_schema_version`, indexed `memory_items`, user-scoped primary key, content hash column, transactional upsert, and delete behavior that hides rows from retrieval/list/get. Store contract and runtime integration tests cover save/search/get/delete, relative paths, default sqlite path selection, and cross-runtime persistence.
+- 2026-06-29: Added SQLite hardening tests for newer-schema rejection, older-schema migration hook, soft-delete hiding and restore-on-save, failed transaction rollback, concurrent store-instance writes, and stable content hash/version increments. The store enables WAL only when creating a new database to avoid repeatedly switching journal mode on every store initialization; it keeps explicit transactions, `busy_timeout`, and `synchronous=NORMAL`.
+- 2026-06-29: Added `RequestIdentity` as the memory service identity boundary and threaded it through `MemoryManager`, memory tools, `MemoryAuditService`, `MemorySnapshotService`, and memory API routes. Current identity is still derived from local requests, tool context, or API path parameters; future auth-bound identity can replace that construction point without rewriting stores.
 
 SQLite P0 requirements:
 
 - `schema_version` table. Initial v1 exists.
-- Forward migrations and rollback notes. Migration hook exists; rollback/runbook notes still needed.
-- Transaction wrapper for save/update/delete/profile upsert. Store-level save/delete transactions exist; profile-specific transaction tests still needed.
+- Forward migrations and rollback notes. Migration hook and newer-schema rejection are tested; rollback/runbook notes still needed.
+- Transaction wrapper for save/update/delete/profile upsert. Store-level save/delete rollback tests exist; profile-specific transaction tests still needed.
 - Unique user-scoped content hash or dedupe key. Current primary key is `(user_id, memory_id)` with `content_hash`; dedupe-key policy remains future work.
 - Indexes for `user_id`, `project_id`, `session_id`, `scope`, `kind`, `expires_at`, `deleted_at`, `content_hash`. Current schema indexes `user_id`, `session_id`, `memory_type`, `expires_at`, `deleted_at`, and `content_hash`; project/scope/kind fields wait for schema evolution.
-- Soft delete support. Delete hides rows via `deleted_at`; hard-delete/retention sweeper still needed.
+- Soft delete support. Delete hides rows via `deleted_at`, and restore-on-save is tested; hard-delete/retention sweeper still needed.
 - Backup/export path.
-- Corruption/migration failure tests.
+- Corruption/migration failure tests. Newer-schema rejection is covered; corrupt database and migration rollback tests still needed.
 
 ## Lifecycle And Privacy
 
@@ -372,9 +374,9 @@ Goal: local engineering-grade memory, still offline and deterministic.
 Work:
 
 1. Add `SQLiteMemoryStore`. Initial implementation done on 2026-06-29.
-2. Add schema version and migration runner. Initial v1 schema and migration hook done on 2026-06-29; migration failure/rollback tests still needed.
+2. Add schema version and migration runner. Initial v1 schema, migration hook, and newer-schema rejection tests done on 2026-06-29; migration rollback/runbook still needed.
 3. Add transaction/lock behavior and user-scoped unique dedupe key.
-4. Shape `RequestIdentity` and thread it through service APIs where practical.
+4. Shape `RequestIdentity` and thread it through service APIs where practical. Initial request-derived identity boundary is implemented on 2026-06-29; auth-bound principal integration and project/tenant/scope enforcement remain future work.
 5. Promote `MemoryWritePolicy` into a decision object with allow/reject/confirmation reasons.
 6. Add token-aware `MemoryContextBuilder` behind existing context metadata.
 7. Add soft delete, export, and audit log foundation.

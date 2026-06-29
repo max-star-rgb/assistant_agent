@@ -7,6 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from multimodal_agent.memory.manager import MemoryManager
+from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.memory import MemoryQuery
 from multimodal_agent.schemas.tools import ToolResult
@@ -188,6 +189,7 @@ def _bind_context_identity(input: MemoryInput, context: ToolContext) -> MemoryIn
 
 
 def _retrieve_with_manager(input: MemoryInput, manager: MemoryManager, tool_name: str) -> ToolResult | None:
+    identity = RequestIdentity.for_user(user_id=input.user_id, session_id=input.session_id)
     query = MemoryQuery(
         user_id=input.user_id,
         query=input.query or "",
@@ -195,7 +197,7 @@ def _retrieve_with_manager(input: MemoryInput, manager: MemoryManager, tool_name
         top_k=_int_content(input.content, "top_k", default=5),
         max_context_chars=_int_content(input.content, "max_context_chars", default=500),
     )
-    result = manager.search(query)
+    result = manager.search_for_identity(identity, query)
     if not result.items:
         return None
 
@@ -232,10 +234,10 @@ def _save_with_manager(
     text = _explicit_save_text(input)
     if not text:
         return _missing_memory_save_content(tool_name)
-    item = manager.save_explicit(
+    identity = RequestIdentity.for_user(user_id=input.user_id, session_id=session_id)
+    item = manager.save_explicit_for_identity(
+        identity,
         memory_id=f"explicit_memory_{uuid4().hex}",
-        user_id=input.user_id,
-        session_id=session_id,
         text=text,
         content=input.content,
     )

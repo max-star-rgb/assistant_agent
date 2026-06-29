@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
+from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem, MemoryType
 from multimodal_agent.schemas.memory_audit import (
     MemoryAuditItem,
@@ -28,29 +29,74 @@ class MemoryAuditService:
         memory_type: MemoryType | None = None,
         include_content: bool = False,
     ) -> MemoryAuditList:
-        items = self._filtered_items(user_id=user_id, memory_type=memory_type)
+        return self.list_items_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            memory_type=memory_type,
+            include_content=include_content,
+        )
+
+    def list_items_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        memory_type: MemoryType | None = None,
+        include_content: bool = False,
+    ) -> MemoryAuditList:
+        items = self._filtered_items(identity=identity, memory_type=memory_type)
         return MemoryAuditList(
-            user_id=user_id,
+            user_id=identity.user_id,
             total=len(items),
             items=[MemoryAuditItem.from_memory(item, include_content=include_content) for item in items],
         )
 
     def get_item(self, *, user_id: str, memory_id: str, include_content: bool = True) -> MemoryAuditItem | None:
-        item = self.memory_manager.get(user_id, memory_id)
+        return self.get_item_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            memory_id=memory_id,
+            include_content=include_content,
+        )
+
+    def get_item_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        memory_id: str,
+        include_content: bool = True,
+    ) -> MemoryAuditItem | None:
+        item = self.memory_manager.get_for_identity(identity, memory_id)
         if item is None:
             return None
         return MemoryAuditItem.from_memory(item, include_content=include_content)
 
     def delete_item(self, *, user_id: str, memory_id: str) -> MemoryDeleteResult:
-        deleted = 1 if self.memory_manager.delete(user_id, memory_id) else 0
-        return MemoryDeleteResult(user_id=user_id, deleted={"memory_items": deleted})
+        return self.delete_item_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            memory_id=memory_id,
+        )
+
+    def delete_item_for_identity(self, identity: RequestIdentity, *, memory_id: str) -> MemoryDeleteResult:
+        deleted = 1 if self.memory_manager.delete_for_identity(identity, memory_id) else 0
+        return MemoryDeleteResult(user_id=identity.user_id, deleted={"memory_items": deleted})
 
     def delete_session(self, *, user_id: str, session_id: str) -> MemoryDeleteResult:
-        deleted = self.memory_manager.delete_by_session(user_id, session_id)
-        return MemoryDeleteResult(user_id=user_id, deleted={"memory_items": deleted})
+        return self.delete_session_for_identity(
+            RequestIdentity.for_user(user_id=user_id, session_id=session_id),
+        )
+
+    def delete_session_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        session_id: str | None = None,
+    ) -> MemoryDeleteResult:
+        deleted = self.memory_manager.delete_session_for_identity(identity, session_id=session_id)
+        return MemoryDeleteResult(user_id=identity.user_id, deleted={"memory_items": deleted})
 
     def audit(self, *, user_id: str) -> MemoryAuditReport:
-        items = self.memory_manager.list_by_user(user_id)
+        return self.audit_for_identity(RequestIdentity.for_user(user_id=user_id))
+
+    def audit_for_identity(self, identity: RequestIdentity) -> MemoryAuditReport:
+        items = self.memory_manager.list_for_identity(identity)
         by_type = Counter(item.memory_type for item in items)
         by_source = Counter(item.source for item in items)
         duplicate_groups = _duplicate_groups(items)
@@ -65,7 +111,7 @@ class MemoryAuditService:
             warnings.append("user_profile_missing")
 
         return MemoryAuditReport(
-            user_id=user_id,
+            user_id=identity.user_id,
             total=len(items),
             by_type=dict(by_type),
             by_source=dict(by_source),
@@ -77,8 +123,8 @@ class MemoryAuditService:
             warnings=warnings,
         )
 
-    def _filtered_items(self, *, user_id: str, memory_type: MemoryType | None) -> list[MemoryItem]:
-        items = self.memory_manager.list_by_user(user_id)
+    def _filtered_items(self, *, identity: RequestIdentity, memory_type: MemoryType | None) -> list[MemoryItem]:
+        items = self.memory_manager.list_for_identity(identity)
         if memory_type is not None:
             items = [item for item in items if item.memory_type == memory_type]
         return items

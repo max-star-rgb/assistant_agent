@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Request
 
 from multimodal_agent.api.routes_agent import get_agent_gateway, get_trial_access_gate
 from multimodal_agent.schemas.a2a import (
+    A2AAgentCard,
     A2A_JSONRPC_VERSION,
     A2A_SEND_MESSAGE_METHODS,
     A2AJsonRpcRequest,
@@ -16,6 +18,7 @@ from multimodal_agent.schemas.a2a import (
     JSONRPC_INVALID_PARAMS,
     JSONRPC_INVALID_REQUEST,
     JSONRPC_METHOD_NOT_FOUND,
+    JSONRPC_PARSE_ERROR,
 )
 from multimodal_agent.services.a2a_adapter import (
     A2AInvalidParams,
@@ -28,7 +31,7 @@ from multimodal_agent.services.a2a_adapter import (
 router = APIRouter()
 
 
-@router.get("/.well-known/agent-card.json")
+@router.get("/.well-known/agent-card.json", response_model=A2AAgentCard)
 def get_agent_card(request: Request) -> dict[str, Any]:
     """Expose a local A2A agent card for discovery."""
 
@@ -36,9 +39,17 @@ def get_agent_card(request: Request) -> dict[str, Any]:
 
 
 @router.post("/a2a/rpc", response_model=A2AJsonRpcResponse)
-def a2a_json_rpc(payload: Any = Body(...)) -> A2AJsonRpcResponse:
+async def a2a_json_rpc(request: Request) -> A2AJsonRpcResponse:
     """Handle A2A JSON-RPC requests over the local gateway."""
 
+    payload = await _read_json_payload(request)
+    if isinstance(payload, _JsonParseFailure):
+        return _error_response(
+            None,
+            JSONRPC_PARSE_ERROR,
+            "Parse error.",
+            data={"detail": payload.message},
+        )
     if not isinstance(payload, dict):
         return _error_response(
             None,
@@ -46,33 +57,41 @@ def a2a_json_rpc(payload: Any = Body(...)) -> A2AJsonRpcResponse:
             "JSON-RPC request must be an object.",
         )
     try:
-        request = A2AJsonRpcRequest.model_validate(payload)
+        rpc_request = A2AJsonRpcRequest.model_validate(payload)
     except Exception as exc:
         return _error_response(
-            payload.get("id") if isinstance(payload, dict) else None,
+            _request_id_from_payload(payload),
             JSONRPC_INVALID_REQUEST,
             "Invalid JSON-RPC request.",
-            data={"detail": str(exc)},
+            data={"detail": _request_validation_detail(exc)},
         )
-    if request.method not in A2A_SEND_MESSAGE_METHODS:
+    if rpc_request.params is None:
+        rpc_request.params = {}
+    if not isinstance(rpc_request.params, dict):
         return _error_response(
-            request.id,
+            rpc_request.id,
+            JSONRPC_INVALID_PARAMS,
+            "A2A params must be an object.",
+        )
+    if rpc_request.method not in A2A_SEND_MESSAGE_METHODS:
+        return _error_response(
+            rpc_request.id,
             JSONRPC_METHOD_NOT_FOUND,
-            f"Unsupported A2A method: {request.method}",
-            data={"method": request.method},
+            f"Unsupported A2A method: {rpc_request.method}",
+            data={"method": rpc_request.method},
         )
     try:
-        gateway_request = gateway_request_from_a2a_params(request.params)
+        gateway_request = gateway_request_from_a2a_params(rpc_request.params)
     except A2AInvalidParams as exc:
         return _error_response(
-            request.id,
+            rpc_request.id,
             JSONRPC_INVALID_PARAMS,
             str(exc),
         )
     access = get_trial_access_gate().check(gateway_request.user_id)
     if not access.allowed:
         return _error_response(
-            request.id,
+            rpc_request.id,
             JSONRPC_INVALID_PARAMS,
             access.reason or "trial user is not allowed",
             data={"user_id": gateway_request.user_id},
@@ -81,21 +100,53 @@ def a2a_json_rpc(payload: Any = Body(...)) -> A2AJsonRpcResponse:
         response = get_agent_gateway().run(gateway_request)
     except Exception as exc:  # pragma: no cover - defensive protocol boundary
         return _error_response(
-            request.id,
+            rpc_request.id,
             JSONRPC_INTERNAL_ERROR,
             "A2A request failed.",
-            data={"detail": str(exc)},
+            data={"detail": exc.__class__.__name__},
         )
-    source_message = request.params.get("message") if isinstance(request.params.get("message"), dict) else {}
+    source_message = rpc_request.params.get("message") if isinstance(rpc_request.params.get("message"), dict) else {}
     return A2AJsonRpcResponse(
         jsonrpc=A2A_JSONRPC_VERSION,
-        id=request.id,
+        id=rpc_request.id,
         result=task_from_gateway_response(
             response,
             request=gateway_request,
             source_message=source_message,
         ),
     )
+
+
+class _JsonParseFailure:
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+
+async def _read_json_payload(request: Request) -> Any | _JsonParseFailure:
+    raw = await request.body()
+    if not raw:
+        return _JsonParseFailure("Request body is empty.")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return _JsonParseFailure(exc.msg)
+    except UnicodeDecodeError:
+        return _JsonParseFailure("Request body is not valid UTF-8 JSON.")
+
+
+def _request_validation_detail(exc: Exception) -> str:
+    if hasattr(exc, "errors"):
+        return "schema_validation"
+    return exc.__class__.__name__
+
+
+def _request_id_from_payload(payload: Any) -> str | int | None:
+    if not isinstance(payload, dict):
+        return None
+    request_id = payload.get("id")
+    if isinstance(request_id, bool):
+        return None
+    return request_id if isinstance(request_id, str | int) or request_id is None else None
 
 
 def _error_response(

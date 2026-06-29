@@ -281,13 +281,13 @@ Remaining risks:
 
 ## Phase D: Inbound A2A Conformance
 
-Status: not started.
+Status: done.
 
 Goal:
 
 - Make the local A2A server compatible enough for external callers without expanding permissions.
 
-Planned controls:
+Implemented controls:
 
 - Agent Card versioning and public capability filtering.
 - Public method list.
@@ -303,6 +303,36 @@ Acceptance checks:
 - Unknown methods return method-not-found.
 - Business failures become failed tasks.
 - Successful final answer appears as an artifact.
+
+Implemented files:
+
+- `src/multimodal_agent/schemas/a2a.py`
+- `src/multimodal_agent/services/a2a_adapter.py`
+- `src/multimodal_agent/api/routes_a2a.py`
+- `tests/test_api_a2a.py`
+
+Validation run on 2026-06-29:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_api_a2a.py \
+  tests/test_agent_gateway.py \
+  tests/test_agent_routing_policy.py \
+  tests/test_agent_communication_routing.py \
+  tests/test_api_agent_graph_runtime.py
+```
+
+Result:
+
+```text
+50 passed
+```
+
+Remaining risks:
+
+- This is inbound compatibility only; outbound A2A transport remains explicitly out of scope until Phase F.
+- Agent Card auth is declared as not required for local/offline mode; pilot auth binding remains Phase G work.
+- The adapter implements the current local `SendMessage` / `message/send` subset, not the full A2A task lifecycle.
 
 ## Phase E: Context, Memory, And Budget Across Agents
 

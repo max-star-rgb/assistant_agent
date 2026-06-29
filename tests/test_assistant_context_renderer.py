@@ -440,6 +440,109 @@ def test_context_pack_compacts_large_product_observations_without_mutating_origi
     assert "observation_context_compacted" in pack.budget.compression_reasons
 
 
+def test_context_pack_prunes_media_file_payloads_without_mutating_original() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="识别这张收据")
+    state = AgentState.from_request(request)
+    image_payload = "data:image/png;base64," + ("A" * 2400)
+    frame_payload = "data:image/png;base64," + ("B" * 2400)
+    file_payload = "secret file body " * 400
+    observation = {
+        "tool_name": "vision_understanding",
+        "status": "succeeded",
+        "summary": "图片中是一张咖啡店收据。",
+        "output_ref": "artifact://vision/result-1",
+        "structured_output": {
+            "artifact_ref": "artifact://vision/result-1",
+            "image_ref": "image://input/receipt-1",
+            "recognized_text": "咖啡 28 元",
+            "labels": ["receipt", "coffee", "store", "paper"],
+            "image_base64": image_payload,
+            "file_content": file_payload,
+            "provider_response": {"api_key": "sk-test", "body": "raw provider response"},
+            "frames": [
+                {
+                    "timestamp_ms": 0,
+                    "summary": "收据正面",
+                    "raw_frame_base64": frame_payload,
+                }
+            ],
+        },
+    }
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[observation],
+        tool_specs=[],
+        iteration=1,
+        max_iterations=5,
+    )
+
+    compacted = pack.observations[0]
+    structured = compacted["structured_output"]
+    prompt = render_prompt_json_context(pack).prompt_json or ""
+
+    assert observation["structured_output"]["image_base64"] == image_payload
+    assert observation["structured_output"]["file_content"] == file_payload
+    assert structured["artifact_ref"] == "artifact://vision/result-1"
+    assert structured["image_ref"] == "image://input/receipt-1"
+    assert structured["recognized_text"] == "咖啡 28 元"
+    assert structured["labels"] == ["receipt", "coffee", "store"]
+    assert "image_base64" not in structured
+    assert "file_content" not in structured
+    assert "provider_response" not in structured
+    assert "raw_frame_base64" not in structured["frames"][0]
+    assert image_payload not in prompt
+    assert frame_payload not in prompt
+    assert file_payload not in prompt
+    assert "sk-test" not in prompt
+    assert "artifact://vision/result-1" in prompt
+    assert compacted["compacted"] is True
+    assert "structured_output.image_base64" in compacted["compaction"]["pruned_keys"]
+    assert "structured_output.frames[0].raw_frame_base64" in compacted["compaction"]["pruned_keys"]
+
+
+def test_context_pack_bounds_command_outputs_for_prompt_context() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="总结命令输出")
+    state = AgentState.from_request(request)
+    stdout = "\n".join(f"line {index}" for index in range(50))
+    stderr = "ERR-" + ("e" * 2500) + "-TAIL"
+    observation = {
+        "tool_name": "shell_command",
+        "status": "succeeded",
+        "summary": "Command completed with output.",
+        "structured_output": {
+            "exit_code": 0,
+            "stdout": stdout,
+            "stderr": stderr,
+        },
+    }
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[observation],
+        tool_specs=[],
+        iteration=1,
+        max_iterations=5,
+    )
+
+    compacted = pack.observations[0]
+    structured = compacted["structured_output"]
+    prompt = render_prompt_json_context(pack).prompt_json or ""
+
+    assert observation["structured_output"]["stdout"] == stdout
+    assert observation["structured_output"]["stderr"] == stderr
+    assert "line 0" in structured["stdout"]
+    assert "line 49" not in structured["stdout"]
+    assert "...[30 lines truncated]" in structured["stdout"]
+    assert "-TAIL" not in structured["stderr"]
+    assert len(structured["stderr"]) < len(stderr)
+    assert "e" * 1500 not in prompt
+    assert compacted["compacted"] is True
+    assert "structured_output.stdout" in compacted["compaction"]["command_output_keys"]
+    assert "structured_output.stderr" in compacted["compaction"]["command_output_keys"]
+    assert compacted["compaction"]["max_command_output_lines"] == 20
+
+
 def test_context_pack_enforces_character_budget() -> None:
     request = UserRequest(
         user_id="u1",

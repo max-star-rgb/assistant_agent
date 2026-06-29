@@ -21,7 +21,7 @@ class SQLiteMemoryStore:
     def __init__(self, path: Path | str = ".local/memory/long_term_memories.sqlite3") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        self._initialize(new_database=not self.path.exists())
 
     def save(self, item: MemoryItem) -> MemoryItem:
         payload = json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
@@ -152,8 +152,10 @@ class SQLiteMemoryStore:
                 (user_id,),
             )
 
-    def _initialize(self) -> None:
+    def _initialize(self, *, new_database: bool) -> None:
         with self._connect() as connection:
+            if new_database:
+                connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memory_schema_version (

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.schemas.agent_gateway import AgentGatewayRunRequest
 from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
+from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryType
 from multimodal_agent.schemas.memory_audit import (
     MemoryAuditItem,
@@ -206,8 +207,8 @@ def list_memory_items(
     include_content: bool = Query(default=False),
 ) -> MemoryAuditList:
     _require_trial_access(user_id)
-    return _memory_audit_service().list_items(
-        user_id=user_id,
+    return _memory_audit_service().list_items_for_identity(
+        _memory_identity(user_id),
         memory_type=memory_type,
         include_content=include_content,
     )
@@ -220,8 +221,8 @@ def get_memory_item(
     include_content: bool = Query(default=True),
 ) -> MemoryAuditItem:
     _require_trial_access(user_id)
-    item = _memory_audit_service().get_item(
-        user_id=user_id,
+    item = _memory_audit_service().get_item_for_identity(
+        _memory_identity(user_id),
         memory_id=memory_id,
         include_content=include_content,
     )
@@ -233,7 +234,7 @@ def get_memory_item(
 @router.get("/memory/users/{user_id}/audit", response_model=MemoryAuditReport)
 def audit_memory(user_id: str) -> MemoryAuditReport:
     _require_trial_access(user_id)
-    return _memory_audit_service().audit(user_id=user_id)
+    return _memory_audit_service().audit_for_identity(_memory_identity(user_id))
 
 
 @router.get("/memory/users/{user_id}/snapshot", response_model=MemorySnapshot)
@@ -246,9 +247,8 @@ def get_memory_snapshot(
     include_content: bool = Query(default=False),
 ) -> MemorySnapshot:
     _require_trial_access(user_id)
-    return _memory_snapshot_service().snapshot(
-        user_id=user_id,
-        session_id=session_id,
+    return _memory_snapshot_service().snapshot_for_identity(
+        _memory_identity(user_id, session_id=session_id),
         query=query,
         top_k=top_k,
         max_context_chars=max_context_chars,
@@ -259,7 +259,10 @@ def get_memory_snapshot(
 @router.delete("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryDeleteResult)
 def delete_memory_item(user_id: str, memory_id: str) -> MemoryDeleteResult:
     _require_trial_access(user_id)
-    result = _memory_audit_service().delete_item(user_id=user_id, memory_id=memory_id)
+    result = _memory_audit_service().delete_item_for_identity(
+        _memory_identity(user_id),
+        memory_id=memory_id,
+    )
     if result.deleted.get("memory_items", 0) == 0:
         raise HTTPException(status_code=404, detail="memory item not found")
     return result
@@ -268,7 +271,9 @@ def delete_memory_item(user_id: str, memory_id: str) -> MemoryDeleteResult:
 @router.delete("/memory/users/{user_id}/sessions/{session_id}", response_model=MemoryDeleteResult)
 def delete_memory_session(user_id: str, session_id: str) -> MemoryDeleteResult:
     _require_trial_access(user_id)
-    return _memory_audit_service().delete_session(user_id=user_id, session_id=session_id)
+    return _memory_audit_service().delete_session_for_identity(
+        _memory_identity(user_id, session_id=session_id),
+    )
 
 
 @router.post("/beta/feedback", response_model=BetaFeedbackRecord)
@@ -330,6 +335,10 @@ def _assert_run_belongs_to_user(run_id: str, user_id: str) -> None:
 
 def _memory_audit_service() -> MemoryAuditService:
     return MemoryAuditService(get_agent_runtime().memory_manager)
+
+
+def _memory_identity(user_id: str, *, session_id: str | None = None) -> RequestIdentity:
+    return RequestIdentity.for_user(user_id=user_id, session_id=session_id)
 
 
 def _memory_snapshot_service() -> MemorySnapshotService:

@@ -48,7 +48,7 @@ class A2AJsonRpcRequest(BaseModel):
     jsonrpc: Literal["2.0"] = A2A_JSONRPC_VERSION
     id: str | int | None = None
     method: str = Field(min_length=1)
-    params: dict[str, Any] = Field(default_factory=dict)
+    params: Any = Field(default_factory=dict)
 
 
 class A2AJsonRpcError(BaseModel):
@@ -112,3 +112,35 @@ class A2ATaskResult(BaseModel):
     artifacts: list[A2AArtifact] = Field(default_factory=list)
     history: list[A2AMessage] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class A2AAgentSkill(BaseModel):
+    """Public skill entry exposed in the local agent card."""
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    inputModes: list[str] = Field(default_factory=list)
+    outputModes: list[str] = Field(default_factory=list)
+
+
+class A2AAgentCard(BaseModel):
+    """Public A2A agent card served from the well-known endpoint."""
+
+    protocolVersion: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = ""
+    url: str = Field(min_length=1)
+    preferredTransport: str = Field(min_length=1)
+    additionalInterfaces: list[dict[str, Any]] = Field(default_factory=list)
+    version: str = Field(min_length=1)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    defaultInputModes: list[str] = Field(default_factory=list)
+    defaultOutputModes: list[str] = Field(default_factory=list)
+    skills: list[A2AAgentSkill] = Field(default_factory=list)
+    supportedMethods: list[str] = Field(default_factory=list)
+    authentication: dict[str, Any] = Field(default_factory=dict)
+    securitySchemes: dict[str, Any] = Field(default_factory=dict)
+    security: list[dict[str, list[str]]] = Field(default_factory=list)
+    supportsAuthenticatedExtendedCard: bool = False

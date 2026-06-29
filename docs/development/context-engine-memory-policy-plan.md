@@ -203,7 +203,7 @@ Remaining risks:
 
 ## Phase 5: Token-Aware Budget And Pruning
 
-Status: partial.
+Status: done.
 
 Goal:
 
@@ -298,7 +298,7 @@ Validation on 2026-06-29:
 
 ### Phase 5c: Tool/Media/File Pruning Policy
 
-Status: not started.
+Status: done.
 
 Scope:
 
@@ -308,10 +308,32 @@ Scope:
   - command output keeps bounded lines and chars.
 - Ensure raw file/media/provider payloads do not enter prompt, trace, or memory.
 
+Implemented files:
+
+- `src/multimodal_agent/services/context/compaction.py`
+- `src/multimodal_agent/agent/assistant_loop_nodes.py`
+
+Done:
+
+- Added explicit raw provider/file/media payload key pruning for assistant-facing observation copies.
+- Added inline media data URI pruning so base64 image/video/audio payloads do not enter rendered prompts.
+- Added bounded command output rendering for stdout/stderr/log-style fields.
+- Preserved prompt-safe refs and recognition summaries such as `output_ref`, `artifact_ref`, `image_ref`, `recognized_text`, and transcripts.
+- Extended observation compaction metadata with pruned key names and command-output truncation limits.
+- Extended trace compaction summaries with pruning/truncation counts only, not raw payloads.
+
 Acceptance checks:
 
 - Oversized media/raw file payloads do not enter prompt, trace, or memory.
 - Existing observation compaction tests continue to pass.
+
+Validation on 2026-06-29:
+
+- Focused Phase 5c renderer/trace regression: passed.
+- Standard context/memory/trace regression set: passed.
+- Assistant-loop trace summary regression: passed.
+- `scripts/check_env.py`: passed.
+- `git diff --check`: passed.
 
 ## Phase 6: Observability And API Polish
 
@@ -387,4 +409,4 @@ Start with Phase 3 hardening if the next task is about compactor quality or prov
 
 Start with Phase 4 if the next task is about memory promotion, candidate audit, profile memory, or durable write policy.
 
-Start with Phase 5 if the next task is about token budgets, provider token usage, or large file/media/tool output pruning.
+Start with Phase 6 if the next task is about trace/API field polish or observability docs.

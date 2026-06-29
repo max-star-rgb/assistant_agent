@@ -7,7 +7,9 @@ from multimodal_agent.api import routes_agent
 from multimodal_agent.api.app import create_app
 from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
 from multimodal_agent.memory.store import InMemoryStore
+from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem
+from multimodal_agent.services.memory_audit import MemoryAuditService
 from multimodal_agent.services.trace_store import InMemoryTraceStore
 
 
@@ -93,6 +95,24 @@ def test_memory_audit_api_report_flags_duplicates_and_profile(monkeypatch) -> No
     assert payload["expired_count"] == 1
     assert set(payload["duplicate_groups"][0]["memory_ids"]) == {"m1", "m2"}
     assert "potential_duplicate_memories" in payload["warnings"]
+
+
+def test_memory_audit_service_uses_request_identity_scope() -> None:
+    store = InMemoryStore()
+    runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
+    store.save(_memory("m1", "u1", "task", "用户一任务", session_id="s1"))
+    store.save(_memory("m2", "u1", "task", "用户一另一任务", session_id="s2"))
+    store.save(_memory("m3", "u2", "task", "用户二任务", session_id="s2"))
+    service = MemoryAuditService(runtime.memory_manager)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s2")
+
+    listed = service.list_items_for_identity(identity)
+    deleted = service.delete_session_for_identity(identity)
+
+    assert {item.memory_id for item in listed.items} == {"m1", "m2"}
+    assert deleted.deleted["memory_items"] == 1
+    assert [item.memory_id for item in store.list_by_user("u1")] == ["m1"]
+    assert [item.memory_id for item in store.list_by_user("u2")] == ["m3"]
 
 
 def _memory(

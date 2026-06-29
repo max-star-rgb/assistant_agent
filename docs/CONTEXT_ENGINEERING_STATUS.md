@@ -19,6 +19,7 @@ Last updated: 2026-06-29
 - 真实 provider 返回 context overflow 类错误时，assistant loop 会标准化为 `provider_context_overflow`，触发 hard compaction 后重试一次，仍失败则停止并返回可解释最终回答。
 - Context budget 会报告自动压缩阶段和原因，便于 trace/API 判断是否发生 conversation、observation 或 budget 级压缩。
 - `TokenBudgetReporter` 已作为可选报告层接入；默认压缩触发仍使用字符预算，metadata 启用估算或提供 provider usage 时才填充 token fields。
+- Tool observation compaction 会在 prompt 副本中移除 raw provider/file/media payload、inline media data URI 和过大的命令输出；原始 observation 不被修改。
 - Trace/API 已暴露 context budget、source counts、tool catalog summary 和 observation compaction summary。
 
 ## Implemented
@@ -58,8 +59,11 @@ Last updated: 2026-06-29
 - 工具 observation 在进入 assistant prompt 前会压缩，不修改原始 observation。
 - `product_search` 和 `price_compare` 有专门字段白名单，只保留标题、价格、URL、平台、可用性、评分、相似度等决策必要字段。
 - 列表默认最多保留 3 条，超出记录 omitted count。
-- 字符串默认最多保留 800 字，超出添加 truncated 标记。
-- compaction metadata 记录 original chars、compacted chars、max items 和 max text chars。
+- 字符串默认最多保留 1200 字，超出添加 truncated 标记。
+- raw provider/file/media payload 字段、base64/data URI、HTML/raw body 等高风险内容会从 prompt 副本中移除。
+- image/video/file 类结果保留 `output_ref`、`artifact_ref`、`image_ref`、识别摘要、transcript 等 prompt-safe 信息。
+- command stdout/stderr/log 类输出默认最多保留 20 行和 1200 字符。
+- compaction metadata 记录 original chars、compacted chars、max items、max text chars、被剪掉的 key 名和命令输出裁剪限制；metadata 不记录原始 payload。
 
 ### Prompt Rendering
 
@@ -78,7 +82,7 @@ Last updated: 2026-06-29
 - 超过预算时会在 prompt 副本中裁剪 memory、conversation 和 observations，并记录 `over_budget`、`trimmed_chars`、`trimmed_sections`。
 - `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_usage_high`、`tool_observation_too_large`、`provider_context_overflow`、`explicit_compact`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
-- assistant decision trace 写入 budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数；run/trace 查询会合并最终 save-memory 阶段的 redacted promotion counts。
+- assistant decision trace 写入 budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数；compaction summary 只暴露 pruning/truncation 计数，不暴露 raw payload；run/trace 查询会合并最终 save-memory 阶段的 redacted promotion counts。
 - `/runs/{run_id}` 与 `/traces/{trace_id}` 可查询 context 相关摘要。
 
 ### LLM Compactor And Provider Overflow

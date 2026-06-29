@@ -5,6 +5,7 @@ from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
 from multimodal_agent.memory.store import InMemoryStore
 from multimodal_agent.memory.write_policy import MemoryWritePolicy
+from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.schemas.tools import ToolResult
@@ -63,6 +64,48 @@ def test_memory_manager_records_promotion_candidate_without_default_write() -> N
     audit = state.request.metadata["memory_promotion_candidate_audit"]
     assert audit[0]["allowed"] is False
     assert "content" not in audit[0]
+
+
+def test_memory_manager_search_for_identity_overrides_query_user_id() -> None:
+    store = InMemoryStore()
+    store.save(memory_item("u1_memory", "preference", "用户喜欢浅色日系风格。"))
+    store.save(
+        MemoryItem(
+            memory_id="u2_memory",
+            user_id="u2",
+            session_id="s1",
+            memory_type="preference",
+            summary="另一个用户喜欢浅色日系风格。",
+            created_at=NOW,
+        )
+    )
+    manager = MemoryManager(store)
+
+    result = manager.search_for_identity(
+        RequestIdentity.for_user(user_id="u1"),
+        MemoryQuery(user_id="u2", query="浅色日系"),
+    )
+
+    assert [item.memory_id for item in result.items] == ["u1_memory"]
+
+
+def test_memory_manager_save_explicit_for_identity_ignores_external_user_id() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="trusted_session")
+
+    saved = manager.save_explicit_for_identity(
+        identity,
+        memory_id="m1",
+        text="记住我喜欢浅色日系海报",
+        content={"user_id": "u2", "summary": "记住我喜欢浅色日系海报"},
+        created_at=NOW,
+    )
+
+    assert saved.user_id == "u1"
+    assert saved.session_id == "trusted_session"
+    assert store.list_by_user("u2") == []
+    assert store.get("u1", "m1") is not None
 
 
 def test_memory_manager_writes_completed_run_summary_when_policy_allows() -> None:

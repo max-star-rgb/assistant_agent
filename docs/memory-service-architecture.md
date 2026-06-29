@@ -81,6 +81,7 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/multimodal_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
 | `src/multimodal_agent/memory/write_policy.py` | Safe memory item construction, TTL defaults, raw payload restrictions, explicit memory typing. |
 | `src/multimodal_agent/memory/profile.py` | Compact `user_profile` memory derived from explicit preference/product/task memories. |
+| `src/multimodal_agent/schemas/identity.py` | `RequestIdentity` contract for request/auth-derived user, tenant, project, session, and allowed memory scopes. |
 | `src/multimodal_agent/tools/memory_tool.py` | Agent-callable `memory`, `memory_retrieval`, and `memory_save` tools. Uses `MemoryManager` from tool context when present. |
 | `src/multimodal_agent/services/memory_audit.py` | User-scoped list/get/delete/audit service over `MemoryManager`. |
 | `src/multimodal_agent/services/memory_snapshot.py` | Read-only snapshot combining memory context, session records, conversation history, audit, and storage boundary info. |
@@ -89,6 +90,31 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/multimodal_agent/schemas/memory_snapshot.py` | API-facing memory boundary snapshot models. |
 
 Agent nodes, assistant loops, API routes, MCP routes, and tools should not depend directly on concrete stores. Use `MemoryManager` or a service that wraps it.
+
+## Identity Boundary
+
+Memory access is scoped by `RequestIdentity` at the service boundary:
+
+```text
+RequestIdentity
+  -> tenant_id
+  -> user_id
+  -> project_id
+  -> session_id
+  -> allowed_scopes
+```
+
+Current P0 behavior:
+
+- Local/mock paths derive identity from `UserRequest`, `ToolContext`, or API path parameters.
+- `MemoryManager` exposes identity-aware methods such as `search_for_identity(...)`, `load_context_for_identity(...)`, `save_explicit_for_identity(...)`, `get_for_identity(...)`, `list_for_identity(...)`, and identity-scoped delete helpers.
+- `MemoryAuditService` and `MemorySnapshotService` expose identity-aware methods and keep the legacy `user_id` methods as compatibility wrappers.
+- Memory tools bind identity from `ToolContext` before invoking `MemoryManager`, so model-supplied `user_id` cannot override runtime context.
+
+Current limits:
+
+- API routes still construct `RequestIdentity` from path parameters after trial-access checks. They are shaped for future auth-bound identity, but they are not yet using a real authentication principal.
+- `allowed_scopes`, `tenant_id`, and `project_id` are carried by the contract but not fully enforced by stores because the current `MemoryItem` schema is still user/session scoped.
 
 ## Service Core Vs Tool Adapter
 

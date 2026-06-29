@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 from uuid import uuid4
 
 from multimodal_agent.schemas.a2a import (
     A2A_PROTOCOL_VERSION,
+    A2A_SEND_MESSAGE_METHODS,
+    A2AAgentCard,
     A2AArtifact,
     A2AMessage,
     A2ATaskResult,
@@ -19,6 +22,26 @@ from multimodal_agent.services.agent_gateway import AgentGateway
 
 DEFAULT_A2A_USER_ID = "a2a_user"
 DEFAULT_A2A_SESSION_ID = "a2a_session"
+PUBLIC_CAPABILITY_TAGS = {
+    "agent_delegation",
+    "chat",
+    "image_generation",
+    "memory",
+    "price_compare",
+    "product_search",
+    "render_3d",
+    "tool_calling",
+    "video_understanding",
+    "vision_understanding",
+}
+PRIVATE_TEXT_MARKERS = (
+    "AgentGraphRuntime",
+    "ProviderConfig",
+    "multimodal_agent.",
+    "/home/",
+    "/src/",
+    "\\",
+)
 
 
 class A2AInvalidParams(ValueError):
@@ -30,29 +53,34 @@ def build_agent_card(*, base_url: str, gateway: AgentGateway | None = None) -> d
 
     normalized_base = base_url.rstrip("/")
     skills = _skills_from_gateway(gateway)
-    return {
-        "protocolVersion": A2A_PROTOCOL_VERSION,
-        "name": "Multimodal Agent",
-        "description": "Local-first multimodal assistant with explicit local multi-agent gateway routing.",
-        "url": f"{normalized_base}/a2a/rpc",
-        "preferredTransport": "JSONRPC",
-        "additionalInterfaces": [
+    card = A2AAgentCard(
+        protocolVersion=A2A_PROTOCOL_VERSION,
+        name="Multimodal Agent",
+        description="Local-first multimodal assistant with explicit local multi-agent gateway routing.",
+        url=f"{normalized_base}/a2a/rpc",
+        preferredTransport="JSONRPC",
+        additionalInterfaces=[
             {
                 "transport": "JSONRPC",
                 "url": f"{normalized_base}/a2a/rpc",
             }
         ],
-        "version": "0.1.0",
-        "capabilities": {
+        version="0.1.0",
+        capabilities={
             "streaming": False,
             "pushNotifications": False,
             "stateTransitionHistory": True,
         },
-        "defaultInputModes": ["text/plain"],
-        "defaultOutputModes": ["text/plain", "application/json"],
-        "skills": skills,
-        "supportsAuthenticatedExtendedCard": False,
-    }
+        defaultInputModes=["text/plain"],
+        defaultOutputModes=["text/plain", "application/json"],
+        skills=skills,
+        supportedMethods=sorted(A2A_SEND_MESSAGE_METHODS),
+        authentication={"required": False},
+        securitySchemes={},
+        security=[],
+        supportsAuthenticatedExtendedCard=False,
+    )
+    return card.model_dump(mode="json")
 
 
 def gateway_request_from_a2a_params(params: Mapping[str, Any]) -> AgentGatewayRunRequest:
@@ -148,7 +176,7 @@ def _skills_from_gateway(gateway: AgentGateway | None) -> list[dict[str, Any]]:
             {
                 "id": "agent.default",
                 "name": "Default Agent",
-                "description": "Default local agent runtime.",
+                "description": "Default local agent.",
                 "tags": ["local", "chat", "tool_calling"],
                 "inputModes": ["text/plain"],
                 "outputModes": ["text/plain", "application/json"],
@@ -160,13 +188,30 @@ def _skills_from_gateway(gateway: AgentGateway | None) -> list[dict[str, Any]]:
             {
                 "id": instance.agent_id,
                 "name": instance.display_name,
-                "description": instance.description,
-                "tags": sorted(set(["local", *instance.capabilities])),
+                "description": _public_description(instance.description),
+                "tags": _public_tags(instance.capabilities),
                 "inputModes": ["text/plain"],
                 "outputModes": ["text/plain", "application/json"],
             }
         )
     return skills
+
+
+def _public_tags(capabilities: list[str]) -> list[str]:
+    return sorted({"local", *(capability for capability in capabilities if capability in PUBLIC_CAPABILITY_TAGS)})
+
+
+def _public_description(description: str) -> str:
+    text = _string(description)
+    if not text:
+        return "Local agent."
+    if any(marker in text for marker in PRIVATE_TEXT_MARKERS):
+        return "Local agent."
+    return _redact_local_paths(text)
+
+
+def _redact_local_paths(text: str) -> str:
+    return re.sub(r"(?<!\w)/(?:[^\s\"']+)", "[redacted-path]", text)
 
 
 def _merged_metadata(params: Mapping[str, Any], message: Mapping[str, Any]) -> dict[str, Any]:

@@ -1707,6 +1707,10 @@ def _context_compaction_summary(observations: list[dict[str, Any]]) -> dict[str,
     compacted_count = 0
     original_chars = 0
     compacted_chars = 0
+    pruned_payload_keys = 0
+    command_outputs_truncated = 0
+    original_command_output_chars = 0
+    compacted_command_output_chars = 0
     for observation in observations:
         compaction = observation.get("compaction")
         if not isinstance(compaction, dict):
@@ -1718,10 +1722,32 @@ def _context_compaction_summary(observations: list[dict[str, Any]]) -> dict[str,
             original_chars += original
         if isinstance(compacted, int):
             compacted_chars += compacted
+        pruned_keys = compaction.get("pruned_keys")
+        if isinstance(pruned_keys, list):
+            pruned_payload_keys += len(pruned_keys)
+        omitted_pruned_keys = compaction.get("omitted_pruned_keys_count")
+        if isinstance(omitted_pruned_keys, int):
+            pruned_payload_keys += omitted_pruned_keys
+        command_output_keys = compaction.get("command_output_keys")
+        if isinstance(command_output_keys, list):
+            command_outputs_truncated += len(command_output_keys)
+        omitted_command_output_keys = compaction.get("omitted_command_output_keys_count")
+        if isinstance(omitted_command_output_keys, int):
+            command_outputs_truncated += omitted_command_output_keys
+        command_original = compaction.get("original_command_output_chars")
+        command_compacted = compaction.get("compacted_command_output_chars")
+        if isinstance(command_original, int):
+            original_command_output_chars += command_original
+        if isinstance(command_compacted, int):
+            compacted_command_output_chars += command_compacted
     return {
         "compacted_observations": compacted_count,
         "original_observation_chars": original_chars,
         "compacted_observation_chars": compacted_chars,
+        "pruned_payload_keys": pruned_payload_keys,
+        "command_outputs_truncated": command_outputs_truncated,
+        "original_command_output_chars": original_command_output_chars,
+        "compacted_command_output_chars": compacted_command_output_chars,
     }
 
 

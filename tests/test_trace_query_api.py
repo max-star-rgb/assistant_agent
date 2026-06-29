@@ -51,6 +51,8 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
     assert "content" not in trace_summary["context"]["memory_promotion_candidate_audit"][0]
     assert "source_counts" in trace_summary["context"]
     assert "compaction" in trace_summary["context"]
+    assert "pruned_payload_keys" in trace_summary["context"]["compaction"]
+    assert "command_outputs_truncated" in trace_summary["context"]["compaction"]
     assert "tool_catalog" in trace_summary["context"]
     assert trace_summary["context"]["tool_catalog"]["total_tool_count"] >= 1
     assert any(

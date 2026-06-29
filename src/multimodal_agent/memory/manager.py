@@ -15,6 +15,7 @@ from multimodal_agent.memory.write_policy import (
     build_run_summary_promotion_candidate,
     promotion_decision_audit_record,
 )
+from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
 from multimodal_agent.schemas.requests import UserRequest
 
@@ -65,6 +66,12 @@ class MemoryManager:
 
         return self.store.search(query)
 
+    def search_for_identity(self, identity: RequestIdentity, query: MemoryQuery) -> MemorySearchResult:
+        """Search memory for an identity, ignoring caller-supplied user_id."""
+
+        scoped_query = query.model_copy(update={"user_id": identity.user_id})
+        return self.search(scoped_query)
+
     def load_context_for_request(
         self,
         request: UserRequest,
@@ -75,14 +82,33 @@ class MemoryManager:
     ) -> MemoryContext:
         """Load bounded, layered memory context for a user request."""
 
+        return self.load_context_for_identity(
+            RequestIdentity.from_user_request(request),
+            query_text=request.text or "",
+            capability=capability,
+            top_k=top_k,
+            max_context_chars=max_context_chars,
+        )
+
+    def load_context_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        query_text: str = "",
+        capability: str | None = None,
+        top_k: int | None = None,
+        max_context_chars: int | None = None,
+    ) -> MemoryContext:
+        """Load bounded, layered memory context for an identity."""
+
         query = MemoryQuery(
-            user_id=request.user_id,
-            query=request.text or "",
+            user_id=identity.user_id,
+            query=query_text,
             capability=capability,
             top_k=top_k or self.default_top_k,
             max_context_chars=max_context_chars or self.default_max_context_chars,
         )
-        result = self.search(query)
+        result = self.search_for_identity(identity, query)
         return self.build_context(result.items, max_chars=query.max_context_chars)
 
     def load_into_state(
@@ -186,20 +212,65 @@ class MemoryManager:
         self._upsert_user_profile(saved)
         return saved
 
+    def save_explicit_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        text: str,
+        content: dict[str, Any] | None = None,
+        memory_id: str | None = None,
+        session_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> MemoryItem:
+        """Persist an explicit memory for an identity, ignoring caller user_id."""
+
+        resolved_session_id = session_id or identity.session_id
+        if not resolved_session_id:
+            raise ValueError("session_id is required to save memory for identity")
+        return self.save_explicit(
+            user_id=identity.user_id,
+            session_id=resolved_session_id,
+            text=text,
+            content=content,
+            memory_id=memory_id,
+            created_at=created_at,
+        )
+
     def get(self, user_id: str, memory_id: str) -> MemoryItem | None:
-        return self.store.get(user_id, memory_id)
+        return self.get_for_identity(RequestIdentity.for_user(user_id=user_id), memory_id)
+
+    def get_for_identity(self, identity: RequestIdentity, memory_id: str) -> MemoryItem | None:
+        return self.store.get(identity.user_id, memory_id)
 
     def list_by_user(self, user_id: str) -> list[MemoryItem]:
-        return self.store.list_by_user(user_id)
+        return self.list_for_identity(RequestIdentity.for_user(user_id=user_id))
+
+    def list_for_identity(self, identity: RequestIdentity) -> list[MemoryItem]:
+        return self.store.list_by_user(identity.user_id)
 
     def delete(self, user_id: str, memory_id: str) -> bool:
-        return self.store.delete(user_id, memory_id)
+        return self.delete_for_identity(RequestIdentity.for_user(user_id=user_id), memory_id)
+
+    def delete_for_identity(self, identity: RequestIdentity, memory_id: str) -> bool:
+        return self.store.delete(identity.user_id, memory_id)
 
     def delete_by_session(self, user_id: str, session_id: str) -> int:
-        return self.store.delete_by_session(user_id, session_id)
+        return self.delete_session_for_identity(
+            RequestIdentity.for_user(user_id=user_id, session_id=session_id),
+            session_id=session_id,
+        )
+
+    def delete_session_for_identity(self, identity: RequestIdentity, *, session_id: str | None = None) -> int:
+        resolved_session_id = session_id or identity.session_id
+        if not resolved_session_id:
+            raise ValueError("session_id is required to delete session memories for identity")
+        return self.store.delete_by_session(identity.user_id, resolved_session_id)
 
     def clear_user(self, user_id: str) -> None:
-        self.store.clear_user(user_id)
+        self.clear_identity(RequestIdentity.for_user(user_id=user_id))
+
+    def clear_identity(self, identity: RequestIdentity) -> None:
+        self.store.clear_user(identity.user_id)
 
     def _merge_or_save(self, item: MemoryItem) -> MemoryItem:
         duplicate = self._find_duplicate(item)

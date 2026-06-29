@@ -6,9 +6,12 @@ from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.api import routes_agent
 from multimodal_agent.api.app import create_app
 from multimodal_agent.memory.store import InMemoryStore
+from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.sessions import SessionCreate
+from multimodal_agent.schemas.memory_snapshot import MemoryStorageSnapshot
 from multimodal_agent.services.assistant_run_service import ConversationTurn, InMemoryConversationStore
+from multimodal_agent.services.memory_snapshot import MemorySnapshotService
 from multimodal_agent.services.session_store import InMemorySessionStore
 from multimodal_agent.services.trace_store import InMemoryTraceStore
 
@@ -84,6 +87,49 @@ def test_memory_snapshot_api_can_include_sanitized_content(monkeypatch) -> None:
     assert response.status_code == 200
     item = response.json()["memory_context"]["blocks"][0]["items"][0]
     assert item["content"] == {"style": "浅色日系"}
+
+
+def test_memory_snapshot_service_uses_request_identity_scope() -> None:
+    memory_store = InMemoryStore()
+    session_store = InMemorySessionStore()
+    conversation_store = InMemoryConversationStore()
+    runtime = AgentGraphRuntime(
+        memory_store=memory_store,
+        trace_store=InMemoryTraceStore(),
+        session_store=session_store,
+    )
+    memory_store.save(_memory("pref", "preference", "用户喜欢浅色日系风格。"))
+    memory_store.save(
+        MemoryItem(
+            memory_id="other",
+            user_id="u2",
+            session_id="s1",
+            memory_type="preference",
+            summary="另一个用户喜欢浅色日系风格。",
+            created_at=NOW,
+        )
+    )
+    service = MemorySnapshotService(
+        memory_manager=runtime.memory_manager,
+        session_store=session_store,
+        conversation_store=conversation_store,
+        storage=MemoryStorageSnapshot(
+            memory_store="InMemoryStore",
+            session_store="InMemorySessionStore",
+            conversation_store="InMemoryConversationStore",
+            checkpointer="none",
+        ),
+    )
+
+    snapshot = service.snapshot_for_identity(
+        RequestIdentity.for_user(user_id="u1", session_id="s1"),
+        query="浅色日系",
+    )
+
+    assert snapshot.user_id == "u1"
+    assert snapshot.memory_context.total == 1
+    assert snapshot.memory_context.blocks[0].items[0].memory_id == "pref"
+    assert snapshot.audit.total == 1
 
 
 def _memory(
