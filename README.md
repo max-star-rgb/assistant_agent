@@ -9,7 +9,8 @@
 - 工具调用通过 `AssistantDecision -> ActionValidator -> ToolExecutor -> ToolRegistry -> Tool` 边界执行，不应绕过 validator、executor、policy 或 audit。
 - Provider 默认走 mock/local/offline 路径。API key 只用于显式 opt-in 的真实 Provider smoke/pilot，不会因为本地存在 key 自动启用真实调用。
 - Memory、demo、eval、CLI 和 Web UI 均围绕同一套本地优先运行时组织。
-- Agent communication 目前实现本地同进程边界和 inbound A2A JSON-RPC adapter：默认 `/agent/run`、CLI、eval 和 Web demo 仍走单 `agent.default`；独立 `/agents/run` 提供显式多 Agent 网关入口；`/.well-known/agent-card.json` 和 `/a2a/rpc` 暴露本地 A2A 兼容入口。远程 outbound agent 调用和 LLM 自动选 agent 仍未实现。
+- Context engineering 已集中到 `AssistantContextPack` 和 `services/context/`，负责 session summary、预算、裁剪、工具 observation compaction 和 trace/debug 摘要；长期记忆写入仍由 Memory service / `MemoryWritePolicy` 管理。
+- Agent communication 目前实现本地同进程边界、inbound A2A JSON-RPC adapter 和默认禁用的 outbound A2A pilot transport：默认 `/agent/run`、CLI、eval 和 Web demo 仍走单 `agent.default`；独立 `/agents/run` 提供显式多 Agent 网关入口；`/.well-known/agent-card.json` 和 `/a2a/rpc` 暴露本地 A2A 兼容入口；远程 outbound 只有显式配置 `a2a_json_rpc` transport、endpoint 和 allowlist 时才可用。LLM 自动选 agent 仍未实现。
 
 ## Quick Start
 
@@ -126,6 +127,7 @@ structured observations -> final answer / events / audit logs
 | 修改文档 | `README.md`、`AGENTS.md`、`docs/CODEX_PROJECT_GUIDE.md` | `docs/**`、根目录入口文档 | `python scripts/check_env.py` |
 | 新增 demo 场景 | `scripts/run_demo_flows.py`、`docs/demo-flows.md` | `scripts/**`、`docs/**`、必要时测试 | `python scripts/run_demo_flows.py` |
 | 调整 provider mock | `docs/configuration.md`、`docs/provider-setup.md`、`src/multimodal_agent/providers/` | 按任务范围修改 provider/mock 与测试 | `python -m pytest` |
+| 调整上下文工程 | `docs/CONTEXT_ENGINEERING_STATUS.md`、`docs/development/context-engine-memory-policy-plan.md`、`src/multimodal_agent/services/context/` | context services、assistant loop、相关测试 | `python -m pytest tests/test_assistant_context_renderer.py tests/test_conversation_context_compaction.py` |
 | 调整 memory 行为 | `docs/memory-service-architecture.md`、`src/multimodal_agent/memory/` | memory 模块和相关测试 | `python -m pytest tests` |
 | 更新 eval | `scripts/run_evals.py`、`tests/evals/eval_cases.json`、`docs/development.md` | eval 用例、脚本、文档 | `python scripts/run_evals.py` |
 | 更新 API 文档 | `docs/quickstart.md`、`docs/observability-local.md`、API routes | `docs/**`，必要时 API 测试 | `python -m pytest tests` |
@@ -144,10 +146,13 @@ structured observations -> final answer / events / audit logs
 
 - [Quickstart](docs/quickstart.md)
 - [Architecture](docs/architecture.md)
+- [上下文工程走读](docs/context-engineering-walkthrough.md)
+- [Context Engineering Status](docs/CONTEXT_ENGINEERING_STATUS.md)
 - [Memory Service Architecture](docs/memory-service-architecture.md)
 - [Memory Kernel Hardening Plan](docs/development/memory-kernel-hardening-plan.md)
 - [Agent Control Plane Plan](docs/development/agent-control-plane-plan.md)
 - [Agent Communication Routing](docs/agent-communication-routing.md)
+- [Local Observability](docs/observability-local.md)
 - [Capabilities](docs/capabilities.md)
 - [Configuration](docs/configuration.md)
 - [Provider Setup](docs/provider-setup.md)

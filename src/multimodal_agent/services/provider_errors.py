@@ -257,12 +257,56 @@ def _sanitize_detail_value(value: Any, policy: ProviderSafetyPolicy) -> Any:
 
 
 def _is_raw_provider_key(key: str) -> bool:
-    lowered = key.lower()
-    return lowered in {
-        "raw",
-        "raw_response",
+    lowered = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+    raw_keys = {
+        "audio_base64",
+        "audio_bytes",
+        "audio_data",
+        "base64",
+        "binary",
+        "blob",
+        "bytes",
+        "data_uri",
+        "data_url",
+        "file_base64",
+        "file_bytes",
+        "file_content",
+        "file_contents",
+        "file_data",
+        "http_response_body",
+        "image_base64",
+        "image_bytes",
+        "image_data",
+        "media_base64",
+        "media_body",
+        "media_bytes",
+        "media_data",
+        "provider_payload",
+        "provider_raw_payload",
         "provider_raw_response",
+        "provider_response",
+        "raw",
+        "raw_audio",
+        "raw_body",
+        "raw_content",
+        "raw_data",
+        "raw_file",
+        "raw_html",
+        "raw_image",
+        "raw_media",
+        "raw_output",
+        "raw_payload",
+        "raw_provider_payload",
+        "raw_provider_response",
+        "raw_response",
+        "raw_result",
+        "raw_results",
+        "raw_video",
         "request_body",
+        "response_body",
+        "video_base64",
+        "video_bytes",
+        "video_data",
         "headers",
         "authorization",
         "api_key",
@@ -273,6 +317,9 @@ def _is_raw_provider_key(key: str) -> bool:
         "token",
         "password",
     }
+    return lowered in raw_keys or lowered.startswith("raw_") or lowered.endswith(
+        ("_base64", "_bytes", "_blob", "_data_uri")
+    )
 
 
 def _stringify(value: object) -> str:

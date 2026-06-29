@@ -18,19 +18,21 @@ Status values:
 | `docs/CODEX_PROJECT_GUIDE.md` | canonical | Current authoritative Codex project guide created from code/config/docs audit. | keep |
 | `docs/DOCS_INDEX.md` | canonical | Current authoritative documentation inventory and cleanup status. | keep |
 | `docs/TESTS_REVIEW.md` | canonical | Current tests directory read-only review for future cleanup planning. | keep |
+| `docs/context-engineering-walkthrough.md` | reference | Human-readable walkthrough for assistant context data flow, field lifecycle, memory boundary, compaction triggers, and debugging. | keep |
+| `docs/CONTEXT_ENGINEERING_STATUS.md` | canonical | Current assistant context, conversation compaction, context budget, tool observation compaction, session summary, and context observability status entry. | keep |
 | `docs/architecture.md` | canonical | Current concise runtime architecture overview; matches assistant-loop and provider-native tool calling direction. | link-from-index |
 | `docs/architecture-layers.md` | canonical | Current layer ownership and governance boundary document; required for architecture/rework decisions. | link-from-index |
-| `docs/memory-service-architecture.md` | canonical | Current authoritative memory service architecture, boundary, routing, and update-rule entry. | keep |
-| `docs/agent-communication-routing.md` | canonical | Current authoritative multi-agent instance routing, agent communication, gateway API, and A2A adapter boundary entry; tracks internal schemas/directory/routing policy/delegation policy/local transport/service, local multi-runtime factory, opt-in local `delegate_to_agent`, `AgentGateway`, `/agents/run`, inbound agent card filtering, and `/a2a/rpc` JSON-RPC error taxonomy. | keep |
+| `docs/memory-service-architecture.md` | canonical | Current authoritative memory service architecture, boundary, routing, token-aware context injection, and update-rule entry. | keep |
+| `docs/agent-communication-routing.md` | canonical | Current authoritative multi-agent instance routing, agent communication, gateway API, and A2A adapter boundary entry; tracks internal schemas/directory/routing policy/delegation policy/delegation context/local and outbound A2A transports/service, pilot readiness summaries/replay, local multi-runtime factory, opt-in local `delegate_to_agent`, `AgentGateway`, `/agents/run`, inbound agent card filtering, and `/a2a/rpc` JSON-RPC error taxonomy. | keep |
 | `docs/capabilities.md` | canonical | Current capability list and default provider boundary. | link-from-index |
 | `docs/configuration.md` | canonical | Current runtime profile and provider selector policy. | link-from-index |
 | `docs/provider-setup.md` | canonical | Current real-provider opt-in setup and missing-config behavior. | link-from-index |
 | `docs/security.md` | canonical | Current safety defaults, secret handling, and real-provider opt-in policy. | link-from-index |
 | `docs/quickstart.md` | canonical | Current local mock/offline quickstart. | link-from-index |
 | `docs/development.md` | canonical | Current development commands and coding constraints. | link-from-index |
-| `docs/development/agent-control-plane-plan.md` | reference | Phased Local Multi-Agent Gateway + inbound A2A control-plane plan; use for gateway routing, delegation safety, A2A conformance, outbound pilot, and pilot-readiness work. | keep |
+| `docs/development/agent-control-plane-plan.md` | reference | Phased Local Multi-Agent Gateway + inbound/outbound A2A control-plane plan; use for gateway routing, delegation safety, delegation context/budget controls, A2A conformance, outbound pilot, and pilot-readiness work. | keep |
 | `docs/development/memory-kernel-hardening-plan.md` | reference | Phased Memory Kernel hardening execution plan for future memory engineering; complements `docs/memory-service-architecture.md`. | keep |
-| `docs/development/context-engine-memory-policy-plan.md` | reference | Step-by-step Context Engine + Memory Policy development plan for future compaction, session summary, LLM compactor, token budget, and memory promotion work. | keep |
+| `docs/development/context-engine-memory-policy-plan.md` | reference | Completed staged Context Engine + Memory Policy implementation log and reference for future compaction, session summary, LLM compactor, token budget, observability, and memory promotion work. | keep |
 | `docs/demo-flows.md` | canonical | Current offline demo-flow guide. | link-from-index |
 | `docs/deployment-local.md` | reference | Local deployment support documentation. | keep |
 | `docs/observability-local.md` | reference | Local run/trace/tool-call observability reference. | keep |

@@ -36,6 +36,7 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
     assert trace_summary["events"]
     assert run_summary["context"]["budget"]["total_chars"] > 0
     assert trace_summary["context"]["budget"]["total_chars"] > 0
+    assert trace_summary["context"]["context_schema_version"] == "context_observability_v1"
     assert "context_usage_ratio" in trace_summary["context"]["budget"]
     assert "compaction_triggered" in trace_summary["context"]["budget"]
     assert trace_summary["context"]["budget"]["token_budget_source"] == "estimated"

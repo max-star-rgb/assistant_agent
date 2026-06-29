@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from multimodal_agent.memory.retriever import KeywordMemoryRetriever
 from multimodal_agent.memory.store import MemoryStore
-from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
+from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, memory_item_matches_query_scope
 
 
 TYPE_PRIORITY = {
@@ -72,6 +72,8 @@ class MemoryRetrievalStrategy:
 
         filtered = []
         for item in items:
+            if not memory_item_matches_query_scope(item, query):
+                continue
             item_session_id = item.session_id or item.content.get("session_id")
             if query.session_id is not None and item_session_id != query.session_id:
                 continue

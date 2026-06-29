@@ -1692,6 +1692,7 @@ def _context_trace_summary(context: AssistantDecisionContext | None) -> dict[str
         return {}
     pack = context.context_pack
     return {
+        "context_schema_version": "context_observability_v1",
         "budget": pack.budget.model_dump(mode="json"),
         "source_counts": pack.source_counts,
         "compaction": _context_compaction_summary(pack.observations),

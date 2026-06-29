@@ -336,7 +336,7 @@ Remaining risks:
 
 ## Phase E: Context, Memory, And Budget Across Agents
 
-Status: not started.
+Status: done for the local delegation boundary.
 
 Goal:
 
@@ -344,12 +344,12 @@ Goal:
 
 Planned modules:
 
-- `DelegationContextBuilder`
-- `ChildContextBudget`
-- `MemoryScopeFilter`
-- `ToolResultPruner`
-- `ArtifactSummaryBuilder`
-- Parent/child budget report
+- `DelegationContextBuilder`: implemented in `services/agent_delegation_context.py`.
+- `ChildContextBudget`: implemented as child-run budget metadata.
+- `MemoryScopeFilter`: implemented to block parent `memory_context_*` forwarding.
+- `ToolResultPruner`: implemented to pass tool output references instead of raw parent tool payloads.
+- `ArtifactSummaryBuilder`: implemented to attach trace-safe child artifact summaries.
+- Parent/child budget report: implemented as `child_context_budget` on child request and task result metadata.
 
 Acceptance checks:
 
@@ -358,9 +358,29 @@ Acceptance checks:
 - Large tool outputs are summarized or passed by reference.
 - Parent receives child artifact/ref/summary instead of raw child context.
 
+Implementation notes:
+
+- The context boundary runs inside `AgentCommunicationService` after delegation policy accepts a task and before transport dispatch.
+- Child request metadata keeps explicit `context_refs`, `request_origin`, `agent_communication`, `child_context_budget`, and `agent_context`.
+- Parent `conversation_history`, `parent_history`, `memory_context_*`, raw provider payloads, base64/media/body fields, secret/token-like fields, and non-allowlisted arbitrary metadata are omitted and recorded in `agent_context.omitted_context`.
+- Raw parent `tool_results` are replaced with `tool_result_refs` when an output reference is available.
+- Memory retrieval and write policy remain owned by `MemoryManager`; delegation does not move memory logic into tools, transports, or gateway routing.
+
+Validation:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_communication_routing.py
+```
+
+Result:
+
+```text
+22 passed
+```
+
 ## Phase F: Outbound A2A Pilot
 
-Status: not started.
+Status: done for default-disabled, allowlisted pilot transport.
 
 Goal:
 
@@ -368,12 +388,12 @@ Goal:
 
 Required controls:
 
-- Remote agent allowlist.
-- Agent Card fetcher and validator.
-- Auth header provider.
-- Timeout/retry/circuit breaker.
-- Max payload size.
-- No silent local fallback.
+- Remote agent allowlist: implemented through `RemoteAgentAllowlist`.
+- Agent Card fetcher and validator: implemented as optional `require_agent_card=True` verification for explicitly configured endpoints.
+- Auth header provider: implemented through explicit `AuthHeaderProvider`.
+- Timeout/retry/circuit breaker: timeout and circuit breaker implemented; retry is intentionally not enabled by default for pilot safety.
+- Max payload size: implemented for request, response, and Agent Card payloads.
+- No silent local fallback: implemented; all remote failures return structured `AgentTaskResult(status="failed")`.
 
 Acceptance checks:
 
@@ -383,9 +403,36 @@ Acceptance checks:
 - Remote protocol errors are normalized.
 - Fake A2A server tests run offline.
 
+Implementation notes:
+
+- `A2AJsonRpcTransport` lives behind the `AgentTransport` interface in `services/agent_transports.py`.
+- A remote agent must be configured in `AgentDirectory` with `transports=["a2a_json_rpc"]` and an explicit `endpoint_url`.
+- The transport requires an explicit host allowlist. HTTPS is required except localhost HTTP when explicitly enabled for tests/pilot.
+- Agent Card fetch/validation verifies an already configured endpoint when `require_agent_card=True`; it never auto-registers or auto-enables remote agents.
+- JSON-RPC protocol errors and A2A task-level business failures are separated and normalized.
+- This phase still does not implement public remote agent fabric, automatic Agent Card discovery, remote marketplace behavior, or LLM target-agent selection.
+
+Validation:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_a2a_json_rpc_transport.py \
+  tests/test_agent_communication_routing.py \
+  tests/test_agent_gateway.py \
+  tests/test_agent_routing_policy.py \
+  tests/test_api_agent_graph_runtime.py \
+  tests/test_api_a2a.py
+```
+
+Result:
+
+```text
+62 passed
+```
+
 ## Phase G: Pilot Readiness
 
-Status: not started.
+Status: minimal readiness/report/replay slice done.
 
 Goal:
 
@@ -393,13 +440,13 @@ Goal:
 
 Required controls:
 
-- Explicit `provider_smoke` / `pilot` real-provider profiles.
-- Auth-bound user identity.
-- Trace and metrics view.
-- Memory isolation tests.
-- Cost/latency reports.
-- Redaction tests.
-- Failure replay notes.
+- Explicit `provider_smoke` / `pilot` real-provider profiles: checked by `PilotReadinessChecker`; default `local_demo` remains pass.
+- Auth-bound user identity: represented as a readiness check; missing auth-bound identity is a warning for production pilot, not silently accepted as complete.
+- Trace and metrics view: implemented for delegated task results through `PilotRunSummary`.
+- Memory isolation tests: not expanded in this slice; existing memory isolation work remains under memory hardening.
+- Cost/latency reports: implemented as redacted summary fields; `AgentCommunicationService` now attaches `latency_ms` around transport dispatch.
+- Redaction tests: implemented for pilot summaries and replay payloads.
+- Failure replay notes: implemented through `FailureReplayPayload`.
 
 Acceptance checks:
 
@@ -407,3 +454,35 @@ Acceptance checks:
 - Remote calls remain opt-in.
 - User identity comes from trusted auth context where available.
 - Traces are redacted by default.
+
+Implementation notes:
+
+- `services/agent_pilot_readiness.py` adds `PilotReadinessChecker`, `PilotRunSummary`, and `FailureReplayPayload`.
+- Readiness checks cover default runtime profile, remote A2A explicit opt-in and allowlist presence, auth-bound identity status, and trace redaction boundary.
+- Failure replay payloads include preview-only user text, media counts, budgets, routing metadata, error codes, and sanitized result metadata. They omit raw provider/tool payloads, parent history, secrets, and full message bodies.
+- This phase does not enable real providers, remote calls, or automatic remote discovery. It also does not complete production auth; body/local-context identity remains a warning until an auth principal is wired in.
+
+Validation:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_agent_pilot_readiness.py \
+  tests/test_a2a_json_rpc_transport.py
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_agent_gateway.py \
+  tests/test_agent_routing_policy.py \
+  tests/test_api_agent_graph_runtime.py \
+  tests/test_api_a2a.py
+```
+
+Result:
+
+```text
+15 passed
+30 passed
+```
+
+Known validation limitation:
+
+- `tests/test_agent_communication_routing.py` is currently blocked by an unrelated dirty `src/multimodal_agent/memory/manager.py` `NameError: MemoryLayer is not defined` during registry import. This was not introduced by Phase G.

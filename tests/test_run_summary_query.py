@@ -101,6 +101,38 @@ def test_trace_summary_query_returns_events_without_raw_payloads() -> None:
     assert summary.events[0]["tool_name"] == "vision_understanding"
 
 
+def test_trace_summary_context_omits_raw_payload_keys() -> None:
+    trace_store = InMemoryTraceStore()
+    trace_store.append(
+        TraceEvent(
+            trace_id="trace_1",
+            run_id="run_1",
+            node_name="assistant",
+            event_type="assistant_decision",
+            output_summary={
+                "decision_type": "final_answer",
+                "context": {
+                    "budget": {"total_chars": 100},
+                    "raw_provider_payload": {"api_key": "sk-test", "body": "raw"},
+                    "media": {
+                        "image_base64": "data:image/png;base64," + ("A" * 200),
+                        "safe_ref": "artifact://image/1",
+                    },
+                },
+            },
+        )
+    )
+
+    summary = TraceQueryService(trace_store).trace_summary("trace_1")
+
+    assert summary is not None
+    dumped = summary.model_dump_json()
+    assert "raw_provider_payload" not in dumped
+    assert "image_base64" not in dumped
+    assert "sk-test" not in dumped
+    assert summary.context["media"]["safe_ref"] == "artifact://image/1"
+
+
 def test_tool_calls_query_returns_none_for_missing_run() -> None:
     trace_store = InMemoryTraceStore()
 

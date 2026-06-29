@@ -14,10 +14,17 @@ def memory_item(
     memory_type: str,
     summary: str,
     content: dict | None = None,
+    *,
+    tenant_id: str | None = None,
+    project_id: str | None = None,
+    scope: str | None = None,
 ) -> MemoryItem:
     return MemoryItem(
         memory_id=memory_id,
         user_id="u1",
+        tenant_id=tenant_id,
+        project_id=project_id,
+        scope=scope,
         memory_type=memory_type,
         summary=summary,
         content=content or {},
@@ -95,6 +102,28 @@ def test_chinese_phrase_retrieval_matches_relevant_fragments_without_global_fall
     )
 
     assert [item.memory_id for item in results] == ["pref", "task"]
+
+
+def test_memory_retrieval_filters_by_tenant_project_and_scope() -> None:
+    store = InMemoryStore()
+    store.save(memory_item("global_pref", "preference", "用户喜欢浅色日系风格。"))
+    store.save(memory_item("project_a", "task", "项目 A 使用浅色日系风格。", tenant_id="t1", project_id="p1", scope="project"))
+    store.save(memory_item("project_b", "task", "项目 B 使用浅色日系风格。", tenant_id="t1", project_id="p2", scope="project"))
+    store.save(memory_item("tenant_other", "task", "其他租户使用浅色日系风格。", tenant_id="t2", project_id="p1", scope="project"))
+    store.save(memory_item("video", "video", "视频里出现浅色日系风格。", tenant_id="t1", project_id="p1"))
+
+    results = MemoryRetrievalStrategy(store).retrieve(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            query="浅色日系",
+            allowed_scopes=["project", "user_profile"],
+            top_k=10,
+        )
+    )
+
+    assert {item.memory_id for item in results} == {"global_pref", "project_a"}
 
 
 def test_jsonl_memory_retrieval_works_across_instances(tmp_path) -> None:

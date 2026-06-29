@@ -55,7 +55,9 @@ AssistantDecision -> ActionValidator -> ToolExecutor
 
 - Assistant run service、session、run history、trace、event sink。
 - Provider selection、provider diagnostics、provider readiness。
-- Agent communication gateway、directory、local transport、task/message routing service。
+- Agent communication gateway、directory、local/outbound A2A transports、task/message routing service。
+- Delegation context filtering, child-run budget metadata, tool-result reference pruning, and cross-agent artifact summaries.
+- Pilot readiness checks, redacted control-plane summaries, and failure replay payload construction.
 - 业务级服务封装，例如 memory audit、generated artifacts、video context。
 
 服务层负责“运行时业务编排”，不直接变成 Agent 决策逻辑。
@@ -111,6 +113,7 @@ RuntimeProfile
 MemoryWritePolicy
 MemoryAuditService
 AgentDirectory / AgentRoutingPolicy / AgentDelegationPolicy / AgentCommunicationService
+DelegationContextBuilder / MemoryScopeFilter / ToolResultPruner
 TraceStore redaction
 API auth / user-session boundary
 ```
@@ -122,7 +125,7 @@ API auth / user-session boundary
 - 控制 provider 调用预算、超时、重试和 fallback。
 - 禁止真实 provider failure 静默降级成 mock success。
 - 控制 memory 写入、敏感信息脱敏、用户隔离和审计删除。
-- 控制 agent-to-agent 路由、目标启用状态、source/target allowlist、delegation depth、ping-pong loop、timeout metadata、transport 边界和未来 remote allowlist。
+- 控制 agent-to-agent 路由、目标启用状态、source/target allowlist、delegation depth、ping-pong loop、timeout metadata、child context filtering、transport 边界和 remote allowlist。
 - 保证 trace、API errors、debug output 只暴露 redacted summary。
 
 所有真实能力调用必须经过：
@@ -185,6 +188,7 @@ memory tool 只是 Agent/LLM 调用记忆服务的适配器，不是记忆服务
 - 新增 assistant 决策、图节点、plan-mode 状态转换：放 `agent/`。
 - 新增可被 Agent 调用的能力：先定义 `ToolSpec`、input schema、structured result，再放 `tools/`。
 - 新增 agent-to-agent 委托能力：先放 `tools/`，通过 `ToolExecutor` 调用 `services/agent_communication.py`，默认不注册。
+- 新增跨 agent context/budget/tool-result 过滤：放 `services/agent_delegation_context.py`，由 `AgentCommunicationService` 在 transport 前调用。
 - 新增多 Agent 用户入口：放 `services/agent_gateway.py` 和 `api/` 路由，默认 `/agent/run` 不经过 gateway，显式 `/agents/run` 才启用。
 - 新增 inbound A2A 协议入口：放 `api/routes_a2a.py` 和 `services/a2a_adapter.py`，只做协议转换并复用 `AgentGateway` / communication service。
 - 新增具体外部模型或第三方 API：放 `providers/`，默认 mock/local，真实 provider 显式 opt-in。

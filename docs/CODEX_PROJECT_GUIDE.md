@@ -45,7 +45,8 @@ Relationship between subsystems:
 - Provider adapters implement specific model/API backends, but the assistant never calls them directly.
 - Tools are the stable capability boundary between Agent decisions and adapters.
 - Memory is accessed through `MemoryManager` and memory tools; API/Agent should not bypass store governance.
-- Agent communication is an optional local boundary for multi-agent routing. The current default `/agent/run`, CLI, eval, and Web demo paths remain single `agent.default`; the separate `/agents/run` endpoint uses `AgentGateway` for explicit local routing. Inbound A2A-compatible discovery and JSON-RPC are exposed through `/.well-known/agent-card.json` and `/a2a/rpc`, both as protocol adapters over the local gateway. `delegate_to_agent` remains registry-level opt-in and is enabled for the gateway controller runtime only; communication services must not change default CLI/API/demo behavior.
+- Context engineering is owned by `services/context/` and `AssistantContextPack`: it assembles request, conversation, memory context, plan state, observations, tool specs, budget, pruning, compaction, and trace/debug summaries. It does not own durable memory writes.
+- Agent communication is an optional boundary for multi-agent routing. The current default `/agent/run`, CLI, eval, and Web demo paths remain single `agent.default`; the separate `/agents/run` endpoint uses `AgentGateway` for explicit local routing. Inbound A2A-compatible discovery and JSON-RPC are exposed through `/.well-known/agent-card.json` and `/a2a/rpc`, both as protocol adapters over the local gateway. Outbound A2A is available only through explicitly configured `A2AJsonRpcTransport` entries with endpoint allowlists and remains disabled by default. `delegate_to_agent` remains registry-level opt-in and is enabled for the gateway controller runtime only; communication services must not change default CLI/API/demo behavior.
 - API and WebSocket wrap the same `AgentGraphRuntime`.
 - Demo and eval scripts use the same runtime with deterministic local inputs.
 
@@ -105,6 +106,7 @@ Real provider opt-in:
 | 修改文档 | `README.md`, `AGENTS.md`, `docs/CODEX_PROJECT_GUIDE.md`, `docs/DOCS_INDEX.md` | `docs/**`, `README.md`, `AGENTS.md` | `git diff --stat`, `python scripts/check_env.py` |
 | 新增 demo 场景 | `docs/demo-flows.md`, `demo_data/scenarios/e2e_demo_scenarios.json`, `scripts/run_demo_flows.py` | `demo_data/**`, tests if explicitly requested | `python scripts/run_demo_flows.py`, `python -m pytest tests/test_demo_scenario_matrix.py` |
 | 调整 provider mock | `docs/configuration.md`, `docs/provider-setup.md`, relevant service adapter, provider tests | `src/multimodal_agent/services/**`, `src/multimodal_agent/tools/**`, tests | `python -m pytest tests/test_provider_config.py tests/test_provider_selection.py` |
+| 调整 context engineering / assistant context | `docs/CONTEXT_ENGINEERING_STATUS.md`, `docs/development/context-engine-memory-policy-plan.md`, `src/multimodal_agent/services/context/**`, context tests | `src/multimodal_agent/services/context/**`, assistant loop touchpoints, tests | `python -m pytest tests/test_assistant_context_renderer.py tests/test_conversation_context_compaction.py tests/test_trace_query_api.py` |
 | 调整 memory 行为 | `docs/memory-service-architecture.md`, `docs/development/memory-kernel-hardening-plan.md` for engineering hardening, `src/multimodal_agent/memory/**`, memory tools/services, memory tests | `src/multimodal_agent/memory/**`, memory tools/services, tests | `python -m pytest tests/test_memory_manager.py tests/test_memory_*` |
 | 调整 agent communication 行为 | `docs/agent-communication-routing.md`, `docs/development/agent-control-plane-plan.md`, `src/multimodal_agent/schemas/agent_communication.py`, `src/multimodal_agent/services/agent_*.py`, `src/multimodal_agent/tools/agent_delegation_tool.py` | agent communication schemas/services/tools/routes as needed, tests | `python -m pytest tests/test_agent_communication_*.py tests/test_agent_gateway.py tests/test_api_a2a.py` |
 | 更新 eval | `scripts/run_evals.py`, `tests/evals/eval_cases.json`, `docs/development.md` | `tests/evals/**`, `scripts/run_evals.py` if requested | `python scripts/run_evals.py` |
@@ -152,6 +154,8 @@ If a command is missing or fails during a docs-only task, record the command and
 - `AGENTS.md` is the agent behavior and repository guardrail entry.
 - `docs/CODEX_PROJECT_GUIDE.md` is the current Codex project understanding entry.
 - `docs/DOCS_INDEX.md` is the documentation inventory and cleanup status source.
+- `docs/context-engineering-walkthrough.md` is the human-readable walkthrough for understanding assistant context data flow and boundaries.
+- `docs/CONTEXT_ENGINEERING_STATUS.md` is the current assistant context, conversation compaction, context budget, tool observation compaction, and trace/debug context entry.
 - `docs/memory-service-architecture.md` is the current memory service architecture and routing entry.
 - `docs/development/memory-kernel-hardening-plan.md` is the phased memory engineering hardening plan.
 - `docs/development/agent-control-plane-plan.md` is the phased local multi-agent gateway and A2A control-plane development plan.

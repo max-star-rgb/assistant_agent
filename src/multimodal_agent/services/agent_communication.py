@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,10 @@ from multimodal_agent.schemas.agent_communication import (
     AgentSessionRef,
     AgentTask,
     AgentTaskResult,
+)
+from multimodal_agent.services.agent_delegation_context import (
+    ArtifactSummaryBuilder,
+    DelegationContextBuilder,
 )
 from multimodal_agent.services.agent_delegation_policy import AgentDelegationPolicy
 from multimodal_agent.services.agent_directory import AgentDirectory, default_agent_instance
@@ -32,10 +37,14 @@ class AgentCommunicationService:
         directory: AgentDirectory | None = None,
         transports: Iterable[AgentTransport] | None = None,
         delegation_policy: AgentDelegationPolicy | None = None,
+        context_builder: DelegationContextBuilder | None = None,
+        artifact_summary_builder: ArtifactSummaryBuilder | None = None,
     ) -> None:
         self.directory = directory or AgentDirectory()
         self._transports = {transport.name: transport for transport in transports or []}
         self.delegation_policy = delegation_policy or AgentDelegationPolicy()
+        self.context_builder = context_builder or DelegationContextBuilder()
+        self.artifact_summary_builder = artifact_summary_builder or ArtifactSummaryBuilder()
 
     def send_message(
         self,
@@ -87,6 +96,8 @@ class AgentCommunicationService:
                 recoverable=error.recoverable,
                 audit_events=[policy.audit_event],
             )
+        context_pack = self.context_builder.build(task)
+        task = context_pack.task
         route = self.directory.resolve(
             AgentRouteRequest(
                 target_agent_id=task.target_agent_id,
@@ -117,13 +128,17 @@ class AgentCommunicationService:
                 recoverable=True,
                 audit_events=[policy.audit_event],
             )
-        result = transport.send_task(task)
+        started_at = time.monotonic()
+        result = transport.send_task(task, instance=route.instance)
+        result = _with_latency(result, started_at=started_at)
         return _with_audit_events(
             result,
             [
                 policy.audit_event,
                 self.delegation_policy.completion_event(task, status=result.status),
             ],
+            task=task,
+            artifact_summary_builder=self.artifact_summary_builder,
         )
 
     def _select_transport(self, transport_names: list[str]) -> AgentTransport | None:
@@ -204,8 +219,9 @@ def _failed_task(
     }
     if audit_events:
         metadata["delegation_audit"] = [_audit_payload(event) for event in audit_events]
-    if "delegation_pairs" in task.metadata:
-        metadata["delegation_pairs"] = task.metadata["delegation_pairs"]
+    for key in ("delegation_pairs", "agent_context", "child_context_budget", "tool_result_refs"):
+        if key in task.metadata:
+            metadata[key] = task.metadata[key]
     return AgentTaskResult(
         task_id=task.task_id,
         target_agent_id=task.target_agent_id,
@@ -222,9 +238,27 @@ def _failed_task(
     )
 
 
-def _with_audit_events(result: AgentTaskResult, audit_events: list[Any]) -> AgentTaskResult:
+def _with_audit_events(
+    result: AgentTaskResult,
+    audit_events: list[Any],
+    *,
+    task: AgentTask | None = None,
+    artifact_summary_builder: ArtifactSummaryBuilder | None = None,
+) -> AgentTaskResult:
     metadata = dict(result.metadata)
     metadata["delegation_audit"] = [_audit_payload(event) for event in audit_events]
+    if task is not None:
+        for key in ("delegation_pairs", "agent_context", "child_context_budget", "tool_result_refs"):
+            if key in task.metadata:
+                metadata[key] = task.metadata[key]
+    if artifact_summary_builder is not None:
+        metadata["artifact_summary"] = artifact_summary_builder.build(result)
+    return result.model_copy(update={"metadata": metadata}, deep=True)
+
+
+def _with_latency(result: AgentTaskResult, *, started_at: float) -> AgentTaskResult:
+    metadata = dict(result.metadata)
+    metadata.setdefault("latency_ms", int((time.monotonic() - started_at) * 1000))
     return result.model_copy(update={"metadata": metadata}, deep=True)
 
 

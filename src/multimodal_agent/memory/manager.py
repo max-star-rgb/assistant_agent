@@ -1,11 +1,12 @@
 """Memory manager boundary for layered agent memory access."""
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from multimodal_agent.memory.context_builder import MemoryContextBlock, MemoryContextBuilder
 from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID, UserProfileMemory
 from multimodal_agent.memory.store import MemoryStore
 from multimodal_agent.memory.write_policy import (
@@ -16,19 +17,18 @@ from multimodal_agent.memory.write_policy import (
     promotion_decision_audit_record,
 )
 from multimodal_agent.schemas.identity import RequestIdentity
-from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
+from multimodal_agent.schemas.memory import (
+    MemoryItem,
+    MemoryQuery,
+    MemoryScope,
+    MemorySearchResult,
+    memory_item_matches_query_scope,
+    memory_scope_for_item,
+)
 from multimodal_agent.schemas.requests import UserRequest
 
 
-MemoryLayer = Literal["session", "semantic", "episodic", "artifact", "procedural"]
-
-
-class MemoryContextBlock(BaseModel):
-    """A prompt-safe grouped view of retrieved memories."""
-
-    layer: MemoryLayer
-    title: str
-    items: list[MemoryItem] = Field(default_factory=list)
+_VALID_MEMORY_SCOPES = {"session", "task", "project", "user_profile", "video", "product"}
 
 
 class MemoryContext(BaseModel):
@@ -39,6 +39,11 @@ class MemoryContext(BaseModel):
     summaries: list[str] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
     blocks: list[MemoryContextBlock] = Field(default_factory=list)
+    total_tokens: int = Field(default=0, ge=0)
+    budget_tokens: int = Field(default=0, ge=0)
+    omitted_count: int = Field(default=0, ge=0)
+    rejected_reasons: list[str] = Field(default_factory=list)
+    retrieval_version: str = ""
 
 
 class MemoryManager:
@@ -55,11 +60,15 @@ class MemoryManager:
         write_policy: MemoryWritePolicy | None = None,
         default_top_k: int = 5,
         default_max_context_chars: int = 500,
+        default_max_context_tokens: int | None = None,
+        context_builder: MemoryContextBuilder | None = None,
     ) -> None:
         self.store = store
         self.write_policy = write_policy or MemoryWritePolicy()
         self.default_top_k = default_top_k
         self.default_max_context_chars = default_max_context_chars
+        self.default_max_context_tokens = default_max_context_tokens
+        self.context_builder = context_builder or MemoryContextBuilder()
 
     def search(self, query: MemoryQuery) -> MemorySearchResult:
         """Search through the configured store."""
@@ -69,7 +78,7 @@ class MemoryManager:
     def search_for_identity(self, identity: RequestIdentity, query: MemoryQuery) -> MemorySearchResult:
         """Search memory for an identity, ignoring caller-supplied user_id."""
 
-        scoped_query = query.model_copy(update={"user_id": identity.user_id})
+        scoped_query = _query_for_identity(identity, query)
         return self.search(scoped_query)
 
     def load_context_for_request(
@@ -79,6 +88,7 @@ class MemoryManager:
         capability: str | None = None,
         top_k: int | None = None,
         max_context_chars: int | None = None,
+        max_context_tokens: int | None = None,
     ) -> MemoryContext:
         """Load bounded, layered memory context for a user request."""
 
@@ -88,6 +98,7 @@ class MemoryManager:
             capability=capability,
             top_k=top_k,
             max_context_chars=max_context_chars,
+            max_context_tokens=max_context_tokens or _memory_context_token_budget_from_metadata(request.metadata),
         )
 
     def load_context_for_identity(
@@ -98,18 +109,26 @@ class MemoryManager:
         capability: str | None = None,
         top_k: int | None = None,
         max_context_chars: int | None = None,
+        max_context_tokens: int | None = None,
     ) -> MemoryContext:
         """Load bounded, layered memory context for an identity."""
 
         query = MemoryQuery(
             user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
             query=query_text,
             capability=capability,
+            allowed_scopes=_allowed_memory_scopes(identity),
             top_k=top_k or self.default_top_k,
             max_context_chars=max_context_chars or self.default_max_context_chars,
         )
         result = self.search_for_identity(identity, query)
-        return self.build_context(result.items, max_chars=query.max_context_chars)
+        return self.build_context(
+            result.items,
+            max_chars=query.max_context_chars,
+            max_tokens=max_context_tokens or self.default_max_context_tokens,
+        )
 
     def load_into_state(
         self,
@@ -119,6 +138,7 @@ class MemoryManager:
         capability: str | None = None,
         top_k: int | None = None,
         max_context_chars: int | None = None,
+        max_context_tokens: int | None = None,
     ) -> MemoryContext:
         """Load memory and attach prompt-safe metadata to AgentState."""
 
@@ -127,6 +147,7 @@ class MemoryManager:
             capability=capability,
             top_k=top_k,
             max_context_chars=max_context_chars,
+            max_context_tokens=max_context_tokens,
         )
         state.memory_context = context.items
         state.request.metadata["memory_context_text"] = context.text
@@ -135,21 +156,41 @@ class MemoryManager:
         state.request.metadata["memory_context_blocks"] = [
             block.model_dump(mode="json") for block in context.blocks
         ]
+        state.request.metadata["memory_context_tokens"] = context.total_tokens
+        state.request.metadata["memory_context_budget_tokens"] = context.budget_tokens
+        state.request.metadata["memory_context_omitted_count"] = context.omitted_count
+        state.request.metadata["memory_context_rejected_reasons"] = context.rejected_reasons
+        state.request.metadata["memory_context_retrieval_version"] = context.retrieval_version
+        state.request.metadata["memory_context_injected_ids"] = [item.memory_id for item in context.items]
         return context
 
-    def build_context(self, items: list[MemoryItem], *, max_chars: int | None = None) -> MemoryContext:
+    def build_context(
+        self,
+        items: list[MemoryItem],
+        *,
+        max_chars: int | None = None,
+        max_tokens: int | None = None,
+    ) -> MemoryContext:
         """Build grouped context text while preserving the retrieved items."""
 
-        blocks = _group_by_layer(items)
-        summaries = [item.summary for item in items]
-        artifact_refs = [ref for item in items for ref in item.artifact_refs]
-        text = format_layered_memory_context(blocks, max_chars=max_chars or self.default_max_context_chars)
+        pack = self.context_builder.build(
+            items,
+            max_chars=max_chars or self.default_max_context_chars,
+            budget_tokens=max_tokens or self.default_max_context_tokens,
+        )
+        summaries = [item.summary for item in pack.items]
+        artifact_refs = [ref for item in pack.items for ref in item.artifact_refs]
         return MemoryContext(
-            items=items,
-            text=text,
+            items=pack.items,
+            text=pack.rendered_context,
             summaries=summaries,
             artifact_refs=artifact_refs,
-            blocks=blocks,
+            blocks=pack.blocks,
+            total_tokens=pack.total_tokens,
+            budget_tokens=pack.budget_tokens,
+            omitted_count=pack.omitted_count,
+            rejected_reasons=pack.rejected_reasons,
+            retrieval_version=pack.retrieval_version,
         )
 
     def save_from_run(self, state: Any) -> MemoryItem | None:
@@ -195,6 +236,9 @@ class MemoryManager:
         text: str,
         content: dict[str, Any] | None = None,
         memory_id: str | None = None,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        scope: MemoryScope | None = None,
         created_at: datetime | None = None,
     ) -> MemoryItem:
         """Persist an explicit user-requested memory."""
@@ -205,9 +249,18 @@ class MemoryManager:
             session_id=session_id,
             text=text,
             content=content,
+            scope=scope,
             policy=self.write_policy,
             created_at=created_at,
         )
+        if tenant_id is not None or project_id is not None or scope is not None:
+            item = item.model_copy(
+                update={
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "scope": scope or item.scope,
+                }
+            )
         saved = self._merge_or_save(item)
         self._upsert_user_profile(saved)
         return saved
@@ -219,6 +272,7 @@ class MemoryManager:
         text: str,
         content: dict[str, Any] | None = None,
         memory_id: str | None = None,
+        scope: MemoryScope | None = None,
         session_id: str | None = None,
         created_at: datetime | None = None,
     ) -> MemoryItem:
@@ -233,6 +287,9 @@ class MemoryManager:
             text=text,
             content=content,
             memory_id=memory_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            scope=scope,
             created_at=created_at,
         )
 
@@ -240,18 +297,23 @@ class MemoryManager:
         return self.get_for_identity(RequestIdentity.for_user(user_id=user_id), memory_id)
 
     def get_for_identity(self, identity: RequestIdentity, memory_id: str) -> MemoryItem | None:
-        return self.store.get(identity.user_id, memory_id)
+        item = self.store.get(identity.user_id, memory_id)
+        if item is None or not _identity_allows_item(identity, item):
+            return None
+        return item
 
     def list_by_user(self, user_id: str) -> list[MemoryItem]:
         return self.list_for_identity(RequestIdentity.for_user(user_id=user_id))
 
     def list_for_identity(self, identity: RequestIdentity) -> list[MemoryItem]:
-        return self.store.list_by_user(identity.user_id)
+        return [item for item in self.store.list_by_user(identity.user_id) if _identity_allows_item(identity, item)]
 
     def delete(self, user_id: str, memory_id: str) -> bool:
         return self.delete_for_identity(RequestIdentity.for_user(user_id=user_id), memory_id)
 
     def delete_for_identity(self, identity: RequestIdentity, memory_id: str) -> bool:
+        if self.get_for_identity(identity, memory_id) is None:
+            return False
         return self.store.delete(identity.user_id, memory_id)
 
     def delete_by_session(self, user_id: str, session_id: str) -> int:
@@ -264,13 +326,23 @@ class MemoryManager:
         resolved_session_id = session_id or identity.session_id
         if not resolved_session_id:
             raise ValueError("session_id is required to delete session memories for identity")
-        return self.store.delete_by_session(identity.user_id, resolved_session_id)
+        items = [
+            item
+            for item in self.list_for_identity(identity)
+            if (item.session_id or item.content.get("session_id")) == resolved_session_id
+        ]
+        deleted = 0
+        for item in items:
+            if self.store.delete(identity.user_id, item.memory_id):
+                deleted += 1
+        return deleted
 
     def clear_user(self, user_id: str) -> None:
         self.clear_identity(RequestIdentity.for_user(user_id=user_id))
 
     def clear_identity(self, identity: RequestIdentity) -> None:
-        self.store.clear_user(identity.user_id)
+        for item in self.list_for_identity(identity):
+            self.store.delete(identity.user_id, item.memory_id)
 
     def _merge_or_save(self, item: MemoryItem) -> MemoryItem:
         duplicate = self._find_duplicate(item)
@@ -303,12 +375,16 @@ class MemoryManager:
                 continue
             if existing.memory_type != item.memory_type:
                 continue
+            if not _same_governance_scope(existing, item):
+                continue
             if _dedupe_key(existing) == item_key:
                 return existing
         return None
 
     def _upsert_user_profile(self, item: MemoryItem) -> MemoryItem | None:
         if item.source == "user_profile" or item.memory_type not in {"preference", "product", "task"}:
+            return None
+        if item.tenant_id is not None or item.project_id is not None or memory_scope_for_item(item) == "project":
             return None
 
         existing = self.store.get(item.user_id, USER_PROFILE_MEMORY_ID)
@@ -327,56 +403,49 @@ class MemoryManager:
         return self.store.save(profile_item)
 
 
-def format_layered_memory_context(blocks: list[MemoryContextBlock], max_chars: int = 500) -> str:
-    """Format memory blocks into a bounded prompt-safe context string."""
-
-    if not blocks:
-        return ""
-
-    lines = ["相关历史："]
-    for block in blocks:
-        candidate = "\n".join(lines + [block.title])
-        if len(candidate) > max_chars:
-            break
-        lines.append(block.title)
-        for item in block.items:
-            ref_text = f" 引用：{item.artifact_refs[0]}" if item.artifact_refs else ""
-            line = f"- [{item.memory_type}] {item.summary}{ref_text}"
-            candidate = "\n".join(lines + [line])
-            if len(candidate) > max_chars:
-                break
-            lines.append(line)
-
-    return "\n".join(lines)[:max_chars]
+def _query_for_identity(identity: RequestIdentity, query: MemoryQuery) -> MemoryQuery:
+    return query.model_copy(
+        update={
+            "user_id": identity.user_id,
+            "tenant_id": identity.tenant_id,
+            "project_id": identity.project_id,
+            "allowed_scopes": _allowed_memory_scopes(identity),
+        }
+    )
 
 
-def _group_by_layer(items: list[MemoryItem]) -> list[MemoryContextBlock]:
-    grouped: dict[MemoryLayer, list[MemoryItem]] = {
-        "semantic": [],
-        "session": [],
-        "episodic": [],
-        "artifact": [],
-        "procedural": [],
-    }
-    for item in items:
-        grouped[_layer_for(item)].append(item)
-
-    blocks: list[MemoryContextBlock] = []
-    for layer, title in _LAYER_TITLES:
-        layer_items = grouped[layer]
-        if layer_items:
-            blocks.append(MemoryContextBlock(layer=layer, title=title, items=layer_items))
-    return blocks
+def _identity_allows_item(identity: RequestIdentity, item: MemoryItem) -> bool:
+    query = MemoryQuery(
+        user_id=identity.user_id,
+        tenant_id=identity.tenant_id,
+        project_id=identity.project_id,
+        allowed_scopes=_allowed_memory_scopes(identity),
+    )
+    return memory_item_matches_query_scope(item, query)
 
 
-def _layer_for(item: MemoryItem) -> MemoryLayer:
-    if item.memory_type == "preference":
-        return "semantic"
-    if item.memory_type == "conversation":
-        return "session"
-    if item.memory_type == "task":
-        return "episodic"
-    return "artifact"
+def _same_governance_scope(left: MemoryItem, right: MemoryItem) -> bool:
+    return (
+        left.tenant_id == right.tenant_id
+        and left.project_id == right.project_id
+        and memory_scope_for_item(left) == memory_scope_for_item(right)
+    )
+
+
+def _allowed_memory_scopes(identity: RequestIdentity) -> list[MemoryScope]:
+    return [
+        cast(MemoryScope, scope)
+        for scope in identity.allowed_scopes
+        if scope in _VALID_MEMORY_SCOPES
+    ]
+
+
+def _memory_context_token_budget_from_metadata(metadata: dict[str, Any]) -> int | None:
+    for key in ("memory_context_max_tokens", "memory_context_budget_tokens"):
+        value = metadata.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
 
 
 def _is_pure_memory_save_run(state: Any) -> bool:
@@ -424,15 +493,6 @@ def _record_promotion_decision(state: Any, decision: Any, saved: MemoryItem | No
 def _increment_metadata_count(metadata: dict[str, Any], key: str) -> None:
     value = metadata.get(key)
     metadata[key] = value + 1 if isinstance(value, int) and value >= 0 else 1
-
-
-_LAYER_TITLES: list[tuple[MemoryLayer, str]] = [
-    ("semantic", "偏好/事实记忆："),
-    ("session", "长期化对话："),
-    ("episodic", "任务/经历记忆："),
-    ("artifact", "产物/对象引用："),
-    ("procedural", "过程/规则记忆："),
-]
 
 
 def _dedupe_key(item: MemoryItem) -> str:

@@ -337,22 +337,32 @@ Validation on 2026-06-29:
 
 ## Phase 6: Observability And API Polish
 
-Status: partial.
+Status: done.
 
 Already done:
 
 - Trace context includes budget, source counts, compaction summary, tool catalog, `compactor_type`, `context_summary_present`, `memory_promotion_candidates`, and `memory_promotion_written`.
+- Trace context includes `context_schema_version="context_observability_v1"` for stable public field versioning.
+- Run/trace query summaries merge the latest assistant context summary with redacted completed-run memory promotion counts.
+- Trace sanitization drops raw provider/file/media payload keys such as `raw_provider_payload` and `image_base64` before public API summaries.
+- `docs/observability-local.md` documents the public context field set and safety boundaries.
 
-Next steps:
+Decisions:
 
-1. Review `/runs/{run_id}` and `/traces/{trace_id}` payloads for stable public field names.
-2. Add UI/Web Console display only if it improves debugging.
-3. Update `docs/observability-local.md` with the final context fields.
-4. Add API regression tests for any newly exposed public fields.
+- Web Console display was not changed in this phase; the existing run/trace API payload is sufficient for local debugging.
+- Context summaries remain debug summaries, not rendered prompts or durable memory records.
+
+Validation on 2026-06-29:
+
+- Focused observability/API regression: passed.
+- Provider safety redaction regression: passed.
+- Standard context/memory/observability regression set: passed.
+- `scripts/check_env.py`: passed.
+- `git diff --check`: passed.
 
 ## Phase 7: Documentation And Boundary Cleanup
 
-Status: in progress.
+Status: done.
 
 Required docs:
 
@@ -372,6 +382,21 @@ Update rule:
 - When completing a phase, change its status here.
 - Add the exact validation commands used.
 - Record known gaps and next phase entry point.
+
+Done:
+
+- Marked this staged implementation plan as complete and clarified that it is now a reference log, not the active architecture source.
+- Added `docs/CONTEXT_ENGINEERING_STATUS.md` to README, Codex guide, development docs, and DOCS_INDEX as the canonical context-engineering entry.
+- Clarified final ownership boundaries:
+  - Context Engine owns assembly, budget, prune, compact, session summary, and trace/debug context summaries.
+  - Memory Service owns durable memory, retrieval, write policy, audit, delete, profile memory, and store selection.
+  - Assistant/LLM may propose actions or candidates, but local policy decides compaction triggers and durable writes.
+- Documented `context_summary`, `MemoryPromotionCandidate`, and long-term memory as separate lifecycle states.
+
+Validation on 2026-06-29:
+
+- `scripts/check_env.py`: passed.
+- `git diff --check`: passed.
 
 ## Standard Validation
 
@@ -405,8 +430,10 @@ Optional wider regression:
 
 ## Next Development Entry
 
-Start with Phase 3 hardening if the next task is about compactor quality or provider overflow.
+This staged plan is complete.
 
-Start with Phase 4 if the next task is about memory promotion, candidate audit, profile memory, or durable write policy.
+For future context work, start with `docs/CONTEXT_ENGINEERING_STATUS.md`.
 
-Start with Phase 6 if the next task is about trace/API field polish or observability docs.
+For future memory work, start with `docs/memory-service-architecture.md`.
+
+For future trace/API observability work, start with `docs/observability-local.md`.

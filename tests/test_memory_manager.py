@@ -108,6 +108,179 @@ def test_memory_manager_save_explicit_for_identity_ignores_external_user_id() ->
     assert store.get("u1", "m1") is not None
 
 
+def test_memory_manager_identity_filters_project_tenant_and_scope() -> None:
+    store = InMemoryStore()
+    store.save(memory_item("global_pref", "preference", "用户喜欢浅色日系风格。"))
+    store.save(
+        MemoryItem(
+            memory_id="project_a",
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="s1",
+            scope="project",
+            memory_type="task",
+            summary="项目 A 使用浅色日系风格。",
+            created_at=NOW,
+        )
+    )
+    store.save(
+        MemoryItem(
+            memory_id="project_b",
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p2",
+            session_id="s1",
+            scope="project",
+            memory_type="task",
+            summary="项目 B 使用浅色日系风格。",
+            created_at=NOW,
+        )
+    )
+    store.save(
+        MemoryItem(
+            memory_id="tenant_other",
+            user_id="u1",
+            tenant_id="t2",
+            project_id="p1",
+            session_id="s1",
+            scope="project",
+            memory_type="task",
+            summary="其他租户使用浅色日系风格。",
+            created_at=NOW,
+        )
+    )
+    store.save(
+        MemoryItem(
+            memory_id="video",
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="s1",
+            memory_type="video",
+            summary="视频里出现浅色日系风格。",
+            created_at=NOW,
+        )
+    )
+    manager = MemoryManager(store)
+    identity = RequestIdentity.for_user(
+        tenant_id="t1",
+        user_id="u1",
+        project_id="p1",
+        allowed_scopes=["project", "user_profile"],
+    )
+
+    result = manager.search_for_identity(identity, MemoryQuery(user_id="u1", query="浅色日系", top_k=10))
+
+    assert {item.memory_id for item in result.items} == {"global_pref", "project_a"}
+    assert {item.memory_id for item in manager.list_for_identity(identity)} == {"global_pref", "project_a"}
+    assert manager.get_for_identity(identity, "project_b") is None
+    assert manager.delete_for_identity(identity, "project_b") is False
+    assert store.get("u1", "project_b") is not None
+
+
+def test_memory_manager_identity_delete_session_only_deletes_visible_items() -> None:
+    store = InMemoryStore()
+    store.save(
+        MemoryItem(
+            memory_id="project_a",
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="s1",
+            scope="project",
+            memory_type="task",
+            summary="项目 A 任务。",
+            created_at=NOW,
+        )
+    )
+    store.save(
+        MemoryItem(
+            memory_id="project_b",
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p2",
+            session_id="s1",
+            scope="project",
+            memory_type="task",
+            summary="项目 B 任务。",
+            created_at=NOW,
+        )
+    )
+    manager = MemoryManager(store)
+    identity = RequestIdentity.for_user(
+        tenant_id="t1",
+        user_id="u1",
+        project_id="p1",
+        session_id="s1",
+        allowed_scopes=["project"],
+    )
+
+    deleted = manager.delete_session_for_identity(identity)
+
+    assert deleted == 1
+    assert store.get("u1", "project_a") is None
+    assert store.get("u1", "project_b") is not None
+
+
+def test_memory_manager_save_explicit_for_identity_writes_project_fields() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+    identity = RequestIdentity.for_user(
+        tenant_id="t1",
+        user_id="u1",
+        project_id="p1",
+        session_id="s1",
+    )
+
+    saved = manager.save_explicit_for_identity(
+        identity,
+        memory_id="m1",
+        text="记住这个项目使用浅色日系风格",
+        scope="project",
+        created_at=NOW,
+    )
+
+    assert saved.tenant_id == "t1"
+    assert saved.project_id == "p1"
+    assert saved.scope == "project"
+    assert store.get("u1", USER_PROFILE_MEMORY_ID) is None
+
+
+def test_memory_manager_does_not_merge_duplicates_across_projects() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+
+    first = manager.save_explicit_for_identity(
+        RequestIdentity.for_user(
+            tenant_id="t1",
+            user_id="u1",
+            project_id="p1",
+            session_id="s1",
+        ),
+        memory_id="project_1_memory",
+        text="记住这个项目使用浅色日系风格",
+        scope="project",
+        created_at=NOW,
+    )
+    second = manager.save_explicit_for_identity(
+        RequestIdentity.for_user(
+            tenant_id="t1",
+            user_id="u1",
+            project_id="p2",
+            session_id="s1",
+        ),
+        memory_id="project_2_memory",
+        text="记住这个项目使用浅色日系风格",
+        scope="project",
+        created_at=NOW,
+    )
+
+    assert first.memory_id == "project_1_memory"
+    assert second.memory_id == "project_2_memory"
+    assert {item.memory_id for item in store.list_by_user("u1")} == {"project_1_memory", "project_2_memory"}
+
+
 def test_memory_manager_writes_completed_run_summary_when_policy_allows() -> None:
     store = InMemoryStore()
     manager = MemoryManager(store, write_policy=MemoryWritePolicy(allow_auto_write=True))

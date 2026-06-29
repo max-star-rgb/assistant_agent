@@ -263,6 +263,9 @@ P0 progress:
 - 2026-06-29: Added `SQLiteMemoryStore` behind the existing `MemoryStore` contract, with `ProviderConfig(memory_backend="sqlite")` and factory routing. The v1 schema includes `memory_schema_version`, indexed `memory_items`, user-scoped primary key, content hash column, transactional upsert, and delete behavior that hides rows from retrieval/list/get. Store contract and runtime integration tests cover save/search/get/delete, relative paths, default sqlite path selection, and cross-runtime persistence.
 - 2026-06-29: Added SQLite hardening tests for newer-schema rejection, older-schema migration hook, soft-delete hiding and restore-on-save, failed transaction rollback, concurrent store-instance writes, and stable content hash/version increments. The store enables WAL only when creating a new database to avoid repeatedly switching journal mode on every store initialization; it keeps explicit transactions, `busy_timeout`, and `synchronous=NORMAL`.
 - 2026-06-29: Added `RequestIdentity` as the memory service identity boundary and threaded it through `MemoryManager`, memory tools, `MemoryAuditService`, `MemorySnapshotService`, and memory API routes. Current identity is still derived from local requests, tool context, or API path parameters; future auth-bound identity can replace that construction point without rewriting stores.
+- 2026-06-29: Added optional `tenant_id`, `project_id`, and coarse `scope` fields to `MemoryItem`/`MemoryQuery`, plus service-layer filtering for retrieval, list, get, and delete. Legacy unscoped user memories remain visible for compatibility; tenant/project-scoped memories require matching identity metadata.
+- 2026-06-29: Expanded `MemoryWriteDecision` into the first-class write-policy result for explicit saves and promotion candidates. The decision now carries destination, confirmation requirement, sensitivity, TTL, and redacted payload metadata. Explicit saves are evaluated through `MemoryWritePolicy.evaluate_explicit_save(...)`; raw provider payloads, base64/raw media, API keys, bearer tokens, and secret-like text are rejected before a `MemoryItem` is built. Promotion audit records now include the decision fields while still excluding candidate content.
+- 2026-06-29: Added `MemoryContextBuilder` as a memory-local token-aware injection boundary. It renders the existing memory layers, estimates tokens deterministically, honors optional memory token budgets, rejects sensitive/expired items from injection, and reports injected IDs, token count, budget, omitted count, rejection reasons, and retrieval version through `memory_context_*` metadata. Global assistant context compaction still uses the existing context-engine character budget unless separately changed.
 
 SQLite P0 requirements:
 
@@ -376,9 +379,9 @@ Work:
 1. Add `SQLiteMemoryStore`. Initial implementation done on 2026-06-29.
 2. Add schema version and migration runner. Initial v1 schema, migration hook, and newer-schema rejection tests done on 2026-06-29; migration rollback/runbook still needed.
 3. Add transaction/lock behavior and user-scoped unique dedupe key.
-4. Shape `RequestIdentity` and thread it through service APIs where practical. Initial request-derived identity boundary is implemented on 2026-06-29; auth-bound principal integration and project/tenant/scope enforcement remain future work.
-5. Promote `MemoryWritePolicy` into a decision object with allow/reject/confirmation reasons.
-6. Add token-aware `MemoryContextBuilder` behind existing context metadata.
+4. Shape `RequestIdentity` and thread it through service APIs where practical. Initial request-derived identity boundary is implemented on 2026-06-29; service-layer project/tenant/scope filtering is in place for scoped memories. Auth-bound principal integration and database-level tenant/project indexes remain future work.
+5. Promote `MemoryWritePolicy` into a decision object with allow/reject/confirmation reasons. Initial `MemoryWriteDecision` fields and explicit-save/promotion-candidate evaluation are implemented on 2026-06-29; user-facing confirmation workflow remains future work.
+6. Add token-aware `MemoryContextBuilder` behind existing context metadata. Initial memory-local builder and metadata reporting are implemented on 2026-06-29; broader memory evals and trace metrics remain future work.
 7. Add soft delete, export, and audit log foundation.
 8. Keep `InMemoryStore` and `JsonlMemoryStore` as local/offline paths.
 9. Add retrieval eval suite before vector work.

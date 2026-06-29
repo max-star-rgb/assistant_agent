@@ -2,12 +2,13 @@
 
 Last updated: 2026-06-29
 
-本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件，再读对应源码和测试。
+本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。第一次理解上下文工程时，先读 `docs/context-engineering-walkthrough.md`；涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的实现任务，应先读本文件，再读对应源码和测试。
 
 ## Current Stage
 
 上下文工程已进入可用实现和硬化阶段，不是单纯规划。
 
+- 多阶段 Context Engine + Memory Policy 计划已经完成；后续应把 `docs/CONTEXT_ENGINEERING_STATUS.md` 作为当前入口，把 `docs/development/context-engine-memory-policy-plan.md` 作为执行记录和参考。
 - 主运行时是 LangGraph/ReAct assistant loop，默认 mock/local/offline。
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、plan state、tool observations、tool specs、source counts 和 budget。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
@@ -19,8 +20,10 @@ Last updated: 2026-06-29
 - 真实 provider 返回 context overflow 类错误时，assistant loop 会标准化为 `provider_context_overflow`，触发 hard compaction 后重试一次，仍失败则停止并返回可解释最终回答。
 - Context budget 会报告自动压缩阶段和原因，便于 trace/API 判断是否发生 conversation、observation 或 budget 级压缩。
 - `TokenBudgetReporter` 已作为可选报告层接入；默认压缩触发仍使用字符预算，metadata 启用估算或提供 provider usage 时才填充 token fields。
+- Memory context now has a separate `MemoryContextBuilder` token-aware injection boundary. It can enforce memory-only token budgets and report injected IDs, token count, omitted count, rejection reasons, and retrieval version without changing global assistant context compaction.
 - Tool observation compaction 会在 prompt 副本中移除 raw provider/file/media payload、inline media data URI 和过大的命令输出；原始 observation 不被修改。
-- Trace/API 已暴露 context budget、source counts、tool catalog summary 和 observation compaction summary。
+- Cross-agent delegation now has a separate child-context boundary in `AgentCommunicationService`: child runs receive explicit `context_refs`, child budget metadata, and redacted audit summaries, not parent history, `memory_context_*`, raw provider payloads, secrets, or raw tool results.
+- Trace/API 已暴露 versioned context debug summary，包括 context budget、source counts、tool catalog summary、observation compaction summary 和 memory promotion counters。
 
 ## Implemented
 
@@ -39,6 +42,9 @@ Last updated: 2026-06-29
 - `MemoryManager` 是 memory 检索、上下文格式化、显式保存、去重、用户画像更新和 completed-run promotion candidate 的边界。
 - memory context 分层为 semantic、session、episodic、artifact、procedural。
 - 默认 `top_k=5`，默认 `max_context_chars=500`。
+- `MemoryContextBuilder` 负责实际注入选择；`MemoryContext.items` 表示已注入的 memory 子集，而不是所有检索候选。
+- 可通过 `memory_context_max_tokens` / `memory_context_budget_tokens` 或 `MemoryManager` 参数限制 memory context token budget。
+- memory context metadata includes `memory_context_tokens`, `memory_context_budget_tokens`, `memory_context_omitted_count`, `memory_context_rejected_reasons`, `memory_context_retrieval_version`, and `memory_context_injected_ids`.
 - 非空 query 走关键词/中文片段相关性门控；只有明确承接型 query 才允许 recent memory fallback。
 - 显式用户记忆会合并重复项，并更新 compact `user_profile` 记忆。
 - completed-run summary 默认只生成 policy-gated promotion candidate 和审计 metadata，不自动写长期 memory；`allow_auto_write=True` 时才会落库。
@@ -65,6 +71,14 @@ Last updated: 2026-06-29
 - command stdout/stderr/log 类输出默认最多保留 20 行和 1200 字符。
 - compaction metadata 记录 original chars、compacted chars、max items、max text chars、被剪掉的 key 名和命令输出裁剪限制；metadata 不记录原始 payload。
 
+### Cross-Agent Delegation Context
+
+- `AgentCommunicationService` builds a child-safe delegation context after delegation policy accepts a task and before `AgentTransport` dispatches it.
+- Child request metadata preserves explicit `context_refs`, `request_origin`, `agent_communication`, `child_context_budget`, and `agent_context`.
+- Parent `conversation_history`, `parent_history`, `memory_context_*`, raw provider payloads, base64/media/body fields, secret/token-like fields, arbitrary non-allowlisted metadata, and raw parent `tool_results` are not forwarded.
+- Omitted fields are recorded as field-name/reason pairs in `agent_context.omitted_context`; raw parent tool results are reduced to `tool_result_refs` when output references exist.
+- This boundary does not replace `AssistantContextPack` assembly and does not move memory retrieval, ranking, write policy, or store access out of `MemoryManager`.
+
 ### Prompt Rendering
 
 - `render_prompt_json_context` 用于 prompt-json 决策模式。
@@ -82,7 +96,8 @@ Last updated: 2026-06-29
 - 超过预算时会在 prompt 副本中裁剪 memory、conversation 和 observations，并记录 `over_budget`、`trimmed_chars`、`trimmed_sections`。
 - `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_usage_high`、`tool_observation_too_large`、`provider_context_overflow`、`explicit_compact`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
-- assistant decision trace 写入 budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数；compaction summary 只暴露 pruning/truncation 计数，不暴露 raw payload；run/trace 查询会合并最终 save-memory 阶段的 redacted promotion counts。
+- assistant decision trace 写入 `context_schema_version="context_observability_v1"`、budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数；compaction summary 只暴露 pruning/truncation 计数，不暴露 raw payload；run/trace 查询会合并最终 save-memory 阶段的 redacted promotion counts。
+- Trace sanitization 会过滤 `raw_provider_payload`、`raw_provider_response`、base64/media/file payload key 和 secret key，作为 public API 前的额外防线。
 - `/runs/{run_id}` 与 `/traces/{trace_id}` 可查询 context 相关摘要。
 
 ### LLM Compactor And Provider Overflow
@@ -96,7 +111,7 @@ Last updated: 2026-06-29
 ## Current Limitations
 
 - 默认自动压缩仍是 deterministic formatting/summary。LLM semantic compaction 已有受控入口，但默认离线 profile 不启用。
-- 当前压缩控制仍是 approximate character budget；token-aware 数据已作为可选报告层接入，但不会默认改变触发/裁剪行为。
+- 当前全局压缩控制仍是 approximate character budget；token-aware 数据已作为可选报告层接入。Memory context 可单独按 token budget 控制注入，但这不替代 AssistantContextPack 的全局字符预算。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
 - 会话历史压缩只压较早轮次文本，不做跨轮语义重写、事实抽取或冲突消解。
 - assistant loop 的真实 LLM 路径中，长期记忆写入应由 assistant 通过 `memory_save` 工具显式选择；图尾不会自动写长期 task summary。
@@ -110,10 +125,12 @@ Last updated: 2026-06-29
 - `src/multimodal_agent/services/context/token_budget.py`
 - `src/multimodal_agent/services/context/compactor.py`
 - `src/multimodal_agent/services/context/renderer.py`
+- `src/multimodal_agent/services/agent_delegation_context.py`
 - `src/multimodal_agent/schemas/context.py`
 - `src/multimodal_agent/services/assistant_run_service.py`
 - `src/multimodal_agent/services/chat_adapter.py`
 - `src/multimodal_agent/services/provider_errors.py`
+- `src/multimodal_agent/memory/context_builder.py`
 - `src/multimodal_agent/memory/manager.py`
 - `src/multimodal_agent/memory/retrieval.py`
 - `src/multimodal_agent/agent/assistant_loop_nodes.py`
@@ -125,6 +142,7 @@ Last updated: 2026-06-29
 - `tests/test_shared_assistant_run_service.py`
 - `tests/test_memory_manager.py`
 - `tests/test_memory_context_builder.py`
+- `tests/test_agent_communication_routing.py`
 - `tests/test_phase8a1_react_action_quality.py`
 - `tests/test_trace_query_api.py`
 
@@ -133,5 +151,6 @@ Current small regression coverage includes budget trimming order, product observ
 ## Next Steps
 
 - Keep adding small regression tests when a concrete context failure appears.
-- Consider token-aware budgeting only if character budgeting causes real provider failures.
+- Use `docs/development/context-engine-memory-policy-plan.md` as a completed implementation log, not an active roadmap.
+- Consider token-aware control decisions only if reporting-only token fields show real provider failures that character budgeting cannot prevent.
 - Consider semantic summary or embedding retrieval only after local relevance tests show keyword retrieval is insufficient.

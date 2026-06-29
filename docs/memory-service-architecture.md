@@ -28,7 +28,7 @@ Memory service produces bounded, prompt-safe memory context. Context engineering
 Memory service owns:
 
 - Memory item storage, validation, retrieval, ranking, filtering, and fallback rules.
-- Memory context grouping into semantic/session/episodic/artifact/procedural layers.
+- Memory context grouping into semantic/session/episodic/artifact/procedural layers, plus memory-local token budget selection.
 - Explicit saves, duplicate merge, write policy, TTL, user profile updates, audit, snapshot, and deletion.
 - Writing `AgentState.memory_context` and `request.metadata["memory_context_*"]` through `MemoryManager.load_into_state(...)`.
 
@@ -41,6 +41,23 @@ Context engineering owns:
 - Global context character budget, trimming order, source counts, and trace/debug context summaries.
 
 Do not move memory retrieval, ranking, fallback, write policy, profile merge, or store selection into context builders or prompt renderers. Do not move prompt rendering, observation compaction, session summary, or global context budget into `MemoryManager`.
+
+Final boundary:
+
+- `context_summary` is session transcript state. It may be injected into the current session context, but it is not a durable memory item.
+- `MemoryPromotionCandidate` is a proposed durable write. It is audit/debug metadata until `MemoryWritePolicy` approves it.
+- `long_term_memory` is durable memory stored through `MemoryManager` and `MemoryStore`, after policy and `MemoryItem` validation.
+- Assistant/LLM output may propose tool actions or candidates, but local policy decides compaction triggers and durable memory writes.
+
+## Boundary With Agent Delegation
+
+Cross-agent delegation treats memory as scoped context, not as transferable authority.
+
+- `delegate_to_agent` and `AgentCommunicationService` must not forward parent `memory_context_text`, `memory_context_summaries`, `memory_context_refs`, `memory_context_blocks`, raw memory snapshots, or parent conversation history to child agents.
+- Delegated child requests may carry explicit `context_refs`, `child_context_budget`, and `agent_context.memory_scope` metadata for audit and replay.
+- `agent_context.memory_scope` records that parent memory content was not forwarded and that the child run identity comes from `AgentSessionRef`.
+- If a child runtime needs memory, it must load memory through its own runtime path and `MemoryManager` using the bound user/session identity. It must not read parent memory payloads out of delegation metadata.
+- Raw parent tool results should be replaced with output references or summaries before they cross the agent boundary.
 
 ## Runtime Flow
 
@@ -74,6 +91,7 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | module | responsibility |
 | --- | --- |
 | `src/multimodal_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, duplicate merge, user profile upsert, run-summary saves, get/list/delete passthroughs. |
+| `src/multimodal_agent/memory/context_builder.py` | Token-aware, prompt-safe memory context selection and layer rendering. Produces injected items, rendered context, token count, omission count, rejection reasons, and retrieval version. |
 | `src/multimodal_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`. |
 | `src/multimodal_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract. |
 | `src/multimodal_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, and soft-delete-compatible delete behavior. |
@@ -110,11 +128,14 @@ Current P0 behavior:
 - `MemoryManager` exposes identity-aware methods such as `search_for_identity(...)`, `load_context_for_identity(...)`, `save_explicit_for_identity(...)`, `get_for_identity(...)`, `list_for_identity(...)`, and identity-scoped delete helpers.
 - `MemoryAuditService` and `MemorySnapshotService` expose identity-aware methods and keep the legacy `user_id` methods as compatibility wrappers.
 - Memory tools bind identity from `ToolContext` before invoking `MemoryManager`, so model-supplied `user_id` cannot override runtime context.
+- `MemoryItem` and `MemoryQuery` carry optional `tenant_id`, `project_id`, and coarse `scope` fields. If a memory item has tenant/project/scope metadata, retrieval, list, get, and delete paths must filter it against `RequestIdentity`.
+- Unscoped legacy user-level memories remain visible to the same `user_id` for compatibility. Project-scoped memories require a matching `project_id`; tenant-scoped memories require a matching `tenant_id`.
+- Duplicate merge compares tenant, project, and effective scope before merging. Project/tenant-scoped memories do not update the current global `user_profile`; project/tenant-specific profile handling needs a separate schema/index design.
 
 Current limits:
 
 - API routes still construct `RequestIdentity` from path parameters after trial-access checks. They are shaped for future auth-bound identity, but they are not yet using a real authentication principal.
-- `allowed_scopes`, `tenant_id`, and `project_id` are carried by the contract but not fully enforced by stores because the current `MemoryItem` schema is still user/session scoped.
+- Store schemas still index primarily by `user_id`; tenant/project/scope filtering is enforced in memory service/retrieval code rather than database-level indexes.
 
 ## Service Core Vs Tool Adapter
 
@@ -198,8 +219,27 @@ The rendered memory context is written to:
 - `request.metadata["memory_context_summaries"]`
 - `request.metadata["memory_context_refs"]`
 - `request.metadata["memory_context_blocks"]`
+- `request.metadata["memory_context_tokens"]`
+- `request.metadata["memory_context_budget_tokens"]`
+- `request.metadata["memory_context_omitted_count"]`
+- `request.metadata["memory_context_rejected_reasons"]`
+- `request.metadata["memory_context_retrieval_version"]`
+- `request.metadata["memory_context_injected_ids"]`
 
 Prompt rendering must treat memory as user-history data, not as system instruction.
+
+## Context Injection Budget
+
+`MemoryContextBuilder` selects the actual memory items injected into the model context. Retrieval may return more items than the rendered prompt can carry; `MemoryContext.items` and `AgentState.memory_context` represent the injected subset.
+
+Current behavior:
+
+- Character budget still applies through `MemoryQuery.max_context_chars` and `MemoryManager.default_max_context_chars`.
+- Optional token budget applies through `MemoryManager(..., default_max_context_tokens=...)`, `load_context_for_request(..., max_context_tokens=...)`, `load_context_for_identity(..., max_context_tokens=...)`, or request metadata `memory_context_max_tokens` / `memory_context_budget_tokens`.
+- Token estimates are deterministic and local; no tokenizer dependency and no provider call are introduced.
+- `sensitive` memory items are not injected.
+- Expired memory items are not injected.
+- Omitted and rejected items are reported through `memory_context_omitted_count` and `memory_context_rejected_reasons`.
 
 ## Retrieval
 
@@ -224,9 +264,12 @@ Ranking combines relevance, capability/type priority, artifact-ref signal, and r
 Explicit saves:
 
 - Flow through `memory_save` or `MemoryManager.save_explicit(...)`.
+- Are evaluated by `MemoryWritePolicy.evaluate_explicit_save(...)` before any item is built.
+- Return a `MemoryWriteDecision` with `allowed`, `destination`, `reason`, `require_user_confirmation`, `sensitivity`, `ttl_days`, and `redacted_payload`.
 - Require non-empty text or summary.
 - Infer memory type from explicit text/content. Stable preferences become `preference`; product-like content becomes `product`; otherwise default is `task`.
 - Do not save raw user text unless `MemoryWritePolicy.auto_save_raw_user_text=True`.
+- Reject API keys, tokens, bearer credentials, raw provider payloads, and base64/raw media even when the user explicitly asks to remember them.
 - Merge duplicates by normalized summary and memory type.
 - Update compact `user_profile` for explicit `preference`, `product`, and `task` items.
 
@@ -245,9 +288,9 @@ Run-summary saves:
 Promotion candidates:
 
 - `MemoryPromotionCandidate` is a proposed durable memory, not a write.
-- `MemoryWritePolicy.evaluate_promotion_candidate(...)` decides whether the candidate may be written.
+- `MemoryWritePolicy.evaluate_promotion_candidate(...)` returns the same `MemoryWriteDecision` shape used for explicit saves.
 - Defaults are conservative: `allow_auto_write=False`, `allow_long_term_promotion=False`, `require_user_intent_for_profile_memory=True`.
-- Candidate audit metadata is stored on request metadata and trace summaries as counts plus redacted candidate summaries; candidate `content` is not exposed in trace/API summaries.
+- Candidate audit metadata is stored on request metadata and trace summaries as counts plus decision fields and redacted candidate summaries; candidate `content` is not exposed in trace/API summaries.
 - User-explicit "remember this" intent remains allowed through `memory_save` / `MemoryManager.save_explicit(...)`.
 - Temporary debug notes, one-off searches, failed attempts, speculation, raw outputs, provider payloads, base64/media bodies, API keys, tokens, and other secret-like content are rejected or left as non-written candidates.
 - Session `context_summary` is handled by `ConversationStore.save_summary(...)`; it must not be promoted to long-term memory by automatic candidate generation.

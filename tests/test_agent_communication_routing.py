@@ -450,6 +450,113 @@ def test_delegate_to_agent_tool_runs_enabled_local_agent() -> None:
     assert request.metadata["context_refs"] == ["ctx_1"]
 
 
+def test_delegate_to_agent_tool_filters_parent_context_and_raw_metadata() -> None:
+    runtime = RecordingRuntime()
+    registry = create_default_registry(
+        enable_agent_delegation=True,
+        agent_communication_service=_worker_service(runtime),
+    )
+
+    result = registry.run(
+        "delegate_to_agent",
+        {
+            "target_agent_id": "agent.worker",
+            "text": "只处理引用里的子任务",
+            "context_refs": ["ctx_keep"],
+            "metadata": {
+                "request_origin": "unit_test",
+                "parent_history": [{"role": "user", "content": "do not forward"}],
+                "memory_context_text": "private parent memory",
+                "raw_provider_response": {"raw": "provider payload"},
+                "api_key": "sk-secret",
+                "unreviewed_note": "not allowlisted",
+                "tool_results": [
+                    {
+                        "tool_name": "product_search",
+                        "status": "succeeded",
+                        "output_ref": "local://tool-result/search-1",
+                        "raw_data": "large raw tool output",
+                    }
+                ],
+            },
+        },
+        ToolContext(
+            run_id="run_parent",
+            user_id="u1",
+            session_id="s1",
+            metadata={"agent_id": DEFAULT_AGENT_ID, "trace_id": "trace_parent"},
+        ),
+    )
+
+    assert result.success is True
+    request = runtime.requests[0]
+    assert request.metadata["context_refs"] == ["ctx_keep"]
+    assert request.metadata["request_origin"] == "unit_test"
+    assert request.metadata["tool_result_refs"] == [
+        {
+            "output_ref": "local://tool-result/search-1",
+            "tool_name": "product_search",
+            "status": "succeeded",
+        }
+    ]
+    for blocked_key in (
+        "parent_history",
+        "memory_context_text",
+        "raw_provider_response",
+        "api_key",
+        "unreviewed_note",
+        "tool_results",
+    ):
+        assert blocked_key not in request.metadata
+    metadata_text = repr(request.metadata)
+    assert "private parent memory" not in metadata_text
+    assert "provider payload" not in metadata_text
+    assert "large raw tool output" not in metadata_text
+    agent_context = request.metadata["agent_context"]
+    omitted = {item["key"]: item["reason"] for item in agent_context["omitted_context"]}
+    assert omitted["parent_history"] == "parent_context_not_forwarded"
+    assert omitted["memory_context_text"] == "memory_context_not_forwarded"
+    assert omitted["raw_provider_response"] == "raw_or_secret_payload_not_forwarded"
+    assert omitted["api-key"] == "raw_or_secret_payload_not_forwarded"
+    assert omitted["unreviewed_note"] == "not_allowlisted"
+    assert omitted["tool_results"] == "tool_result_pruned"
+    assert agent_context["memory_scope"]["parent_memory_forwarded"] is False
+
+
+def test_communication_service_reports_child_budget_and_artifact_summary() -> None:
+    runtime = RecordingRuntime(agent_id="agent.worker")
+    service = _worker_service(runtime)
+
+    result = service.send_message(
+        target_agent_id="agent.worker",
+        source_agent_id=DEFAULT_AGENT_ID,
+        session=AgentSessionRef(user_id="u1", session_id="s1", correlation_id="corr_budget"),
+        message=AgentMessage(text="budgeted child task", metadata={"context_refs": ["ctx_budget"]}),
+        token_budget=321,
+        tool_budget=4,
+    )
+
+    assert result.status == "completed"
+    assert result.metadata["child_context_budget"] == {
+        "token_budget": 321,
+        "tool_budget": 4,
+        "timeout_ms": 30_000,
+        "delegation_depth": 0,
+        "max_delegation_depth": 1,
+    }
+    assert result.metadata["artifact_summary"] == {
+        "artifact_count": 1,
+        "kinds": ["text"],
+        "output_ref_count": 1,
+        "text_chars": len("handled: budgeted child task"),
+        "data_keys": ["agent_id"],
+    }
+    request = runtime.requests[0]
+    assert request.metadata["child_context_budget"]["token_budget"] == 321
+    assert request.metadata["agent_context"]["context_refs"] == ["ctx_budget"]
+    assert request.metadata["agent_context"]["memory_scope"]["user_id"] == "u1"
+
+
 def test_delegate_to_agent_tool_uses_local_multi_instance_factory() -> None:
     default_runtime = RecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="run_default")
     worker_runtime = RecordingRuntime(agent_id="agent.worker", run_id="run_worker")

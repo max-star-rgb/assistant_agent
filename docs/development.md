@@ -39,8 +39,15 @@ docs/release-checklist.md
 
 Task specs live in `tasks/`. Phase docs live in `docs/`. They are implementation history and planning material; user-facing docs are the consolidated guides linked from README.
 
+## Architecture And Boundary Docs
+
+- `docs/context-engineering-walkthrough.md`: owner-facing walkthrough for assistant context data flow, boundaries, compaction, and debugging.
+- `docs/CONTEXT_ENGINEERING_STATUS.md`: current assistant context, conversation compaction, context budget, tool observation compaction, session summary, and trace/debug context status.
+- `docs/memory-service-architecture.md`: current memory service ownership, retrieval, write policy, profile memory, audit, and boundary rules.
+- `docs/architecture-layers.md`: stable layer ownership and governance boundary checklist.
+
 ## Development Plans
 
 - `docs/development/agent-control-plane-plan.md`: phased Local Multi-Agent Gateway + inbound A2A control-plane plan. Use it for gateway, routing, delegation safety, A2A conformance, outbound A2A pilot, and pilot-readiness work after reading `docs/agent-communication-routing.md`.
 - `docs/development/memory-kernel-hardening-plan.md`: phased Memory Kernel hardening plan. Use it for future memory engineering work after reading `docs/memory-service-architecture.md`.
-- `docs/development/context-engine-memory-policy-plan.md`: step-by-step Context Engine + Memory Policy plan. Use it for future context compaction, session summary, LLM compactor, token budget, and memory promotion work.
+- `docs/development/context-engine-memory-policy-plan.md`: completed staged Context Engine + Memory Policy implementation log. Use it as reference after reading `docs/CONTEXT_ENGINEERING_STATUS.md`.

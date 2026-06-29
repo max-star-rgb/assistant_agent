@@ -5,11 +5,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from multimodal_agent.schemas.memory import MemoryItem, MemoryType
+from multimodal_agent.schemas.memory import MemoryItem, MemoryScope, MemoryType
 from multimodal_agent.services.provider_errors import sanitize_error_message
 
 
 MemoryPromotionKind = Literal["episodic_memory", "long_term_memory"]
+MemoryWriteDestination = Literal[
+    "reject",
+    "session_summary",
+    "task_checkpoint",
+    "project_memory",
+    "user_profile",
+    "video_memory",
+    "product_memory",
+]
+MemoryWriteDecisionSensitivity = Literal["low", "medium", "high", "secret"]
 
 
 class MemoryPromotionCandidate(BaseModel):
@@ -57,11 +67,16 @@ class MemoryPromotionCandidate(BaseModel):
 
 
 class MemoryWriteDecision(BaseModel):
-    """Policy decision for a memory promotion candidate."""
+    """Policy decision for a proposed memory write."""
 
     allowed: bool
+    destination: MemoryWriteDestination = "reject"
     reason: str
-    candidate: MemoryPromotionCandidate
+    require_user_confirmation: bool = False
+    sensitivity: MemoryWriteDecisionSensitivity = "low"
+    ttl_days: int | None = None
+    redacted_payload: dict[str, Any] = Field(default_factory=dict)
+    candidate: MemoryPromotionCandidate | None = None
 
 
 class MemoryWritePolicy(BaseModel):
@@ -101,40 +116,115 @@ class MemoryWritePolicy(BaseModel):
     def evaluate_promotion_candidate(self, candidate: MemoryPromotionCandidate) -> MemoryWriteDecision:
         """Decide whether a generated candidate may become durable memory."""
 
+        destination = _destination_for(memory_type=candidate.memory_type)
+        redacted_payload = _redacted_candidate_payload(candidate, proposed_destination=destination)
         if candidate.rejected_reason:
             return MemoryWriteDecision(
                 allowed=False,
+                destination="reject",
                 reason=candidate.rejected_reason,
+                sensitivity=_sensitivity_for_rejection(candidate.rejected_reason),
+                redacted_payload=redacted_payload,
                 candidate=candidate,
             )
         if candidate.user_intent_explicit:
             return MemoryWriteDecision(
                 allowed=True,
+                destination=destination,
                 reason="用户明确要求记住，允许写入长期记忆。",
+                ttl_days=self.ttl_days_by_type.get(candidate.memory_type),
+                redacted_payload=redacted_payload,
                 candidate=candidate,
             )
         if candidate.kind == "long_term_memory" and not self.allow_long_term_promotion:
             return MemoryWriteDecision(
                 allowed=False,
+                destination="reject",
                 reason="默认禁止自动 long-term memory promotion。",
+                redacted_payload=redacted_payload,
                 candidate=candidate,
             )
         if candidate.memory_type == "preference" and self.require_user_intent_for_profile_memory:
             return MemoryWriteDecision(
                 allowed=False,
+                destination="reject",
                 reason="profile/preference memory 需要用户明确意图。",
+                redacted_payload=redacted_payload,
                 candidate=candidate,
             )
         if not self.allow_auto_write:
             return MemoryWriteDecision(
                 allowed=False,
+                destination="reject",
                 reason="默认禁止自动 memory write；候选仅供审计或显式确认。",
+                redacted_payload=redacted_payload,
                 candidate=candidate,
             )
         return MemoryWriteDecision(
             allowed=True,
+            destination=destination,
             reason="policy 允许自动写入该候选。",
+            ttl_days=self.ttl_days_by_type.get(candidate.memory_type),
+            redacted_payload=redacted_payload,
             candidate=candidate,
+        )
+
+    def evaluate_explicit_save(
+        self,
+        *,
+        text: str,
+        content: dict[str, Any] | None = None,
+        scope: MemoryScope | None = None,
+    ) -> MemoryWriteDecision:
+        """Decide whether an explicit user save may become memory."""
+
+        payload = content or {}
+        memory_type = _explicit_memory_type(text, payload)
+        summary = _explicit_summary(text, payload)
+        destination = _destination_for(memory_type=memory_type, scope=scope)
+        redacted_payload = _redacted_explicit_payload(
+            summary=summary,
+            memory_type=memory_type,
+            content=payload,
+            destination=destination,
+            scope=scope,
+            raw_text_stored=self.auto_save_raw_user_text,
+        )
+        if not summary:
+            return MemoryWriteDecision(
+                allowed=False,
+                destination="reject",
+                reason="explicit memory requires non-empty text or summary",
+                redacted_payload=redacted_payload,
+            )
+
+        unsafe_reason = _unsafe_payload_reason({"text": text, "summary": summary, "content": payload})
+        if unsafe_reason:
+            return MemoryWriteDecision(
+                allowed=False,
+                destination="reject",
+                reason=unsafe_reason,
+                sensitivity="secret",
+                redacted_payload=redacted_payload,
+            )
+
+        redacted_summary = sanitize_error_message(summary)
+        if self.require_explicit_save_for_sensitive and redacted_summary != summary:
+            return MemoryWriteDecision(
+                allowed=False,
+                destination="reject",
+                reason="sensitive explicit memory requires user confirmation",
+                require_user_confirmation=True,
+                sensitivity="high",
+                redacted_payload=redacted_payload,
+            )
+
+        return MemoryWriteDecision(
+            allowed=True,
+            destination=destination,
+            reason="用户明确要求记住，允许写入。",
+            ttl_days=self.ttl_days_by_type.get(memory_type),
+            redacted_payload=redacted_payload,
         )
 
 
@@ -254,6 +344,18 @@ def promotion_decision_audit_record(
     """Return a redacted audit record for traces/metadata."""
 
     candidate = decision.candidate
+    if candidate is None:
+        return {
+            "allowed": decision.allowed,
+            "destination": decision.destination,
+            "written": written_memory_id is not None,
+            "written_memory_id": written_memory_id,
+            "reason": _clip(sanitize_error_message(decision.reason), 240),
+            "require_user_confirmation": decision.require_user_confirmation,
+            "sensitivity": decision.sensitivity,
+            "ttl_days": decision.ttl_days,
+            "redacted_payload": decision.redacted_payload,
+        }
     return {
         "kind": candidate.kind,
         "memory_type": candidate.memory_type,
@@ -261,10 +363,15 @@ def promotion_decision_audit_record(
         "summary": _clip(sanitize_error_message(candidate.summary), 200),
         "tags": [_clip(sanitize_error_message(tag), 80) for tag in candidate.tags[:8]],
         "allowed": decision.allowed,
+        "destination": decision.destination,
         "written": written_memory_id is not None,
         "written_memory_id": written_memory_id,
         "reason": _clip(sanitize_error_message(decision.reason), 240),
         "user_intent_explicit": candidate.user_intent_explicit,
+        "require_user_confirmation": decision.require_user_confirmation,
+        "sensitivity": decision.sensitivity,
+        "ttl_days": decision.ttl_days,
+        "redacted_payload": decision.redacted_payload,
     }
 
 
@@ -317,6 +424,7 @@ def build_explicit_memory_item(
     session_id: str,
     text: str,
     content: dict[str, Any] | None = None,
+    scope: MemoryScope | None = None,
     policy: MemoryWritePolicy | None = None,
     created_at: datetime | None = None,
 ) -> MemoryItem:
@@ -324,14 +432,16 @@ def build_explicit_memory_item(
 
     resolved_policy = policy or MemoryWritePolicy()
     now = created_at or datetime.now(timezone.utc)
-    memory_type = _explicit_memory_type(text, content or {})
-    summary = _explicit_summary(text, content or {})
-    if not summary:
-        raise ValueError("explicit memory requires non-empty text or summary")
+    payload = content or {}
+    decision = resolved_policy.evaluate_explicit_save(text=text, content=payload, scope=scope)
+    if not decision.allowed:
+        raise ValueError(decision.reason)
+    memory_type = _explicit_memory_type(text, payload)
+    summary = _explicit_summary(text, payload)
     redacted_summary = sanitize_error_message(summary)
     safe_content: dict[str, Any] = {"explicit": True}
     for key in ("summary", "style", "budget", "product_ref", "product_id", "item", "output_ref"):
-        value = (content or {}).get(key)
+        value = payload.get(key)
         if value:
             safe_content[key] = value
     if resolved_policy.auto_save_raw_user_text:
@@ -342,6 +452,7 @@ def build_explicit_memory_item(
         memory_id=memory_id,
         user_id=user_id,
         session_id=session_id,
+        scope=scope,
         memory_type=memory_type,
         summary=redacted_summary,
         content=safe_content,
@@ -350,8 +461,84 @@ def build_explicit_memory_item(
         artifact_refs=artifact_refs,
         created_at=now,
         expires_at=resolved_policy.expires_at_for(memory_type, now),
-        sensitivity="sensitive" if redacted_summary != summary else "normal",
+        sensitivity=_item_sensitivity_for_decision(decision),
     )
+
+
+def _destination_for(
+    *,
+    memory_type: MemoryType,
+    scope: MemoryScope | str | None = None,
+) -> MemoryWriteDestination:
+    if scope == "project":
+        return "project_memory"
+    if memory_type == "conversation":
+        return "session_summary"
+    if memory_type == "preference":
+        return "user_profile"
+    if memory_type == "video":
+        return "video_memory"
+    if memory_type == "product":
+        return "product_memory"
+    return "task_checkpoint"
+
+
+def _redacted_candidate_payload(
+    candidate: MemoryPromotionCandidate,
+    *,
+    proposed_destination: MemoryWriteDestination,
+) -> dict[str, Any]:
+    return {
+        "summary": _clip(sanitize_error_message(candidate.summary), 200),
+        "memory_type": candidate.memory_type,
+        "kind": candidate.kind,
+        "source": _clip(sanitize_error_message(candidate.source), 120),
+        "tags": [_clip(sanitize_error_message(tag), 80) for tag in candidate.tags[:8]],
+        "proposed_destination": proposed_destination,
+        "has_content": bool(candidate.content),
+        "user_intent_explicit": candidate.user_intent_explicit,
+    }
+
+
+def _redacted_explicit_payload(
+    *,
+    summary: str,
+    memory_type: MemoryType,
+    content: dict[str, Any],
+    destination: MemoryWriteDestination,
+    scope: MemoryScope | str | None,
+    raw_text_stored: bool,
+) -> dict[str, Any]:
+    safe_keys = {"summary", "style", "budget", "product_ref", "product_id", "item", "output_ref"}
+    redacted_summary = sanitize_error_message(summary) if summary.strip() else ""
+    return {
+        "summary": _clip(redacted_summary, 200),
+        "memory_type": memory_type,
+        "destination": destination,
+        "scope": scope,
+        "content_keys": sorted(str(key) for key in content if str(key) in safe_keys),
+        "raw_text_stored": raw_text_stored,
+    }
+
+
+def _item_sensitivity_for_decision(decision: MemoryWriteDecision) -> Literal["normal", "private", "sensitive"]:
+    if decision.sensitivity == "low":
+        return "normal"
+    if decision.sensitivity == "medium":
+        return "private"
+    return "sensitive"
+
+
+def _sensitivity_for_rejection(reason: str) -> MemoryWriteDecisionSensitivity:
+    lowered = reason.lower()
+    if (
+        "secret" in lowered
+        or "sensitive key" in lowered
+        or "raw media/provider" in lowered
+        or "inline media" in lowered
+    ):
+        return "secret"
+    return "high"
 
 
 def _explicit_memory_type(text: str, content: dict[str, Any]) -> MemoryType:

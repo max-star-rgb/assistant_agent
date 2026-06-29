@@ -47,6 +47,53 @@ def test_explicit_remember_writes_liked_character_as_preference() -> None:
     assert item.summary == "我爱玉桂狗"
 
 
+def test_explicit_save_policy_returns_first_class_decision() -> None:
+    decision = MemoryWritePolicy().evaluate_explicit_save(
+        text="记住我喜欢日系极简风格",
+        content={"style": "日系极简"},
+    )
+
+    assert decision.allowed is True
+    assert decision.destination == "user_profile"
+    assert decision.reason
+    assert decision.require_user_confirmation is False
+    assert decision.sensitivity == "low"
+    assert decision.ttl_days is None
+    assert decision.redacted_payload == {
+        "summary": "我喜欢日系极简风格",
+        "memory_type": "preference",
+        "destination": "user_profile",
+        "scope": None,
+        "content_keys": ["style"],
+        "raw_text_stored": False,
+    }
+    assert decision.candidate is None
+
+
+def test_explicit_project_scope_policy_routes_to_project_memory() -> None:
+    decision = MemoryWritePolicy().evaluate_explicit_save(
+        text="记住这个项目使用浅色日系风格",
+        scope="project",
+    )
+
+    assert decision.allowed is True
+    assert decision.destination == "project_memory"
+    assert decision.redacted_payload["scope"] == "project"
+
+
+def test_explicit_secret_policy_rejects_without_raw_payload() -> None:
+    decision = MemoryWritePolicy().evaluate_explicit_save(
+        text="记住 Authorization: Bearer secret-token",
+    )
+
+    assert decision.allowed is False
+    assert decision.destination == "reject"
+    assert decision.sensitivity == "secret"
+    assert decision.require_user_confirmation is False
+    assert "secret-token" not in str(decision.redacted_payload)
+    assert "[redacted]" in decision.redacted_payload["summary"]
+
+
 def test_explicit_memory_requires_real_summary() -> None:
     with pytest.raises(ValueError):
         build_explicit_memory_item(
@@ -106,6 +153,8 @@ def test_memory_promotion_candidate_is_not_written_by_default() -> None:
     decision = MemoryWritePolicy().evaluate_promotion_candidate(candidate)
 
     assert decision.allowed is False
+    assert decision.destination == "reject"
+    assert decision.redacted_payload["proposed_destination"] == "task_checkpoint"
     assert "默认禁止自动 memory write" in decision.reason
 
 
@@ -122,6 +171,7 @@ def test_explicit_memory_promotion_candidate_is_allowed() -> None:
     decision = MemoryWritePolicy().evaluate_promotion_candidate(candidate)
 
     assert decision.allowed is True
+    assert decision.destination == "user_profile"
     assert "用户明确要求记住" in decision.reason
 
 
@@ -199,6 +249,10 @@ def test_promotion_audit_record_does_not_include_candidate_content() -> None:
     audit = promotion_decision_audit_record(decision)
 
     assert audit["summary"] == "用户这次完成了一次临时商品搜索。"
+    assert audit["destination"] == "reject"
+    assert audit["require_user_confirmation"] is False
+    assert audit["sensitivity"] == "low"
+    assert audit["redacted_payload"]["proposed_destination"] == "task_checkpoint"
     assert "content" not in audit
     assert "output_refs" not in audit
 

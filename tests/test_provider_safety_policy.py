@@ -61,11 +61,16 @@ def test_policy_removes_raw_provider_detail_fields() -> None:
     detail = policy.sanitize_detail(
         {
             "raw_response": {"Authorization": "Bearer sk-secret", "body": "x" * 1000},
+            "raw_provider_payload": {"api_key": "sk-test", "body": "raw"},
+            "media": {"image_base64": "data:image/png;base64," + ("A" * 200), "output_ref": "artifact://image/1"},
             "status_code": 500,
         }
     )
 
     assert "raw_response" not in detail
+    assert "raw_provider_payload" not in detail
+    assert "image_base64" not in detail["media"]
+    assert detail["media"]["output_ref"] == "artifact://image/1"
     assert detail["status_code"] == 500
 
 

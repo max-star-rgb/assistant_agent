@@ -21,6 +21,7 @@ MemoryType = Literal[
     "render",
 ]
 
+MemoryScope = Literal["session", "task", "project", "user_profile", "video", "product"]
 MemorySensitivity = Literal["normal", "private", "sensitive"]
 
 _SENSITIVE_KEYS = {
@@ -56,7 +57,10 @@ class MemoryItem(BaseModel):
 
     memory_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
+    tenant_id: str | None = None
+    project_id: str | None = None
     session_id: str | None = None
+    scope: MemoryScope | None = None
     memory_type: MemoryType
     content: dict[str, Any] = Field(default_factory=dict)
     summary: str = Field(min_length=1)
@@ -80,6 +84,8 @@ class MemoryItem(BaseModel):
         self.reason = sanitize_error_message(self.reason) if self.reason else None
         self.content = _sanitize_payload(self.content)
         self.tags = [sanitize_error_message(tag) for tag in self.tags]
+        if self.scope is None:
+            self.scope = memory_scope_for_item(self)
         return self
 
 
@@ -87,10 +93,13 @@ class MemoryQuery(BaseModel):
     """Query options for local memory retrieval."""
 
     user_id: str = Field(min_length=1)
+    tenant_id: str | None = None
+    project_id: str | None = None
     session_id: str | None = None
     query: str = ""
     capability: str | None = None
     memory_types: list[MemoryType] = Field(default_factory=list)
+    allowed_scopes: list[MemoryScope] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     top_k: int = Field(default=5, ge=1, le=50)
     max_context_chars: int = Field(default=500, ge=50, le=4000)
@@ -160,6 +169,45 @@ def _memory_type_from_capability(capability: str) -> MemoryType:
     if capability == "memory_save":
         return "task"
     return "artifact"
+
+
+def memory_scope_for_item(item: MemoryItem) -> MemoryScope:
+    """Return the effective governance scope for a memory item."""
+
+    if item.scope is not None:
+        return item.scope
+    if item.source == "user_profile":
+        return "user_profile"
+    return memory_scope_for_type(item.memory_type)
+
+
+def memory_scope_for_type(memory_type: MemoryType) -> MemoryScope:
+    """Map current memory types to coarse governance scopes."""
+
+    if memory_type == "conversation":
+        return "session"
+    if memory_type == "preference":
+        return "user_profile"
+    if memory_type == "product":
+        return "product"
+    if memory_type == "video":
+        return "video"
+    return "task"
+
+
+def memory_item_matches_query_scope(item: MemoryItem, query: MemoryQuery) -> bool:
+    """Return whether an item is visible under query governance fields."""
+
+    effective_scope = memory_scope_for_item(item)
+    if query.allowed_scopes and effective_scope not in query.allowed_scopes:
+        return False
+    if item.tenant_id is not None and item.tenant_id != query.tenant_id:
+        return False
+    if item.project_id is not None and item.project_id != query.project_id:
+        return False
+    if effective_scope == "project" and (not query.project_id or item.project_id != query.project_id):
+        return False
+    return True
 
 
 def _reject_unsafe_payload(value: Any) -> None:

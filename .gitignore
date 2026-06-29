@@ -20,6 +20,7 @@ htmlcov/
 !/docs/agent-communication-routing.md
 !/docs/architecture-layers.md
 !/docs/CONTEXT_ENGINEERING_STATUS.md
+!/docs/context-engineering-walkthrough.md
 !/docs/DOCS_INDEX.md
 !/docs/quickstart.md
 !/docs/development.md
@@ -34,7 +35,9 @@ htmlcov/
 /demo_data/
 /tests/*
 !/tests/test_agent_communication_*.py
+!/tests/test_a2a_json_rpc_transport.py
 !/tests/test_api_a2a.py
 !/tests/test_agent_gateway.py
+!/tests/test_agent_pilot_readiness.py
 !/tests/test_agent_routing_policy.py
 !/tests/test_memory_tool_boundary.py
