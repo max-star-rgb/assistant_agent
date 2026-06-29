@@ -266,6 +266,8 @@ P0 progress:
 - 2026-06-29: Added optional `tenant_id`, `project_id`, and coarse `scope` fields to `MemoryItem`/`MemoryQuery`, plus service-layer filtering for retrieval, list, get, and delete. Legacy unscoped user memories remain visible for compatibility; tenant/project-scoped memories require matching identity metadata.
 - 2026-06-29: Expanded `MemoryWriteDecision` into the first-class write-policy result for explicit saves and promotion candidates. The decision now carries destination, confirmation requirement, sensitivity, TTL, and redacted payload metadata. Explicit saves are evaluated through `MemoryWritePolicy.evaluate_explicit_save(...)`; raw provider payloads, base64/raw media, API keys, bearer tokens, and secret-like text are rejected before a `MemoryItem` is built. Promotion audit records now include the decision fields while still excluding candidate content.
 - 2026-06-29: Added `MemoryContextBuilder` as a memory-local token-aware injection boundary. It renders the existing memory layers, estimates tokens deterministically, honors optional memory token budgets, rejects sensitive/expired items from injection, and reports injected IDs, token count, budget, omitted count, rejection reasons, and retrieval version through `memory_context_*` metadata. Global assistant context compaction still uses the existing context-engine character budget unless separately changed.
+- 2026-06-29: Added an offline memory retrieval eval baseline through `multimodal_agent.memory.retrieval_eval` and `scripts/run_evals.py --suite memory`. The initial suite covers relevant retrieval, correct empty recall, cross-user isolation, expired exclusion, sensitive memory non-injection, and memory token budget compliance. Summary metrics include Recall@k, MRR, false-positive rate, correct-empty rate, cross-user leakage rate, sensitive/expired injection rate, and token budget compliance.
+- 2026-06-29: Added first-pass user-scoped memory export and expired-memory retention sweep through `MemoryAuditService` and API routes. The sweep supports dry-run, soft-delete, and explicit hard-delete modes while preserving identity scoping. `InMemoryStore`, `JsonlMemoryStore`, and `SQLiteMemoryStore` expose a `hard_delete(...)` hook; production-grade audit log storage and rollback/rebuild remain future work.
 
 SQLite P0 requirements:
 
@@ -274,8 +276,8 @@ SQLite P0 requirements:
 - Transaction wrapper for save/update/delete/profile upsert. Store-level save/delete rollback tests exist; profile-specific transaction tests still needed.
 - Unique user-scoped content hash or dedupe key. Current primary key is `(user_id, memory_id)` with `content_hash`; dedupe-key policy remains future work.
 - Indexes for `user_id`, `project_id`, `session_id`, `scope`, `kind`, `expires_at`, `deleted_at`, `content_hash`. Current schema indexes `user_id`, `session_id`, `memory_type`, `expires_at`, `deleted_at`, and `content_hash`; project/scope/kind fields wait for schema evolution.
-- Soft delete support. Delete hides rows via `deleted_at`, and restore-on-save is tested; hard-delete/retention sweeper still needed.
-- Backup/export path.
+- Soft delete support. Delete hides SQLite rows via `deleted_at`, restore-on-save is tested, and a user-scoped retention sweeper can soft-delete or explicitly hard-delete expired items.
+- Backup/export path. First-pass user export API is implemented; backup/runbook packaging remains future work.
 - Corruption/migration failure tests. Newer-schema rejection is covered; corrupt database and migration rollback tests still needed.
 
 ## Lifecycle And Privacy
@@ -382,9 +384,9 @@ Work:
 4. Shape `RequestIdentity` and thread it through service APIs where practical. Initial request-derived identity boundary is implemented on 2026-06-29; service-layer project/tenant/scope filtering is in place for scoped memories. Auth-bound principal integration and database-level tenant/project indexes remain future work.
 5. Promote `MemoryWritePolicy` into a decision object with allow/reject/confirmation reasons. Initial `MemoryWriteDecision` fields and explicit-save/promotion-candidate evaluation are implemented on 2026-06-29; user-facing confirmation workflow remains future work.
 6. Add token-aware `MemoryContextBuilder` behind existing context metadata. Initial memory-local builder and metadata reporting are implemented on 2026-06-29; broader memory evals and trace metrics remain future work.
-7. Add soft delete, export, and audit log foundation.
+7. Add soft delete, export, and audit log foundation. Soft-delete behavior, user export, and retention sweep are implemented; durable audit-log storage remains future work.
 8. Keep `InMemoryStore` and `JsonlMemoryStore` as local/offline paths.
-9. Add retrieval eval suite before vector work.
+9. Add retrieval eval suite before vector work. Initial offline retrieval eval suite and summary metrics are implemented on 2026-06-29; broader corpus coverage and regression thresholds remain future work.
 10. Add store corruption, migration, and concurrency tests.
 
 Acceptance:

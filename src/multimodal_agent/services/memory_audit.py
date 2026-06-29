@@ -13,6 +13,8 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryAuditReport,
     MemoryDeleteResult,
     MemoryDuplicateGroup,
+    MemoryExport,
+    MemoryRetentionSweepResult,
 )
 
 
@@ -92,6 +94,69 @@ class MemoryAuditService:
         deleted = self.memory_manager.delete_session_for_identity(identity, session_id=session_id)
         return MemoryDeleteResult(user_id=identity.user_id, deleted={"memory_items": deleted})
 
+    def export(self, *, user_id: str, include_content: bool = True) -> MemoryExport:
+        return self.export_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            include_content=include_content,
+        )
+
+    def export_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        include_content: bool = True,
+    ) -> MemoryExport:
+        items = self.memory_manager.list_for_identity(identity)
+        return MemoryExport(
+            user_id=identity.user_id,
+            exported_at=datetime.now(timezone.utc),
+            include_content=include_content,
+            total=len(items),
+            items=[MemoryAuditItem.from_memory(item, include_content=include_content) for item in items],
+        )
+
+    def sweep_expired(
+        self,
+        *,
+        user_id: str,
+        hard_delete: bool = False,
+        dry_run: bool = False,
+    ) -> MemoryRetentionSweepResult:
+        return self.sweep_expired_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            hard_delete=hard_delete,
+            dry_run=dry_run,
+        )
+
+    def sweep_expired_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        hard_delete: bool = False,
+        dry_run: bool = False,
+    ) -> MemoryRetentionSweepResult:
+        items = self.memory_manager.list_for_identity(identity)
+        expired_items = [item for item in items if _is_expired(item)]
+        deleted_count = 0
+        if not dry_run:
+            for item in expired_items:
+                deleted = (
+                    self.memory_manager.hard_delete_for_identity(identity, item.memory_id)
+                    if hard_delete
+                    else self.memory_manager.delete_for_identity(identity, item.memory_id)
+                )
+                if deleted:
+                    deleted_count += 1
+        return MemoryRetentionSweepResult(
+            user_id=identity.user_id,
+            mode="hard_delete" if hard_delete else "soft_delete",
+            dry_run=dry_run,
+            scanned=len(items),
+            expired=len(expired_items),
+            deleted={"memory_items": deleted_count},
+            memory_ids=[item.memory_id for item in expired_items],
+        )
+
     def audit(self, *, user_id: str) -> MemoryAuditReport:
         return self.audit_for_identity(RequestIdentity.for_user(user_id=user_id))
 
@@ -156,14 +221,14 @@ def _duplicate_groups(items: list[MemoryItem]) -> list[MemoryDuplicateGroup]:
 
 
 def _expired_count(items: list[MemoryItem]) -> int:
-    count = 0
-    for item in items:
-        if item.expires_at is None:
-            continue
-        now = datetime.now(tz=item.expires_at.tzinfo or timezone.utc)
-        if item.expires_at < now:
-            count += 1
-    return count
+    return sum(1 for item in items if _is_expired(item))
+
+
+def _is_expired(item: MemoryItem) -> bool:
+    if item.expires_at is None:
+        return False
+    now = datetime.now(tz=item.expires_at.tzinfo or timezone.utc)
+    return item.expires_at < now
 
 
 def _dedupe_key(item: MemoryItem) -> str:

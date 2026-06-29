@@ -196,6 +196,8 @@ Module ownership:
 | `tests/test_agent_communication_*.py` | Offline deterministic tests for directory, routing, transport, delegation, and safety policy. |
 | `tests/test_agent_gateway.py` | Offline deterministic tests for gateway behavior. |
 | `tests/test_api_a2a.py` | Offline deterministic tests for inbound A2A API behavior. |
+| `tests/test_a2a_json_rpc_transport.py` | Offline deterministic tests for the default-disabled outbound A2A pilot transport. |
+| `tests/test_agent_pilot_readiness.py` | Offline deterministic tests for readiness checks, redacted summaries, and replay payload redaction. |
 
 If file names change during implementation, keep the same ownership boundaries and update this table.
 
@@ -294,12 +296,18 @@ The inbound MVP exposes this repository as an agent without changing default `/a
 
 ## Validation
 
-For the current internal-boundary state:
+For the current gateway, A2A adapter, outbound pilot transport, and pilot-readiness state:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_communication_routing.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_routing_policy.py tests/test_agent_gateway.py tests/test_api_agent_graph_runtime.py tests/test_api_a2a.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_agent_communication_routing.py \
+  tests/test_agent_pilot_readiness.py \
+  tests/test_a2a_json_rpc_transport.py \
+  tests/test_agent_gateway.py \
+  tests/test_agent_routing_policy.py \
+  tests/test_api_agent_graph_runtime.py \
+  tests/test_api_a2a.py
 ```
 
 For broader behavior changes, run:

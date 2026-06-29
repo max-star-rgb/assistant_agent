@@ -61,12 +61,14 @@ Implemented baseline:
 - Worker runtime does not register `delegate_to_agent`.
 - `GET /.well-known/agent-card.json`: inbound A2A-compatible discovery.
 - `POST /a2a/rpc`: inbound A2A JSON-RPC `SendMessage` plus `message/send` compatibility alias.
+- Default-disabled outbound `A2AJsonRpcTransport` pilot with explicit endpoint and allowlist.
+- Pilot readiness summary and preview-only failure replay helpers.
 - Default runtime profile remains mock/local/offline.
 
 Unsupported baseline:
 
-- Outbound A2A remote calls.
-- Remote agent network fabric.
+- Public remote agent network fabric.
+- Automatic remote Agent Card discovery or enablement.
 - LLM target-agent selection.
 - Automatic real-provider enablement from keys.
 
@@ -466,10 +468,9 @@ Validation:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_agent_communication_routing.py \
   tests/test_agent_pilot_readiness.py \
-  tests/test_a2a_json_rpc_transport.py
-
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_a2a_json_rpc_transport.py \
   tests/test_agent_gateway.py \
   tests/test_agent_routing_policy.py \
   tests/test_api_agent_graph_runtime.py \
@@ -479,10 +480,9 @@ Validation:
 Result:
 
 ```text
-15 passed
-30 passed
+67 passed across the current gateway/A2A/pilot readiness regression slice.
 ```
 
 Known validation limitation:
 
-- `tests/test_agent_communication_routing.py` is currently blocked by an unrelated dirty `src/multimodal_agent/memory/manager.py` `NameError: MemoryLayer is not defined` during registry import. This was not introduced by Phase G.
+- No public remote agent fabric, automatic Agent Card discovery, or production auth binding is implemented in this phase.

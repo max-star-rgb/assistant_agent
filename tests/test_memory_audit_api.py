@@ -97,6 +97,52 @@ def test_memory_audit_api_report_flags_duplicates_and_profile(monkeypatch) -> No
     assert "potential_duplicate_memories" in payload["warnings"]
 
 
+def test_memory_audit_api_exports_user_memory(monkeypatch) -> None:
+    store = InMemoryStore()
+    runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
+    store.save(_memory("m1", "u1", "preference", "用户喜欢日系风格。", content={"style": "日系"}))
+    store.save(_memory("m2", "u2", "preference", "其他用户记忆。", content={"style": "其他"}))
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    exported = client.get("/memory/users/u1/export")
+    redacted = client.get("/memory/users/u1/export", params={"include_content": False})
+
+    assert exported.status_code == 200
+    payload = exported.json()
+    assert payload["user_id"] == "u1"
+    assert payload["total"] == 1
+    assert payload["include_content"] is True
+    assert payload["items"][0]["memory_id"] == "m1"
+    assert payload["items"][0]["content"] == {"style": "日系"}
+    assert redacted.status_code == 200
+    assert redacted.json()["items"][0]["content"] is None
+
+
+def test_memory_audit_api_sweeps_expired_memory(monkeypatch) -> None:
+    store = InMemoryStore()
+    runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
+    now = datetime.now(timezone.utc)
+    store.save(_memory("expired", "u1", "task", "过期任务", expires_at=now - timedelta(days=1)))
+    store.save(_memory("active", "u1", "task", "有效任务", expires_at=now + timedelta(days=1)))
+    store.save(_memory("other", "u2", "task", "其他用户过期任务", expires_at=now - timedelta(days=1)))
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    dry_run = client.post("/memory/users/u1/retention/sweep", params={"dry_run": True})
+
+    assert dry_run.status_code == 200
+    assert dry_run.json()["expired"] == 1
+    assert dry_run.json()["deleted"]["memory_items"] == 0
+    assert store.get("u1", "expired") is not None
+    swept = client.post("/memory/users/u1/retention/sweep")
+    assert swept.status_code == 200
+    assert swept.json()["deleted"]["memory_items"] == 1
+    assert store.get("u1", "expired") is None
+    assert store.get("u1", "active") is not None
+    assert store.get("u2", "other") is not None
+
+
 def test_memory_audit_service_uses_request_identity_scope() -> None:
     store = InMemoryStore()
     runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from multimodal_agent.memory.context_builder import MemoryContextBlock, MemoryContextBuilder
+from multimodal_agent.memory.context_builder import MemoryContextBlock, MemoryContextBuilder, MemoryLayer
 from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID, UserProfileMemory
 from multimodal_agent.memory.store import MemoryStore
 from multimodal_agent.memory.write_policy import (
@@ -314,6 +314,17 @@ class MemoryManager:
     def delete_for_identity(self, identity: RequestIdentity, memory_id: str) -> bool:
         if self.get_for_identity(identity, memory_id) is None:
             return False
+        return self.store.delete(identity.user_id, memory_id)
+
+    def hard_delete(self, user_id: str, memory_id: str) -> bool:
+        return self.hard_delete_for_identity(RequestIdentity.for_user(user_id=user_id), memory_id)
+
+    def hard_delete_for_identity(self, identity: RequestIdentity, memory_id: str) -> bool:
+        if self.get_for_identity(identity, memory_id) is None:
+            return False
+        hard_delete = getattr(self.store, "hard_delete", None)
+        if callable(hard_delete):
+            return bool(hard_delete(identity.user_id, memory_id))
         return self.store.delete(identity.user_id, memory_id)
 
     def delete_by_session(self, user_id: str, session_id: str) -> int:

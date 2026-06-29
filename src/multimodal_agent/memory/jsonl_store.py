@@ -70,6 +70,9 @@ class JsonlMemoryStore:
         self._write_all(remaining)
         return True
 
+    def hard_delete(self, user_id: str, memory_id: str) -> bool:
+        return self.delete(user_id, memory_id)
+
     def delete_by_session(self, user_id: str, session_id: str) -> int:
         items = self._read_all()
         remaining = [

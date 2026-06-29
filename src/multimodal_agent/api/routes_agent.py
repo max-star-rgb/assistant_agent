@@ -16,6 +16,8 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryAuditList,
     MemoryAuditReport,
     MemoryDeleteResult,
+    MemoryExport,
+    MemoryRetentionSweepResult,
 )
 from multimodal_agent.schemas.memory_snapshot import MemorySnapshot, MemoryStorageSnapshot
 from multimodal_agent.schemas.requests import UserRequest
@@ -235,6 +237,32 @@ def get_memory_item(
 def audit_memory(user_id: str) -> MemoryAuditReport:
     _require_trial_access(user_id)
     return _memory_audit_service().audit_for_identity(_memory_identity(user_id))
+
+
+@router.get("/memory/users/{user_id}/export", response_model=MemoryExport)
+def export_memory(
+    user_id: str,
+    include_content: bool = Query(default=True),
+) -> MemoryExport:
+    _require_trial_access(user_id)
+    return _memory_audit_service().export_for_identity(
+        _memory_identity(user_id),
+        include_content=include_content,
+    )
+
+
+@router.post("/memory/users/{user_id}/retention/sweep", response_model=MemoryRetentionSweepResult)
+def sweep_expired_memory(
+    user_id: str,
+    hard_delete: bool = Query(default=False),
+    dry_run: bool = Query(default=False),
+) -> MemoryRetentionSweepResult:
+    _require_trial_access(user_id)
+    return _memory_audit_service().sweep_expired_for_identity(
+        _memory_identity(user_id),
+        hard_delete=hard_delete,
+        dry_run=dry_run,
+    )
 
 
 @router.get("/memory/users/{user_id}/snapshot", response_model=MemorySnapshot)

@@ -21,6 +21,10 @@ from multimodal_agent.agent.intent_router_adapter import create_intent_router_ad
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.memory.store import InMemoryStore
+from multimodal_agent.memory.retrieval_eval import (
+    evaluate_memory_retrieval_case,
+    summarize_memory_retrieval_eval_dicts,
+)
 from multimodal_agent.schemas.api import agent_run_response_from_state
 from multimodal_agent.schemas.capabilities import canonical_intent
 from multimodal_agent.schemas.intent_router import IntentRouterRequest
@@ -443,9 +447,17 @@ def evaluate_memory_case(case: dict[str, Any], router_mode: str = "rule") -> dic
     elif scenario == "delete_user_scoped":
         store.save(item.model_copy(update={"user_id": "user_b"}))
         passed = store.delete("user_a", "m_shared") and store.get("user_b", "m_shared") is not None
+    elif scenario == "retrieval_eval":
+        eval_result = evaluate_memory_retrieval_case(
+            {
+                "id": case["id"],
+                **case.get("memory_retrieval_eval", {}),
+            }
+        )
+        passed = eval_result.passed
     else:
         passed = False
-    return {
+    detail = {
         "id": case["id"],
         "router_mode": router_mode,
         "suite": case.get("suite"),
@@ -474,6 +486,9 @@ def evaluate_memory_case(case: dict[str, Any], router_mode: str = "rule") -> dic
         "missing_slots": [],
         "media_requirement_errors": [],
     }
+    if scenario == "retrieval_eval":
+        detail["memory_retrieval_eval"] = eval_result.model_dump(mode="json")
+    return detail
 
 
 def evaluate_provider_safety_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
@@ -607,7 +622,12 @@ def summarize_details(details: list[dict[str, Any]], include_suites: bool = True
             )
             for suite in sorted({detail.get("suite") for detail in details if detail.get("suite")})
         }
-    return {
+    memory_retrieval_results = [
+        detail["memory_retrieval_eval"]
+        for detail in details
+        if isinstance(detail.get("memory_retrieval_eval"), dict)
+    ]
+    summary = {
         "total": total,
         "passed": passed_count,
         "failed": failed,
@@ -627,6 +647,9 @@ def summarize_details(details: list[dict[str, Any]], include_suites: bool = True
         ),
         "failed_case_ids": failed_case_ids,
     }
+    if memory_retrieval_results:
+        summary["memory_retrieval_eval"] = summarize_memory_retrieval_eval_dicts(memory_retrieval_results)
+    return summary
 
 
 def main() -> int:

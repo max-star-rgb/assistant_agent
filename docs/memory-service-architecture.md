@@ -17,7 +17,7 @@ The memory service is local-first long-term memory for the agent. It covers:
 - Saving explicit user-requested memories.
 - Saving safe completed-run summaries where allowed.
 - Maintaining a compact `user_profile` memory derived from explicit memories.
-- Exposing audit, delete, and snapshot views through service/API boundaries.
+- Exposing audit, export, retention sweep, delete, and snapshot views through service/API boundaries.
 
 Conversation history is related but separate. Session conversation context, including session-scoped `context_summary`, is owned by conversation/session services and is combined with memory only in context packs and memory snapshots. `context_summary` is not a long-term memory item.
 
@@ -90,9 +90,9 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 
 | module | responsibility |
 | --- | --- |
-| `src/multimodal_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, duplicate merge, user profile upsert, run-summary saves, get/list/delete passthroughs. |
+| `src/multimodal_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
 | `src/multimodal_agent/memory/context_builder.py` | Token-aware, prompt-safe memory context selection and layer rendering. Produces injected items, rendered context, token count, omission count, rejection reasons, and retrieval version. |
-| `src/multimodal_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`. |
+| `src/multimodal_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`, including soft-delete-compatible delete and hard-delete store boundary methods. |
 | `src/multimodal_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract. |
 | `src/multimodal_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, and soft-delete-compatible delete behavior. |
 | `src/multimodal_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
@@ -101,10 +101,10 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/multimodal_agent/memory/profile.py` | Compact `user_profile` memory derived from explicit preference/product/task memories. |
 | `src/multimodal_agent/schemas/identity.py` | `RequestIdentity` contract for request/auth-derived user, tenant, project, session, and allowed memory scopes. |
 | `src/multimodal_agent/tools/memory_tool.py` | Agent-callable `memory`, `memory_retrieval`, and `memory_save` tools. Uses `MemoryManager` from tool context when present. |
-| `src/multimodal_agent/services/memory_audit.py` | User-scoped list/get/delete/audit service over `MemoryManager`. |
+| `src/multimodal_agent/services/memory_audit.py` | User-scoped list/get/export/retention-sweep/delete/audit service over `MemoryManager`. |
 | `src/multimodal_agent/services/memory_snapshot.py` | Read-only snapshot combining memory context, session records, conversation history, audit, and storage boundary info. |
 | `src/multimodal_agent/schemas/memory.py` | Public memory contracts and payload safety validation. |
-| `src/multimodal_agent/schemas/memory_audit.py` | API-facing audit/delete/list models. |
+| `src/multimodal_agent/schemas/memory_audit.py` | API-facing audit/export/retention/delete/list models. |
 | `src/multimodal_agent/schemas/memory_snapshot.py` | API-facing memory boundary snapshot models. |
 
 Agent nodes, assistant loops, API routes, MCP routes, and tools should not depend directly on concrete stores. Use `MemoryManager` or a service that wraps it.
@@ -147,7 +147,7 @@ Use this routing matrix:
 | --- | --- |
 | Graph/runtime automatic memory load/save | `graph node -> MemoryManager -> MemoryStore` |
 | Assistant/LLM explicit memory action | `AssistantDecision -> ActionValidator -> ToolExecutor -> memory tool -> MemoryManager` |
-| API audit/snapshot/delete | `API route -> MemoryAuditService / MemorySnapshotService -> MemoryManager` |
+| API audit/export/retention/snapshot/delete | `API route -> MemoryAuditService / MemorySnapshotService -> MemoryManager` |
 | Unit tests for storage/retrieval/policy | direct `MemoryManager` or store instantiation is allowed only inside focused tests |
 
 `src/multimodal_agent/tools/memory_tool.py` must stay a thin tool adapter. It may:
@@ -164,7 +164,7 @@ It must not own or reimplement:
 - Write policy, TTL, duplicate merge, sensitivity, or raw payload filtering.
 - User profile extraction or merge behavior.
 - Storage backend selection or direct `MemoryStore` access.
-- API audit, snapshot, deletion, or user-data lifecycle behavior.
+- API audit, export, retention sweep, snapshot, deletion, or user-data lifecycle behavior.
 
 If memory logic grows beyond identity binding, input adaptation, or result wrapping, move it into `MemoryManager`, `memory/` helpers, or a `services/memory_*` service before exposing it through a tool.
 
@@ -259,6 +259,17 @@ Filters apply after candidate selection:
 
 Ranking combines relevance, capability/type priority, artifact-ref signal, and recency. Capability-specific priorities currently exist for image generation, product search, render 3D, and direct chat.
 
+## Retrieval Eval
+
+Memory retrieval quality is measured before adding embedding or vector dependencies.
+
+Current local eval boundary:
+
+- `src/multimodal_agent/memory/retrieval_eval.py` runs deterministic `InMemoryStore + MemoryManager` retrieval and context-injection cases.
+- `scripts/run_evals.py --suite memory` includes the retrieval eval cases from `tests/evals/eval_cases.json`.
+- Metrics include Recall@k, MRR, false-positive rate, correct-empty rate, cross-user leakage rate, sensitive/expired injection rate, and token budget compliance.
+- Initial coverage includes black-bag recall, color preference recall, task/product resume, budget preference, unrelated empty recall, cross-user isolation, expired exclusion, sensitive non-injection, and token budget compliance.
+
 ## Writes
 
 Explicit saves:
@@ -331,11 +342,13 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 - `GET /memory/users/{user_id}/items`
 - `GET /memory/users/{user_id}/items/{memory_id}`
 - `GET /memory/users/{user_id}/audit`
+- `GET /memory/users/{user_id}/export`
 - `GET /memory/users/{user_id}/snapshot`
+- `POST /memory/users/{user_id}/retention/sweep`
 - `DELETE /memory/users/{user_id}/items/{memory_id}`
 - `DELETE /memory/users/{user_id}/sessions/{session_id}`
 
-List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match.
+List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Export is identity-scoped and can omit content with `include_content=false`. Retention sweep scans only identity-visible memories, supports `dry_run=true`, soft-deletes expired items by default, and uses `MemoryManager.hard_delete_for_identity(...)` plus `MemoryStore.hard_delete(...)` when `hard_delete=true`. SQLite removes the row on hard delete; in-memory and JSONL stores already delete physically. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match.
 
 `DELETE /beta/users/{user_id}/data` clears memory through `runtime.memory_manager.clear_user(user_id)` as part of broader user-data deletion.
 
@@ -360,6 +373,8 @@ Focused validation for memory changes:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_write_policy.py tests/test_memory_privacy_redaction.py tests/test_memory_lifecycle.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_audit_api.py tests/test_memory_snapshot_api.py tests/test_memory_runtime_integration.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_tool_boundary.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_retrieval_eval.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory
 ```
 
 For broad behavior changes, run the full offline suite:

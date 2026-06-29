@@ -1356,6 +1356,267 @@
     ]
   },
   {
+    "id": "memory_retrieval_black_bag_style_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_black_bag_style",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "上次那个黑色包是什么风格？",
+      "expected_memory_ids": [
+        "product_black_commute_bag"
+      ],
+      "fixtures": [
+        {
+          "memory_id": "product_black_commute_bag",
+          "memory_type": "product",
+          "summary": "用户上次关注了一个黑色通勤包，风格是简约商务。",
+          "created_at": "2026-01-02T00:00:00+00:00"
+        },
+        {
+          "memory_id": "pref_light_style",
+          "memory_type": "preference",
+          "summary": "用户喜欢浅色日系风格。",
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_color_preference_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_color_preference",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "我之前喜欢什么配色？",
+      "expected_memory_ids": [
+        "pref_color_light"
+      ],
+      "fixtures": [
+        {
+          "memory_id": "pref_color_light",
+          "memory_type": "preference",
+          "summary": "用户之前说喜欢浅色、米白和低饱和配色。",
+          "created_at": "2026-01-02T00:00:00+00:00"
+        },
+        {
+          "memory_id": "product_black_commute_bag",
+          "memory_type": "product",
+          "summary": "用户上次关注了一个黑色通勤包。",
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_living_room_product_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_living_room_product",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "刚才让我放到客厅的是哪个商品？",
+      "expected_memory_ids": [
+        "task_living_room_chair"
+      ],
+      "fixtures": [
+        {
+          "memory_id": "task_living_room_chair",
+          "memory_type": "task",
+          "summary": "刚才用户让我把米白色单人椅商品放到客厅里渲染。",
+          "created_at": "2026-01-02T00:00:00+00:00"
+        },
+        {
+          "memory_id": "task_old_shoe",
+          "memory_type": "task",
+          "summary": "之前用户搜索过白色运动鞋。",
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_budget_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_budget",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "我预算是多少？",
+      "expected_memory_ids": [
+        "pref_budget_500"
+      ],
+      "fixtures": [
+        {
+          "memory_id": "pref_budget_500",
+          "memory_type": "preference",
+          "summary": "用户预算是 500 元以内，优先性价比。",
+          "created_at": "2026-01-02T00:00:00+00:00"
+        },
+        {
+          "memory_id": "pref_color_light",
+          "memory_type": "preference",
+          "summary": "用户喜欢浅色低饱和配色。",
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_unrelated_empty_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_unrelated_empty",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "玉桂狗联名杯子",
+      "expected_empty": true,
+      "fixtures": [
+        {
+          "memory_id": "product_black_commute_bag",
+          "memory_type": "product",
+          "summary": "用户上次关注了一个黑色通勤包。",
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_cross_user_isolation_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_cross_user_isolation",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "浅色日系",
+      "user_id": "user_b",
+      "expected_empty": true,
+      "forbidden_memory_ids": [
+        "cross_user_pref"
+      ],
+      "fixtures": [
+        {
+          "memory_id": "cross_user_pref",
+          "user_id": "user_a",
+          "memory_type": "preference",
+          "summary": "用户 A 喜欢浅色日系风格。",
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_expired_exclusion_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_expired_exclusion",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "过期预算",
+      "expected_empty": true,
+      "forbidden_memory_ids": [
+        "expired_budget"
+      ],
+      "fixtures": [
+        {
+          "memory_id": "expired_budget",
+          "memory_type": "preference",
+          "summary": "过期预算是 300 元。",
+          "created_at": "2020-01-01T00:00:00+00:00",
+          "expires_at": "2020-01-02T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_sensitive_not_injected_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_sensitive_not_injected",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "预算",
+      "expected_memory_ids": [
+        "safe_budget"
+      ],
+      "expected_injected_ids": [
+        "safe_budget"
+      ],
+      "forbidden_injected_ids": [
+        "sensitive_budget"
+      ],
+      "fixtures": [
+        {
+          "memory_id": "safe_budget",
+          "memory_type": "preference",
+          "summary": "用户预算是 500 元以内。",
+          "created_at": "2026-01-02T00:00:00+00:00"
+        },
+        {
+          "memory_id": "sensitive_budget",
+          "memory_type": "preference",
+          "summary": "用户预算包含敏感付款信息。",
+          "sensitivity": "sensitive",
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_token_budget_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_token_budget",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "浅色",
+      "max_context_chars": 1000,
+      "max_context_tokens": 28,
+      "expected_memory_ids": [
+        "token_small"
+      ],
+      "expected_injected_ids": [
+        "token_small"
+      ],
+      "forbidden_injected_ids": [
+        "token_large"
+      ],
+      "fixtures": [
+        {
+          "memory_id": "token_small",
+          "memory_type": "preference",
+          "summary": "用户喜欢浅色。",
+          "created_at": "2026-01-02T00:00:00+00:00"
+        },
+        {
+          "memory_id": "token_large",
+          "memory_type": "preference",
+          "summary": "用户喜欢非常详细的日系极简浅色背景。用户喜欢非常详细的日系极简浅色背景。用户喜欢非常详细的日系极简浅色背景。用户喜欢非常详细的日系极简浅色背景。",
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
     "id": "memory_user_isolation_001",
     "category": "memory",
     "suite": "memory",

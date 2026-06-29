@@ -1,7 +1,7 @@
 """Schemas for memory audit APIs."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -89,3 +89,27 @@ class MemoryDeleteResult(BaseModel):
     protocol_version: str = PROTOCOL_VERSION
     user_id: str
     deleted: dict[str, int] = Field(default_factory=dict)
+
+
+class MemoryExport(BaseModel):
+    """User-scoped memory export."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    user_id: str
+    exported_at: datetime
+    include_content: bool
+    total: int = Field(ge=0)
+    items: list[MemoryAuditItem] = Field(default_factory=list)
+
+
+class MemoryRetentionSweepResult(BaseModel):
+    """Result of an expired-memory retention sweep."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    user_id: str
+    mode: Literal["soft_delete", "hard_delete"]
+    dry_run: bool = False
+    scanned: int = Field(ge=0)
+    expired: int = Field(ge=0)
+    deleted: dict[str, int] = Field(default_factory=dict)
+    memory_ids: list[str] = Field(default_factory=list)

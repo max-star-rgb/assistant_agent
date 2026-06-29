@@ -109,6 +109,17 @@ class SQLiteMemoryStore:
             )
             return cursor.rowcount > 0
 
+    def hard_delete(self, user_id: str, memory_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM memory_items
+                WHERE user_id = ? AND memory_id = ?
+                """,
+                (user_id, memory_id),
+            )
+            return cursor.rowcount > 0
+
     def delete_by_session(self, user_id: str, session_id: str) -> int:
         items = [
             item

@@ -40,4 +40,5 @@ htmlcov/
 !/tests/test_agent_gateway.py
 !/tests/test_agent_pilot_readiness.py
 !/tests/test_agent_routing_policy.py
+!/tests/test_memory_retrieval_eval.py
 !/tests/test_memory_tool_boundary.py

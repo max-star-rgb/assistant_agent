@@ -22,7 +22,7 @@ Status values:
 | `docs/CONTEXT_ENGINEERING_STATUS.md` | canonical | Current assistant context, conversation compaction, context budget, tool observation compaction, session summary, and context observability status entry. | keep |
 | `docs/architecture.md` | canonical | Current concise runtime architecture overview; matches assistant-loop and provider-native tool calling direction. | link-from-index |
 | `docs/architecture-layers.md` | canonical | Current layer ownership and governance boundary document; required for architecture/rework decisions. | link-from-index |
-| `docs/memory-service-architecture.md` | canonical | Current authoritative memory service architecture, boundary, routing, token-aware context injection, and update-rule entry. | keep |
+| `docs/memory-service-architecture.md` | canonical | Current authoritative memory service architecture, boundary, routing, token-aware context injection, retrieval eval, export/retention lifecycle, and update-rule entry. | keep |
 | `docs/agent-communication-routing.md` | canonical | Current authoritative multi-agent instance routing, agent communication, gateway API, and A2A adapter boundary entry; tracks internal schemas/directory/routing policy/delegation policy/delegation context/local and outbound A2A transports/service, pilot readiness summaries/replay, local multi-runtime factory, opt-in local `delegate_to_agent`, `AgentGateway`, `/agents/run`, inbound agent card filtering, and `/a2a/rpc` JSON-RPC error taxonomy. | keep |
 | `docs/capabilities.md` | canonical | Current capability list and default provider boundary. | link-from-index |
 | `docs/configuration.md` | canonical | Current runtime profile and provider selector policy. | link-from-index |

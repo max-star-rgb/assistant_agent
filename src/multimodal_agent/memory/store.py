@@ -21,6 +21,9 @@ class MemoryStore(Protocol):
     def delete(self, user_id: str, memory_id: str) -> bool:
         """Delete one memory item for a user."""
 
+    def hard_delete(self, user_id: str, memory_id: str) -> bool:
+        """Permanently delete one memory item for a user."""
+
     def delete_by_session(self, user_id: str, session_id: str) -> int:
         """Delete memory items for one user session."""
 
@@ -64,6 +67,9 @@ class InMemoryStore:
         if not user_items:
             self._items_by_user.pop(user_id, None)
         return True
+
+    def hard_delete(self, user_id: str, memory_id: str) -> bool:
+        return self.delete(user_id, memory_id)
 
     def delete_by_session(self, user_id: str, session_id: str) -> int:
         user_items = self._items_by_user.get(user_id, {})
