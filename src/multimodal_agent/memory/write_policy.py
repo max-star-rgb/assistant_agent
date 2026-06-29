@@ -1,17 +1,60 @@
 """Memory write policy and lifecycle helpers."""
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from multimodal_agent.schemas.memory import MemoryItem, MemoryType
 from multimodal_agent.services.provider_errors import sanitize_error_message
 
 
+MemoryPromotionKind = Literal["episodic_memory", "long_term_memory"]
+
+
+class MemoryPromotionCandidate(BaseModel):
+    """A proposed memory write that still needs policy approval."""
+
+    user_id: str
+    session_id: str
+    summary: str
+    memory_type: MemoryType = "task"
+    kind: MemoryPromotionKind = "episodic_memory"
+    content: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    source: str = "memory_promotion_candidate"
+    reason: str = ""
+    user_intent_explicit: bool = False
+    rejected_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_candidate_payload(self) -> "MemoryPromotionCandidate":
+        self.summary = sanitize_error_message(self.summary.strip())
+        self.reason = sanitize_error_message(self.reason.strip())
+        self.tags = [sanitize_error_message(tag) for tag in self.tags]
+        unsafe_reason = _unsafe_payload_reason(
+            {"summary": self.summary, "content": self.content, "tags": self.tags, "reason": self.reason}
+        )
+        if unsafe_reason and self.rejected_reason is None:
+            self.rejected_reason = unsafe_reason
+        return self
+
+
+class MemoryWriteDecision(BaseModel):
+    """Policy decision for a memory promotion candidate."""
+
+    allowed: bool
+    reason: str
+    candidate: MemoryPromotionCandidate
+
+
 class MemoryWritePolicy(BaseModel):
     """Local-first policy controlling what may be written to memory."""
 
+    allow_session_summary_write: bool = True
+    allow_long_term_promotion: bool = False
+    require_user_intent_for_profile_memory: bool = True
+    allow_auto_write: bool = False
     auto_save_preferences: bool = True
     auto_save_artifacts: bool = True
     auto_save_task_summary: bool = True
@@ -38,6 +81,72 @@ class MemoryWritePolicy(BaseModel):
             return None
         base = now or datetime.now(timezone.utc)
         return base + timedelta(days=days)
+
+    def evaluate_promotion_candidate(self, candidate: MemoryPromotionCandidate) -> MemoryWriteDecision:
+        """Decide whether a generated candidate may become durable memory."""
+
+        if candidate.rejected_reason:
+            return MemoryWriteDecision(
+                allowed=False,
+                reason=candidate.rejected_reason,
+                candidate=candidate,
+            )
+        if candidate.user_intent_explicit:
+            return MemoryWriteDecision(
+                allowed=True,
+                reason="用户明确要求记住，允许写入长期记忆。",
+                candidate=candidate,
+            )
+        if candidate.kind == "long_term_memory" and not self.allow_long_term_promotion:
+            return MemoryWriteDecision(
+                allowed=False,
+                reason="默认禁止自动 long-term memory promotion。",
+                candidate=candidate,
+            )
+        if candidate.memory_type == "preference" and self.require_user_intent_for_profile_memory:
+            return MemoryWriteDecision(
+                allowed=False,
+                reason="profile/preference memory 需要用户明确意图。",
+                candidate=candidate,
+            )
+        if not self.allow_auto_write:
+            return MemoryWriteDecision(
+                allowed=False,
+                reason="默认禁止自动 memory write；候选仅供审计或显式确认。",
+                candidate=candidate,
+            )
+        return MemoryWriteDecision(
+            allowed=True,
+            reason="policy 允许自动写入该候选。",
+            candidate=candidate,
+        )
+
+
+def build_memory_promotion_candidate(
+    *,
+    user_id: str,
+    session_id: str,
+    summary: str,
+    memory_type: MemoryType = "task",
+    kind: MemoryPromotionKind = "episodic_memory",
+    content: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    reason: str = "",
+    user_intent_explicit: bool = False,
+) -> MemoryPromotionCandidate:
+    """Build a policy-gated candidate without writing it to a store."""
+
+    return MemoryPromotionCandidate(
+        user_id=user_id,
+        session_id=session_id,
+        summary=summary,
+        memory_type=memory_type,
+        kind=kind,
+        content=content or {},
+        tags=tags or [],
+        reason=reason,
+        user_intent_explicit=user_intent_explicit,
+    )
 
 
 def build_task_summary_memory_item(
@@ -171,3 +280,42 @@ def _explicit_summary(text: str, content: dict[str, Any]) -> str:
             cleaned = cleaned[len(prefix) :].strip(" ：:")
             break
     return cleaned
+
+
+def _unsafe_payload_reason(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized = str(key).lower()
+            if normalized in {"api_key", "apikey", "authorization", "bearer", "cookie", "password", "secret", "token"}:
+                return f"candidate contains sensitive key: {key}"
+            if normalized in {
+                "base64",
+                "image_base64",
+                "video_base64",
+                "audio_base64",
+                "raw",
+                "raw_image",
+                "raw_video",
+                "raw_audio",
+                "raw_media",
+                "provider_response",
+                "raw_provider_response",
+            }:
+                return f"candidate contains raw media/provider payload key: {key}"
+            nested_reason = _unsafe_payload_reason(nested)
+            if nested_reason:
+                return nested_reason
+        return None
+    if isinstance(value, list):
+        for nested in value:
+            nested_reason = _unsafe_payload_reason(nested)
+            if nested_reason:
+                return nested_reason
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized.startswith(("data:image/", "data:video/", "data:audio/")):
+            return "candidate contains inline media data"
+        if "sk-" in normalized or "bearer " in normalized:
+            return "candidate contains secret-like text"
+    return None

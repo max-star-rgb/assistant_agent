@@ -31,6 +31,12 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
     assert trace_summary["events"]
     assert run_summary["context"]["budget"]["total_chars"] > 0
     assert trace_summary["context"]["budget"]["total_chars"] > 0
+    assert "context_usage_ratio" in trace_summary["context"]["budget"]
+    assert "compaction_triggered" in trace_summary["context"]["budget"]
+    assert "compactor_type" in trace_summary["context"]
+    assert "context_summary_present" in trace_summary["context"]
+    assert "memory_promotion_candidates" in trace_summary["context"]
+    assert "memory_promotion_written" in trace_summary["context"]
     assert "source_counts" in trace_summary["context"]
     assert "compaction" in trace_summary["context"]
     assert "tool_catalog" in trace_summary["context"]

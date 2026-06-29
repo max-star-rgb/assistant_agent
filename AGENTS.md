@@ -13,6 +13,7 @@
 
 - 涉及上下文工程、assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 时，必须阅读 `docs/CONTEXT_ENGINEERING_STATUS.md`。
 - 涉及记忆服务设计、`MemoryManager`、memory store/retrieval/write policy/user profile、memory tool、memory API 或长期记忆边界时，必须阅读 `docs/memory-service-architecture.md`。
+- 涉及记忆服务工程化落地、Memory Kernel、SQLite/store migration、RequestIdentity、token-aware memory context、retention/export/audit 或 memory eval 时，必须阅读 `docs/development/memory-kernel-hardening-plan.md`。
 - 涉及多 agent 实例、agent directory/gateway、agent-to-agent 通信、A2A/JSON-RPC adapter、跨实例 session/task 路由或 `delegate_to_agent` 类工具时，必须阅读 `docs/agent-communication-routing.md`。
 - 涉及架构分层、模块归属、治理边界或重构判断时，必须阅读 `docs/architecture-layers.md`。
 - 涉及文档盘点、入口路由、归档、删除、清理、新增 canonical/reference 文档，或判断 canonical/reference/historical/archive-candidate 状态时，阅读 `docs/DOCS_INDEX.md`。普通代码实现任务不必默认读取它，除非需要决定应更新哪些文档或文档权威性。
@@ -139,6 +140,7 @@ conda run -n hello_agent <command>
 - `AGENTS.md` 是 agent 行为约束入口，应简短稳定，不塞入长篇历史设计。
 - `docs/CODEX_PROJECT_GUIDE.md` 是 Codex 快速理解当前项目的权威指南。
 - `docs/memory-service-architecture.md` 是记忆服务架构、边界、路由和更新规则的当前权威入口。
+- `docs/development/memory-kernel-hardening-plan.md` 是后续 Memory Kernel 工程化落地的阶段计划。
 - `docs/CONTEXT_ENGINEERING_STATUS.md` 是上下文工程当前进展、限制和下一步入口。
 - `docs/agent-communication-routing.md` 是多 agent 实例、agent 通信路由、A2A adapter 边界和更新规则的当前权威入口。
 - `docs/DOCS_INDEX.md` 是文档清单和清理依据，只在文档盘点/归档/删除任务中作为入口。

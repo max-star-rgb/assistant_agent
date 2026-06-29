@@ -13,6 +13,9 @@ Last updated: 2026-06-29
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - `MemoryManager` 负责加载分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
 - Assistant context 已有字符预算兜底；超限时优先压缩 memory/conversation，最后才压缩工具 observation。
+- `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，最近 2 轮保留原文。
+- `CompactionPolicy` 统一判断压缩触发：usage 高水位、超预算、大 tool observation、provider context overflow metadata、显式 `/compact` 或 `compact_context=True`。
+- `ContextCompactor` 已抽象为可插拔边界；默认 deterministic/local，不调用真实 LLM。`LLMCompactor` 仅在 `provider_smoke` 或 `pilot` profile 且 chat adapter 非 mock 时启用，输出无效时回退 deterministic。
 - Context budget 会报告自动压缩阶段和原因，便于 trace/API 判断是否发生 conversation、observation 或 budget 级压缩。
 - Trace/API 已暴露 context budget、source counts、tool catalog summary 和 observation compaction summary。
 
@@ -21,8 +24,10 @@ Last updated: 2026-06-29
 ### Conversation Context
 
 - 会话历史有独立 `ConversationStore` 边界，支持 in-memory 和 JSONL。
+- `ConversationStore` 同时保存普通 turn 和 session-scoped `context_summary`；summary 用于当前 session 恢复，不写入长期 memory。
 - 默认每个 user/session 保留最近 8 轮历史，配置项是 `MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS`。
 - prompt 上下文默认保留最近 2 轮原文，较早轮次压缩为短摘要。
+- 请求注入顺序是 session summary、recent turns、memory context；`reset_conversation=True` 同时清空 turns 和 session summary。
 - 压缩元数据包括 `conversation_context_compacted`、`conversation_context_recent_turns`、`conversation_context_compacted_turns`。
 - `reset_conversation` metadata 可清空当前 session 的短期对话历史。
 
@@ -62,17 +67,17 @@ Last updated: 2026-06-29
 
 ### Context Budget And Observability
 
-- `ContextBudgetReport` 统计 request、conversation、memory、plan、observations、tool specs 和 total chars。
+- `ContextBudgetReport` 统计 request、conversation、memory、plan、observations、tool specs 和 total chars，并报告 `context_usage_ratio`、`compaction_triggered`。
 - 默认 context 字符预算是 12000 chars；测试或特定调用可通过 request metadata `context_budget_max_chars` 下调。
 - 超过预算时会在 prompt 副本中裁剪 memory、conversation 和 observations，并记录 `over_budget`、`trimmed_chars`、`trimmed_sections`。
-- `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_over_budget`、`context_budget_trimmed`。
+- `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_usage_high`、`tool_observation_too_large`、`provider_context_overflow`、`explicit_compact`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
-- assistant decision trace 写入 budget、source counts、compaction summary 和 tool catalog summary。
+- assistant decision trace 写入 budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数。
 - `/runs/{run_id}` 与 `/traces/{trace_id}` 可查询 context 相关摘要。
 
 ## Current Limitations
 
-- 当前自动压缩是 deterministic formatting/truncation，不是 LLM 自主决定的生成式长期摘要。
+- 默认自动压缩仍是 deterministic formatting/summary。LLM semantic compaction 已有受控入口，但默认离线 profile 不启用。
 - 当前预算是 approximate character budget，不是严格 token-aware budget；这是有意保持简单。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
 - 会话历史压缩只压较早轮次文本，不做跨轮语义重写、事实抽取或冲突消解。
@@ -83,6 +88,8 @@ Last updated: 2026-06-29
 - `src/multimodal_agent/services/context/builder.py`
 - `src/multimodal_agent/services/context/conversation.py`
 - `src/multimodal_agent/services/context/compaction.py`
+- `src/multimodal_agent/services/context/policy.py`
+- `src/multimodal_agent/services/context/compactor.py`
 - `src/multimodal_agent/services/context/renderer.py`
 - `src/multimodal_agent/schemas/context.py`
 - `src/multimodal_agent/services/assistant_run_service.py`

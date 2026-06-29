@@ -1,4 +1,6 @@
+from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.config import ProviderConfig
+from multimodal_agent.memory.store import InMemoryStore
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services import assistant_run_service as run_service
 from multimodal_agent.services.assistant_run_service import (
@@ -118,6 +120,112 @@ def test_shared_assistant_run_service_compacts_older_conversation_context() -> N
     assert "4. 用户：第 4 轮用户" in context_text
     assert pack.source_counts["conversation_turns"] == 4
     assert pack.source_counts["conversation_compacted_turns"] == 2
+
+
+def test_shared_assistant_run_service_persists_and_restores_session_summary() -> None:
+    store = InMemoryConversationStore()
+    for index in range(3):
+        store.append(
+            "u1",
+            "s1",
+            ConversationTurn(
+                user_text=f"第 {index + 1} 轮用户：必须保留约束",
+                assistant_text=f"第 {index + 1} 轮助手：已确认",
+                run_id=f"run_{index + 1}",
+                trace_id=f"trace_{index + 1}",
+            ),
+        )
+
+    first = run_assistant_query(
+        "继续",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=store,
+        metadata={"context_budget_max_chars": 50_000},
+    )
+    restored = run_assistant_query(
+        "再继续",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=store,
+        metadata={"context_budget_max_chars": 50_000},
+    )
+
+    assert store.get_summary("u1", "s1") is not None
+    assert first.state.request.metadata["context_summary_present"] is True
+    assert restored.state.request.metadata["context_summary_present"] is True
+    assert "较早对话摘要" in restored.state.request.metadata["conversation_context_text"]
+
+
+def test_reset_conversation_clears_session_summary_before_current_turn() -> None:
+    store = InMemoryConversationStore()
+    for index in range(3):
+        store.append(
+            "u1",
+            "s1",
+            ConversationTurn(
+                user_text=f"第 {index + 1} 轮用户",
+                assistant_text=f"第 {index + 1} 轮助手",
+                run_id=f"run_{index + 1}",
+                trace_id=f"trace_{index + 1}",
+            ),
+        )
+    run_assistant_query(
+        "生成摘要",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=store,
+        metadata={"context_budget_max_chars": 50_000},
+    )
+    assert store.get_summary("u1", "s1") is not None
+
+    reset = run_assistant_query(
+        "重置后继续",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=store,
+        metadata={"reset_conversation": True, "context_budget_max_chars": 50_000},
+    )
+
+    assert reset.state.request.metadata["conversation_history"] == []
+    assert reset.state.request.metadata.get("context_summary_present") is None
+    assert store.get_summary("u1", "s1") is None
+
+
+def test_session_summary_does_not_write_to_memory_store() -> None:
+    memory_store = InMemoryStore()
+    conversation_store = InMemoryConversationStore()
+    runtime = AgentGraphRuntime(memory_store=memory_store)
+    for index in range(3):
+        conversation_store.append(
+            "u1",
+            "s1",
+            ConversationTurn(
+                user_text=f"第 {index + 1} 轮用户：必须保留约束",
+                assistant_text=f"第 {index + 1} 轮助手：已确认",
+                run_id=f"run_{index + 1}",
+                trace_id=f"trace_{index + 1}",
+            ),
+        )
+
+    run_assistant_request(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="继续",
+            metadata={"context_budget_max_chars": 50_000},
+        ),
+        load_env=False,
+        runtime=runtime,
+        conversation_store=conversation_store,
+    )
+
+    assert conversation_store.get_summary("u1", "s1") is not None
+    assert all(item.source != "context_summary" for item in memory_store.list_by_user("u1"))
 
 
 def test_shared_assistant_run_service_keeps_sessions_isolated() -> None:

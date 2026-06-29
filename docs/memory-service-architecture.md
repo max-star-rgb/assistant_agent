@@ -6,6 +6,8 @@ This document is the current canonical entry for memory service architecture. Up
 
 Older Phase 8 memory documents remain background references. They are not the current design source when this file and code disagree.
 
+Future engineering hardening should follow `docs/development/memory-kernel-hardening-plan.md` after reading this architecture document.
+
 ## Scope
 
 The memory service is local-first long-term memory for the agent. It covers:
@@ -17,7 +19,7 @@ The memory service is local-first long-term memory for the agent. It covers:
 - Maintaining a compact `user_profile` memory derived from explicit memories.
 - Exposing audit, delete, and snapshot views through service/API boundaries.
 
-Conversation history is related but separate. Session conversation context is owned by conversation/session services and is combined with memory only in context packs and memory snapshots.
+Conversation history is related but separate. Session conversation context, including session-scoped `context_summary`, is owned by conversation/session services and is combined with memory only in context packs and memory snapshots. `context_summary` is not a long-term memory item.
 
 ## Boundary With Context Engineering
 
@@ -33,11 +35,12 @@ Memory service owns:
 Context engineering owns:
 
 - `AssistantContextPack` assembly from request, conversation, memory context, plan state, observations, and tool specs.
+- Session-scoped context summary generation and prompt injection through `ContextCompactor` and `ConversationStore`.
 - Prompt-json, native-tool, and final-only rendering.
 - Tool observation compaction.
 - Global context character budget, trimming order, source counts, and trace/debug context summaries.
 
-Do not move memory retrieval, ranking, fallback, write policy, profile merge, or store selection into context builders or prompt renderers. Do not move prompt rendering, observation compaction, or global context budget into `MemoryManager`.
+Do not move memory retrieval, ranking, fallback, write policy, profile merge, or store selection into context builders or prompt renderers. Do not move prompt rendering, observation compaction, session summary, or global context budget into `MemoryManager`.
 
 ## Runtime Flow
 
@@ -207,6 +210,15 @@ Run-summary saves:
 - Store safe task summaries and output refs, not raw request/provider payloads.
 - Respect `MemoryWritePolicy.auto_save_task_summary`.
 - Are skipped in assistant-loop non-mock chat paths so the model can choose `memory_save` explicitly.
+
+Promotion candidates:
+
+- `MemoryPromotionCandidate` is a proposed durable memory, not a write.
+- `MemoryWritePolicy.evaluate_promotion_candidate(...)` decides whether the candidate may be written.
+- Defaults are conservative: `allow_auto_write=False`, `allow_long_term_promotion=False`, `require_user_intent_for_profile_memory=True`.
+- User-explicit "remember this" intent remains allowed through `memory_save` / `MemoryManager.save_explicit(...)`.
+- Temporary debug notes, one-off searches, failed attempts, speculation, raw outputs, provider payloads, base64/media bodies, API keys, tokens, and other secret-like content are rejected or left as non-written candidates.
+- Session `context_summary` is handled by `ConversationStore.save_summary(...)`; it must not be promoted to long-term memory unless a separate candidate passes policy and user/project rules.
 
 Default TTL policy:
 

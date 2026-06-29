@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from multimodal_agent.memory.write_policy import (
     MemoryWritePolicy,
+    build_memory_promotion_candidate,
     build_explicit_memory_item,
     build_task_summary_memory_item,
 )
@@ -87,6 +88,52 @@ def test_write_policy_can_disable_auto_task_summary() -> None:
     )
 
     assert item is None
+
+
+def test_memory_promotion_candidate_is_not_written_by_default() -> None:
+    candidate = build_memory_promotion_candidate(
+        user_id="u1",
+        session_id="s1",
+        summary="用户这次完成了一次临时商品搜索。",
+        memory_type="task",
+        kind="episodic_memory",
+        reason="task completed",
+    )
+
+    decision = MemoryWritePolicy().evaluate_promotion_candidate(candidate)
+
+    assert decision.allowed is False
+    assert "默认禁止自动 memory write" in decision.reason
+
+
+def test_explicit_memory_promotion_candidate_is_allowed() -> None:
+    candidate = build_memory_promotion_candidate(
+        user_id="u1",
+        session_id="s1",
+        summary="用户喜欢浅色日系风格。",
+        memory_type="preference",
+        kind="long_term_memory",
+        user_intent_explicit=True,
+    )
+
+    decision = MemoryWritePolicy().evaluate_promotion_candidate(candidate)
+
+    assert decision.allowed is True
+    assert "用户明确要求记住" in decision.reason
+
+
+def test_sensitive_memory_promotion_candidate_is_rejected() -> None:
+    candidate = build_memory_promotion_candidate(
+        user_id="u1",
+        session_id="s1",
+        summary="raw output",
+        content={"raw_provider_response": {"api_key": "sk-test"}},
+    )
+
+    decision = MemoryWritePolicy(allow_auto_write=True).evaluate_promotion_candidate(candidate)
+
+    assert decision.allowed is False
+    assert "raw media/provider payload" in decision.reason
 
 
 @pytest.mark.parametrize("content", [{"api_key": "sk-test"}, {"raw_video": "..."}, {"provider_response": {"x": 1}}])

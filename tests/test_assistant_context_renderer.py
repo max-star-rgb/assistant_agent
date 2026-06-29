@@ -1,17 +1,40 @@
 from datetime import datetime, timezone
 import json
 
+from multimodal_agent.config import ProviderConfig
 from multimodal_agent.agent.state import AgentState
+from multimodal_agent.schemas.context import ContextSummary
 from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.planning import TaskPlan, TaskStep
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.schemas.tools import ToolSpec
+from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
 from multimodal_agent.services.context.builder import build_assistant_context_pack
+from multimodal_agent.services.context.compactor import (
+    COMPACTOR_DETERMINISTIC,
+    COMPACTOR_LLM_FALLBACK,
+    DeterministicContextCompactor,
+    LLMCompactor,
+    SummaryValidator,
+    create_context_compactor,
+)
 from multimodal_agent.services.context.renderer import (
     render_final_only_context,
     render_native_tool_context,
     render_prompt_json_context,
 )
+
+
+class _FakeChatAdapter:
+    provider = "openai"
+
+    def __init__(self, response_text: str) -> None:
+        self.response_text = response_text
+        self.calls: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.calls.append(request)
+        return ChatResult(response_text=self.response_text, provider=self.provider, model="fake")
 
 
 def test_context_pack_contains_request_memory_conversation_observations_and_tools() -> None:
@@ -109,6 +132,109 @@ def test_context_pack_reports_conversation_compaction_reason() -> None:
 
     assert pack.budget.compression_stage == "compacted"
     assert pack.budget.compression_reasons == ["conversation_context_compacted"]
+
+
+def test_context_pack_triggers_session_summary_at_usage_ratio() -> None:
+    history = [
+        {
+            "user_text": "用户早期需求：" + ("保留关键约束。" * 20),
+            "assistant_text": "助手早期回复：" + ("已经确认。" * 20),
+            "run_id": "run_1",
+            "trace_id": "trace_1",
+        }
+    ]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="继续",
+        metadata={
+            "context_budget_max_chars": 1000,
+            "conversation_history": history,
+            "conversation_context_text": "上下文：" + ("接近预算。" * 180),
+        },
+    )
+    state = AgentState.from_request(request)
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert pack.budget.context_usage_ratio >= 0.80
+    assert pack.budget.compaction_triggered is True
+    assert "context_usage_high" in pack.budget.compression_reasons
+    assert pack.context_summary is not None
+    assert request.metadata["context_summary_present"] is True
+    assert request.metadata["context_compactor_type"] == "deterministic"
+
+
+def test_context_pack_hard_compacts_provider_overflow_metadata() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="继续",
+        metadata={"provider_context_overflow": True},
+    )
+    state = AgentState.from_request(request)
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert pack.budget.compaction_triggered is True
+    assert "provider_context_overflow" in pack.budget.compression_reasons
+    assert pack.context_summary is not None
+
+
+def test_deterministic_context_compactor_returns_structured_summary() -> None:
+    result = DeterministicContextCompactor().compact(
+        conversation=[],
+        current_request=UserRequest(user_id="u1", session_id="s1", text="继续整理需求"),
+        observations=[{"tool_name": "product_search", "status": "succeeded", "output_ref": "mock://products/1"}],
+        budget_report=None,
+    )
+
+    assert result.compactor_type == COMPACTOR_DETERMINISTIC
+    assert result.summary.task_state == "继续整理需求"
+    assert "output_ref:mock://products/1" in result.summary.important_refs
+
+
+def test_llm_compactor_invalid_schema_falls_back_to_deterministic() -> None:
+    adapter = _FakeChatAdapter('{"task_state": "x", "user_constraints": "not-a-list"}')
+    result = LLMCompactor(adapter).compact(
+        conversation=[],
+        current_request=UserRequest(user_id="u1", session_id="s1", text="需要总结"),
+        observations=[],
+        budget_report=None,
+    )
+
+    assert adapter.calls
+    assert result.compactor_type == COMPACTOR_LLM_FALLBACK
+    assert result.summary.task_state == "需要总结"
+
+
+def test_summary_validator_rejects_raw_or_secret_payloads() -> None:
+    try:
+        SummaryValidator().validate(
+            ContextSummary(task_state="raw_provider_response: sk-test"),
+        )
+    except ValueError as exc:
+        assert "unsafe" in str(exc)
+    else:
+        raise AssertionError("SummaryValidator should reject unsafe summary text")
+
+
+def test_create_context_compactor_keeps_llm_disabled_without_provider_profile() -> None:
+    compactor = create_context_compactor(ProviderConfig.from_env({}), _FakeChatAdapter("{}"))
+
+    assert isinstance(compactor, DeterministicContextCompactor)
 
 
 def test_context_pack_compacts_large_product_observations_without_mutating_original() -> None:

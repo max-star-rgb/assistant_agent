@@ -59,6 +59,7 @@ class AssistantLoopState(TypedDict):
     router: NotRequired[ToolRouter]
     tool_executor: NotRequired[ToolExecutor]
     chat_adapter: NotRequired[ChatAdapter]
+    context_compactor: NotRequired[Any]
     memory_manager: NotRequired[Any]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
@@ -177,6 +178,7 @@ def _build_decision_context(
         tool_specs=tool_specs,
         iteration=iterations,
         max_iterations=max_iterations,
+        context_compactor=graph_state.get("context_compactor"),
     )
     return AssistantDecisionContext(
         context_pack=context_pack,
@@ -672,6 +674,7 @@ def _request_final_answer_after_tool_limit(
         iteration=iteration,
         max_iterations=max_iterations,
         memory_text=memory_text,
+        context_compactor=graph_state.get("context_compactor"),
     )
     prompt = render_final_only_prompt(context_pack)
     result = chat_adapter.chat(
@@ -1565,6 +1568,10 @@ def _context_trace_summary(context: AssistantDecisionContext | None) -> dict[str
         "source_counts": pack.source_counts,
         "compaction": _context_compaction_summary(pack.observations),
         "tool_catalog": pack.tool_catalog_summary.model_dump(mode="json"),
+        "compactor_type": pack.compactor_type,
+        "context_summary_present": pack.context_summary is not None,
+        "memory_promotion_candidates": _metadata_int(pack.request.metadata, "memory_promotion_candidates"),
+        "memory_promotion_written": _metadata_int(pack.request.metadata, "memory_promotion_written"),
     }
 
 
@@ -1588,6 +1595,11 @@ def _context_compaction_summary(observations: list[dict[str, Any]]) -> dict[str,
         "original_observation_chars": original_chars,
         "compacted_observation_chars": compacted_chars,
     }
+
+
+def _metadata_int(metadata: dict[str, Any], key: str) -> int:
+    value = metadata.get(key)
+    return value if isinstance(value, int) and value >= 0 else 0
 
 
 def _record_react_observation(
