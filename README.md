@@ -4,12 +4,12 @@
 
 ## Current Status
 
-- API 层使用 FastAPI，提供健康检查、默认 Agent 调用、多 Agent 网关调用、记忆、评测和演示相关接口。
+- API 层使用 FastAPI，提供健康检查、默认 Agent 调用、多 Agent 网关调用、inbound A2A JSON-RPC、记忆、评测和演示相关接口。
 - Agent 层以 `AgentGraphRuntime` 和 assistant loop 为核心，负责意图理解、追问、工具选择、工具结果融合和最终回答。
 - 工具调用通过 `AssistantDecision -> ActionValidator -> ToolExecutor -> ToolRegistry -> Tool` 边界执行，不应绕过 validator、executor、policy 或 audit。
 - Provider 默认走 mock/local/offline 路径。API key 只用于显式 opt-in 的真实 Provider smoke/pilot，不会因为本地存在 key 自动启用真实调用。
 - Memory、demo、eval、CLI 和 Web UI 均围绕同一套本地优先运行时组织。
-- Agent communication 目前实现本地同进程边界：默认 `/agent/run`、CLI、eval 和 Web demo 仍走单 `agent.default`；独立 `/agents/run` 提供显式多 Agent 网关入口，支持 `target_agent_id` 和 `collaboration_mode`，主控 `agent.default` 可通过 opt-in `delegate_to_agent` 委托本地 worker；尚未接入 A2A 网络协议或远程 agent。
+- Agent communication 目前实现本地同进程边界和 inbound A2A JSON-RPC adapter：默认 `/agent/run`、CLI、eval 和 Web demo 仍走单 `agent.default`；独立 `/agents/run` 提供显式多 Agent 网关入口；`/.well-known/agent-card.json` 和 `/a2a/rpc` 暴露本地 A2A 兼容入口。远程 outbound agent 调用和 LLM 自动选 agent 仍未实现。
 
 ## Quick Start
 
@@ -48,6 +48,12 @@ $PY scripts/run_client.py --server http://127.0.0.1:8000 "你好，帮我总结�
 curl -s http://127.0.0.1:8000/agents/run \
   -H 'content-type: application/json' \
   -d '{"user_id":"demo_user","session_id":"demo_session","text":"你好","collaboration_mode":"single"}'
+```
+
+查看本地 A2A agent card：
+
+```bash
+curl -s http://127.0.0.1:8000/.well-known/agent-card.json
 ```
 
 常用本地 URL：
@@ -139,6 +145,7 @@ structured observations -> final answer / events / audit logs
 - [Quickstart](docs/quickstart.md)
 - [Architecture](docs/architecture.md)
 - [Memory Service Architecture](docs/memory-service-architecture.md)
+- [Memory Kernel Hardening Plan](docs/development/memory-kernel-hardening-plan.md)
 - [Agent Communication Routing](docs/agent-communication-routing.md)
 - [Capabilities](docs/capabilities.md)
 - [Configuration](docs/configuration.md)

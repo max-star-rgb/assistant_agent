@@ -15,6 +15,7 @@ from multimodal_agent.agent.router import ToolRouter
 from multimodal_agent.agent.tool_executor import ToolExecutor
 from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.services.chat_adapter import ChatAdapter
+from multimodal_agent.services.context.compactor import ContextCompactor
 from multimodal_agent.services.trace_store import TraceStore, trace_graph_node
 
 
@@ -28,6 +29,7 @@ RUNTIME_STATE_KEYS = frozenset(
         "router",
         "tool_executor",
         "chat_adapter",
+        "context_compactor",
         "memory_manager",
         "trace_store",
         "current_node_name",
@@ -42,6 +44,7 @@ class GraphRuntimeContext:
     tool_executor: ToolExecutor
     chat_adapter: ChatAdapter
     memory_manager: MemoryManager
+    context_compactor: ContextCompactor | None = None
     intent_detector: IntentDetector | None = None
     router: ToolRouter | None = None
     trace_store: TraceStore | None = None
@@ -85,6 +88,8 @@ def _with_runtime_context(graph_state: GraphStateT, runtime_context: GraphRuntim
         enriched_state["router"] = runtime_context.router
     enriched_state["tool_executor"] = runtime_context.tool_executor
     enriched_state["chat_adapter"] = runtime_context.chat_adapter
+    if runtime_context.context_compactor is not None:
+        enriched_state["context_compactor"] = runtime_context.context_compactor
     enriched_state["memory_manager"] = runtime_context.memory_manager
     if runtime_context.trace_store is not None:
         enriched_state["trace_store"] = runtime_context.trace_store

@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from multimodal_agent.api.routes_a2a import router as a2a_router
 from multimodal_agent.api.routes_agent import router as agent_router
 from multimodal_agent.api.websocket import router as websocket_router
 from multimodal_agent.schemas.api import PROTOCOL_VERSION, api_error
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
     GENERATED_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/artifacts/generated", StaticFiles(directory=GENERATED_ARTIFACT_DIR), name="generated_artifacts")
     app.include_router(agent_router)
+    app.include_router(a2a_router)
     app.include_router(websocket_router)
     return app
 

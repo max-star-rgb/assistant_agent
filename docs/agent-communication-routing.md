@@ -4,7 +4,7 @@ Last updated: 2026-06-29
 
 This document is the current canonical entry for multi-agent instance routing, agent-to-agent communication, and A2A-style protocol adapter boundaries. Update it whenever agent directory/gateway behavior, agent communication services, `delegate_to_agent` tools, cross-instance sessions, A2A routes, JSON-RPC transport, or related safety policy changes.
 
-Current status: opt-in local gateway/delegation boundary implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and Web demo paths on one default `AgentGraphRuntime` and does not register delegation in the default `ToolRegistry`. It now has protocol-neutral schemas, an `AgentDirectory`, `LocalAgentTransport`, `AgentCommunicationService`, a local multi-runtime factory, an opt-in `delegate_to_agent` tool, an `AgentGateway` service, and a separate `POST /agents/run` API for same-process multi-agent routing. It does not yet implement inbound A2A routes, outbound A2A JSON-RPC, remote agent calls, or LLM target-agent selection.
+Current status: opt-in local gateway/delegation boundary and inbound A2A JSON-RPC adapter implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and Web demo paths on one default `AgentGraphRuntime` and does not register delegation in the default `ToolRegistry`. It now has protocol-neutral schemas, an `AgentDirectory`, `LocalAgentTransport`, `AgentCommunicationService`, a local multi-runtime factory, an opt-in `delegate_to_agent` tool, an `AgentGateway` service, a separate `POST /agents/run` API for same-process multi-agent routing, and inbound `/.well-known/agent-card.json` plus `/a2a/rpc` routes. It does not yet implement outbound A2A JSON-RPC, remote agent calls, or LLM target-agent selection.
 
 Current stage boundary:
 
@@ -12,6 +12,7 @@ Current stage boundary:
 Current stage implements a local same-process AgentGateway, not a full OpenClaw chat/network fabric.
 Default product entrypoints still call agent.default through existing `/agent/run`, CLI, eval, and Web demo paths.
 `/agents/run` is the explicit multi-agent gateway entrypoint.
+`/.well-known/agent-card.json` and `/a2a/rpc` expose an inbound A2A-compatible JSON-RPC adapter over the local gateway.
 delegate_to_agent exists only as an explicit registry-level opt-in local tool, enabled for the gateway controller runtime.
 Any implementation must not change default single-agent behavior.
 ```
@@ -92,15 +93,19 @@ Implemented files:
 | module | status | responsibility |
 | --- | --- | --- |
 | `src/multimodal_agent/schemas/agent_communication.py` | implemented | Internal message, task, artifact, session ref, route request/result contracts. |
+| `src/multimodal_agent/schemas/a2a.py` | implemented | Minimal inbound A2A JSON-RPC request/response constants and schema. |
 | `src/multimodal_agent/schemas/agent_gateway.py` | implemented | External `/agents/run` request contract with explicit target and collaboration mode fields. |
 | `src/multimodal_agent/services/agent_directory.py` | implemented | Default `agent.default` identity, capability metadata, enablement, and simple routing. |
 | `src/multimodal_agent/services/agent_transports.py` | implemented | `LocalAgentTransport` for same-process runtime calls and normalized results. |
 | `src/multimodal_agent/services/agent_communication.py` | implemented | Service boundary and local multi-runtime factory for routing an `AgentTask` through an enabled transport. |
 | `src/multimodal_agent/services/agent_gateway.py` | implemented | Local `AgentGateway` that manages `agent.default` plus `agent.worker`, supports `single` and `controller_delegate`, and returns `AgentRunResponse`. |
+| `src/multimodal_agent/services/a2a_adapter.py` | implemented | Inbound A2A adapter that maps agent card and JSON-RPC `SendMessage` requests to/from `AgentGateway`. |
 | `src/multimodal_agent/tools/agent_delegation_tool.py` | implemented | Opt-in `delegate_to_agent` tool backed by `AgentCommunicationService`. |
 | `src/multimodal_agent/api/routes_agent.py` | implemented | Existing `/agent/run` plus separate `/agents/run` gateway endpoint sharing trial access rules. |
+| `src/multimodal_agent/api/routes_a2a.py` | implemented | Inbound A2A-compatible agent card and JSON-RPC endpoint over local gateway. |
 | `tests/test_agent_communication_routing.py` | implemented | Offline tests for default routing, local transport, disabled/unknown agents, depth limits, opt-in registration, and local delegation tool behavior. |
 | `tests/test_agent_gateway.py` | implemented | Offline tests for gateway routing, controller delegation registry shape, structured unknown-agent failure, and single-agent compatibility. |
+| `tests/test_api_a2a.py` | implemented | Offline API tests for agent card, JSON-RPC `SendMessage`, method errors, invalid params, and failed task mapping. |
 
 ## Protocol Boundary
 
@@ -116,6 +121,7 @@ Rules:
 - Do not make `AgentGraphRuntime`, assistant nodes, or core tool execution depend on A2A schema classes.
 - Do not require A2A for local in-process multi-agent tests.
 - Implement `LocalAgentTransport` first for deterministic offline behavior.
+- Inbound A2A routes must be thin protocol adapters over `AgentGateway` or `AgentCommunicationService`; they must not directly call a provider, memory store, or another runtime.
 - Add `A2AJsonRpcTransport` only behind an `AgentTransport` interface.
 - Remote network transport must be explicit opt-in and allowlisted.
 - A2A failure must return structured errors; it must not silently fall back to local/mock success.
@@ -125,6 +131,9 @@ Rules:
 - Default single-agent routing is `agent.default` and must remain compatible with current CLI/API/demo/eval behavior.
 - `POST /agent/run` remains the default single-agent HTTP endpoint and must not use `AgentGateway`.
 - `POST /agents/run` is the explicit local multi-agent HTTP endpoint. It accepts `target_agent_id`, optional `capability`, and `collaboration_mode`.
+- `GET /.well-known/agent-card.json` exposes a local A2A agent card. It advertises the local `/a2a/rpc` JSON-RPC endpoint and enabled local agent skills.
+- `POST /a2a/rpc` supports inbound A2A JSON-RPC `SendMessage` and the legacy-compatible `message/send` alias. It maps text and local media references into `AgentGatewayRunRequest`, then maps `AgentRunResponse` into an A2A task-like result.
+- A2A metadata may carry `user_id`, `session_id`, `target_agent_id`, `capability`, and `collaboration_mode`. Missing user/session fields use local defaults and still pass through the same trial-access gate.
 - `collaboration_mode="single"` directly runs the resolved target agent. If no target or capability is provided, the target is `agent.default`.
 - `collaboration_mode="controller_delegate"` enters the controller path when no explicit target is supplied. The controller runtime uses the `agent.default` identity with `delegate_to_agent` registered. The normal single-mode `agent.default` runtime and worker runtimes do not register that tool by default.
 - If `target_agent_id` is supplied, it remains the explicit initial route even when `collaboration_mode` is set.
@@ -149,16 +158,19 @@ Module ownership:
 | module | responsibility |
 | --- | --- |
 | `src/multimodal_agent/schemas/agent_communication.py` | Internal message, task, artifact, session ref, route request/result contracts. |
+| `src/multimodal_agent/schemas/a2a.py` | Inbound A2A JSON-RPC protocol constants and public request/response wrapper schemas. |
 | `src/multimodal_agent/schemas/agent_gateway.py` | External gateway request contract for `/agents/run`. |
 | `src/multimodal_agent/services/agent_directory.py` | Agent registry, capability metadata, enablement, future allowlist, and routing table. |
 | `src/multimodal_agent/services/agent_gateway.py` | Gateway service that selects the initial local runtime and augments `AgentRunResponse` with gateway metadata. |
+| `src/multimodal_agent/services/a2a_adapter.py` | Protocol adapter between inbound A2A agent card/JSON-RPC payloads and internal gateway requests/responses. |
 | `src/multimodal_agent/services/agent_communication.py` | Service boundary for sending messages/tasks through transports. |
 | `src/multimodal_agent/services/agent_transports.py` | `LocalAgentTransport`, future `A2AJsonRpcTransport`, and transport result normalization. |
 | `src/multimodal_agent/tools/agent_delegation_tool.py` | Agent-callable delegation tool registered in `ToolRegistry` only when enabled with an `AgentCommunicationService`. |
 | `src/multimodal_agent/api/routes_agent.py` | HTTP interface for `/agent/run` and the separate `/agents/run` gateway route. |
-| `src/multimodal_agent/api/routes_a2a.py` | Future optional inbound A2A-compatible routes and agent card endpoint. |
+| `src/multimodal_agent/api/routes_a2a.py` | Inbound A2A-compatible agent card and local JSON-RPC endpoint. |
 | `tests/test_agent_communication_*.py` | Offline deterministic tests for directory, routing, transport, delegation, and safety policy. |
 | `tests/test_agent_gateway.py` | Offline deterministic tests for gateway behavior. |
+| `tests/test_api_a2a.py` | Offline deterministic tests for inbound A2A API behavior. |
 
 If file names change during implementation, keep the same ownership boundaries and update this table.
 
@@ -201,6 +213,22 @@ It reuses `AgentRunResponse` and adds `agent_gateway` metadata under `data` and 
 
 The existing `POST /agent/run` endpoint does not use this gateway.
 
+## Inbound A2A API
+
+The local A2A-compatible discovery and JSON-RPC endpoints are:
+
+```text
+GET  /.well-known/agent-card.json
+POST /a2a/rpc
+```
+
+Supported JSON-RPC methods:
+
+- `SendMessage`: current A2A JSON-RPC message send method.
+- `message/send`: compatibility alias routed to the same adapter.
+
+The adapter extracts text from A2A message parts, maps image/video/audio file references when MIME types are available, reads local routing fields from metadata, and runs the request through `AgentGateway`. A failed agent run is returned as an A2A task with `status.state="failed"`; malformed JSON-RPC or unsupported methods return JSON-RPC error objects.
+
 ## A2A-Compatible MVP
 
 Implementation order:
@@ -211,10 +239,10 @@ Implementation order:
 4. Add an opt-in `delegate_to_agent` tool. Done for local transport.
 4a. Add a local multi-runtime factory for `agent.default -> agent.worker` style tests. Done.
 4b. Add local `AgentGateway` and separate `/agents/run` API. Done.
-5. Add inbound A2A-compatible agent card and `message/send` route.
+5. Add inbound A2A-compatible agent card and JSON-RPC `SendMessage` route. Done.
 6. Add outbound `A2AJsonRpcTransport` with allowlist, timeouts, and structured errors.
 
-The inbound MVP should expose this repository as an agent without changing default `/agent/run` behavior. The outbound MVP should only call allowlisted local or explicitly configured remote agents.
+The inbound MVP exposes this repository as an agent without changing default `/agent/run` behavior. The outbound MVP should only call allowlisted local or explicitly configured remote agents.
 
 ## Update Rules
 
@@ -233,7 +261,7 @@ For the current internal-boundary state:
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_communication_routing.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_gateway.py tests/test_api_agent_graph_runtime.py tests/unit/test_tool_registry.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_gateway.py tests/test_api_agent_graph_runtime.py tests/test_api_a2a.py tests/unit/test_tool_registry.py
 ```
 
 For broader behavior changes, run:

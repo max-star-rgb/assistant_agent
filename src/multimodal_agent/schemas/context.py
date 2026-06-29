@@ -30,10 +30,35 @@ class ContextBudgetReport(BaseModel):
     total_chars: int = Field(default=0, ge=0)
     max_chars: int = Field(default=0, ge=0)
     over_budget: bool = False
+    context_usage_ratio: float = Field(default=0.0, ge=0.0)
+    compaction_triggered: bool = False
     trimmed_chars: int = Field(default=0, ge=0)
     trimmed_sections: list[str] = Field(default_factory=list)
     compression_stage: str = "none"
     compression_reasons: list[str] = Field(default_factory=list)
+
+
+class ContextPolicy(BaseModel):
+    """Context assembly and compaction thresholds."""
+
+    max_context_chars: int = Field(default=12_000, ge=500)
+    compact_at_ratio: float = Field(default=0.80, ge=0.0, le=1.0)
+    hard_compact_at_ratio: float = Field(default=0.92, ge=0.0, le=1.0)
+    keep_recent_turns: int = Field(default=2, ge=1)
+    max_tool_result_chars: int = Field(default=1_200, ge=100)
+    max_memory_context_chars: int = Field(default=500, ge=50)
+
+
+class ContextSummary(BaseModel):
+    """Session-scoped semantic summary used as current context, not long-term memory."""
+
+    task_state: str = ""
+    user_constraints: list[str] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+    open_todos: list[str] = Field(default_factory=list)
+    important_refs: list[str] = Field(default_factory=list)
+    dropped_context_note: str = ""
+    source_turn_count: int = Field(default=0, ge=0)
 
 
 class ToolCatalogSummary(BaseModel):
@@ -51,6 +76,8 @@ class AssistantContextPack(BaseModel):
     """All materials needed to render one assistant loop context."""
 
     request: UserRequest
+    context_summary: ContextSummary | None = None
+    compactor_type: str = "none"
     conversation_text: str = ""
     memory_summaries: list[str] = Field(default_factory=list)
     memory_text: str = ""

@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 
 MAX_ITEMS_PER_LIST = 3
-MAX_TEXT_CHARS = 800
+MAX_TEXT_CHARS = 1200
 MAX_GENERIC_DEPTH = 3
 
 _TOP_LEVEL_KEYS = (

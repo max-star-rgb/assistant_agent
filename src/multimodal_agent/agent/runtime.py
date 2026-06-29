@@ -19,6 +19,7 @@ from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.services.event_sink import EventSink
 from multimodal_agent.services.chat_adapter import ChatAdapter, create_chat_adapter
 from multimodal_agent.services.checkpointer import create_checkpointer
+from multimodal_agent.services.context.compactor import ContextCompactor, create_context_compactor
 from multimodal_agent.services.run_history import RunHistoryStore
 from multimodal_agent.services.session_store import SessionStore, create_session_store
 from multimodal_agent.services.tool_history import ToolHistoryStore
@@ -43,6 +44,7 @@ class AgentGraphRuntime:
         event_sink: EventSink | None = None,
         trace_store: TraceStore | None = None,
         chat_adapter: ChatAdapter | None = None,
+        context_compactor: ContextCompactor | None = None,
         video_context_store: VideoContextStore | None = None,
         checkpointer: Any | None = None,
     ) -> None:
@@ -59,6 +61,7 @@ class AgentGraphRuntime:
         self.event_sink = event_sink
         self.trace_store = trace_store or InMemoryTraceStore()
         self.chat_adapter = chat_adapter or create_chat_adapter(self.config)
+        self.context_compactor = context_compactor or create_context_compactor(self.config, self.chat_adapter)
         self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
         self.tool_executor = ToolExecutor(
             registry=self.registry,
@@ -106,6 +109,7 @@ class AgentGraphRuntime:
             router=self.router,
             tool_executor=tool_executor,
             chat_adapter=self.chat_adapter,
+            context_compactor=self.context_compactor,
             memory_manager=self.memory_manager,
             trace_store=self.trace_store,
         )

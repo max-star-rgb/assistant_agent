@@ -58,6 +58,20 @@ curl -s http://127.0.0.1:8000/agents/run \
   -d '{"user_id":"demo_user","session_id":"demo_session","text":"你好","target_agent_id":"agent.worker","collaboration_mode":"single"}'
 ```
 
+Inspect the local A2A agent card:
+
+```bash
+curl -s http://127.0.0.1:8000/.well-known/agent-card.json
+```
+
+Send an inbound A2A JSON-RPC message:
+
+```bash
+curl -s http://127.0.0.1:8000/a2a/rpc \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"rpc_1","method":"SendMessage","params":{"message":{"role":"user","messageId":"msg_1","contextId":"demo_session","parts":[{"kind":"text","text":"你好"}],"metadata":{"user_id":"demo_user","target_agent_id":"agent.worker"}}}}'
+```
+
 ## Defaults
 
 - No API key required.

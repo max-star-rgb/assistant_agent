@@ -68,6 +68,7 @@ AssistantDecision -> ActionValidator -> ToolExecutor
 
 - FastAPI HTTP API。
 - WebSocket event stream。
+- Inbound A2A JSON-RPC protocol adapter。
 - MCP server / skills packaging boundary。
 
 接口层只负责协议转换、鉴权/用户边界、请求响应模型适配。它不应该绕过 `AgentGraphRuntime`、`ToolExecutor`、`MemoryManager` 或治理策略直接执行能力。
@@ -185,6 +186,7 @@ memory tool 只是 Agent/LLM 调用记忆服务的适配器，不是记忆服务
 - 新增可被 Agent 调用的能力：先定义 `ToolSpec`、input schema、structured result，再放 `tools/`。
 - 新增 agent-to-agent 委托能力：先放 `tools/`，通过 `ToolExecutor` 调用 `services/agent_communication.py`，默认不注册。
 - 新增多 Agent 用户入口：放 `services/agent_gateway.py` 和 `api/` 路由，默认 `/agent/run` 不经过 gateway，显式 `/agents/run` 才启用。
+- 新增 inbound A2A 协议入口：放 `api/routes_a2a.py` 和 `services/a2a_adapter.py`，只做协议转换并复用 `AgentGateway` / communication service。
 - 新增具体外部模型或第三方 API：放 `providers/`，默认 mock/local，真实 provider 显式 opt-in。
 - 新增运行服务、trace、session、audit、agent communication、provider 管理：放 `services/`。
 - 新增 HTTP/WebSocket/MCP 入口：放 `api/` 或 `mcp/`，并复用 runtime/service/tool 边界。

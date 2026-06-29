@@ -1,26 +1,32 @@
 """Build assistant context packs from runtime state."""
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from multimodal_agent.agent.state import AgentState
-from multimodal_agent.schemas.context import AssistantContextPack, AssistantPlanContext, ContextBudgetReport
+from multimodal_agent.schemas.context import AssistantContextPack, AssistantPlanContext, ContextBudgetReport, ContextSummary
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.schemas.tools import ToolSpec
+from multimodal_agent.services.context.compactor import (
+    ContextCompactor,
+    DeterministicContextCompactor,
+    context_summary_from_metadata,
+    format_context_summary,
+)
 from multimodal_agent.services.context.compaction import compact_observations_for_context
+from multimodal_agent.services.context.policy import (
+    COMPRESSION_REASON_CONTEXT_BUDGET_TRIMMED,
+    COMPRESSION_REASON_CONTEXT_OVER_BUDGET,
+    COMPRESSION_REASON_CONVERSATION_COMPACTED,
+    COMPRESSION_REASON_OBSERVATION_COMPACTED,
+    COMPRESSION_STAGE_BUDGET_TRIMMED,
+    COMPRESSION_STAGE_COMPACTED,
+    COMPRESSION_STAGE_NONE,
+    CompactionPolicy,
+    context_policy_from_request,
+)
 from multimodal_agent.services.context.tool_catalog import select_prompt_tool_specs
-
-
-DEFAULT_CONTEXT_BUDGET_MAX_CHARS = 12_000
-CONTEXT_BUDGET_METADATA_KEY = "context_budget_max_chars"
-MIN_CONTEXT_BUDGET_MAX_CHARS = 500
-COMPRESSION_STAGE_NONE = "none"
-COMPRESSION_STAGE_COMPACTED = "compacted"
-COMPRESSION_STAGE_BUDGET_TRIMMED = "budget_trimmed"
-COMPRESSION_REASON_CONVERSATION_COMPACTED = "conversation_context_compacted"
-COMPRESSION_REASON_OBSERVATION_COMPACTED = "observation_context_compacted"
-COMPRESSION_REASON_CONTEXT_OVER_BUDGET = "context_over_budget"
-COMPRESSION_REASON_CONTEXT_BUDGET_TRIMMED = "context_budget_trimmed"
 
 
 def build_assistant_context_pack(
@@ -33,12 +39,17 @@ def build_assistant_context_pack(
     max_iterations: int,
     memory_summaries: list[str] | None = None,
     memory_text: str | None = None,
+    context_compactor: ContextCompactor | None = None,
 ) -> AssistantContextPack:
     """Collect state and request materials for assistant prompt rendering."""
 
     active_request = request or state.request
+    context_policy = context_policy_from_request(active_request)
+    budget_limit = context_policy.max_context_chars
     summaries = memory_summaries if memory_summaries is not None else [item.summary for item in state.memory_context]
     conversation_text = _conversation_context_text(active_request)
+    context_summary = _context_summary(active_request)
+    compactor_type = _metadata_text(active_request, "context_compactor_type") or "none"
     text = (
         memory_text
         if memory_text is not None
@@ -66,8 +77,30 @@ def build_assistant_context_pack(
         plan_state=plan_state,
         observations=context_observations,
         tool_specs=prompt_tool_specs,
+        max_chars=budget_limit,
     )
-    budget_limit = _context_budget_limit(active_request)
+    compaction_decision = CompactionPolicy().evaluate(
+        request=active_request,
+        budget=initial_budget,
+        observations=context_observations,
+        policy=context_policy,
+    )
+    if compaction_decision.triggered:
+        compactor = context_compactor or DeterministicContextCompactor()
+        compaction = compactor.compact(
+            conversation=_conversation_history_turns(active_request),
+            current_request=active_request,
+            observations=context_observations,
+            budget_report=initial_budget,
+            existing_summary=context_summary,
+        )
+        context_summary = compaction.summary
+        compactor_type = compaction.compactor_type
+        active_request.metadata["context_summary"] = context_summary.model_dump(mode="json")
+        active_request.metadata["context_summary_text"] = format_context_summary(context_summary)
+        active_request.metadata["context_summary_present"] = True
+        active_request.metadata["context_compactor_type"] = compactor_type
+
     budgeted = _enforce_context_budget(
         request=active_request,
         conversation_text=conversation_text,
@@ -85,9 +118,12 @@ def build_assistant_context_pack(
         observations=context_observations,
         over_budget=over_budget,
         trimmed_sections=budgeted.trimmed_sections,
+        extra_reasons=compaction_decision.reasons,
     )
     return AssistantContextPack(
         request=active_request,
+        context_summary=context_summary,
+        compactor_type=compactor_type,
         conversation_text=budgeted.conversation_text,
         memory_summaries=summaries,
         memory_text=budgeted.memory_text,
@@ -109,6 +145,7 @@ def build_assistant_context_pack(
             tool_specs=prompt_tool_specs,
             max_chars=budget_limit,
             over_budget=over_budget,
+            compaction_triggered=compaction_decision.triggered or bool(budgeted.trimmed_sections),
             trimmed_chars=max(0, initial_budget.total_chars - budgeted.total_chars),
             trimmed_sections=budgeted.trimmed_sections,
             compression_stage=_compression_stage(
@@ -137,6 +174,13 @@ def _conversation_context_text(request: UserRequest) -> str:
     if isinstance(conversation_context, str) and conversation_context.strip():
         return conversation_context.strip()
     return ""
+
+
+def _context_summary(request: UserRequest) -> ContextSummary | None:
+    summary = context_summary_from_metadata(request.metadata.get("context_summary"))
+    if summary is not None:
+        return summary
+    return context_summary_from_metadata(request.metadata.get("session_context_summary"))
 
 
 def _is_plan_mode_active(state: AgentState) -> bool:
@@ -197,6 +241,7 @@ def _budget_report(
     tool_specs: list[ToolSpec],
     max_chars: int = 0,
     over_budget: bool = False,
+    compaction_triggered: bool = False,
     trimmed_chars: int = 0,
     trimmed_sections: list[str] | None = None,
     compression_stage: str = COMPRESSION_STAGE_NONE,
@@ -216,6 +261,7 @@ def _budget_report(
         + observations_chars
         + tool_spec_chars
     )
+    context_usage_ratio = total_chars / max_chars if max_chars > 0 else 0.0
     return ContextBudgetReport(
         request_chars=request_chars,
         conversation_chars=conversation_chars,
@@ -226,6 +272,8 @@ def _budget_report(
         total_chars=total_chars,
         max_chars=max_chars,
         over_budget=over_budget,
+        context_usage_ratio=context_usage_ratio,
+        compaction_triggered=compaction_triggered,
         trimmed_chars=trimmed_chars,
         trimmed_sections=trimmed_sections or [],
         compression_stage=compression_stage,
@@ -239,8 +287,9 @@ def _compression_reasons(
     observations: list[dict[str, Any]],
     over_budget: bool,
     trimmed_sections: list[str],
+    extra_reasons: list[str] | None = None,
 ) -> list[str]:
-    reasons: list[str] = []
+    reasons: list[str] = list(extra_reasons or [])
     if request.metadata.get("conversation_context_compacted") is True:
         reasons.append(COMPRESSION_REASON_CONVERSATION_COMPACTED)
     if any(observation.get("compacted") is True for observation in observations):
@@ -249,7 +298,7 @@ def _compression_reasons(
         reasons.append(COMPRESSION_REASON_CONTEXT_OVER_BUDGET)
     if trimmed_sections:
         reasons.append(COMPRESSION_REASON_CONTEXT_BUDGET_TRIMMED)
-    return reasons
+    return _unique(reasons)
 
 
 def _compression_stage(reasons: list[str], *, trimmed_sections: list[str]) -> str:
@@ -288,13 +337,6 @@ class _BudgetedContext:
         self.observations = observations
         self.total_chars = total_chars
         self.trimmed_sections = trimmed_sections
-
-
-def _context_budget_limit(request: UserRequest) -> int:
-    value = request.metadata.get(CONTEXT_BUDGET_METADATA_KEY)
-    if isinstance(value, int):
-        return max(MIN_CONTEXT_BUDGET_MAX_CHARS, value)
-    return DEFAULT_CONTEXT_BUDGET_MAX_CHARS
 
 
 def _enforce_context_budget(
@@ -421,3 +463,41 @@ def _clip_text_to_chars(value: str, max_chars: int) -> str:
     if max_chars <= 20:
         return value[:max_chars]
     return value[: max_chars - 15].rstrip() + "...[trimmed]"
+
+
+@dataclass(frozen=True)
+class _ConversationTurnForSummary:
+    user_text: str
+    assistant_text: str
+    run_id: str
+    trace_id: str
+
+
+def _conversation_history_turns(request: UserRequest) -> list[_ConversationTurnForSummary]:
+    history = request.metadata.get("conversation_history")
+    if not isinstance(history, list):
+        return []
+    turns: list[_ConversationTurnForSummary] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        turns.append(
+            _ConversationTurnForSummary(
+                user_text=str(item.get("user_text") or ""),
+                assistant_text=str(item.get("assistant_text") or ""),
+                run_id=str(item.get("run_id") or ""),
+                trace_id=str(item.get("trace_id") or ""),
+            )
+        )
+    return turns
+
+
+def _unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result

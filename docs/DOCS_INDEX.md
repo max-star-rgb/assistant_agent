@@ -21,13 +21,15 @@ Status values:
 | `docs/architecture.md` | canonical | Current concise runtime architecture overview; matches assistant-loop and provider-native tool calling direction. | link-from-index |
 | `docs/architecture-layers.md` | canonical | Current layer ownership and governance boundary document; required for architecture/rework decisions. | link-from-index |
 | `docs/memory-service-architecture.md` | canonical | Current authoritative memory service architecture, boundary, routing, and update-rule entry. | keep |
-| `docs/agent-communication-routing.md` | canonical | Current authoritative multi-agent instance routing, agent communication, gateway API, and A2A adapter boundary entry; tracks internal schemas/directory/local transport/service, local multi-runtime factory, opt-in local `delegate_to_agent`, `AgentGateway`, and `/agents/run`. | keep |
+| `docs/agent-communication-routing.md` | canonical | Current authoritative multi-agent instance routing, agent communication, gateway API, and A2A adapter boundary entry; tracks internal schemas/directory/local transport/service, local multi-runtime factory, opt-in local `delegate_to_agent`, `AgentGateway`, `/agents/run`, inbound agent card, and `/a2a/rpc`. | keep |
 | `docs/capabilities.md` | canonical | Current capability list and default provider boundary. | link-from-index |
 | `docs/configuration.md` | canonical | Current runtime profile and provider selector policy. | link-from-index |
 | `docs/provider-setup.md` | canonical | Current real-provider opt-in setup and missing-config behavior. | link-from-index |
 | `docs/security.md` | canonical | Current safety defaults, secret handling, and real-provider opt-in policy. | link-from-index |
 | `docs/quickstart.md` | canonical | Current local mock/offline quickstart. | link-from-index |
 | `docs/development.md` | canonical | Current development commands and coding constraints. | link-from-index |
+| `docs/development/memory-kernel-hardening-plan.md` | reference | Phased Memory Kernel hardening execution plan for future memory engineering; complements `docs/memory-service-architecture.md`. | keep |
+| `docs/development/context-engine-memory-policy-plan.md` | reference | Step-by-step Context Engine + Memory Policy development plan for future compaction, session summary, LLM compactor, token budget, and memory promotion work. | keep |
 | `docs/demo-flows.md` | canonical | Current offline demo-flow guide. | link-from-index |
 | `docs/deployment-local.md` | reference | Local deployment support documentation. | keep |
 | `docs/observability-local.md` | reference | Local run/trace/tool-call observability reference. | keep |

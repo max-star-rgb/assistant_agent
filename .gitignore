@@ -22,7 +22,10 @@ htmlcov/
 !/docs/CONTEXT_ENGINEERING_STATUS.md
 !/docs/DOCS_INDEX.md
 !/docs/quickstart.md
+!/docs/development.md
 !/docs/memory-service-architecture.md
+!/docs/development/
+!/docs/development/**
 !/docs/TESTS_REVIEW.md
 !/docs/archive/
 !/docs/archive/**
@@ -31,5 +34,6 @@ htmlcov/
 /demo_data/
 /tests/*
 !/tests/test_agent_communication_*.py
+!/tests/test_api_a2a.py
 !/tests/test_agent_gateway.py
 !/tests/test_memory_tool_boundary.py
