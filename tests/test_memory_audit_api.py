@@ -143,6 +143,38 @@ def test_memory_audit_api_sweeps_expired_memory(monkeypatch) -> None:
     assert store.get("u2", "other") is not None
 
 
+def test_memory_audit_api_lists_events_and_metrics(monkeypatch) -> None:
+    store = InMemoryStore()
+    runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
+    runtime.memory_manager.save_explicit(
+        user_id="u1",
+        session_id="s1",
+        text="记住我喜欢日系风格",
+        content={"summary": "用户喜欢日系风格。", "style": "日系"},
+    )
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    exported = client.get("/memory/users/u1/export", params={"include_content": False})
+    events = client.get("/memory/users/u1/events")
+    filtered_events = client.get("/memory/users/u1/events", params={"event_type": "memory_exported"})
+    metrics = client.get("/memory/users/u1/metrics")
+
+    assert exported.status_code == 200
+    assert events.status_code == 200
+    event_types = {event["event_type"] for event in events.json()["items"]}
+    assert {"memory_explicit_saved", "memory_exported"}.issubset(event_types)
+    assert filtered_events.status_code == 200
+    assert filtered_events.json()["total"] == 1
+    assert filtered_events.json()["items"][0]["event_type"] == "memory_exported"
+    assert metrics.status_code == 200
+    metric_payload = metrics.json()
+    assert metric_payload["by_event_type"]["memory_explicit_saved"] == 1
+    assert metric_payload["by_event_type"]["memory_exported"] == 1
+    assert metric_payload["counters"]["memory.write.allowed.count"] == 1
+    assert metric_payload["counters"]["memory.export.count"] == 1
+
+
 def test_memory_audit_service_uses_request_identity_scope() -> None:
     store = InMemoryStore()
     runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())

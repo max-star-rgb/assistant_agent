@@ -15,6 +15,7 @@ from multimodal_agent.services.agent_pilot_readiness import (
     build_failure_replay_payload,
     build_pilot_run_summary,
 )
+from multimodal_agent.services.api_identity import IdentityPolicy, resolve_request_identity
 
 
 def test_pilot_readiness_checker_reports_safe_default_profile() -> None:
@@ -73,6 +74,21 @@ def test_pilot_readiness_checker_accepts_explicit_remote_allowlist_and_auth_iden
     checks = {check.name: check for check in report.checks}
     assert checks["remote_a2a_explicit_opt_in"].status == "passed"
     assert checks["auth_bound_identity"].status == "passed"
+
+
+def test_pilot_readiness_checker_blocks_production_required_request_identity() -> None:
+    identity = resolve_request_identity(user_id="u1", session_id="s1", source="request_body")
+    identity_policy = IdentityPolicy().evaluate(identity, production_required=True)
+
+    report = PilotReadinessChecker().evaluate(
+        runtime_profile=get_runtime_profile("local_demo"),
+        identity_policy=identity_policy,
+    )
+
+    assert report.status == "blocked"
+    checks = {check.name: check for check in report.checks}
+    assert checks["auth_bound_identity"].status == "failed"
+    assert checks["auth_bound_identity"].detail["production_required"] is True
 
 
 def test_pilot_run_summary_redacts_sensitive_metadata_and_reports_metrics() -> None:

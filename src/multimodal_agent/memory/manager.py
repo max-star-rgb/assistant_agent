@@ -25,7 +25,13 @@ from multimodal_agent.schemas.memory import (
     memory_item_matches_query_scope,
     memory_scope_for_item,
 )
+from multimodal_agent.schemas.memory_audit import (
+    MemoryAuditEvent,
+    MemoryAuditEventOutcome,
+    MemoryAuditEventType,
+)
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 
 
 _VALID_MEMORY_SCOPES = {"session", "task", "project", "user_profile", "video", "product"}
@@ -62,6 +68,7 @@ class MemoryManager:
         default_max_context_chars: int = 500,
         default_max_context_tokens: int | None = None,
         context_builder: MemoryContextBuilder | None = None,
+        max_audit_events: int = 1000,
     ) -> None:
         self.store = store
         self.write_policy = write_policy or MemoryWritePolicy()
@@ -69,6 +76,8 @@ class MemoryManager:
         self.default_max_context_chars = default_max_context_chars
         self.default_max_context_tokens = default_max_context_tokens
         self.context_builder = context_builder or MemoryContextBuilder()
+        self.max_audit_events = max(1, max_audit_events)
+        self._audit_events: list[MemoryAuditEvent] = []
 
     def search(self, query: MemoryQuery) -> MemorySearchResult:
         """Search through the configured store."""
@@ -124,11 +133,35 @@ class MemoryManager:
             max_context_chars=max_context_chars or self.default_max_context_chars,
         )
         result = self.search_for_identity(identity, query)
-        return self.build_context(
+        context = self.build_context(
             result.items,
             max_chars=query.max_context_chars,
             max_tokens=max_context_tokens or self.default_max_context_tokens,
         )
+        self.record_audit_event(
+            "memory_context_loaded",
+            user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            session_id=identity.session_id,
+            summary="memory context loaded",
+            counts={
+                "retrieved": result.total,
+                "injected": len(context.items),
+                "tokens": context.total_tokens,
+                "budget_tokens": context.budget_tokens,
+                "omitted": context.omitted_count,
+                "rejected": len(context.rejected_reasons),
+            },
+            metadata={
+                "capability": capability,
+                "query_present": bool(query_text.strip()),
+                "retrieval_version": context.retrieval_version,
+                "injected_memory_ids": [item.memory_id for item in context.items],
+                "rejected_reasons": context.rejected_reasons[:8],
+            },
+        )
+        return context
 
     def load_into_state(
         self,
@@ -216,6 +249,15 @@ class MemoryManager:
         )
         if candidate is None:
             _record_no_promotion_candidate(state, "auto_save_task_summary_disabled")
+            self.record_audit_event(
+                "memory_promotion_decided",
+                user_id=state.user_id,
+                session_id=state.session_id,
+                outcome="skipped",
+                summary="promotion candidate skipped",
+                counts={"candidates": 0, "written": 0, "rejected": 0},
+                metadata={"reason": "auto_save_task_summary_disabled"},
+            )
             return None
         decision = self.write_policy.evaluate_promotion_candidate(candidate)
         item = build_memory_item_from_promotion_candidate(
@@ -226,6 +268,23 @@ class MemoryManager:
         )
         saved = self.store.save(item) if item is not None else None
         _record_promotion_decision(state, decision, saved)
+        self.record_audit_event(
+            "memory_promotion_decided",
+            user_id=candidate.user_id,
+            session_id=candidate.session_id,
+            memory_id=saved.memory_id if saved is not None else None,
+            outcome="succeeded" if saved is not None else "rejected",
+            summary="promotion candidate written" if saved is not None else "promotion candidate rejected",
+            counts={
+                "candidates": 1,
+                "written": 1 if saved is not None else 0,
+                "rejected": 0 if saved is not None else 1,
+            },
+            metadata=promotion_decision_audit_record(
+                decision,
+                written_memory_id=saved.memory_id if saved is not None else None,
+            ),
+        )
         return saved
 
     def save_explicit(
@@ -243,6 +302,20 @@ class MemoryManager:
     ) -> MemoryItem:
         """Persist an explicit user-requested memory."""
 
+        decision = self.write_policy.evaluate_explicit_save(text=text, content=content, scope=scope)
+        if not decision.allowed:
+            self.record_audit_event(
+                "memory_explicit_saved",
+                user_id=user_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                session_id=session_id,
+                outcome="rejected",
+                summary="explicit memory rejected",
+                counts={"attempted": 1, "written": 0, "rejected": 1},
+                metadata=promotion_decision_audit_record(decision),
+            )
+            raise ValueError(decision.reason)
         item = build_explicit_memory_item(
             memory_id=memory_id or f"explicit_memory_{uuid4().hex}",
             user_id=user_id,
@@ -263,6 +336,23 @@ class MemoryManager:
             )
         saved = self._merge_or_save(item)
         self._upsert_user_profile(saved)
+        self.record_audit_event(
+            "memory_explicit_saved",
+            user_id=saved.user_id,
+            tenant_id=saved.tenant_id,
+            project_id=saved.project_id,
+            session_id=saved.session_id,
+            memory_id=saved.memory_id,
+            summary="explicit memory saved",
+            counts={"attempted": 1, "written": 1, "rejected": 0},
+            metadata={
+                "memory_type": saved.memory_type,
+                "scope": memory_scope_for_item(saved),
+                "sensitivity": saved.sensitivity,
+                "destination": decision.destination,
+                "ttl_days": decision.ttl_days,
+            },
+        )
         return saved
 
     def save_explicit_for_identity(
@@ -312,20 +402,49 @@ class MemoryManager:
         return self.delete_for_identity(RequestIdentity.for_user(user_id=user_id), memory_id)
 
     def delete_for_identity(self, identity: RequestIdentity, memory_id: str) -> bool:
-        if self.get_for_identity(identity, memory_id) is None:
+        item = self.get_for_identity(identity, memory_id)
+        if item is None:
             return False
-        return self.store.delete(identity.user_id, memory_id)
+        deleted = self.store.delete(identity.user_id, memory_id)
+        if deleted:
+            self.record_audit_event(
+                "memory_deleted",
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=item.session_id,
+                memory_id=memory_id,
+                summary="memory soft-deleted",
+                counts={"memory_items": 1},
+                metadata={"memory_type": item.memory_type, "scope": memory_scope_for_item(item)},
+            )
+        return deleted
 
     def hard_delete(self, user_id: str, memory_id: str) -> bool:
         return self.hard_delete_for_identity(RequestIdentity.for_user(user_id=user_id), memory_id)
 
     def hard_delete_for_identity(self, identity: RequestIdentity, memory_id: str) -> bool:
-        if self.get_for_identity(identity, memory_id) is None:
+        item = self.get_for_identity(identity, memory_id)
+        if item is None:
             return False
         hard_delete = getattr(self.store, "hard_delete", None)
         if callable(hard_delete):
-            return bool(hard_delete(identity.user_id, memory_id))
-        return self.store.delete(identity.user_id, memory_id)
+            deleted = bool(hard_delete(identity.user_id, memory_id))
+        else:
+            deleted = self.store.delete(identity.user_id, memory_id)
+        if deleted:
+            self.record_audit_event(
+                "memory_hard_deleted",
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=item.session_id,
+                memory_id=memory_id,
+                summary="memory hard-deleted",
+                counts={"memory_items": 1},
+                metadata={"memory_type": item.memory_type, "scope": memory_scope_for_item(item)},
+            )
+        return deleted
 
     def delete_by_session(self, user_id: str, session_id: str) -> int:
         return self.delete_session_for_identity(
@@ -346,14 +465,86 @@ class MemoryManager:
         for item in items:
             if self.store.delete(identity.user_id, item.memory_id):
                 deleted += 1
+        self.record_audit_event(
+            "memory_session_deleted",
+            user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            session_id=resolved_session_id,
+            summary="session memory deleted",
+            counts={"memory_items": deleted},
+        )
         return deleted
 
     def clear_user(self, user_id: str) -> None:
         self.clear_identity(RequestIdentity.for_user(user_id=user_id))
 
     def clear_identity(self, identity: RequestIdentity) -> None:
+        deleted = 0
         for item in self.list_for_identity(identity):
-            self.store.delete(identity.user_id, item.memory_id)
+            if self.store.delete(identity.user_id, item.memory_id):
+                deleted += 1
+        self.record_audit_event(
+            "memory_user_cleared",
+            user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            session_id=identity.session_id,
+            summary="user memory cleared",
+            counts={"memory_items": deleted},
+        )
+
+    def record_audit_event(
+        self,
+        event_type: MemoryAuditEventType,
+        *,
+        user_id: str,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        memory_id: str | None = None,
+        outcome: MemoryAuditEventOutcome = "succeeded",
+        summary: str = "",
+        counts: dict[str, int] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryAuditEvent:
+        """Record a prompt-safe, local memory audit event."""
+
+        event = MemoryAuditEvent(
+            event_id=f"memory_event_{uuid4().hex}",
+            event_type=event_type,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            session_id=session_id,
+            memory_id=memory_id,
+            occurred_at=datetime.now(timezone.utc),
+            outcome=outcome,
+            summary=sanitize_error_message(summary or event_type),
+            counts=_audit_counts(counts or {}),
+            metadata=_audit_metadata(metadata or {}),
+        )
+        self._audit_events.append(event)
+        del self._audit_events[:-self.max_audit_events]
+        return event
+
+    def list_audit_events_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> list[MemoryAuditEvent]:
+        """List recent memory audit events visible to an identity."""
+
+        resolved_limit = max(1, min(limit, self.max_audit_events))
+        events = [
+            event
+            for event in self._audit_events
+            if _identity_allows_event(identity, event)
+            and (event_type is None or event.event_type == event_type)
+        ]
+        return list(reversed(events[-resolved_limit:]))
 
     def _merge_or_save(self, item: MemoryItem) -> MemoryItem:
         duplicate = self._find_duplicate(item)
@@ -435,6 +626,16 @@ def _identity_allows_item(identity: RequestIdentity, item: MemoryItem) -> bool:
     return memory_item_matches_query_scope(item, query)
 
 
+def _identity_allows_event(identity: RequestIdentity, event: MemoryAuditEvent) -> bool:
+    if event.user_id != identity.user_id:
+        return False
+    if event.tenant_id is not None and event.tenant_id != identity.tenant_id:
+        return False
+    if event.project_id is not None and event.project_id != identity.project_id:
+        return False
+    return True
+
+
 def _same_governance_scope(left: MemoryItem, right: MemoryItem) -> bool:
     return (
         left.tenant_id == right.tenant_id
@@ -504,6 +705,20 @@ def _record_promotion_decision(state: Any, decision: Any, saved: MemoryItem | No
 def _increment_metadata_count(metadata: dict[str, Any], key: str) -> None:
     value = metadata.get(key)
     metadata[key] = value + 1 if isinstance(value, int) and value >= 0 else 1
+
+
+def _audit_counts(counts: dict[str, int]) -> dict[str, int]:
+    clean: dict[str, int] = {}
+    for key, value in counts.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            continue
+        clean[sanitize_error_message(key)] = value
+    return clean
+
+
+def _audit_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    sanitized = sanitize_error_detail(metadata)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 def _dedupe_key(item: MemoryItem) -> str:

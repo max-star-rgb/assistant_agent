@@ -8,12 +8,15 @@ from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
 from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem, MemoryType
 from multimodal_agent.schemas.memory_audit import (
+    MemoryAuditEvent,
+    MemoryAuditEventList,
     MemoryAuditItem,
     MemoryAuditList,
     MemoryAuditReport,
     MemoryDeleteResult,
     MemoryDuplicateGroup,
     MemoryExport,
+    MemoryMetricsReport,
     MemoryRetentionSweepResult,
 )
 
@@ -107,13 +110,24 @@ class MemoryAuditService:
         include_content: bool = True,
     ) -> MemoryExport:
         items = self.memory_manager.list_for_identity(identity)
-        return MemoryExport(
+        export = MemoryExport(
             user_id=identity.user_id,
             exported_at=datetime.now(timezone.utc),
             include_content=include_content,
             total=len(items),
             items=[MemoryAuditItem.from_memory(item, include_content=include_content) for item in items],
         )
+        self.memory_manager.record_audit_event(
+            "memory_exported",
+            user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            session_id=identity.session_id,
+            summary="memory export created",
+            counts={"memory_items": len(items), "include_content": 1 if include_content else 0},
+            metadata={"include_content": include_content},
+        )
+        return export
 
     def sweep_expired(
         self,
@@ -147,7 +161,7 @@ class MemoryAuditService:
                 )
                 if deleted:
                     deleted_count += 1
-        return MemoryRetentionSweepResult(
+        result = MemoryRetentionSweepResult(
             user_id=identity.user_id,
             mode="hard_delete" if hard_delete else "soft_delete",
             dry_run=dry_run,
@@ -155,6 +169,67 @@ class MemoryAuditService:
             expired=len(expired_items),
             deleted={"memory_items": deleted_count},
             memory_ids=[item.memory_id for item in expired_items],
+        )
+        self.memory_manager.record_audit_event(
+            "memory_retention_swept",
+            user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            session_id=identity.session_id,
+            outcome="skipped" if dry_run else "succeeded",
+            summary="expired memory retention sweep",
+            counts={
+                "scanned": result.scanned,
+                "expired": result.expired,
+                "deleted": deleted_count,
+                "hard_delete": 1 if hard_delete else 0,
+                "dry_run": 1 if dry_run else 0,
+            },
+            metadata={"mode": result.mode, "memory_ids": result.memory_ids[:50]},
+        )
+        return result
+
+    def events(
+        self,
+        *,
+        user_id: str,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> MemoryAuditEventList:
+        return self.events_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            event_type=event_type,
+            limit=limit,
+        )
+
+    def events_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> MemoryAuditEventList:
+        items = self.memory_manager.list_audit_events_for_identity(
+            identity,
+            event_type=event_type,
+            limit=limit,
+        )
+        return MemoryAuditEventList(user_id=identity.user_id, total=len(items), items=items)
+
+    def metrics(self, *, user_id: str) -> MemoryMetricsReport:
+        return self.metrics_for_identity(RequestIdentity.for_user(user_id=user_id))
+
+    def metrics_for_identity(self, identity: RequestIdentity) -> MemoryMetricsReport:
+        limit = getattr(self.memory_manager, "max_audit_events", 1000)
+        events = self.memory_manager.list_audit_events_for_identity(identity, limit=limit)
+        by_event_type = Counter(event.event_type for event in events)
+        by_outcome = Counter(event.outcome for event in events)
+        return MemoryMetricsReport(
+            user_id=identity.user_id,
+            total_events=len(events),
+            by_event_type=dict(by_event_type),
+            by_outcome=dict(by_outcome),
+            counters=_metrics_counters(events),
         )
 
     def audit(self, *, user_id: str) -> MemoryAuditReport:
@@ -233,3 +308,51 @@ def _is_expired(item: MemoryItem) -> bool:
 
 def _dedupe_key(item: MemoryItem) -> str:
     return "".join(ch for ch in item.summary.strip().lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+
+
+def _metrics_counters(events: list[MemoryAuditEvent]) -> dict[str, int]:
+    counters: Counter[str] = Counter()
+    counters["memory.audit.events.count"] = len(events)
+    for event in events:
+        counters[f"memory.audit.event.{event.event_type}.count"] += 1
+        if event.event_type == "memory_context_loaded":
+            counters["memory.search.count"] += 1
+            if event.counts.get("retrieved", 0) > 0:
+                counters["memory.search.hit.count"] += 1
+            else:
+                counters["memory.search.empty.count"] += 1
+            counters["memory.context.injected_tokens"] += event.counts.get("tokens", 0)
+            counters["memory.context.omitted_items"] += event.counts.get("omitted", 0)
+            counters["memory.context.rejected_items"] += event.counts.get("rejected", 0)
+            counters["memory.context.rejected_sensitive_items"] += _sensitive_rejection_count(event)
+        elif event.event_type == "memory_explicit_saved":
+            counters["memory.write.allowed.count"] += event.counts.get("written", 0)
+            counters["memory.write.rejected.count"] += event.counts.get("rejected", 0)
+            if event.metadata.get("require_user_confirmation") is True:
+                counters["memory.write.needs_confirmation.count"] += 1
+        elif event.event_type == "memory_promotion_decided":
+            counters["memory.write.allowed.count"] += event.counts.get("written", 0)
+            counters["memory.write.rejected.count"] += event.counts.get("rejected", 0)
+            if event.metadata.get("require_user_confirmation") is True:
+                counters["memory.write.needs_confirmation.count"] += 1
+        elif event.event_type == "memory_deleted":
+            counters["memory.delete.soft.count"] += event.counts.get("memory_items", 0)
+        elif event.event_type == "memory_hard_deleted":
+            counters["memory.delete.hard.count"] += event.counts.get("memory_items", 0)
+        elif event.event_type in {"memory_session_deleted", "memory_user_cleared"}:
+            counters["memory.delete.soft.count"] += event.counts.get("memory_items", 0)
+        elif event.event_type == "memory_exported":
+            counters["memory.export.count"] += 1
+            counters["memory.export.items"] += event.counts.get("memory_items", 0)
+        elif event.event_type == "memory_retention_swept":
+            counters["memory.ttl.swept.count"] += 1
+            counters["memory.ttl.expired.count"] += event.counts.get("expired", 0)
+            counters["memory.ttl.deleted.count"] += event.counts.get("deleted", 0)
+    return dict(sorted(counters.items()))
+
+
+def _sensitive_rejection_count(event: MemoryAuditEvent) -> int:
+    reasons = event.metadata.get("rejected_reasons")
+    if not isinstance(reasons, list):
+        return 0
+    return sum(1 for reason in reasons if "sensitive" in str(reason).lower())

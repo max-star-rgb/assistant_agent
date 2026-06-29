@@ -150,7 +150,7 @@ Rules:
 - `POST /a2a/rpc` supports inbound A2A JSON-RPC `SendMessage` and the legacy-compatible `message/send` alias. It maps text and local media references into `AgentGatewayRunRequest`, then maps `AgentRunResponse` into an A2A task-like result.
 - `/a2a/rpc` returns JSON-RPC parse error `-32700`, invalid request `-32600`, method not found `-32601`, invalid params `-32602`, and internal error `-32603` for protocol/adapter failures.
 - Gateway/business failures remain successful JSON-RPC responses with an A2A task result whose `status.state` is `failed`.
-- A2A metadata may carry `user_id`, `session_id`, `target_agent_id`, `capability`, and `collaboration_mode`. Missing user/session fields use local defaults and still pass through the same trial-access gate.
+- A2A metadata may carry `user_id`, `session_id`, `target_agent_id`, `capability`, and `collaboration_mode`. Missing user/session fields use local defaults and still pass through the same request-identity resolver and trial-access gate; this is request-derived identity provenance, not production authentication.
 - `collaboration_mode="single"` directly runs the resolved target agent. If no target or capability is provided, the target is `agent.default`.
 - `collaboration_mode="controller_delegate"` enters the controller path when no explicit target is supplied. The controller runtime uses the `agent.default` identity with `delegate_to_agent` registered. The normal single-mode `agent.default` runtime and worker runtimes do not register that tool by default.
 - If `target_agent_id` is supplied, it remains the explicit initial route even when `collaboration_mode` is set.

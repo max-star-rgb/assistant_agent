@@ -17,7 +17,7 @@ The memory service is local-first long-term memory for the agent. It covers:
 - Saving explicit user-requested memories.
 - Saving safe completed-run summaries where allowed.
 - Maintaining a compact `user_profile` memory derived from explicit memories.
-- Exposing audit, export, retention sweep, delete, and snapshot views through service/API boundaries.
+- Exposing audit, audit-event, metrics, export, retention sweep, delete, and snapshot views through service/API boundaries.
 
 Conversation history is related but separate. Session conversation context, including session-scoped `context_summary`, is owned by conversation/session services and is combined with memory only in context packs and memory snapshots. `context_summary` is not a long-term memory item.
 
@@ -101,10 +101,10 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/multimodal_agent/memory/profile.py` | Compact `user_profile` memory derived from explicit preference/product/task memories. |
 | `src/multimodal_agent/schemas/identity.py` | `RequestIdentity` contract for request/auth-derived user, tenant, project, session, and allowed memory scopes. |
 | `src/multimodal_agent/tools/memory_tool.py` | Agent-callable `memory`, `memory_retrieval`, and `memory_save` tools. Uses `MemoryManager` from tool context when present. |
-| `src/multimodal_agent/services/memory_audit.py` | User-scoped list/get/export/retention-sweep/delete/audit service over `MemoryManager`. |
+| `src/multimodal_agent/services/memory_audit.py` | User-scoped list/get/export/retention-sweep/delete/audit/event/metrics service over `MemoryManager`. |
 | `src/multimodal_agent/services/memory_snapshot.py` | Read-only snapshot combining memory context, session records, conversation history, audit, and storage boundary info. |
 | `src/multimodal_agent/schemas/memory.py` | Public memory contracts and payload safety validation. |
-| `src/multimodal_agent/schemas/memory_audit.py` | API-facing audit/export/retention/delete/list models. |
+| `src/multimodal_agent/schemas/memory_audit.py` | API-facing audit/export/retention/delete/list/event/metrics models. |
 | `src/multimodal_agent/schemas/memory_snapshot.py` | API-facing memory boundary snapshot models. |
 
 Agent nodes, assistant loops, API routes, MCP routes, and tools should not depend directly on concrete stores. Use `MemoryManager` or a service that wraps it.
@@ -124,7 +124,8 @@ RequestIdentity
 
 Current P0 behavior:
 
-- Local/mock paths derive identity from `UserRequest`, `ToolContext`, or API path parameters.
+- Local/mock paths derive identity from `UserRequest`, `ToolContext`, API path/query parameters, or inbound A2A metadata.
+- API routes resolve request-derived identity through `services/api_identity.py` before trial-access checks and memory service calls. This centralizes provenance (`request_body`, `path`, `query`, `a2a_metadata`, `websocket_query`) without treating it as production authentication. `IdentityPolicy` can classify the resolved identity as auth-bound, request-derived warning, local bypass warning, or production-blocking failure.
 - `MemoryManager` exposes identity-aware methods such as `search_for_identity(...)`, `load_context_for_identity(...)`, `save_explicit_for_identity(...)`, `get_for_identity(...)`, `list_for_identity(...)`, and identity-scoped delete helpers.
 - `MemoryAuditService` and `MemorySnapshotService` expose identity-aware methods and keep the legacy `user_id` methods as compatibility wrappers.
 - Memory tools bind identity from `ToolContext` before invoking `MemoryManager`, so model-supplied `user_id` cannot override runtime context.
@@ -134,7 +135,7 @@ Current P0 behavior:
 
 Current limits:
 
-- API routes still construct `RequestIdentity` from path parameters after trial-access checks. They are shaped for future auth-bound identity, but they are not yet using a real authentication principal.
+- API routes still use request-derived identity unless a future auth context is wired into `services/api_identity.py`. They are shaped for auth-bound identity and policy evaluation, but they are not yet using a real authentication principal.
 - Store schemas still index primarily by `user_id`; tenant/project/scope filtering is enforced in memory service/retrieval code rather than database-level indexes.
 
 ## Service Core Vs Tool Adapter
@@ -342,6 +343,8 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 - `GET /memory/users/{user_id}/items`
 - `GET /memory/users/{user_id}/items/{memory_id}`
 - `GET /memory/users/{user_id}/audit`
+- `GET /memory/users/{user_id}/events`
+- `GET /memory/users/{user_id}/metrics`
 - `GET /memory/users/{user_id}/export`
 - `GET /memory/users/{user_id}/snapshot`
 - `POST /memory/users/{user_id}/retention/sweep`
@@ -349,6 +352,8 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 - `DELETE /memory/users/{user_id}/sessions/{session_id}`
 
 List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Export is identity-scoped and can omit content with `include_content=false`. Retention sweep scans only identity-visible memories, supports `dry_run=true`, soft-deletes expired items by default, and uses `MemoryManager.hard_delete_for_identity(...)` plus `MemoryStore.hard_delete(...)` when `hard_delete=true`. SQLite removes the row on hard delete; in-memory and JSONL stores already delete physically. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match.
+
+`MemoryManager` keeps a bounded, in-process `MemoryAuditEvent` list for prompt-safe lifecycle events: context load, explicit save/reject, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. This foundation is useful for local API/debug visibility, but it is not a durable audit log; production-grade audit storage, rollback/rebuild, and long-term metrics export remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
 
 `DELETE /beta/users/{user_id}/data` clears memory through `runtime.memory_manager.clear_user(user_id)` as part of broader user-data deletion.
 

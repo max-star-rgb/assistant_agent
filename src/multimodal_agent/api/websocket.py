@@ -11,6 +11,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.schemas.events import AgentEvent
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services.api_identity import resolve_request_identity
 from multimodal_agent.services.assistant_run_service import run_assistant_request
 
 
@@ -77,7 +78,13 @@ async def agent_websocket(
     video_id: list[str] | None = Query(default=None),
     execution_strategy: str = Query(default="react"),
 ) -> None:
-    access = get_trial_access_gate().check(user_id)
+    identity_resolution = resolve_request_identity(
+        user_id=user_id,
+        session_id=session_id,
+        source="websocket_query",
+    )
+    identity = identity_resolution.identity
+    access = identity_resolution.trial_access(get_trial_access_gate())
     if not access.allowed and not _can_bypass_trial_access(websocket, client_kind):
         await websocket.accept()
         await websocket.send_json(
@@ -87,7 +94,7 @@ async def agent_websocket(
                 error={
                     "code": "ACCESS_DENIED",
                     "message": access.reason or "trial user is not allowed",
-                    "detail": {"user_id": access.user_id},
+                    "detail": {"user_id": identity.user_id},
                     "recoverable": True,
                 },
             ).model_dump(mode="json", exclude_none=True)
@@ -118,10 +125,10 @@ async def agent_websocket(
 
     request_text = request_payload["text"]
     request_execution_strategy = request_payload["execution_strategy"]
-    logger.info("[ws] session=%s user=%s 收到: %s", session_id, user_id, _preview(request_text))
+    logger.info("[ws] session=%s user=%s 收到: %s", session_id, identity.user_id, _preview(request_text))
     request = UserRequest(
-        user_id=user_id,
-        session_id=session_id,
+        user_id=identity.user_id,
+        session_id=identity.session_id or session_id,
         text=request_text,
         image_ids=request_payload["image_ids"],
         video_ids=request_payload["video_ids"],
@@ -130,6 +137,7 @@ async def agent_websocket(
             "source": _request_source(client_kind),
             "transport": "websocket",
             "execution_strategy": _execution_strategy(request_execution_strategy),
+            "request_identity": identity_resolution.metadata(),
         },
     )
     loop = asyncio.get_running_loop()

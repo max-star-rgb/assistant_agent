@@ -8,6 +8,19 @@ from pydantic import BaseModel, Field
 from multimodal_agent.schemas.api import PROTOCOL_VERSION
 from multimodal_agent.schemas.memory import MemoryItem, MemoryType
 
+MemoryAuditEventType = Literal[
+    "memory_context_loaded",
+    "memory_explicit_saved",
+    "memory_promotion_decided",
+    "memory_deleted",
+    "memory_hard_deleted",
+    "memory_session_deleted",
+    "memory_user_cleared",
+    "memory_exported",
+    "memory_retention_swept",
+]
+MemoryAuditEventOutcome = Literal["succeeded", "skipped", "rejected", "failed"]
+
 
 class MemoryAuditItem(BaseModel):
     """Public, user-scoped memory item view."""
@@ -113,3 +126,40 @@ class MemoryRetentionSweepResult(BaseModel):
     expired: int = Field(ge=0)
     deleted: dict[str, int] = Field(default_factory=dict)
     memory_ids: list[str] = Field(default_factory=list)
+
+
+class MemoryAuditEvent(BaseModel):
+    """Prompt-safe lifecycle event emitted by the memory service boundary."""
+
+    event_id: str
+    event_type: MemoryAuditEventType
+    user_id: str
+    tenant_id: str | None = None
+    project_id: str | None = None
+    session_id: str | None = None
+    memory_id: str | None = None
+    occurred_at: datetime
+    outcome: MemoryAuditEventOutcome = "succeeded"
+    summary: str = ""
+    counts: dict[str, int] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryAuditEventList(BaseModel):
+    """User-scoped list of memory audit events."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    user_id: str
+    total: int = Field(ge=0)
+    items: list[MemoryAuditEvent] = Field(default_factory=list)
+
+
+class MemoryMetricsReport(BaseModel):
+    """Aggregated local counters derived from memory audit events."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    user_id: str
+    total_events: int = Field(ge=0)
+    by_event_type: dict[str, int] = Field(default_factory=dict)
+    by_outcome: dict[str, int] = Field(default_factory=dict)
+    counters: dict[str, int] = Field(default_factory=dict)

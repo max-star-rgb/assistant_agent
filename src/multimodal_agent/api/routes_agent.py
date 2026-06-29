@@ -12,11 +12,13 @@ from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
 from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryType
 from multimodal_agent.schemas.memory_audit import (
+    MemoryAuditEventList,
     MemoryAuditItem,
     MemoryAuditList,
     MemoryAuditReport,
     MemoryDeleteResult,
     MemoryExport,
+    MemoryMetricsReport,
     MemoryRetentionSweepResult,
 )
 from multimodal_agent.schemas.memory_snapshot import MemorySnapshot, MemoryStorageSnapshot
@@ -31,6 +33,7 @@ from multimodal_agent.services.assistant_run_service import (
     runtime_info,
 )
 from multimodal_agent.services.agent_gateway import AgentGateway, create_default_agent_gateway
+from multimodal_agent.services.api_identity import ApiIdentitySource, ResolvedRequestIdentity, resolve_request_identity
 from multimodal_agent.services.beta_feedback import (
     BetaEvaluationExport,
     BetaEvaluationItem,
@@ -85,13 +88,17 @@ def get_trial_access_gate() -> TrialAccessGate:
 
 @router.post("/agent/run", response_model=AgentRunResponse)
 def run_agent(request: UserRequest) -> AgentRunResponse:
-    _require_trial_access(request.user_id)
+    identity_resolution = _identity_from_request(request)
+    _require_trial_access_for_identity(identity_resolution)
+    request = _with_identity_metadata(request, identity_resolution)
     return run_assistant_request(request, runtime=get_agent_runtime()).api_response()
 
 
 @router.post("/agents/run", response_model=AgentRunResponse)
 def run_agents(request: AgentGatewayRunRequest) -> AgentRunResponse:
-    _require_trial_access(request.user_id)
+    identity_resolution = _identity_from_request(request)
+    _require_trial_access_for_identity(identity_resolution)
+    request = _with_identity_metadata(request, identity_resolution)
     return get_agent_gateway().run(request)
 
 
@@ -134,21 +141,21 @@ def demo_access(user_id: str = Query(...)) -> TrialAccessStatus:
 
 @router.post("/sessions", response_model=SessionRecord)
 def create_session(session: SessionCreate) -> SessionRecord:
-    _require_trial_access(session.user_id)
+    _require_trial_access_for_identity(_identity_from_user_id(session.user_id, source="request_body"))
     return get_agent_runtime().session_store.create(session)
 
 
 @router.get("/sessions", response_model=SessionList)
 def list_sessions(user_id: str = Query(...)) -> SessionList:
-    _require_trial_access(user_id)
-    sessions = get_agent_runtime().session_store.list_by_user(user_id)
-    return SessionList(user_id=user_id, total=len(sessions), sessions=sessions)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="query"))
+    sessions = get_agent_runtime().session_store.list_by_user(identity.user_id)
+    return SessionList(user_id=identity.user_id, total=len(sessions), sessions=sessions)
 
 
 @router.get("/sessions/{session_id}", response_model=SessionRecord)
 def get_session(session_id: str, user_id: str = Query(...)) -> SessionRecord:
-    _require_trial_access(user_id)
-    record = get_agent_runtime().session_store.get(user_id, session_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, session_id=session_id, source="query"))
+    record = get_agent_runtime().session_store.get(identity.user_id, session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
     return record
@@ -156,13 +163,13 @@ def get_session(session_id: str, user_id: str = Query(...)) -> SessionRecord:
 
 @router.delete("/sessions/{session_id}", response_model=SessionDeleteResult)
 def delete_session(session_id: str, user_id: str = Query(...)) -> SessionDeleteResult:
-    _require_trial_access(user_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, session_id=session_id, source="query"))
     runtime = get_agent_runtime()
-    deleted = 1 if runtime.session_store.delete(user_id, session_id) else 0
+    deleted = 1 if runtime.session_store.delete(identity.user_id, session_id) else 0
     if deleted == 0:
         raise HTTPException(status_code=404, detail="session not found")
-    clear_conversation_history(user_id, session_id, config=runtime.config)
-    return SessionDeleteResult(user_id=user_id, deleted={"sessions": deleted})
+    clear_conversation_history(identity.user_id, session_id, config=runtime.config)
+    return SessionDeleteResult(user_id=identity.user_id, deleted={"sessions": deleted})
 
 
 @router.get("/runs/{run_id}", response_model=RunSummary)
@@ -208,9 +215,9 @@ def list_memory_items(
     memory_type: MemoryType | None = Query(default=None),
     include_content: bool = Query(default=False),
 ) -> MemoryAuditList:
-    _require_trial_access(user_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
     return _memory_audit_service().list_items_for_identity(
-        _memory_identity(user_id),
+        identity,
         memory_type=memory_type,
         include_content=include_content,
     )
@@ -222,9 +229,9 @@ def get_memory_item(
     memory_id: str,
     include_content: bool = Query(default=True),
 ) -> MemoryAuditItem:
-    _require_trial_access(user_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
     item = _memory_audit_service().get_item_for_identity(
-        _memory_identity(user_id),
+        identity,
         memory_id=memory_id,
         include_content=include_content,
     )
@@ -235,8 +242,28 @@ def get_memory_item(
 
 @router.get("/memory/users/{user_id}/audit", response_model=MemoryAuditReport)
 def audit_memory(user_id: str) -> MemoryAuditReport:
-    _require_trial_access(user_id)
-    return _memory_audit_service().audit_for_identity(_memory_identity(user_id))
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+    return _memory_audit_service().audit_for_identity(identity)
+
+
+@router.get("/memory/users/{user_id}/events", response_model=MemoryAuditEventList)
+def list_memory_events(
+    user_id: str,
+    event_type: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> MemoryAuditEventList:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+    return _memory_audit_service().events_for_identity(
+        identity,
+        event_type=event_type,
+        limit=limit,
+    )
+
+
+@router.get("/memory/users/{user_id}/metrics", response_model=MemoryMetricsReport)
+def get_memory_metrics(user_id: str) -> MemoryMetricsReport:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+    return _memory_audit_service().metrics_for_identity(identity)
 
 
 @router.get("/memory/users/{user_id}/export", response_model=MemoryExport)
@@ -244,9 +271,9 @@ def export_memory(
     user_id: str,
     include_content: bool = Query(default=True),
 ) -> MemoryExport:
-    _require_trial_access(user_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
     return _memory_audit_service().export_for_identity(
-        _memory_identity(user_id),
+        identity,
         include_content=include_content,
     )
 
@@ -257,9 +284,9 @@ def sweep_expired_memory(
     hard_delete: bool = Query(default=False),
     dry_run: bool = Query(default=False),
 ) -> MemoryRetentionSweepResult:
-    _require_trial_access(user_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
     return _memory_audit_service().sweep_expired_for_identity(
-        _memory_identity(user_id),
+        identity,
         hard_delete=hard_delete,
         dry_run=dry_run,
     )
@@ -274,9 +301,9 @@ def get_memory_snapshot(
     max_context_chars: int = Query(default=1000, ge=50, le=4000),
     include_content: bool = Query(default=False),
 ) -> MemorySnapshot:
-    _require_trial_access(user_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, session_id=session_id, source="path"))
     return _memory_snapshot_service().snapshot_for_identity(
-        _memory_identity(user_id, session_id=session_id),
+        identity,
         query=query,
         top_k=top_k,
         max_context_chars=max_context_chars,
@@ -286,9 +313,9 @@ def get_memory_snapshot(
 
 @router.delete("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryDeleteResult)
 def delete_memory_item(user_id: str, memory_id: str) -> MemoryDeleteResult:
-    _require_trial_access(user_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
     result = _memory_audit_service().delete_item_for_identity(
-        _memory_identity(user_id),
+        identity,
         memory_id=memory_id,
     )
     if result.deleted.get("memory_items", 0) == 0:
@@ -298,22 +325,24 @@ def delete_memory_item(user_id: str, memory_id: str) -> MemoryDeleteResult:
 
 @router.delete("/memory/users/{user_id}/sessions/{session_id}", response_model=MemoryDeleteResult)
 def delete_memory_session(user_id: str, session_id: str) -> MemoryDeleteResult:
-    _require_trial_access(user_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, session_id=session_id, source="path"))
     return _memory_audit_service().delete_session_for_identity(
-        _memory_identity(user_id, session_id=session_id),
+        identity,
     )
 
 
 @router.post("/beta/feedback", response_model=BetaFeedbackRecord)
 def submit_beta_feedback(feedback: BetaFeedbackCreate) -> BetaFeedbackRecord:
-    _assert_run_belongs_to_user(feedback.run_id, feedback.user_id)
+    identity = _require_trial_access_for_identity(_identity_from_user_id(feedback.user_id, source="request_body"))
+    _assert_run_belongs_to_user(feedback.run_id, identity.user_id)
     return get_beta_feedback_store().append(feedback)
 
 
 @router.get("/beta/evaluations", response_model=BetaEvaluationExport)
 def export_beta_evaluations(user_id: str | None = Query(default=None)) -> BetaEvaluationExport:
     store = get_beta_feedback_store()
-    records = store.list_by_user(user_id) if user_id else store.read_all()
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="query")) if user_id else None
+    records = store.list_by_user(identity.user_id) if identity is not None else store.read_all()
     trace_service = TraceQueryService(get_agent_runtime().trace_store)
     items: list[BetaEvaluationItem] = []
     for record in records:
@@ -329,6 +358,8 @@ def export_beta_evaluations(user_id: str | None = Query(default=None)) -> BetaEv
 
 @router.delete("/beta/users/{user_id}/data")
 def delete_beta_user_data(user_id: str) -> dict[str, Any]:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+    user_id = identity.user_id
     runtime = get_agent_runtime()
     memory_items = runtime.memory_manager.list_by_user(user_id)
     runtime.memory_manager.clear_user(user_id)
@@ -365,10 +396,6 @@ def _memory_audit_service() -> MemoryAuditService:
     return MemoryAuditService(get_agent_runtime().memory_manager)
 
 
-def _memory_identity(user_id: str, *, session_id: str | None = None) -> RequestIdentity:
-    return RequestIdentity.for_user(user_id=user_id, session_id=session_id)
-
-
 def _memory_snapshot_service() -> MemorySnapshotService:
     runtime = get_agent_runtime()
     conversation_store = get_default_conversation_store(runtime.config)
@@ -385,7 +412,56 @@ def _memory_snapshot_service() -> MemorySnapshotService:
     )
 
 
-def _require_trial_access(user_id: str) -> None:
-    status = get_trial_access_gate().check(user_id)
+def _identity_from_request(request: UserRequest) -> ResolvedRequestIdentity:
+    metadata = request.metadata or {}
+    return resolve_request_identity(
+        user_id=request.user_id,
+        session_id=request.session_id,
+        source="request_body",
+        tenant_id=_metadata_string(metadata, "tenant_id"),
+        project_id=_metadata_string(metadata, "project_id"),
+    )
+
+
+def _identity_from_user_id(
+    user_id: str | None,
+    *,
+    session_id: str | None = None,
+    source: ApiIdentitySource,
+) -> ResolvedRequestIdentity:
+    return resolve_request_identity(
+        user_id=user_id or "",
+        session_id=session_id,
+        source=source,
+    )
+
+
+def _metadata_string(metadata: dict[str, Any], key: str) -> str | None:
+    value = metadata.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _with_identity_metadata(request: UserRequest, resolution: ResolvedRequestIdentity):
+    metadata = dict(request.metadata)
+    metadata.setdefault("request_identity", resolution.metadata())
+    return request.model_copy(
+        update={
+            "user_id": resolution.identity.user_id,
+            "session_id": resolution.identity.session_id or request.session_id,
+            "metadata": metadata,
+        }
+    )
+
+
+def _require_trial_access_for_identity(resolution: ResolvedRequestIdentity) -> RequestIdentity:
+    status = resolution.trial_access(get_trial_access_gate())
     if not status.allowed:
         raise HTTPException(status_code=403, detail=status.reason or "trial user is not allowed")
+    return resolution.identity
+
+
+def _require_trial_access(user_id: str) -> None:
+    _require_trial_access_for_identity(_identity_from_user_id(user_id, source="local_context"))

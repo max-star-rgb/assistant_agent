@@ -58,6 +58,8 @@ def test_api_agent_run_defaults_to_graph_runtime(monkeypatch) -> None:
     assert payload["response_text"] == "graph runtime"
     assert payload["intent"] == "chat"
     assert len(runtime.requests) == 1
+    assert runtime.requests[0].metadata["request_identity"]["identity_source"] == "request_body"
+    assert runtime.requests[0].metadata["request_identity"]["auth_bound_identity"] is False
 
 
 def test_api_agents_run_uses_agent_gateway(monkeypatch) -> None:
@@ -82,6 +84,7 @@ def test_api_agents_run_uses_agent_gateway(monkeypatch) -> None:
     assert payload["response_text"] == "gateway runtime"
     assert payload["data"]["agent_gateway"]["agent_id"] == "agent.worker"
     assert len(gateway.requests) == 1
+    assert gateway.requests[0].metadata["request_identity"]["identity_source"] == "request_body"
 
 
 def test_api_agent_run_does_not_use_agent_gateway(monkeypatch) -> None:

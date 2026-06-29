@@ -26,6 +26,7 @@ from multimodal_agent.services.a2a_adapter import (
     gateway_request_from_a2a_params,
     task_from_gateway_response,
 )
+from multimodal_agent.services.api_identity import resolve_request_identity
 
 
 router = APIRouter()
@@ -88,13 +89,18 @@ async def a2a_json_rpc(request: Request) -> A2AJsonRpcResponse:
             JSONRPC_INVALID_PARAMS,
             str(exc),
         )
-    access = get_trial_access_gate().check(gateway_request.user_id)
+    identity = resolve_request_identity(
+        user_id=gateway_request.user_id,
+        session_id=gateway_request.session_id,
+        source="a2a_metadata",
+    )
+    access = identity.trial_access(get_trial_access_gate())
     if not access.allowed:
         return _error_response(
             rpc_request.id,
             JSONRPC_INVALID_PARAMS,
             access.reason or "trial user is not allowed",
-            data={"user_id": gateway_request.user_id},
+            data={"user_id": identity.identity.user_id},
         )
     try:
         response = get_agent_gateway().run(gateway_request)

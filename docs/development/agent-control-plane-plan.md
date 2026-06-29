@@ -443,7 +443,7 @@ Goal:
 Required controls:
 
 - Explicit `provider_smoke` / `pilot` real-provider profiles: checked by `PilotReadinessChecker`; default `local_demo` remains pass.
-- Auth-bound user identity: represented as a readiness check; missing auth-bound identity is a warning for production pilot, not silently accepted as complete.
+- Auth-bound user identity: represented as a readiness check; missing auth-bound identity is a warning for production pilot, not silently accepted as complete. HTTP, WebSocket, and inbound A2A routes now pass through `services/api_identity.py` so request-derived identity provenance is centralized until a real auth principal is wired in. `IdentityPolicy` turns that provenance into machine-readable `passed` / `warning` / `failed` decisions for pilot readiness.
 - Trace and metrics view: implemented for delegated task results through `PilotRunSummary`.
 - Memory isolation tests: not expanded in this slice; existing memory isolation work remains under memory hardening.
 - Cost/latency reports: implemented as redacted summary fields; `AgentCommunicationService` now attaches `latency_ms` around transport dispatch.
@@ -454,15 +454,15 @@ Acceptance checks:
 
 - Default profile still mock/local/offline.
 - Remote calls remain opt-in.
-- User identity comes from trusted auth context where available.
+- User identity comes from trusted auth context where available; current local/offline routes record request-derived identity provenance but are not production-auth-bound.
 - Traces are redacted by default.
 
 Implementation notes:
 
 - `services/agent_pilot_readiness.py` adds `PilotReadinessChecker`, `PilotRunSummary`, and `FailureReplayPayload`.
-- Readiness checks cover default runtime profile, remote A2A explicit opt-in and allowlist presence, auth-bound identity status, and trace redaction boundary.
+- Readiness checks cover default runtime profile, remote A2A explicit opt-in and allowlist presence, `IdentityPolicy` auth-bound identity status, and trace redaction boundary.
 - Failure replay payloads include preview-only user text, media counts, budgets, routing metadata, error codes, and sanitized result metadata. They omit raw provider/tool payloads, parent history, secrets, and full message bodies.
-- This phase does not enable real providers, remote calls, or automatic remote discovery. It also does not complete production auth; body/local-context identity remains a warning until an auth principal is wired in.
+- This phase does not enable real providers, remote calls, or automatic remote discovery. It also does not complete production auth; request-derived identity from body/path/query/WebSocket/A2A metadata remains a warning until an auth principal is wired in.
 
 Validation:
 

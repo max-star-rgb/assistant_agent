@@ -1,6 +1,8 @@
 import sqlite3
 from datetime import datetime, timezone
 
+import pytest
+
 from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy
 from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
@@ -103,6 +105,78 @@ def test_memory_export_is_identity_scoped_and_can_include_content() -> None:
     assert exported.total == 1
     assert exported.items[0].memory_id == "m1"
     assert exported.items[0].content == {"style": "浅色"}
+
+
+def test_memory_audit_events_and_metrics_cover_lifecycle_operations() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+    service = MemoryAuditService(manager)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+    other_identity = RequestIdentity.for_user(user_id="u2", session_id="s1")
+
+    saved = manager.save_explicit_for_identity(
+        identity,
+        text="记住我喜欢浅色背景",
+        content={"summary": "用户喜欢浅色背景。", "style": "浅色"},
+    )
+    manager.save_explicit_for_identity(
+        other_identity,
+        text="记住我喜欢深色背景",
+        content={"summary": "用户喜欢深色背景。", "style": "深色"},
+    )
+    manager.load_context_for_identity(identity, query_text="浅色")
+    service.export_for_identity(identity, include_content=False)
+    store.save(
+        MemoryItem(
+            memory_id="expired",
+            user_id="u1",
+            session_id="s2",
+            memory_type="task",
+            summary="过期任务",
+            created_at=NOW,
+            expires_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    service.sweep_expired_for_identity(identity)
+
+    events = service.events_for_identity(identity, limit=20)
+    event_types = {event.event_type for event in events.items}
+    metrics = service.metrics_for_identity(identity)
+
+    assert saved.memory_id in {event.memory_id for event in events.items if event.memory_id}
+    assert {
+        "memory_explicit_saved",
+        "memory_context_loaded",
+        "memory_exported",
+        "memory_retention_swept",
+        "memory_deleted",
+    }.issubset(event_types)
+    assert all(event.user_id == "u1" for event in events.items)
+    assert metrics.by_event_type["memory_explicit_saved"] == 1
+    assert metrics.counters["memory.write.allowed.count"] == 1
+    assert metrics.counters["memory.search.count"] == 1
+    assert metrics.counters["memory.export.count"] == 1
+    assert metrics.counters["memory.ttl.swept.count"] == 1
+    assert metrics.counters["memory.delete.soft.count"] == 1
+
+
+def test_rejected_explicit_memory_emits_audit_event_without_persisting() -> None:
+    manager = MemoryManager(InMemoryStore())
+    service = MemoryAuditService(manager)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    with pytest.raises(ValueError):
+        manager.save_explicit_for_identity(identity, text="记住 sk-secret-token")
+
+    events = service.events_for_identity(identity)
+    metrics = service.metrics_for_identity(identity)
+
+    assert events.total == 1
+    assert events.items[0].event_type == "memory_explicit_saved"
+    assert events.items[0].outcome == "rejected"
+    assert events.items[0].metadata["reason"] == "candidate contains secret-like text"
+    assert manager.list_for_identity(identity) == []
+    assert metrics.counters["memory.write.rejected.count"] == 1
 
 
 def test_retention_sweep_soft_deletes_expired_visible_items_only() -> None:

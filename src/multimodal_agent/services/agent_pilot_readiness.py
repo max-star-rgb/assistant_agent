@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from multimodal_agent.runtime_profile import RuntimeProfile, get_runtime_profile
 from multimodal_agent.schemas.agent_communication import AgentArtifact, AgentTask, AgentTaskResult
 from multimodal_agent.services.agent_directory import AgentDirectory
+from multimodal_agent.services.api_identity import IdentityPolicy, IdentityPolicyDecision
 from multimodal_agent.services.provider_budget import ProviderCallBudget
 from multimodal_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 
@@ -72,11 +73,18 @@ class PilotReadinessChecker:
         runtime_profile: RuntimeProfile | None = None,
         allowlisted_hosts: list[str] | None = None,
         auth_bound_identity: bool = False,
+        identity_policy: IdentityPolicyDecision | None = None,
     ) -> PilotReadinessReport:
         checks = [
             self._runtime_profile_check(runtime_profile or get_runtime_profile()),
             self._remote_opt_in_check(directory=directory, allowlisted_hosts=allowlisted_hosts or []),
-            self._identity_check(auth_bound_identity=auth_bound_identity),
+            self._identity_check(
+                identity_policy=identity_policy
+                or IdentityPolicy().evaluate(
+                    identity_source="auth_context" if auth_bound_identity else "request_body_or_local_context",
+                    auth_bound_identity=auth_bound_identity,
+                )
+            ),
             PilotReadinessCheck(
                 name="trace_redaction_default",
                 status="passed",
@@ -154,20 +162,11 @@ class PilotReadinessChecker:
             },
         )
 
-    def _identity_check(self, *, auth_bound_identity: bool) -> PilotReadinessCheck:
-        if auth_bound_identity:
-            return PilotReadinessCheck(
-                name="auth_bound_identity",
-                status="passed",
-                detail={"identity_source": "auth_context"},
-            )
+    def _identity_check(self, *, identity_policy: IdentityPolicyDecision) -> PilotReadinessCheck:
         return PilotReadinessCheck(
             name="auth_bound_identity",
-            status="warning",
-            detail={
-                "identity_source": "request_body_or_local_context",
-                "required_for": "production_pilot",
-            },
+            status=identity_policy.status,
+            detail=identity_policy.model_dump(mode="json"),
         )
 
 
