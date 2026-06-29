@@ -133,13 +133,16 @@ def create_default_agent_gateway(
     default_runtime = AgentGraphRuntime(config=resolved_config)
     worker_runtime = AgentGraphRuntime(config=resolved_config)
     instances = [
-        default_agent_instance(),
+        default_agent_instance(can_delegate=True, allowed_targets=[worker_agent_id]),
         AgentInstance(
             agent_id=worker_agent_id,
             display_name="Worker Agent",
             description="Local same-process worker runtime for explicit gateway routing.",
+            role="worker",
             capabilities=["chat", "tool_calling"],
             transports=["local"],
+            can_delegate=False,
+            allowed_targets=[],
             metadata={"worker": True, "offline": True, "local": True},
         ),
     ]

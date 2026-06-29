@@ -309,6 +309,75 @@ def test_provider_context_overflow_retry_happens_only_once() -> None:
     assert state.request.metadata["provider_context_overflow_retry_failed"] is True
 
 
+def test_provider_token_usage_feeds_next_context_budget_without_raw_payload() -> None:
+    trace_store = InMemoryTraceStore()
+    adapter = OverflowThenSuccessChatAdapter(
+        [
+            ChatResult(
+                response_text=(
+                    '{"type": "tool_call", "tool_name": "product_search", '
+                    '"tool_input": {"query": "鞋"}, "reason": "search"}'
+                ),
+                provider="scripted",
+                model="scripted",
+                usage={
+                    "prompt_tokens": 123,
+                    "completion_tokens": 5,
+                    "total_tokens": 128,
+                    "raw_provider_response": {"api_key": "sk-test"},
+                },
+            ),
+            ChatResult(
+                response_text='{"type": "final_answer", "message": "已搜索鞋。", "reason": "完成"}',
+                provider="scripted",
+                model="scripted",
+                usage={
+                    "input_tokens": 456,
+                    "output_tokens": 7,
+                    "raw_payload": "sk-test raw provider payload",
+                },
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="prompt_json"),
+        chat_adapter=adapter,
+        trace_store=trace_store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="找鞋"))
+
+    assert len(adapter.requests) == 2
+    assert state.response is not None
+    assert state.response.message == "已搜索鞋。"
+    assert state.request.metadata["provider_token_usage"] == {
+        "prompt_tokens": 456,
+        "completion_tokens": 7,
+        "total_tokens": 463,
+    }
+    dumped_metadata = str(state.request.metadata)
+    assert "raw_provider_response" not in dumped_metadata
+    assert "raw_payload" not in dumped_metadata
+    assert "sk-test" not in dumped_metadata
+
+    decision_events = [
+        event
+        for event in trace_store.list_by_run(state.run_id)
+        if event.event_type == "assistant_decision" and event.status == "final_answer"
+    ]
+    assert decision_events
+    budget = decision_events[-1].output_summary["context"]["budget"]
+    assert budget["token_budget_source"] == "provider_usage"
+    assert budget["total_tokens"] == 123
+    assert budget["provider_prompt_tokens"] == 123
+    assert budget["provider_completion_tokens"] == 5
+    assert budget["provider_total_tokens"] == 128
+    dumped_trace = str(decision_events[-1].model_dump(mode="json"))
+    assert "raw_provider_response" not in dumped_trace
+    assert "raw_payload" not in dumped_trace
+    assert "sk-test" not in dumped_trace
+
+
 def test_invalid_tool_input_is_rejected_before_execution() -> None:
     runtime = AgentGraphRuntime(
         chat_adapter=ScriptedChatAdapter(

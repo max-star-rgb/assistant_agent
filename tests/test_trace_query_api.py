@@ -15,7 +15,12 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
 
     run_response = client.post(
         "/agent/run",
-        json={"user_id": "u1", "session_id": "s1", "text": "帮我找相似款"},
+        json={
+            "user_id": "u1",
+            "session_id": "s1",
+            "text": "帮我找相似款",
+            "metadata": {"context_budget_estimate_tokens": True, "context_budget_max_tokens": 1000},
+        },
     )
     run_payload = run_response.json()
 
@@ -33,6 +38,9 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
     assert trace_summary["context"]["budget"]["total_chars"] > 0
     assert "context_usage_ratio" in trace_summary["context"]["budget"]
     assert "compaction_triggered" in trace_summary["context"]["budget"]
+    assert trace_summary["context"]["budget"]["token_budget_source"] == "estimated"
+    assert trace_summary["context"]["budget"]["total_tokens"] > 0
+    assert trace_summary["context"]["budget"]["max_tokens"] == 1000
     assert "compactor_type" in trace_summary["context"]
     assert "context_summary_present" in trace_summary["context"]
     assert "memory_promotion_candidates" in trace_summary["context"]

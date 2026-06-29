@@ -143,6 +143,153 @@ def test_communication_service_enforces_delegation_depth() -> None:
     assert runtime.requests == []
 
 
+def test_communication_service_rejects_source_without_delegation_permission() -> None:
+    default_runtime = RecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="run_default")
+    worker_runtime = RecordingRuntime(agent_id="agent.worker", run_id="run_worker")
+    service = AgentCommunicationService(
+        directory=AgentDirectory(
+            [
+                AgentInstance(
+                    agent_id=DEFAULT_AGENT_ID,
+                    display_name="Default Agent",
+                    role="controller",
+                    can_delegate=True,
+                    allowed_targets=["agent.worker"],
+                    transports=["local"],
+                ),
+                AgentInstance(
+                    agent_id="agent.worker",
+                    display_name="Worker Agent",
+                    role="worker",
+                    can_delegate=False,
+                    transports=["local"],
+                ),
+            ]
+        ),
+        transports=[LocalAgentTransport({DEFAULT_AGENT_ID: default_runtime, "agent.worker": worker_runtime})],
+    )
+
+    result = service.send_message(
+        target_agent_id=DEFAULT_AGENT_ID,
+        source_agent_id="agent.worker",
+        session=AgentSessionRef(user_id="u1", session_id="s1"),
+        message=AgentMessage(text="delegate back"),
+    )
+
+    assert result.status == "failed"
+    assert result.errors[0].code == "agent_delegation_not_allowed"
+    assert result.metadata["delegation_audit"][0]["policy_code"] == "agent_delegation_not_allowed"
+    assert default_runtime.requests == []
+    assert worker_runtime.requests == []
+
+
+def test_communication_service_enforces_allowed_targets() -> None:
+    service = AgentCommunicationService(
+        directory=AgentDirectory(
+            [
+                AgentInstance(
+                    agent_id=DEFAULT_AGENT_ID,
+                    display_name="Default Agent",
+                    role="controller",
+                    can_delegate=True,
+                    allowed_targets=["agent.worker"],
+                    transports=["local"],
+                ),
+                AgentInstance(
+                    agent_id="agent.other",
+                    display_name="Other Agent",
+                    role="worker",
+                    transports=["local"],
+                ),
+            ]
+        ),
+        transports=[LocalAgentTransport({"agent.other": RecordingRuntime(agent_id="agent.other")})],
+    )
+
+    result = service.send_message(
+        target_agent_id="agent.other",
+        source_agent_id=DEFAULT_AGENT_ID,
+        session=AgentSessionRef(user_id="u1", session_id="s1"),
+        message=AgentMessage(text="not allowed"),
+    )
+
+    assert result.status == "failed"
+    assert result.errors[0].code == "agent_delegation_target_not_allowed"
+    assert result.metadata["delegation_audit"][0]["status"] == "blocked"
+
+
+def test_communication_service_blocks_ping_pong_pair() -> None:
+    service = AgentCommunicationService(
+        directory=AgentDirectory(
+            [
+                AgentInstance(
+                    agent_id=DEFAULT_AGENT_ID,
+                    display_name="Default Agent",
+                    can_delegate=True,
+                    allowed_targets=["agent.worker"],
+                    transports=["local"],
+                ),
+                AgentInstance(
+                    agent_id="agent.worker",
+                    display_name="Worker Agent",
+                    can_delegate=True,
+                    allowed_targets=[DEFAULT_AGENT_ID],
+                    transports=["local"],
+                ),
+            ]
+        ),
+        transports=[LocalAgentTransport({DEFAULT_AGENT_ID: RecordingRuntime(), "agent.worker": RecordingRuntime()})],
+    )
+    task = AgentTask(
+        source_agent_id="agent.worker",
+        target_agent_id=DEFAULT_AGENT_ID,
+        session=AgentSessionRef(user_id="u1", session_id="s1"),
+        message=AgentMessage(text="ping pong"),
+        metadata={"delegation_pairs": [[DEFAULT_AGENT_ID, "agent.worker"]]},
+    )
+
+    result = service.send_task(task)
+
+    assert result.status == "failed"
+    assert result.errors[0].code == "agent_delegation_ping_pong_blocked"
+    assert result.metadata["delegation_audit"][0]["policy_code"] == "agent_delegation_ping_pong_blocked"
+
+
+def test_communication_service_rejects_timeout_above_policy_limit() -> None:
+    service = AgentCommunicationService(
+        directory=AgentDirectory(
+            [
+                AgentInstance(
+                    agent_id=DEFAULT_AGENT_ID,
+                    display_name="Default Agent",
+                    can_delegate=True,
+                    allowed_targets=["agent.worker"],
+                    transports=["local"],
+                ),
+                AgentInstance(
+                    agent_id="agent.worker",
+                    display_name="Worker Agent",
+                    transports=["local"],
+                ),
+            ]
+        ),
+        transports=[LocalAgentTransport({"agent.worker": RecordingRuntime(agent_id="agent.worker")})],
+    )
+    task = AgentTask(
+        source_agent_id=DEFAULT_AGENT_ID,
+        target_agent_id="agent.worker",
+        session=AgentSessionRef(user_id="u1", session_id="s1"),
+        message=AgentMessage(text="timeout"),
+        timeout_ms=400_000,
+    )
+
+    result = service.send_task(task)
+
+    assert result.status == "failed"
+    assert result.errors[0].code == "agent_delegation_timeout_too_large"
+    assert result.metadata["delegation_audit"][0]["policy_code"] == "agent_delegation_timeout_too_large"
+
+
 def test_communication_service_rejects_disabled_agent() -> None:
     directory = AgentDirectory(
         [
@@ -161,6 +308,7 @@ def test_communication_service_rejects_disabled_agent() -> None:
 
     result = service.send_message(
         target_agent_id=DEFAULT_AGENT_ID,
+        source_agent_id="agent.caller",
         session=AgentSessionRef(user_id="u1", session_id="s1"),
         message=AgentMessage(text="hello"),
     )
@@ -183,7 +331,10 @@ def test_create_local_agent_communication_service_builds_multi_instance_director
 
     assert set(instances) == {DEFAULT_AGENT_ID, "agent.worker"}
     assert instances[DEFAULT_AGENT_ID].metadata["default"] is True
+    assert instances[DEFAULT_AGENT_ID].can_delegate is True
+    assert instances[DEFAULT_AGENT_ID].allowed_targets == ["agent.worker"]
     assert instances["agent.worker"].metadata["local"] is True
+    assert instances["agent.worker"].can_delegate is False
     assert instances["agent.worker"].capabilities == ["chat", "tool_calling"]
 
     result = service.send_message(
@@ -195,6 +346,8 @@ def test_create_local_agent_communication_service_builds_multi_instance_director
 
     assert result.status == "completed"
     assert result.run_id == "run_worker"
+    assert result.metadata["delegation_audit"][0]["event_type"] == "delegation_dispatched"
+    assert result.metadata["delegation_audit"][1]["event_type"] == "delegation_completed"
     assert result.artifacts[0].data["agent_id"] == "agent.worker"
     assert len(worker_runtime.requests) == 1
     assert default_runtime.requests == []
@@ -263,7 +416,13 @@ def test_delegate_to_agent_tool_runs_enabled_local_agent() -> None:
 
     result = registry.run(
         "delegate_to_agent",
-        {"target_agent_id": "agent.worker", "text": "请处理这个子任务"},
+        {
+            "target_agent_id": "agent.worker",
+            "text": "请处理这个子任务",
+            "context_refs": ["ctx_1"],
+            "token_budget": 100,
+            "tool_budget": 2,
+        },
         ToolContext(
             run_id="run_parent",
             user_id="u1",
@@ -286,6 +445,9 @@ def test_delegate_to_agent_tool_runs_enabled_local_agent() -> None:
     assert request.session_id == "s1"
     assert request.metadata["agent_communication"]["parent_run_id"] == "run_parent"
     assert request.metadata["agent_communication"]["parent_trace_id"] == "trace_parent"
+    assert request.metadata["agent_communication"]["token_budget"] == 100
+    assert request.metadata["agent_communication"]["tool_budget"] == 2
+    assert request.metadata["context_refs"] == ["ctx_1"]
 
 
 def test_delegate_to_agent_tool_uses_local_multi_instance_factory() -> None:

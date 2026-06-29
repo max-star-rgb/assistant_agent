@@ -110,7 +110,7 @@ ProviderExecutionPolicy
 RuntimeProfile
 MemoryWritePolicy
 MemoryAuditService
-AgentDirectory / AgentCommunicationService
+AgentDirectory / AgentRoutingPolicy / AgentDelegationPolicy / AgentCommunicationService
 TraceStore redaction
 API auth / user-session boundary
 ```
@@ -122,7 +122,7 @@ API auth / user-session boundary
 - 控制 provider 调用预算、超时、重试和 fallback。
 - 禁止真实 provider failure 静默降级成 mock success。
 - 控制 memory 写入、敏感信息脱敏、用户隔离和审计删除。
-- 控制 agent-to-agent 路由、目标启用状态、delegation depth、transport 边界和未来 allowlist。
+- 控制 agent-to-agent 路由、目标启用状态、source/target allowlist、delegation depth、ping-pong loop、timeout metadata、transport 边界和未来 remote allowlist。
 - 保证 trace、API errors、debug output 只暴露 redacted summary。
 
 所有真实能力调用必须经过：

@@ -12,6 +12,12 @@ AgentTransportName = Literal["local", "a2a_json_rpc"]
 AgentTaskStatus = Literal["created", "running", "completed", "failed"]
 AgentMessageRole = Literal["user", "assistant", "system", "tool"]
 AgentArtifactKind = Literal["text", "data", "output_ref", "error"]
+AgentDelegationAuditEventType = Literal[
+    "delegation_requested",
+    "delegation_rejected",
+    "delegation_dispatched",
+    "delegation_completed",
+]
 
 
 DEFAULT_AGENT_ID = "agent.default"
@@ -50,10 +56,13 @@ class AgentInstance(BaseModel):
     agent_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = ""
+    role: str = "worker"
     capabilities: list[str] = Field(default_factory=list)
     enabled: bool = True
     transports: list[AgentTransportName] = Field(default_factory=lambda: ["local"])
     endpoint_url: str | None = None
+    can_delegate: bool = False
+    allowed_targets: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -63,10 +72,13 @@ class AgentInstanceConfig(BaseModel):
     agent_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = ""
+    role: str = "worker"
     capabilities: list[str] = Field(default_factory=list)
     enabled: bool = True
     transports: list[AgentTransportName] = Field(default_factory=lambda: ["local"])
     endpoint_url: str | None = None
+    can_delegate: bool = False
+    allowed_targets: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def to_instance(self) -> AgentInstance:
@@ -76,10 +88,13 @@ class AgentInstanceConfig(BaseModel):
             agent_id=self.agent_id,
             display_name=self.display_name,
             description=self.description,
+            role=self.role,
             capabilities=list(self.capabilities),
             enabled=self.enabled,
             transports=list(self.transports),
             endpoint_url=self.endpoint_url,
+            can_delegate=self.can_delegate,
+            allowed_targets=list(self.allowed_targets),
             metadata=dict(self.metadata),
         )
 
@@ -143,7 +158,22 @@ class AgentTask(BaseModel):
     timeout_ms: int = Field(default=30_000, ge=1)
     delegation_depth: int = Field(default=0, ge=0)
     max_delegation_depth: int = Field(default=1, ge=0)
+    token_budget: int | None = Field(default=None, ge=0)
+    tool_budget: int | None = Field(default=None, ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentDelegationAuditEvent(BaseModel):
+    """Redacted audit event for one delegation policy decision."""
+
+    event_type: AgentDelegationAuditEventType
+    task_id: str = Field(min_length=1)
+    source_agent_id: str = Field(min_length=1)
+    target_agent_id: str = Field(min_length=1)
+    correlation_id: str = Field(min_length=1)
+    status: Literal["allowed", "blocked", "completed", "failed"]
+    policy_code: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentArtifact(BaseModel):

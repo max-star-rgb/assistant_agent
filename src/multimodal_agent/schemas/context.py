@@ -19,7 +19,7 @@ class AssistantPlanContext(BaseModel):
 
 
 class ContextBudgetReport(BaseModel):
-    """Approximate character budget for one assistant context pack."""
+    """Approximate character and optional token budget for one assistant context pack."""
 
     request_chars: int = Field(default=0, ge=0)
     conversation_chars: int = Field(default=0, ge=0)
@@ -36,6 +36,19 @@ class ContextBudgetReport(BaseModel):
     trimmed_sections: list[str] = Field(default_factory=list)
     compression_stage: str = "none"
     compression_reasons: list[str] = Field(default_factory=list)
+    request_tokens: int = Field(default=0, ge=0)
+    conversation_tokens: int = Field(default=0, ge=0)
+    memory_tokens: int = Field(default=0, ge=0)
+    plan_tokens: int = Field(default=0, ge=0)
+    observations_tokens: int = Field(default=0, ge=0)
+    tool_spec_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    max_tokens: int = Field(default=0, ge=0)
+    token_usage_ratio: float = Field(default=0.0, ge=0.0)
+    token_budget_source: str = "none"
+    provider_prompt_tokens: int = Field(default=0, ge=0)
+    provider_completion_tokens: int = Field(default=0, ge=0)
+    provider_total_tokens: int = Field(default=0, ge=0)
 
 
 class ContextPolicy(BaseModel):

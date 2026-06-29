@@ -220,13 +220,13 @@ Remaining risks:
 
 ## Phase C: Delegation Safety Hardening
 
-Status: not started.
+Status: done.
 
 Goal:
 
 - Make `delegate_to_agent` a high-spec safety tool.
 
-Planned controls:
+Implemented controls:
 
 - Delegation depth policy.
 - Ping-pong loop detector.
@@ -234,14 +234,50 @@ Planned controls:
 - Timeout policy.
 - Delegation audit event.
 - Delegation input redaction.
+- Source `can_delegate` and `allowed_targets` policy.
 
 Acceptance checks:
 
 - `default -> worker` can run when allowed.
 - `worker -> default` is blocked by default.
 - Repeated target-pair loops are blocked or bounded.
-- Timeout and budget failures return structured errors.
-- Parent/child trace tree can be reconstructed.
+- Timeout limit failures return structured errors.
+- Child token/tool budget metadata is propagated for later accounting.
+- Parent/child run, trace, correlation, and audit metadata is carried in task results.
+
+Implemented files:
+
+- `src/multimodal_agent/schemas/agent_communication.py`
+- `src/multimodal_agent/services/agent_delegation_policy.py`
+- `src/multimodal_agent/services/agent_communication.py`
+- `src/multimodal_agent/services/agent_directory.py`
+- `src/multimodal_agent/services/agent_gateway.py`
+- `src/multimodal_agent/services/agent_transports.py`
+- `src/multimodal_agent/tools/agent_delegation_tool.py`
+- `tests/test_agent_communication_routing.py`
+
+Validation run on 2026-06-29:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_agent_communication_routing.py \
+  tests/test_agent_gateway.py \
+  tests/test_agent_routing_policy.py \
+  tests/test_api_a2a.py \
+  tests/test_api_agent_graph_runtime.py
+```
+
+Result:
+
+```text
+44 passed
+```
+
+Remaining risks:
+
+- Timeout policy validates configured limits before dispatch; local in-process transport still cannot preempt a long-running runtime mid-call.
+- Budget fields are propagated as parent/child metadata; actual token/tool accounting remains future budget-integration work.
+- Audit metadata is returned with delegated task results; durable trace/replay storage remains a later pilot-readiness concern.
 
 ## Phase D: Inbound A2A Conformance
 

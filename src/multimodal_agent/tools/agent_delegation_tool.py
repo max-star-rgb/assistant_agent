@@ -29,8 +29,11 @@ class DelegateToAgentInput(BaseModel):
     image_ids: list[str] = Field(default_factory=list)
     video_ids: list[str] = Field(default_factory=list)
     audio_id: str | None = None
+    context_refs: list[str] = Field(default_factory=list)
     timeout_ms: int = Field(default=30_000, ge=1, le=300_000)
     max_delegation_depth: int = Field(default=1, ge=0, le=5)
+    token_budget: int | None = Field(default=None, ge=0)
+    tool_budget: int | None = Field(default=None, ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -98,18 +101,21 @@ class AgentDelegationTool(MockTool):
                 session_id=context.session_id,
                 parent_run_id=context.run_id,
                 parent_trace_id=_context_trace_id(context),
+                correlation_id=_context_correlation_id(context),
             ),
             message=AgentMessage(
                 text=input.text,
                 image_ids=list(input.image_ids),
                 video_ids=list(input.video_ids),
                 audio_id=input.audio_id,
-                metadata=dict(input.metadata),
+                metadata=_message_metadata(input),
             ),
             timeout_ms=input.timeout_ms,
             delegation_depth=_next_delegation_depth(context),
             max_delegation_depth=input.max_delegation_depth,
-            metadata={"tool": self.name},
+            token_budget=input.token_budget,
+            tool_budget=input.tool_budget,
+            metadata=_task_metadata(context, input, self.name),
         )
         return _tool_result_from_task(result)
 
@@ -129,6 +135,15 @@ def _context_trace_id(context: ToolContext) -> str | None:
     return str(value) if isinstance(value, str) and value else None
 
 
+def _context_correlation_id(context: ToolContext) -> str:
+    metadata = context.metadata.get("agent_communication")
+    if isinstance(metadata, dict):
+        value = metadata.get("correlation_id")
+        if isinstance(value, str) and value:
+            return value
+    return AgentSessionRef(user_id=context.user_id or "unknown", session_id=context.session_id or "unknown").correlation_id
+
+
 def _next_delegation_depth(context: ToolContext) -> int:
     metadata = context.metadata.get("agent_communication")
     if isinstance(metadata, dict):
@@ -136,6 +151,42 @@ def _next_delegation_depth(context: ToolContext) -> int:
         if isinstance(value, int):
             return value + 1
     return 1
+
+
+def _message_metadata(input: DelegateToAgentInput) -> dict[str, Any]:
+    metadata = dict(input.metadata)
+    if input.context_refs:
+        metadata["context_refs"] = list(input.context_refs)
+    return metadata
+
+
+def _task_metadata(context: ToolContext, input: DelegateToAgentInput, tool_name: str) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"tool": tool_name}
+    pairs = _delegation_pairs_from_context(context)
+    if pairs:
+        metadata["delegation_pairs"] = pairs
+    if input.context_refs:
+        metadata["context_refs"] = list(input.context_refs)
+    return metadata
+
+
+def _delegation_pairs_from_context(context: ToolContext) -> list[list[str]]:
+    metadata = context.metadata.get("agent_communication")
+    if not isinstance(metadata, dict):
+        return []
+    raw_pairs = metadata.get("delegation_pairs")
+    if not isinstance(raw_pairs, list):
+        return []
+    pairs: list[list[str]] = []
+    for pair in raw_pairs:
+        if (
+            isinstance(pair, list)
+            and len(pair) == 2
+            and isinstance(pair[0], str)
+            and isinstance(pair[1], str)
+        ):
+            pairs.append([pair[0], pair[1]])
+    return pairs
 
 
 def _has_message_payload(input: DelegateToAgentInput) -> bool:

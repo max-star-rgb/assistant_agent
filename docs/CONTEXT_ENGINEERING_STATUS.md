@@ -18,6 +18,7 @@ Last updated: 2026-06-29
 - `ContextCompactor` 已抽象为可插拔边界；默认 deterministic/local，不调用真实 LLM。`LLMCompactor` 仅在 `provider_smoke` 或 `pilot` profile 且 chat adapter 非 mock 时启用，输出无效时回退 deterministic。
 - 真实 provider 返回 context overflow 类错误时，assistant loop 会标准化为 `provider_context_overflow`，触发 hard compaction 后重试一次，仍失败则停止并返回可解释最终回答。
 - Context budget 会报告自动压缩阶段和原因，便于 trace/API 判断是否发生 conversation、observation 或 budget 级压缩。
+- `TokenBudgetReporter` 已作为可选报告层接入；默认压缩触发仍使用字符预算，metadata 启用估算或提供 provider usage 时才填充 token fields。
 - Trace/API 已暴露 context budget、source counts、tool catalog summary 和 observation compaction summary。
 
 ## Implemented
@@ -71,6 +72,9 @@ Last updated: 2026-06-29
 
 - `ContextBudgetReport` 统计 request、conversation、memory、plan、observations、tool specs 和 total chars，并报告 `context_usage_ratio`、`compaction_triggered`。
 - 默认 context 字符预算是 12000 chars；测试或特定调用可通过 request metadata `context_budget_max_chars` 下调。
+- 可选 token budget 字段包括 section token estimates、`total_tokens`、`max_tokens`、`token_usage_ratio`、`token_budget_source` 和 provider usage counters；它们只用于报告，不替代 char budget control path。
+- 本地 token 估算通过 `context_budget_estimate_tokens=True` 或 `context_budget_max_tokens` 启用；provider usage metadata 如 `context_token_usage` / `provider_token_usage` / `last_chat_usage` 优先于估算。
+- assistant loop 会把 `ChatResult.usage` 归一为安全 token counters 写入 request metadata，供下一轮 context budget report 使用；raw provider payload 字段不会写入 metadata/trace。
 - 超过预算时会在 prompt 副本中裁剪 memory、conversation 和 observations，并记录 `over_budget`、`trimmed_chars`、`trimmed_sections`。
 - `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_usage_high`、`tool_observation_too_large`、`provider_context_overflow`、`explicit_compact`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
@@ -88,7 +92,7 @@ Last updated: 2026-06-29
 ## Current Limitations
 
 - 默认自动压缩仍是 deterministic formatting/summary。LLM semantic compaction 已有受控入口，但默认离线 profile 不启用。
-- 当前预算是 approximate character budget，不是严格 token-aware budget；这是有意保持简单。
+- 当前压缩控制仍是 approximate character budget；token-aware 数据已作为可选报告层接入，但不会默认改变触发/裁剪行为。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
 - 会话历史压缩只压较早轮次文本，不做跨轮语义重写、事实抽取或冲突消解。
 - assistant loop 的真实 LLM 路径中，长期记忆写入应由 assistant 通过 `memory_save` 工具显式选择；图尾不会自动写长期 task summary。
@@ -99,6 +103,7 @@ Last updated: 2026-06-29
 - `src/multimodal_agent/services/context/conversation.py`
 - `src/multimodal_agent/services/context/compaction.py`
 - `src/multimodal_agent/services/context/policy.py`
+- `src/multimodal_agent/services/context/token_budget.py`
 - `src/multimodal_agent/services/context/compactor.py`
 - `src/multimodal_agent/services/context/renderer.py`
 - `src/multimodal_agent/schemas/context.py`

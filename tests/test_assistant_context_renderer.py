@@ -108,6 +108,75 @@ def test_context_pack_prefers_memory_manager_metadata_text_and_blocks() -> None:
     assert pack.source_counts["artifact_refs"] == 1
     assert pack.budget.memory_chars == len(pack.memory_text)
     assert pack.budget.total_chars >= pack.budget.memory_chars
+    assert pack.budget.token_budget_source == "none"
+    assert pack.budget.total_tokens == 0
+
+
+def test_context_pack_reports_estimated_tokens_when_enabled() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="帮我总结上下文",
+        metadata={
+            "context_budget_estimate_tokens": True,
+            "context_budget_max_tokens": 1000,
+            "conversation_context_text": "用户偏好简洁回答",
+        },
+    )
+    state = AgentState.from_request(request)
+    state.memory_context.append(_memory("用户喜欢日系极简风格"))
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[{"tool_name": "product_search", "status": "succeeded", "summary": "found items"}],
+        tool_specs=[ToolSpec(name="product_search", description="Search products.")],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert pack.budget.token_budget_source == "estimated"
+    assert pack.budget.request_tokens > 0
+    assert pack.budget.conversation_tokens > 0
+    assert pack.budget.memory_tokens > 0
+    assert pack.budget.observations_tokens > 0
+    assert pack.budget.tool_spec_tokens > 0
+    assert pack.budget.total_tokens >= pack.budget.request_tokens
+    assert pack.budget.max_tokens == 1000
+    assert pack.budget.token_usage_ratio > 0
+    assert pack.budget.compression_stage == "none"
+
+
+def test_context_pack_prefers_provider_token_usage_over_estimates() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="继续",
+        metadata={
+            "context_budget_estimate_tokens": True,
+            "context_budget_max_tokens": 1000,
+            "provider_token_usage": {
+                "prompt_tokens": 321,
+                "completion_tokens": 17,
+                "total_tokens": 338,
+            },
+        },
+    )
+    state = AgentState.from_request(request)
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert pack.budget.token_budget_source == "provider_usage"
+    assert pack.budget.total_tokens == 321
+    assert pack.budget.provider_prompt_tokens == 321
+    assert pack.budget.provider_completion_tokens == 17
+    assert pack.budget.provider_total_tokens == 338
+    assert pack.budget.token_usage_ratio == 0.321
 
 
 def test_context_pack_reports_conversation_compaction_reason() -> None:

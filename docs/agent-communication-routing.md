@@ -4,7 +4,7 @@ Last updated: 2026-06-29
 
 This document is the current canonical entry for multi-agent instance routing, agent-to-agent communication, and A2A-style protocol adapter boundaries. Update it whenever agent directory/gateway behavior, agent communication services, `delegate_to_agent` tools, cross-instance sessions, A2A routes, JSON-RPC transport, or related safety policy changes.
 
-Current status: opt-in local gateway/delegation boundary and inbound A2A JSON-RPC adapter implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and Web demo paths on one default `AgentGraphRuntime` and does not register delegation in the default `ToolRegistry`. It now has protocol-neutral schemas, an `AgentDirectory`, deterministic `AgentRoutingPolicy`, `LocalAgentTransport`, `AgentCommunicationService`, a local multi-runtime factory, an opt-in `delegate_to_agent` tool, an `AgentGateway` service, a separate `POST /agents/run` API for same-process multi-agent routing, and inbound `/.well-known/agent-card.json` plus `/a2a/rpc` routes. It does not yet implement outbound A2A JSON-RPC, remote agent calls, or LLM target-agent selection.
+Current status: opt-in local gateway/delegation boundary and inbound A2A JSON-RPC adapter implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and Web demo paths on one default `AgentGraphRuntime` and does not register delegation in the default `ToolRegistry`. It now has protocol-neutral schemas, an `AgentDirectory`, deterministic `AgentRoutingPolicy`, `AgentDelegationPolicy`, `LocalAgentTransport`, `AgentCommunicationService`, a local multi-runtime factory, an opt-in `delegate_to_agent` tool, an `AgentGateway` service, a separate `POST /agents/run` API for same-process multi-agent routing, and inbound `/.well-known/agent-card.json` plus `/a2a/rpc` routes. It does not yet implement outbound A2A JSON-RPC, remote agent calls, or LLM target-agent selection.
 
 Current stage boundary:
 
@@ -80,6 +80,7 @@ Planned internal contracts:
 - `AgentDirectory`: registry of agent IDs, capabilities, endpoint metadata, enabled transports, and allowlist policy.
 - `AgentRoutingPolicy`: deterministic gateway route policy for explicit targets, routing tables, capability matches, controller fallback, and default fallback.
 - `AgentGateway`: entrypoint that selects the initial target agent for inbound user/API requests.
+- `AgentDelegationPolicy`: service-layer policy for source permission, allowed targets, depth, timeout, loop detection, budget metadata, and redacted audit events.
 - `AgentCommunicationService`: application service used by tools or API routes to send messages/tasks to another agent.
 - `AgentTransport`: transport interface. Implementations may include local in-process calls, A2A JSON-RPC over HTTP, or a future queue.
 - `AgentMessage`: internal message envelope independent of any external protocol.
@@ -98,6 +99,7 @@ Implemented files:
 | `src/multimodal_agent/schemas/agent_gateway.py` | implemented | External `/agents/run` request contract, collaboration mode enum, route-decision metadata, and delegated-task summaries. |
 | `src/multimodal_agent/services/agent_directory.py` | implemented | Default `agent.default` identity, capability metadata, enablement, and directory config loading. |
 | `src/multimodal_agent/services/agent_routing_policy.py` | implemented | Deterministic gateway routing policy, capability matching, routing-table overrides, and controller/default fallback selection. |
+| `src/multimodal_agent/services/agent_delegation_policy.py` | implemented | Delegation permission, allowed-target, depth, timeout, ping-pong loop, budget metadata, redaction, and audit policy. |
 | `src/multimodal_agent/services/agent_transports.py` | implemented | `LocalAgentTransport` for same-process runtime calls and normalized results. |
 | `src/multimodal_agent/services/agent_communication.py` | implemented | Service boundary and local multi-runtime factory for routing an `AgentTask` through an enabled transport. |
 | `src/multimodal_agent/services/agent_gateway.py` | implemented | Local `AgentGateway` that manages `agent.default` plus `agent.worker`, supports `single` and `controller_delegate`, and returns `AgentRunResponse`. |
@@ -145,11 +147,14 @@ Rules:
 - `delegate_to_agent` is not registered by `create_default_registry()` by default.
 - Register `delegate_to_agent` only by passing `enable_agent_delegation=True` and an `AgentCommunicationService` to `create_default_registry(...)`.
 - Use `create_local_agent_communication_service({...})` to build a same-process multi-runtime service for tests or explicit local experiments.
+- Local multi-runtime factory marks `agent.default` as a controller that can delegate only to non-default local workers; workers default to `can_delegate=False`.
 - The current opt-in is code/registry-level or the explicit `/agents/run` gateway. There is no default runtime environment variable that exposes delegation in normal `/agent/run` API/CLI runs.
 - Multi-agent routing must be explicit by `agent_id`, capability match, or a configured routing table. Avoid hidden LLM-only target selection until deterministic policy and tests exist.
 - A target agent must be enabled in `AgentDirectory`; unknown or disabled agents return structured errors.
 - Outbound delegation must use a `delegate_to_agent` style tool through `ActionValidator` and `ToolExecutor`.
 - Cross-agent calls must carry `user_id`, `session_id`, parent `run_id`, trace/correlation ID, timeout, and loop/depth metadata.
+- AgentCommunicationService applies `AgentDelegationPolicy` before transport dispatch. It blocks self-delegation, sources that cannot delegate, disallowed targets, depth violations, oversized timeout requests, repeated delegation pairs, and ping-pong target pairs.
+- Delegated task results include redacted `delegation_audit`, `delegation_pairs`, and optional child budget metadata.
 - User/session isolation applies across agent boundaries. One agent must not read another user's memory or session state through delegation.
 - Loop control is mandatory. Track delegation depth, repeated target pairs, and ping-pong limits.
 - Tool/provider budgets must include delegated work or carry a separate child budget linked to the parent run.
@@ -167,6 +172,7 @@ Module ownership:
 | `src/multimodal_agent/schemas/agent_gateway.py` | External gateway request and metadata contracts for `/agents/run`, including route decision and delegated child-task summaries. |
 | `src/multimodal_agent/services/agent_directory.py` | Agent registry, capability metadata, enablement, and directory config loading. |
 | `src/multimodal_agent/services/agent_routing_policy.py` | Deterministic route policy, capability match policy, routing-table policy, and gateway route decision assembly. |
+| `src/multimodal_agent/services/agent_delegation_policy.py` | Service-layer delegation policy, loop control, allowed-target checks, timeout validation, budget metadata, redaction, and audit event generation. |
 | `src/multimodal_agent/services/agent_gateway.py` | Gateway service that selects the initial local runtime and augments `AgentRunResponse` with gateway metadata. |
 | `src/multimodal_agent/services/a2a_adapter.py` | Protocol adapter between inbound A2A agent card/JSON-RPC payloads and internal gateway requests/responses. |
 | `src/multimodal_agent/services/agent_communication.py` | Service boundary for sending messages/tasks through transports. |
@@ -252,10 +258,11 @@ Implementation order:
 3. Add `LocalAgentTransport` and same-process multi-runtime tests. Done.
 4. Add `AgentCommunicationService`. Done.
 5. Add an opt-in `delegate_to_agent` tool. Done for local transport.
-6. Add a local multi-runtime factory for `agent.default -> agent.worker` style tests. Done.
-7. Add local `AgentGateway` and separate `/agents/run` API. Done.
-8. Add inbound A2A-compatible agent card and JSON-RPC `SendMessage` route. Done.
-9. Add outbound `A2AJsonRpcTransport` with allowlist, timeouts, and structured errors.
+6. Add service-layer `AgentDelegationPolicy` for allowed targets, depth, timeout, loop control, budget metadata, redaction, and audit events. Done.
+7. Add a local multi-runtime factory for `agent.default -> agent.worker` style tests. Done.
+8. Add local `AgentGateway` and separate `/agents/run` API. Done.
+9. Add inbound A2A-compatible agent card and JSON-RPC `SendMessage` route. Done.
+10. Add outbound `A2AJsonRpcTransport` with allowlist, timeouts, and structured errors.
 
 The inbound MVP exposes this repository as an agent without changing default `/agent/run` behavior. The outbound MVP should only call allowlisted local or explicitly configured remote agents.
 
@@ -276,7 +283,7 @@ For the current internal-boundary state:
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_communication_routing.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_routing_policy.py tests/test_agent_gateway.py tests/test_api_agent_graph_runtime.py tests/test_api_a2a.py tests/unit/test_tool_registry.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_routing_policy.py tests/test_agent_gateway.py tests/test_api_agent_graph_runtime.py tests/test_api_a2a.py
 ```
 
 For broader behavior changes, run:

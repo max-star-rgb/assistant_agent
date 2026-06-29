@@ -43,6 +43,7 @@ from multimodal_agent.services.context.renderer import (
     render_final_only_prompt,
     render_native_user_message,
 )
+from multimodal_agent.services.context.token_budget import normalize_provider_token_usage
 from multimodal_agent.services.trace_store import TraceEvent, sanitize_trace_value
 
 
@@ -259,6 +260,7 @@ def _decide_with_llm(
         else _build_prompt_json_chat_request(context, state)
     )
     result = chat_adapter.chat(request)
+    _record_chat_usage_metadata(state, result)
     if _is_provider_context_overflow_result(result) and _can_retry_provider_context_overflow(state):
         _record_provider_context_overflow(state, result)
         retry_context = _rebuild_context_after_provider_overflow(graph_state, context)
@@ -268,6 +270,7 @@ def _decide_with_llm(
             else _build_prompt_json_chat_request(retry_context, state)
         )
         result = chat_adapter.chat(retry_request)
+        _record_chat_usage_metadata(state, result)
         context = retry_context
         if _is_provider_context_overflow_result(result):
             _record_provider_context_overflow(state, result, retry_failed=True)
@@ -302,6 +305,20 @@ def _decide_with_llm(
     if context.iterations >= context.max_iterations and decision.type == "tool_call":
         return _max_iteration_final_answer(context.max_iterations), context
     return decision, context
+
+
+def _record_chat_usage_metadata(state: AgentState, result: ChatResult) -> None:
+    usage = normalize_provider_token_usage(result.usage)
+    if not usage:
+        return
+    metadata = state.request.metadata
+    metadata["context_token_usage"] = dict(usage)
+    metadata["provider_token_usage"] = dict(usage)
+    metadata["last_chat_usage"] = dict(usage)
+    history = metadata.setdefault("provider_token_usage_history", [])
+    if isinstance(history, list):
+        history.append(dict(usage))
+        del history[:-10]
 
 
 def _is_provider_context_overflow_result(result: ChatResult) -> bool:
@@ -795,6 +812,7 @@ def _request_final_answer_after_tool_limit(
             max_tokens=1024,
         )
     )
+    _record_chat_usage_metadata(state, result)
     decision = AssistantDecision.from_llm_output(result.response_text if result.success else "")
     if decision.type == "final_answer" and decision.message:
         return decision
@@ -828,6 +846,7 @@ def _repair_llm_decision(
             max_tokens=512,
         )
     )
+    _record_chat_usage_metadata(state, result)
     repaired = AssistantDecision.from_llm_output(result.response_text if result.success else "")
     if _is_parse_failure_reason(repaired.reason):
         return fallback

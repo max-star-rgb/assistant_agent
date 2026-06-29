@@ -102,13 +102,18 @@ class AgentDirectory:
         return AgentRouteResult(status="routed", instance=instance)
 
 
-def default_agent_instance() -> AgentInstance:
+def default_agent_instance(
+    *,
+    can_delegate: bool = False,
+    allowed_targets: list[str] | None = None,
+) -> AgentInstance:
     """Return the default single-agent runtime identity."""
 
     return AgentInstance(
         agent_id=DEFAULT_AGENT_ID,
         display_name="Default Agent",
         description="Default local AgentGraphRuntime instance.",
+        role="controller",
         capabilities=[
             "chat",
             "tool_calling",
@@ -121,6 +126,8 @@ def default_agent_instance() -> AgentInstance:
             "memory",
         ],
         transports=["local"],
+        can_delegate=can_delegate,
+        allowed_targets=list(allowed_targets or []),
         metadata={"default": True, "offline": True},
     )
 

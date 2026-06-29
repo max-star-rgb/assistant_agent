@@ -201,32 +201,117 @@ Remaining risks:
 - Candidate audit is metadata/trace only; there is no separate durable candidate review queue yet.
 - Real LLM-generated memory candidates remain future work and must stay policy-gated.
 
-## Phase 5: Token-Aware Budget And Overflow Recovery
+## Phase 5: Token-Aware Budget And Pruning
 
-Status: not started.
+Status: partial.
 
 Goal:
 
-- Add optional token-aware budget reporting while keeping char budget fallback.
-- Use provider token usage when available.
-- Harden large tool/media/file output pruning.
+- Add optional token-aware budget reporting while keeping char budget as the default control path.
+- Use provider token usage/estimates when available, without changing mock/local/offline behavior.
+- Harden large tool/media/file output pruning as a separate content policy step.
 
-Steps:
+### Phase 5a: Token-Aware Budget Reporter
 
-1. Introduce `TokenBudgetReporter` behind a small interface.
-2. Keep char-based budget as default for mock/local/offline.
-3. Add provider-token metadata when real chat adapters return usage.
-4. Add tool/media pruning rules:
-   - large files keep summary and artifact ref only,
-   - images/videos keep refs and recognition summary only,
-   - command output keeps bounded lines and chars.
-5. Keep provider overflow retry-once behavior covered by Phase 3 regression tests.
+Status: done.
+
+Scope:
+
+- Introduce `TokenBudgetReporter` behind a small context-service interface.
+- Keep char-based budget as the source of truth for compaction triggers.
+- Add optional token fields to budget reports when usage metadata or estimates exist.
+- Expose token fields through existing trace/API context summaries.
+- Do not add new dependencies or provider calls.
+- Do not change tool/media/file pruning behavior in this subphase.
+
+Implemented files:
+
+- `src/multimodal_agent/schemas/context.py`
+- `src/multimodal_agent/services/context/token_budget.py`
+- `src/multimodal_agent/services/context/builder.py`
+
+Done:
+
+- Added optional token fields to `ContextBudgetReport`.
+- Added `TokenBudgetReporter` with deterministic local estimates.
+- Enabled estimates only via metadata such as `context_budget_estimate_tokens=True` or `context_budget_max_tokens`.
+- Preferred provider usage metadata from `context_token_usage`, `provider_token_usage`, or `last_chat_usage` when present.
+- Exposed token fields through existing trace/API context summaries.
 
 Acceptance checks:
 
 - Existing char-budget tests still pass.
 - Token reporter absence does not change default behavior.
+- Token estimates are visible in `ContextBudgetReport` and trace context when enabled by metadata.
+- Provider token usage metadata is preferred over estimates when present.
+
+Suggested tests:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_assistant_context_renderer.py \
+  tests/test_trace_query_api.py -q
+```
+
+Validation on 2026-06-29:
+
+- Focused Phase 5a regression above: passed.
+- Standard context/memory regression set: passed.
+- `scripts/check_env.py`: passed.
+- `git diff --check`: passed.
+
+### Phase 5b: Provider Token Usage And Overflow Metadata
+
+Status: done.
+
+Scope:
+
+- Normalize provider token usage from real `ChatResult`/adapter metadata when available.
+- Carry provider token usage into the next context budget report.
+- Keep provider overflow retry-once behavior covered by Phase 3 regression tests.
+
+Implemented files:
+
+- `src/multimodal_agent/agent/assistant_loop_nodes.py`
+- `src/multimodal_agent/services/context/token_budget.py`
+
+Done:
+
+- Added safe provider usage normalization that keeps only token counters.
+- Recorded `ChatResult.usage` into request metadata after assistant chat calls, repair calls, final-only calls, and overflow retries.
+- Carried provider token usage into the next assistant context budget report through existing token budget metadata.
+- Kept overflow retry bounded to one retry.
+
+Acceptance checks:
+
+- Provider usage metadata does not leak raw provider response.
+- Overflow retry remains bounded to one retry.
+- Missing token usage falls back to Phase 5a estimates.
+
+Validation on 2026-06-29:
+
+- Focused provider token usage and overflow regression: passed.
+- Full assistant-loop behavior regression: passed.
+- Standard context/memory regression set: passed.
+- `scripts/check_env.py`: passed.
+- `git diff --check`: passed.
+
+### Phase 5c: Tool/Media/File Pruning Policy
+
+Status: not started.
+
+Scope:
+
+- Add tool/media pruning rules:
+  - large files keep summary and artifact ref only,
+  - images/videos keep refs and recognition summary only,
+  - command output keeps bounded lines and chars.
+- Ensure raw file/media/provider payloads do not enter prompt, trace, or memory.
+
+Acceptance checks:
+
 - Oversized media/raw file payloads do not enter prompt, trace, or memory.
+- Existing observation compaction tests continue to pass.
 
 ## Phase 6: Observability And API Polish
 

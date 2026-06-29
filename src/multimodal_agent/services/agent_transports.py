@@ -67,6 +67,10 @@ def _request_from_task(task: AgentTask) -> UserRequest:
             "correlation_id": task.session.correlation_id,
             "delegation_depth": task.delegation_depth,
             "max_delegation_depth": task.max_delegation_depth,
+            "delegation_pairs": task.metadata.get("delegation_pairs", []),
+            "timeout_ms": task.timeout_ms,
+            "token_budget": task.token_budget,
+            "tool_budget": task.tool_budget,
             "transport": "local",
         },
     }

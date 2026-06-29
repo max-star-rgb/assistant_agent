@@ -26,6 +26,7 @@ from multimodal_agent.services.context.policy import (
     CompactionPolicy,
     context_policy_from_request,
 )
+from multimodal_agent.services.context.token_budget import token_budget_reporter_from_request
 from multimodal_agent.services.context.tool_catalog import select_prompt_tool_specs
 
 
@@ -262,6 +263,22 @@ def _budget_report(
         + tool_spec_chars
     )
     context_usage_ratio = total_chars / max_chars if max_chars > 0 else 0.0
+    token_reporter = token_budget_reporter_from_request(request)
+    token_budget = (
+        token_reporter.report(
+            request=request,
+            sections={
+                "request": request.text or "",
+                "conversation": conversation_text,
+                "memory": memory_text,
+                "plan": plan_state.model_dump(mode="json") if _has_plan_context(plan_state) else {},
+                "observations": observations,
+                "tool_spec": [spec.model_dump(mode="json") for spec in tool_specs],
+            },
+        )
+        if token_reporter is not None
+        else None
+    )
     return ContextBudgetReport(
         request_chars=request_chars,
         conversation_chars=conversation_chars,
@@ -278,6 +295,7 @@ def _budget_report(
         trimmed_sections=trimmed_sections or [],
         compression_stage=compression_stage,
         compression_reasons=compression_reasons or [],
+        **(token_budget.model_dump(mode="json") if token_budget is not None else {}),
     )
 
 

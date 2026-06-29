@@ -15,6 +15,7 @@ from multimodal_agent.schemas.agent_communication import (
     AgentTask,
     AgentTaskResult,
 )
+from multimodal_agent.services.agent_delegation_policy import AgentDelegationPolicy
 from multimodal_agent.services.agent_directory import AgentDirectory, default_agent_instance
 from multimodal_agent.services.agent_transports import AgentTransport, LocalAgentTransport
 
@@ -30,9 +31,11 @@ class AgentCommunicationService:
         *,
         directory: AgentDirectory | None = None,
         transports: Iterable[AgentTransport] | None = None,
+        delegation_policy: AgentDelegationPolicy | None = None,
     ) -> None:
         self.directory = directory or AgentDirectory()
         self._transports = {transport.name: transport for transport in transports or []}
+        self.delegation_policy = delegation_policy or AgentDelegationPolicy()
 
     def send_message(
         self,
@@ -44,6 +47,8 @@ class AgentCommunicationService:
         timeout_ms: int = 30_000,
         delegation_depth: int = 0,
         max_delegation_depth: int = 1,
+        token_budget: int | None = None,
+        tool_budget: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> AgentTaskResult:
         """Build and send a task from a single message."""
@@ -57,6 +62,8 @@ class AgentCommunicationService:
                 timeout_ms=timeout_ms,
                 delegation_depth=delegation_depth,
                 max_delegation_depth=max_delegation_depth,
+                token_budget=token_budget,
+                tool_budget=tool_budget,
                 metadata=dict(metadata or {}),
             )
         )
@@ -64,16 +71,21 @@ class AgentCommunicationService:
     def send_task(self, task: AgentTask) -> AgentTaskResult:
         """Resolve a target agent and deliver one task through an enabled transport."""
 
-        if task.delegation_depth > task.max_delegation_depth:
+        policy = self.delegation_policy.validate(task, directory=self.directory)
+        task = task.model_copy(update={"metadata": policy.metadata}, deep=True)
+        if not policy.accepted:
+            error = policy.error or AgentCommunicationError(
+                code="agent_delegation_policy_rejected",
+                message="Agent delegation rejected by policy.",
+                recoverable=True,
+            )
             return _failed_task(
                 task,
-                "agent_delegation_depth_exceeded",
-                "Agent delegation depth exceeded.",
-                detail={
-                    "delegation_depth": task.delegation_depth,
-                    "max_delegation_depth": task.max_delegation_depth,
-                },
-                recoverable=False,
+                error.code,
+                error.message,
+                detail=error.detail,
+                recoverable=error.recoverable,
+                audit_events=[policy.audit_event],
             )
         route = self.directory.resolve(
             AgentRouteRequest(
@@ -93,6 +105,7 @@ class AgentCommunicationService:
                 error.message,
                 detail=error.detail,
                 recoverable=error.recoverable,
+                audit_events=[policy.audit_event],
             )
         transport = self._select_transport(route.instance.transports)
         if transport is None:
@@ -102,8 +115,16 @@ class AgentCommunicationService:
                 "No enabled transport is available for the target agent.",
                 detail={"agent_id": task.target_agent_id, "transports": list(route.instance.transports)},
                 recoverable=True,
+                audit_events=[policy.audit_event],
             )
-        return transport.send_task(task)
+        result = transport.send_task(task)
+        return _with_audit_events(
+            result,
+            [
+                policy.audit_event,
+                self.delegation_policy.completion_event(task, status=result.status),
+            ],
+        )
 
     def _select_transport(self, transport_names: list[str]) -> AgentTransport | None:
         for name in transport_names:
@@ -138,22 +159,26 @@ def create_local_agent_communication_service(
         raise ValueError("at least one local runtime is required")
     instance_map = {instance.agent_id: instance for instance in instances or []}
     for agent_id in sorted(runtimes):
-        instance_map.setdefault(agent_id, _default_local_instance(agent_id))
+        instance_map.setdefault(agent_id, _default_local_instance(agent_id, runtimes.keys()))
     return AgentCommunicationService(
         directory=AgentDirectory(list(instance_map.values())),
         transports=[LocalAgentTransport(dict(runtimes))],
     )
 
 
-def _default_local_instance(agent_id: str) -> AgentInstance:
+def _default_local_instance(agent_id: str, runtime_agent_ids: Iterable[str] | None = None) -> AgentInstance:
     if agent_id == DEFAULT_AGENT_ID:
-        return default_agent_instance()
+        allowed_targets = sorted(item for item in (runtime_agent_ids or []) if item != DEFAULT_AGENT_ID)
+        return default_agent_instance(can_delegate=bool(allowed_targets), allowed_targets=allowed_targets)
     return AgentInstance(
         agent_id=agent_id,
         display_name=_display_name(agent_id),
         description="Local same-process agent runtime instance.",
+        role="worker",
         capabilities=["chat", "tool_calling"],
         transports=["local"],
+        can_delegate=False,
+        allowed_targets=[],
         metadata={"offline": True, "local": True},
     )
 
@@ -170,7 +195,17 @@ def _failed_task(
     *,
     detail: dict[str, Any] | None = None,
     recoverable: bool = False,
+    audit_events: list[Any] | None = None,
 ) -> AgentTaskResult:
+    metadata = {
+        "source_agent_id": task.source_agent_id,
+        "target_agent_id": task.target_agent_id,
+        "correlation_id": task.session.correlation_id,
+    }
+    if audit_events:
+        metadata["delegation_audit"] = [_audit_payload(event) for event in audit_events]
+    if "delegation_pairs" in task.metadata:
+        metadata["delegation_pairs"] = task.metadata["delegation_pairs"]
     return AgentTaskResult(
         task_id=task.task_id,
         target_agent_id=task.target_agent_id,
@@ -183,9 +218,17 @@ def _failed_task(
                 recoverable=recoverable,
             )
         ],
-        metadata={
-            "source_agent_id": task.source_agent_id,
-            "target_agent_id": task.target_agent_id,
-            "correlation_id": task.session.correlation_id,
-        },
+        metadata=metadata,
     )
+
+
+def _with_audit_events(result: AgentTaskResult, audit_events: list[Any]) -> AgentTaskResult:
+    metadata = dict(result.metadata)
+    metadata["delegation_audit"] = [_audit_payload(event) for event in audit_events]
+    return result.model_copy(update={"metadata": metadata}, deep=True)
+
+
+def _audit_payload(event: Any) -> dict[str, Any]:
+    if hasattr(event, "model_dump"):
+        return event.model_dump(mode="json")
+    return dict(event) if isinstance(event, dict) else {"event": str(event)}
