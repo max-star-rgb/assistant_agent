@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
+from multimodal_agent.api.auth import get_auth_context
 from multimodal_agent.schemas.agent_gateway import AgentGatewayRunRequest
 from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
 from multimodal_agent.schemas.identity import RequestIdentity
@@ -33,7 +34,12 @@ from multimodal_agent.services.assistant_run_service import (
     runtime_info,
 )
 from multimodal_agent.services.agent_gateway import AgentGateway, create_default_agent_gateway
-from multimodal_agent.services.api_identity import ApiIdentitySource, ResolvedRequestIdentity, resolve_request_identity
+from multimodal_agent.services.api_identity import (
+    ApiIdentitySource,
+    AuthContext,
+    ResolvedRequestIdentity,
+    resolve_request_identity,
+)
 from multimodal_agent.services.beta_feedback import (
     BetaEvaluationExport,
     BetaEvaluationItem,
@@ -87,16 +93,19 @@ def get_trial_access_gate() -> TrialAccessGate:
 
 
 @router.post("/agent/run", response_model=AgentRunResponse)
-def run_agent(request: UserRequest) -> AgentRunResponse:
-    identity_resolution = _identity_from_request(request)
+def run_agent(request: UserRequest, auth_context: AuthContext = Depends(get_auth_context)) -> AgentRunResponse:
+    identity_resolution = _identity_from_request(request, auth_context=auth_context)
     _require_trial_access_for_identity(identity_resolution)
     request = _with_identity_metadata(request, identity_resolution)
     return run_assistant_request(request, runtime=get_agent_runtime()).api_response()
 
 
 @router.post("/agents/run", response_model=AgentRunResponse)
-def run_agents(request: AgentGatewayRunRequest) -> AgentRunResponse:
-    identity_resolution = _identity_from_request(request)
+def run_agents(
+    request: AgentGatewayRunRequest,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> AgentRunResponse:
+    identity_resolution = _identity_from_request(request, auth_context=auth_context)
     _require_trial_access_for_identity(identity_resolution)
     request = _with_identity_metadata(request, identity_resolution)
     return get_agent_gateway().run(request)
@@ -140,21 +149,33 @@ def demo_access(user_id: str = Query(...)) -> TrialAccessStatus:
 
 
 @router.post("/sessions", response_model=SessionRecord)
-def create_session(session: SessionCreate) -> SessionRecord:
-    _require_trial_access_for_identity(_identity_from_user_id(session.user_id, source="request_body"))
+def create_session(
+    session: SessionCreate,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> SessionRecord:
+    _require_trial_access_for_identity(_identity_from_user_id(session.user_id, source="request_body", auth_context=auth_context))
     return get_agent_runtime().session_store.create(session)
 
 
 @router.get("/sessions", response_model=SessionList)
-def list_sessions(user_id: str = Query(...)) -> SessionList:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="query"))
+def list_sessions(
+    user_id: str = Query(...),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> SessionList:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="query", auth_context=auth_context))
     sessions = get_agent_runtime().session_store.list_by_user(identity.user_id)
     return SessionList(user_id=identity.user_id, total=len(sessions), sessions=sessions)
 
 
 @router.get("/sessions/{session_id}", response_model=SessionRecord)
-def get_session(session_id: str, user_id: str = Query(...)) -> SessionRecord:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, session_id=session_id, source="query"))
+def get_session(
+    session_id: str,
+    user_id: str = Query(...),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> SessionRecord:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(user_id, session_id=session_id, source="query", auth_context=auth_context)
+    )
     record = get_agent_runtime().session_store.get(identity.user_id, session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
@@ -162,8 +183,14 @@ def get_session(session_id: str, user_id: str = Query(...)) -> SessionRecord:
 
 
 @router.delete("/sessions/{session_id}", response_model=SessionDeleteResult)
-def delete_session(session_id: str, user_id: str = Query(...)) -> SessionDeleteResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, session_id=session_id, source="query"))
+def delete_session(
+    session_id: str,
+    user_id: str = Query(...),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> SessionDeleteResult:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(user_id, session_id=session_id, source="query", auth_context=auth_context)
+    )
     runtime = get_agent_runtime()
     deleted = 1 if runtime.session_store.delete(identity.user_id, session_id) else 0
     if deleted == 0:
@@ -214,8 +241,9 @@ def list_memory_items(
     user_id: str,
     memory_type: MemoryType | None = Query(default=None),
     include_content: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemoryAuditList:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     return _memory_audit_service().list_items_for_identity(
         identity,
         memory_type=memory_type,
@@ -228,8 +256,9 @@ def get_memory_item(
     user_id: str,
     memory_id: str,
     include_content: bool = Query(default=True),
+    auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemoryAuditItem:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     item = _memory_audit_service().get_item_for_identity(
         identity,
         memory_id=memory_id,
@@ -241,8 +270,11 @@ def get_memory_item(
 
 
 @router.get("/memory/users/{user_id}/audit", response_model=MemoryAuditReport)
-def audit_memory(user_id: str) -> MemoryAuditReport:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+def audit_memory(
+    user_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryAuditReport:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     return _memory_audit_service().audit_for_identity(identity)
 
 
@@ -251,8 +283,9 @@ def list_memory_events(
     user_id: str,
     event_type: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
+    auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemoryAuditEventList:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     return _memory_audit_service().events_for_identity(
         identity,
         event_type=event_type,
@@ -261,8 +294,11 @@ def list_memory_events(
 
 
 @router.get("/memory/users/{user_id}/metrics", response_model=MemoryMetricsReport)
-def get_memory_metrics(user_id: str) -> MemoryMetricsReport:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+def get_memory_metrics(
+    user_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryMetricsReport:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     return _memory_audit_service().metrics_for_identity(identity)
 
 
@@ -270,8 +306,9 @@ def get_memory_metrics(user_id: str) -> MemoryMetricsReport:
 def export_memory(
     user_id: str,
     include_content: bool = Query(default=True),
+    auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemoryExport:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     return _memory_audit_service().export_for_identity(
         identity,
         include_content=include_content,
@@ -283,8 +320,9 @@ def sweep_expired_memory(
     user_id: str,
     hard_delete: bool = Query(default=False),
     dry_run: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemoryRetentionSweepResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     return _memory_audit_service().sweep_expired_for_identity(
         identity,
         hard_delete=hard_delete,
@@ -300,8 +338,11 @@ def get_memory_snapshot(
     top_k: int = Query(default=5, ge=1, le=50),
     max_context_chars: int = Query(default=1000, ge=50, le=4000),
     include_content: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemorySnapshot:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, session_id=session_id, source="path"))
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(user_id, session_id=session_id, source="path", auth_context=auth_context)
+    )
     return _memory_snapshot_service().snapshot_for_identity(
         identity,
         query=query,
@@ -312,8 +353,12 @@ def get_memory_snapshot(
 
 
 @router.delete("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryDeleteResult)
-def delete_memory_item(user_id: str, memory_id: str) -> MemoryDeleteResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+def delete_memory_item(
+    user_id: str,
+    memory_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryDeleteResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     result = _memory_audit_service().delete_item_for_identity(
         identity,
         memory_id=memory_id,
@@ -324,24 +369,42 @@ def delete_memory_item(user_id: str, memory_id: str) -> MemoryDeleteResult:
 
 
 @router.delete("/memory/users/{user_id}/sessions/{session_id}", response_model=MemoryDeleteResult)
-def delete_memory_session(user_id: str, session_id: str) -> MemoryDeleteResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, session_id=session_id, source="path"))
+def delete_memory_session(
+    user_id: str,
+    session_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryDeleteResult:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(user_id, session_id=session_id, source="path", auth_context=auth_context)
+    )
     return _memory_audit_service().delete_session_for_identity(
         identity,
     )
 
 
 @router.post("/beta/feedback", response_model=BetaFeedbackRecord)
-def submit_beta_feedback(feedback: BetaFeedbackCreate) -> BetaFeedbackRecord:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(feedback.user_id, source="request_body"))
+def submit_beta_feedback(
+    feedback: BetaFeedbackCreate,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> BetaFeedbackRecord:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(feedback.user_id, source="request_body", auth_context=auth_context)
+    )
     _assert_run_belongs_to_user(feedback.run_id, identity.user_id)
     return get_beta_feedback_store().append(feedback)
 
 
 @router.get("/beta/evaluations", response_model=BetaEvaluationExport)
-def export_beta_evaluations(user_id: str | None = Query(default=None)) -> BetaEvaluationExport:
+def export_beta_evaluations(
+    user_id: str | None = Query(default=None),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> BetaEvaluationExport:
     store = get_beta_feedback_store()
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="query")) if user_id else None
+    identity = (
+        _require_trial_access_for_identity(_identity_from_user_id(user_id, source="query", auth_context=auth_context))
+        if user_id
+        else None
+    )
     records = store.list_by_user(identity.user_id) if identity is not None else store.read_all()
     trace_service = TraceQueryService(get_agent_runtime().trace_store)
     items: list[BetaEvaluationItem] = []
@@ -350,15 +413,18 @@ def export_beta_evaluations(user_id: str | None = Query(default=None)) -> BetaEv
         run_payload = summary.model_dump(mode="json") if summary is not None else {"run_id": record.run_id, "missing": True}
         items.append(BetaEvaluationItem(feedback=record, run=run_payload))
     return BetaEvaluationExport(
-        user_id=user_id,
-        summary=summarize_feedback(records, user_id=user_id),
+        user_id=identity.user_id if identity is not None else None,
+        summary=summarize_feedback(records, user_id=identity.user_id if identity is not None else None),
         items=items,
     )
 
 
 @router.delete("/beta/users/{user_id}/data")
-def delete_beta_user_data(user_id: str) -> dict[str, Any]:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path"))
+def delete_beta_user_data(
+    user_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> dict[str, Any]:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     user_id = identity.user_id
     runtime = get_agent_runtime()
     memory_items = runtime.memory_manager.list_by_user(user_id)
@@ -412,15 +478,23 @@ def _memory_snapshot_service() -> MemorySnapshotService:
     )
 
 
-def _identity_from_request(request: UserRequest) -> ResolvedRequestIdentity:
+def _identity_from_request(
+    request: UserRequest,
+    *,
+    auth_context: AuthContext | None = None,
+) -> ResolvedRequestIdentity:
     metadata = request.metadata or {}
-    return resolve_request_identity(
-        user_id=request.user_id,
-        session_id=request.session_id,
-        source="request_body",
-        tenant_id=_metadata_string(metadata, "tenant_id"),
-        project_id=_metadata_string(metadata, "project_id"),
-    )
+    try:
+        return resolve_request_identity(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            source="request_body",
+            tenant_id=_metadata_string(metadata, "tenant_id"),
+            project_id=_metadata_string(metadata, "project_id"),
+            auth_context=auth_context,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _identity_from_user_id(
@@ -428,12 +502,17 @@ def _identity_from_user_id(
     *,
     session_id: str | None = None,
     source: ApiIdentitySource,
+    auth_context: AuthContext | None = None,
 ) -> ResolvedRequestIdentity:
-    return resolve_request_identity(
-        user_id=user_id or "",
-        session_id=session_id,
-        source=source,
-    )
+    try:
+        return resolve_request_identity(
+            user_id=user_id or "",
+            session_id=session_id,
+            source=source,
+            auth_context=auth_context,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _metadata_string(metadata: dict[str, Any], key: str) -> str | None:

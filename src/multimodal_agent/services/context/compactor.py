@@ -63,11 +63,11 @@ class DeterministicContextCompactor:
         budget_report: ContextBudgetReport | None = None,
         existing_summary: ContextSummary | None = None,
     ) -> ContextCompactionResult:
-        turns = list(conversation)
         constraints = list(existing_summary.user_constraints) if existing_summary else []
         decisions = list(existing_summary.decisions) if existing_summary else []
         todos = list(existing_summary.open_todos) if existing_summary else []
         refs = list(existing_summary.important_refs) if existing_summary else []
+        turns = _new_summary_turns(conversation, existing_summary)
 
         for turn in turns:
             constraints.extend(_extract_constraints(turn.user_text))
@@ -287,6 +287,24 @@ def _turn_refs(turn: ConversationTurnView) -> list[str]:
     if turn.trace_id:
         refs.append(f"trace:{turn.trace_id}")
     return refs
+
+
+def _new_summary_turns(
+    conversation: list[ConversationTurnView],
+    existing_summary: ContextSummary | None,
+) -> list[ConversationTurnView]:
+    if existing_summary is None:
+        return list(conversation)
+    summarized_refs = set(existing_summary.important_refs)
+    return [turn for turn in conversation if not _turn_already_summarized(turn, summarized_refs)]
+
+
+def _turn_already_summarized(turn: ConversationTurnView, summarized_refs: set[str]) -> bool:
+    run_id = getattr(turn, "run_id", "")
+    if run_id and f"run:{run_id}" in summarized_refs:
+        return True
+    trace_id = getattr(turn, "trace_id", "")
+    return bool(trace_id and f"trace:{trace_id}" in summarized_refs)
 
 
 def _observation_refs(observation: dict[str, Any]) -> list[str]:

@@ -23,7 +23,30 @@ ApiIdentitySource = Literal[
     "auth_context",
     "local_context",
 ]
+AuthContextSource = Literal["none", "test", "header", "jwt", "session"]
 IdentityPolicyStatus = Literal["passed", "warning", "failed"]
+
+
+class AuthContext(BaseModel):
+    """Trusted authentication context placeholder for API dependencies.
+
+    The default dependency returns ``authenticated=False``. Future header/JWT
+    integration should populate this model instead of changing route logic.
+    """
+
+    authenticated: bool = False
+    source: AuthContextSource = "none"
+    user_id: str | None = None
+    session_id: str | None = None
+    tenant_id: str | None = None
+    project_id: str | None = None
+    allowed_scopes: list[str] | None = None
+
+    @classmethod
+    def anonymous(cls) -> "AuthContext":
+        """Return the default unauthenticated local/offline context."""
+
+        return cls()
 
 
 class ResolvedRequestIdentity(BaseModel):
@@ -121,6 +144,7 @@ def resolve_request_identity(
     tenant_id: str | None = None,
     project_id: str | None = None,
     allowed_scopes: list[str] | None = None,
+    auth_context: AuthContext | None = None,
     auth_user_id: str | None = None,
     auth_session_id: str | None = None,
     auth_tenant_id: str | None = None,
@@ -133,6 +157,13 @@ def resolve_request_identity(
     Future authenticated routes can pass ``auth_user_id`` and keep the same
     service boundary.
     """
+
+    if auth_context is not None and auth_context.authenticated:
+        auth_user_id = auth_context.user_id
+        auth_session_id = auth_context.session_id
+        auth_tenant_id = auth_context.tenant_id
+        auth_project_id = auth_context.project_id
+        allowed_scopes = auth_context.allowed_scopes or allowed_scopes
 
     requested_user_id = _clean_optional(user_id)
     requested_session_id = _clean_optional(session_id)

@@ -1,12 +1,22 @@
 from fastapi.testclient import TestClient
 
 from multimodal_agent.api.app import create_app
+from multimodal_agent.api.auth import (
+    AUTH_HEADER_ENABLED_ENV,
+    AUTH_PROJECT_ID_HEADER,
+    AUTH_SCOPES_HEADER,
+    AUTH_SESSION_ID_HEADER,
+    AUTH_TENANT_ID_HEADER,
+    AUTH_USER_ID_HEADER,
+    auth_context_from_headers,
+    header_auth_enabled,
+)
+from multimodal_agent.services.api_identity import AuthContext, IdentityPolicy, resolve_request_identity
 from multimodal_agent.services.trial_access import (
     TRIAL_USER_ID_FILE_ENV,
     TRIAL_USER_IDS_ENV,
     trial_access_gate_from_env,
 )
-from multimodal_agent.services.api_identity import IdentityPolicy, resolve_request_identity
 
 
 def test_trial_access_open_mode_allows_non_empty_user_id() -> None:
@@ -72,6 +82,31 @@ def test_request_identity_resolver_prefers_matching_auth_context() -> None:
     assert resolved.metadata()["auth_bound_identity"] is True
 
 
+def test_request_identity_resolver_accepts_auth_context_model() -> None:
+    resolved = resolve_request_identity(
+        user_id="alice",
+        session_id="body_session",
+        source="request_body",
+        auth_context=AuthContext(
+            authenticated=True,
+            source="test",
+            user_id="alice",
+            session_id="auth_session",
+            tenant_id="tenant_1",
+            project_id="project_1",
+            allowed_scopes=["project"],
+        ),
+    )
+
+    assert resolved.identity.user_id == "alice"
+    assert resolved.identity.session_id == "auth_session"
+    assert resolved.identity.tenant_id == "tenant_1"
+    assert resolved.identity.project_id == "project_1"
+    assert resolved.identity.allowed_scopes == ["project"]
+    assert resolved.source == "auth_context"
+    assert resolved.auth_bound is True
+
+
 def test_request_identity_resolver_rejects_auth_user_mismatch() -> None:
     try:
         resolve_request_identity(
@@ -84,6 +119,49 @@ def test_request_identity_resolver_rejects_auth_user_mismatch() -> None:
         assert "auth context" in str(exc)
     else:
         raise AssertionError("expected auth mismatch to fail")
+
+
+def test_header_auth_context_is_disabled_by_default() -> None:
+    auth_context = auth_context_from_headers(
+        {AUTH_USER_ID_HEADER: "header_user"},
+        env={},
+    )
+
+    assert header_auth_enabled({}) is False
+    assert auth_context.authenticated is False
+    assert auth_context.source == "none"
+    assert auth_context.user_id is None
+
+
+def test_header_auth_context_requires_non_empty_user_when_enabled() -> None:
+    auth_context = auth_context_from_headers(
+        {AUTH_USER_ID_HEADER: "  "},
+        env={AUTH_HEADER_ENABLED_ENV: "1"},
+    )
+
+    assert header_auth_enabled({AUTH_HEADER_ENABLED_ENV: "true"}) is True
+    assert auth_context.authenticated is False
+
+
+def test_header_auth_context_uses_controlled_headers_when_enabled() -> None:
+    auth_context = auth_context_from_headers(
+        {
+            AUTH_USER_ID_HEADER.lower(): " header_user ",
+            AUTH_SESSION_ID_HEADER: " header_session ",
+            AUTH_TENANT_ID_HEADER: " tenant_1 ",
+            AUTH_PROJECT_ID_HEADER: " project_1 ",
+            AUTH_SCOPES_HEADER: "project, memory:read memory:write",
+        },
+        env={AUTH_HEADER_ENABLED_ENV: "yes"},
+    )
+
+    assert auth_context.authenticated is True
+    assert auth_context.source == "header"
+    assert auth_context.user_id == "header_user"
+    assert auth_context.session_id == "header_session"
+    assert auth_context.tenant_id == "tenant_1"
+    assert auth_context.project_id == "project_1"
+    assert auth_context.allowed_scopes == ["project", "memory:read", "memory:write"]
 
 
 def test_identity_policy_warns_for_request_derived_local_identity() -> None:

@@ -524,6 +524,9 @@ class MemoryManager:
             counts=_audit_counts(counts or {}),
             metadata=_audit_metadata(metadata or {}),
         )
+        save_audit_event = getattr(self.store, "save_audit_event", None)
+        if callable(save_audit_event):
+            save_audit_event(event)
         self._audit_events.append(event)
         del self._audit_events[:-self.max_audit_events]
         return event
@@ -538,6 +541,15 @@ class MemoryManager:
         """List recent memory audit events visible to an identity."""
 
         resolved_limit = max(1, min(limit, self.max_audit_events))
+        list_audit_events = getattr(self.store, "list_audit_events", None)
+        if callable(list_audit_events):
+            return list_audit_events(
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                event_type=event_type,
+                limit=resolved_limit,
+            )
         events = [
             event
             for event in self._audit_events

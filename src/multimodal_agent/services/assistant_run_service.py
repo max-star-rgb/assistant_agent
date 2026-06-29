@@ -24,6 +24,7 @@ from multimodal_agent.services.context.conversation import (
     conversation_context_metadata,
     format_conversation_context,
 )
+from multimodal_agent.services.context.policy import context_policy_from_request
 from multimodal_agent.services.event_sink import EventSink, ListEventSink
 from multimodal_agent.services.trace_store import trace_debug_summary
 from multimodal_agent.services.video_context import load_demo_video_frames
@@ -651,7 +652,8 @@ def _prepare_conversation_request(
         return request.model_copy(update={"metadata": metadata}, deep=True)
     metadata["conversation_history"] = [turn.model_dump() for turn in history]
     if summary is not None:
-        recent_history = history[-2:]
+        recent_turn_limit = context_policy_from_request(request).keep_recent_turns
+        recent_history = history[-recent_turn_limit:]
         metadata["conversation_context_text"] = _format_summary_and_recent_context(
             summary,
             recent_history,
@@ -659,8 +661,12 @@ def _prepare_conversation_request(
         )
         metadata.update(_summary_metadata(summary, recent_turns=len(recent_history)))
     else:
-        metadata["conversation_context_text"] = format_conversation_context(history)
-        metadata.update(conversation_context_metadata(history))
+        recent_turn_limit = context_policy_from_request(request).keep_recent_turns
+        metadata["conversation_context_text"] = format_conversation_context(
+            history,
+            recent_turns=recent_turn_limit,
+        )
+        metadata.update(conversation_context_metadata(history, recent_turns=recent_turn_limit))
     metadata["conversation_turn_index"] = len(history) + 1
     return request.model_copy(update={"metadata": metadata}, deep=True)
 
@@ -715,10 +721,11 @@ def _maybe_update_session_summary(
     turns_to_compact = _turns_to_compact(request=request, history=history, existing_summary=existing_summary)
     if not turns_to_compact:
         return existing_summary
+    policy = context_policy_from_request(request)
     budget = ContextBudgetReport(
         conversation_chars=sum(len(turn.user_text) + len(turn.assistant_text) for turn in history),
         total_chars=sum(len(turn.user_text) + len(turn.assistant_text) for turn in history) + len(request.text or ""),
-        max_chars=_metadata_int(request.metadata, "context_budget_max_chars", DEFAULT_MAX_HISTORY_TURNS * 1500),
+        max_chars=policy.max_context_chars,
     )
     result = DeterministicContextCompactor().compact(
         conversation=turns_to_compact,
@@ -744,17 +751,29 @@ def _turns_to_compact(
 ) -> list[ConversationTurn]:
     if not history:
         return []
+    policy = context_policy_from_request(request)
+    recent_turn_limit = policy.keep_recent_turns
     if _explicit_compact_metadata(request.metadata) or (request.text or "").strip() == "/compact":
         candidates = history
     else:
         history_chars = sum(len(turn.user_text) + len(turn.assistant_text) for turn in history)
-        max_chars = _metadata_int(request.metadata, "context_budget_max_chars", 12_000)
+        max_chars = policy.max_context_chars
         high_usage = max_chars > 0 and history_chars / max_chars >= 0.80
-        candidates = history if high_usage and len(history) <= 2 else history[:-2]
+        candidates = (
+            history
+            if high_usage and len(history) <= recent_turn_limit
+            else history[:-recent_turn_limit]
+        )
     if not candidates:
         return []
     summarized_refs = set(existing_summary.important_refs) if existing_summary else set()
-    return [turn for turn in candidates if f"run:{turn.run_id}" not in summarized_refs]
+    return [turn for turn in candidates if not _turn_ref_summarized(turn, summarized_refs)]
+
+
+def _turn_ref_summarized(turn: ConversationTurn, summarized_refs: set[str]) -> bool:
+    if turn.run_id and f"run:{turn.run_id}" in summarized_refs:
+        return True
+    return bool(turn.trace_id and f"trace:{turn.trace_id}" in summarized_refs)
 
 
 def _format_summary_and_recent_context(
@@ -792,11 +811,6 @@ def _explicit_compact_metadata(metadata: dict[str, Any]) -> bool:
         if isinstance(value, str) and value.strip() == "/compact":
             return True
     return False
-
-
-def _metadata_int(metadata: dict[str, Any], key: str, default: int) -> int:
-    value = metadata.get(key)
-    return value if isinstance(value, int) and value > 0 else default
 
 
 def _trim_session_records(

@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
+from multimodal_agent.api.auth import get_websocket_auth_context
 from multimodal_agent.schemas.events import AgentEvent
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.api_identity import resolve_request_identity
@@ -78,11 +79,30 @@ async def agent_websocket(
     video_id: list[str] | None = Query(default=None),
     execution_strategy: str = Query(default="react"),
 ) -> None:
-    identity_resolution = resolve_request_identity(
-        user_id=user_id,
-        session_id=session_id,
-        source="websocket_query",
-    )
+    auth_context = get_websocket_auth_context(websocket)
+    try:
+        identity_resolution = resolve_request_identity(
+            user_id=user_id,
+            session_id=session_id,
+            source="websocket_query",
+            auth_context=auth_context,
+        )
+    except ValueError as exc:
+        await websocket.accept()
+        await websocket.send_json(
+            AgentEvent(
+                type="agent_error",
+                session_id=session_id,
+                error={
+                    "code": "ACCESS_DENIED",
+                    "message": str(exc),
+                    "detail": {"user_id": user_id},
+                    "recoverable": True,
+                },
+            ).model_dump(mode="json", exclude_none=True)
+        )
+        await websocket.close(code=1008)
+        return
     identity = identity_resolution.identity
     access = identity_resolution.trial_access(get_trial_access_gate())
     if not access.allowed and not _can_bypass_trial_access(websocket, client_kind):

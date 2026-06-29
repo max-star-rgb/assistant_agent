@@ -94,7 +94,7 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/multimodal_agent/memory/context_builder.py` | Token-aware, prompt-safe memory context selection and layer rendering. Produces injected items, rendered context, token count, omission count, rejection reasons, and retrieval version. |
 | `src/multimodal_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`, including soft-delete-compatible delete and hard-delete store boundary methods. |
 | `src/multimodal_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract. |
-| `src/multimodal_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, and soft-delete-compatible delete behavior. |
+| `src/multimodal_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, soft-delete-compatible delete behavior, and durable audit-event rows. |
 | `src/multimodal_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
 | `src/multimodal_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
 | `src/multimodal_agent/memory/write_policy.py` | Safe memory item construction, TTL defaults, raw payload restrictions, explicit memory typing. |
@@ -125,7 +125,7 @@ RequestIdentity
 Current P0 behavior:
 
 - Local/mock paths derive identity from `UserRequest`, `ToolContext`, API path/query parameters, or inbound A2A metadata.
-- API routes resolve request-derived identity through `services/api_identity.py` before trial-access checks and memory service calls. This centralizes provenance (`request_body`, `path`, `query`, `a2a_metadata`, `websocket_query`) without treating it as production authentication. `IdentityPolicy` can classify the resolved identity as auth-bound, request-derived warning, local bypass warning, or production-blocking failure.
+- API routes resolve request-derived identity through `services/api_identity.py` before trial-access checks and memory service calls. `api/auth.py` provides the default FastAPI `AuthContext` dependency, which returns anonymous/no-auth context and ignores auth-like headers unless the explicit `MULTIMODAL_AGENT_AUTH_HEADER_ENABLED` pilot flag is enabled. In that pilot mode, only controlled `X-Multimodal-Agent-*` headers are converted into `AuthContext`; body/path/query user mismatch is rejected by the identity resolver. This centralizes provenance (`request_body`, `path`, `query`, `a2a_metadata`, `websocket_query`, `auth_context`) without treating it as production JWT/session authentication. `IdentityPolicy` can classify the resolved identity as auth-bound, request-derived warning, local bypass warning, or production-blocking failure.
 - `MemoryManager` exposes identity-aware methods such as `search_for_identity(...)`, `load_context_for_identity(...)`, `save_explicit_for_identity(...)`, `get_for_identity(...)`, `list_for_identity(...)`, and identity-scoped delete helpers.
 - `MemoryAuditService` and `MemorySnapshotService` expose identity-aware methods and keep the legacy `user_id` methods as compatibility wrappers.
 - Memory tools bind identity from `ToolContext` before invoking `MemoryManager`, so model-supplied `user_id` cannot override runtime context.
@@ -135,7 +135,7 @@ Current P0 behavior:
 
 Current limits:
 
-- API routes still use request-derived identity unless a future auth context is wired into `services/api_identity.py`. They are shaped for auth-bound identity and policy evaluation, but they are not yet using a real authentication principal.
+- API routes still use request-derived identity unless the `api/auth.py` dependency returns a trusted auth context. They are shaped for auth-bound identity and policy evaluation, but they are not yet using a real authentication principal.
 - Store schemas still index primarily by `user_id`; tenant/project/scope filtering is enforced in memory service/retrieval code rather than database-level indexes.
 
 ## Service Core Vs Tool Adapter
@@ -353,7 +353,7 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 
 List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Export is identity-scoped and can omit content with `include_content=false`. Retention sweep scans only identity-visible memories, supports `dry_run=true`, soft-deletes expired items by default, and uses `MemoryManager.hard_delete_for_identity(...)` plus `MemoryStore.hard_delete(...)` when `hard_delete=true`. SQLite removes the row on hard delete; in-memory and JSONL stores already delete physically. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match.
 
-`MemoryManager` keeps a bounded, in-process `MemoryAuditEvent` list for prompt-safe lifecycle events: context load, explicit save/reject, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. This foundation is useful for local API/debug visibility, but it is not a durable audit log; production-grade audit storage, rollback/rebuild, and long-term metrics export remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
+`MemoryManager` records prompt-safe lifecycle events: context load, explicit save/reject, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. In-memory and JSONL paths keep a bounded in-process event list. SQLite schema v2 persists events in `memory_audit_events`, with common filter fields split into columns and the full redacted event saved as JSON payload, so events survive runtime restarts for the local SQLite backend. Production-grade external metrics export, backup packaging, and full rollback/rebuild runbooks remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
 
 `DELETE /beta/users/{user_id}/data` clears memory through `runtime.memory_manager.clear_user(user_id)` as part of broader user-data deletion.
 

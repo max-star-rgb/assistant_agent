@@ -2,10 +2,17 @@ from fastapi.testclient import TestClient
 
 from multimodal_agent.agent.state import AgentState
 from multimodal_agent.api import routes_agent
+from multimodal_agent.api.auth import (
+    AUTH_HEADER_ENABLED_ENV,
+    AUTH_SESSION_ID_HEADER,
+    AUTH_USER_ID_HEADER,
+    get_auth_context,
+)
 from multimodal_agent.api.app import create_app
 from multimodal_agent.schemas.api import AgentRunResponse
 from multimodal_agent.schemas.planning import IntentResult
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
+from multimodal_agent.services.api_identity import AuthContext
 
 
 class RecordingRuntime:
@@ -105,3 +112,107 @@ def test_api_agent_run_does_not_use_agent_gateway(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["run_id"] == "run_graph_runtime_test"
     assert len(runtime.requests) == 1
+
+
+def test_api_agent_run_can_use_auth_context_dependency(monkeypatch) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    app = create_app()
+    app.dependency_overrides[get_auth_context] = lambda: AuthContext(
+        authenticated=True,
+        source="test",
+        user_id="u1",
+        session_id="auth_session",
+        tenant_id="tenant_1",
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/run",
+        json={"user_id": "u1", "session_id": "body_session", "text": "你好"},
+    )
+
+    assert response.status_code == 200
+    assert runtime.requests[0].user_id == "u1"
+    assert runtime.requests[0].session_id == "auth_session"
+    metadata = runtime.requests[0].metadata["request_identity"]
+    assert metadata["identity_source"] == "auth_context"
+    assert metadata["auth_bound_identity"] is True
+
+
+def test_api_agent_run_rejects_auth_context_user_mismatch(monkeypatch) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    app = create_app()
+    app.dependency_overrides[get_auth_context] = lambda: AuthContext(
+        authenticated=True,
+        source="test",
+        user_id="auth_user",
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/run",
+        json={"user_id": "body_user", "session_id": "s1", "text": "你好"},
+    )
+
+    assert response.status_code == 403
+    assert "auth context" in response.json()["detail"]
+    assert runtime.requests == []
+
+
+def test_api_agent_run_ignores_auth_headers_when_disabled(monkeypatch) -> None:
+    monkeypatch.delenv(AUTH_HEADER_ENABLED_ENV, raising=False)
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/agent/run",
+        headers={AUTH_USER_ID_HEADER: "header_user", AUTH_SESSION_ID_HEADER: "header_session"},
+        json={"user_id": "body_user", "session_id": "body_session", "text": "你好"},
+    )
+
+    assert response.status_code == 200
+    assert runtime.requests[0].user_id == "body_user"
+    assert runtime.requests[0].session_id == "body_session"
+    metadata = runtime.requests[0].metadata["request_identity"]
+    assert metadata["identity_source"] == "request_body"
+    assert metadata["auth_bound_identity"] is False
+
+
+def test_api_agent_run_uses_enabled_header_auth(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_HEADER_ENABLED_ENV, "1")
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/agent/run",
+        headers={AUTH_USER_ID_HEADER: "auth_user", AUTH_SESSION_ID_HEADER: "header_session"},
+        json={"user_id": "auth_user", "session_id": "body_session", "text": "你好"},
+    )
+
+    assert response.status_code == 200
+    assert runtime.requests[0].user_id == "auth_user"
+    assert runtime.requests[0].session_id == "header_session"
+    metadata = runtime.requests[0].metadata["request_identity"]
+    assert metadata["identity_source"] == "auth_context"
+    assert metadata["auth_bound_identity"] is True
+
+
+def test_api_agent_run_rejects_enabled_header_auth_user_mismatch(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_HEADER_ENABLED_ENV, "true")
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/agent/run",
+        headers={AUTH_USER_ID_HEADER: "auth_user"},
+        json={"user_id": "body_user", "session_id": "body_session", "text": "你好"},
+    )
+
+    assert response.status_code == 403
+    assert "auth context" in response.json()["detail"]
+    assert runtime.requests == []

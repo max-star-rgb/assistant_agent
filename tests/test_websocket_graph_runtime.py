@@ -1,10 +1,18 @@
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
+from multimodal_agent.agent.state import AgentState
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.api import routes_agent
+from multimodal_agent.api.auth import (
+    AUTH_HEADER_ENABLED_ENV,
+    AUTH_SESSION_ID_HEADER,
+    AUTH_USER_ID_HEADER,
+)
 from multimodal_agent.api.app import create_app
 from multimodal_agent.api.websocket import mock_agent_events
+from multimodal_agent.schemas.planning import IntentResult
+from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.schemas.tools import ToolResult
 from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
 from multimodal_agent.tools.base import MockTool, ToolContext
@@ -24,6 +32,18 @@ class ScriptedChatAdapter:
         index = min(self.calls, len(self.outputs) - 1)
         self.calls += 1
         return ChatResult(response_text=self.outputs[index], provider=self.provider, model="scripted")
+
+
+class RecordingWebSocketRuntime:
+    def __init__(self) -> None:
+        self.requests: list[UserRequest] = []
+
+    def run_state(self, request: UserRequest) -> AgentState:
+        self.requests.append(request)
+        state = AgentState.from_request(request, run_id="run_websocket_auth_test")
+        state.set_intent(IntentResult(intent="chat", confidence=1.0, rationale="test"))
+        state.set_response(AgentResponse(message="websocket runtime", data={"runtime": "websocket"}))
+        return state
 
 
 class FailingPriceCompareInput(BaseModel):
@@ -80,6 +100,50 @@ def test_websocket_accepts_initial_json_request_payload() -> None:
     assert events[0]["type"] == "task_started"
     assert events[-1]["type"] == "agent_response"
     assert events[-1]["payload"]["response"]["status"] == "completed"
+
+
+def test_websocket_ignores_auth_headers_when_disabled(monkeypatch) -> None:
+    monkeypatch.delenv(AUTH_HEADER_ENABLED_ENV, raising=False)
+    runtime = RecordingWebSocketRuntime()
+    try:
+        routes_agent._RUNTIME = runtime
+        client = TestClient(create_app())
+
+        with client.websocket_connect(
+            "/ws/agent/header-disabled?text=你好&user_id=body_user",
+            headers={AUTH_USER_ID_HEADER: "header_user", AUTH_SESSION_ID_HEADER: "header_session"},
+        ) as websocket:
+            events = _receive_until(websocket, "agent_response")
+    finally:
+        routes_agent._RUNTIME = None
+
+    assert events[-1]["payload"]["response"]["status"] == "completed"
+    assert runtime.requests[0].user_id == "body_user"
+    assert runtime.requests[0].session_id == "header-disabled"
+    metadata = runtime.requests[0].metadata["request_identity"]
+    assert metadata["identity_source"] == "websocket_query"
+    assert metadata["auth_bound_identity"] is False
+
+
+def test_websocket_rejects_enabled_header_auth_user_mismatch(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_HEADER_ENABLED_ENV, "1")
+    runtime = RecordingWebSocketRuntime()
+    try:
+        routes_agent._RUNTIME = runtime
+        client = TestClient(create_app())
+
+        with client.websocket_connect(
+            "/ws/agent/header-mismatch?text=你好&user_id=body_user",
+            headers={AUTH_USER_ID_HEADER: "auth_user"},
+        ) as websocket:
+            event = websocket.receive_json()
+    finally:
+        routes_agent._RUNTIME = None
+
+    assert event["type"] == "agent_error"
+    assert event["error"]["code"] == "ACCESS_DENIED"
+    assert "auth context" in event["error"]["message"]
+    assert runtime.requests == []
 
 
 def test_websocket_first_event_streams_before_final_response() -> None:

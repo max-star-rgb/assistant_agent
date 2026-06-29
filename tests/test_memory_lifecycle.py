@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 
 import pytest
@@ -269,7 +270,7 @@ def test_sqlite_retention_sweep_hard_deletes_expired_row(tmp_path) -> None:
     assert result.mode == "hard_delete"
     assert result.deleted["memory_items"] == 1
     assert store.get("u1", "expired") is None
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         count = connection.execute(
             "SELECT COUNT(*) FROM memory_items WHERE user_id = ? AND memory_id = ?",
             ("u1", "expired"),

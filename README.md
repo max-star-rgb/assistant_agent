@@ -8,6 +8,7 @@
 - Agent 层以 `AgentGraphRuntime` 和 assistant loop 为核心，负责意图理解、追问、工具选择、工具结果融合和最终回答。
 - 工具调用通过 `AssistantDecision -> ActionValidator -> ToolExecutor -> ToolRegistry -> Tool` 边界执行，不应绕过 validator、executor、policy 或 audit。
 - Provider 默认走 mock/local/offline 路径。API key 只用于显式 opt-in 的真实 Provider smoke/pilot，不会因为本地存在 key 自动启用真实调用。
+- API 身份默认仍来自请求体、路径或查询参数并标记为非 auth-bound；默认不会读取 auth-like header。受控 header auth 仅在显式设置 `MULTIMODAL_AGENT_AUTH_HEADER_ENABLED` 后作为 pilot 启用。
 - Memory、demo、eval、CLI 和 Web UI 均围绕同一套本地优先运行时组织。
 - Context engineering 已集中到 `AssistantContextPack` 和 `services/context/`，负责 session summary、预算、裁剪、工具 observation compaction 和 trace/debug 摘要；长期记忆写入仍由 Memory service / `MemoryWritePolicy` 管理。
 - Agent communication 目前实现本地同进程边界、inbound A2A JSON-RPC adapter、默认禁用的 outbound A2A pilot transport，以及 pilot readiness 摘要/回放辅助：默认 `/agent/run`、CLI、eval 和 Web demo 仍走单 `agent.default`；独立 `/agents/run` 提供显式多 Agent 网关入口；`/.well-known/agent-card.json` 和 `/a2a/rpc` 暴露本地 A2A 兼容入口；远程 outbound 只有显式配置 `a2a_json_rpc` transport、endpoint 和 allowlist 时才可用。LLM 自动选 agent 仍未实现。

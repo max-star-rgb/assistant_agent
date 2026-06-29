@@ -268,18 +268,19 @@ P0 progress:
 - 2026-06-29: Added `MemoryContextBuilder` as a memory-local token-aware injection boundary. It renders the existing memory layers, estimates tokens deterministically, honors optional memory token budgets, rejects sensitive/expired items from injection, and reports injected IDs, token count, budget, omitted count, rejection reasons, and retrieval version through `memory_context_*` metadata. Global assistant context compaction still uses the existing context-engine character budget unless separately changed.
 - 2026-06-29: Added an offline memory retrieval eval baseline through `multimodal_agent.memory.retrieval_eval` and `scripts/run_evals.py --suite memory`. The initial suite covers relevant retrieval, correct empty recall, cross-user isolation, expired exclusion, sensitive memory non-injection, and memory token budget compliance. Summary metrics include Recall@k, MRR, false-positive rate, correct-empty rate, cross-user leakage rate, sensitive/expired injection rate, and token budget compliance.
 - 2026-06-29: Added first-pass user-scoped memory export and expired-memory retention sweep through `MemoryAuditService` and API routes. The sweep supports dry-run, soft-delete, and explicit hard-delete modes while preserving identity scoping. `InMemoryStore`, `JsonlMemoryStore`, and `SQLiteMemoryStore` expose a `hard_delete(...)` hook; production-grade audit log storage and rollback/rebuild remain future work.
-- 2026-06-29: Added bounded in-process `MemoryAuditEvent` and `MemoryMetricsReport` foundation. `MemoryManager` records context load, explicit save/reject, promotion decision, soft delete, hard delete, session delete, and user-clear events; `MemoryAuditService` records export and retention-sweep events and exposes `/events` and `/metrics` API views. This is local/debug visibility only; durable audit-log storage, external metrics export, and rollback/rebuild remain future work.
+- 2026-06-29: Added bounded in-process `MemoryAuditEvent` and `MemoryMetricsReport` foundation. `MemoryManager` records context load, explicit save/reject, promotion decision, soft delete, hard delete, session delete, and user-clear events; `MemoryAuditService` records export and retention-sweep events and exposes `/events` and `/metrics` API views. This established the local/API event shape before the SQLite durable storage work below.
+- 2026-06-29: Added SQLite schema v2 durable audit-event storage. `SQLiteMemoryStore` now persists `MemoryAuditEvent` rows in `memory_audit_events`, migrates v0/v1 databases to v2, rejects newer schemas before mutating them, and supports user/type scoped event reads across runtime restarts. Tests cover v1 audit migration, corrupt database rejection, audit-event transaction rollback, persisted event identity filtering, and cross-instance event reads. External metrics export and full backup/rollback runbooks remain future work.
 
 SQLite P0 requirements:
 
-- `schema_version` table. Initial v1 exists.
-- Forward migrations and rollback notes. Migration hook and newer-schema rejection are tested; rollback/runbook notes still needed.
+- `schema_version` table. SQLite schema v2 exists; v1 was memory-item only, v2 adds durable audit events.
+- Forward migrations and rollback notes. Migration hook, newer-schema rejection, audit-event migration, corrupt database rejection, and audit rollback tests exist; operator rollback/runbook notes still needed.
 - Transaction wrapper for save/update/delete/profile upsert. Store-level save/delete rollback tests exist; profile-specific transaction tests still needed.
 - Unique user-scoped content hash or dedupe key. Current primary key is `(user_id, memory_id)` with `content_hash`; dedupe-key policy remains future work.
 - Indexes for `user_id`, `project_id`, `session_id`, `scope`, `kind`, `expires_at`, `deleted_at`, `content_hash`. Current schema indexes `user_id`, `session_id`, `memory_type`, `expires_at`, `deleted_at`, and `content_hash`; project/scope/kind fields wait for schema evolution.
 - Soft delete support. Delete hides SQLite rows via `deleted_at`, restore-on-save is tested, and a user-scoped retention sweeper can soft-delete or explicitly hard-delete expired items.
 - Backup/export path. First-pass user export API is implemented; backup/runbook packaging remains future work.
-- Corruption/migration failure tests. Newer-schema rejection is covered; corrupt database and migration rollback tests still needed.
+- Corruption/migration failure tests. Newer-schema rejection, corrupt database rejection, and audit-event rollback are covered; broader migration rollback tests and restore drills remain future work.
 
 ## Lifecycle And Privacy
 
@@ -380,12 +381,12 @@ Goal: local engineering-grade memory, still offline and deterministic.
 Work:
 
 1. Add `SQLiteMemoryStore`. Initial implementation done on 2026-06-29.
-2. Add schema version and migration runner. Initial v1 schema, migration hook, and newer-schema rejection tests done on 2026-06-29; migration rollback/runbook still needed.
+2. Add schema version and migration runner. Initial v1 schema, v2 audit-event migration, migration hook, newer-schema rejection, corrupt database rejection, and audit rollback tests done on 2026-06-29; operator rollback/runbook still needed.
 3. Add transaction/lock behavior and user-scoped unique dedupe key.
 4. Shape `RequestIdentity` and thread it through service APIs where practical. Initial request-derived identity boundary is implemented on 2026-06-29; service-layer project/tenant/scope filtering is in place for scoped memories. Auth-bound principal integration and database-level tenant/project indexes remain future work.
 5. Promote `MemoryWritePolicy` into a decision object with allow/reject/confirmation reasons. Initial `MemoryWriteDecision` fields and explicit-save/promotion-candidate evaluation are implemented on 2026-06-29; user-facing confirmation workflow remains future work.
 6. Add token-aware `MemoryContextBuilder` behind existing context metadata. Initial memory-local builder and metadata reporting are implemented on 2026-06-29; broader memory evals and trace metrics remain future work.
-7. Add soft delete, export, and audit log foundation. Soft-delete behavior, user export, retention sweep, in-process audit events, and derived local metrics are implemented; durable audit-log storage remains future work.
+7. Add soft delete, export, and audit log foundation. Soft-delete behavior, user export, retention sweep, in-process audit events, SQLite durable audit-event storage, and derived local metrics are implemented; external metrics export and full runbooks remain future work.
 8. Keep `InMemoryStore` and `JsonlMemoryStore` as local/offline paths.
 9. Add retrieval eval suite before vector work. Initial offline retrieval eval suite and summary metrics are implemented on 2026-06-29; broader corpus coverage and regression thresholds remain future work.
 10. Add store corruption, migration, and concurrency tests.

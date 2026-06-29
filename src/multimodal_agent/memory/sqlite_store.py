@@ -10,9 +10,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
+from multimodal_agent.schemas.memory_audit import MemoryAuditEvent
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class SQLiteMemoryStore:
@@ -163,80 +164,145 @@ class SQLiteMemoryStore:
                 (user_id,),
             )
 
+    def save_audit_event(self, event: MemoryAuditEvent) -> MemoryAuditEvent:
+        """Persist a prompt-safe memory audit event."""
+
+        payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+        counts = json.dumps(event.counts, ensure_ascii=False, sort_keys=True)
+        metadata = json.dumps(event.metadata, ensure_ascii=False, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_audit_events (
+                    event_id,
+                    user_id,
+                    tenant_id,
+                    project_id,
+                    session_id,
+                    memory_id,
+                    event_type,
+                    outcome,
+                    summary,
+                    counts,
+                    metadata,
+                    payload,
+                    occurred_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    tenant_id = excluded.tenant_id,
+                    project_id = excluded.project_id,
+                    session_id = excluded.session_id,
+                    memory_id = excluded.memory_id,
+                    event_type = excluded.event_type,
+                    outcome = excluded.outcome,
+                    summary = excluded.summary,
+                    counts = excluded.counts,
+                    metadata = excluded.metadata,
+                    payload = excluded.payload,
+                    occurred_at = excluded.occurred_at
+                """,
+                (
+                    event.event_id,
+                    event.user_id,
+                    event.tenant_id,
+                    event.project_id,
+                    event.session_id,
+                    event.memory_id,
+                    event.event_type,
+                    event.outcome,
+                    event.summary,
+                    counts,
+                    metadata,
+                    payload,
+                    event.occurred_at.isoformat(),
+                ),
+            )
+        return event
+
+    def list_audit_events(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> list[MemoryAuditEvent]:
+        """List recent prompt-safe audit events visible to one identity."""
+
+        resolved_limit = max(1, min(limit, 1000))
+        clauses = [
+            "user_id = ?",
+            "(tenant_id IS NULL OR tenant_id = ?)",
+            "(project_id IS NULL OR project_id = ?)",
+        ]
+        params: list[object] = [user_id, tenant_id, project_id]
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        params.append(resolved_limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT payload
+                FROM memory_audit_events
+                WHERE {" AND ".join(clauses)}
+                ORDER BY occurred_at DESC, event_id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [MemoryAuditEvent.model_validate_json(str(row["payload"])) for row in rows]
+
     def _initialize(self, *, new_database: bool) -> None:
         with self._connect() as connection:
             if new_database:
                 connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS memory_schema_version (
-                    version INTEGER NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS memory_items (
-                    user_id TEXT NOT NULL,
-                    memory_id TEXT NOT NULL,
-                    session_id TEXT,
-                    memory_type TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT,
-                    expires_at TEXT,
-                    deleted_at TEXT,
-                    version INTEGER NOT NULL DEFAULT 1,
-                    PRIMARY KEY (user_id, memory_id)
-                )
-                """
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_memory_items_user_created ON memory_items(user_id, created_at)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_memory_items_user_session ON memory_items(user_id, session_id)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_memory_items_user_type ON memory_items(user_id, memory_type)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_memory_items_expires_at ON memory_items(expires_at)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_memory_items_user_deleted ON memory_items(user_id, deleted_at)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_memory_items_user_content_hash ON memory_items(user_id, content_hash)"
-            )
-            row = connection.execute("SELECT version FROM memory_schema_version LIMIT 1").fetchone()
-            if row is None:
+                _ensure_memory_schema(connection)
+                _ensure_audit_schema(connection)
                 connection.execute(
                     "INSERT INTO memory_schema_version(version) VALUES (?)",
                     (SCHEMA_VERSION,),
                 )
                 return
+
+            row = _read_schema_version(connection)
+            if row is None:
+                _ensure_memory_schema(connection)
+                _ensure_audit_schema(connection)
+                connection.execute(
+                    "INSERT INTO memory_schema_version(version) VALUES (?)",
+                    (SCHEMA_VERSION,),
+                )
+                return
+
             current_version = int(row["version"])
             if current_version > SCHEMA_VERSION:
                 raise RuntimeError(
                     f"SQLite memory store schema version {current_version} is newer than supported {SCHEMA_VERSION}"
                 )
+            if current_version == SCHEMA_VERSION:
+                return
+
+            _ensure_memory_schema(connection)
+            _ensure_audit_schema(connection)
             if current_version < SCHEMA_VERSION:
                 self._migrate(connection, current_version)
 
     def _migrate(self, connection: sqlite3.Connection, _current_version: int) -> None:
+        _ensure_audit_schema(connection)
         connection.execute("UPDATE memory_schema_version SET version = ?", (SCHEMA_VERSION,))
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(str(self.path), timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
-        connection.execute("PRAGMA synchronous=NORMAL")
         try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA busy_timeout=30000")
+            connection.execute("PRAGMA synchronous=NORMAL")
             yield connection
             connection.commit()
         except Exception:
@@ -247,3 +313,93 @@ class SQLiteMemoryStore:
 
     def _item_from_row(self, row: sqlite3.Row) -> MemoryItem:
         return MemoryItem.model_validate_json(str(row["payload"]))
+
+
+def _ensure_memory_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_schema_version (
+            version INTEGER NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_items (
+            user_id TEXT NOT NULL,
+            memory_id TEXT NOT NULL,
+            session_id TEXT,
+            memory_type TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            expires_at TEXT,
+            deleted_at TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (user_id, memory_id)
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_user_created ON memory_items(user_id, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_user_session ON memory_items(user_id, session_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_user_type ON memory_items(user_id, memory_type)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_expires_at ON memory_items(expires_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_user_deleted ON memory_items(user_id, deleted_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_user_content_hash ON memory_items(user_id, content_hash)"
+    )
+
+
+def _read_schema_version(connection: sqlite3.Connection) -> sqlite3.Row | None:
+    try:
+        return connection.execute("SELECT version FROM memory_schema_version LIMIT 1").fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table: memory_schema_version" in str(exc):
+            return None
+        raise
+
+
+def _ensure_audit_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_audit_events (
+            event_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            tenant_id TEXT,
+            project_id TEXT,
+            session_id TEXT,
+            memory_id TEXT,
+            event_type TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            counts TEXT NOT NULL,
+            metadata TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            occurred_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_audit_events_user_time ON memory_audit_events(user_id, occurred_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_audit_events_user_type ON memory_audit_events(user_id, event_type)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_audit_events_user_session ON memory_audit_events(user_id, session_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_audit_events_memory ON memory_audit_events(user_id, memory_id)"
+    )

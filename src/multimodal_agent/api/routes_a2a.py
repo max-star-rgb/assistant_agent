@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from multimodal_agent.api.auth import get_auth_context
 from multimodal_agent.api.routes_agent import get_agent_gateway, get_trial_access_gate
 from multimodal_agent.schemas.a2a import (
     A2AAgentCard,
@@ -26,7 +27,7 @@ from multimodal_agent.services.a2a_adapter import (
     gateway_request_from_a2a_params,
     task_from_gateway_response,
 )
-from multimodal_agent.services.api_identity import resolve_request_identity
+from multimodal_agent.services.api_identity import AuthContext, resolve_request_identity
 
 
 router = APIRouter()
@@ -40,7 +41,10 @@ def get_agent_card(request: Request) -> dict[str, Any]:
 
 
 @router.post("/a2a/rpc", response_model=A2AJsonRpcResponse)
-async def a2a_json_rpc(request: Request) -> A2AJsonRpcResponse:
+async def a2a_json_rpc(
+    request: Request,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> A2AJsonRpcResponse:
     """Handle A2A JSON-RPC requests over the local gateway."""
 
     payload = await _read_json_payload(request)
@@ -89,11 +93,19 @@ async def a2a_json_rpc(request: Request) -> A2AJsonRpcResponse:
             JSONRPC_INVALID_PARAMS,
             str(exc),
         )
-    identity = resolve_request_identity(
-        user_id=gateway_request.user_id,
-        session_id=gateway_request.session_id,
-        source="a2a_metadata",
-    )
+    try:
+        identity = resolve_request_identity(
+            user_id=gateway_request.user_id,
+            session_id=gateway_request.session_id,
+            source="a2a_metadata",
+            auth_context=auth_context,
+        )
+    except ValueError as exc:
+        return _error_response(
+            rpc_request.id,
+            JSONRPC_INVALID_PARAMS,
+            str(exc),
+        )
     access = identity.trial_access(get_trial_access_gate())
     if not access.allowed:
         return _error_response(
