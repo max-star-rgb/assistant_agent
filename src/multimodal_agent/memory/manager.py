@@ -1,6 +1,6 @@
 """Memory manager boundary for layered agent memory access."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from uuid import uuid4
 
@@ -22,6 +22,7 @@ from multimodal_agent.schemas.memory import (
     MemoryQuery,
     MemoryScope,
     MemorySearchResult,
+    MemoryType,
     memory_item_matches_query_scope,
     memory_scope_for_item,
 )
@@ -29,6 +30,8 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryAuditEvent,
     MemoryAuditEventOutcome,
     MemoryAuditEventType,
+    MemoryConfirmationStatus,
+    MemoryPendingConfirmation,
     MemoryProfileRepairAction,
     MemoryProfileRepairResult,
 )
@@ -37,6 +40,26 @@ from multimodal_agent.services.provider_errors import sanitize_error_detail, san
 
 
 _VALID_MEMORY_SCOPES = {"session", "task", "project", "user_profile", "video", "product"}
+_VALID_MEMORY_TYPES = {
+    "conversation",
+    "video",
+    "image",
+    "product",
+    "preference",
+    "artifact",
+    "task",
+    "generation",
+    "render",
+}
+_SAFE_EXPLICIT_CONTENT_KEYS = {
+    "summary",
+    "style",
+    "budget",
+    "product_ref",
+    "product_id",
+    "item",
+    "output_ref",
+}
 
 
 class MemoryContext(BaseModel):
@@ -52,6 +75,14 @@ class MemoryContext(BaseModel):
     omitted_count: int = Field(default=0, ge=0)
     rejected_reasons: list[str] = Field(default_factory=list)
     retrieval_version: str = ""
+
+
+class MemoryConfirmationRequired(ValueError):
+    """Raised when an explicit memory save requires user confirmation."""
+
+    def __init__(self, confirmation: MemoryPendingConfirmation) -> None:
+        super().__init__(confirmation.reason)
+        self.confirmation = confirmation
 
 
 class MemoryManager:
@@ -71,6 +102,7 @@ class MemoryManager:
         default_max_context_tokens: int | None = None,
         context_builder: MemoryContextBuilder | None = None,
         max_audit_events: int = 1000,
+        default_confirmation_ttl_seconds: int = 86400,
     ) -> None:
         self.store = store
         self.write_policy = write_policy or MemoryWritePolicy()
@@ -79,7 +111,9 @@ class MemoryManager:
         self.default_max_context_tokens = default_max_context_tokens
         self.context_builder = context_builder or MemoryContextBuilder()
         self.max_audit_events = max(1, max_audit_events)
+        self.default_confirmation_ttl_seconds = max(60, default_confirmation_ttl_seconds)
         self._audit_events: list[MemoryAuditEvent] = []
+        self._pending_confirmations: dict[str, MemoryPendingConfirmation] = {}
 
     def search(self, query: MemoryQuery) -> MemorySearchResult:
         """Search through the configured store."""
@@ -306,6 +340,34 @@ class MemoryManager:
 
         decision = self.write_policy.evaluate_explicit_save(text=text, content=content, scope=scope)
         if not decision.allowed:
+            if decision.require_user_confirmation:
+                confirmation = self._create_pending_confirmation(
+                    user_id=user_id,
+                    session_id=session_id,
+                    text=text,
+                    content=content,
+                    memory_id=memory_id,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    scope=scope,
+                    decision=decision,
+                    created_at=created_at,
+                )
+                self.record_audit_event(
+                    "memory_confirmation_created",
+                    user_id=user_id,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    session_id=session_id,
+                    memory_id=memory_id,
+                    summary="explicit memory confirmation required",
+                    counts={"attempted": 1, "pending": 1, "written": 0, "rejected": 0},
+                    metadata={
+                        **promotion_decision_audit_record(decision),
+                        "confirmation_id": confirmation.confirmation_id,
+                    },
+                )
+                raise MemoryConfirmationRequired(confirmation)
             self.record_audit_event(
                 "memory_explicit_saved",
                 user_id=user_id,
@@ -467,6 +529,10 @@ class MemoryManager:
         for item in items:
             if self.store.delete(identity.user_id, item.memory_id):
                 deleted += 1
+        confirmations_deleted = self._delete_confirmations_for_identity(
+            identity,
+            session_id=resolved_session_id,
+        )
         self.record_audit_event(
             "memory_session_deleted",
             user_id=identity.user_id,
@@ -474,7 +540,7 @@ class MemoryManager:
             project_id=identity.project_id,
             session_id=resolved_session_id,
             summary="session memory deleted",
-            counts={"memory_items": deleted},
+            counts={"memory_items": deleted, "confirmations": confirmations_deleted},
         )
         return deleted
 
@@ -486,6 +552,7 @@ class MemoryManager:
         for item in self.list_for_identity(identity):
             if self.store.delete(identity.user_id, item.memory_id):
                 deleted += 1
+        confirmations_deleted = self._delete_confirmations_for_identity(identity)
         self.record_audit_event(
             "memory_user_cleared",
             user_id=identity.user_id,
@@ -493,8 +560,193 @@ class MemoryManager:
             project_id=identity.project_id,
             session_id=identity.session_id,
             summary="user memory cleared",
-            counts={"memory_items": deleted},
+            counts={"memory_items": deleted, "confirmations": confirmations_deleted},
         )
+
+    def list_confirmations_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        include_resolved: bool = False,
+    ) -> list[MemoryPendingConfirmation]:
+        """List memory confirmations visible to an identity."""
+
+        confirmations: list[MemoryPendingConfirmation] = []
+        for confirmation in self._pending_confirmations.values():
+            if not _identity_allows_confirmation(identity, confirmation):
+                continue
+            current = _confirmation_with_expired_status(confirmation)
+            if not include_resolved and current.status != "pending":
+                continue
+            confirmations.append(current)
+        return sorted(confirmations, key=lambda item: item.created_at, reverse=True)
+
+    def get_confirmation_for_identity(
+        self,
+        identity: RequestIdentity,
+        confirmation_id: str,
+    ) -> MemoryPendingConfirmation | None:
+        """Return one visible memory confirmation if it exists."""
+
+        confirmation = self._pending_confirmations.get(confirmation_id)
+        if confirmation is None or not _identity_allows_confirmation(identity, confirmation):
+            return None
+        return _confirmation_with_expired_status(confirmation)
+
+    def confirm_memory_for_identity(
+        self,
+        identity: RequestIdentity,
+        confirmation_id: str,
+        *,
+        created_at: datetime | None = None,
+    ) -> MemoryPendingConfirmation | None:
+        """Confirm a pending explicit memory and persist the redacted payload."""
+
+        confirmation = self._pending_confirmations.get(confirmation_id)
+        if confirmation is None or not _identity_allows_confirmation(identity, confirmation):
+            return None
+        if _confirmation_is_expired(confirmation):
+            expired = confirmation.model_copy(
+                update={"status": "expired", "decided_at": datetime.now(timezone.utc)}
+            )
+            self._pending_confirmations[confirmation_id] = expired
+            self.record_audit_event(
+                "memory_confirmation_decided",
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=confirmation.session_id,
+                memory_id=confirmation.memory_id,
+                outcome="rejected",
+                summary="memory confirmation expired",
+                counts={"expired": 1, "confirmed": 0, "rejected": 0},
+                metadata={"confirmation_id": confirmation_id, "status": "expired"},
+            )
+            raise ValueError("memory confirmation expired")
+        if confirmation.status != "pending":
+            raise ValueError(f"memory confirmation is {confirmation.status}")
+
+        scope = _confirmation_scope(confirmation)
+        content = {
+            **confirmation.content_preview,
+            "summary": confirmation.summary,
+            "consent": "explicit_confirmation",
+            "confirmation_id": confirmation.confirmation_id,
+        }
+        item = build_explicit_memory_item(
+            memory_id=confirmation.memory_id or f"explicit_memory_{uuid4().hex}",
+            user_id=identity.user_id,
+            session_id=confirmation.session_id or identity.session_id or "default",
+            text=confirmation.summary,
+            content=content,
+            scope=scope,
+            policy=self.write_policy,
+            created_at=created_at,
+        )
+        if confirmation.tenant_id is not None or confirmation.project_id is not None or scope is not None:
+            item = item.model_copy(
+                update={
+                    "tenant_id": confirmation.tenant_id,
+                    "project_id": confirmation.project_id,
+                    "scope": scope or item.scope,
+                }
+            )
+        saved = self._merge_or_save(item)
+        self._upsert_user_profile(saved)
+        now = datetime.now(timezone.utc)
+        confirmed = confirmation.model_copy(
+            update={
+                "status": "confirmed",
+                "decided_at": now,
+                "confirmed_memory_id": saved.memory_id,
+            }
+        )
+        self._pending_confirmations[confirmation_id] = confirmed
+        self.record_audit_event(
+            "memory_explicit_saved",
+            user_id=saved.user_id,
+            tenant_id=saved.tenant_id,
+            project_id=saved.project_id,
+            session_id=saved.session_id,
+            memory_id=saved.memory_id,
+            summary="confirmed explicit memory saved",
+            counts={"attempted": 1, "written": 1, "rejected": 0},
+            metadata={
+                "memory_type": saved.memory_type,
+                "scope": memory_scope_for_item(saved),
+                "sensitivity": saved.sensitivity,
+                "destination": confirmation.destination,
+                "confirmed_from_confirmation": True,
+                "confirmation_id": confirmation_id,
+            },
+        )
+        self.record_audit_event(
+            "memory_confirmation_decided",
+            user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            session_id=confirmation.session_id,
+            memory_id=saved.memory_id,
+            summary="memory confirmation accepted",
+            counts={"confirmed": 1, "rejected": 0, "expired": 0},
+            metadata={
+                "confirmation_id": confirmation_id,
+                "status": "confirmed",
+                "confirmed_memory_id": saved.memory_id,
+            },
+        )
+        return confirmed
+
+    def reject_memory_for_identity(
+        self,
+        identity: RequestIdentity,
+        confirmation_id: str,
+    ) -> MemoryPendingConfirmation | None:
+        """Reject a pending explicit-memory confirmation without persisting memory."""
+
+        confirmation = self._pending_confirmations.get(confirmation_id)
+        if confirmation is None or not _identity_allows_confirmation(identity, confirmation):
+            return None
+        if confirmation.status != "pending":
+            raise ValueError(f"memory confirmation is {confirmation.status}")
+        status: MemoryConfirmationStatus = "expired" if _confirmation_is_expired(confirmation) else "rejected"
+        decided = confirmation.model_copy(
+            update={"status": status, "decided_at": datetime.now(timezone.utc)}
+        )
+        self._pending_confirmations[confirmation_id] = decided
+        self.record_audit_event(
+            "memory_confirmation_decided",
+            user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            session_id=confirmation.session_id,
+            memory_id=confirmation.memory_id,
+            outcome="rejected",
+            summary="memory confirmation rejected" if status == "rejected" else "memory confirmation expired",
+            counts={
+                "confirmed": 0,
+                "rejected": 1 if status == "rejected" else 0,
+                "expired": 1 if status == "expired" else 0,
+            },
+            metadata={"confirmation_id": confirmation_id, "status": status},
+        )
+        return decided
+
+    def _delete_confirmations_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        session_id: str | None = None,
+    ) -> int:
+        confirmation_ids = [
+            confirmation.confirmation_id
+            for confirmation in self._pending_confirmations.values()
+            if _identity_allows_confirmation(identity, confirmation)
+            and (session_id is None or confirmation.session_id == session_id)
+        ]
+        for confirmation_id in confirmation_ids:
+            del self._pending_confirmations[confirmation_id]
+        return len(confirmation_ids)
 
     def rebuild_user_profile_for_identity(
         self,
@@ -642,6 +894,47 @@ class MemoryManager:
         ]
         return list(reversed(events[-resolved_limit:]))
 
+    def _create_pending_confirmation(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        text: str,
+        content: dict[str, Any] | None,
+        memory_id: str | None,
+        tenant_id: str | None,
+        project_id: str | None,
+        scope: MemoryScope | None,
+        decision: Any,
+        created_at: datetime | None = None,
+    ) -> MemoryPendingConfirmation:
+        now = created_at or datetime.now(timezone.utc)
+        redacted_payload = sanitize_error_detail(decision.redacted_payload)
+        if not isinstance(redacted_payload, dict):
+            redacted_payload = {}
+        summary = str(redacted_payload.get("summary") or sanitize_error_message(text)).strip()
+        confirmation = MemoryPendingConfirmation(
+            confirmation_id=f"memory_confirmation_{uuid4().hex}",
+            user_id=user_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            session_id=session_id,
+            memory_id=memory_id or f"explicit_memory_{uuid4().hex}",
+            status="pending",
+            memory_type=_memory_type_from_confirmation_payload(redacted_payload),
+            scope=scope,
+            destination=str(decision.destination),
+            sensitivity=str(decision.sensitivity),
+            reason=sanitize_error_message(decision.reason),
+            summary=summary or "pending memory confirmation",
+            redacted_payload=redacted_payload,
+            content_preview=_safe_explicit_content_preview(content or {}, summary=summary),
+            created_at=now,
+            expires_at=now + timedelta(seconds=self.default_confirmation_ttl_seconds),
+        )
+        self._pending_confirmations[confirmation.confirmation_id] = confirmation
+        return confirmation
+
     def _merge_or_save(self, item: MemoryItem) -> MemoryItem:
         duplicate = self._find_duplicate(item)
         if duplicate is None:
@@ -730,6 +1023,54 @@ def _identity_allows_event(identity: RequestIdentity, event: MemoryAuditEvent) -
     if event.project_id is not None and event.project_id != identity.project_id:
         return False
     return True
+
+
+def _identity_allows_confirmation(identity: RequestIdentity, confirmation: MemoryPendingConfirmation) -> bool:
+    if confirmation.user_id != identity.user_id:
+        return False
+    if confirmation.tenant_id is not None and confirmation.tenant_id != identity.tenant_id:
+        return False
+    if confirmation.project_id is not None and confirmation.project_id != identity.project_id:
+        return False
+    if confirmation.scope is not None and confirmation.scope not in _allowed_memory_scopes(identity):
+        return False
+    return True
+
+
+def _confirmation_is_expired(confirmation: MemoryPendingConfirmation) -> bool:
+    if confirmation.status != "pending" or confirmation.expires_at is None:
+        return False
+    now = datetime.now(tz=confirmation.expires_at.tzinfo or timezone.utc)
+    return confirmation.expires_at < now
+
+
+def _confirmation_with_expired_status(confirmation: MemoryPendingConfirmation) -> MemoryPendingConfirmation:
+    if not _confirmation_is_expired(confirmation):
+        return confirmation
+    return confirmation.model_copy(update={"status": "expired"})
+
+
+def _confirmation_scope(confirmation: MemoryPendingConfirmation) -> MemoryScope | None:
+    return cast(MemoryScope, confirmation.scope) if confirmation.scope in _VALID_MEMORY_SCOPES else None
+
+
+def _memory_type_from_confirmation_payload(payload: dict[str, Any]) -> MemoryType:
+    value = str(payload.get("memory_type") or "task")
+    return cast(MemoryType, value if value in _VALID_MEMORY_TYPES else "task")
+
+
+def _safe_explicit_content_preview(payload: dict[str, Any], *, summary: str) -> dict[str, Any]:
+    preview: dict[str, Any] = {}
+    if summary.strip():
+        preview["summary"] = sanitize_error_message(summary)
+    for key in _SAFE_EXPLICIT_CONTENT_KEYS:
+        if key == "summary":
+            continue
+        value = payload.get(key)
+        if value in (None, "", [], {}):
+            continue
+        preview[key] = sanitize_error_detail(value)
+    return preview
 
 
 def _profile_source_items(items: list[MemoryItem]) -> list[MemoryItem]:

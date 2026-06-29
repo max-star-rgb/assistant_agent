@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from multimodal_agent.memory.manager import MemoryManager
+from multimodal_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
 from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
 from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy
 from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
@@ -179,6 +179,89 @@ def test_rejected_explicit_memory_emits_audit_event_without_persisting() -> None
     assert events.items[0].metadata["reason"] == "candidate contains secret-like text"
     assert manager.list_for_identity(identity) == []
     assert metrics.counters["memory.write.rejected.count"] == 1
+
+
+def test_sensitive_explicit_memory_requires_confirmation_before_persisting() -> None:
+    manager = MemoryManager(InMemoryStore())
+    service = MemoryAuditService(manager)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    with pytest.raises(MemoryConfirmationRequired) as raised:
+        manager.save_explicit_for_identity(
+            identity,
+            text="记住我的项目路径是 /home/alice/private/project",
+        )
+
+    confirmation = raised.value.confirmation
+    pending = service.confirmations_for_identity(identity)
+    metrics_before = service.metrics_for_identity(identity)
+
+    assert confirmation.status == "pending"
+    assert confirmation.summary == "我的项目路径是 [redacted]"
+    assert confirmation.content_preview["summary"] == "我的项目路径是 [redacted]"
+    assert pending.total == 1
+    assert pending.items[0].confirmation_id == confirmation.confirmation_id
+    assert manager.list_for_identity(identity) == []
+    assert metrics_before.counters["memory.write.needs_confirmation.count"] == 1
+
+    result = service.confirm_memory_for_identity(identity, confirmation_id=confirmation.confirmation_id)
+    assert result is not None
+    saved = manager.get_for_identity(identity, result.memory_id or "")
+    metrics_after = service.metrics_for_identity(identity)
+
+    assert result.status == "confirmed"
+    assert saved is not None
+    assert saved.summary == "我的项目路径是 [redacted]"
+    assert "/home/alice" not in saved.summary
+    assert saved.content["consent"] == "explicit_confirmation"
+    assert saved.content["confirmation_id"] == confirmation.confirmation_id
+    assert metrics_after.counters["memory.write.allowed.count"] == 1
+    assert metrics_after.counters["memory.write.needs_confirmation.count"] == 1
+    assert metrics_after.counters["memory.confirmation.confirmed.count"] == 1
+
+
+def test_sensitive_explicit_memory_confirmation_can_be_rejected() -> None:
+    manager = MemoryManager(InMemoryStore())
+    service = MemoryAuditService(manager)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    with pytest.raises(MemoryConfirmationRequired) as raised:
+        manager.save_explicit_for_identity(
+            identity,
+            text="记住我的本地文件在 /home/alice/private/report.pdf",
+        )
+
+    rejected = service.reject_memory_for_identity(
+        identity,
+        confirmation_id=raised.value.confirmation.confirmation_id,
+    )
+    listed = service.confirmations_for_identity(identity, include_resolved=True)
+    metrics = service.metrics_for_identity(identity)
+
+    assert rejected is not None
+    assert rejected.status == "rejected"
+    assert listed.total == 1
+    assert listed.items[0].status == "rejected"
+    assert manager.list_for_identity(identity) == []
+    assert metrics.counters["memory.confirmation.rejected.count"] == 1
+
+
+def test_session_delete_clears_pending_memory_confirmations() -> None:
+    manager = MemoryManager(InMemoryStore())
+    service = MemoryAuditService(manager)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    with pytest.raises(MemoryConfirmationRequired):
+        manager.save_explicit_for_identity(
+            identity,
+            text="记住我的临时路径是 /home/alice/private/tmp",
+        )
+
+    assert service.confirmations_for_identity(identity).total == 1
+
+    manager.delete_session_for_identity(identity)
+
+    assert service.confirmations_for_identity(identity, include_resolved=True).total == 0
 
 
 def test_profile_status_and_rebuild_create_missing_profile_from_sources() -> None:

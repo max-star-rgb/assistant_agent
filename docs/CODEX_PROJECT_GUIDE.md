@@ -75,11 +75,8 @@ Real provider opt-in:
 | `docs/CODEX_PROJECT_GUIDE.md` | Current Codex project understanding entry | safe to edit |
 | `docs/DOCS_INDEX.md` | Documentation inventory and cleanup status | safe to edit |
 | `docs/TESTS_REVIEW.md` | Read-only tests audit and cleanup guidance | safe to edit |
-| `docs/phase1-7/` | Historical phase docs and reviews | docs only |
-| `docs/phase8/` | Phase 8 architecture/task background | docs only |
-| `tasks/` | Historical and active task specs | docs only |
-| `prompts/` | Historical prompt starters | docs only |
-| `skills/` | Repository-local Codex skills and old phase runners | docs only |
+| `docs/phase8/` | Phase 8 architecture background | docs only |
+| `docs/archive/` | Selected historical phase/background material retained outside default reading paths | docs only |
 | `haodanku-openapi-docs/` | Haodanku provider reference docs | docs only |
 | `src/**` | Application source code | edit only for implementation tasks |
 | `tests/**` | Test suite and eval cases | update with behavior changes |
@@ -132,17 +129,15 @@ ruff check
 ruff format --check
 mypy
 python scripts/smoke_mcp_tools.py
-python scripts/validate_skills.py
 ```
 
-Current validation snapshot on 2026-06-26:
+Recent validation notes:
 
-- `scripts/check_env.py`: passed.
-- `python -m pytest -p no:cacheprovider`: 961 passed, 8 skipped.
-- `scripts/run_evals.py`: 99 passed, 0 failed.
-- `scripts/run_demo_flows.py`: 20 passed, 0 failed.
-- `scripts/smoke_mcp_tools.py`: passed, `ok=true`.
-- `scripts/validate_skills.py`: passed, `ok=true`, 18 skills.
+- 2026-06-29 docs cleanup: `scripts/check_env.py` passed.
+- 2026-06-29 docs cleanup: `python -m pytest tests/test_mcp_skills_safety.py tests/test_mcp_server_skeleton.py -q` passed, 9 passed.
+- 2026-06-29 docs cleanup: `scripts/run_evals.py` passed, 107 passed, 0 failed.
+- Last broad pytest baseline before this docs cleanup: `python -m pytest -p no:cacheprovider` passed, 961 passed, 8 skipped.
+- Last demo/smoke baseline before this docs cleanup: `scripts/run_demo_flows.py` passed, 20 passed, 0 failed; `scripts/smoke_mcp_tools.py` passed, `ok=true`.
 - `python -m ruff check .`: unavailable, `No module named ruff`.
 - `python -m ruff format --check .`: unavailable, `No module named ruff`.
 - `python -m mypy .`: unavailable, `No module named mypy`.
@@ -163,15 +158,12 @@ If a command is missing or fails during a docs-only task, record the command and
 - `docs/agent-communication-routing.md` is the current agent communication routing and A2A adapter boundary entry.
 - `docs/TESTS_REVIEW.md` is the tests cleanup/readiness audit.
 - Top-level `docs/*.md` are current user/developer references unless the index says otherwise.
-- Historical phase/task/skill docs are retained or archived by default, not deleted directly.
+- Historical `tasks/`, `prompts/`, and repository-local `skills/` construction materials were deleted after explicit user confirmation. Remaining historical/background docs are retained or archived by default, not deleted directly.
 - A document must first be marked `delete-candidate` in `docs/DOCS_INDEX.md` and pass human review before deletion.
 - Do not treat "old" as "delete." Old docs can still be useful history or design rationale.
 
 ## 8. Known Open Questions
 
 - Whether old `conditional` graph and intent-router/planner compatibility tests remain product requirements or can later be archived.
-- Whether `prompts/**` should remain tracked after Phase 8, or be moved to a historical archive.
-- Whether `skills/phase8-runner/SKILL.md` should be rewritten to match current paths/defaults or archived.
 - Whether `hello_agent_latest.docx` should stay in the repo, be exported to Markdown, or be archived outside the normal doc tree.
-- Whether tracked generated/temp-like files such as `prompts/phase8/.~lock.run-assistant-loop-mvp.md#` can be deleted after human review.
 - Whether `tests/__pycache__` and other generated cache directories are intentionally tracked or should be cleaned in a separate non-code task.

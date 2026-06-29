@@ -440,7 +440,17 @@ def build_explicit_memory_item(
     summary = _explicit_summary(text, payload)
     redacted_summary = sanitize_error_message(summary)
     safe_content: dict[str, Any] = {"explicit": True}
-    for key in ("summary", "style", "budget", "product_ref", "product_id", "item", "output_ref"):
+    for key in (
+        "summary",
+        "style",
+        "budget",
+        "product_ref",
+        "product_id",
+        "item",
+        "output_ref",
+        "consent",
+        "confirmation_id",
+    ):
         value = payload.get(key)
         if value:
             safe_content[key] = value
@@ -509,7 +519,17 @@ def _redacted_explicit_payload(
     scope: MemoryScope | str | None,
     raw_text_stored: bool,
 ) -> dict[str, Any]:
-    safe_keys = {"summary", "style", "budget", "product_ref", "product_id", "item", "output_ref"}
+    safe_keys = {
+        "summary",
+        "style",
+        "budget",
+        "product_ref",
+        "product_id",
+        "item",
+        "output_ref",
+        "consent",
+        "confirmation_id",
+    }
     redacted_summary = sanitize_error_message(summary) if summary.strip() else ""
     return {
         "summary": _clip(redacted_summary, 200),

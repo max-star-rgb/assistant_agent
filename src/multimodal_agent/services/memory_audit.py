@@ -13,6 +13,8 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryAuditItem,
     MemoryAuditList,
     MemoryAuditReport,
+    MemoryConfirmationList,
+    MemoryConfirmationResult,
     MemoryDeleteResult,
     MemoryDuplicateGroup,
     MemoryExport,
@@ -233,6 +235,80 @@ class MemoryAuditService:
             counters=_metrics_counters(events),
         )
 
+    def confirmations(self, *, user_id: str, include_resolved: bool = False) -> MemoryConfirmationList:
+        return self.confirmations_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            include_resolved=include_resolved,
+        )
+
+    def confirmations_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        include_resolved: bool = False,
+    ) -> MemoryConfirmationList:
+        items = self.memory_manager.list_confirmations_for_identity(
+            identity,
+            include_resolved=include_resolved,
+        )
+        return MemoryConfirmationList(user_id=identity.user_id, total=len(items), items=items)
+
+    def confirm_memory(
+        self,
+        *,
+        user_id: str,
+        confirmation_id: str,
+    ) -> MemoryConfirmationResult | None:
+        return self.confirm_memory_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            confirmation_id=confirmation_id,
+        )
+
+    def confirm_memory_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        confirmation_id: str,
+    ) -> MemoryConfirmationResult | None:
+        confirmation = self.memory_manager.confirm_memory_for_identity(identity, confirmation_id)
+        if confirmation is None:
+            return None
+        return MemoryConfirmationResult(
+            user_id=identity.user_id,
+            confirmation_id=confirmation.confirmation_id,
+            status=confirmation.status,
+            memory_id=confirmation.confirmed_memory_id,
+            confirmation=confirmation,
+        )
+
+    def reject_memory(
+        self,
+        *,
+        user_id: str,
+        confirmation_id: str,
+    ) -> MemoryConfirmationResult | None:
+        return self.reject_memory_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            confirmation_id=confirmation_id,
+        )
+
+    def reject_memory_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        confirmation_id: str,
+    ) -> MemoryConfirmationResult | None:
+        confirmation = self.memory_manager.reject_memory_for_identity(identity, confirmation_id)
+        if confirmation is None:
+            return None
+        return MemoryConfirmationResult(
+            user_id=identity.user_id,
+            confirmation_id=confirmation.confirmation_id,
+            status=confirmation.status,
+            memory_id=confirmation.confirmed_memory_id,
+            confirmation=confirmation,
+        )
+
     def profile_status(self, *, user_id: str) -> MemoryProfileRepairResult:
         return self.profile_status_for_identity(RequestIdentity.for_user(user_id=user_id))
 
@@ -373,6 +449,13 @@ def _metrics_counters(events: list[MemoryAuditEvent]) -> dict[str, int]:
             counters["memory.write.rejected.count"] += event.counts.get("rejected", 0)
             if event.metadata.get("require_user_confirmation") is True:
                 counters["memory.write.needs_confirmation.count"] += 1
+        elif event.event_type == "memory_confirmation_created":
+            counters["memory.write.needs_confirmation.count"] += event.counts.get("pending", 0)
+            counters["memory.confirmation.pending.count"] += event.counts.get("pending", 0)
+        elif event.event_type == "memory_confirmation_decided":
+            counters["memory.confirmation.confirmed.count"] += event.counts.get("confirmed", 0)
+            counters["memory.confirmation.rejected.count"] += event.counts.get("rejected", 0)
+            counters["memory.confirmation.expired.count"] += event.counts.get("expired", 0)
         elif event.event_type == "memory_deleted":
             counters["memory.delete.soft.count"] += event.counts.get("memory_items", 0)
         elif event.event_type == "memory_hard_deleted":

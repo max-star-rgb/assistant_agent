@@ -18,7 +18,6 @@ python -m pytest
 python scripts/run_evals.py
 python scripts/run_demo_flows.py
 python scripts/smoke_mcp_tools.py
-python scripts/validate_skills.py
 ```
 
 Release checklist:
@@ -37,7 +36,7 @@ docs/release-checklist.md
 
 ## Task Docs
 
-Task specs live in `tasks/`. Phase docs live in `docs/`. They are implementation history and planning material; user-facing docs are the consolidated guides linked from README.
+Current user-facing and developer-facing docs are the consolidated guides linked from README. Historical `tasks/`, `prompts/`, and repository-local `skills/` materials were removed after user confirmation; remaining phase/background material lives under `docs/archive/` only when it still has reference value.
 
 ## Architecture And Boundary Docs
 

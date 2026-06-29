@@ -113,7 +113,7 @@ structured observations -> final answer / events / audit logs
 | `scripts/` | 环境检查、服务启动、CLI、demo、eval、smoke 脚本 |
 | `tests/` | pytest 测试，覆盖 unit/integration/API/demo/eval 等路径 |
 | `docs/` | 当前权威文档、架构文档、API 文档、历史归档 |
-| `tasks/` | 历史阶段任务和仍可参考的执行记录 |
+| `docs/archive/` | 少量仍有参考价值的历史阶段材料 |
 
 ## Runtime Modes
 
@@ -175,7 +175,7 @@ structured observations -> final answer / events / audit logs
 - [Troubleshooting](docs/troubleshooting.md)
 - [Release Checklist](docs/release-checklist.md)
 
-历史 phase/task/skill/prompt 文档默认保留或归档，不直接删除。Historical phase docs remain available for traceability, but ordinary users should not need to read them. 删除文档前应先在 `docs/DOCS_INDEX.md` 标为 `delete-candidate`，写明重复、过期和已吸收位置，并经过人工确认。
+历史 `tasks/`、`prompts/` 和仓库内 `skills/` 构建材料已按用户确认删除；少量仍有参考价值的阶段背景保留在 `docs/archive/`，不在默认阅读路径。删除剩余文档前应先在 `docs/DOCS_INDEX.md` 标为 `delete-candidate`，写明重复、过期和已吸收位置，并经过人工确认。
 
 ## Validation
 

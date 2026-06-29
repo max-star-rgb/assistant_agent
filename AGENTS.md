@@ -18,7 +18,7 @@
 - 涉及架构分层、模块归属、治理边界或重构判断时，必须阅读 `docs/architecture-layers.md`。
 - 涉及文档盘点、入口路由、归档、删除、清理、新增 canonical/reference 文档，或判断 canonical/reference/historical/archive-candidate 状态时，阅读 `docs/DOCS_INDEX.md`。普通代码实现任务不必默认读取它，除非需要决定应更新哪些文档或文档权威性。
 
-历史 `tasks/`、`prompts/`、`skills/`、phase 文档只在用户明确点名、需要追溯历史决策或执行对应历史任务时阅读。不要把旧 roadmap 当成当前真实架构。
+历史 task、prompt 和旧 runner skill 构建材料已按用户确认删除；少量剩余 phase/archive 背景文档只在用户明确点名、需要追溯历史决策或执行对应历史任务时阅读。不要把旧 roadmap 当成当前真实架构。
 
 ## 2. 项目定位
 
@@ -113,9 +113,7 @@ conda run -n hello_agent <command>
 | `tests/` | pytest 测试 | 修改行为时同步维护，除非用户限制只读 |
 | `scripts/` | 本地验证、服务、demo、eval、smoke 脚本 | 可按任务修改 |
 | `docs/` | 当前权威文档、参考文档、历史归档 | 文档任务优先修改 |
-| `tasks/` | 历史或阶段任务说明 | 默认参考或归档，不直接删除 |
-| `prompts/` | 历史 prompt 或任务 prompt | 默认参考或归档，不直接删除 |
-| `skills/` | 历史 skill 定义或 agent 工作流 | 默认参考或归档，不直接删除 |
+| `docs/archive/` | 少量仍有参考价值的历史阶段材料 | 默认只作追溯，不直接删除 |
 
 如果用户对本轮任务设定更严格的 scope，例如“不要修改 `src/**`”或“不要修改 `tests/**`”，以用户当前约束为准。
 
@@ -147,7 +145,7 @@ conda run -n hello_agent <command>
 - `docs/agent-communication-routing.md` 是多 agent 实例、agent 通信路由、A2A adapter 边界和更新规则的当前权威入口。
 - `docs/DOCS_INDEX.md` 是文档清单和清理依据，只在文档盘点/归档/删除任务中作为入口。
 - `docs/TESTS_REVIEW.md` 是 tests 目录只读评估入口。
-- 历史 phase/task/skill/prompt 文档默认保留或归档，不直接删除。
+- 历史 task/prompt/skill 构建材料已按用户确认删除；剩余 phase/archive 背景文档默认保留，不直接删除。
 - 删除文档必须先进入 `delete-candidate`，写明重复、过期、已吸收位置，并经过人工确认。
 
 ## 9. 测试与验收

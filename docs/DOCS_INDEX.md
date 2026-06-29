@@ -1,6 +1,6 @@
 # Documentation Index
 
-This index records the current documentation status after a read-only architecture and repository audit. It does not delete files. Historical phase/task/skill material is preserved unless a later human-reviewed cleanup task decides otherwise.
+This index records the current documentation status after architecture and documentation cleanup. Historical `tasks/`, `prompts/`, and repository-local `skills/` construction materials were deleted after explicit user confirmation; remaining archive material is kept only when it still has reference value.
 
 Status values:
 
@@ -13,8 +13,8 @@ Status values:
 
 | path | status | reason | action |
 | --- | --- | --- | --- |
-| `README.md` | canonical | Human-facing project entry; accurately describes default mock/local/offline mode and main commands. Contains one stale Phase 6 link that should be fixed separately or during entry-link update. | update |
-| `AGENTS.md` | canonical | Agent behavior constraints and repository workflow rules. It should point Codex to the new guide and index. | update |
+| `README.md` | canonical | Human-facing project entry; describes default mock/local/offline mode, main commands, and current documentation routing. | keep |
+| `AGENTS.md` | canonical | Agent behavior constraints and repository workflow rules; points Codex to the guide, index, and task-specific canonical docs. | keep |
 | `docs/CODEX_PROJECT_GUIDE.md` | canonical | Current authoritative Codex project guide created from code/config/docs audit. | keep |
 | `docs/DOCS_INDEX.md` | canonical | Current authoritative documentation inventory and cleanup status. | keep |
 | `docs/TESTS_REVIEW.md` | canonical | Current tests directory read-only review for future cleanup planning. | keep |
@@ -22,7 +22,7 @@ Status values:
 | `docs/CONTEXT_ENGINEERING_STATUS.md` | canonical | Current assistant context, conversation compaction, context budget, tool observation compaction, session summary, context observability status, and new-dialogue quick handoff entry. | keep |
 | `docs/architecture.md` | canonical | Current concise runtime architecture overview; matches assistant-loop and provider-native tool calling direction. | link-from-index |
 | `docs/architecture-layers.md` | canonical | Current layer ownership and governance boundary document; required for architecture/rework decisions. | link-from-index |
-| `docs/memory-service-architecture.md` | canonical | Current authoritative memory service architecture, boundary, routing, token-aware context injection, retrieval eval, SQLite-backed audit events/metrics, profile repair, export/retention lifecycle, and update-rule entry. | keep |
+| `docs/memory-service-architecture.md` | canonical | Current authoritative memory service architecture, boundary, routing, token-aware context injection, retrieval eval, SQLite-backed audit events/metrics, consent confirmation flow, profile repair, export/retention lifecycle, and update-rule entry. | keep |
 | `docs/agent-communication-routing.md` | canonical | Current authoritative multi-agent instance routing, agent communication, gateway API, and A2A adapter boundary entry; tracks internal schemas/directory/routing policy/delegation policy/delegation context/local and outbound A2A transports/service, pilot readiness summaries/replay, local multi-runtime factory, opt-in local `delegate_to_agent`, `AgentGateway`, `/agents/run`, inbound agent card filtering, and `/a2a/rpc` JSON-RPC error taxonomy. | keep |
 | `docs/capabilities.md` | canonical | Current capability list and default provider boundary. | link-from-index |
 | `docs/configuration.md` | canonical | Current runtime profile and provider selector policy. | link-from-index |
@@ -48,20 +48,7 @@ Status values:
 | `docs/phase8/beta-trial.md` | reference | Beta trial/productization reference, not global architecture entry. | keep |
 | `docs/phase8/phase8A_1_react_action_quality_hardening.md` | historical | Completed/current Phase 8A hardening task design and audit trail. | archive-later |
 | `docs/phase8/phase8A_2_react_final_answer_handoff.md` | historical | Completed/current Phase 8A handoff task design and audit trail. | archive-later |
-| `docs/phase1-7/**` | historical | Large phase history, reviews, roadmaps, and older consolidated docs. Valuable for traceability but not a current entry point. | archive-later |
-| `tasks/phase8/**` | historical | Phase 8 task specifications. Useful when continuing a specific task, but not a global project guide. | archive-later |
-| `tasks/phase1-7/**` | historical | Completed historical task specifications and phase indexes. Keep for audit trail; do not delete by default. | archive-later |
-| `prompts/phase8/*.md` | historical | Prompt-only execution starters. They contain task path typos such as `task/phase8/...` instead of `tasks/phase8/...`; task docs are the real boundary. | archive-later |
-| `docs/archive/2026-06-26/prompts/phase1-7/**` | historical | Archived from `prompts/phase1-7/**`. Old Codex startup/task/review prompts for earlier phases; useful as history but no longer in the default reading path. | keep |
-| `skills/assistant-demo-flow/**` | reference | Offline demo-flow skill remains conceptually useful, but some doc paths reference old Phase 1-7 locations. | update |
-| `skills/offline-mcp-tools/**` | reference | Offline MCP smoke and inventory skill remains useful for packaging checks. | keep |
-| `skills/phase5i-runner/**` | historical | Historical phase runner skill and prompts. | archive-later |
-| `skills/phase5j-runner/**` | historical | Historical phase runner skill and prompts. | archive-later |
-| `skills/phase6*-runner/**` | historical | Historical phase runner skills and prompts. | archive-later |
-| `skills/phase7*-runner/**` | historical | Historical phase runner skills and prompts. | archive-later |
-| `docs/archive/2026-06-26/skills/phase8-runner/SKILL.md` | historical | Archived from `skills/phase8-runner/SKILL.md`. Stale runner: it references non-current paths such as `docs/phase8_A1_react_assistant_loop.md` and says conditional graph remains default, while current code defaults to `assistant_loop`. | keep |
-| `skills/README_USE_PHASE6.md` | historical | Historical instructions for Phase 6 skill usage. | archive-later |
-| `skills/README_USE_PHASE7.md` | historical | Historical instructions for Phase 7 skill usage. | archive-later |
+| `.local/docs-archive/2026-06-29/phase1-7-docs/**` | historical | Local-only ignored archive of old Phase 1-7 docs that were not tracked by git; kept out of the default docs tree. | keep-local |
 | `haodanku-openapi-docs/AI使用说明.md` | reference | Required entry for Haodanku-related development. | keep |
 | `haodanku-openapi-docs/接口目录.md` | reference | Required interface category map for Haodanku-related development. | keep |
 | `haodanku-openapi-docs/平台接入规则与接口选择.md` | reference | Haodanku auth and interface selection reference. | keep |
@@ -77,7 +64,7 @@ Status values:
 
 ## Cleanup Rules
 
-- Do not delete phase/task/skill documents directly. Move them to archive only after a dedicated cleanup task.
+- Historical `tasks/`, `prompts/`, and repository-local `skills/` materials are intentionally absent after explicit user confirmation. Do not recreate those top-level directories unless a new task explicitly needs them.
 - Every `delete-candidate` requires human review before deletion.
 - If a stale document still contains unique implementation history, archive it rather than delete it.
 - Keep README, AGENTS, `docs/CODEX_PROJECT_GUIDE.md`, and `docs/DOCS_INDEX.md` synchronized.
@@ -88,8 +75,8 @@ Status values:
 
 Archived:
 
-- `prompts/phase1-7/**` -> `docs/archive/2026-06-26/prompts/phase1-7/**`
-- `skills/phase8-runner/SKILL.md` -> `docs/archive/2026-06-26/skills/phase8-runner/SKILL.md`
+- `prompts/phase1-7/**` -> `docs/archive/2026-06-26/prompts/phase1-7/**`; later deleted on 2026-06-29 after user confirmation.
+- `skills/phase8-runner/SKILL.md` -> `docs/archive/2026-06-26/skills/phase8-runner/SKILL.md`; later deleted on 2026-06-29 after user confirmation.
 - `hello_agent_latest.docx` -> `docs/archive/2026-06-26/hello_agent_latest.docx`
 
 Deleted:
@@ -101,3 +88,23 @@ Retained:
 
 - `src/multimodal_agent/api/readme.md`: still `delete-candidate`, but `src/**` is out of scope for this cleanup.
 - `.pytest_cache/README.md`: still `delete-candidate`, but its reason does not explicitly say it was absorbed by `docs/CODEX_PROJECT_GUIDE.md` or README/AGENTS.
+
+### 2026-06-29
+
+Local-only cleanup:
+
+- ignored, untracked `docs/phase1-7/**` was moved to `.local/docs-archive/2026-06-29/phase1-7-docs/**` to remove it from the default docs tree without creating hundreds of new tracked archive files.
+
+Deleted after user confirmation:
+
+- `tasks/phase1-7/**`
+- `tasks/phase8/**`
+- `prompts/phase8/**`
+- `skills/**`
+- `docs/archive/2026-06-29/tasks/**`
+- `docs/archive/2026-06-29/prompts/**`
+- `docs/archive/2026-06-29/skills/**`
+- `docs/archive/2026-06-26/prompts/**`
+- `docs/archive/2026-06-26/skills/**`
+- `scripts/validate_skills.py`
+- `tests/test_skills_validation.py`

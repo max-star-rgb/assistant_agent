@@ -79,6 +79,10 @@ UserRequest
   -> assistant decision or tool call
   -> memory_retrieval / memory_save tool through ToolExecutor
   -> MemoryManager.search(...) or MemoryManager.save_explicit(...)
+       -> allow: MemoryStore.save(...)
+       -> needs confirmation: in-process MemoryPendingConfirmation
+       -> reject: audit-only rejection
+  -> optional API user confirmation/rejection for pending explicit memory
   -> compose_response
   -> save_memory node
   -> MemoryManager.save_from_run(...) when policy allows
@@ -90,7 +94,7 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 
 | module | responsibility |
 | --- | --- |
-| `src/multimodal_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
+| `src/multimodal_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, pending confirmation flow, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
 | `src/multimodal_agent/memory/context_builder.py` | Token-aware, prompt-safe memory context selection and layer rendering. Produces injected items, rendered context, token count, omission count, rejection reasons, and retrieval version. |
 | `src/multimodal_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`, including soft-delete-compatible delete and hard-delete store boundary methods. |
 | `src/multimodal_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract. |
@@ -101,10 +105,10 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/multimodal_agent/memory/profile.py` | Compact `user_profile` memory derived from explicit preference/product/task memories. |
 | `src/multimodal_agent/schemas/identity.py` | `RequestIdentity` contract for request/auth-derived user, tenant, project, session, and allowed memory scopes. |
 | `src/multimodal_agent/tools/memory_tool.py` | Agent-callable `memory`, `memory_retrieval`, and `memory_save` tools. Uses `MemoryManager` from tool context when present. |
-| `src/multimodal_agent/services/memory_audit.py` | User-scoped list/get/export/retention-sweep/delete/audit/event/metrics service over `MemoryManager`. |
+| `src/multimodal_agent/services/memory_audit.py` | User-scoped list/get/export/retention-sweep/delete/audit/event/metrics/confirmation service over `MemoryManager`. |
 | `src/multimodal_agent/services/memory_snapshot.py` | Read-only snapshot combining memory context, session records, conversation history, audit, and storage boundary info. |
 | `src/multimodal_agent/schemas/memory.py` | Public memory contracts and payload safety validation. |
-| `src/multimodal_agent/schemas/memory_audit.py` | API-facing audit/export/retention/delete/list/event/metrics models. |
+| `src/multimodal_agent/schemas/memory_audit.py` | API-facing audit/export/retention/delete/list/event/metrics/confirmation models. |
 | `src/multimodal_agent/schemas/memory_snapshot.py` | API-facing memory boundary snapshot models. |
 
 Agent nodes, assistant loops, API routes, MCP routes, and tools should not depend directly on concrete stores. Use `MemoryManager` or a service that wraps it.
@@ -157,6 +161,7 @@ Use this routing matrix:
 - Validate tool-facing required input.
 - Convert tool input into `MemoryQuery` or `MemoryManager.save_explicit(...)`.
 - Wrap manager output as `ToolResult` and capability output contracts.
+- Surface `MemoryConfirmationRequired` as a recoverable `memory_save` partial result with a `confirmation_id`; it must not report pending confirmation as a completed save.
 - Keep small legacy/mock compatibility paths only when required by existing tests or demos.
 
 It must not own or reimplement:
@@ -280,6 +285,10 @@ Explicit saves:
 - Flow through `memory_save` or `MemoryManager.save_explicit(...)`.
 - Are evaluated by `MemoryWritePolicy.evaluate_explicit_save(...)` before any item is built.
 - Return a `MemoryWriteDecision` with `allowed`, `destination`, `reason`, `require_user_confirmation`, `sensitivity`, `ttl_days`, and `redacted_payload`.
+- If `allowed=True`, the durable `MemoryItem` is built through `build_explicit_memory_item(...)` and still passes `MemoryItem` payload validation before storage.
+- If `require_user_confirmation=True`, the write creates an in-process `MemoryPendingConfirmation` with only redacted summary and safe content preview. No durable memory item is stored until the user confirms it through the confirmation API/service path.
+- Confirming a pending explicit memory re-runs the normal explicit-memory builder on the redacted payload, stores the resulting item, and records both `memory_explicit_saved` and `memory_confirmation_decided` audit events.
+- Rejecting a pending explicit memory records `memory_confirmation_decided` and does not write a memory item.
 - Require non-empty text or summary.
 - Infer memory type from explicit text/content. Stable preferences become `preference`; product-like content becomes `product`; otherwise default is `task`.
 - Do not save raw user text unless `MemoryWritePolicy.auto_save_raw_user_text=True`.
@@ -319,6 +328,8 @@ Default TTL policy:
 
 Sensitive-looking summaries are sanitized. If task-summary sanitization changes the summary and `require_explicit_save_for_sensitive=True`, automatic task-summary saving is skipped.
 
+Current confirmation limit: pending confirmations are process-local in `MemoryManager`. SQLite persists the redacted audit events, but the pending confirmation queue itself does not survive runtime restart yet. A durable confirmation table/store contract is still future work before production use.
+
 ## User Profile
 
 The compact user profile is stored as a normal memory item:
@@ -349,6 +360,9 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 - `GET /memory/users/{user_id}/audit`
 - `GET /memory/users/{user_id}/events`
 - `GET /memory/users/{user_id}/metrics`
+- `GET /memory/users/{user_id}/confirmations`
+- `POST /memory/users/{user_id}/confirmations/{confirmation_id}/confirm`
+- `POST /memory/users/{user_id}/confirmations/{confirmation_id}/reject`
 - `GET /memory/users/{user_id}/profile/status`
 - `POST /memory/users/{user_id}/profile/rebuild`
 - `GET /memory/users/{user_id}/export`
@@ -357,9 +371,11 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 - `DELETE /memory/users/{user_id}/items/{memory_id}`
 - `DELETE /memory/users/{user_id}/sessions/{session_id}`
 
-List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Export is identity-scoped and can omit content with `include_content=false`. Retention sweep scans only identity-visible memories, supports `dry_run=true`, soft-deletes expired items by default, and uses `MemoryManager.hard_delete_for_identity(...)` plus `MemoryStore.hard_delete(...)` when `hard_delete=true`. SQLite removes the row on hard delete; in-memory and JSONL stores already delete physically. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match.
+List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Export is identity-scoped and can omit content with `include_content=false`. Retention sweep scans only identity-visible memories, supports `dry_run=true`, soft-deletes expired items by default, and uses `MemoryManager.hard_delete_for_identity(...)` plus `MemoryStore.hard_delete(...)` when `hard_delete=true`. SQLite removes the row on hard delete; in-memory and JSONL stores already delete physically. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match. Session/user delete also clears identity-visible in-process pending confirmations.
 
-`MemoryManager` records prompt-safe lifecycle events: context load, explicit save/reject, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. In-memory and JSONL paths keep a bounded in-process event list. SQLite schema v2 persists events in `memory_audit_events`, with common filter fields split into columns and the full redacted event saved as JSON payload, so events survive runtime restarts for the local SQLite backend. Production-grade external metrics export, backup packaging, and full rollback/rebuild runbooks remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
+Confirmation endpoints list pending or resolved explicit-memory confirmations and let a user accept or reject a sensitive-but-redacted explicit memory. Confirmed entries become normal durable memory items; rejected or expired entries remain audit/governance state only.
+
+`MemoryManager` records prompt-safe lifecycle events: context load, explicit save/reject, confirmation create/decide, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. In-memory and JSONL paths keep a bounded in-process event list. SQLite schema v2 persists events in `memory_audit_events`, with common filter fields split into columns and the full redacted event saved as JSON payload, so events survive runtime restarts for the local SQLite backend. Production-grade external metrics export, durable confirmation queues, backup packaging, and full rollback/rebuild runbooks remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
 
 `DELETE /beta/users/{user_id}/data` clears memory through `runtime.memory_manager.clear_user(user_id)` as part of broader user-data deletion.
 

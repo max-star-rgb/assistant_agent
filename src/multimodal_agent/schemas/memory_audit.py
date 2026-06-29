@@ -11,6 +11,8 @@ from multimodal_agent.schemas.memory import MemoryItem, MemoryType
 MemoryAuditEventType = Literal[
     "memory_context_loaded",
     "memory_explicit_saved",
+    "memory_confirmation_created",
+    "memory_confirmation_decided",
     "memory_promotion_decided",
     "memory_deleted",
     "memory_hard_deleted",
@@ -22,6 +24,7 @@ MemoryAuditEventType = Literal[
 ]
 MemoryAuditEventOutcome = Literal["succeeded", "skipped", "rejected", "failed"]
 MemoryProfileRepairAction = Literal["none", "create", "update", "delete"]
+MemoryConfirmationStatus = Literal["pending", "confirmed", "rejected", "expired"]
 
 
 class MemoryAuditItem(BaseModel):
@@ -165,6 +168,50 @@ class MemoryMetricsReport(BaseModel):
     by_event_type: dict[str, int] = Field(default_factory=dict)
     by_outcome: dict[str, int] = Field(default_factory=dict)
     counters: dict[str, int] = Field(default_factory=dict)
+
+
+class MemoryPendingConfirmation(BaseModel):
+    """Prompt-safe pending explicit-memory confirmation."""
+
+    confirmation_id: str
+    user_id: str
+    tenant_id: str | None = None
+    project_id: str | None = None
+    session_id: str | None = None
+    memory_id: str | None = None
+    status: MemoryConfirmationStatus = "pending"
+    memory_type: MemoryType
+    scope: str | None = None
+    destination: str
+    sensitivity: str
+    reason: str
+    summary: str
+    redacted_payload: dict[str, Any] = Field(default_factory=dict)
+    content_preview: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    expires_at: datetime | None = None
+    decided_at: datetime | None = None
+    confirmed_memory_id: str | None = None
+
+
+class MemoryConfirmationList(BaseModel):
+    """User-scoped list of pending or resolved memory confirmations."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    user_id: str
+    total: int = Field(ge=0)
+    items: list[MemoryPendingConfirmation] = Field(default_factory=list)
+
+
+class MemoryConfirmationResult(BaseModel):
+    """Result of a memory confirmation decision."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    user_id: str
+    confirmation_id: str
+    status: MemoryConfirmationStatus
+    memory_id: str | None = None
+    confirmation: MemoryPendingConfirmation
 
 
 class MemoryProfileRepairResult(BaseModel):

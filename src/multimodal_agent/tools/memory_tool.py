@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from multimodal_agent.memory.manager import MemoryManager
+from multimodal_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
 from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.memory import MemoryQuery
@@ -235,12 +235,17 @@ def _save_with_manager(
     if not text:
         return _missing_memory_save_content(tool_name)
     identity = RequestIdentity.for_user(user_id=input.user_id, session_id=session_id)
-    item = manager.save_explicit_for_identity(
-        identity,
-        memory_id=f"explicit_memory_{uuid4().hex}",
-        text=text,
-        content=input.content,
-    )
+    try:
+        item = manager.save_explicit_for_identity(
+            identity,
+            memory_id=f"explicit_memory_{uuid4().hex}",
+            text=text,
+            content=input.content,
+        )
+    except MemoryConfirmationRequired as exc:
+        return _memory_confirmation_required_result(tool_name, exc)
+    except ValueError as exc:
+        return _memory_save_rejected_result(tool_name, str(exc))
     display_item = item.model_copy(update={"summary": "已保存用户偏好。"})
     data = display_item.model_dump(mode="json")
     output_ref = f"local://memory/{item.memory_id}"
@@ -258,6 +263,65 @@ def _save_with_manager(
         output_ref=output_ref,
         latency_ms=1,
         contract=contract,
+    )
+
+
+def _memory_confirmation_required_result(tool_name: str, exc: MemoryConfirmationRequired) -> ToolResult:
+    confirmation = exc.confirmation
+    data = {
+        "requires_confirmation": True,
+        "confirmation_id": confirmation.confirmation_id,
+        "status": confirmation.status,
+        "summary": confirmation.summary,
+        "reason": confirmation.reason,
+        "expires_at": confirmation.expires_at.isoformat() if confirmation.expires_at else None,
+    }
+    output_ref = f"local://memory/confirmations/{confirmation.confirmation_id}"
+    contract = build_capability_output_contract(
+        capability="memory_save",
+        status="partial",
+        output_ref=output_ref,
+        data=data,
+        errors=[
+            {
+                "code": "memory_confirmation_required",
+                "message": "记忆包含需要用户确认的敏感内容，确认后才会保存。",
+                "recoverable": True,
+            }
+        ],
+        metadata={"provider": "local", "source": "memory_manager", "requires_confirmation": True},
+    )
+    return ToolResult(
+        tool_name=tool_name,
+        success=False,
+        data={**data, "contract": contract.model_dump(mode="json")},
+        error="记忆包含需要用户确认的敏感内容，确认后才会保存。",
+        output_ref=output_ref,
+        latency_ms=1,
+        contract=contract,
+    )
+
+
+def _memory_save_rejected_result(tool_name: str, reason: str) -> ToolResult:
+    contract = build_capability_output_contract(
+        capability="memory_save",
+        status="failed",
+        errors=[
+            {
+                "code": "memory_write_rejected",
+                "message": reason or "记忆写入被策略拒绝。",
+                "recoverable": False,
+            }
+        ],
+        metadata={"provider": "local", "source": "memory_manager"},
+    )
+    return ToolResult(
+        tool_name=tool_name,
+        success=False,
+        error=reason or "记忆写入被策略拒绝。",
+        latency_ms=1,
+        contract=contract,
+        data={"contract": contract.model_dump(mode="json")},
     )
 
 

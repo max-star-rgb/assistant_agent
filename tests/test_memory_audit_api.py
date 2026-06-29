@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.api import routes_agent
 from multimodal_agent.api.app import create_app
+from multimodal_agent.memory.manager import MemoryConfirmationRequired
 from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
 from multimodal_agent.memory.store import InMemoryStore
 from multimodal_agent.schemas.identity import RequestIdentity
@@ -173,6 +175,33 @@ def test_memory_audit_api_lists_events_and_metrics(monkeypatch) -> None:
     assert metric_payload["by_event_type"]["memory_exported"] == 1
     assert metric_payload["counters"]["memory.write.allowed.count"] == 1
     assert metric_payload["counters"]["memory.export.count"] == 1
+
+
+def test_memory_audit_api_confirms_pending_sensitive_memory(monkeypatch) -> None:
+    store = InMemoryStore()
+    runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+    with pytest.raises(MemoryConfirmationRequired) as raised:
+        runtime.memory_manager.save_explicit_for_identity(
+            identity,
+            text="记住我的项目路径是 /home/alice/private/project",
+        )
+    confirmation_id = raised.value.confirmation.confirmation_id
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    listed = client.get("/memory/users/u1/confirmations")
+    confirmed = client.post(f"/memory/users/u1/confirmations/{confirmation_id}/confirm")
+    item = client.get(f"/memory/users/u1/items/{confirmed.json()['memory_id']}")
+
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert listed.json()["items"][0]["status"] == "pending"
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "confirmed"
+    assert item.status_code == 200
+    assert item.json()["summary"] == "我的项目路径是 [redacted]"
+    assert item.json()["content"]["consent"] == "explicit_confirmation"
 
 
 def test_memory_audit_api_checks_and_rebuilds_user_profile(monkeypatch) -> None:

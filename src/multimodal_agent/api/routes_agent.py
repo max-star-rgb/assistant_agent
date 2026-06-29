@@ -17,6 +17,8 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryAuditItem,
     MemoryAuditList,
     MemoryAuditReport,
+    MemoryConfirmationList,
+    MemoryConfirmationResult,
     MemoryDeleteResult,
     MemoryExport,
     MemoryMetricsReport,
@@ -301,6 +303,57 @@ def get_memory_metrics(
 ) -> MemoryMetricsReport:
     identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     return _memory_audit_service().metrics_for_identity(identity)
+
+
+@router.get("/memory/users/{user_id}/confirmations", response_model=MemoryConfirmationList)
+def list_memory_confirmations(
+    user_id: str,
+    include_resolved: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryConfirmationList:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    return _memory_audit_service().confirmations_for_identity(
+        identity,
+        include_resolved=include_resolved,
+    )
+
+
+@router.post("/memory/users/{user_id}/confirmations/{confirmation_id}/confirm", response_model=MemoryConfirmationResult)
+def confirm_memory_confirmation(
+    user_id: str,
+    confirmation_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryConfirmationResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    try:
+        result = _memory_audit_service().confirm_memory_for_identity(
+            identity,
+            confirmation_id=confirmation_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="memory confirmation not found")
+    return result
+
+
+@router.post("/memory/users/{user_id}/confirmations/{confirmation_id}/reject", response_model=MemoryConfirmationResult)
+def reject_memory_confirmation(
+    user_id: str,
+    confirmation_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryConfirmationResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    try:
+        result = _memory_audit_service().reject_memory_for_identity(
+            identity,
+            confirmation_id=confirmation_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="memory confirmation not found")
+    return result
 
 
 @router.get("/memory/users/{user_id}/profile/status", response_model=MemoryProfileRepairResult)

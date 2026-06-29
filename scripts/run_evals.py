@@ -36,7 +36,6 @@ from multimodal_agent.services.provider_errors import build_provider_error
 from multimodal_agent.services.provider_policy import RetryPolicy
 from multimodal_agent.services.trace_store import InMemoryTraceStore
 from multimodal_agent.mcp.server import OfflineMCPServer
-from scripts.validate_skills import validate_skills
 
 
 DEFAULT_CASES_PATH = ROOT / "tests" / "evals" / "eval_cases.json"
@@ -380,13 +379,10 @@ def evaluate_plan_mode_case(case: dict[str, Any], router_mode: str = "rule") -> 
 
 
 def evaluate_packaging_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
-    """Evaluate offline MCP / Skills packaging checks."""
+    """Evaluate offline MCP packaging checks."""
 
     scenario = case.get("packaging_scenario")
-    if scenario == "skills_validate":
-        validation = validate_skills(ROOT / "skills")
-        passed = validation["ok"] is True
-    elif scenario == "mcp_tool_inventory":
+    if scenario == "mcp_tool_inventory":
         tools = {tool["name"] for tool in OfflineMCPServer().list_tools()}
         passed = {"agent_run", "tool_list", "tool_run", "demo_flow_run"}.issubset(tools)
     elif scenario == "mcp_smoke_redaction":

@@ -71,7 +71,7 @@ AssistantDecision -> ActionValidator -> ToolExecutor
 - FastAPI HTTP API。
 - WebSocket event stream。
 - Inbound A2A JSON-RPC protocol adapter。
-- MCP server / skills packaging boundary。
+- MCP server packaging boundary。
 
 接口层只负责协议转换、鉴权/用户边界、请求响应模型适配。它不应该绕过 `AgentGraphRuntime`、`ToolExecutor`、`MemoryManager` 或治理策略直接执行能力。
 

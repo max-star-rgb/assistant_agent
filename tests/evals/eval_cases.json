@@ -1635,16 +1635,6 @@
     "expected_tools": []
   },
   {
-    "id": "packaging_skills_validate_001",
-    "category": "packaging",
-    "suite": "packaging",
-    "scenario_id": "skills_validate",
-    "packaging_scenario": "skills_validate",
-    "expected_intent": "packaging",
-    "expected_capability": "packaging",
-    "expected_tools": []
-  },
-  {
     "id": "packaging_mcp_tool_inventory_001",
     "category": "packaging",
     "suite": "packaging",
