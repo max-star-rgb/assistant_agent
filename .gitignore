@@ -18,6 +18,7 @@ htmlcov/
 /docs/*
 !/docs/CODEX_PROJECT_GUIDE.md
 !/docs/agent-communication-routing.md
+!/docs/architecture-layers.md
 !/docs/CONTEXT_ENGINEERING_STATUS.md
 !/docs/DOCS_INDEX.md
 !/docs/memory-service-architecture.md
@@ -27,4 +28,5 @@ htmlcov/
 /prompts/
 /skills/
 /demo_data/
-/tests/
+/tests/*
+!/tests/test_agent_communication_*.py

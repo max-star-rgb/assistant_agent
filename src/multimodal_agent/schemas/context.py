@@ -28,6 +28,10 @@ class ContextBudgetReport(BaseModel):
     observations_chars: int = Field(default=0, ge=0)
     tool_spec_chars: int = Field(default=0, ge=0)
     total_chars: int = Field(default=0, ge=0)
+    max_chars: int = Field(default=0, ge=0)
+    over_budget: bool = False
+    trimmed_chars: int = Field(default=0, ge=0)
+    trimmed_sections: list[str] = Field(default_factory=list)
 
 
 class ToolCatalogSummary(BaseModel):

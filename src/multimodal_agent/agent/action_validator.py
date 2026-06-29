@@ -97,6 +97,11 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
         return _reject("invalid_tool_input", "memory_retrieval requires query.")
     if tool_name == "memory_save" and not _has_memory_save_text(tool_input):
         return _reject("invalid_tool_input", "memory_save requires query, content.text, or content.summary.")
+    if tool_name == "delegate_to_agent":
+        if not tool_input.get("target_agent_id"):
+            return _reject("invalid_tool_input", "delegate_to_agent requires target_agent_id.")
+        if not _has_agent_delegation_payload(tool_input):
+            return _reject("invalid_tool_input", "delegate_to_agent requires text, image_ids, video_ids, or audio_id.")
     return None
 
 
@@ -107,6 +112,15 @@ def _has_memory_save_text(tool_input: dict[str, Any]) -> bool:
     if not isinstance(content, dict):
         return False
     return bool(content.get("text") or content.get("summary"))
+
+
+def _has_agent_delegation_payload(tool_input: dict[str, Any]) -> bool:
+    return bool(
+        tool_input.get("text")
+        or tool_input.get("image_ids")
+        or tool_input.get("video_ids")
+        or tool_input.get("audio_id")
+    )
 
 
 def _has_explicit_render_intent(text: str, tool_input: dict[str, Any]) -> bool:

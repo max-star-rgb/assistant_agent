@@ -72,6 +72,18 @@ def test_contextual_followup_can_use_recent_memory_fallback() -> None:
     assert [item.memory_id for item in results] == ["task_recent"]
 
 
+def test_empty_query_lists_recent_memory_for_audit_browsing() -> None:
+    store = InMemoryStore()
+    store.save(memory_item("pref", "preference", "用户喜欢日系极简风格。"))
+    store.save(memory_item("task", "task", "曾经先搜索商品再比较价格。"))
+
+    results = MemoryRetrievalStrategy(store).retrieve(
+        MemoryQuery(user_id="u1", query="", top_k=5)
+    )
+
+    assert {item.memory_id for item in results} == {"pref", "task"}
+
+
 def test_chinese_phrase_retrieval_matches_relevant_fragments_without_global_fallback() -> None:
     store = InMemoryStore()
     store.save(memory_item("pref", "preference", "用户喜欢日系极简风格。"))

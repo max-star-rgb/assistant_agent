@@ -12,7 +12,7 @@ Main directories:
 
 - `src/multimodal_agent/agent/`: Agent runtime, assistant loop, compatibility conditional graph, action validation, tool execution, response composition, loop/plan guards.
 - `src/multimodal_agent/tools/`: Agent-callable tool boundary and `ToolSpec` contracts.
-- `src/multimodal_agent/services/`: Runtime services such as chat adapters, provider selection, trace/session/run history, context building, demo examples, provider readiness, and memory audit.
+- `src/multimodal_agent/services/`: Runtime services such as chat adapters, provider selection, trace/session/run history, context building, agent communication routing, demo examples, provider readiness, and memory audit.
 - `src/multimodal_agent/providers/`: Optional real provider adapters such as Ark, Qwen, and Haodanku.
 - `src/multimodal_agent/memory/`: `MemoryManager`, stores, retrieval, write policy, local JSONL/in-memory memory.
 - `src/multimodal_agent/api/`: FastAPI HTTP routes, WebSocket stream, and static Web Console.
@@ -45,6 +45,7 @@ Relationship between subsystems:
 - Provider adapters implement specific model/API backends, but the assistant never calls them directly.
 - Tools are the stable capability boundary between Agent decisions and adapters.
 - Memory is accessed through `MemoryManager` and memory tools; API/Agent should not bypass store governance.
+- Agent communication is an optional internal boundary for future multi-agent routing. The current default remains single `agent.default`; `delegate_to_agent` is registry-level opt-in only, local multi-runtime tests use `create_local_agent_communication_service`, and communication services must not change default CLI/API/demo behavior.
 - API and WebSocket wrap the same `AgentGraphRuntime`.
 - Demo and eval scripts use the same runtime with deterministic local inputs.
 
@@ -78,8 +79,8 @@ Real provider opt-in:
 | `prompts/` | Historical prompt starters | docs only |
 | `skills/` | Repository-local Codex skills and old phase runners | docs only |
 | `haodanku-openapi-docs/` | Haodanku provider reference docs | docs only |
-| `src/**` | Application source code | do not touch for this task |
-| `tests/**` | Test suite and eval cases | read-only in this task |
+| `src/**` | Application source code | edit only for implementation tasks |
+| `tests/**` | Test suite and eval cases | update with behavior changes |
 | `scripts/` | CLI/server/eval/demo/smoke helpers | read-only unless explicitly requested |
 | `demo_data/` | Safe local demo fixtures | read-only unless explicitly requested |
 | `.env` | Local untracked environment file | do not touch |
@@ -105,6 +106,7 @@ Real provider opt-in:
 | 新增 demo 场景 | `docs/demo-flows.md`, `demo_data/scenarios/e2e_demo_scenarios.json`, `scripts/run_demo_flows.py` | `demo_data/**`, tests if explicitly requested | `python scripts/run_demo_flows.py`, `python -m pytest tests/test_demo_scenario_matrix.py` |
 | 调整 provider mock | `docs/configuration.md`, `docs/provider-setup.md`, relevant service adapter, provider tests | `src/multimodal_agent/services/**`, `src/multimodal_agent/tools/**`, tests | `python -m pytest tests/test_provider_config.py tests/test_provider_selection.py` |
 | 调整 memory 行为 | `docs/memory-service-architecture.md`, `src/multimodal_agent/memory/**`, memory tools/services, memory tests | `src/multimodal_agent/memory/**`, memory tools/services, tests | `python -m pytest tests/test_memory_manager.py tests/test_memory_*` |
+| 调整 agent communication 行为 | `docs/agent-communication-routing.md`, `src/multimodal_agent/schemas/agent_communication.py`, `src/multimodal_agent/services/agent_*.py`, `src/multimodal_agent/tools/agent_delegation_tool.py` | agent communication schemas/services/tools/routes as needed, tests | `python -m pytest tests/test_agent_communication_*.py` |
 | 更新 eval | `scripts/run_evals.py`, `tests/evals/eval_cases.json`, `docs/development.md` | `tests/evals/**`, `scripts/run_evals.py` if requested | `python scripts/run_evals.py` |
 | 更新 API 文档 | `docs/observability-local.md`, `src/multimodal_agent/api/routes_agent.py`, API tests | docs first; source only in implementation tasks | `python -m pytest tests/test_api_* tests/test_websocket_*` |
 | Work on Haodanku provider | `haodanku-openapi-docs/AI使用说明.md`, `haodanku-openapi-docs/接口目录.md`, relevant interface doc | provider docs/source only when task asks | `python -m pytest tests/test_haodanku_product_search_adapter.py` |
@@ -151,6 +153,7 @@ If a command is missing or fails during a docs-only task, record the command and
 - `docs/CODEX_PROJECT_GUIDE.md` is the current Codex project understanding entry.
 - `docs/DOCS_INDEX.md` is the documentation inventory and cleanup status source.
 - `docs/memory-service-architecture.md` is the current memory service architecture and routing entry.
+- `docs/agent-communication-routing.md` is the current agent communication routing and A2A adapter boundary entry.
 - `docs/TESTS_REVIEW.md` is the tests cleanup/readiness audit.
 - Top-level `docs/*.md` are current user/developer references unless the index says otherwise.
 - Historical phase/task/skill docs are retained or archived by default, not deleted directly.

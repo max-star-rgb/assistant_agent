@@ -1,0 +1,115 @@
+"""Directory for optional multi-agent instance routing."""
+
+from __future__ import annotations
+
+from multimodal_agent.schemas.agent_communication import (
+    DEFAULT_AGENT_ID,
+    AgentCommunicationError,
+    AgentInstance,
+    AgentRouteRequest,
+    AgentRouteResult,
+)
+
+
+class AgentDirectory:
+    """In-memory registry of enabled agent runtime identities."""
+
+    def __init__(self, instances: list[AgentInstance] | None = None) -> None:
+        self._instances: dict[str, AgentInstance] = {}
+        for instance in instances or [default_agent_instance()]:
+            self.register(instance)
+
+    def register(self, instance: AgentInstance) -> None:
+        if instance.agent_id in self._instances:
+            raise ValueError(f"Agent already registered: {instance.agent_id}")
+        self._instances[instance.agent_id] = instance
+
+    def get(self, agent_id: str) -> AgentInstance | None:
+        return self._instances.get(agent_id)
+
+    def list(self, *, include_disabled: bool = False) -> list[AgentInstance]:
+        instances = sorted(self._instances.values(), key=lambda item: item.agent_id)
+        if include_disabled:
+            return instances
+        return [instance for instance in instances if instance.enabled]
+
+    def resolve(self, request: AgentRouteRequest) -> AgentRouteResult:
+        """Resolve a target agent by explicit id or capability."""
+
+        if request.target_agent_id:
+            return self._resolve_agent_id(request.target_agent_id)
+        if request.capability:
+            matches = [
+                instance
+                for instance in self.list()
+                if request.capability in set(instance.capabilities)
+            ]
+            if len(matches) == 1:
+                return AgentRouteResult(status="routed", instance=matches[0])
+            if len(matches) > 1:
+                return AgentRouteResult(
+                    status="failed",
+                    error=AgentCommunicationError(
+                        code="agent_route_ambiguous",
+                        message=f"Multiple agents match capability: {request.capability}",
+                        detail={"capability": request.capability, "agent_ids": [item.agent_id for item in matches]},
+                        recoverable=True,
+                    ),
+                )
+            return AgentRouteResult(
+                status="failed",
+                error=AgentCommunicationError(
+                    code="agent_capability_not_found",
+                    message=f"No enabled agent supports capability: {request.capability}",
+                    detail={"capability": request.capability},
+                    recoverable=True,
+                ),
+            )
+        return self._resolve_agent_id(DEFAULT_AGENT_ID)
+
+    def _resolve_agent_id(self, agent_id: str) -> AgentRouteResult:
+        instance = self.get(agent_id)
+        if instance is None:
+            return AgentRouteResult(
+                status="failed",
+                error=AgentCommunicationError(
+                    code="agent_not_found",
+                    message=f"Agent not found: {agent_id}",
+                    detail={"agent_id": agent_id},
+                    recoverable=True,
+                ),
+            )
+        if not instance.enabled:
+            return AgentRouteResult(
+                status="failed",
+                error=AgentCommunicationError(
+                    code="agent_disabled",
+                    message=f"Agent is disabled: {agent_id}",
+                    detail={"agent_id": agent_id},
+                    recoverable=True,
+                ),
+            )
+        return AgentRouteResult(status="routed", instance=instance)
+
+
+def default_agent_instance() -> AgentInstance:
+    """Return the default single-agent runtime identity."""
+
+    return AgentInstance(
+        agent_id=DEFAULT_AGENT_ID,
+        display_name="Default Agent",
+        description="Default local AgentGraphRuntime instance.",
+        capabilities=[
+            "chat",
+            "tool_calling",
+            "vision_understanding",
+            "video_understanding",
+            "product_search",
+            "price_compare",
+            "image_generation",
+            "render_3d",
+            "memory",
+        ],
+        transports=["local"],
+        metadata={"default": True, "offline": True},
+    )

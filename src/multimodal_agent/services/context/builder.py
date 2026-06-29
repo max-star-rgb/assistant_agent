@@ -11,6 +11,11 @@ from multimodal_agent.services.context.compaction import compact_observations_fo
 from multimodal_agent.services.context.tool_catalog import select_prompt_tool_specs
 
 
+DEFAULT_CONTEXT_BUDGET_MAX_CHARS = 12_000
+CONTEXT_BUDGET_METADATA_KEY = "context_budget_max_chars"
+MIN_CONTEXT_BUDGET_MAX_CHARS = 500
+
+
 def build_assistant_context_pack(
     *,
     state: AgentState,
@@ -39,34 +44,59 @@ def build_assistant_context_pack(
     tool_catalog = select_prompt_tool_specs(active_request, active_tool_specs)
     prompt_tool_specs = tool_catalog.prompt_tool_specs
     plan_state = build_assistant_plan_context(state)
-    return AssistantContextPack(
+    source_counts = _source_counts(
+        request=active_request,
+        memory_summaries=summaries,
+        memory_blocks=memory_blocks,
+        observations=active_observations,
+        tool_specs=active_tool_specs,
+        prompt_tool_specs=prompt_tool_specs,
+    )
+    initial_budget = _budget_report(
         request=active_request,
         conversation_text=conversation_text,
-        memory_summaries=summaries,
         memory_text=text,
-        memory_blocks=memory_blocks,
         plan_state=plan_state,
         observations=context_observations,
+        tool_specs=prompt_tool_specs,
+    )
+    budget_limit = _context_budget_limit(active_request)
+    budgeted = _enforce_context_budget(
+        request=active_request,
+        conversation_text=conversation_text,
+        memory_text=text,
+        observations=context_observations,
+        plan_state=plan_state,
+        tool_specs=prompt_tool_specs,
+        max_chars=budget_limit,
+    )
+    if budgeted.memory_text == "":
+        summaries = []
+    return AssistantContextPack(
+        request=active_request,
+        conversation_text=budgeted.conversation_text,
+        memory_summaries=summaries,
+        memory_text=budgeted.memory_text,
+        memory_blocks=memory_blocks,
+        plan_state=plan_state,
+        observations=budgeted.observations,
         tool_specs=active_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
         tool_catalog_summary=tool_catalog.summary,
         iteration=iteration,
         max_iterations=max_iterations,
-        source_counts=_source_counts(
-            request=active_request,
-            memory_summaries=summaries,
-            memory_blocks=memory_blocks,
-            observations=active_observations,
-            tool_specs=active_tool_specs,
-            prompt_tool_specs=prompt_tool_specs,
-        ),
+        source_counts=source_counts,
         budget=_budget_report(
             request=active_request,
-            conversation_text=conversation_text,
-            memory_text=text,
+            conversation_text=budgeted.conversation_text,
+            memory_text=budgeted.memory_text,
             plan_state=plan_state,
-            observations=context_observations,
+            observations=budgeted.observations,
             tool_specs=prompt_tool_specs,
+            max_chars=budget_limit,
+            over_budget=initial_budget.total_chars > budget_limit,
+            trimmed_chars=max(0, initial_budget.total_chars - budgeted.total_chars),
+            trimmed_sections=budgeted.trimmed_sections,
         ),
     )
 
@@ -146,6 +176,10 @@ def _budget_report(
     plan_state: AssistantPlanContext,
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
+    max_chars: int = 0,
+    over_budget: bool = False,
+    trimmed_chars: int = 0,
+    trimmed_sections: list[str] | None = None,
 ) -> ContextBudgetReport:
     request_chars = len(request.text or "")
     conversation_chars = len(conversation_text)
@@ -169,6 +203,10 @@ def _budget_report(
         observations_chars=observations_chars,
         tool_spec_chars=tool_spec_chars,
         total_chars=total_chars,
+        max_chars=max_chars,
+        over_budget=over_budget,
+        trimmed_chars=trimmed_chars,
+        trimmed_sections=trimmed_sections or [],
     )
 
 
@@ -183,3 +221,153 @@ def _json_chars(value: Any) -> int:
 def _metadata_int(request: UserRequest, key: str) -> int:
     value = request.metadata.get(key)
     return value if isinstance(value, int) and value >= 0 else 0
+
+
+class _BudgetedContext:
+    def __init__(
+        self,
+        *,
+        conversation_text: str,
+        memory_text: str,
+        observations: list[dict[str, Any]],
+        total_chars: int,
+        trimmed_sections: list[str],
+    ) -> None:
+        self.conversation_text = conversation_text
+        self.memory_text = memory_text
+        self.observations = observations
+        self.total_chars = total_chars
+        self.trimmed_sections = trimmed_sections
+
+
+def _context_budget_limit(request: UserRequest) -> int:
+    value = request.metadata.get(CONTEXT_BUDGET_METADATA_KEY)
+    if isinstance(value, int):
+        return max(MIN_CONTEXT_BUDGET_MAX_CHARS, value)
+    return DEFAULT_CONTEXT_BUDGET_MAX_CHARS
+
+
+def _enforce_context_budget(
+    *,
+    request: UserRequest,
+    conversation_text: str,
+    memory_text: str,
+    observations: list[dict[str, Any]],
+    plan_state: AssistantPlanContext,
+    tool_specs: list[ToolSpec],
+    max_chars: int,
+) -> _BudgetedContext:
+    budget = _budget_report(
+        request=request,
+        conversation_text=conversation_text,
+        memory_text=memory_text,
+        plan_state=plan_state,
+        observations=observations,
+        tool_specs=tool_specs,
+    )
+    if budget.total_chars <= max_chars:
+        return _BudgetedContext(
+            conversation_text=conversation_text,
+            memory_text=memory_text,
+            observations=observations,
+            total_chars=budget.total_chars,
+            trimmed_sections=[],
+        )
+
+    trimmed_sections: list[str] = []
+    fixed_chars = budget.request_chars + budget.plan_chars + budget.tool_spec_chars
+    available = max(0, max_chars - fixed_chars)
+
+    budgeted_memory_text = memory_text
+    observation_chars = _json_chars(observations)
+    target_memory_chars = max(0, available - observation_chars - len(conversation_text))
+    if len(budgeted_memory_text) > target_memory_chars:
+        budgeted_memory_text = _clip_text_to_chars(budgeted_memory_text, target_memory_chars)
+        trimmed_sections.append("memory")
+
+    budgeted_conversation_text = conversation_text
+    used_after_memory = observation_chars + len(budgeted_memory_text)
+    target_conversation_chars = max(0, available - used_after_memory)
+    if len(budgeted_conversation_text) > target_conversation_chars:
+        budgeted_conversation_text = _clip_text_to_chars(
+            budgeted_conversation_text,
+            target_conversation_chars,
+        )
+        trimmed_sections.append("conversation")
+
+    budgeted_observations = observations
+    used_after_text_context = len(budgeted_memory_text) + len(budgeted_conversation_text)
+    target_observation_chars = max(0, available - used_after_text_context)
+    if _json_chars(budgeted_observations) > target_observation_chars:
+        budgeted_observations = _trim_observations_to_chars(
+            budgeted_observations,
+            max_chars=target_observation_chars,
+        )
+        trimmed_sections.append("observations")
+
+    final_budget = _budget_report(
+        request=request,
+        conversation_text=budgeted_conversation_text,
+        memory_text=budgeted_memory_text,
+        plan_state=plan_state,
+        observations=budgeted_observations,
+        tool_specs=tool_specs,
+    )
+    return _BudgetedContext(
+        conversation_text=budgeted_conversation_text,
+        memory_text=budgeted_memory_text,
+        observations=budgeted_observations,
+        total_chars=final_budget.total_chars,
+        trimmed_sections=trimmed_sections,
+    )
+
+
+def _trim_observations_to_chars(
+    observations: list[dict[str, Any]],
+    *,
+    max_chars: int,
+) -> list[dict[str, Any]]:
+    if max_chars <= 0 or not observations:
+        return []
+    if _json_chars(observations) <= max_chars:
+        return observations
+
+    candidate = [_summarize_observation_for_budget(observation) for observation in observations]
+    while len(candidate) > 1 and _json_chars(candidate) > max_chars:
+        candidate = candidate[1:]
+    if _json_chars(candidate) <= max_chars:
+        return candidate
+
+    latest = candidate[-1]
+    latest_summary = _clip_text_to_chars(str(latest.get("summary") or ""), 80)
+    fallback = [
+        {
+            "tool_name": latest.get("tool_name"),
+            "status": latest.get("status"),
+            "summary": latest_summary,
+            "budget_trimmed": True,
+        }
+    ]
+    return fallback if _json_chars(fallback) <= max_chars else []
+
+
+def _summarize_observation_for_budget(observation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tool_name": observation.get("tool_name"),
+        "status": observation.get("status"),
+        "summary": _clip_text_to_chars(str(observation.get("summary") or ""), 160),
+        "output_ref": observation.get("output_ref"),
+        "error_code": observation.get("error_code"),
+        "error_message": _clip_text_to_chars(str(observation.get("error_message") or ""), 160),
+        "budget_trimmed": True,
+    }
+
+
+def _clip_text_to_chars(value: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(value) <= max_chars:
+        return value
+    if max_chars <= 20:
+        return value[:max_chars]
+    return value[: max_chars - 15].rstrip() + "...[trimmed]"

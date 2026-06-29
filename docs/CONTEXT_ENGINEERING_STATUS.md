@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-06-27
+Last updated: 2026-06-29
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件，再读对应源码和测试。
 
@@ -12,6 +12,7 @@ Last updated: 2026-06-27
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、plan state、tool observations、tool specs、source counts 和 budget。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - `MemoryManager` 负责加载分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
+- Assistant context 已有字符预算兜底；超限时优先压缩 memory/conversation，最后才压缩工具 observation。
 - Trace/API 已暴露 context budget、source counts、tool catalog summary 和 observation compaction summary。
 
 ## Implemented
@@ -50,13 +51,16 @@ Last updated: 2026-06-27
 ### Context Budget And Observability
 
 - `ContextBudgetReport` 统计 request、conversation、memory、plan、observations、tool specs 和 total chars。
+- 默认 context 字符预算是 12000 chars；测试或特定调用可通过 request metadata `context_budget_max_chars` 下调。
+- 超过预算时会在 prompt 副本中裁剪 memory、conversation 和 observations，并记录 `over_budget`、`trimmed_chars`、`trimmed_sections`。
+- 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
 - assistant decision trace 写入 budget、source counts、compaction summary 和 tool catalog summary。
 - `/runs/{run_id}` 与 `/traces/{trace_id}` 可查询 context 相关摘要。
 
 ## Current Limitations
 
 - 当前压缩是 deterministic formatting/truncation，不是 LLM 生成式长期摘要。
-- 当前预算是 approximate character budget，不是严格 token-aware budget。
+- 当前预算是 approximate character budget，不是严格 token-aware budget；这是有意保持简单。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
 - 会话历史压缩只压较早轮次文本，不做跨轮语义重写、事实抽取或冲突消解。
 - assistant loop 的真实 LLM 路径中，长期记忆写入应由 assistant 通过 `memory_save` 工具显式选择；图尾不会自动写长期 task summary。
@@ -83,10 +87,10 @@ Last updated: 2026-06-27
 - `tests/test_phase8a1_react_action_quality.py`
 - `tests/test_trace_query_api.py`
 
+Current small regression coverage includes budget trimming order, product observation field preservation, prompt data-boundary labels, empty-query memory browsing, conversation compaction, trace context summaries, and run-summary context reporting.
+
 ## Next Steps
 
-- Add token-aware budgeting behind the existing `ContextBudgetReport` boundary.
-- Add optional semantic summary generation for older conversation history, with deterministic offline behavior for tests.
-- Add optional embedding/vector retrieval behind `MemoryManager` and `MemoryStore`.
-- Add stronger evals for context relevance, prompt injection resistance, and multi-turn factual continuity.
-- Keep real provider summarization or embedding opt-in only under controlled runtime profiles.
+- Keep adding small regression tests when a concrete context failure appears.
+- Consider token-aware budgeting only if character budgeting causes real provider failures.
+- Consider semantic summary or embedding retrieval only after local relevance tests show keyword retrieval is insufficient.

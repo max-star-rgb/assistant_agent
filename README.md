@@ -9,6 +9,7 @@
 - 工具调用通过 `AssistantDecision -> ActionValidator -> ToolExecutor -> ToolRegistry -> Tool` 边界执行，不应绕过 validator、executor、policy 或 audit。
 - Provider 默认走 mock/local/offline 路径。API key 只用于显式 opt-in 的真实 Provider smoke/pilot，不会因为本地存在 key 自动启用真实调用。
 - Memory、demo、eval、CLI 和 Web UI 均围绕同一套本地优先运行时组织。
+- Agent communication 目前实现内部本地边界：默认仍是单 `agent.default`，`delegate_to_agent` 只通过显式 registry opt-in 注册，可通过 `create_local_agent_communication_service` + `LocalAgentTransport` 做本进程多 runtime 离线路由测试；尚未接入完整 gateway 或 A2A 网络协议。
 
 ## Quick Start
 
@@ -77,6 +78,7 @@ structured observations -> final answer / events / audit logs
 | --- | --- |
 | `src/multimodal_agent/api/` | FastAPI app、routes、server/client integration |
 | `src/multimodal_agent/agent/` | LangGraph runtime、assistant loop、决策、验证、执行、事件 |
+| `src/multimodal_agent/services/` | runtime services、context、trace、session、agent communication、provider 管理 |
 | `src/multimodal_agent/providers/` | LLM、图片、视频等 provider adapter 与 profile 配置 |
 | `src/multimodal_agent/tools/` | Tool registry、工具实现、工具策略和审计边界 |
 | `src/multimodal_agent/memory/` | 会话记忆、检索、存储、memory provider |
@@ -129,6 +131,7 @@ structured observations -> final answer / events / audit logs
 - [Quickstart](docs/quickstart.md)
 - [Architecture](docs/architecture.md)
 - [Memory Service Architecture](docs/memory-service-architecture.md)
+- [Agent Communication Routing](docs/agent-communication-routing.md)
 - [Capabilities](docs/capabilities.md)
 - [Configuration](docs/configuration.md)
 - [Provider Setup](docs/provider-setup.md)

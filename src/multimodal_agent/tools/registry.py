@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Dict
+from typing import TYPE_CHECKING, Any, List, Dict
 
 from pydantic import BaseModel
 
 from multimodal_agent.config import ProviderConfig
 from multimodal_agent.schemas.tools import ToolResult, ToolSpec
 from multimodal_agent.tools.base import BaseTool, ToolContext
+from multimodal_agent.tools.agent_delegation_tool import AgentDelegationTool
 from multimodal_agent.tools.image_generation_tool import ImageGenerationTool
 from multimodal_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool, MemoryTool
 from multimodal_agent.tools.price_compare_tool import PriceCompareTool
@@ -22,6 +23,9 @@ from multimodal_agent.services.video_adapter import create_video_understanding_a
 from multimodal_agent.services.video_context import VideoContextStore
 from multimodal_agent.tools.video_tool import VideoUnderstandingTool
 from multimodal_agent.tools.vision_tool import VisionUnderstandingTool
+
+if TYPE_CHECKING:
+    from multimodal_agent.services.agent_communication import AgentCommunicationService
 
 
 class ToolRegistry:
@@ -168,6 +172,23 @@ _ACTION_USAGE: dict[str, dict[str, list[str]]] = {
             "Memory writes must remain concise, auditable, and about long-term user/project value.",
         ],
     },
+    "delegate_to_agent": {
+        "when_to_use": [
+            "A task must be delegated to another enabled local agent instance.",
+            "The caller has an explicit target_agent_id and a bounded delegation task.",
+        ],
+        "when_not_to_use": [
+            "Default single-agent runs.",
+            "No target_agent_id is provided.",
+            "The target is the current/source agent.",
+            "Remote A2A or network agent calls are needed; this local tool does not perform network transport.",
+        ],
+        "runtime_constraints": [
+            "Opt-in only; not registered in the default ToolRegistry.",
+            "Requires target_agent_id and text, image_ids, video_ids, or audio_id.",
+            "Must execute through ActionValidator and ToolExecutor.",
+        ],
+    },
 }
 
 
@@ -175,6 +196,8 @@ def create_default_registry(
     config: ProviderConfig | None = None,
     *,
     video_context_store: VideoContextStore | None = None,
+    enable_agent_delegation: bool = False,
+    agent_communication_service: AgentCommunicationService | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for tool in (
@@ -189,4 +212,8 @@ def create_default_registry(
         MemorySaveTool(),
     ):
         registry.register(tool)
+    if enable_agent_delegation:
+        if agent_communication_service is None:
+            raise ValueError("agent_communication_service is required when agent delegation is enabled")
+        registry.register(AgentDelegationTool(agent_communication_service))
     return registry
