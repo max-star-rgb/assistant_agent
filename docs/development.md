@@ -41,5 +41,6 @@ Task specs live in `tasks/`. Phase docs live in `docs/`. They are implementation
 
 ## Development Plans
 
+- `docs/development/agent-control-plane-plan.md`: phased Local Multi-Agent Gateway + inbound A2A control-plane plan. Use it for gateway, routing, delegation safety, A2A conformance, outbound A2A pilot, and pilot-readiness work after reading `docs/agent-communication-routing.md`.
 - `docs/development/memory-kernel-hardening-plan.md`: phased Memory Kernel hardening plan. Use it for future memory engineering work after reading `docs/memory-service-architecture.md`.
 - `docs/development/context-engine-memory-policy-plan.md`: step-by-step Context Engine + Memory Policy plan. Use it for future context compaction, session summary, LLM compactor, token budget, and memory promotion work.

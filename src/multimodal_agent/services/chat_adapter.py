@@ -299,6 +299,8 @@ def _chat_error(provider: str, code: str, message: object, *, recoverable: bool 
 def _http_error_code(status_code: int) -> str:
     if status_code in {401, 403}:
         return "provider_auth_failed"
+    if status_code == 413:
+        return "provider_context_overflow"
     if status_code == 429:
         return "provider_rate_limited"
     if 500 <= status_code:

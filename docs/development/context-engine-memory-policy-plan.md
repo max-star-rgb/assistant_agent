@@ -110,41 +110,53 @@ Regression tests:
 
 ## Phase 3: LLM Compactor Hardening
 
-Status: partial.
+Status: done.
 
-Already done:
+Done:
 
 - `LLMCompactor` calls the configured `ChatAdapter`.
 - It is selected only under `provider_smoke` or `pilot` when chat adapter is not mock.
 - `SummaryValidator` checks schema and rejects raw/secret-like payloads.
 - Invalid output falls back to deterministic compactor.
 - Trace records `compactor_type`.
+- A fake real adapter test exercises the LLM compactor path without network.
+- Provider context overflow is normalized to `provider_context_overflow`, marks metadata, forces hard compaction, retries once, and then stops.
+- `SummaryValidator` rejects summaries that keep only one side of a tool-call/tool-result reference pair.
+- LLM compactor prompts omit raw provider payload fields before any provider call.
 
-Next steps:
+Implemented files:
 
-1. Add an opt-in provider smoke script or test that uses a fake real adapter to exercise the LLM compactor path without network.
-2. Add provider context overflow retry handling:
-   - detect provider overflow error,
-   - mark `provider_context_overflow`,
-   - hard compact,
-   - retry exactly once,
-   - prevent infinite retry.
-3. Extend validator tests for tool-call/tool-result pairing references.
-4. Ensure provider raw response never appears in trace, session summary, prompt context, or memory candidates.
+- `src/multimodal_agent/agent/assistant_loop_nodes.py`
+- `src/multimodal_agent/services/chat_adapter.py`
+- `src/multimodal_agent/services/context/compactor.py`
+- `src/multimodal_agent/services/provider_errors.py`
 
-Suggested tests:
+Regression tests:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
   tests/test_assistant_context_renderer.py \
+  tests/test_phase8a1_react_action_quality.py \
   tests/test_trace_query_api.py -q
 ```
 
+Validation on 2026-06-29:
+
+- Focused Phase 3 regression above: passed.
+- Context/memory regression set: passed.
+- `scripts/check_env.py`: passed.
+- `git diff --check`: passed.
+
+Remaining risks:
+
+- Budgeting is still character-based; token-aware reporting remains Phase 5 work.
+- Real provider smoke remains opt-in only and was not run during offline regression.
+
 ## Phase 4: Memory Promotion Workflow
 
-Status: partial.
+Status: done.
 
-Already done:
+Done:
 
 - `MemoryPromotionCandidate` models proposed durable writes.
 - `MemoryWritePolicy.evaluate_promotion_candidate(...)` separates candidate generation from actual writes.
@@ -154,20 +166,22 @@ Already done:
   - `require_user_intent_for_profile_memory=True`
   - `allow_auto_write=False`
 - Explicit user memory still goes through `memory_save` / `MemoryManager.save_explicit(...)`.
+- `build_run_summary_promotion_candidate(...)` produces safe completed-run candidates without raw request/provider payloads.
+- `MemoryManager.save_from_run(...)` records candidate audit metadata and rejects automatic writes by default.
+- `MemoryManager.save_from_run(...)` writes only when policy explicitly allows automatic writes.
+- Trace/run summaries merge redacted promotion counts from the final save-memory stage.
+- Session `context_summary` candidates are rejected and remain session-scoped.
+- Raw provider payload aliases such as `raw_provider_payload`, `raw_payload`, and `raw_html` are rejected.
 
-Next steps:
+Implemented files:
 
-1. Add a candidate generator boundary that can produce candidates from safe run summaries.
-2. Store candidate audit metadata without writing durable memory by default.
-3. Expose promotion candidate counts in API/trace only after redaction.
-4. Add tests proving:
-   - candidate does not imply write,
-   - default policy rejects automatic promotion,
-   - explicit "remember this" still writes,
-   - raw/sensitive payloads are rejected,
-   - session `context_summary` is never auto-promoted.
+- `src/multimodal_agent/memory/write_policy.py`
+- `src/multimodal_agent/memory/manager.py`
+- `src/multimodal_agent/schemas/memory.py`
+- `src/multimodal_agent/services/trace_store.py`
+- `src/multimodal_agent/services/trace_query.py`
 
-Suggested tests:
+Regression tests:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
@@ -175,6 +189,17 @@ Suggested tests:
   tests/test_memory_manager.py \
   tests/test_memory_tool_boundary.py -q
 ```
+
+Validation on 2026-06-29:
+
+- Focused Phase 4 regression above plus trace query/run summary tests: passed.
+- Memory backend integration with opt-in auto promotion: passed.
+- Standard context/memory regression set: passed.
+
+Remaining risks:
+
+- Candidate audit is metadata/trace only; there is no separate durable candidate review queue yet.
+- Real LLM-generated memory candidates remain future work and must stay policy-gated.
 
 ## Phase 5: Token-Aware Budget And Overflow Recovery
 
@@ -195,7 +220,7 @@ Steps:
    - large files keep summary and artifact ref only,
    - images/videos keep refs and recognition summary only,
    - command output keeps bounded lines and chars.
-5. Add provider overflow retry-once behavior from Phase 3 if not already complete.
+5. Keep provider overflow retry-once behavior covered by Phase 3 regression tests.
 
 Acceptance checks:
 

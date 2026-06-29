@@ -28,6 +28,7 @@ Status values:
 | `docs/security.md` | canonical | Current safety defaults, secret handling, and real-provider opt-in policy. | link-from-index |
 | `docs/quickstart.md` | canonical | Current local mock/offline quickstart. | link-from-index |
 | `docs/development.md` | canonical | Current development commands and coding constraints. | link-from-index |
+| `docs/development/agent-control-plane-plan.md` | reference | Phased Local Multi-Agent Gateway + inbound A2A control-plane plan; use for gateway routing, delegation safety, A2A conformance, outbound pilot, and pilot-readiness work. | keep |
 | `docs/development/memory-kernel-hardening-plan.md` | reference | Phased Memory Kernel hardening execution plan for future memory engineering; complements `docs/memory-service-architecture.md`. | keep |
 | `docs/development/context-engine-memory-policy-plan.md` | reference | Step-by-step Context Engine + Memory Policy development plan for future compaction, session summary, LLM compactor, token budget, and memory promotion work. | keep |
 | `docs/demo-flows.md` | canonical | Current offline demo-flow guide. | link-from-index |

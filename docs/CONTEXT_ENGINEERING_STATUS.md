@@ -16,6 +16,7 @@ Last updated: 2026-06-29
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，最近 2 轮保留原文。
 - `CompactionPolicy` 统一判断压缩触发：usage 高水位、超预算、大 tool observation、provider context overflow metadata、显式 `/compact` 或 `compact_context=True`。
 - `ContextCompactor` 已抽象为可插拔边界；默认 deterministic/local，不调用真实 LLM。`LLMCompactor` 仅在 `provider_smoke` 或 `pilot` profile 且 chat adapter 非 mock 时启用，输出无效时回退 deterministic。
+- 真实 provider 返回 context overflow 类错误时，assistant loop 会标准化为 `provider_context_overflow`，触发 hard compaction 后重试一次，仍失败则停止并返回可解释最终回答。
 - Context budget 会报告自动压缩阶段和原因，便于 trace/API 判断是否发生 conversation、observation 或 budget 级压缩。
 - Trace/API 已暴露 context budget、source counts、tool catalog summary 和 observation compaction summary。
 
@@ -33,11 +34,12 @@ Last updated: 2026-06-29
 
 ### Memory Context
 
-- `MemoryManager` 是 memory 检索、上下文格式化、显式保存、去重、用户画像更新和 completed-run summary 的边界。
+- `MemoryManager` 是 memory 检索、上下文格式化、显式保存、去重、用户画像更新和 completed-run promotion candidate 的边界。
 - memory context 分层为 semantic、session、episodic、artifact、procedural。
 - 默认 `top_k=5`，默认 `max_context_chars=500`。
 - 非空 query 走关键词/中文片段相关性门控；只有明确承接型 query 才允许 recent memory fallback。
 - 显式用户记忆会合并重复项，并更新 compact `user_profile` 记忆。
+- completed-run summary 默认只生成 policy-gated promotion candidate 和审计 metadata，不自动写长期 memory；`allow_auto_write=True` 时才会落库。
 
 ### Boundary With Memory Service
 
@@ -72,8 +74,16 @@ Last updated: 2026-06-29
 - 超过预算时会在 prompt 副本中裁剪 memory、conversation 和 observations，并记录 `over_budget`、`trimmed_chars`、`trimmed_sections`。
 - `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_usage_high`、`tool_observation_too_large`、`provider_context_overflow`、`explicit_compact`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
-- assistant decision trace 写入 budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数。
+- assistant decision trace 写入 budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数；run/trace 查询会合并最终 save-memory 阶段的 redacted promotion counts。
 - `/runs/{run_id}` 与 `/traces/{trace_id}` 可查询 context 相关摘要。
+
+### LLM Compactor And Provider Overflow
+
+- `SummaryValidator` 要求 LLM compactor 输出完整 schema，并拒绝 secret/API key/base64/raw provider payload 等不应持久或注入的内容。
+- LLM compactor prompt 会先移除 `raw_provider_payload`、`raw_payload`、`raw_html` 等高风险字段，再交给 provider。
+- Summary 中如引用 `tool_call:` / `tool_call_id:`，必须保留对应 `tool_result:` / `tool_result_id:`，反向亦然，避免压缩时切断工具调用和结果证据链。
+- Provider HTTP 413、`context_length_exceeded`、`context_overflow`、`input_too_large` 和 `request_too_large` 会归一为 `provider_context_overflow`。
+- Context overflow retry 只允许一次；retry 计数和 provider error metadata 只记录安全摘要，不记录原始 provider response。
 
 ## Current Limitations
 
@@ -93,6 +103,8 @@ Last updated: 2026-06-29
 - `src/multimodal_agent/services/context/renderer.py`
 - `src/multimodal_agent/schemas/context.py`
 - `src/multimodal_agent/services/assistant_run_service.py`
+- `src/multimodal_agent/services/chat_adapter.py`
+- `src/multimodal_agent/services/provider_errors.py`
 - `src/multimodal_agent/memory/manager.py`
 - `src/multimodal_agent/memory/retrieval.py`
 - `src/multimodal_agent/agent/assistant_loop_nodes.py`

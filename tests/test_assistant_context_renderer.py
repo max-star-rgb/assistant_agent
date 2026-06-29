@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 import json
 
-from multimodal_agent.config import ProviderConfig
 from multimodal_agent.agent.state import AgentState
+from multimodal_agent.config import ProviderConfig
+from multimodal_agent.runtime_profile import get_runtime_profile
 from multimodal_agent.schemas.context import ContextSummary
 from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.planning import TaskPlan, TaskStep
@@ -12,6 +13,7 @@ from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
 from multimodal_agent.services.context.builder import build_assistant_context_pack
 from multimodal_agent.services.context.compactor import (
     COMPACTOR_DETERMINISTIC,
+    COMPACTOR_LLM,
     COMPACTOR_LLM_FALLBACK,
     DeterministicContextCompactor,
     LLMCompactor,
@@ -235,6 +237,88 @@ def test_create_context_compactor_keeps_llm_disabled_without_provider_profile() 
     compactor = create_context_compactor(ProviderConfig.from_env({}), _FakeChatAdapter("{}"))
 
     assert isinstance(compactor, DeterministicContextCompactor)
+
+
+def test_create_context_compactor_uses_llm_for_provider_profile_with_fake_real_adapter() -> None:
+    adapter = _FakeChatAdapter(
+        json.dumps(
+            {
+                "task_state": "已总结",
+                "user_constraints": [],
+                "decisions": ["保留关键需求"],
+                "open_todos": [],
+                "important_refs": [],
+                "dropped_context_note": "压缩完成",
+                "source_turn_count": 1,
+            },
+            ensure_ascii=False,
+        )
+    )
+    compactor = create_context_compactor(
+        ProviderConfig(runtime_profile=get_runtime_profile("provider_smoke")),
+        adapter,
+    )
+
+    result = compactor.compact(
+        conversation=[],
+        current_request=UserRequest(user_id="u1", session_id="s1", text="总结上下文"),
+        observations=[],
+    )
+
+    assert isinstance(compactor, LLMCompactor)
+    assert adapter.calls
+    assert result.compactor_type == COMPACTOR_LLM
+    assert result.summary.task_state == "已总结"
+
+
+def test_summary_validator_rejects_split_tool_call_result_refs() -> None:
+    try:
+        SummaryValidator().validate(
+            ContextSummary(
+                task_state="处理中",
+                important_refs=["tool_call:call_1"],
+            )
+        )
+    except ValueError as exc:
+        assert "tool call/result" in str(exc)
+    else:
+        raise AssertionError("SummaryValidator should reject split tool refs")
+
+
+def test_llm_compactor_prompt_omits_raw_provider_payloads() -> None:
+    adapter = _FakeChatAdapter(
+        json.dumps(
+            {
+                "task_state": "已总结",
+                "user_constraints": [],
+                "decisions": [],
+                "open_todos": [],
+                "important_refs": [],
+                "dropped_context_note": "",
+                "source_turn_count": 0,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    LLMCompactor(adapter).compact(
+        conversation=[],
+        current_request=UserRequest(user_id="u1", session_id="s1", text="总结"),
+        observations=[
+            {
+                "tool_name": "product_search",
+                "status": "succeeded",
+                "summary": "safe summary",
+                "raw_provider_response": {"api_key": "sk-test", "body": "x" * 100},
+            }
+        ],
+    )
+
+    assert adapter.calls
+    prompt = adapter.calls[0].user_query
+    assert "safe summary" in prompt
+    assert "raw_provider_response" not in prompt
+    assert "sk-test" not in prompt
 
 
 def test_context_pack_compacts_large_product_observations_without_mutating_original() -> None:

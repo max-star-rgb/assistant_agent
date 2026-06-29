@@ -12,9 +12,15 @@ from multimodal_agent.schemas.agent_communication import (
     DEFAULT_AGENT_ID,
     AgentCommunicationError,
     AgentInstance,
-    AgentRouteRequest,
 )
-from multimodal_agent.schemas.agent_gateway import AgentCollaborationMode, AgentGatewayRunRequest
+from multimodal_agent.schemas.agent_gateway import (
+    AgentCollaborationMode,
+    AgentGatewayDelegatedTaskSummary,
+    AgentGatewayRouteDecision,
+    AgentGatewayRouteReason,
+    AgentGatewayRunMetadata,
+    AgentGatewayRunRequest,
+)
 from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION, api_error
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.agent_communication import (
@@ -22,6 +28,7 @@ from multimodal_agent.services.agent_communication import (
     create_local_agent_communication_service,
 )
 from multimodal_agent.services.agent_directory import AgentDirectory, default_agent_instance
+from multimodal_agent.services.agent_routing_policy import AgentRoutingPolicy
 from multimodal_agent.services.assistant_run_service import run_assistant_request, resolve_runtime_config
 from multimodal_agent.services.trace_store import new_trace_id
 from multimodal_agent.services.video_context import InMemoryVideoContextStore
@@ -42,38 +49,49 @@ class AgentGateway:
         communication_service: AgentCommunicationService | None = None,
         controller_agent_id: str = DEFAULT_AGENT_ID,
         controller_runtime: Any | None = None,
+        routing_policy: AgentRoutingPolicy | None = None,
+        routing_table: Mapping[str, str] | None = None,
     ) -> None:
         if not runtimes:
             raise ValueError("at least one agent runtime is required")
+        if routing_policy is not None and routing_table:
+            raise ValueError("routing_table cannot be provided with routing_policy")
         self.runtimes = dict(runtimes)
         self.directory = directory or create_local_agent_communication_service(self.runtimes).directory
         self.communication_service = communication_service
         self.controller_agent_id = controller_agent_id
         self.controller_runtime = controller_runtime or self.runtimes.get(controller_agent_id)
+        self.routing_policy = routing_policy or AgentRoutingPolicy(
+            controller_agent_id=controller_agent_id,
+            routing_table=routing_table,
+        )
 
     def run(self, request: AgentGatewayRunRequest | UserRequest) -> AgentRunResponse:
         """Run one request through the selected local agent."""
 
         gateway_request = _coerce_gateway_request(request)
         mode = gateway_request.effective_collaboration_mode()
-        route = self.directory.resolve(
-            AgentRouteRequest(
-                target_agent_id=self._initial_target_agent_id(gateway_request, mode),
-                capability=gateway_request.capability,
-                source_agent_id=self.controller_agent_id,
-            )
+        route_decision = self.routing_policy.resolve(
+            gateway_request,
+            directory=self.directory,
+            source_agent_id=self.controller_agent_id,
         )
+        route = route_decision.route
         if route.status != "routed" or route.instance is None:
             error = route.error or AgentCommunicationError(
                 code="agent_route_failed",
                 message="Agent route failed.",
                 recoverable=True,
             )
-            return _failed_response(gateway_request, error=error, mode=mode)
+            return _failed_response(
+                gateway_request,
+                error=error,
+                mode=mode,
+                route_reason=route_decision.reason,
+            )
 
         agent_id = route.instance.agent_id
-        use_controller = self._uses_controller_runtime(gateway_request, mode, agent_id)
-        runtime = self.controller_runtime if use_controller else self.runtimes.get(agent_id)
+        runtime = self.controller_runtime if route_decision.use_controller_runtime else self.runtimes.get(agent_id)
         if runtime is None:
             return _failed_response(
                 gateway_request,
@@ -85,6 +103,7 @@ class AgentGateway:
                 ),
                 mode=mode,
                 agent_id=agent_id,
+                route_reason=route_decision.reason,
             )
 
         runtime_request = gateway_request.to_user_request(
@@ -96,34 +115,9 @@ class AgentGateway:
             request=gateway_request,
             agent_id=agent_id,
             mode=mode,
+            route_reason=route_decision.reason,
             route_instance=route.instance,
             runtime=runtime,
-        )
-
-    def _initial_target_agent_id(
-        self,
-        request: AgentGatewayRunRequest,
-        mode: AgentCollaborationMode,
-    ) -> str | None:
-        if request.target_agent_id:
-            return request.target_agent_id
-        if request.capability:
-            return None
-        if mode == "controller_delegate":
-            return self.controller_agent_id
-        return DEFAULT_AGENT_ID
-
-    def _uses_controller_runtime(
-        self,
-        request: AgentGatewayRunRequest,
-        mode: AgentCollaborationMode,
-        agent_id: str,
-    ) -> bool:
-        return (
-            mode == "controller_delegate"
-            and agent_id == self.controller_agent_id
-            and not request.target_agent_id
-            and not request.capability
         )
 
 
@@ -213,18 +207,25 @@ def _augment_response(
     request: AgentGatewayRunRequest,
     agent_id: str,
     mode: AgentCollaborationMode,
+    route_reason: AgentGatewayRouteReason,
     route_instance: AgentInstance,
     runtime: Any,
 ) -> AgentRunResponse:
-    gateway_info = {
-        "agent_id": agent_id,
-        "collaboration_mode": mode,
-        "target_agent_id": request.target_agent_id,
-        "capability": request.capability,
-        "delegation_enabled": "delegate_to_agent" in _runtime_tool_names(runtime),
-        "delegated_tasks": _delegated_task_summary(response),
-        "route": route_instance.model_dump(mode="json"),
-    }
+    delegation_enabled = "delegate_to_agent" in _runtime_tool_names(runtime)
+    metadata = AgentGatewayRunMetadata(
+        route_decision=AgentGatewayRouteDecision(
+            selected_agent_id=agent_id,
+            requested_target_agent_id=request.target_agent_id,
+            requested_capability=request.capability,
+            collaboration_mode=mode,
+            reason=route_reason,
+            status="routed",
+            delegation_enabled=delegation_enabled,
+        ),
+        delegated_tasks=_delegated_task_summary(response),
+        route=route_instance.model_dump(mode="json"),
+    )
+    gateway_info = metadata.public_payload()
     data = dict(response.data)
     data["agent_gateway"] = gateway_info
     runtime_info = dict(response.runtime_info)
@@ -237,15 +238,22 @@ def _failed_response(
     *,
     error: AgentCommunicationError,
     mode: AgentCollaborationMode,
+    route_reason: AgentGatewayRouteReason,
     agent_id: str | None = None,
 ) -> AgentRunResponse:
-    gateway_info = {
-        "agent_id": agent_id,
-        "collaboration_mode": mode,
-        "target_agent_id": request.target_agent_id,
-        "capability": request.capability,
-        "delegated_tasks": [],
-    }
+    metadata = AgentGatewayRunMetadata(
+        route_decision=AgentGatewayRouteDecision(
+            selected_agent_id=agent_id,
+            requested_target_agent_id=request.target_agent_id,
+            requested_capability=request.capability,
+            collaboration_mode=mode,
+            reason=route_reason,
+            status="failed",
+            error_code=error.code,
+            error_message=error.message,
+        ),
+    )
+    gateway_info = metadata.public_payload()
     return AgentRunResponse(
         protocol_version=PROTOCOL_VERSION,
         run_id=new_run_id(),
@@ -279,8 +287,8 @@ def _runtime_tool_names(runtime: Any) -> list[str]:
     return [str(name) for name in names]
 
 
-def _delegated_task_summary(response: AgentRunResponse) -> list[dict[str, Any]]:
-    tasks: list[dict[str, Any]] = []
+def _delegated_task_summary(response: AgentRunResponse) -> list[AgentGatewayDelegatedTaskSummary]:
+    tasks: list[AgentGatewayDelegatedTaskSummary] = []
     for result in response.tool_results:
         if result.get("tool_name") != "delegate_to_agent":
             continue
@@ -288,18 +296,18 @@ def _delegated_task_summary(response: AgentRunResponse) -> list[dict[str, Any]]:
         errors = data.get("errors") if isinstance(data, dict) else []
         artifacts = data.get("artifacts") if isinstance(data, dict) else []
         tasks.append(
-            {
-                "task_id": data.get("task_id"),
-                "target_agent_id": data.get("target_agent_id"),
-                "status": data.get("status"),
-                "run_id": data.get("run_id"),
-                "trace_id": data.get("trace_id"),
-                "artifact_count": len(artifacts) if isinstance(artifacts, list) else 0,
-                "error_codes": [
+            AgentGatewayDelegatedTaskSummary(
+                task_id=data.get("task_id"),
+                target_agent_id=data.get("target_agent_id"),
+                status=data.get("status"),
+                run_id=data.get("run_id"),
+                trace_id=data.get("trace_id"),
+                artifact_count=len(artifacts) if isinstance(artifacts, list) else 0,
+                error_codes=[
                     error.get("code")
                     for error in errors
                     if isinstance(error, dict) and error.get("code")
                 ],
-            }
+            )
         )
     return tasks

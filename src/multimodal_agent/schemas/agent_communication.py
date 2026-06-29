@@ -57,6 +57,44 @@ class AgentInstance(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AgentInstanceConfig(BaseModel):
+    """Configuration entry used to build an agent directory."""
+
+    agent_id: str = Field(min_length=1)
+    display_name: str = Field(min_length=1)
+    description: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    transports: list[AgentTransportName] = Field(default_factory=lambda: ["local"])
+    endpoint_url: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def to_instance(self) -> AgentInstance:
+        """Convert static config into a runtime directory identity."""
+
+        return AgentInstance(
+            agent_id=self.agent_id,
+            display_name=self.display_name,
+            description=self.description,
+            capabilities=list(self.capabilities),
+            enabled=self.enabled,
+            transports=list(self.transports),
+            endpoint_url=self.endpoint_url,
+            metadata=dict(self.metadata),
+        )
+
+
+class AgentDirectoryConfig(BaseModel):
+    """Static config for deterministic local agent routing."""
+
+    instances: list[AgentInstanceConfig] = Field(default_factory=list)
+    default_agent_id: str = DEFAULT_AGENT_ID
+    routing_table: dict[str, str] = Field(
+        default_factory=dict,
+        description="Capability name to target agent id mapping.",
+    )
+
+
 class AgentRouteRequest(BaseModel):
     """Routing request for selecting a target agent."""
 

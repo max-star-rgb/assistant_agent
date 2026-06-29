@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from multimodal_agent.schemas.agent_communication import (
     DEFAULT_AGENT_ID,
     AgentCommunicationError,
+    AgentDirectoryConfig,
     AgentInstance,
     AgentRouteRequest,
     AgentRouteResult,
@@ -14,10 +17,17 @@ from multimodal_agent.schemas.agent_communication import (
 class AgentDirectory:
     """In-memory registry of enabled agent runtime identities."""
 
-    def __init__(self, instances: list[AgentInstance] | None = None) -> None:
+    def __init__(self, instances: Iterable[AgentInstance] | AgentDirectoryConfig | None = None) -> None:
         self._instances: dict[str, AgentInstance] = {}
-        for instance in instances or [default_agent_instance()]:
+        resolved_instances = _instances_from_config(instances)
+        for instance in resolved_instances:
             self.register(instance)
+
+    @classmethod
+    def from_config(cls, config: AgentDirectoryConfig) -> "AgentDirectory":
+        """Build a directory from static routing config."""
+
+        return cls(config)
 
     def register(self, instance: AgentInstance) -> None:
         if instance.agent_id in self._instances:
@@ -113,3 +123,15 @@ def default_agent_instance() -> AgentInstance:
         transports=["local"],
         metadata={"default": True, "offline": True},
     )
+
+
+def _instances_from_config(
+    instances: Iterable[AgentInstance] | AgentDirectoryConfig | None,
+) -> list[AgentInstance]:
+    if instances is None:
+        return [default_agent_instance()]
+    if isinstance(instances, AgentDirectoryConfig):
+        if not instances.instances:
+            return [default_agent_instance()]
+        return [config.to_instance() for config in instances.instances]
+    return list(instances)

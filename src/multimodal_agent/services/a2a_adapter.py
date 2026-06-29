@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Any, Mapping
 from uuid import uuid4
 
-from multimodal_agent.schemas.a2a import A2A_PROTOCOL_VERSION
+from multimodal_agent.schemas.a2a import (
+    A2A_PROTOCOL_VERSION,
+    A2AArtifact,
+    A2AMessage,
+    A2ATaskResult,
+    A2ATaskStatus,
+)
 from multimodal_agent.schemas.agent_gateway import AgentCollaborationMode, AgentGatewayRunRequest
 from multimodal_agent.schemas.api import AgentRunResponse
 from multimodal_agent.services.agent_gateway import AgentGateway
@@ -108,33 +114,32 @@ def task_from_gateway_response(
         task_id=response.run_id,
     )
     state = "failed" if response.status == "failed" else "completed"
-    task = {
-        "id": response.run_id,
-        "contextId": context_id,
-        "kind": "task",
-        "status": {
-            "state": state,
-            "message": reply_message,
-        },
-        "artifacts": [
-            {
-                "artifactId": f"artifact_{response.run_id}",
-                "name": "agent-response",
-                "parts": [{"kind": "text", "text": response.response_text}],
-            }
+    task = A2ATaskResult(
+        id=response.run_id,
+        contextId=context_id,
+        status=A2ATaskStatus(
+            state=state,
+            message=reply_message,
+        ),
+        artifacts=[
+            A2AArtifact(
+                artifactId=f"artifact_{response.run_id}",
+                name="agent-response",
+                parts=[{"kind": "text", "text": response.response_text}],
+            )
         ],
-        "history": [
+        history=[
             _public_source_message(source_message, fallback_message_id=source_message_id, context_id=context_id),
             reply_message,
         ],
-        "metadata": {
+        metadata={
             "trace_id": response.trace_id,
             "runtime_status": response.status,
             "agent_gateway": response.data.get("agent_gateway", {}),
             "errors": [error.model_dump(mode="json") for error in response.errors],
         },
-    }
-    return task
+    )
+    return task.model_dump(mode="json")
 
 
 def _skills_from_gateway(gateway: AgentGateway | None) -> list[dict[str, Any]]:
@@ -219,15 +224,14 @@ def _file_ref(part: Mapping[str, Any]) -> str:
     return _string(value)
 
 
-def _agent_message(*, text: str, context_id: str, task_id: str) -> dict[str, Any]:
-    return {
-        "kind": "message",
-        "role": "agent",
-        "messageId": f"msg_{uuid4().hex}",
-        "contextId": context_id,
-        "taskId": task_id,
-        "parts": [{"kind": "text", "text": text}],
-    }
+def _agent_message(*, text: str, context_id: str, task_id: str) -> A2AMessage:
+    return A2AMessage(
+        role="agent",
+        messageId=f"msg_{uuid4().hex}",
+        contextId=context_id,
+        taskId=task_id,
+        parts=[{"kind": "text", "text": text}],
+    )
 
 
 def _public_source_message(
@@ -235,14 +239,13 @@ def _public_source_message(
     *,
     fallback_message_id: str,
     context_id: str,
-) -> dict[str, Any]:
-    return {
-        "kind": "message",
-        "role": _string(message.get("role")) or "user",
-        "messageId": _string(message.get("messageId")) or fallback_message_id,
-        "contextId": _string(message.get("contextId")) or context_id,
-        "parts": list(message.get("parts") if isinstance(message.get("parts"), list) else []),
-    }
+) -> A2AMessage:
+    return A2AMessage(
+        role=_string(message.get("role")) or "user",
+        messageId=_string(message.get("messageId")) or fallback_message_id,
+        contextId=_string(message.get("contextId")) or context_id,
+        parts=list(message.get("parts") if isinstance(message.get("parts"), list) else []),
+    )
 
 
 def _collaboration_mode(value: str) -> AgentCollaborationMode:

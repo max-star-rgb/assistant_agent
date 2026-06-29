@@ -12,7 +12,8 @@ from multimodal_agent.schemas.assistant_decision import AssistantDecision
 from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
+from multimodal_agent.services.chat_adapter import ChatProviderError, ChatRequest, ChatResult
+from multimodal_agent.services.context.compactor import DeterministicContextCompactor
 from multimodal_agent.services.trace_store import InMemoryTraceStore
 from multimodal_agent.tools.base import MockTool, ToolContext
 from multimodal_agent.tools.registry import ToolRegistry, create_default_registry
@@ -31,6 +32,19 @@ class ScriptedChatAdapter:
         index = min(self.calls, len(self.outputs) - 1)
         self.calls += 1
         return ChatResult(response_text=self.outputs[index], provider=self.provider, model="scripted")
+
+
+class OverflowThenSuccessChatAdapter:
+    provider = "scripted"
+
+    def __init__(self, results: list[ChatResult]) -> None:
+        self.results = results
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        index = min(len(self.requests) - 1, len(self.results) - 1)
+        return self.results[index]
 
 
 class FailingInput(BaseModel):
@@ -192,6 +206,107 @@ def test_malformed_json_repair_failure_falls_back_to_safe_final_answer() -> None
     assert state.tool_calls == []
     assert state.response is not None
     assert state.response.message == raw
+
+
+def test_provider_context_overflow_retries_once_with_compacted_context() -> None:
+    trace_store = InMemoryTraceStore()
+    adapter = OverflowThenSuccessChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted",
+                errors=[
+                    ChatProviderError(
+                        code="provider_context_overflow",
+                        message="context too large api_key=sk-test raw_provider_response={...}",
+                        recoverable=True,
+                    )
+                ],
+            ),
+            ChatResult(
+                response_text='{"type": "final_answer", "message": "压缩后完成。", "reason": "上下文已压缩"}',
+                provider="scripted",
+                model="scripted",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="prompt_json"),
+        chat_adapter=adapter,
+        context_compactor=DeterministicContextCompactor(),
+        trace_store=trace_store,
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="继续总结",
+            metadata={
+                "conversation_history": [
+                    {
+                        "user_text": "必须保留这个约束",
+                        "assistant_text": "已确认",
+                        "run_id": "run_old",
+                        "trace_id": "trace_old",
+                    }
+                ],
+                "conversation_context_text": "旧上下文" * 200,
+            },
+        )
+    )
+
+    assert len(adapter.requests) == 2
+    assert state.response is not None
+    assert state.response.message == "压缩后完成。"
+    assert state.request.metadata["provider_context_overflow"] is True
+    assert state.request.metadata["provider_context_overflow_retry_count"] == 1
+    assert state.request.metadata["context_summary_present"] is True
+    dumped_metadata = str(state.request.metadata)
+    assert "sk-test" not in dumped_metadata
+    assert "raw_provider_response" not in dumped_metadata
+
+    decision_events = [
+        event
+        for event in trace_store.list_by_run(state.run_id)
+        if event.event_type == "assistant_decision" and event.status == "final_answer"
+    ]
+    assert decision_events
+    context = decision_events[-1].output_summary["context"]
+    assert context["context_summary_present"] is True
+    assert "provider_context_overflow" in context["budget"]["compression_reasons"]
+
+
+def test_provider_context_overflow_retry_happens_only_once() -> None:
+    adapter = OverflowThenSuccessChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                errors=[ChatProviderError(code="provider_context_overflow", message="too large", recoverable=True)],
+            ),
+            ChatResult(
+                provider="scripted",
+                errors=[ChatProviderError(code="context_length_exceeded", message="still too large", recoverable=True)],
+            ),
+            ChatResult(
+                response_text='{"type": "final_answer", "message": "should not be used"}',
+                provider="scripted",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="prompt_json"),
+        chat_adapter=adapter,
+        context_compactor=DeterministicContextCompactor(),
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="继续总结"))
+
+    assert len(adapter.requests) == 2
+    assert state.response is not None
+    assert "仍失败" in state.response.message
+    assert state.request.metadata["provider_context_overflow_retry_count"] == 1
+    assert state.request.metadata["provider_context_overflow_retry_failed"] is True
 
 
 def test_invalid_tool_input_is_rejected_before_execution() -> None:

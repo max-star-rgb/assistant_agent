@@ -1,10 +1,11 @@
 from multimodal_agent.agent.state import AgentState
 from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.agent_communication import DEFAULT_AGENT_ID
+from multimodal_agent.schemas.agent_communication import DEFAULT_AGENT_ID, AgentInstance
 from multimodal_agent.schemas.agent_gateway import AgentGatewayRunRequest
 from multimodal_agent.schemas.planning import IntentResult
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.schemas.tools import ToolResult
+from multimodal_agent.services.agent_directory import AgentDirectory, default_agent_instance
 from multimodal_agent.services.agent_gateway import WORKER_AGENT_ID, AgentGateway, create_default_agent_gateway
 
 
@@ -60,6 +61,8 @@ def test_gateway_defaults_to_agent_default() -> None:
     assert response.run_id == "run_default"
     assert response.response_text == "handled by agent.default: hello"
     assert response.data["agent_gateway"]["agent_id"] == DEFAULT_AGENT_ID
+    assert response.data["agent_gateway"]["route_decision"]["reason"] == "default_agent"
+    assert response.data["agent_gateway"]["route_decision"]["status"] == "routed"
     assert response.runtime_info["agent_gateway"]["collaboration_mode"] == "single"
     assert len(default_runtime.requests) == 1
     assert worker_runtime.requests == []
@@ -81,8 +84,89 @@ def test_gateway_routes_explicit_target_agent_to_worker() -> None:
 
     assert response.run_id == "run_worker"
     assert response.data["agent_gateway"]["agent_id"] == WORKER_AGENT_ID
+    assert response.data["agent_gateway"]["route_decision"]["reason"] == "explicit_target_agent_id"
     assert len(worker_runtime.requests) == 1
     assert default_runtime.requests == []
+
+
+def test_gateway_routes_unique_capability_to_worker() -> None:
+    default_runtime = RecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="run_default")
+    worker_runtime = RecordingRuntime(agent_id=WORKER_AGENT_ID, run_id="run_worker")
+    gateway = AgentGateway(
+        {DEFAULT_AGENT_ID: default_runtime, WORKER_AGENT_ID: worker_runtime},
+        directory=AgentDirectory(
+            [
+                default_agent_instance(),
+                AgentInstance(
+                    agent_id=WORKER_AGENT_ID,
+                    display_name="Worker Agent",
+                    capabilities=["worker_specialist"],
+                    transports=["local"],
+                ),
+            ]
+        ),
+    )
+
+    response = gateway.run(
+        AgentGatewayRunRequest(
+            user_id="u1",
+            session_id="s1",
+            text="route by capability",
+            capability="worker_specialist",
+        )
+    )
+
+    assert response.run_id == "run_worker"
+    assert response.data["agent_gateway"]["route_decision"]["reason"] == "capability_match"
+    assert response.data["agent_gateway"]["route_decision"]["requested_capability"] == "worker_specialist"
+    assert len(worker_runtime.requests) == 1
+    assert default_runtime.requests == []
+
+
+def test_gateway_routes_configured_routing_table_to_worker() -> None:
+    default_runtime = RecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="run_default")
+    worker_runtime = RecordingRuntime(agent_id=WORKER_AGENT_ID, run_id="run_worker")
+    other_runtime = RecordingRuntime(agent_id="agent.other", run_id="run_other")
+    gateway = AgentGateway(
+        {
+            DEFAULT_AGENT_ID: default_runtime,
+            WORKER_AGENT_ID: worker_runtime,
+            "agent.other": other_runtime,
+        },
+        directory=AgentDirectory(
+            [
+                default_agent_instance(),
+                AgentInstance(
+                    agent_id=WORKER_AGENT_ID,
+                    display_name="Worker Agent",
+                    capabilities=["worker_specialist"],
+                    transports=["local"],
+                ),
+                AgentInstance(
+                    agent_id="agent.other",
+                    display_name="Other Agent",
+                    capabilities=["worker_specialist"],
+                    transports=["local"],
+                ),
+            ]
+        ),
+        routing_table={"worker_specialist": WORKER_AGENT_ID},
+    )
+
+    response = gateway.run(
+        AgentGatewayRunRequest(
+            user_id="u1",
+            session_id="s1",
+            text="route by table",
+            capability="worker_specialist",
+        )
+    )
+
+    assert response.run_id == "run_worker"
+    assert response.data["agent_gateway"]["route_decision"]["reason"] == "routing_table"
+    assert len(worker_runtime.requests) == 1
+    assert default_runtime.requests == []
+    assert other_runtime.requests == []
 
 
 def test_gateway_controller_delegate_enters_default_controller() -> None:
@@ -106,6 +190,8 @@ def test_gateway_controller_delegate_enters_default_controller() -> None:
     assert response.run_id == "run_default"
     assert response.data["agent_gateway"]["agent_id"] == DEFAULT_AGENT_ID
     assert response.data["agent_gateway"]["collaboration_mode"] == "controller_delegate"
+    assert response.data["agent_gateway"]["route_decision"]["reason"] == "controller_delegate_default"
+    assert response.data["agent_gateway"]["route_decision"]["delegation_enabled"] is False
     assert response.data["agent_gateway"]["delegated_tasks"] == [
         {
             "task_id": "agent_task_test",
@@ -168,6 +254,9 @@ def test_gateway_returns_structured_error_for_unknown_agent() -> None:
     assert response.errors[0].code == "AGENT_NOT_FOUND"
     assert response.errors[0].recoverable is True
     assert response.data["agent_gateway"]["target_agent_id"] == "agent.missing"
+    assert response.data["agent_gateway"]["route_decision"]["reason"] == "explicit_target_agent_id"
+    assert response.data["agent_gateway"]["route_decision"]["status"] == "failed"
+    assert response.data["agent_gateway"]["route_decision"]["error_code"] == "agent_not_found"
     assert default_runtime.requests == []
 
 

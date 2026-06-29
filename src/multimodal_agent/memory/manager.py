@@ -11,7 +11,9 @@ from multimodal_agent.memory.store import MemoryStore
 from multimodal_agent.memory.write_policy import (
     MemoryWritePolicy,
     build_explicit_memory_item,
-    build_task_summary_memory_item,
+    build_memory_item_from_promotion_candidate,
+    build_run_summary_promotion_candidate,
+    promotion_decision_audit_record,
 )
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
 from multimodal_agent.schemas.requests import UserRequest
@@ -125,7 +127,7 @@ class MemoryManager:
         )
 
     def save_from_run(self, state: Any) -> MemoryItem | None:
-        """Persist a safe task summary for a completed run."""
+        """Evaluate a completed-run memory candidate and persist only when policy allows."""
 
         if state.status != "completed" or state.response is None:
             return None
@@ -136,8 +138,7 @@ class MemoryManager:
             for result in state.tool_results
             for ref in ([result.output_ref] if result.output_ref else [])
         ]
-        item = build_task_summary_memory_item(
-            memory_id=f"run_memory_{uuid4().hex}",
+        candidate = build_run_summary_promotion_candidate(
             user_id=state.user_id,
             session_id=state.session_id,
             summary=state.response.message if state.response else "Agent run completed.",
@@ -145,11 +146,20 @@ class MemoryManager:
             selected_tools=[tool.tool_name for tool in state.selected_tools],
             output_refs=output_refs,
             policy=self.write_policy,
+        )
+        if candidate is None:
+            _record_no_promotion_candidate(state, "auto_save_task_summary_disabled")
+            return None
+        decision = self.write_policy.evaluate_promotion_candidate(candidate)
+        item = build_memory_item_from_promotion_candidate(
+            memory_id=f"run_memory_{uuid4().hex}",
+            candidate=candidate,
+            policy=self.write_policy,
             created_at=datetime.now(timezone.utc),
         )
-        if item is None:
-            return None
-        return self.store.save(item)
+        saved = self.store.save(item) if item is not None else None
+        _record_promotion_decision(state, decision, saved)
+        return saved
 
     def save_explicit(
         self,
@@ -305,6 +315,44 @@ def _is_pure_memory_save_run(state: Any) -> bool:
         if getattr(result, "success", False)
     }
     return successful_tool_names == {"memory_save"}
+
+
+def _record_no_promotion_candidate(state: Any, reason: str) -> None:
+    metadata = getattr(getattr(state, "request", None), "metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    metadata["auto_task_summary_memory"] = {
+        "skipped": True,
+        "reason": reason,
+        "candidate": False,
+    }
+
+
+def _record_promotion_decision(state: Any, decision: Any, saved: MemoryItem | None) -> None:
+    metadata = getattr(getattr(state, "request", None), "metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    _increment_metadata_count(metadata, "memory_promotion_candidates")
+    if saved is not None:
+        _increment_metadata_count(metadata, "memory_promotion_written")
+    else:
+        _increment_metadata_count(metadata, "memory_promotion_rejected")
+    audit = metadata.setdefault("memory_promotion_candidate_audit", [])
+    if isinstance(audit, list):
+        audit.append(promotion_decision_audit_record(decision, written_memory_id=saved.memory_id if saved else None))
+        del audit[:-10]
+    metadata["auto_task_summary_memory"] = {
+        "skipped": saved is None,
+        "reason": decision.reason,
+        "candidate": True,
+        "written": saved is not None,
+        "memory_id": saved.memory_id if saved else None,
+    }
+
+
+def _increment_metadata_count(metadata: dict[str, Any], key: str) -> None:
+    value = metadata.get(key)
+    metadata[key] = value + 1 if isinstance(value, int) and value >= 0 else 1
 
 
 _LAYER_TITLES: list[tuple[MemoryLayer, str]] = [

@@ -4,6 +4,7 @@ from multimodal_agent.agent.state import AgentState
 from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
 from multimodal_agent.memory.store import InMemoryStore
+from multimodal_agent.memory.write_policy import MemoryWritePolicy
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
 from multimodal_agent.schemas.tools import ToolResult
@@ -45,7 +46,7 @@ def test_memory_manager_loads_layered_context_into_state() -> None:
     ]
 
 
-def test_memory_manager_saves_completed_run_summary() -> None:
+def test_memory_manager_records_promotion_candidate_without_default_write() -> None:
     store = InMemoryStore()
     manager = MemoryManager(store)
     request = UserRequest(user_id="u1", session_id="s1", text="帮我找白鞋")
@@ -54,9 +55,31 @@ def test_memory_manager_saves_completed_run_summary() -> None:
 
     item = manager.save_from_run(state)
 
+    assert item is None
+    assert store.search(MemoryQuery(user_id="u1", query="商品搜索")).items == []
+    assert state.request.metadata["memory_promotion_candidates"] == 1
+    assert state.request.metadata.get("memory_promotion_written", 0) == 0
+    assert state.request.metadata["memory_promotion_rejected"] == 1
+    audit = state.request.metadata["memory_promotion_candidate_audit"]
+    assert audit[0]["allowed"] is False
+    assert "content" not in audit[0]
+
+
+def test_memory_manager_writes_completed_run_summary_when_policy_allows() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store, write_policy=MemoryWritePolicy(allow_auto_write=True))
+    request = UserRequest(user_id="u1", session_id="s1", text="帮我找白鞋")
+    state = AgentState.from_request(request)
+    state.set_response(AgentResponse(message="已完成商品搜索。"))
+
+    item = manager.save_from_run(state)
+
     assert item is not None
     assert item.memory_type == "task"
+    assert item.source == "agent_run_summary_candidate"
     assert store.search(MemoryQuery(user_id="u1", query="商品搜索")).items
+    assert state.request.metadata["memory_promotion_candidates"] == 1
+    assert state.request.metadata["memory_promotion_written"] == 1
 
 
 def test_memory_manager_skips_task_summary_for_pure_memory_save_run() -> None:

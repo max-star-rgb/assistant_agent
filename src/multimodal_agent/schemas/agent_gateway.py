@@ -4,16 +4,94 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from multimodal_agent.schemas.requests import UserRequest
 
 
 AgentCollaborationMode = Literal["single", "controller_delegate"]
+AgentGatewayRouteReason = Literal[
+    "explicit_target_agent_id",
+    "capability_match",
+    "routing_table",
+    "controller_delegate_default",
+    "default_agent",
+]
+AgentGatewayRouteStatus = Literal["routed", "failed"]
+
+
+class AgentGatewayDelegatedTaskSummary(BaseModel):
+    """Public summary for one delegated child task."""
+
+    task_id: str | None = None
+    target_agent_id: str | None = None
+    status: str | None = None
+    run_id: str | None = None
+    trace_id: str | None = None
+    artifact_count: int = 0
+    error_codes: list[str] = Field(default_factory=list)
+
+
+class AgentGatewayRouteDecision(BaseModel):
+    """Deterministic route decision exposed by the gateway control plane."""
+
+    selected_agent_id: str | None = None
+    requested_target_agent_id: str | None = None
+    requested_capability: str | None = None
+    collaboration_mode: AgentCollaborationMode
+    reason: AgentGatewayRouteReason
+    status: AgentGatewayRouteStatus
+    delegation_enabled: bool = False
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class AgentGatewayRunMetadata(BaseModel):
+    """Stable gateway metadata embedded in AgentRunResponse data/runtime_info."""
+
+    route_decision: AgentGatewayRouteDecision
+    delegated_tasks: list[AgentGatewayDelegatedTaskSummary] = Field(default_factory=list)
+    route: dict[str, Any] | None = None
+
+    def public_payload(self) -> dict[str, Any]:
+        """Return metadata with legacy flat keys retained for compatibility."""
+
+        payload = self.model_dump(mode="json")
+        decision = self.route_decision
+        payload.update(
+            {
+                "agent_id": decision.selected_agent_id,
+                "collaboration_mode": decision.collaboration_mode,
+                "target_agent_id": decision.requested_target_agent_id,
+                "capability": decision.requested_capability,
+                "delegation_enabled": decision.delegation_enabled,
+            }
+        )
+        return payload
 
 
 class AgentGatewayRunRequest(UserRequest):
     """Request accepted by the optional `/agents/run` gateway entrypoint."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "user_id": "demo_user",
+                    "session_id": "demo_session",
+                    "text": "Summarize this with the worker agent.",
+                    "target_agent_id": "agent.worker",
+                    "collaboration_mode": "single",
+                },
+                {
+                    "user_id": "demo_user",
+                    "session_id": "demo_session",
+                    "text": "Coordinate this task and delegate if useful.",
+                    "collaboration_mode": "controller_delegate",
+                },
+            ]
+        }
+    )
 
     target_agent_id: str | None = None
     capability: str | None = None

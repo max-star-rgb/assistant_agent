@@ -29,14 +29,30 @@ class MemoryPromotionCandidate(BaseModel):
 
     @model_validator(mode="after")
     def validate_candidate_payload(self) -> "MemoryPromotionCandidate":
-        self.summary = sanitize_error_message(self.summary.strip())
-        self.reason = sanitize_error_message(self.reason.strip())
+        original_payload = {
+            "summary": self.summary.strip(),
+            "content": self.content,
+            "tags": self.tags,
+            "reason": self.reason.strip(),
+            "source": self.source,
+        }
+        self.summary = sanitize_error_message(original_payload["summary"])
+        self.reason = sanitize_error_message(original_payload["reason"])
+        self.source = sanitize_error_message(self.source)
         self.tags = [sanitize_error_message(tag) for tag in self.tags]
-        unsafe_reason = _unsafe_payload_reason(
-            {"summary": self.summary, "content": self.content, "tags": self.tags, "reason": self.reason}
-        )
+        if not self.summary and self.rejected_reason is None:
+            self.rejected_reason = "candidate requires non-empty summary"
+        if _is_session_summary_candidate(self) and self.rejected_reason is None:
+            self.rejected_reason = "session context_summary is session-scoped and must not be auto-promoted"
+        unsafe_reason = _unsafe_payload_reason(original_payload)
         if unsafe_reason and self.rejected_reason is None:
             self.rejected_reason = unsafe_reason
+        if (
+            self.summary != original_payload["summary"]
+            and original_payload["summary"]
+            and self.rejected_reason is None
+        ):
+            self.rejected_reason = "candidate contains secret-like text"
         return self
 
 
@@ -133,6 +149,8 @@ def build_memory_promotion_candidate(
     tags: list[str] | None = None,
     reason: str = "",
     user_intent_explicit: bool = False,
+    source: str = "memory_promotion_candidate",
+    rejected_reason: str | None = None,
 ) -> MemoryPromotionCandidate:
     """Build a policy-gated candidate without writing it to a store."""
 
@@ -144,9 +162,110 @@ def build_memory_promotion_candidate(
         kind=kind,
         content=content or {},
         tags=tags or [],
+        source=source,
         reason=reason,
         user_intent_explicit=user_intent_explicit,
+        rejected_reason=rejected_reason,
     )
+
+
+def build_run_summary_promotion_candidate(
+    *,
+    user_id: str,
+    session_id: str,
+    summary: str,
+    intent: str | None,
+    selected_tools: list[str],
+    output_refs: list[str] | None = None,
+    policy: MemoryWritePolicy | None = None,
+) -> MemoryPromotionCandidate | None:
+    """Build a completed-run memory candidate without performing a write."""
+
+    resolved_policy = policy or MemoryWritePolicy()
+    if not resolved_policy.auto_save_task_summary:
+        return None
+    refs = [str(ref) for ref in output_refs or [] if str(ref).strip()]
+    redacted_summary = sanitize_error_message(summary)
+    rejected_reason = None
+    if resolved_policy.require_explicit_save_for_sensitive and redacted_summary != summary:
+        rejected_reason = "candidate contains secret-like text"
+    return build_memory_promotion_candidate(
+        user_id=user_id,
+        session_id=session_id,
+        summary=redacted_summary,
+        memory_type="task",
+        kind="episodic_memory",
+        content={
+            "intent": intent,
+            "selected_tools": selected_tools[:8],
+            "output_refs": refs,
+        },
+        tags=["run_summary", *selected_tools[:5]],
+        source="agent_run_summary_candidate",
+        reason="completed run summary candidate",
+        rejected_reason=rejected_reason,
+    )
+
+
+def build_memory_item_from_promotion_candidate(
+    *,
+    memory_id: str,
+    candidate: MemoryPromotionCandidate,
+    policy: MemoryWritePolicy | None = None,
+    created_at: datetime | None = None,
+) -> MemoryItem | None:
+    """Convert an allowed promotion candidate into a durable memory item."""
+
+    resolved_policy = policy or MemoryWritePolicy()
+    decision = resolved_policy.evaluate_promotion_candidate(candidate)
+    if not decision.allowed:
+        return None
+    now = created_at or datetime.now(timezone.utc)
+    output_refs = candidate.content.get("output_refs")
+    artifact_refs = (
+        [str(ref) for ref in output_refs if str(ref).strip()]
+        if isinstance(output_refs, list) and resolved_policy.auto_save_artifacts
+        else []
+    )
+    return MemoryItem(
+        memory_id=memory_id,
+        user_id=candidate.user_id,
+        session_id=candidate.session_id,
+        memory_type=candidate.memory_type,
+        summary=candidate.summary,
+        content={
+            **candidate.content,
+            "promotion_kind": candidate.kind,
+        },
+        tags=_unique(["memory_promotion", *candidate.tags]),
+        source=candidate.source,
+        artifact_refs=artifact_refs,
+        reason=candidate.reason or None,
+        created_at=now,
+        expires_at=resolved_policy.expires_at_for(candidate.memory_type, now),
+    )
+
+
+def promotion_decision_audit_record(
+    decision: MemoryWriteDecision,
+    *,
+    written_memory_id: str | None = None,
+) -> dict[str, Any]:
+    """Return a redacted audit record for traces/metadata."""
+
+    candidate = decision.candidate
+    return {
+        "kind": candidate.kind,
+        "memory_type": candidate.memory_type,
+        "source": _clip(sanitize_error_message(candidate.source), 120),
+        "summary": _clip(sanitize_error_message(candidate.summary), 200),
+        "tags": [_clip(sanitize_error_message(tag), 80) for tag in candidate.tags[:8]],
+        "allowed": decision.allowed,
+        "written": written_memory_id is not None,
+        "written_memory_id": written_memory_id,
+        "reason": _clip(sanitize_error_message(decision.reason), 240),
+        "user_intent_explicit": candidate.user_intent_explicit,
+    }
 
 
 def build_task_summary_memory_item(
@@ -298,8 +417,11 @@ def _unsafe_payload_reason(value: Any) -> str | None:
                 "raw_video",
                 "raw_audio",
                 "raw_media",
+                "raw_payload",
+                "raw_html",
                 "provider_response",
                 "raw_provider_response",
+                "raw_provider_payload",
             }:
                 return f"candidate contains raw media/provider payload key: {key}"
             nested_reason = _unsafe_payload_reason(nested)
@@ -319,3 +441,26 @@ def _unsafe_payload_reason(value: Any) -> str | None:
         if "sk-" in normalized or "bearer " in normalized:
             return "candidate contains secret-like text"
     return None
+
+
+def _is_session_summary_candidate(candidate: MemoryPromotionCandidate) -> bool:
+    if candidate.source in {"context_summary", "session_context_summary"}:
+        return True
+    return any(str(key).lower() == "context_summary" for key in candidate.content)
+
+
+def _unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _clip(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return f"{value[: max_chars - 1]}…"

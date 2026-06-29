@@ -43,8 +43,11 @@ _RAW_PAYLOAD_KEYS = {
     "raw_video",
     "raw_audio",
     "raw_media",
+    "raw_payload",
+    "raw_html",
     "provider_response",
     "raw_provider_response",
+    "raw_provider_payload",
 }
 
 

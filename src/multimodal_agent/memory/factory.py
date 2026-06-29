@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
-from multimodal_agent.config import ProviderConfig
+from multimodal_agent.config import DEFAULT_JSONL_MEMORY_PATH, DEFAULT_SQLITE_MEMORY_PATH, ProviderConfig
 from multimodal_agent.memory.jsonl_store import JsonlMemoryStore
+from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
 from multimodal_agent.memory.store import InMemoryStore, MemoryStore
 
 
@@ -16,6 +17,8 @@ def create_memory_store(config: ProviderConfig | None = None) -> MemoryStore:
     resolved_config = config or ProviderConfig.from_env()
     if resolved_config.memory_backend == "jsonl":
         return JsonlMemoryStore(_repo_relative_path(resolved_config.memory_path))
+    if resolved_config.memory_backend == "sqlite":
+        return SQLiteMemoryStore(_repo_relative_path(_sqlite_memory_path(resolved_config.memory_path)))
     return InMemoryStore()
 
 
@@ -24,3 +27,9 @@ def _repo_relative_path(path: str) -> Path:
     if resolved.is_absolute():
         return resolved
     return REPO_ROOT / resolved
+
+
+def _sqlite_memory_path(path: str) -> str:
+    if path == DEFAULT_JSONL_MEMORY_PATH:
+        return DEFAULT_SQLITE_MEMORY_PATH
+    return path

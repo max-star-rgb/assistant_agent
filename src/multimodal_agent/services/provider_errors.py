@@ -90,6 +90,7 @@ PROVIDER_ERROR_CODES = frozenset(
         "provider_invalid_config",
         "provider_request_invalid",
         "provider_request_too_large",
+        "provider_context_overflow",
         "provider_unsupported_input",
         "provider_unsupported_format",
         "provider_timeout",
@@ -121,6 +122,7 @@ PROVIDER_RECOVERABLE_CODES = frozenset(
         "provider_unavailable",
         "provider_bad_gateway",
         "provider_rate_limited",
+        "provider_context_overflow",
         "provider_execution_failed",
     }
 )
@@ -152,6 +154,10 @@ def normalize_provider_error_code(code: str | None) -> str:
         "network_error": "provider_network_error",
         "missing_api_key": "provider_missing_api_key",
         "missing_base_url": "provider_missing_base_url",
+        "context_length_exceeded": "provider_context_overflow",
+        "context_overflow": "provider_context_overflow",
+        "input_too_large": "provider_context_overflow",
+        "request_too_large": "provider_context_overflow",
     }
     normalized = aliases.get(normalized, normalized)
     if normalized in PROVIDER_ERROR_CODES:

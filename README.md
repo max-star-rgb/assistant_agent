@@ -146,6 +146,7 @@ structured observations -> final answer / events / audit logs
 - [Architecture](docs/architecture.md)
 - [Memory Service Architecture](docs/memory-service-architecture.md)
 - [Memory Kernel Hardening Plan](docs/development/memory-kernel-hardening-plan.md)
+- [Agent Control Plane Plan](docs/development/agent-control-plane-plan.md)
 - [Agent Communication Routing](docs/agent-communication-routing.md)
 - [Capabilities](docs/capabilities.md)
 - [Configuration](docs/configuration.md)

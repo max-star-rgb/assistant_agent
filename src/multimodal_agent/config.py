@@ -22,6 +22,11 @@ AgentGraphMode = Literal["conditional", "assistant_loop"]
 AssistantToolCallMode = Literal["auto", "prompt_json", "native_tools"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
+MemoryBackend = Literal["memory", "jsonl", "sqlite"]
+
+
+DEFAULT_JSONL_MEMORY_PATH = ".local/memory/long_term_memories.jsonl"
+DEFAULT_SQLITE_MEMORY_PATH = ".local/memory/long_term_memories.sqlite3"
 
 
 VisionProviderName = str
@@ -68,8 +73,8 @@ class ProviderConfig:
     ark_vision_model: str = "doubao-seed-2-0-lite-260215"
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
     seed_vision_model: str = "seed-vision"
-    memory_backend: Literal["memory", "jsonl"] = "memory"
-    memory_path: str = ".local/memory/long_term_memories.jsonl"
+    memory_backend: MemoryBackend = "memory"
+    memory_path: str = DEFAULT_JSONL_MEMORY_PATH
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 8
@@ -156,7 +161,7 @@ class ProviderConfig:
         )
         image_generation_settings = resolve_image_generation_provider(image_generation_provider, source)
         memory_backend = _memory_backend(source.get("MULTIMODAL_AGENT_MEMORY_BACKEND"))
-        memory_path = source.get("MULTIMODAL_AGENT_MEMORY_PATH", ".local/memory/long_term_memories.jsonl")
+        memory_path = source.get("MULTIMODAL_AGENT_MEMORY_PATH") or _default_memory_path(memory_backend)
         conversation_history_backend = _conversation_history_backend(
             source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND"),
             memory_backend=memory_backend,
@@ -433,7 +438,9 @@ class ProviderConfig:
         )
 
 
-def _memory_backend(value: str | None) -> Literal["memory", "jsonl"]:
+def _memory_backend(value: str | None) -> MemoryBackend:
+    if value == "sqlite":
+        return "sqlite"
     if value == "jsonl":
         return "jsonl"
     return "memory"
@@ -442,13 +449,19 @@ def _memory_backend(value: str | None) -> Literal["memory", "jsonl"]:
 def _conversation_history_backend(
     value: str | None,
     *,
-    memory_backend: Literal["memory", "jsonl"],
+    memory_backend: MemoryBackend,
 ) -> ConversationHistoryBackend:
     if value == "jsonl":
         return "jsonl"
     if value == "memory":
         return "memory"
     return "jsonl" if memory_backend == "jsonl" else "memory"
+
+
+def _default_memory_path(memory_backend: MemoryBackend) -> str:
+    if memory_backend == "sqlite":
+        return DEFAULT_SQLITE_MEMORY_PATH
+    return DEFAULT_JSONL_MEMORY_PATH
 
 
 def _langgraph_checkpointer_backend(value: str | None) -> LangGraphCheckpointerBackend:

@@ -175,6 +175,7 @@ class SummaryValidator:
         if missing:
             raise ValueError(f"context summary missing fields: {sorted(missing)}")
         _reject_unsafe_summary_payload(payload)
+        _validate_tool_pair_refs(summary.important_refs)
 
 
 def create_context_compactor(
@@ -243,7 +244,7 @@ def _summary_prompt(
             for turn in conversation
         ],
         "current_request": current_request.model_dump(mode="json"),
-        "observations": observations,
+        "observations": _safe_summary_payload(observations),
         "budget_report": budget_report.model_dump(mode="json") if budget_report else None,
     }
     return (
@@ -317,6 +318,43 @@ def _reject_unsafe_summary_payload(value: Any) -> None:
         raise ValueError("context summary contains unsafe text")
 
 
+def _validate_tool_pair_refs(refs: list[str]) -> None:
+    tool_calls = _ref_values(refs, prefixes=("tool_call:", "tool_call_id:"))
+    tool_results = _ref_values(refs, prefixes=("tool_result:", "tool_result_id:"))
+    if not tool_calls and not tool_results:
+        return
+    if tool_calls != tool_results:
+        raise ValueError("context summary must preserve complete tool call/result reference pairs")
+
+
+def _ref_values(refs: list[str], *, prefixes: tuple[str, ...]) -> set[str]:
+    values: set[str] = set()
+    for ref in refs:
+        for prefix in prefixes:
+            if ref.startswith(prefix):
+                suffix = ref[len(prefix) :].strip()
+                if suffix:
+                    values.add(suffix)
+    return values
+
+
+def _safe_summary_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        payload: dict[str, Any] = {}
+        for key, nested in value.items():
+            if _looks_unsafe(str(key)):
+                continue
+            payload[key] = _safe_summary_payload(nested)
+        return payload
+    if isinstance(value, list):
+        return [_safe_summary_payload(item) for item in value[:8]]
+    if isinstance(value, str):
+        if _looks_unsafe(value):
+            return "[redacted]"
+        return _clip(value, 500)
+    return value
+
+
 def _looks_unsafe(value: str) -> bool:
     normalized = value.lower()
     unsafe_markers = (
@@ -327,6 +365,9 @@ def _looks_unsafe(value: str) -> bool:
         "secret",
         "token",
         "raw_provider_response",
+        "raw_provider_payload",
+        "raw_payload",
+        "raw_html",
         "provider_response",
         "base64",
         "data:image/",

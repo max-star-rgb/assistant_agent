@@ -254,18 +254,22 @@ Selection rules:
 | --- | --- | --- |
 | `InMemoryStore` | unit tests, demo, short-lived runtime | keep |
 | `JsonlMemoryStore` | local/debug readable persistence | keep, do not make it production default |
-| `SQLiteMemoryStore` | local engineering store with transactions, indexes, migration | P0 priority |
+| `SQLiteMemoryStore` | local engineering store with transactions, indexes, migration | P0 v1 implemented; hardening continues |
 | `PostgresMemoryStore` | future multi-user managed production store | P1/P2 |
 | Vector adapter | optional semantic recall | P2 only, not default |
 
+P0 progress:
+
+- 2026-06-29: Added `SQLiteMemoryStore` behind the existing `MemoryStore` contract, with `ProviderConfig(memory_backend="sqlite")` and factory routing. The v1 schema includes `memory_schema_version`, indexed `memory_items`, user-scoped primary key, content hash column, transactional upsert, and delete behavior that hides rows from retrieval/list/get. Store contract and runtime integration tests cover save/search/get/delete, relative paths, default sqlite path selection, and cross-runtime persistence.
+
 SQLite P0 requirements:
 
-- `schema_version` table.
-- Forward migrations and rollback notes.
-- Transaction wrapper for save/update/delete/profile upsert.
-- Unique user-scoped content hash or dedupe key.
-- Indexes for `user_id`, `project_id`, `session_id`, `scope`, `kind`, `expires_at`, `deleted_at`, `content_hash`.
-- Soft delete support.
+- `schema_version` table. Initial v1 exists.
+- Forward migrations and rollback notes. Migration hook exists; rollback/runbook notes still needed.
+- Transaction wrapper for save/update/delete/profile upsert. Store-level save/delete transactions exist; profile-specific transaction tests still needed.
+- Unique user-scoped content hash or dedupe key. Current primary key is `(user_id, memory_id)` with `content_hash`; dedupe-key policy remains future work.
+- Indexes for `user_id`, `project_id`, `session_id`, `scope`, `kind`, `expires_at`, `deleted_at`, `content_hash`. Current schema indexes `user_id`, `session_id`, `memory_type`, `expires_at`, `deleted_at`, and `content_hash`; project/scope/kind fields wait for schema evolution.
+- Soft delete support. Delete hides rows via `deleted_at`; hard-delete/retention sweeper still needed.
 - Backup/export path.
 - Corruption/migration failure tests.
 
@@ -367,8 +371,8 @@ Goal: local engineering-grade memory, still offline and deterministic.
 
 Work:
 
-1. Add `SQLiteMemoryStore`.
-2. Add schema version and migration runner.
+1. Add `SQLiteMemoryStore`. Initial implementation done on 2026-06-29.
+2. Add schema version and migration runner. Initial v1 schema and migration hook done on 2026-06-29; migration failure/rollback tests still needed.
 3. Add transaction/lock behavior and user-scoped unique dedupe key.
 4. Shape `RequestIdentity` and thread it through service APIs where practical.
 5. Promote `MemoryWritePolicy` into a decision object with allow/reject/confirmation reasons.

@@ -235,7 +235,7 @@ def summarize_graph_state(graph_state: dict[str, Any]) -> dict[str, Any]:
     state = graph_state.get("state")
     if state is None:
         return {}
-    return {
+    summary = {
         "status": getattr(state, "status", None),
         "intent": state.intent.intent if getattr(state, "intent", None) is not None else None,
         "plan_step_count": len(state.plan.steps) if getattr(state, "plan", None) is not None else 0,
@@ -245,6 +245,29 @@ def summarize_graph_state(graph_state: dict[str, Any]) -> dict[str, Any]:
         "error_count": len(getattr(state, "errors", [])),
         "current_step_index": graph_state.get("current_step_index", 0),
     }
+    memory_promotion = _memory_promotion_state_summary(state)
+    if memory_promotion:
+        summary["memory_promotion"] = memory_promotion
+    return summary
+
+
+def _memory_promotion_state_summary(state: Any) -> dict[str, Any]:
+    metadata = getattr(getattr(state, "request", None), "metadata", {})
+    if not isinstance(metadata, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key in (
+        "memory_promotion_candidates",
+        "memory_promotion_written",
+        "memory_promotion_rejected",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, int) and value >= 0:
+            result[key] = value
+    audit = metadata.get("memory_promotion_candidate_audit")
+    if isinstance(audit, list) and audit:
+        result["memory_promotion_candidate_audit"] = sanitize_error_detail(audit[-10:])
+    return result
 
 
 def latest_error_summary(graph_state: dict[str, Any]) -> dict[str, Any] | None:

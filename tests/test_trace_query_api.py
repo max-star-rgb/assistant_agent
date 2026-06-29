@@ -37,6 +37,10 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
     assert "context_summary_present" in trace_summary["context"]
     assert "memory_promotion_candidates" in trace_summary["context"]
     assert "memory_promotion_written" in trace_summary["context"]
+    assert trace_summary["context"]["memory_promotion_candidates"] == 1
+    assert trace_summary["context"]["memory_promotion_written"] == 0
+    assert trace_summary["context"]["memory_promotion_rejected"] == 1
+    assert "content" not in trace_summary["context"]["memory_promotion_candidate_audit"][0]
     assert "source_counts" in trace_summary["context"]
     assert "compaction" in trace_summary["context"]
     assert "tool_catalog" in trace_summary["context"]

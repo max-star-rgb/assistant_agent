@@ -76,6 +76,7 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/multimodal_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, duplicate merge, user profile upsert, run-summary saves, get/list/delete passthroughs. |
 | `src/multimodal_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`. |
 | `src/multimodal_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract. |
+| `src/multimodal_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, and soft-delete-compatible delete behavior. |
 | `src/multimodal_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
 | `src/multimodal_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
 | `src/multimodal_agent/memory/write_policy.py` | Safe memory item construction, TTL defaults, raw payload restrictions, explicit memory typing. |
@@ -126,14 +127,15 @@ Configured by `ProviderConfig`:
 
 - `memory_backend="memory"`: default process-local `InMemoryStore`.
 - `memory_backend="jsonl"`: local `JsonlMemoryStore`.
-- `memory_path`: default `.local/memory/long_term_memories.jsonl`.
+- `memory_backend="sqlite"`: local `SQLiteMemoryStore`.
+- `memory_path`: default `.local/memory/long_term_memories.jsonl`; when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite` is set without an explicit path, the default is `.local/memory/long_term_memories.sqlite3`.
 
 Environment variables:
 
 - `MULTIMODAL_AGENT_MEMORY_BACKEND`
 - `MULTIMODAL_AGENT_MEMORY_PATH`
 
-Relative JSONL paths resolve from the repository root. JSONL is still local-first storage, not a real external provider. Future SQLite, PostgreSQL, vector DB, or external memory service adapters must sit behind `MemoryStore` and `MemoryManager`.
+Relative JSONL and SQLite paths resolve from the repository root. JSONL and SQLite are still local-first storage, not real external providers. Future PostgreSQL, vector DB, or external memory service adapters must sit behind `MemoryStore` and `MemoryManager`.
 
 ## Contracts
 
@@ -205,10 +207,13 @@ Explicit saves:
 Run-summary saves:
 
 - Flow through `MemoryManager.save_from_run(...)`.
-- Only save completed runs with a response.
+- Only consider completed runs with a response.
 - Skip pure memory-save runs.
-- Store safe task summaries and output refs, not raw request/provider payloads.
-- Respect `MemoryWritePolicy.auto_save_task_summary`.
+- First produce a `MemoryPromotionCandidate` from safe task summaries and output refs, not raw request/provider payloads.
+- Respect `MemoryWritePolicy.auto_save_task_summary` for candidate generation.
+- Evaluate the candidate through `MemoryWritePolicy.evaluate_promotion_candidate(...)` before any durable write.
+- Default policy records candidate audit metadata and rejects the automatic write because `allow_auto_write=False`.
+- Write a durable task memory only when policy explicitly allows automatic writes.
 - Are skipped in assistant-loop non-mock chat paths so the model can choose `memory_save` explicitly.
 
 Promotion candidates:
@@ -216,9 +221,10 @@ Promotion candidates:
 - `MemoryPromotionCandidate` is a proposed durable memory, not a write.
 - `MemoryWritePolicy.evaluate_promotion_candidate(...)` decides whether the candidate may be written.
 - Defaults are conservative: `allow_auto_write=False`, `allow_long_term_promotion=False`, `require_user_intent_for_profile_memory=True`.
+- Candidate audit metadata is stored on request metadata and trace summaries as counts plus redacted candidate summaries; candidate `content` is not exposed in trace/API summaries.
 - User-explicit "remember this" intent remains allowed through `memory_save` / `MemoryManager.save_explicit(...)`.
 - Temporary debug notes, one-off searches, failed attempts, speculation, raw outputs, provider payloads, base64/media bodies, API keys, tokens, and other secret-like content are rejected or left as non-written candidates.
-- Session `context_summary` is handled by `ConversationStore.save_summary(...)`; it must not be promoted to long-term memory unless a separate candidate passes policy and user/project rules.
+- Session `context_summary` is handled by `ConversationStore.save_summary(...)`; it must not be promoted to long-term memory by automatic candidate generation.
 
 Default TTL policy:
 

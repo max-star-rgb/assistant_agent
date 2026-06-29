@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from multimodal_agent.api import routes_a2a
 from multimodal_agent.api.app import create_app
+from multimodal_agent.schemas.a2a import A2ATaskResult
 from multimodal_agent.schemas.agent_communication import DEFAULT_AGENT_ID, AgentInstance
 from multimodal_agent.schemas.api import AgentRunResponse
 from multimodal_agent.services.agent_directory import AgentDirectory, default_agent_instance
@@ -97,11 +98,13 @@ def test_a2a_send_message_routes_to_agent_gateway(monkeypatch) -> None:
     assert payload["id"] == "rpc_1"
     assert payload["error"] is None
     result = payload["result"]
+    A2ATaskResult.model_validate(result)
     assert result["id"] == "run_a2a_test"
     assert result["contextId"] == "ctx_1"
     assert result["status"]["state"] == "completed"
     assert result["status"]["message"]["parts"][0]["text"] == "a2a response"
     assert result["metadata"]["trace_id"] == "trace_a2a_test"
+    assert result["artifacts"][0]["parts"][0]["text"] == "a2a response"
     assert len(gateway.requests) == 1
     request = gateway.requests[0]
     assert request.user_id == "u1"

@@ -106,7 +106,7 @@ Real provider opt-in:
 | 新增 demo 场景 | `docs/demo-flows.md`, `demo_data/scenarios/e2e_demo_scenarios.json`, `scripts/run_demo_flows.py` | `demo_data/**`, tests if explicitly requested | `python scripts/run_demo_flows.py`, `python -m pytest tests/test_demo_scenario_matrix.py` |
 | 调整 provider mock | `docs/configuration.md`, `docs/provider-setup.md`, relevant service adapter, provider tests | `src/multimodal_agent/services/**`, `src/multimodal_agent/tools/**`, tests | `python -m pytest tests/test_provider_config.py tests/test_provider_selection.py` |
 | 调整 memory 行为 | `docs/memory-service-architecture.md`, `docs/development/memory-kernel-hardening-plan.md` for engineering hardening, `src/multimodal_agent/memory/**`, memory tools/services, memory tests | `src/multimodal_agent/memory/**`, memory tools/services, tests | `python -m pytest tests/test_memory_manager.py tests/test_memory_*` |
-| 调整 agent communication 行为 | `docs/agent-communication-routing.md`, `src/multimodal_agent/schemas/agent_communication.py`, `src/multimodal_agent/services/agent_*.py`, `src/multimodal_agent/tools/agent_delegation_tool.py` | agent communication schemas/services/tools/routes as needed, tests | `python -m pytest tests/test_agent_communication_*.py` |
+| 调整 agent communication 行为 | `docs/agent-communication-routing.md`, `docs/development/agent-control-plane-plan.md`, `src/multimodal_agent/schemas/agent_communication.py`, `src/multimodal_agent/services/agent_*.py`, `src/multimodal_agent/tools/agent_delegation_tool.py` | agent communication schemas/services/tools/routes as needed, tests | `python -m pytest tests/test_agent_communication_*.py tests/test_agent_gateway.py tests/test_api_a2a.py` |
 | 更新 eval | `scripts/run_evals.py`, `tests/evals/eval_cases.json`, `docs/development.md` | `tests/evals/**`, `scripts/run_evals.py` if requested | `python scripts/run_evals.py` |
 | 更新 API 文档 | `docs/observability-local.md`, `src/multimodal_agent/api/routes_agent.py`, API tests | docs first; source only in implementation tasks | `python -m pytest tests/test_api_* tests/test_websocket_*` |
 | Work on Haodanku provider | `haodanku-openapi-docs/AI使用说明.md`, `haodanku-openapi-docs/接口目录.md`, relevant interface doc | provider docs/source only when task asks | `python -m pytest tests/test_haodanku_product_search_adapter.py` |
@@ -154,6 +154,7 @@ If a command is missing or fails during a docs-only task, record the command and
 - `docs/DOCS_INDEX.md` is the documentation inventory and cleanup status source.
 - `docs/memory-service-architecture.md` is the current memory service architecture and routing entry.
 - `docs/development/memory-kernel-hardening-plan.md` is the phased memory engineering hardening plan.
+- `docs/development/agent-control-plane-plan.md` is the phased local multi-agent gateway and A2A control-plane development plan.
 - `docs/agent-communication-routing.md` is the current agent communication routing and A2A adapter boundary entry.
 - `docs/TESTS_REVIEW.md` is the tests cleanup/readiness audit.
 - Top-level `docs/*.md` are current user/developer references unless the index says otherwise.

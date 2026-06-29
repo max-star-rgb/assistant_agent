@@ -48,6 +48,14 @@ from multimodal_agent.services.trace_store import TraceEvent, sanitize_trace_val
 
 MAX_PLAN_STEPS = 8
 MAX_PLAN_REVISIONS = 2
+PROVIDER_CONTEXT_OVERFLOW_CODES = {
+    "provider_context_overflow",
+    "context_length_exceeded",
+    "context_overflow",
+    "input_too_large",
+    "provider_request_too_large",
+    "provider_input_size_exceeded",
+}
 
 
 class AssistantLoopState(TypedDict):
@@ -131,7 +139,7 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
         is_mock=is_mock,
         tool_call_mode=_assistant_tool_call_mode(graph_state),
     )
-    decision = _decide_next_action(
+    decision, context = _decide_next_action(
         graph_state,
         context=context,
         chat_adapter=chat_adapter,
@@ -210,12 +218,12 @@ def _decide_next_action(
     context: AssistantDecisionContext,
     chat_adapter: ChatAdapter,
     state: AgentState,
-) -> AssistantDecision:
+) -> tuple[AssistantDecision, AssistantDecisionContext]:
     """Select the next assistant action without mutating response state."""
 
     if context.is_mock:
-        return _decide_with_mock_plan(graph_state, context, state)
-    return _decide_with_llm(chat_adapter, context, state)
+        return _decide_with_mock_plan(graph_state, context, state), context
+    return _decide_with_llm(chat_adapter, context, state, graph_state=graph_state)
 
 
 def _decide_with_mock_plan(
@@ -240,7 +248,9 @@ def _decide_with_llm(
     chat_adapter: ChatAdapter,
     context: AssistantDecisionContext,
     state: AgentState,
-) -> AssistantDecision:
+    *,
+    graph_state: AssistantLoopState,
+) -> tuple[AssistantDecision, AssistantDecisionContext]:
     """Ask the real chat adapter for the next ReAct action."""
 
     request = (
@@ -249,6 +259,19 @@ def _decide_with_llm(
         else _build_prompt_json_chat_request(context, state)
     )
     result = chat_adapter.chat(request)
+    if _is_provider_context_overflow_result(result) and _can_retry_provider_context_overflow(state):
+        _record_provider_context_overflow(state, result)
+        retry_context = _rebuild_context_after_provider_overflow(graph_state, context)
+        retry_request = (
+            _build_native_tool_chat_request(retry_context, state)
+            if _use_native_tool_calling(retry_context)
+            else _build_prompt_json_chat_request(retry_context, state)
+        )
+        result = chat_adapter.chat(retry_request)
+        context = retry_context
+        if _is_provider_context_overflow_result(result):
+            _record_provider_context_overflow(state, result, retry_failed=True)
+            return _provider_context_overflow_final_answer(result), context
     raw_output = result.response_text if result.success else ""
     if _use_native_tool_calling(context) and result.success and result.tool_calls:
         _record_native_tool_call(state, result.tool_calls[0])
@@ -265,7 +288,7 @@ def _decide_with_llm(
             fallback=decision,
         )
     if decision.type == "tool_call" and context.iterations + 1 >= context.max_iterations:
-        return _request_final_answer_after_tool_limit(
+        decision = _request_final_answer_after_tool_limit(
             chat_adapter=chat_adapter,
             state=state,
             request=context.request,
@@ -273,10 +296,95 @@ def _decide_with_llm(
             observations=context.tool_observations,
             iteration=context.iterations,
             max_iterations=context.max_iterations,
+            context_compactor=graph_state.get("context_compactor"),
         )
+        return decision, context
     if context.iterations >= context.max_iterations and decision.type == "tool_call":
-        return _max_iteration_final_answer(context.max_iterations)
-    return decision
+        return _max_iteration_final_answer(context.max_iterations), context
+    return decision, context
+
+
+def _is_provider_context_overflow_result(result: ChatResult) -> bool:
+    return any(error.code in PROVIDER_CONTEXT_OVERFLOW_CODES for error in result.errors)
+
+
+def _can_retry_provider_context_overflow(state: AgentState) -> bool:
+    value = state.request.metadata.get("provider_context_overflow_retry_count")
+    retry_count = value if isinstance(value, int) and value >= 0 else 0
+    return retry_count < 1
+
+
+def _record_provider_context_overflow(
+    state: AgentState,
+    result: ChatResult,
+    *,
+    retry_failed: bool = False,
+) -> None:
+    metadata = state.request.metadata
+    metadata["provider_context_overflow"] = True
+    metadata["last_provider_error_code"] = "provider_context_overflow"
+    if not retry_failed:
+        metadata["provider_context_overflow_retry_count"] = _metadata_int(metadata, "provider_context_overflow_retry_count") + 1
+        metadata["provider_context_overflow_retry_attempted"] = True
+    else:
+        metadata["provider_context_overflow_retry_failed"] = True
+    provider_errors = metadata.setdefault("provider_errors", [])
+    if isinstance(provider_errors, list):
+        for error in result.errors:
+            if error.code not in PROVIDER_CONTEXT_OVERFLOW_CODES:
+                continue
+            provider_errors.append(
+                {
+                    "code": "provider_context_overflow",
+                    "message": "provider context overflow",
+                    "recoverable": error.recoverable,
+                    "provider": result.provider,
+                    "model": result.model,
+                }
+            )
+
+
+def _rebuild_context_after_provider_overflow(
+    graph_state: AssistantLoopState,
+    context: AssistantDecisionContext,
+) -> AssistantDecisionContext:
+    pack = build_assistant_context_pack(
+        state=graph_state["state"],
+        request=context.request,
+        observations=context.tool_observations,
+        tool_specs=context.tool_specs,
+        iteration=context.iterations,
+        max_iterations=context.max_iterations,
+        memory_text=context.memory_text,
+        context_compactor=graph_state.get("context_compactor"),
+    )
+    return AssistantDecisionContext(
+        context_pack=pack,
+        request=pack.request,
+        memory_summaries=pack.memory_summaries,
+        memory_text=pack.memory_text,
+        tool_specs=pack.tool_specs,
+        tool_observations=pack.observations,
+        iterations=context.iterations,
+        max_iterations=context.max_iterations,
+        is_mock=context.is_mock,
+        tool_call_mode=context.tool_call_mode,
+    )
+
+
+def _provider_context_overflow_final_answer(result: ChatResult) -> AssistantDecision:
+    message = "模型上下文超出限制，已尝试压缩后重试一次但仍失败。请缩短输入或拆分任务后再试。"
+    reason = "Provider context overflow persisted after one compaction retry."
+    error_message = next((sanitize_trace_value(error.message) for error in result.errors), "")
+    notes = ["provider_context_overflow", "provider_context_overflow_retry_failed"]
+    if error_message:
+        notes.append("provider_error_sanitized")
+    return AssistantDecision(
+        type="final_answer",
+        message=message,
+        reason=reason,
+        safety_notes=notes,
+    )
 
 
 def _assistant_tool_call_mode(graph_state: AssistantLoopState) -> str:
@@ -663,6 +771,7 @@ def _request_final_answer_after_tool_limit(
     observations: list[dict[str, Any]],
     iteration: int,
     max_iterations: int,
+    context_compactor: Any | None = None,
 ) -> AssistantDecision:
     """Ask the real assistant to summarize instead of issuing another tool call at the limit."""
 
@@ -674,7 +783,7 @@ def _request_final_answer_after_tool_limit(
         iteration=iteration,
         max_iterations=max_iterations,
         memory_text=memory_text,
-        context_compactor=graph_state.get("context_compactor"),
+        context_compactor=context_compactor,
     )
     prompt = render_final_only_prompt(context_pack)
     result = chat_adapter.chat(
