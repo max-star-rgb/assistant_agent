@@ -37,8 +37,8 @@ def test_memory_manager_loads_layered_context_into_state() -> None:
 
     assert [item.memory_id for item in context.items] == ["pref", "task"]
     assert state.memory_context == context.items
-    assert "语义记忆" in state.request.metadata["memory_context_text"]
-    assert "情景记忆" in state.request.metadata["memory_context_text"]
+    assert "偏好/事实记忆" in state.request.metadata["memory_context_text"]
+    assert "任务/经历记忆" in state.request.metadata["memory_context_text"]
     assert state.request.metadata["memory_context_summaries"] == [
         "用户喜欢日系极简风格。",
         "曾经先搜索商品再比较价格。",

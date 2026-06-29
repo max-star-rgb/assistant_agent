@@ -4,12 +4,12 @@
 
 ## Current Status
 
-- API 层使用 FastAPI，提供健康检查、Agent 调用、记忆、评测和演示相关接口。
+- API 层使用 FastAPI，提供健康检查、默认 Agent 调用、多 Agent 网关调用、记忆、评测和演示相关接口。
 - Agent 层以 `AgentGraphRuntime` 和 assistant loop 为核心，负责意图理解、追问、工具选择、工具结果融合和最终回答。
 - 工具调用通过 `AssistantDecision -> ActionValidator -> ToolExecutor -> ToolRegistry -> Tool` 边界执行，不应绕过 validator、executor、policy 或 audit。
 - Provider 默认走 mock/local/offline 路径。API key 只用于显式 opt-in 的真实 Provider smoke/pilot，不会因为本地存在 key 自动启用真实调用。
 - Memory、demo、eval、CLI 和 Web UI 均围绕同一套本地优先运行时组织。
-- Agent communication 目前实现内部本地边界：默认仍是单 `agent.default`，`delegate_to_agent` 只通过显式 registry opt-in 注册，可通过 `create_local_agent_communication_service` + `LocalAgentTransport` 做本进程多 runtime 离线路由测试；尚未接入完整 gateway 或 A2A 网络协议。
+- Agent communication 目前实现本地同进程边界：默认 `/agent/run`、CLI、eval 和 Web demo 仍走单 `agent.default`；独立 `/agents/run` 提供显式多 Agent 网关入口，支持 `target_agent_id` 和 `collaboration_mode`，主控 `agent.default` 可通过 opt-in `delegate_to_agent` 委托本地 worker；尚未接入 A2A 网络协议或远程 agent。
 
 ## Quick Start
 
@@ -40,6 +40,14 @@ $PY scripts/run_server.py --provider mock --image-provider mock
 
 ```bash
 $PY scripts/run_client.py --server http://127.0.0.1:8000 "你好，帮我总结一下当前能力"
+```
+
+显式调用本地多 Agent 网关：
+
+```bash
+curl -s http://127.0.0.1:8000/agents/run \
+  -H 'content-type: application/json' \
+  -d '{"user_id":"demo_user","session_id":"demo_session","text":"你好","collaboration_mode":"single"}'
 ```
 
 常用本地 URL：

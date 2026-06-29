@@ -1,6 +1,6 @@
 # Memory Service Architecture
 
-Last updated: 2026-06-27
+Last updated: 2026-06-29
 
 This document is the current canonical entry for memory service architecture. Update it whenever `MemoryManager`, memory stores, retrieval, write policy, user profile behavior, memory tools, memory APIs, or memory context boundaries change.
 
@@ -18,6 +18,26 @@ The memory service is local-first long-term memory for the agent. It covers:
 - Exposing audit, delete, and snapshot views through service/API boundaries.
 
 Conversation history is related but separate. Session conversation context is owned by conversation/session services and is combined with memory only in context packs and memory snapshots.
+
+## Boundary With Context Engineering
+
+Memory service produces bounded, prompt-safe memory context. Context engineering consumes that context as one input among request text, conversation history, plan state, tool observations, and tool specs.
+
+Memory service owns:
+
+- Memory item storage, validation, retrieval, ranking, filtering, and fallback rules.
+- Memory context grouping into semantic/session/episodic/artifact/procedural layers.
+- Explicit saves, duplicate merge, write policy, TTL, user profile updates, audit, snapshot, and deletion.
+- Writing `AgentState.memory_context` and `request.metadata["memory_context_*"]` through `MemoryManager.load_into_state(...)`.
+
+Context engineering owns:
+
+- `AssistantContextPack` assembly from request, conversation, memory context, plan state, observations, and tool specs.
+- Prompt-json, native-tool, and final-only rendering.
+- Tool observation compaction.
+- Global context character budget, trimming order, source counts, and trace/debug context summaries.
+
+Do not move memory retrieval, ranking, fallback, write policy, profile merge, or store selection into context builders or prompt renderers. Do not move prompt rendering, observation compaction, or global context budget into `MemoryManager`.
 
 ## Runtime Flow
 
@@ -66,6 +86,37 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 
 Agent nodes, assistant loops, API routes, MCP routes, and tools should not depend directly on concrete stores. Use `MemoryManager` or a service that wraps it.
 
+## Service Core Vs Tool Adapter
+
+Memory is a service capability. `memory_retrieval` and `memory_save` are Agent-callable adapters for that capability, not the owner of memory behavior.
+
+Use this routing matrix:
+
+| caller | allowed path |
+| --- | --- |
+| Graph/runtime automatic memory load/save | `graph node -> MemoryManager -> MemoryStore` |
+| Assistant/LLM explicit memory action | `AssistantDecision -> ActionValidator -> ToolExecutor -> memory tool -> MemoryManager` |
+| API audit/snapshot/delete | `API route -> MemoryAuditService / MemorySnapshotService -> MemoryManager` |
+| Unit tests for storage/retrieval/policy | direct `MemoryManager` or store instantiation is allowed only inside focused tests |
+
+`src/multimodal_agent/tools/memory_tool.py` must stay a thin tool adapter. It may:
+
+- Bind `ToolContext.user_id` and `ToolContext.session_id`.
+- Validate tool-facing required input.
+- Convert tool input into `MemoryQuery` or `MemoryManager.save_explicit(...)`.
+- Wrap manager output as `ToolResult` and capability output contracts.
+- Keep small legacy/mock compatibility paths only when required by existing tests or demos.
+
+It must not own or reimplement:
+
+- Retrieval/ranking/fallback strategy.
+- Write policy, TTL, duplicate merge, sensitivity, or raw payload filtering.
+- User profile extraction or merge behavior.
+- Storage backend selection or direct `MemoryStore` access.
+- API audit, snapshot, deletion, or user-data lifecycle behavior.
+
+If memory logic grows beyond identity binding, input adaptation, or result wrapping, move it into `MemoryManager`, `memory/` helpers, or a `services/memory_*` service before exposing it through a tool.
+
 ## Storage
 
 Configured by `ProviderConfig`:
@@ -97,13 +148,17 @@ Do not store raw user text by default, raw provider responses, real media bodies
 
 `MemoryManager.build_context()` groups memory items into prompt-safe layers:
 
-| memory type | layer |
-| --- | --- |
-| `preference` | `semantic` |
-| `conversation` | `session` |
-| `task` | `episodic` |
-| `product`, `artifact`, `image`, `video`, `generation`, `render` | `artifact` |
-| future procedural memory | `procedural` |
+`MemoryItem.memory_type` is the storage/business category. `MemoryContextBlock.layer` is a derived prompt/context grouping. Keep the internal layer constants stable, and use the display title to make the group readable in prompts, API snapshots, and Web UI.
+
+| memory type | internal layer | display title |
+| --- | --- | --- |
+| `preference` | `semantic` | 偏好/事实记忆 |
+| `conversation` | `session` | 长期化对话 |
+| `task` | `episodic` | 任务/经历记忆 |
+| `product`, `artifact`, `image`, `video`, `generation`, `render` | `artifact` | 产物/对象引用 |
+| future procedural memory | `procedural` | 过程/规则记忆 |
+
+Do not rename `semantic`, `session`, `episodic`, `artifact`, or `procedural` just to improve UI wording. Those constants are internal context layers and may appear in metadata, API snapshots, and tests. Change display titles when the wording needs to be clearer.
 
 The rendered memory context is written to:
 
@@ -202,6 +257,7 @@ List and snapshot endpoints do not include memory `content` by default. `include
 - Read this document before designing or changing memory service behavior.
 - Keep Agent/API/MCP code behind `MemoryManager`, `MemoryAuditService`, `MemorySnapshotService`, `ToolExecutor`, or memory tools.
 - Do not let assistant nodes or API routes directly instantiate or query concrete stores.
+- Keep memory tools thin. Tool code may adapt tool input/output, but service behavior belongs in `MemoryManager`, `memory/`, or `services/memory_*`.
 - Do not bypass `MemoryWritePolicy` or `MemoryItem` validation when writing memory.
 - Do not add embedding/vector/external memory by changing prompt builders or agent nodes directly; add an adapter behind `MemoryStore`/retrieval and keep deterministic local behavior for tests.
 - Keep default behavior mock/local/offline. A memory backend must not become a network provider merely because credentials exist.
@@ -216,6 +272,7 @@ Focused validation for memory changes:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_manager.py tests/test_memory_retrieval_strategy.py tests/test_memory_store_boundary.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_write_policy.py tests/test_memory_privacy_redaction.py tests/test_memory_lifecycle.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_audit_api.py tests/test_memory_snapshot_api.py tests/test_memory_runtime_integration.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_tool_boundary.py
 ```
 
 For broad behavior changes, run the full offline suite:

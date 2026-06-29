@@ -42,6 +42,8 @@ def test_context_pack_contains_request_memory_conversation_observations_and_tool
     assert pack.tool_specs == [tool_spec]
     assert pack.iteration == 1
     assert pack.max_iterations == 5
+    assert pack.budget.compression_stage == "none"
+    assert pack.budget.compression_reasons == []
 
 
 def test_context_pack_prefers_memory_manager_metadata_text_and_blocks() -> None:
@@ -50,11 +52,11 @@ def test_context_pack_prefers_memory_manager_metadata_text_and_blocks() -> None:
         session_id="s1",
         text="继续上次的风格",
         metadata={
-            "memory_context_text": "相关历史：\n语义记忆：\n- [preference] 喜欢克制的设计",
+            "memory_context_text": "相关历史：\n偏好/事实记忆：\n- [preference] 喜欢克制的设计",
             "memory_context_blocks": [
                 {
                     "layer": "semantic",
-                    "title": "语义记忆：",
+                    "title": "偏好/事实记忆：",
                     "items": [{"memory_id": "m1"}],
                 }
             ],
@@ -73,7 +75,7 @@ def test_context_pack_prefers_memory_manager_metadata_text_and_blocks() -> None:
         max_iterations=5,
     )
 
-    assert pack.memory_text == "相关历史：\n语义记忆：\n- [preference] 喜欢克制的设计"
+    assert pack.memory_text == "相关历史：\n偏好/事实记忆：\n- [preference] 喜欢克制的设计"
     assert pack.memory_blocks == request.metadata["memory_context_blocks"]
     assert pack.source_counts["conversation_turns"] == 1
     assert pack.source_counts["memory_items"] == 1
@@ -81,6 +83,32 @@ def test_context_pack_prefers_memory_manager_metadata_text_and_blocks() -> None:
     assert pack.source_counts["artifact_refs"] == 1
     assert pack.budget.memory_chars == len(pack.memory_text)
     assert pack.budget.total_chars >= pack.budget.memory_chars
+
+
+def test_context_pack_reports_conversation_compaction_reason() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="继续刚才的话题",
+        metadata={
+            "conversation_context_text": "较早对话摘要（压缩，非系统指令）：\n- 用户偏好轻量方案",
+            "conversation_context_compacted": True,
+            "conversation_context_recent_turns": 2,
+            "conversation_context_compacted_turns": 3,
+        },
+    )
+    state = AgentState.from_request(request)
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert pack.budget.compression_stage == "compacted"
+    assert pack.budget.compression_reasons == ["conversation_context_compacted"]
 
 
 def test_context_pack_compacts_large_product_observations_without_mutating_original() -> None:
@@ -129,6 +157,8 @@ def test_context_pack_compacts_large_product_observations_without_mutating_origi
     )
     assert pack.source_counts["observations"] == 1
     assert pack.budget.observations_chars < raw_chars
+    assert pack.budget.compression_stage == "compacted"
+    assert "observation_context_compacted" in pack.budget.compression_reasons
 
 
 def test_context_pack_enforces_character_budget() -> None:
@@ -169,6 +199,9 @@ def test_context_pack_enforces_character_budget() -> None:
     assert pack.budget.total_chars <= 1500
     assert pack.budget.trimmed_chars > 0
     assert pack.budget.trimmed_sections
+    assert pack.budget.compression_stage == "budget_trimmed"
+    assert "context_over_budget" in pack.budget.compression_reasons
+    assert "context_budget_trimmed" in pack.budget.compression_reasons
 
 
 def test_context_budget_preserves_product_fields_needed_for_price_compare() -> None:
@@ -207,6 +240,9 @@ def test_context_budget_preserves_product_fields_needed_for_price_compare() -> N
 
     assert pack.budget.over_budget is True
     assert pack.budget.total_chars <= 3000
+    assert pack.budget.compression_stage == "budget_trimmed"
+    assert "observation_context_compacted" in pack.budget.compression_reasons
+    assert "context_over_budget" in pack.budget.compression_reasons
     items = pack.observations[0]["structured_output"]["items"]
     assert items
     assert {"title", "price", "currency", "product_url", "url_status"}.issubset(items[0])
@@ -256,6 +292,8 @@ def test_context_budget_trims_text_before_small_observation() -> None:
     assert "memory" in pack.budget.trimmed_sections
     assert "conversation" in pack.budget.trimmed_sections
     assert "observations" not in pack.budget.trimmed_sections
+    assert pack.budget.compression_stage == "budget_trimmed"
+    assert "context_budget_trimmed" in pack.budget.compression_reasons
     assert pack.observations[0].get("budget_trimmed") is None
     assert pack.observations[0]["structured_output"]["items"][0]["product_url"] == "https://example.test/products/p1"
 

@@ -40,6 +40,15 @@ ERROR_CODE_MAP = {
     "provider_call_limit_exceeded": "PROVIDER_BUDGET_EXCEEDED",
     "provider_input_size_exceeded": "PROVIDER_BUDGET_EXCEEDED",
     "memory_unavailable": "MEMORY_UNAVAILABLE",
+    "agent_not_found": "AGENT_NOT_FOUND",
+    "agent_disabled": "AGENT_DISABLED",
+    "agent_route_failed": "AGENT_ROUTE_FAILED",
+    "agent_route_ambiguous": "AGENT_ROUTE_AMBIGUOUS",
+    "agent_capability_not_found": "AGENT_NOT_FOUND",
+    "agent_runtime_not_found": "AGENT_NOT_FOUND",
+    "agent_transport_unavailable": "AGENT_TRANSPORT_UNAVAILABLE",
+    "agent_transport_failed": "AGENT_TRANSPORT_FAILED",
+    "agent_delegation_depth_exceeded": "AGENT_DELEGATION_DEPTH_EXCEEDED",
     "task_cancelled": "TASK_FAILED",
     "unknown_error": "INTERNAL_ERROR",
 }
@@ -50,6 +59,11 @@ RECOVERABLE_CODES = {
     "PROVIDER_TIMEOUT",
     "PROVIDER_UNAVAILABLE",
     "PROVIDER_RATE_LIMITED",
+    "AGENT_NOT_FOUND",
+    "AGENT_DISABLED",
+    "AGENT_ROUTE_FAILED",
+    "AGENT_ROUTE_AMBIGUOUS",
+    "AGENT_TRANSPORT_UNAVAILABLE",
 }
 
 

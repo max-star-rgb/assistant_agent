@@ -45,7 +45,7 @@ Relationship between subsystems:
 - Provider adapters implement specific model/API backends, but the assistant never calls them directly.
 - Tools are the stable capability boundary between Agent decisions and adapters.
 - Memory is accessed through `MemoryManager` and memory tools; API/Agent should not bypass store governance.
-- Agent communication is an optional internal boundary for future multi-agent routing. The current default remains single `agent.default`; `delegate_to_agent` is registry-level opt-in only, local multi-runtime tests use `create_local_agent_communication_service`, and communication services must not change default CLI/API/demo behavior.
+- Agent communication is an optional local boundary for multi-agent routing. The current default `/agent/run`, CLI, eval, and Web demo paths remain single `agent.default`; the separate `/agents/run` endpoint uses `AgentGateway` for explicit local routing. `delegate_to_agent` remains registry-level opt-in and is enabled for the gateway controller runtime only; communication services must not change default CLI/API/demo behavior.
 - API and WebSocket wrap the same `AgentGraphRuntime`.
 - Demo and eval scripts use the same runtime with deterministic local inputs.
 

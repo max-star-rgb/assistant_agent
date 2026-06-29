@@ -13,6 +13,7 @@ Last updated: 2026-06-29
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - `MemoryManager` 负责加载分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
 - Assistant context 已有字符预算兜底；超限时优先压缩 memory/conversation，最后才压缩工具 observation。
+- Context budget 会报告自动压缩阶段和原因，便于 trace/API 判断是否发生 conversation、observation 或 budget 级压缩。
 - Trace/API 已暴露 context budget、source counts、tool catalog summary 和 observation compaction summary。
 
 ## Implemented
@@ -32,6 +33,17 @@ Last updated: 2026-06-29
 - 默认 `top_k=5`，默认 `max_context_chars=500`。
 - 非空 query 走关键词/中文片段相关性门控；只有明确承接型 query 才允许 recent memory fallback。
 - 显式用户记忆会合并重复项，并更新 compact `user_profile` 记忆。
+
+### Boundary With Memory Service
+
+上下文工程消费 memory service 产出的 prompt-safe memory context，但不拥有 memory 行为。
+
+- Memory service 负责 memory item 的存储、检索、排序、分层、写入、去重、用户画像、TTL、审计和删除。
+- `MemoryManager` 可以把检索结果格式化为 `MemoryContext`，并写入 `request.metadata["memory_context_*"]`。
+- Context engineering 负责把 request、conversation、memory context、plan state、tool observations 和 tool specs 组装成 `AssistantContextPack`。
+- Context engineering 负责 prompt/native rendering、tool observation compaction、全局 context budget、source counts 和 trace/debug 摘要。
+- Context engineering 不应重新实现 memory 检索、ranking、fallback、write policy、profile merge 或 store 选择。
+- Memory service 不应了解 prompt-json/native-tools 渲染、tool observation compaction 或全局 context budget。
 
 ### Tool Observation Compaction
 
@@ -53,13 +65,14 @@ Last updated: 2026-06-29
 - `ContextBudgetReport` 统计 request、conversation、memory、plan、observations、tool specs 和 total chars。
 - 默认 context 字符预算是 12000 chars；测试或特定调用可通过 request metadata `context_budget_max_chars` 下调。
 - 超过预算时会在 prompt 副本中裁剪 memory、conversation 和 observations，并记录 `over_budget`、`trimmed_chars`、`trimmed_sections`。
+- `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
 - assistant decision trace 写入 budget、source counts、compaction summary 和 tool catalog summary。
 - `/runs/{run_id}` 与 `/traces/{trace_id}` 可查询 context 相关摘要。
 
 ## Current Limitations
 
-- 当前压缩是 deterministic formatting/truncation，不是 LLM 生成式长期摘要。
+- 当前自动压缩是 deterministic formatting/truncation，不是 LLM 自主决定的生成式长期摘要。
 - 当前预算是 approximate character budget，不是严格 token-aware budget；这是有意保持简单。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
 - 会话历史压缩只压较早轮次文本，不做跨轮语义重写、事实抽取或冲突消解。

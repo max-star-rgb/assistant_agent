@@ -308,11 +308,11 @@ def _is_pure_memory_save_run(state: Any) -> bool:
 
 
 _LAYER_TITLES: list[tuple[MemoryLayer, str]] = [
-    ("semantic", "语义记忆："),
+    ("semantic", "偏好/事实记忆："),
     ("session", "长期化对话："),
-    ("episodic", "情景记忆："),
-    ("artifact", "产物引用："),
-    ("procedural", "过程记忆："),
+    ("episodic", "任务/经历记忆："),
+    ("artifact", "产物/对象引用："),
+    ("procedural", "过程/规则记忆："),
 ]
 
 

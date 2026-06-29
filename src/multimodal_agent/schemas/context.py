@@ -32,6 +32,8 @@ class ContextBudgetReport(BaseModel):
     over_budget: bool = False
     trimmed_chars: int = Field(default=0, ge=0)
     trimmed_sections: list[str] = Field(default_factory=list)
+    compression_stage: str = "none"
+    compression_reasons: list[str] = Field(default_factory=list)
 
 
 class ToolCatalogSummary(BaseModel):

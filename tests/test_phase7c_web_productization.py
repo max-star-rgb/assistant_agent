@@ -88,8 +88,8 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "/items/" in html
     assert "/snapshot?" in html
     assert "记忆层" in html
-    assert "语义记忆" in html
-    assert "情景记忆" in html
+    assert "偏好/事实记忆" in html
+    assert "任务/经历记忆" in html
     assert "来源" in html
     assert "底层类型" in html
     assert "召回原因" in html

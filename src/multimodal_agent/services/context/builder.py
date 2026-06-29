@@ -14,6 +14,13 @@ from multimodal_agent.services.context.tool_catalog import select_prompt_tool_sp
 DEFAULT_CONTEXT_BUDGET_MAX_CHARS = 12_000
 CONTEXT_BUDGET_METADATA_KEY = "context_budget_max_chars"
 MIN_CONTEXT_BUDGET_MAX_CHARS = 500
+COMPRESSION_STAGE_NONE = "none"
+COMPRESSION_STAGE_COMPACTED = "compacted"
+COMPRESSION_STAGE_BUDGET_TRIMMED = "budget_trimmed"
+COMPRESSION_REASON_CONVERSATION_COMPACTED = "conversation_context_compacted"
+COMPRESSION_REASON_OBSERVATION_COMPACTED = "observation_context_compacted"
+COMPRESSION_REASON_CONTEXT_OVER_BUDGET = "context_over_budget"
+COMPRESSION_REASON_CONTEXT_BUDGET_TRIMMED = "context_budget_trimmed"
 
 
 def build_assistant_context_pack(
@@ -72,6 +79,13 @@ def build_assistant_context_pack(
     )
     if budgeted.memory_text == "":
         summaries = []
+    over_budget = initial_budget.total_chars > budget_limit
+    compression_reasons = _compression_reasons(
+        request=active_request,
+        observations=context_observations,
+        over_budget=over_budget,
+        trimmed_sections=budgeted.trimmed_sections,
+    )
     return AssistantContextPack(
         request=active_request,
         conversation_text=budgeted.conversation_text,
@@ -94,9 +108,14 @@ def build_assistant_context_pack(
             observations=budgeted.observations,
             tool_specs=prompt_tool_specs,
             max_chars=budget_limit,
-            over_budget=initial_budget.total_chars > budget_limit,
+            over_budget=over_budget,
             trimmed_chars=max(0, initial_budget.total_chars - budgeted.total_chars),
             trimmed_sections=budgeted.trimmed_sections,
+            compression_stage=_compression_stage(
+                compression_reasons,
+                trimmed_sections=budgeted.trimmed_sections,
+            ),
+            compression_reasons=compression_reasons,
         ),
     )
 
@@ -180,6 +199,8 @@ def _budget_report(
     over_budget: bool = False,
     trimmed_chars: int = 0,
     trimmed_sections: list[str] | None = None,
+    compression_stage: str = COMPRESSION_STAGE_NONE,
+    compression_reasons: list[str] | None = None,
 ) -> ContextBudgetReport:
     request_chars = len(request.text or "")
     conversation_chars = len(conversation_text)
@@ -207,7 +228,36 @@ def _budget_report(
         over_budget=over_budget,
         trimmed_chars=trimmed_chars,
         trimmed_sections=trimmed_sections or [],
+        compression_stage=compression_stage,
+        compression_reasons=compression_reasons or [],
     )
+
+
+def _compression_reasons(
+    *,
+    request: UserRequest,
+    observations: list[dict[str, Any]],
+    over_budget: bool,
+    trimmed_sections: list[str],
+) -> list[str]:
+    reasons: list[str] = []
+    if request.metadata.get("conversation_context_compacted") is True:
+        reasons.append(COMPRESSION_REASON_CONVERSATION_COMPACTED)
+    if any(observation.get("compacted") is True for observation in observations):
+        reasons.append(COMPRESSION_REASON_OBSERVATION_COMPACTED)
+    if over_budget:
+        reasons.append(COMPRESSION_REASON_CONTEXT_OVER_BUDGET)
+    if trimmed_sections:
+        reasons.append(COMPRESSION_REASON_CONTEXT_BUDGET_TRIMMED)
+    return reasons
+
+
+def _compression_stage(reasons: list[str], *, trimmed_sections: list[str]) -> str:
+    if trimmed_sections:
+        return COMPRESSION_STAGE_BUDGET_TRIMMED
+    if reasons:
+        return COMPRESSION_STAGE_COMPACTED
+    return COMPRESSION_STAGE_NONE
 
 
 def _has_plan_context(plan_state: AssistantPlanContext) -> bool:

@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
+from multimodal_agent.schemas.agent_gateway import AgentGatewayRunRequest
 from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
 from multimodal_agent.schemas.memory import MemoryType
 from multimodal_agent.schemas.memory_audit import (
@@ -26,6 +27,7 @@ from multimodal_agent.services.assistant_run_service import (
     run_assistant_request,
     runtime_info,
 )
+from multimodal_agent.services.agent_gateway import AgentGateway, create_default_agent_gateway
 from multimodal_agent.services.beta_feedback import (
     BetaEvaluationExport,
     BetaEvaluationItem,
@@ -47,6 +49,7 @@ from multimodal_agent.services.trial_access import (
 
 router = APIRouter()
 _RUNTIME: AgentGraphRuntime | None = None
+_AGENT_GATEWAY: AgentGateway | None = None
 _FEEDBACK_STORE: BetaFeedbackStore | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
@@ -57,6 +60,13 @@ def get_agent_runtime() -> AgentGraphRuntime:
     if _RUNTIME is None:
         _RUNTIME = create_runtime()
     return _RUNTIME
+
+
+def get_agent_gateway() -> AgentGateway:
+    global _AGENT_GATEWAY
+    if _AGENT_GATEWAY is None:
+        _AGENT_GATEWAY = create_default_agent_gateway()
+    return _AGENT_GATEWAY
 
 
 def get_beta_feedback_store() -> BetaFeedbackStore:
@@ -74,6 +84,12 @@ def get_trial_access_gate() -> TrialAccessGate:
 def run_agent(request: UserRequest) -> AgentRunResponse:
     _require_trial_access(request.user_id)
     return run_assistant_request(request, runtime=get_agent_runtime()).api_response()
+
+
+@router.post("/agents/run", response_model=AgentRunResponse)
+def run_agents(request: AgentGatewayRunRequest) -> AgentRunResponse:
+    _require_trial_access(request.user_id)
+    return get_agent_gateway().run(request)
 
 
 @router.get("/demo/scenarios")

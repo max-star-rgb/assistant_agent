@@ -274,13 +274,24 @@ def create_runtime(
 ) -> AgentGraphRuntime:
     """Create the shared runtime with manual `.env` loading and offline test isolation."""
 
-    if _is_pytest():
-        resolved_config = config or ProviderConfig.from_env({})
-    else:
-        if load_env and not _skip_dotenv_load():
-            load_env_file()
-        resolved_config = config or ProviderConfig.from_env()
+    resolved_config = resolve_runtime_config(config=config, load_env=load_env)
     return AgentGraphRuntime(config=resolved_config, event_sink=event_sink)
+
+
+def resolve_runtime_config(
+    *,
+    config: ProviderConfig | None = None,
+    load_env: bool = True,
+) -> ProviderConfig:
+    """Resolve runtime config with the same local/offline defaults as create_runtime."""
+
+    if config is not None:
+        return config
+    if _is_pytest():
+        return ProviderConfig.from_env({})
+    if load_env and not _skip_dotenv_load():
+        load_env_file()
+    return ProviderConfig.from_env()
 
 
 def run_assistant_request(

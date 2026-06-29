@@ -55,7 +55,7 @@ AssistantDecision -> ActionValidator -> ToolExecutor
 
 - Assistant run service、session、run history、trace、event sink。
 - Provider selection、provider diagnostics、provider readiness。
-- Agent communication directory、local transport、task/message routing service。
+- Agent communication gateway、directory、local transport、task/message routing service。
 - 业务级服务封装，例如 memory audit、generated artifacts、video context。
 
 服务层负责“运行时业务编排”，不直接变成 Agent 决策逻辑。
@@ -175,6 +175,8 @@ Agent / Tool / API
   -> MemoryStore / Retrieval backend
 ```
 
+memory tool 只是 Agent/LLM 调用记忆服务的适配器，不是记忆服务本体。它只应负责 `ToolContext` 身份绑定、工具输入适配、调用 `MemoryManager`、包装 `ToolResult`；检索排序、写入策略、TTL、去重、用户画像、审计、snapshot 和 store 选择都应留在 `memory/` 或 `services/memory_*` 边界。
+
 当前可以保留 `memory/` 目录，不需要为了分层口径立即迁移文件。后续如要移动，应通过独立任务完成，并保持 public contracts 和测试稳定。
 
 ## Where To Add Code
@@ -182,6 +184,7 @@ Agent / Tool / API
 - 新增 assistant 决策、图节点、plan-mode 状态转换：放 `agent/`。
 - 新增可被 Agent 调用的能力：先定义 `ToolSpec`、input schema、structured result，再放 `tools/`。
 - 新增 agent-to-agent 委托能力：先放 `tools/`，通过 `ToolExecutor` 调用 `services/agent_communication.py`，默认不注册。
+- 新增多 Agent 用户入口：放 `services/agent_gateway.py` 和 `api/` 路由，默认 `/agent/run` 不经过 gateway，显式 `/agents/run` 才启用。
 - 新增具体外部模型或第三方 API：放 `providers/`，默认 mock/local，真实 provider 显式 opt-in。
 - 新增运行服务、trace、session、audit、agent communication、provider 管理：放 `services/`。
 - 新增 HTTP/WebSocket/MCP 入口：放 `api/` 或 `mcp/`，并复用 runtime/service/tool 边界。
@@ -198,5 +201,6 @@ Agent / Tool / API
 - 真实 provider 默认关闭，测试默认不调用真实外部服务。
 - provider budget、timeout、retry、fallback 边界没有被绕过。
 - memory 写入经过 `MemoryManager` / write policy。
+- memory tool 没有承载检索、写入、画像、TTL、审计或直接 store 访问等服务逻辑。
 - trace、error、debug output 没有泄露 secret、raw provider response、base64 或敏感路径。
 - 修改行为时同步更新对应 docs/tasks，并补充测试覆盖。

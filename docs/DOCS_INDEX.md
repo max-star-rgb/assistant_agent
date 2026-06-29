@@ -21,7 +21,7 @@ Status values:
 | `docs/architecture.md` | canonical | Current concise runtime architecture overview; matches assistant-loop and provider-native tool calling direction. | link-from-index |
 | `docs/architecture-layers.md` | canonical | Current layer ownership and governance boundary document; required for architecture/rework decisions. | link-from-index |
 | `docs/memory-service-architecture.md` | canonical | Current authoritative memory service architecture, boundary, routing, and update-rule entry. | keep |
-| `docs/agent-communication-routing.md` | canonical | Current authoritative multi-agent instance routing, agent communication, and A2A adapter boundary entry; tracks internal schemas/directory/local transport/service, local multi-runtime factory, and opt-in local `delegate_to_agent` tool implementation. | keep |
+| `docs/agent-communication-routing.md` | canonical | Current authoritative multi-agent instance routing, agent communication, gateway API, and A2A adapter boundary entry; tracks internal schemas/directory/local transport/service, local multi-runtime factory, opt-in local `delegate_to_agent`, `AgentGateway`, and `/agents/run`. | keep |
 | `docs/capabilities.md` | canonical | Current capability list and default provider boundary. | link-from-index |
 | `docs/configuration.md` | canonical | Current runtime profile and provider selector policy. | link-from-index |
 | `docs/provider-setup.md` | canonical | Current real-provider opt-in setup and missing-config behavior. | link-from-index |
