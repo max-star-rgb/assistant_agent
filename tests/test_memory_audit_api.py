@@ -175,6 +175,33 @@ def test_memory_audit_api_lists_events_and_metrics(monkeypatch) -> None:
     assert metric_payload["counters"]["memory.export.count"] == 1
 
 
+def test_memory_audit_api_checks_and_rebuilds_user_profile(monkeypatch) -> None:
+    store = InMemoryStore()
+    runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
+    store.save(_memory("pref", "u1", "preference", "用户喜欢日系风格。"))
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    status = client.get("/memory/users/u1/profile/status")
+    dry_run = client.post("/memory/users/u1/profile/rebuild", params={"dry_run": True})
+
+    assert status.status_code == 200
+    assert status.json()["action"] == "create"
+    assert status.json()["repaired"] is False
+    assert "profile_missing" in status.json()["issues"]
+    assert dry_run.status_code == 200
+    assert dry_run.json()["dry_run"] is True
+    assert runtime.memory_manager.get("u1", USER_PROFILE_MEMORY_ID) is None
+
+    rebuilt = client.post("/memory/users/u1/profile/rebuild")
+    profile = client.get("/memory/users/u1/items/user_profile")
+
+    assert rebuilt.status_code == 200
+    assert rebuilt.json()["repaired"] is True
+    assert profile.status_code == 200
+    assert profile.json()["content"]["source_memory_ids"] == ["pref"]
+
+
 def test_memory_audit_service_uses_request_identity_scope() -> None:
     store = InMemoryStore()
     runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())

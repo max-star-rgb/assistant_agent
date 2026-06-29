@@ -185,6 +185,8 @@ Environment variables:
 
 Relative JSONL and SQLite paths resolve from the repository root. JSONL and SQLite are still local-first storage, not real external providers. Future PostgreSQL, vector DB, or external memory service adapters must sit behind `MemoryStore` and `MemoryManager`.
 
+`SQLiteMemoryStore` also exposes local operator helpers for `backup_to(...)`, `restore_backup(...)`, `integrity_check()`, and `rebuild_indexes()`. These helpers cover both `memory_items` and `memory_audit_events`. Operational steps and rollback guidance live in `docs/development/memory-sqlite-operator-runbook.md`.
+
 ## Contracts
 
 Core models:
@@ -336,6 +338,8 @@ Its content stores:
 
 This keeps profile retrieval compatible with the existing store/search/delete contract while avoiding a separate profile storage path.
 
+`MemoryManager.rebuild_user_profile_for_identity(...)` can check or repair the compact profile from current source memories. Source memories are identity-visible, unexpired, unscoped `preference`, `product`, and `task` items; tenant/project-scoped items are excluded until scoped profile storage is designed. The repair result reports missing, stale, orphaned, and out-of-sync profile state. Repair can create, update, delete, or no-op the `user_profile` item and records a prompt-safe `memory_profile_repaired` audit event when invoked through the repair path.
+
 ## API And Audit
 
 Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the runtime `MemoryManager`:
@@ -345,6 +349,8 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 - `GET /memory/users/{user_id}/audit`
 - `GET /memory/users/{user_id}/events`
 - `GET /memory/users/{user_id}/metrics`
+- `GET /memory/users/{user_id}/profile/status`
+- `POST /memory/users/{user_id}/profile/rebuild`
 - `GET /memory/users/{user_id}/export`
 - `GET /memory/users/{user_id}/snapshot`
 - `POST /memory/users/{user_id}/retention/sweep`

@@ -251,6 +251,75 @@ def test_sqlite_store_persists_audit_events_across_instances(tmp_path) -> None:
     )
 
 
+def test_sqlite_store_backup_restore_includes_memories_audit_and_rebuilds_indexes(tmp_path) -> None:
+    path = tmp_path / "memories.sqlite3"
+    backup_path = tmp_path / "backup" / "memories-backup.sqlite3"
+    restored_path = tmp_path / "restored.sqlite3"
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+    store = SQLiteMemoryStore(path)
+    manager = MemoryManager(store)
+
+    saved = manager.save_explicit_for_identity(
+        identity,
+        text="记住我喜欢白色运动鞋",
+        content={"summary": "用户喜欢白色运动鞋。", "style": "白色运动鞋"},
+    )
+    store.backup_to(backup_path)
+    restored = SQLiteMemoryStore.restore_backup(backup_path, restored_path)
+
+    assert restored.integrity_check() == ["ok"]
+    assert [item.memory_id for item in restored.list_by_user("u1") if item.memory_id == saved.memory_id] == [
+        saved.memory_id
+    ]
+    assert any(
+        event.event_type == "memory_explicit_saved" and event.memory_id == saved.memory_id
+        for event in restored.list_audit_events(user_id="u1")
+    )
+
+    with _sqlite_connection(restored_path) as connection:
+        connection.execute("DROP INDEX IF EXISTS idx_memory_items_user_created")
+        connection.execute("DROP INDEX IF EXISTS idx_memory_audit_events_user_time")
+    assert "idx_memory_items_user_created" not in _sqlite_index_names(restored_path)
+    assert "idx_memory_audit_events_user_time" not in _sqlite_index_names(restored_path)
+
+    restored.rebuild_indexes()
+
+    assert "idx_memory_items_user_created" in _sqlite_index_names(restored_path)
+    assert "idx_memory_audit_events_user_time" in _sqlite_index_names(restored_path)
+
+
+def test_sqlite_store_backup_and_restore_overwrite_are_explicit(tmp_path) -> None:
+    source_path = tmp_path / "source.sqlite3"
+    backup_path = tmp_path / "backup.sqlite3"
+    restore_path = tmp_path / "restore.sqlite3"
+    source = SQLiteMemoryStore(source_path)
+    source.save(make_memory("source_memory"))
+    SQLiteMemoryStore(restore_path).save(make_memory("existing_memory"))
+    backup_path.write_text("existing backup", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        source.backup_to(backup_path)
+    source.backup_to(backup_path, overwrite=True)
+    with pytest.raises(FileExistsError):
+        SQLiteMemoryStore.restore_backup(backup_path, restore_path)
+
+    restored = SQLiteMemoryStore.restore_backup(backup_path, restore_path, overwrite=True)
+
+    assert [item.memory_id for item in restored.list_by_user("u1")] == ["source_memory"]
+
+
+def test_sqlite_store_failed_restore_preserves_destination(tmp_path) -> None:
+    source_path = tmp_path / "corrupt-source.sqlite3"
+    destination_path = tmp_path / "destination.sqlite3"
+    SQLiteMemoryStore(destination_path).save(make_memory("existing_memory"))
+    source_path.write_text("not a sqlite database", encoding="utf-8")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        SQLiteMemoryStore.restore_backup(source_path, destination_path, overwrite=True)
+
+    assert [item.memory_id for item in SQLiteMemoryStore(destination_path).list_by_user("u1")] == ["existing_memory"]
+
+
 def test_sqlite_store_filters_persisted_audit_events_by_identity_scope(tmp_path) -> None:
     path = tmp_path / "memories.sqlite3"
     manager = MemoryManager(SQLiteMemoryStore(path))
@@ -300,6 +369,14 @@ def _sqlite_memory_row(path, user_id: str, memory_id: str) -> tuple[str, int]:
             "SELECT content_hash, version FROM memory_items WHERE user_id = ? AND memory_id = ?",
             (user_id, memory_id),
         ).fetchone()
+
+
+def _sqlite_index_names(path: Path) -> set[str]:
+    with _sqlite_connection(path) as connection:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    return {str(row[0]) for row in rows}
 
 
 @contextmanager

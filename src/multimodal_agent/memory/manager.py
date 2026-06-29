@@ -29,6 +29,8 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryAuditEvent,
     MemoryAuditEventOutcome,
     MemoryAuditEventType,
+    MemoryProfileRepairAction,
+    MemoryProfileRepairResult,
 )
 from multimodal_agent.schemas.requests import UserRequest
 from multimodal_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
@@ -494,6 +496,88 @@ class MemoryManager:
             counts={"memory_items": deleted},
         )
 
+    def rebuild_user_profile_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        dry_run: bool = False,
+        record_event: bool = True,
+    ) -> MemoryProfileRepairResult:
+        """Rebuild the compact global user profile from source memories."""
+
+        now = datetime.now(timezone.utc)
+        existing = self.get_for_identity(identity, USER_PROFILE_MEMORY_ID)
+        source_items = _profile_source_items(self.list_for_identity(identity))
+        expected_profile = UserProfileMemory.empty(identity.user_id, now=now)
+        for item in sorted(source_items, key=lambda item: item.created_at):
+            expected_profile.merge_memory(item, now=item.updated_at or item.created_at)
+        expected_item = expected_profile.to_memory_item(session_id=existing.session_id if existing else identity.session_id)
+        if existing is not None:
+            expected_item = expected_item.model_copy(update={"created_at": existing.created_at})
+
+        current_source_ids = _profile_source_ids(existing)
+        expected_source_ids = list(expected_profile.source_memory_ids)
+        missing_source_ids = [memory_id for memory_id in expected_source_ids if memory_id not in current_source_ids]
+        stale_source_ids = [memory_id for memory_id in current_source_ids if memory_id not in expected_source_ids]
+        issues = _profile_repair_issues(
+            existing=existing,
+            expected_item=expected_item,
+            source_count=len(source_items),
+            missing_source_ids=missing_source_ids,
+            stale_source_ids=stale_source_ids,
+        )
+        action = _profile_repair_action(existing=existing, source_count=len(source_items), issues=issues)
+        repaired = False
+        if not dry_run and action != "none":
+            if action == "delete":
+                repaired = self.store.delete(identity.user_id, USER_PROFILE_MEMORY_ID)
+            else:
+                self.store.save(expected_item)
+                repaired = True
+        profile_present_after = (
+            existing is not None if dry_run else self.get_for_identity(identity, USER_PROFILE_MEMORY_ID) is not None
+        )
+        result = MemoryProfileRepairResult(
+            user_id=identity.user_id,
+            dry_run=dry_run,
+            repaired=repaired,
+            action=action,
+            profile_memory_id=USER_PROFILE_MEMORY_ID if (existing is not None or source_items) else None,
+            profile_present_before=existing is not None,
+            profile_present_after=profile_present_after,
+            source_count=len(source_items),
+            expected_source_memory_ids=expected_source_ids,
+            current_source_memory_ids=current_source_ids,
+            missing_source_memory_ids=missing_source_ids,
+            stale_source_memory_ids=stale_source_ids,
+            issues=issues,
+            expected_summary=expected_item.summary if source_items else None,
+            current_summary=existing.summary if existing is not None else None,
+        )
+        if record_event:
+            self.record_audit_event(
+                "memory_profile_repaired",
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=identity.session_id,
+                memory_id=USER_PROFILE_MEMORY_ID,
+                outcome="skipped" if dry_run or action == "none" else "succeeded",
+                summary="user profile repair checked" if dry_run else "user profile repair applied",
+                counts={
+                    "source_items": result.source_count,
+                    "issues": len(result.issues),
+                    "repaired": 1 if result.repaired else 0,
+                },
+                metadata={
+                    "action": result.action,
+                    "issues": result.issues,
+                    "missing_source_memory_ids": result.missing_source_memory_ids[:50],
+                    "stale_source_memory_ids": result.stale_source_memory_ids[:50],
+                },
+            )
+        return result
+
     def record_audit_event(
         self,
         event_type: MemoryAuditEventType,
@@ -648,6 +732,70 @@ def _identity_allows_event(identity: RequestIdentity, event: MemoryAuditEvent) -
     return True
 
 
+def _profile_source_items(items: list[MemoryItem]) -> list[MemoryItem]:
+    return [
+        item
+        for item in items
+        if item.source != "user_profile"
+        and item.memory_type in {"preference", "product", "task"}
+        and item.tenant_id is None
+        and item.project_id is None
+        and memory_scope_for_item(item) != "project"
+        and not _is_expired(item)
+    ]
+
+
+def _profile_source_ids(item: MemoryItem | None) -> list[str]:
+    if item is None:
+        return []
+    value = item.content.get("source_memory_ids")
+    if not isinstance(value, list):
+        return []
+    return [str(memory_id) for memory_id in value if str(memory_id).strip()]
+
+
+def _profile_repair_issues(
+    *,
+    existing: MemoryItem | None,
+    expected_item: MemoryItem,
+    source_count: int,
+    missing_source_ids: list[str],
+    stale_source_ids: list[str],
+) -> list[str]:
+    issues: list[str] = []
+    if existing is None and source_count > 0:
+        issues.append("profile_missing")
+    if existing is not None and source_count == 0:
+        issues.append("profile_orphaned")
+    if existing is not None and source_count > 0:
+        if missing_source_ids:
+            issues.append("profile_missing_sources")
+        if stale_source_ids:
+            issues.append("profile_stale_sources")
+        if existing.summary != expected_item.summary:
+            issues.append("profile_summary_out_of_sync")
+        if existing.content.get("preferences") != expected_item.content.get("preferences"):
+            issues.append("profile_preferences_out_of_sync")
+        if existing.content.get("facts") != expected_item.content.get("facts"):
+            issues.append("profile_facts_out_of_sync")
+    return list(dict.fromkeys(issues))
+
+
+def _profile_repair_action(
+    *,
+    existing: MemoryItem | None,
+    source_count: int,
+    issues: list[str],
+) -> MemoryProfileRepairAction:
+    if not issues:
+        return "none"
+    if existing is None and source_count > 0:
+        return "create"
+    if existing is not None and source_count == 0:
+        return "delete"
+    return "update"
+
+
 def _same_governance_scope(left: MemoryItem, right: MemoryItem) -> bool:
     return (
         left.tenant_id == right.tenant_id
@@ -670,6 +818,13 @@ def _memory_context_token_budget_from_metadata(metadata: dict[str, Any]) -> int 
         if isinstance(value, int) and value > 0:
             return value
     return None
+
+
+def _is_expired(item: MemoryItem) -> bool:
+    if item.expires_at is None:
+        return False
+    now = datetime.now(tz=item.expires_at.tzinfo or timezone.utc)
+    return item.expires_at < now
 
 
 def _is_pure_memory_save_run(state: Any) -> bool:

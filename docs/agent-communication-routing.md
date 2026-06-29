@@ -150,7 +150,9 @@ Rules:
 - `POST /a2a/rpc` supports inbound A2A JSON-RPC `SendMessage` and the legacy-compatible `message/send` alias. It maps text and local media references into `AgentGatewayRunRequest`, then maps `AgentRunResponse` into an A2A task-like result.
 - `/a2a/rpc` returns JSON-RPC parse error `-32700`, invalid request `-32600`, method not found `-32601`, invalid params `-32602`, and internal error `-32603` for protocol/adapter failures.
 - Gateway/business failures remain successful JSON-RPC responses with an A2A task result whose `status.state` is `failed`.
-- A2A metadata may carry `user_id`, `session_id`, `target_agent_id`, `capability`, and `collaboration_mode`. Missing user/session fields use local defaults and still pass through the same `AuthContext` dependency, request-identity resolver, and trial-access gate; by default this is request-derived identity provenance, not production authentication.
+- `/agent/run`, `/agents/run`, WebSocket, memory APIs, and `/a2a/rpc` all pass through the same `AuthContext` dependency and identity resolver. By default `api/auth.py` returns anonymous context and ignores auth-like headers, so request body/path/query/A2A metadata identity remains local/offline provenance rather than production authentication.
+- The disabled-by-default header-auth pilot is enabled only with `MULTIMODAL_AGENT_AUTH_HEADER_ENABLED`. In that mode controlled `X-Multimodal-Agent-User-Id`, `X-Multimodal-Agent-Session-Id`, `X-Multimodal-Agent-Tenant-Id`, `X-Multimodal-Agent-Project-Id`, and `X-Multimodal-Agent-Scopes` headers are converted into `AuthContext`. Body/path/query/A2A metadata `user_id` must match the header user or the request is rejected before gateway dispatch.
+- A2A metadata may carry `user_id`, `session_id`, `target_agent_id`, `capability`, and `collaboration_mode`. Missing user/session fields use local defaults and still pass through the same `AuthContext` dependency, request-identity resolver, and trial-access gate. When header auth is enabled, the resolved auth-bound `user_id`/`session_id` and safe `request_identity` provenance are written back into the internal `AgentGatewayRunRequest` before dispatch.
 - `collaboration_mode="single"` directly runs the resolved target agent. If no target or capability is provided, the target is `agent.default`.
 - `collaboration_mode="controller_delegate"` enters the controller path when no explicit target is supplied. The controller runtime uses the `agent.default` identity with `delegate_to_agent` registered. The normal single-mode `agent.default` runtime and worker runtimes do not register that tool by default.
 - If `target_agent_id` is supplied, it remains the explicit initial route even when `collaboration_mode` is set.
@@ -248,6 +250,19 @@ Route decisions are reported with these deterministic reasons:
 
 The existing `POST /agent/run` endpoint does not use this gateway.
 
+Header-auth pilot example:
+
+```bash
+MULTIMODAL_AGENT_AUTH_HEADER_ENABLED=1 \
+curl -s http://127.0.0.1:8000/agents/run \
+  -H 'content-type: application/json' \
+  -H 'X-Multimodal-Agent-User-Id: demo_user' \
+  -H 'X-Multimodal-Agent-Session-Id: auth_session' \
+  -d '{"user_id":"demo_user","session_id":"body_session","text":"你好","target_agent_id":"agent.worker","collaboration_mode":"single"}'
+```
+
+If `user_id` is different from `X-Multimodal-Agent-User-Id`, the route returns `403` and does not dispatch to the gateway.
+
 ## Inbound A2A API
 
 The local A2A-compatible discovery and JSON-RPC endpoints are:
@@ -263,6 +278,8 @@ Supported JSON-RPC methods:
 - `message/send`: compatibility alias routed to the same adapter.
 
 The adapter extracts text from A2A message parts, maps image/video/audio file references when MIME types are available, reads local routing fields from metadata, maps `contextId` to local `session_id`, and runs the request through `AgentGateway`. A failed agent run is returned as an A2A task with `status.state="failed"`; malformed JSON-RPC or unsupported methods return JSON-RPC error objects. Successful and failed task outputs return final text through A2A artifacts rather than only status messages.
+
+When the header-auth pilot is enabled, `/a2a/rpc` applies the same identity binding before `AgentGateway` dispatch. A mismatch between A2A metadata `user_id` and `X-Multimodal-Agent-User-Id` returns JSON-RPC invalid params `-32602`; this is a protocol/adapter rejection, not a failed agent task.
 
 ## A2A-Compatible MVP
 

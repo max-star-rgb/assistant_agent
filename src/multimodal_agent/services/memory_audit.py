@@ -17,6 +17,7 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryDuplicateGroup,
     MemoryExport,
     MemoryMetricsReport,
+    MemoryProfileRepairResult,
     MemoryRetentionSweepResult,
 )
 
@@ -232,6 +233,39 @@ class MemoryAuditService:
             counters=_metrics_counters(events),
         )
 
+    def profile_status(self, *, user_id: str) -> MemoryProfileRepairResult:
+        return self.profile_status_for_identity(RequestIdentity.for_user(user_id=user_id))
+
+    def profile_status_for_identity(self, identity: RequestIdentity) -> MemoryProfileRepairResult:
+        return self.memory_manager.rebuild_user_profile_for_identity(
+            identity,
+            dry_run=True,
+            record_event=False,
+        )
+
+    def rebuild_profile(
+        self,
+        *,
+        user_id: str,
+        dry_run: bool = False,
+    ) -> MemoryProfileRepairResult:
+        return self.rebuild_profile_for_identity(
+            RequestIdentity.for_user(user_id=user_id),
+            dry_run=dry_run,
+        )
+
+    def rebuild_profile_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        dry_run: bool = False,
+    ) -> MemoryProfileRepairResult:
+        return self.memory_manager.rebuild_user_profile_for_identity(
+            identity,
+            dry_run=dry_run,
+            record_event=True,
+        )
+
     def audit(self, *, user_id: str) -> MemoryAuditReport:
         return self.audit_for_identity(RequestIdentity.for_user(user_id=user_id))
 
@@ -249,6 +283,10 @@ class MemoryAuditService:
         profile_present = any(item.memory_id == USER_PROFILE_MEMORY_ID and item.source == "user_profile" for item in items)
         if any(item.memory_type == "preference" for item in items) and not profile_present:
             warnings.append("user_profile_missing")
+        profile_status = self.profile_status_for_identity(identity)
+        for issue in profile_status.issues:
+            if issue not in warnings:
+                warnings.append(issue)
 
         return MemoryAuditReport(
             user_id=identity.user_id,
@@ -348,6 +386,9 @@ def _metrics_counters(events: list[MemoryAuditEvent]) -> dict[str, int]:
             counters["memory.ttl.swept.count"] += 1
             counters["memory.ttl.expired.count"] += event.counts.get("expired", 0)
             counters["memory.ttl.deleted.count"] += event.counts.get("deleted", 0)
+        elif event.event_type == "memory_profile_repaired":
+            counters["memory.profile.update.count"] += event.counts.get("repaired", 0)
+            counters["memory.profile.conflict.count"] += event.counts.get("issues", 0)
     return dict(sorted(counters.items()))
 
 

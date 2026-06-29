@@ -36,6 +36,7 @@ Implemented baseline:
 - `ContextCompactor` has deterministic default behavior.
 - `LLMCompactor` exists behind explicit provider profiles and falls back to deterministic output when schema validation fails.
 - `ConversationStore` can persist turns and session summary.
+- Session summary rolls forward with the recent-turn window: only newly aged-out turns are merged into `context_summary`.
 - `reset_conversation=True` clears both turns and session summary.
 - `MemoryPromotionCandidate` is separate from memory writes.
 - `MemoryWritePolicy` defaults block automatic long-term promotion.
@@ -96,6 +97,7 @@ Acceptance checks:
 
 - Summary persists in in-memory and JSONL conversation stores.
 - Next turn receives `context_summary` and recent turn context.
+- Sliding-window updates do not summarize the same turn twice.
 - `reset_conversation=True` starts without old turns or summary.
 - Session summary does not create a `MemoryItem`.
 
@@ -107,6 +109,12 @@ Regression tests:
   tests/test_memory_runtime_integration.py \
   tests/test_memory_snapshot_api.py -q
 ```
+
+Follow-up hardening on 2026-06-29:
+
+- `DeterministicContextCompactor` skips turns whose `run:` or `trace:` refs already exist in the current session summary.
+- `run_assistant_request` uses `ContextPolicy.keep_recent_turns` for recent-window selection instead of a local hard-coded value.
+- This remains deterministic sliding-window compaction; no scene classifier, quality feedback loop, component registry, or undo log was introduced.
 
 ## Phase 3: LLM Compactor Hardening
 

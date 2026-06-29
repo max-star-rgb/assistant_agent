@@ -39,6 +39,14 @@ class _FakeChatAdapter:
         return ChatResult(response_text=self.response_text, provider=self.provider, model="fake")
 
 
+class _SummaryTurn:
+    def __init__(self, user_text: str, assistant_text: str, run_id: str, trace_id: str) -> None:
+        self.user_text = user_text
+        self.assistant_text = assistant_text
+        self.run_id = run_id
+        self.trace_id = trace_id
+
+
 def test_context_pack_contains_request_memory_conversation_observations_and_tools() -> None:
     request = UserRequest(
         user_id="u1",
@@ -275,6 +283,31 @@ def test_deterministic_context_compactor_returns_structured_summary() -> None:
     assert result.compactor_type == COMPACTOR_DETERMINISTIC
     assert result.summary.task_state == "继续整理需求"
     assert "output_ref:mock://products/1" in result.summary.important_refs
+
+
+def test_deterministic_context_compactor_skips_existing_summary_turn_refs() -> None:
+    existing = ContextSummary(
+        task_state="已经整理",
+        decisions=["旧助手回复"],
+        important_refs=["run:run_1", "trace:trace_1"],
+        source_turn_count=1,
+    )
+
+    result = DeterministicContextCompactor().compact(
+        conversation=[
+            _SummaryTurn("旧用户", "旧助手回复", "run_1", "trace_1"),
+            _SummaryTurn("新用户", "新助手回复", "run_2", "trace_2"),
+        ],
+        current_request=UserRequest(user_id="u1", session_id="s1", text="继续"),
+        observations=[],
+        existing_summary=existing,
+    )
+
+    assert result.summary.source_turn_count == 2
+    assert result.summary.decisions.count("旧助手回复") == 1
+    assert "新助手回复" in result.summary.decisions
+    assert "run:run_1" in result.summary.important_refs
+    assert "run:run_2" in result.summary.important_refs
 
 
 def test_llm_compactor_invalid_schema_falls_back_to_deterministic() -> None:

@@ -2,7 +2,21 @@
 
 Last updated: 2026-06-29
 
-本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。第一次理解上下文工程时，先读 `docs/context-engineering-walkthrough.md`；涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的实现任务，应先读本文件，再读对应源码和测试。
+本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
+
+## 新对话快速交接
+
+如果新对话涉及上下文工程，先读本节即可快速接上当前状态。
+
+- 当前结论：上下文工程第一版已经可用并适合阶段性收口，不是缺核心组件的状态。
+- 当前权威入口：本文件。不要把 `docs/development/context-engine-memory-policy-plan.md` 当成新的 active roadmap。
+- 已实现核心闭环：`AssistantContextPack`、session summary、增量滑动窗口摘要、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要。
+- 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
+- 预算现状：全局压缩控制仍以字符预算为准；token-aware 目前是报告层。Memory context 有单独 token-aware 注入边界。
+- memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
+- 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
+- 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
+- 按需补读：给人解释机制时读 `docs/context-engineering-walkthrough.md`；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`；追溯阶段决策时读 `docs/development/context-engine-memory-policy-plan.md`。
 
 ## Current Stage
 
@@ -32,7 +46,8 @@ Last updated: 2026-06-29
 - 会话历史有独立 `ConversationStore` 边界，支持 in-memory 和 JSONL。
 - `ConversationStore` 同时保存普通 turn 和 session-scoped `context_summary`；summary 用于当前 session 恢复，不写入长期 memory。
 - 默认每个 user/session 保留最近 8 轮历史，配置项是 `MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS`。
-- prompt 上下文默认保留最近 2 轮原文，较早轮次压缩为短摘要。
+- prompt 上下文默认保留最近 2 轮原文，较早轮次进入 session summary。
+- 会话摘要采用增量滑动窗口：每轮进入 runtime 前，只把新滑出最近窗口且尚未在 summary refs 中出现的 turn 合并进 `context_summary`，避免重复压缩同一 turn。
 - 请求注入顺序是 session summary、recent turns、memory context；`reset_conversation=True` 同时清空 turns 和 session summary。
 - 压缩元数据包括 `conversation_context_compacted`、`conversation_context_recent_turns`、`conversation_context_compacted_turns`。
 - `reset_conversation` metadata 可清空当前 session 的短期对话历史。
@@ -113,7 +128,7 @@ Last updated: 2026-06-29
 - 默认自动压缩仍是 deterministic formatting/summary。LLM semantic compaction 已有受控入口，但默认离线 profile 不启用。
 - 当前全局压缩控制仍是 approximate character budget；token-aware 数据已作为可选报告层接入。Memory context 可单独按 token budget 控制注入，但这不替代 AssistantContextPack 的全局字符预算。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
-- 会话历史压缩只压较早轮次文本，不做跨轮语义重写、事实抽取或冲突消解。
+- 会话历史压缩只增量合并滑出窗口的较早轮次，不做跨轮语义重写、事实抽取、冲突消解或质量反馈调参。
 - assistant loop 的真实 LLM 路径中，长期记忆写入应由 assistant 通过 `memory_save` 工具显式选择；图尾不会自动写长期 task summary。
 
 ## Key Files

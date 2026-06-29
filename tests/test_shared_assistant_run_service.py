@@ -159,6 +159,52 @@ def test_shared_assistant_run_service_persists_and_restores_session_summary() ->
     assert "较早对话摘要" in restored.state.request.metadata["conversation_context_text"]
 
 
+def test_session_summary_rolls_forward_without_resummarizing_old_turns() -> None:
+    store = InMemoryConversationStore()
+    for index in range(3):
+        store.append(
+            "u1",
+            "s1",
+            ConversationTurn(
+                user_text=f"第 {index + 1} 轮用户：必须保留约束",
+                assistant_text=f"第 {index + 1} 轮助手：已确认",
+                run_id=f"run_{index + 1}",
+                trace_id=f"trace_{index + 1}",
+            ),
+        )
+
+    first = run_assistant_query(
+        "继续第一步",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=store,
+        metadata={"context_budget_max_chars": 50_000},
+    )
+    first_summary = store.get_summary("u1", "s1")
+
+    second = run_assistant_query(
+        "继续第二步",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=store,
+        metadata={"context_budget_max_chars": 50_000},
+    )
+    second_summary = store.get_summary("u1", "s1")
+
+    assert first_summary is not None
+    assert first_summary.source_turn_count == 1
+    assert second_summary is not None
+    assert second_summary.source_turn_count == 2
+    assert second_summary.decisions.count("第 1 轮助手：已确认") == 1
+    assert "第 2 轮助手：已确认" in second_summary.decisions
+    assert "run:run_1" in second_summary.important_refs
+    assert "run:run_2" in second_summary.important_refs
+    assert first.state.request.metadata["conversation_context_compacted_turns"] == 1
+    assert second.state.request.metadata["conversation_context_compacted_turns"] == 2
+
+
 def test_reset_conversation_clears_session_summary_before_current_turn() -> None:
     store = InMemoryConversationStore()
     for index in range(3):

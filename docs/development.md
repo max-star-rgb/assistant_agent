@@ -41,8 +41,8 @@ Task specs live in `tasks/`. Phase docs live in `docs/`. They are implementation
 
 ## Architecture And Boundary Docs
 
-- `docs/context-engineering-walkthrough.md`: owner-facing walkthrough for assistant context data flow, boundaries, compaction, and debugging.
-- `docs/CONTEXT_ENGINEERING_STATUS.md`: current assistant context, conversation compaction, context budget, tool observation compaction, session summary, and trace/debug context status.
+- `docs/CONTEXT_ENGINEERING_STATUS.md`: current assistant context, conversation compaction, context budget, tool observation compaction, session summary, trace/debug context status, and new-dialogue quick handoff.
+- `docs/context-engineering-walkthrough.md`: owner-facing walkthrough for assistant context data flow, boundaries, compaction, and debugging; read when explanation is needed, not as the default engineering entry.
 - `docs/memory-service-architecture.md`: current memory service ownership, retrieval, write policy, profile memory, audit, and boundary rules.
 - `docs/architecture-layers.md`: stable layer ownership and governance boundary checklist.
 
@@ -50,4 +50,4 @@ Task specs live in `tasks/`. Phase docs live in `docs/`. They are implementation
 
 - `docs/development/agent-control-plane-plan.md`: phased Local Multi-Agent Gateway + inbound A2A control-plane plan. Use it for gateway, routing, delegation safety, A2A conformance, outbound A2A pilot, and pilot-readiness work after reading `docs/agent-communication-routing.md`.
 - `docs/development/memory-kernel-hardening-plan.md`: phased Memory Kernel hardening plan. Use it for future memory engineering work after reading `docs/memory-service-architecture.md`.
-- `docs/development/context-engine-memory-policy-plan.md`: completed staged Context Engine + Memory Policy implementation log. Use it as reference after reading `docs/CONTEXT_ENGINEERING_STATUS.md`.
+- `docs/development/context-engine-memory-policy-plan.md`: completed staged Context Engine + Memory Policy implementation log. Use it only for historical decisions or phase traceability after reading `docs/CONTEXT_ENGINEERING_STATUS.md`.

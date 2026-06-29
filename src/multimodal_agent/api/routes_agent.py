@@ -20,6 +20,7 @@ from multimodal_agent.schemas.memory_audit import (
     MemoryDeleteResult,
     MemoryExport,
     MemoryMetricsReport,
+    MemoryProfileRepairResult,
     MemoryRetentionSweepResult,
 )
 from multimodal_agent.schemas.memory_snapshot import MemorySnapshot, MemoryStorageSnapshot
@@ -300,6 +301,28 @@ def get_memory_metrics(
 ) -> MemoryMetricsReport:
     identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     return _memory_audit_service().metrics_for_identity(identity)
+
+
+@router.get("/memory/users/{user_id}/profile/status", response_model=MemoryProfileRepairResult)
+def get_memory_profile_status(
+    user_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryProfileRepairResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    return _memory_audit_service().profile_status_for_identity(identity)
+
+
+@router.post("/memory/users/{user_id}/profile/rebuild", response_model=MemoryProfileRepairResult)
+def rebuild_memory_profile(
+    user_id: str,
+    dry_run: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryProfileRepairResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    return _memory_audit_service().rebuild_profile_for_identity(
+        identity,
+        dry_run=dry_run,
+    )
 
 
 @router.get("/memory/users/{user_id}/export", response_model=MemoryExport)

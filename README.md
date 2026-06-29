@@ -52,6 +52,17 @@ curl -s http://127.0.0.1:8000/agents/run \
   -d '{"user_id":"demo_user","session_id":"demo_session","text":"你好","collaboration_mode":"single"}'
 ```
 
+本地 header-auth pilot 需要显式开启；开启后 header 用户必须与请求体用户一致，header session 会成为绑定 session：
+
+```bash
+MULTIMODAL_AGENT_AUTH_HEADER_ENABLED=1 \
+curl -s http://127.0.0.1:8000/agents/run \
+  -H 'content-type: application/json' \
+  -H 'X-Multimodal-Agent-User-Id: demo_user' \
+  -H 'X-Multimodal-Agent-Session-Id: auth_session' \
+  -d '{"user_id":"demo_user","session_id":"body_session","text":"你好","target_agent_id":"agent.worker"}'
+```
+
 查看本地 A2A agent card：
 
 ```bash
@@ -128,7 +139,7 @@ structured observations -> final answer / events / audit logs
 | 修改文档 | `README.md`、`AGENTS.md`、`docs/CODEX_PROJECT_GUIDE.md` | `docs/**`、根目录入口文档 | `python scripts/check_env.py` |
 | 新增 demo 场景 | `scripts/run_demo_flows.py`、`docs/demo-flows.md` | `scripts/**`、`docs/**`、必要时测试 | `python scripts/run_demo_flows.py` |
 | 调整 provider mock | `docs/configuration.md`、`docs/provider-setup.md`、`src/multimodal_agent/providers/` | 按任务范围修改 provider/mock 与测试 | `python -m pytest` |
-| 调整上下文工程 | `docs/CONTEXT_ENGINEERING_STATUS.md`、`docs/development/context-engine-memory-policy-plan.md`、`src/multimodal_agent/services/context/` | context services、assistant loop、相关测试 | `python -m pytest tests/test_assistant_context_renderer.py tests/test_conversation_context_compaction.py` |
+| 调整上下文工程 | `docs/CONTEXT_ENGINEERING_STATUS.md` 顶部快速交接和相关小节；按需读 walkthrough 或历史 plan | context services、assistant loop、相关测试 | `python -m pytest tests/test_assistant_context_renderer.py tests/test_conversation_context_compaction.py` |
 | 调整 memory 行为 | `docs/memory-service-architecture.md`、`src/multimodal_agent/memory/` | memory 模块和相关测试 | `python -m pytest tests` |
 | 更新 eval | `scripts/run_evals.py`、`tests/evals/eval_cases.json`、`docs/development.md` | eval 用例、脚本、文档 | `python scripts/run_evals.py` |
 | 更新 API 文档 | `docs/quickstart.md`、`docs/observability-local.md`、API routes | `docs/**`，必要时 API 测试 | `python -m pytest tests` |

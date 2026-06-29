@@ -256,6 +256,71 @@ class SQLiteMemoryStore:
             ).fetchall()
         return [MemoryAuditEvent.model_validate_json(str(row["payload"])) for row in rows]
 
+    def backup_to(self, destination: Path | str, *, overwrite: bool = False) -> Path:
+        """Create a consistent SQLite backup that includes memories and audit events."""
+
+        destination_path = Path(destination)
+        if destination_path == self.path:
+            raise ValueError("backup destination must differ from source database")
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        if destination_path.exists() and not overwrite:
+            raise FileExistsError(destination_path)
+        if overwrite:
+            _remove_sqlite_file_set(destination_path)
+        _backup_database(self.path, destination_path)
+        _assert_sqlite_integrity(destination_path)
+        return destination_path
+
+    @classmethod
+    def restore_backup(
+        cls,
+        source: Path | str,
+        destination: Path | str,
+        *,
+        overwrite: bool = False,
+    ) -> "SQLiteMemoryStore":
+        """Restore a validated backup into a SQLite memory database path."""
+
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if source_path == destination_path:
+            raise ValueError("restore source and destination must differ")
+        if not source_path.exists():
+            raise FileNotFoundError(source_path)
+        if destination_path.exists() and not overwrite:
+            raise FileExistsError(destination_path)
+        _assert_sqlite_integrity(source_path)
+        _assert_supported_schema(source_path)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        staging_path = _staging_restore_path(destination_path)
+        _remove_sqlite_file_set(staging_path)
+        try:
+            _backup_database(source_path, staging_path)
+            _assert_sqlite_integrity(staging_path)
+            _assert_supported_schema(staging_path)
+            if overwrite:
+                _remove_sqlite_file_set(destination_path)
+            staging_path.replace(destination_path)
+        finally:
+            _remove_sqlite_file_set(staging_path)
+        return cls(destination_path)
+
+    def integrity_check(self) -> list[str]:
+        """Run SQLite integrity_check and return the raw result rows."""
+
+        with self._connect() as connection:
+            rows = connection.execute("PRAGMA integrity_check").fetchall()
+        return [str(row[0]) for row in rows]
+
+    def rebuild_indexes(self) -> None:
+        """Rebuild memory and audit indexes without changing stored payload rows."""
+
+        with self._connect() as connection:
+            for index_name in _SQLITE_INDEX_NAMES:
+                connection.execute(f"DROP INDEX IF EXISTS {index_name}")
+            _ensure_memory_schema(connection)
+            _ensure_audit_schema(connection)
+
     def _initialize(self, *, new_database: bool) -> None:
         with self._connect() as connection:
             if new_database:
@@ -362,6 +427,20 @@ def _ensure_memory_schema(connection: sqlite3.Connection) -> None:
     )
 
 
+_SQLITE_INDEX_NAMES = (
+    "idx_memory_items_user_created",
+    "idx_memory_items_user_session",
+    "idx_memory_items_user_type",
+    "idx_memory_items_expires_at",
+    "idx_memory_items_user_deleted",
+    "idx_memory_items_user_content_hash",
+    "idx_memory_audit_events_user_time",
+    "idx_memory_audit_events_user_type",
+    "idx_memory_audit_events_user_session",
+    "idx_memory_audit_events_memory",
+)
+
+
 def _read_schema_version(connection: sqlite3.Connection) -> sqlite3.Row | None:
     try:
         return connection.execute("SELECT version FROM memory_schema_version LIMIT 1").fetchone()
@@ -403,3 +482,51 @@ def _ensure_audit_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_audit_events_memory ON memory_audit_events(user_id, memory_id)"
     )
+
+
+def _backup_database(source: Path, destination: Path) -> None:
+    source_connection = sqlite3.connect(str(source), timeout=30)
+    destination_connection = sqlite3.connect(str(destination), timeout=30)
+    try:
+        source_connection.backup(destination_connection)
+        destination_connection.commit()
+    finally:
+        destination_connection.close()
+        source_connection.close()
+
+
+def _assert_sqlite_integrity(path: Path) -> None:
+    connection = sqlite3.connect(str(path), timeout=30)
+    try:
+        rows = connection.execute("PRAGMA integrity_check").fetchall()
+    finally:
+        connection.close()
+    issues = [str(row[0]) for row in rows]
+    if issues != ["ok"]:
+        raise RuntimeError(f"SQLite memory database integrity check failed: {issues}")
+
+
+def _assert_supported_schema(path: Path) -> None:
+    connection = sqlite3.connect(str(path), timeout=30)
+    connection.row_factory = sqlite3.Row
+    try:
+        row = _read_schema_version(connection)
+    finally:
+        connection.close()
+    if row is None:
+        raise RuntimeError("SQLite memory database schema version is missing")
+    version = int(row["version"])
+    if version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"SQLite memory store schema version {version} is newer than supported {SCHEMA_VERSION}"
+        )
+
+
+def _staging_restore_path(destination: Path) -> Path:
+    return destination.with_name(f".{destination.name}.restore-tmp")
+
+
+def _remove_sqlite_file_set(path: Path) -> None:
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        if candidate.exists():
+            candidate.unlink()

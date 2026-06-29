@@ -163,10 +163,19 @@ class PilotReadinessChecker:
         )
 
     def _identity_check(self, *, identity_policy: IdentityPolicyDecision) -> PilotReadinessCheck:
+        detail = identity_policy.model_dump(mode="json")
+        detail.update(
+            {
+                "accepted_auth_sources": ["auth_context"],
+                "header_auth_pilot_env": "MULTIMODAL_AGENT_AUTH_HEADER_ENABLED",
+                "header_auth_default": "disabled",
+                "mismatch_policy": "reject request body/path/query user_id when auth context user_id differs",
+            }
+        )
         return PilotReadinessCheck(
             name="auth_bound_identity",
             status=identity_policy.status,
-            detail=identity_policy.model_dump(mode="json"),
+            detail=detail,
         )
 
 

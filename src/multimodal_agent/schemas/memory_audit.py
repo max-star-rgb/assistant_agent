@@ -18,8 +18,10 @@ MemoryAuditEventType = Literal[
     "memory_user_cleared",
     "memory_exported",
     "memory_retention_swept",
+    "memory_profile_repaired",
 ]
 MemoryAuditEventOutcome = Literal["succeeded", "skipped", "rejected", "failed"]
+MemoryProfileRepairAction = Literal["none", "create", "update", "delete"]
 
 
 class MemoryAuditItem(BaseModel):
@@ -163,3 +165,24 @@ class MemoryMetricsReport(BaseModel):
     by_event_type: dict[str, int] = Field(default_factory=dict)
     by_outcome: dict[str, int] = Field(default_factory=dict)
     counters: dict[str, int] = Field(default_factory=dict)
+
+
+class MemoryProfileRepairResult(BaseModel):
+    """User-profile rebuild/repair status."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    user_id: str
+    dry_run: bool = False
+    repaired: bool = False
+    action: MemoryProfileRepairAction = "none"
+    profile_memory_id: str | None = None
+    profile_present_before: bool = False
+    profile_present_after: bool = False
+    source_count: int = Field(ge=0)
+    expected_source_memory_ids: list[str] = Field(default_factory=list)
+    current_source_memory_ids: list[str] = Field(default_factory=list)
+    missing_source_memory_ids: list[str] = Field(default_factory=list)
+    stale_source_memory_ids: list[str] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
+    expected_summary: str | None = None
+    current_summary: str | None = None

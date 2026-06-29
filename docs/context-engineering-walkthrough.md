@@ -116,7 +116,14 @@ UserRequest
 - `conversation_context_compacted`
 - `session_context_summary`
 
-默认最近 2 轮保留原文，较早对话压缩为短摘要。
+默认最近 2 轮保留原文，较早对话进入 session summary。
+
+可以把它理解成一个滑动窗口：
+
+- 窗口内：最近 2 轮原文直接进入 prompt。
+- 窗口外：旧 turn 被合并到 `context_summary`。
+- 下一轮请求到来时，只处理新滑出窗口、且还没有被 summary refs 记录过的 turn。
+- summary 仍是当前 session 的短期状态，不写入长期记忆。
 
 `reset_conversation=True` 会同时清空普通 turn 和会话摘要。
 
@@ -207,6 +214,7 @@ max_memory_context_chars = 500
 - 这不是 `MemoryManager` 写入。
 - 这不是长期记忆。
 - 这不会调用 `MemoryManager.save_explicit(...)`。
+- 默认摘要不是关键词抽取，也不是默认 LLM 生成；它是本地确定性规则摘要，会保留约束、助手决策、未完成事项和 run/trace/tool refs。
 
 ## 预算裁剪顺序
 

@@ -114,6 +114,16 @@ async def a2a_json_rpc(
             access.reason or "trial user is not allowed",
             data={"user_id": identity.identity.user_id},
         )
+    gateway_request = gateway_request.model_copy(
+        update={
+            "user_id": identity.identity.user_id,
+            "session_id": identity.identity.session_id or gateway_request.session_id,
+            "metadata": {
+                **dict(gateway_request.metadata),
+                "request_identity": identity.metadata(),
+            },
+        }
+    )
     try:
         response = get_agent_gateway().run(gateway_request)
     except Exception as exc:  # pragma: no cover - defensive protocol boundary
