@@ -7,6 +7,7 @@ USER_DOCS = (
     "AGENTS.md",
     "docs/CONTEXT_ENGINEERING_STATUS.md",
     "docs/context-engineering-walkthrough.md",
+    "docs/memory-module-walkthrough.md",
     "docs/memory-service-architecture.md",
     "docs/agent-communication-routing.md",
 )

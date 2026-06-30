@@ -8,7 +8,7 @@
 
 按任务范围补充阅读：
 
-- 涉及上下文工程、assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 时，必须先读 `docs/CONTEXT_ENGINEERING_STATUS.md` 顶部“新对话快速交接”，再按任务读对应小节、源码和测试。`docs/context-engineering-walkthrough.md` 只在需要面向人解释机制或排错时阅读；`docs/development/context-engine-memory-policy-plan.md` 只在追溯阶段决策或历史实施记录时阅读。
+- 涉及上下文工程、assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 时，必须先读 `docs/CONTEXT_ENGINEERING_STATUS.md` 顶部“新对话快速交接”，再按任务读对应小节、源码和测试。`docs/development/context-engine-memory-policy-plan.md` 只在追溯阶段决策或历史实施记录时阅读。
 - 涉及记忆服务设计、`MemoryManager`、memory store/retrieval/write policy/user profile、memory tool、memory API 或长期记忆边界时，必须阅读 `docs/memory-service-architecture.md`。
 - 涉及记忆服务工程化落地、Memory Kernel、SQLite/store migration、RequestIdentity、token-aware memory context、retention/export/audit 或 memory eval 时，必须阅读 `docs/development/memory-kernel-hardening-plan.md`。
 - 涉及多 agent 实例、agent directory/gateway、agent-to-agent 通信、A2A/JSON-RPC adapter、跨实例 session/task 路由或 `delegate_to_agent` 类工具时，必须阅读 `docs/agent-communication-routing.md`。
@@ -135,9 +135,10 @@ conda run -n hello_agent <command>
 - `README.md` 是人类入口，说明项目当前定位、架构、运行方式和常用命令。
 - `AGENTS.md` 是 agent 行为约束入口，应简短稳定，不塞入长篇历史设计。
 - `docs/memory-service-architecture.md` 是记忆服务架构、边界、路由和更新规则的当前权威入口。
+- `docs/memory-module-walkthrough.md` 是面向项目负责人的记忆模块中文解释文档；它不是 agent 必读或补读入口，维护时只需保持与 `docs/memory-service-architecture.md` 不冲突。
 - `docs/development/memory-kernel-hardening-plan.md` 是后续 Memory Kernel 工程化落地的阶段计划。
 - `docs/CONTEXT_ENGINEERING_STATUS.md` 是上下文工程当前进展、限制、下一步和新对话快速交接入口。
-- `docs/context-engineering-walkthrough.md` 是上下文工程中文解释文档，按需用于理解机制，不是每次任务必读入口。
+- `docs/context-engineering-walkthrough.md` 是面向项目负责人的上下文工程中文解释文档；它不是 agent 必读或补读入口，维护时只需保持与 `docs/CONTEXT_ENGINEERING_STATUS.md` 不冲突。
 - `docs/development/context-engine-memory-policy-plan.md` 是已完成的上下文工程阶段实施记录，按需追溯历史，不是当前 active roadmap。
 - `docs/agent-communication-routing.md` 是多 agent 实例、agent 通信路由、A2A adapter 边界和更新规则的当前权威入口。
 - 历史 task/prompt/skill 构建材料和根目录通用文档已按用户确认删除；`docs/development/`、`docs/interview/` 暂不清理。
