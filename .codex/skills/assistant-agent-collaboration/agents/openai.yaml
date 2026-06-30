@@ -1,0 +1,4 @@
+interface:
+  display_name: "Assistant Agent Collaboration"
+  short_description: "Agent collaboration workflow for assistant_agent"
+  default_prompt: "Use $assistant-agent-collaboration to modify or review assistant_agent multi-agent, gateway, A2A, or OpenClaw-reference behavior."

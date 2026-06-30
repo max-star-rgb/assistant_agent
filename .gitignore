@@ -21,7 +21,10 @@ htmlcov/
 !/docs/context-engineering-walkthrough.md
 !/docs/memory-module-walkthrough.md
 !/docs/memory-service-architecture.md
+!/docs/tool-calling-architecture.md
 !/docs/agent-collaboration-walkthrough.md
+!/docs/interview/
+!/docs/interview/**
 !/docs/development/
 !/docs/development/**
 !/docs/archive/

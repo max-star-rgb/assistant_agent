@@ -1,8 +1,10 @@
-# Multimodal Agent
+# assistant_agent
 
 本项目仍在快速演进中，README 暂时只保留占位入口。
 
 当前开发规则、运行边界、文档路由和 agent 工作入口以 [AGENTS.md](AGENTS.md) 为准。项目稳定后再重写面向人的 README。
+
+当前项目展示名/发行名为 `assistant_agent`。Python 包目录仍为 `src/multimodal_agent/`，本地 conda 环境仍为 `hello_agent`；这两项属于后续迁移范围，不在当前占位 README 中重命名。
 
 常用本地验证命令：
 
@@ -17,5 +19,6 @@
 - `docs/context-engineering-walkthrough.md`
 - `docs/memory-service-architecture.md`
 - `docs/memory-module-walkthrough.md`
+- `docs/tool-calling-architecture.md`
 - `docs/agent-communication-routing.md`
 - `docs/agent-collaboration-walkthrough.md`

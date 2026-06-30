@@ -1,7 +1,7 @@
 [project]
-name = "multimodal-agent"
+name = "assistant_agent"
 version = "0.1.0"
-description = "A multimodal autonomous tool-calling agent scaffold."
+description = "A local-first multimodal autonomous tool-calling assistant agent."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["fastapi>=0.115.0", "pydantic>=2.0", "uvicorn>=0.30.0"]
