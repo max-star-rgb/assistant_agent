@@ -80,7 +80,7 @@ UserRequest
   -> memory_retrieval / memory_save tool through ToolExecutor
   -> MemoryManager.search(...) or MemoryManager.save_explicit(...)
        -> allow: MemoryStore.save(...)
-       -> needs confirmation: in-process MemoryPendingConfirmation
+       -> needs confirmation: MemoryPendingConfirmation
        -> reject: audit-only rejection
   -> optional API user confirmation/rejection for pending explicit memory
   -> compose_response
@@ -190,7 +190,7 @@ Environment variables:
 
 Relative JSONL and SQLite paths resolve from the repository root. JSONL and SQLite are still local-first storage, not real external providers. Future PostgreSQL, vector DB, or external memory service adapters must sit behind `MemoryStore` and `MemoryManager`.
 
-`SQLiteMemoryStore` also exposes local operator helpers for `backup_to(...)`, `restore_backup(...)`, `integrity_check()`, and `rebuild_indexes()`. These helpers cover both `memory_items` and `memory_audit_events`. Operational steps and rollback guidance live in `docs/development/memory-sqlite-operator-runbook.md`.
+`SQLiteMemoryStore` also exposes local operator helpers for `backup_to(...)`, `restore_backup(...)`, `integrity_check()`, and `rebuild_indexes()`. These helpers cover `memory_items`, `memory_audit_events`, and `memory_confirmations`. Operational steps and rollback guidance live in `docs/development/memory-sqlite-operator-runbook.md`.
 
 ## Contracts
 
@@ -286,7 +286,7 @@ Explicit saves:
 - Are evaluated by `MemoryWritePolicy.evaluate_explicit_save(...)` before any item is built.
 - Return a `MemoryWriteDecision` with `allowed`, `destination`, `reason`, `require_user_confirmation`, `sensitivity`, `ttl_days`, and `redacted_payload`.
 - If `allowed=True`, the durable `MemoryItem` is built through `build_explicit_memory_item(...)` and still passes `MemoryItem` payload validation before storage.
-- If `require_user_confirmation=True`, the write creates an in-process `MemoryPendingConfirmation` with only redacted summary and safe content preview. No durable memory item is stored until the user confirms it through the confirmation API/service path.
+- If `require_user_confirmation=True`, the write creates a `MemoryPendingConfirmation` with only redacted summary and safe content preview. SQLite schema v3 persists these confirmations in `memory_confirmations`; stores without confirmation methods use the in-process manager fallback. No durable memory item is stored until the user confirms it through the confirmation API/service path.
 - Confirming a pending explicit memory re-runs the normal explicit-memory builder on the redacted payload, stores the resulting item, and records both `memory_explicit_saved` and `memory_confirmation_decided` audit events.
 - Rejecting a pending explicit memory records `memory_confirmation_decided` and does not write a memory item.
 - Require non-empty text or summary.
@@ -328,7 +328,7 @@ Default TTL policy:
 
 Sensitive-looking summaries are sanitized. If task-summary sanitization changes the summary and `require_explicit_save_for_sensitive=True`, automatic task-summary saving is skipped.
 
-Current confirmation limit: pending confirmations are process-local in `MemoryManager`. SQLite persists the redacted audit events, but the pending confirmation queue itself does not survive runtime restart yet. A durable confirmation table/store contract is still future work before production use.
+Current confirmation limit: SQLite-backed pending confirmations survive runtime restart; JSONL and other stores without `save_confirmation(...)` / `list_confirmations(...)` methods still use the process-local `MemoryManager` fallback. A formal cross-backend confirmation-store contract and JSONL sidecar persistence remain future work.
 
 ## User Profile
 
@@ -371,11 +371,11 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 - `DELETE /memory/users/{user_id}/items/{memory_id}`
 - `DELETE /memory/users/{user_id}/sessions/{session_id}`
 
-List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Export is identity-scoped and can omit content with `include_content=false`. Retention sweep scans only identity-visible memories, supports `dry_run=true`, soft-deletes expired items by default, and uses `MemoryManager.hard_delete_for_identity(...)` plus `MemoryStore.hard_delete(...)` when `hard_delete=true`. SQLite removes the row on hard delete; in-memory and JSONL stores already delete physically. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match. Session/user delete also clears identity-visible in-process pending confirmations.
+List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Export is identity-scoped and can omit content with `include_content=false`. Retention sweep scans only identity-visible memories, supports `dry_run=true`, soft-deletes expired items by default, and uses `MemoryManager.hard_delete_for_identity(...)` plus `MemoryStore.hard_delete(...)` when `hard_delete=true`. SQLite removes the row on hard delete; in-memory and JSONL stores already delete physically. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match. Session/user delete also clears identity-visible pending confirmations.
 
 Confirmation endpoints list pending or resolved explicit-memory confirmations and let a user accept or reject a sensitive-but-redacted explicit memory. Confirmed entries become normal durable memory items; rejected or expired entries remain audit/governance state only.
 
-`MemoryManager` records prompt-safe lifecycle events: context load, explicit save/reject, confirmation create/decide, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. In-memory and JSONL paths keep a bounded in-process event list. SQLite schema v2 persists events in `memory_audit_events`, with common filter fields split into columns and the full redacted event saved as JSON payload, so events survive runtime restarts for the local SQLite backend. Production-grade external metrics export, durable confirmation queues, backup packaging, and full rollback/rebuild runbooks remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
+`MemoryManager` records prompt-safe lifecycle events: context load, explicit save/reject, confirmation create/decide, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. In-memory and JSONL paths keep a bounded in-process event list. SQLite schema v2 persists events in `memory_audit_events`, with common filter fields split into columns and the full redacted event saved as JSON payload, so events survive runtime restarts for the local SQLite backend. SQLite schema v3 persists redacted pending/resolved confirmations in `memory_confirmations`. Production-grade external metrics export, backup packaging, and full rollback/rebuild runbooks remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
 
 `DELETE /beta/users/{user_id}/data` clears memory through `runtime.memory_manager.clear_user(user_id)` as part of broader user-data deletion.
 
@@ -389,7 +389,7 @@ Confirmation endpoints list pending or resolved explicit-memory confirmations an
 - Do not add embedding/vector/external memory by changing prompt builders or agent nodes directly; add an adapter behind `MemoryStore`/retrieval and keep deterministic local behavior for tests.
 - Keep default behavior mock/local/offline. A memory backend must not become a network provider merely because credentials exist.
 - When memory context rendering, conversation context, context budget, or prompt injection handling changes, also read `docs/CONTEXT_ENGINEERING_STATUS.md`.
-- Update this file, `docs/DOCS_INDEX.md`, and any affected tests when the architecture changes.
+- Update this file, `README.md`, `AGENTS.md`, and any affected tests when the architecture changes.
 
 ## Validation
 

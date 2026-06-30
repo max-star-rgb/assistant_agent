@@ -1,13 +1,10 @@
 # AGENTS.md
 
-本文件是给 Codex / coding agent 的仓库级指导。它应保持稳定、可自动加载，并只记录当前项目的通用规则。详细架构、记忆服务架构、上下文工程状态、agent 通信路由、文档清单和测试评估在 `docs/`。
+本文件是给 Codex / coding agent 的仓库级指导。它应保持稳定、可自动加载，并只记录当前项目的通用规则。README 是人类入口；专项架构细节只保留在少量 `docs/` 文档中。
 
 ## 1. 当前权威入口
 
-开始仓库内任何非纯问答/非单条无副作用命令任务前，优先阅读：
-
-1. `docs/CODEX_PROJECT_GUIDE.md`：当前项目架构、运行边界和 Codex 工作入口。每个新任务或上下文恢复后默认先读；只有与仓库无关的普通问答，或用户只要求执行单个简单命令时可跳过。
-2. `README.md`：人类入口和常用运行命令。
+开始仓库内任何非纯问答/非单条无副作用命令任务前，优先阅读 `README.md`。只有与仓库无关的普通问答，或用户只要求执行单个简单命令时可跳过。
 
 按任务范围补充阅读：
 
@@ -15,8 +12,8 @@
 - 涉及记忆服务设计、`MemoryManager`、memory store/retrieval/write policy/user profile、memory tool、memory API 或长期记忆边界时，必须阅读 `docs/memory-service-architecture.md`。
 - 涉及记忆服务工程化落地、Memory Kernel、SQLite/store migration、RequestIdentity、token-aware memory context、retention/export/audit 或 memory eval 时，必须阅读 `docs/development/memory-kernel-hardening-plan.md`。
 - 涉及多 agent 实例、agent directory/gateway、agent-to-agent 通信、A2A/JSON-RPC adapter、跨实例 session/task 路由或 `delegate_to_agent` 类工具时，必须阅读 `docs/agent-communication-routing.md`。
-- 涉及架构分层、模块归属、治理边界或重构判断时，必须阅读 `docs/architecture-layers.md`。
-- 涉及文档盘点、入口路由、归档、删除、清理、新增 canonical/reference 文档，或判断 canonical/reference/historical/archive-candidate 状态时，阅读 `docs/DOCS_INDEX.md`。普通代码实现任务不必默认读取它，除非需要决定应更新哪些文档或文档权威性。
+- 涉及架构分层、模块归属、治理边界或重构判断时，以本文件的“当前架构边界”和“编码约定”为准；只有触及上下文、记忆或 agent communication 专项时才补读对应 docs。
+- 涉及文档盘点、入口路由、归档、删除、清理或新增文档时，优先保持 README、AGENTS 和少量专项 docs 同步；不要重新引入通用索引文档。
 
 历史 task、prompt 和旧 runner skill 构建材料已按用户确认删除；少量剩余 phase/archive 背景文档只在用户明确点名、需要追溯历史决策或执行对应历史任务时阅读。不要把旧 roadmap 当成当前真实架构。
 
@@ -24,7 +21,7 @@
 
 本仓库实现一个本地优先的多模态自主工具调用 Agent。Agent 负责理解用户输入、选择工具、执行受控调用、融合结果并给出最终回答；具体能力由工具、provider adapter、memory service、demo/eval/API 层协作提供。
 
-当前核心运行时以 LangGraph/ReAct assistant loop 为主，同时保留 mock/local/offline 路径用于稳定测试和演示。真实外部 Provider 是显式 opt-in 能力，不是默认运行路径。
+当前核心运行时以 LangGraph/ReAct assistant loop 为主，同时保留 mock/local/offline 路径用于稳定测试和演示。用户已确认后续本机项目运行主要使用真实 LLM；真实外部 Provider 仍必须通过 `provider_smoke` 或 `pilot` profile 和本机未跟踪配置显式启用。
 
 ## 3. 当前架构边界
 
@@ -60,8 +57,8 @@ ToolRegistry -> tools -> provider adapters / memory / local services
 
 默认规则不可随意放宽：
 
-- 默认只允许 mock/local/offline 路径。
-- 不自动调用真实 LLM、图片、视频、商品、通知、数据库或其他外部 Provider。
+- 仓库测试、eval、无 key 环境默认只允许 mock/local/offline 路径。
+- 用户本机任务可以使用真实 LLM，但不自动调用真实图片、视频、商品、通知、数据库或其他外部 Provider。
 - 不因为检测到 API key 就启用真实 Provider。
 - 不写入 API key、token、真实 `.env`、真实用户数据或真实 provider raw response。
 - 不提交真实媒体、生成物、大文件、缓存目录或外部服务原始返回。
@@ -69,7 +66,7 @@ ToolRegistry -> tools -> provider adapters / memory / local services
 
 真实 Provider 调用必须同时满足：
 
-- 用户或任务明确要求真实 Provider smoke/pilot。
+- 用户或任务明确要求真实 Provider，或本轮任务是在用户本机真实 LLM 运行口径下执行。
 - 使用受控 runtime profile，例如 `MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke` 或 `pilot`。
 - key 只来自本机环境变量或用户已配置的安全位置，不能写入仓库。
 - 最终报告必须说明调用范围和验证结果。
@@ -113,7 +110,8 @@ conda run -n hello_agent <command>
 | `tests/` | pytest 测试 | 修改行为时同步维护，除非用户限制只读 |
 | `scripts/` | 本地验证、服务、demo、eval、smoke 脚本 | 可按任务修改 |
 | `docs/` | 当前权威文档、参考文档、历史归档 | 文档任务优先修改 |
-| `docs/archive/` | 少量仍有参考价值的历史阶段材料 | 默认只作追溯，不直接删除 |
+| `docs/development/` | 开发计划和 runbook，暂不清理 | 默认只作追溯，不直接删除 |
+| `docs/interview/` | 面试/解释材料，暂不清理 | 默认不动 |
 
 如果用户对本轮任务设定更严格的 scope，例如“不要修改 `src/**`”或“不要修改 `tests/**`”，以用户当前约束为准。
 
@@ -136,17 +134,14 @@ conda run -n hello_agent <command>
 
 - `README.md` 是人类入口，说明项目当前定位、架构、运行方式和常用命令。
 - `AGENTS.md` 是 agent 行为约束入口，应简短稳定，不塞入长篇历史设计。
-- `docs/CODEX_PROJECT_GUIDE.md` 是 Codex 快速理解当前项目的权威指南。
 - `docs/memory-service-architecture.md` 是记忆服务架构、边界、路由和更新规则的当前权威入口。
 - `docs/development/memory-kernel-hardening-plan.md` 是后续 Memory Kernel 工程化落地的阶段计划。
 - `docs/CONTEXT_ENGINEERING_STATUS.md` 是上下文工程当前进展、限制、下一步和新对话快速交接入口。
 - `docs/context-engineering-walkthrough.md` 是上下文工程中文解释文档，按需用于理解机制，不是每次任务必读入口。
 - `docs/development/context-engine-memory-policy-plan.md` 是已完成的上下文工程阶段实施记录，按需追溯历史，不是当前 active roadmap。
 - `docs/agent-communication-routing.md` 是多 agent 实例、agent 通信路由、A2A adapter 边界和更新规则的当前权威入口。
-- `docs/DOCS_INDEX.md` 是文档清单和清理依据，只在文档盘点/归档/删除任务中作为入口。
-- `docs/TESTS_REVIEW.md` 是 tests 目录只读评估入口。
-- 历史 task/prompt/skill 构建材料已按用户确认删除；剩余 phase/archive 背景文档默认保留，不直接删除。
-- 删除文档必须先进入 `delete-candidate`，写明重复、过期、已吸收位置，并经过人工确认。
+- 历史 task/prompt/skill 构建材料和根目录通用文档已按用户确认删除；`docs/development/`、`docs/interview/` 暂不清理。
+- 新增文档必须有明确长期用途；优先更新 README、AGENTS 或现有专项文档。
 
 ## 9. 测试与验收
 

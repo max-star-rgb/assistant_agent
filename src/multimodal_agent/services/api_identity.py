@@ -25,6 +25,7 @@ ApiIdentitySource = Literal[
 ]
 AuthContextSource = Literal["none", "test", "header", "jwt", "session"]
 IdentityPolicyStatus = Literal["passed", "warning", "failed"]
+IDENTITY_NOT_AUTH_BOUND_ERROR = "IDENTITY_NOT_AUTH_BOUND"
 
 
 class AuthContext(BaseModel):
@@ -55,6 +56,7 @@ class ResolvedRequestIdentity(BaseModel):
     identity: RequestIdentity
     source: ApiIdentitySource
     auth_bound: bool = False
+    auth_context_source: str | None = None
     requested_user_id: str | None = None
     requested_session_id: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -70,6 +72,7 @@ class ResolvedRequestIdentity(BaseModel):
         return {
             "identity_source": self.source,
             "auth_bound_identity": self.auth_bound,
+            "auth_context_source": self.auth_context_source,
             "requested_user_id": self.requested_user_id,
             "requested_session_id": self.requested_session_id,
             "warnings": list(self.warnings),
@@ -86,6 +89,24 @@ class IdentityPolicyDecision(BaseModel):
     local_bypass: bool = False
     warnings: list[str] = Field(default_factory=list)
     reason: str | None = None
+
+
+class IdentityPolicyError(ValueError):
+    """Stable identity policy failure for API protocol adapters."""
+
+    def __init__(self, *, code: str, message: str, decision: IdentityPolicyDecision) -> None:
+        super().__init__(message)
+        self.code = code
+        self.decision = decision
+
+    def detail(self) -> dict[str, object]:
+        """Return a redacted error detail suitable for HTTP/API responses."""
+
+        return {
+            "code": self.code,
+            "message": str(self),
+            "identity_policy": self.decision.model_dump(mode="json"),
+        }
 
 
 class IdentityPolicy:
@@ -136,6 +157,28 @@ class IdentityPolicy:
         )
 
 
+def enforce_identity_policy(
+    resolution: ResolvedRequestIdentity,
+    *,
+    production_required: bool = False,
+    local_bypass: bool = False,
+) -> IdentityPolicyDecision:
+    """Raise when a resolved identity is not acceptable for the active policy."""
+
+    decision = IdentityPolicy().evaluate(
+        resolution,
+        production_required=production_required,
+        local_bypass=local_bypass,
+    )
+    if decision.status == "failed":
+        raise IdentityPolicyError(
+            code=IDENTITY_NOT_AUTH_BOUND_ERROR,
+            message=decision.reason or "identity policy failed",
+            decision=decision,
+        )
+    return decision
+
+
 def resolve_request_identity(
     *,
     user_id: str,
@@ -158,12 +201,15 @@ def resolve_request_identity(
     service boundary.
     """
 
+    auth_context_source = str(auth_context.source) if auth_context is not None else None
     if auth_context is not None and auth_context.authenticated:
         auth_user_id = auth_context.user_id
         auth_session_id = auth_context.session_id
         auth_tenant_id = auth_context.tenant_id
         auth_project_id = auth_context.project_id
         allowed_scopes = auth_context.allowed_scopes or allowed_scopes
+    elif auth_user_id:
+        auth_context_source = "test"
 
     requested_user_id = _clean_optional(user_id)
     requested_session_id = _clean_optional(session_id)
@@ -185,6 +231,7 @@ def resolve_request_identity(
             identity=identity,
             source="auth_context",
             auth_bound=True,
+            auth_context_source=auth_context_source,
             requested_user_id=requested_user_id,
             requested_session_id=requested_session_id,
             warnings=warnings,
@@ -204,6 +251,7 @@ def resolve_request_identity(
         identity=identity,
         source=source,
         auth_bound=False,
+        auth_context_source=auth_context_source,
         requested_user_id=requested_user_id,
         requested_session_id=requested_session_id,
         warnings=warnings,

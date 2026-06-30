@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 
-from multimodal_agent.api.auth import get_auth_context
+from multimodal_agent.api.auth import get_auth_context, require_auth_bound_identity
 from multimodal_agent.api.routes_agent import get_agent_gateway, get_trial_access_gate
 from multimodal_agent.schemas.a2a import (
     A2AAgentCard,
@@ -27,7 +27,12 @@ from multimodal_agent.services.a2a_adapter import (
     gateway_request_from_a2a_params,
     task_from_gateway_response,
 )
-from multimodal_agent.services.api_identity import AuthContext, resolve_request_identity
+from multimodal_agent.services.api_identity import (
+    AuthContext,
+    IdentityPolicyError,
+    enforce_identity_policy,
+    resolve_request_identity,
+)
 
 
 router = APIRouter()
@@ -99,6 +104,17 @@ async def a2a_json_rpc(
             session_id=gateway_request.session_id,
             source="a2a_metadata",
             auth_context=auth_context,
+        )
+        enforce_identity_policy(
+            identity,
+            production_required=require_auth_bound_identity(),
+        )
+    except IdentityPolicyError as exc:
+        return _error_response(
+            rpc_request.id,
+            JSONRPC_INVALID_PARAMS,
+            str(exc),
+            data=exc.detail(),
         )
     except ValueError as exc:
         return _error_response(

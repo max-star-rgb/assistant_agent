@@ -6,6 +6,8 @@ from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.api import routes_agent
 from multimodal_agent.api.auth import (
     AUTH_HEADER_ENABLED_ENV,
+    AUTH_MODE_ENV,
+    AUTH_REQUIRE_BOUND_IDENTITY_ENV,
     AUTH_SESSION_ID_HEADER,
     AUTH_USER_ID_HEADER,
 )
@@ -144,6 +146,48 @@ def test_websocket_rejects_enabled_header_auth_user_mismatch(monkeypatch) -> Non
     assert event["error"]["code"] == "ACCESS_DENIED"
     assert "auth context" in event["error"]["message"]
     assert runtime.requests == []
+
+
+def test_websocket_rejects_request_identity_when_auth_bound_required(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "1")
+    runtime = RecordingWebSocketRuntime()
+    try:
+        routes_agent._RUNTIME = runtime
+        client = TestClient(create_app())
+
+        with client.websocket_connect("/ws/agent/auth-required?text=你好&user_id=body_user") as websocket:
+            event = websocket.receive_json()
+    finally:
+        routes_agent._RUNTIME = None
+
+    assert event["type"] == "agent_error"
+    assert event["error"]["code"] == "IDENTITY_NOT_AUTH_BOUND"
+    assert event["error"]["detail"]["code"] == "IDENTITY_NOT_AUTH_BOUND"
+    assert runtime.requests == []
+
+
+def test_websocket_uses_trusted_header_auth_mode_when_required(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_MODE_ENV, "trusted_header")
+    monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "true")
+    runtime = RecordingWebSocketRuntime()
+    try:
+        routes_agent._RUNTIME = runtime
+        client = TestClient(create_app())
+
+        with client.websocket_connect(
+            "/ws/agent/trusted-session?text=你好&user_id=auth_user",
+            headers={AUTH_USER_ID_HEADER: "auth_user", AUTH_SESSION_ID_HEADER: "trusted_session"},
+        ) as websocket:
+            events = _receive_until(websocket, "agent_response")
+    finally:
+        routes_agent._RUNTIME = None
+
+    assert events[-1]["payload"]["response"]["status"] == "completed"
+    assert runtime.requests[0].user_id == "auth_user"
+    assert runtime.requests[0].session_id == "trusted_session"
+    metadata = runtime.requests[0].metadata["request_identity"]
+    assert metadata["identity_source"] == "auth_context"
+    assert metadata["auth_context_source"] == "header"
 
 
 def test_websocket_first_event_streams_before_final_response() -> None:

@@ -15,9 +15,9 @@ LLM target selection is suggestion-only until deterministic policy exists.
 
 This document is a development plan, not the canonical architecture source. Before changing code, read:
 
-- `docs/CODEX_PROJECT_GUIDE.md`
+- `README.md`
+- `AGENTS.md`
 - `docs/agent-communication-routing.md`
-- `docs/architecture-layers.md`
 - `docs/CONTEXT_ENGINEERING_STATUS.md` when context, history, tool observation compaction, or budget behavior changes.
 - `docs/memory-service-architecture.md` when memory scope or memory tools change.
 

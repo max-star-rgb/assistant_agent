@@ -13,12 +13,12 @@ Default runtime stays mock/local/offline.
 
 Use this document for follow-up implementation work. It is a development plan, not the architecture source. Before changing code, read:
 
-- `docs/CODEX_PROJECT_GUIDE.md`
+- `README.md`
+- `AGENTS.md`
 - `docs/CONTEXT_ENGINEERING_STATUS.md`
 - `docs/memory-service-architecture.md`
-- `docs/development.md`
 
-If the task touches architecture ownership, also read `docs/architecture-layers.md`.
+If the task touches architecture ownership, use the boundary rules in `AGENTS.md`.
 
 ## Current Baseline
 
@@ -377,13 +377,11 @@ Required docs:
 - `docs/CONTEXT_ENGINEERING_STATUS.md`
 - `docs/memory-service-architecture.md`
 - `docs/development/context-engine-memory-policy-plan.md`
-- `docs/development.md`
 
 Optional docs when API fields or workflows change:
 
-- `docs/observability-local.md`
-- `docs/CODEX_PROJECT_GUIDE.md`
-- `docs/DOCS_INDEX.md`
+- `README.md`
+- `AGENTS.md`
 
 Update rule:
 
@@ -394,7 +392,7 @@ Update rule:
 Done:
 
 - Marked this staged implementation plan as complete and clarified that it is now a reference log, not the active architecture source.
-- Added `docs/CONTEXT_ENGINEERING_STATUS.md` to README, Codex guide, development docs, and DOCS_INDEX as the canonical context-engineering entry.
+- Added `docs/CONTEXT_ENGINEERING_STATUS.md` to the current entry docs as the canonical context-engineering entry.
 - Clarified final ownership boundaries:
   - Context Engine owns assembly, budget, prune, compact, session summary, and trace/debug context summaries.
   - Memory Service owns durable memory, retrieval, write policy, audit, delete, profile memory, and store selection.

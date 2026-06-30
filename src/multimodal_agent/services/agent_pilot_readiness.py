@@ -167,6 +167,8 @@ class PilotReadinessChecker:
         detail.update(
             {
                 "accepted_auth_sources": ["auth_context"],
+                "auth_mode_env": "MULTIMODAL_AGENT_AUTH_MODE",
+                "require_auth_bound_identity_env": "MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY",
                 "header_auth_pilot_env": "MULTIMODAL_AGENT_AUTH_HEADER_ENABLED",
                 "header_auth_default": "disabled",
                 "mismatch_policy": "reject request body/path/query user_id when auth context user_id differs",

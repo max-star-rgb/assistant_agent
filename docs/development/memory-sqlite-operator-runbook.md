@@ -13,8 +13,9 @@ SQLite memory backup and restore covers:
 
 - `memory_items`
 - `memory_audit_events`
+- `memory_confirmations`
 - `memory_schema_version`
-- SQLite indexes for memory retrieval and audit-event queries
+- SQLite indexes for memory retrieval, audit-event queries, and confirmation queues
 
 It does not cover external object storage, cloud backup policies, PostgreSQL, vector indexes, or real provider artifacts. Raw provider responses, base64/media bodies, API keys, and secrets must not be placed in memory backups.
 
@@ -84,7 +85,7 @@ print(backup)
 PY
 ```
 
-The backup uses SQLite's backup API and includes both durable memories and audit events.
+The backup uses SQLite's backup API and includes durable memories, audit events, and pending/resolved memory confirmations.
 
 If the backup path already exists, the operation fails unless `overwrite=True` is passed. Avoid overwriting backups during incident response.
 
@@ -164,7 +165,7 @@ If migration fails:
 3. Run `integrity_check()`.
 4. Run focused memory validation.
 
-The current store rejects newer schema versions before mutating them. Older v0/v1 stores migrate to schema v2, which adds `memory_audit_events`.
+The current store rejects newer schema versions before mutating them. Older v0/v1 stores migrate through schema v2, which adds `memory_audit_events`; v3 adds `memory_confirmations` for durable pending/resolved memory confirmation state.
 
 ## Corruption Response
 
@@ -200,4 +201,4 @@ $PY scripts/run_evals.py
 - Backup files are local files. Move/copy them according to the deployment's data policy.
 - Restore should be done while writers are stopped.
 - This runbook does not provide encryption, remote retention, or multi-tenant production backup policy.
-- SQLite backup contains redacted memory payloads and audit events, but it is still user data and should be handled as sensitive local data.
+- SQLite backup contains redacted memory payloads, audit events, and memory confirmations, but it is still user data and should be handled as sensitive local data.

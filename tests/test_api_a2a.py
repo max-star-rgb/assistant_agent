@@ -1,7 +1,13 @@
 from fastapi.testclient import TestClient
 
 from multimodal_agent.api import routes_a2a
-from multimodal_agent.api.auth import AUTH_HEADER_ENABLED_ENV, AUTH_SESSION_ID_HEADER, AUTH_USER_ID_HEADER
+from multimodal_agent.api.auth import (
+    AUTH_HEADER_ENABLED_ENV,
+    AUTH_MODE_ENV,
+    AUTH_REQUIRE_BOUND_IDENTITY_ENV,
+    AUTH_SESSION_ID_HEADER,
+    AUTH_USER_ID_HEADER,
+)
 from multimodal_agent.api.app import create_app
 from multimodal_agent.schemas.a2a import A2AAgentCard, A2ATaskResult
 from multimodal_agent.schemas.agent_communication import DEFAULT_AGENT_ID, AgentInstance
@@ -187,6 +193,81 @@ def test_a2a_send_message_uses_enabled_header_auth(monkeypatch) -> None:
     assert metadata["identity_source"] == "auth_context"
     assert metadata["auth_bound_identity"] is True
     assert metadata["requested_session_id"] == "body_context"
+
+
+def test_a2a_send_message_uses_trusted_header_auth_mode_when_required(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_MODE_ENV, "trusted_header")
+    monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "1")
+    gateway = RecordingGateway()
+    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/a2a/rpc",
+        headers={AUTH_USER_ID_HEADER: "auth_user", AUTH_SESSION_ID_HEADER: "trusted_session"},
+        json={
+            "jsonrpc": "2.0",
+            "id": "rpc_trusted_auth",
+            "method": "SendMessage",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "messageId": "msg_trusted_auth",
+                    "contextId": "body_context",
+                    "parts": [{"kind": "text", "text": "hello from A2A"}],
+                    "metadata": {
+                        "user_id": "auth_user",
+                        "target_agent_id": "agent.worker",
+                    },
+                }
+            },
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["error"] is None
+    assert len(gateway.requests) == 1
+    request = gateway.requests[0]
+    assert request.user_id == "auth_user"
+    assert request.session_id == "trusted_session"
+    assert request.metadata["request_identity"]["auth_context_source"] == "header"
+
+
+def test_a2a_send_message_rejects_request_identity_when_auth_bound_required(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "true")
+    gateway = RecordingGateway()
+    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/a2a/rpc",
+        json={
+            "jsonrpc": "2.0",
+            "id": "rpc_auth_required",
+            "method": "SendMessage",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "messageId": "msg_auth_required",
+                    "contextId": "body_context",
+                    "parts": [{"kind": "text", "text": "hello from A2A"}],
+                    "metadata": {
+                        "user_id": "body_user",
+                        "target_agent_id": "agent.worker",
+                    },
+                }
+            },
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["result"] is None
+    assert payload["id"] == "rpc_auth_required"
+    assert payload["error"]["code"] == -32602
+    assert payload["error"]["data"]["code"] == "IDENTITY_NOT_AUTH_BOUND"
+    assert gateway.requests == []
 
 
 def test_a2a_send_message_rejects_enabled_header_auth_user_mismatch(monkeypatch) -> None:

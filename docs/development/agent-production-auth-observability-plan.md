@@ -2,7 +2,7 @@
 
 Last updated: 2026-06-29
 
-Status: planned.
+Status: in progress. Phase A and Phase B have first-pass implementation.
 
 This plan defines the next hardening stage after the local multi-agent gateway,
 inbound A2A adapter, default-disabled outbound A2A pilot, request identity
@@ -58,7 +58,9 @@ Implemented baseline:
 - Outbound `A2AJsonRpcTransport` exists but is default-disabled and requires explicit endpoint and allowlist configuration.
 - `services/api_identity.py` centralizes request identity resolution.
 - `api/auth.py` returns anonymous `AuthContext` by default.
-- Header-auth pilot is disabled by default and enabled only with `MULTIMODAL_AGENT_AUTH_HEADER_ENABLED`.
+- Header-auth pilot is disabled by default and enabled only with `MULTIMODAL_AGENT_AUTH_HEADER_ENABLED` or `MULTIMODAL_AGENT_AUTH_MODE=header_pilot|trusted_header`.
+- `api/auth.py` exposes an `AuthProvider` boundary with anonymous, header, and deferred JWT/session provider shapes.
+- `MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY=true` rejects request-derived identity across HTTP, WebSocket, memory APIs, and inbound A2A before dispatch.
 - `IdentityPolicy` can classify request-derived identity as warning/failed and auth-bound identity as passed.
 - `PilotReadinessChecker` reports runtime profile, remote A2A opt-in, identity policy, and trace redaction checks.
 - Trace/run query APIs, memory audit APIs, and local observability docs already exist, but they are not yet a unified control-plane audit surface.
@@ -88,22 +90,24 @@ Rules:
 
 ## Phase A: Contract And Policy Freeze
 
+Status: first-pass implemented on 2026-06-29.
+
 Goal: Make production auth and observability semantics explicit before adding new behavior.
 
 Work:
 
-- Add API contract notes for auth-bound identity across `/agent/run`, `/agents/run`, `/a2a/rpc`, WebSocket, memory APIs, and beta APIs.
-- Define supported auth modes:
-  - `anonymous_local`: current default local/offline behavior.
+- Add API contract notes for auth-bound identity across `/agent/run`, `/agents/run`, `/a2a/rpc`, WebSocket, memory APIs, and beta APIs. First pass done in README, Codex guide, and agent communication routing docs.
+- Define supported auth modes. First pass implemented in `api/auth.py`:
+  - `anonymous`: current default local/offline behavior.
   - `header_pilot`: current disabled-by-default controlled-header pilot.
-  - `trusted_header`: future reverse-proxy or gateway-bound header mode.
-  - `jwt`: future signed-token mode.
-  - `session`: future server-side session mode.
-- Define production-required behavior:
-  - request-derived identity is rejected when production identity is required.
-  - auth/body mismatch returns structured `403` for HTTP and JSON-RPC `-32602` for `/a2a/rpc`.
-  - WebSocket auth mismatch emits `agent_error` and closes with policy violation.
-- Define safe metadata:
+  - `trusted_header`: explicit trusted-header mode for future reverse-proxy or gateway-bound deployments.
+  - `jwt`: deferred signed-token mode; currently fails closed when auth-bound identity is required.
+  - `session`: deferred server-side session mode; currently fails closed when auth-bound identity is required.
+- Define production-required behavior. First pass implemented:
+  - request-derived identity is rejected when `MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY=true`.
+  - auth/body mismatch returns `403` for HTTP and JSON-RPC `-32602` for `/a2a/rpc`.
+  - WebSocket auth mismatch or missing auth-bound identity emits `agent_error` and closes with policy violation.
+- Define safe metadata. First pass implemented:
   - `identity_source`
   - `auth_bound_identity`
   - `auth_context_source`
@@ -132,21 +136,23 @@ Suggested tests:
 
 ## Phase B: Auth Provider Adapter Boundary
 
+Status: first-pass implemented on 2026-06-29.
+
 Goal: Add a replaceable auth provider boundary without turning local defaults into production auth.
 
 Work:
 
-- Introduce an `AuthProvider` protocol or service boundary behind `api/auth.py`.
-- Keep anonymous local provider as the default.
-- Add explicit configured provider modes for:
-  - trusted internal headers from a reverse proxy or gateway.
-  - signed JWT validation, when dependencies/config are available.
-  - test provider for deterministic tests.
-- Add config names that make unsafe defaults obvious:
+- Introduce an `AuthProvider` protocol or service boundary behind `api/auth.py`. Done.
+- Keep anonymous local provider as the default. Done.
+- Add explicit configured provider modes. First pass done:
+  - controlled headers from a reverse proxy or gateway through `trusted_header`.
+  - signed JWT validation and server-side session modes are named deferred providers and return anonymous context until implemented.
+  - deterministic tests use FastAPI dependency override or explicit env-driven header providers.
+- Add config names that make unsafe defaults obvious. Done:
   - `MULTIMODAL_AGENT_AUTH_MODE=anonymous|header_pilot|trusted_header|jwt|session`
   - `MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY=true|false`
-- Ensure keys/secrets are read only from environment or safe local config and never written to the repo.
-- Add structured auth errors with stable codes.
+- Ensure keys/secrets are read only from environment or safe local config and never written to the repo. Still required for future real JWT/session implementation.
+- Add structured auth errors with stable codes. First pass added `IDENTITY_NOT_AUTH_BOUND`.
 
 Acceptance:
 
@@ -339,4 +345,3 @@ This stage is complete when:
 - Should observability events be stored in the existing `TraceStore`, a new audit store, or memory-audit-adjacent storage?
 - What is the minimum useful retention policy for pilot audit events?
 - Should A2A inbound Agent Card advertise auth requirements differently when production auth is required?
-

@@ -3,15 +3,26 @@ from fastapi.testclient import TestClient
 from multimodal_agent.api.app import create_app
 from multimodal_agent.api.auth import (
     AUTH_HEADER_ENABLED_ENV,
+    AUTH_MODE_ENV,
     AUTH_PROJECT_ID_HEADER,
+    AUTH_REQUIRE_BOUND_IDENTITY_ENV,
     AUTH_SCOPES_HEADER,
     AUTH_SESSION_ID_HEADER,
     AUTH_TENANT_ID_HEADER,
     AUTH_USER_ID_HEADER,
     auth_context_from_headers,
     header_auth_enabled,
+    require_auth_bound_identity,
+    resolve_auth_mode,
 )
-from multimodal_agent.services.api_identity import AuthContext, IdentityPolicy, resolve_request_identity
+from multimodal_agent.services.api_identity import (
+    IDENTITY_NOT_AUTH_BOUND_ERROR,
+    AuthContext,
+    IdentityPolicy,
+    IdentityPolicyError,
+    enforce_identity_policy,
+    resolve_request_identity,
+)
 from multimodal_agent.services.trial_access import (
     TRIAL_USER_ID_FILE_ENV,
     TRIAL_USER_IDS_ENV,
@@ -105,6 +116,7 @@ def test_request_identity_resolver_accepts_auth_context_model() -> None:
     assert resolved.identity.allowed_scopes == ["project"]
     assert resolved.source == "auth_context"
     assert resolved.auth_bound is True
+    assert resolved.metadata()["auth_context_source"] == "test"
 
 
 def test_request_identity_resolver_rejects_auth_user_mismatch() -> None:
@@ -133,6 +145,12 @@ def test_header_auth_context_is_disabled_by_default() -> None:
     assert auth_context.user_id is None
 
 
+def test_auth_mode_defaults_to_anonymous_and_supports_legacy_header_flag() -> None:
+    assert resolve_auth_mode({}) == "anonymous"
+    assert resolve_auth_mode({AUTH_HEADER_ENABLED_ENV: "1"}) == "header_pilot"
+    assert resolve_auth_mode({AUTH_MODE_ENV: "anonymous_local", AUTH_HEADER_ENABLED_ENV: "1"}) == "anonymous"
+
+
 def test_header_auth_context_requires_non_empty_user_when_enabled() -> None:
     auth_context = auth_context_from_headers(
         {AUTH_USER_ID_HEADER: "  "},
@@ -141,6 +159,33 @@ def test_header_auth_context_requires_non_empty_user_when_enabled() -> None:
 
     assert header_auth_enabled({AUTH_HEADER_ENABLED_ENV: "true"}) is True
     assert auth_context.authenticated is False
+
+
+def test_header_auth_context_uses_auth_mode_header_pilot() -> None:
+    auth_context = auth_context_from_headers(
+        {AUTH_USER_ID_HEADER: "header_user"},
+        env={AUTH_MODE_ENV: "header_pilot"},
+    )
+
+    assert auth_context.authenticated is True
+    assert auth_context.source == "header"
+    assert auth_context.user_id == "header_user"
+
+
+def test_trusted_header_auth_mode_uses_same_controlled_headers() -> None:
+    auth_context = auth_context_from_headers(
+        {
+            AUTH_USER_ID_HEADER: "trusted_user",
+            AUTH_SESSION_ID_HEADER: "trusted_session",
+        },
+        env={AUTH_MODE_ENV: "trusted_header"},
+    )
+
+    assert header_auth_enabled({AUTH_MODE_ENV: "trusted_header"}) is False
+    assert auth_context.authenticated is True
+    assert auth_context.source == "header"
+    assert auth_context.user_id == "trusted_user"
+    assert auth_context.session_id == "trusted_session"
 
 
 def test_header_auth_context_uses_controlled_headers_when_enabled() -> None:
@@ -164,6 +209,21 @@ def test_header_auth_context_uses_controlled_headers_when_enabled() -> None:
     assert auth_context.allowed_scopes == ["project", "memory:read", "memory:write"]
 
 
+def test_jwt_and_session_modes_are_deferred_and_fail_closed_when_required() -> None:
+    jwt_context = auth_context_from_headers(
+        {AUTH_USER_ID_HEADER: "ignored"},
+        env={AUTH_MODE_ENV: "jwt"},
+    )
+    session_context = auth_context_from_headers(
+        {AUTH_USER_ID_HEADER: "ignored"},
+        env={AUTH_MODE_ENV: "session"},
+    )
+
+    assert jwt_context.authenticated is False
+    assert session_context.authenticated is False
+    assert require_auth_bound_identity({AUTH_REQUIRE_BOUND_IDENTITY_ENV: "yes"}) is True
+
+
 def test_identity_policy_warns_for_request_derived_local_identity() -> None:
     resolved = resolve_request_identity(user_id="alice", session_id="s1", source="request_body")
 
@@ -173,6 +233,19 @@ def test_identity_policy_warns_for_request_derived_local_identity() -> None:
     assert decision.identity_source == "request_body"
     assert decision.auth_bound_identity is False
     assert "identity_not_auth_bound" in decision.warnings
+
+
+def test_identity_policy_enforcement_raises_stable_error_when_required() -> None:
+    resolved = resolve_request_identity(user_id="alice", session_id="s1", source="request_body")
+
+    try:
+        enforce_identity_policy(resolved, production_required=True)
+    except IdentityPolicyError as exc:
+        assert exc.code == IDENTITY_NOT_AUTH_BOUND_ERROR
+        assert exc.detail()["code"] == IDENTITY_NOT_AUTH_BOUND_ERROR
+        assert exc.detail()["identity_policy"]["production_required"] is True
+    else:
+        raise AssertionError("expected production-required identity policy to fail")
 
 
 def test_identity_policy_fails_request_derived_identity_when_production_required() -> None:

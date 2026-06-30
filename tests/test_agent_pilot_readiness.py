@@ -26,6 +26,11 @@ def test_pilot_readiness_checker_reports_safe_default_profile() -> None:
     assert checks["default_profile_mock_local_offline"].status == "passed"
     assert checks["remote_a2a_default_disabled"].status == "passed"
     assert checks["auth_bound_identity"].status == "warning"
+    assert checks["auth_bound_identity"].detail["auth_mode_env"] == "MULTIMODAL_AGENT_AUTH_MODE"
+    assert (
+        checks["auth_bound_identity"].detail["require_auth_bound_identity_env"]
+        == "MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY"
+    )
     assert checks["auth_bound_identity"].detail["header_auth_pilot_env"] == "MULTIMODAL_AGENT_AUTH_HEADER_ENABLED"
     assert checks["auth_bound_identity"].detail["header_auth_default"] == "disabled"
     assert checks["auth_bound_identity"].detail["mismatch_policy"].startswith("reject")

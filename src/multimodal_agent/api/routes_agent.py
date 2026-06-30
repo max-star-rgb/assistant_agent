@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api.auth import get_auth_context
+from multimodal_agent.api.auth import get_auth_context, require_auth_bound_identity
 from multimodal_agent.schemas.agent_gateway import AgentGatewayRunRequest
 from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
 from multimodal_agent.schemas.identity import RequestIdentity
@@ -40,7 +40,9 @@ from multimodal_agent.services.agent_gateway import AgentGateway, create_default
 from multimodal_agent.services.api_identity import (
     ApiIdentitySource,
     AuthContext,
+    IdentityPolicyError,
     ResolvedRequestIdentity,
+    enforce_identity_policy,
     resolve_request_identity,
 )
 from multimodal_agent.services.beta_feedback import (
@@ -561,7 +563,7 @@ def _identity_from_request(
 ) -> ResolvedRequestIdentity:
     metadata = request.metadata or {}
     try:
-        return resolve_request_identity(
+        resolution = resolve_request_identity(
             user_id=request.user_id,
             session_id=request.session_id,
             source="request_body",
@@ -569,6 +571,7 @@ def _identity_from_request(
             project_id=_metadata_string(metadata, "project_id"),
             auth_context=auth_context,
         )
+        return _enforce_identity_policy(resolution)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
@@ -581,14 +584,26 @@ def _identity_from_user_id(
     auth_context: AuthContext | None = None,
 ) -> ResolvedRequestIdentity:
     try:
-        return resolve_request_identity(
+        resolution = resolve_request_identity(
             user_id=user_id or "",
             session_id=session_id,
             source=source,
             auth_context=auth_context,
         )
+        return _enforce_identity_policy(resolution)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _enforce_identity_policy(resolution: ResolvedRequestIdentity) -> ResolvedRequestIdentity:
+    try:
+        enforce_identity_policy(
+            resolution,
+            production_required=require_auth_bound_identity(),
+        )
+    except IdentityPolicyError as exc:
+        raise HTTPException(status_code=403, detail=exc.detail()) from exc
+    return resolution
 
 
 def _metadata_string(metadata: dict[str, Any], key: str) -> str | None:

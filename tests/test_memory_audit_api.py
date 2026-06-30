@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.api import routes_agent
+from multimodal_agent.api.auth import AUTH_MODE_ENV, AUTH_REQUIRE_BOUND_IDENTITY_ENV, AUTH_USER_ID_HEADER
 from multimodal_agent.api.app import create_app
 from multimodal_agent.memory.manager import MemoryConfirmationRequired
 from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
@@ -38,6 +39,35 @@ def test_memory_audit_api_lists_and_gets_user_scoped_items(monkeypatch) -> None:
     assert item.status_code == 200
     assert item.json()["content"] == {"style": "日系"}
     assert missing.status_code == 404
+
+
+def test_memory_audit_api_rejects_request_identity_when_auth_bound_required(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "1")
+    store = InMemoryStore()
+    runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
+    store.save(_memory("m1", "u1", "preference", "用户喜欢日系风格。", content={"style": "日系"}))
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    listed = client.get("/memory/users/u1/items")
+
+    assert listed.status_code == 403
+    assert listed.json()["detail"]["code"] == "IDENTITY_NOT_AUTH_BOUND"
+
+
+def test_memory_audit_api_uses_trusted_header_auth_when_required(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_MODE_ENV, "trusted_header")
+    monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "true")
+    store = InMemoryStore()
+    runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
+    store.save(_memory("m1", "u1", "preference", "用户喜欢日系风格。", content={"style": "日系"}))
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    listed = client.get("/memory/users/u1/items", headers={AUTH_USER_ID_HEADER: "u1"})
+
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
 
 
 def test_memory_audit_api_deletes_item_and_session(monkeypatch) -> None:

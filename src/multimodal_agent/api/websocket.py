@@ -9,10 +9,10 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api.auth import get_websocket_auth_context
+from multimodal_agent.api.auth import get_websocket_auth_context, require_auth_bound_identity
 from multimodal_agent.schemas.events import AgentEvent
 from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.api_identity import resolve_request_identity
+from multimodal_agent.services.api_identity import IdentityPolicyError, enforce_identity_policy, resolve_request_identity
 from multimodal_agent.services.assistant_run_service import run_assistant_request
 
 
@@ -87,6 +87,26 @@ async def agent_websocket(
             source="websocket_query",
             auth_context=auth_context,
         )
+        enforce_identity_policy(
+            identity_resolution,
+            production_required=require_auth_bound_identity(),
+        )
+    except IdentityPolicyError as exc:
+        await websocket.accept()
+        await websocket.send_json(
+            AgentEvent(
+                type="agent_error",
+                session_id=session_id,
+                error={
+                    "code": exc.code,
+                    "message": str(exc),
+                    "detail": exc.detail(),
+                    "recoverable": True,
+                },
+            ).model_dump(mode="json", exclude_none=True)
+        )
+        await websocket.close(code=1008)
+        return
     except ValueError as exc:
         await websocket.accept()
         await websocket.send_json(

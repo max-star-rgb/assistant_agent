@@ -1,6 +1,6 @@
 # Multimodal Agent
 
-本仓库实现一个本地优先的多模态自主工具调用 Agent。当前项目已经从早期阶段任务推进进入成型状态：核心运行时以 LangGraph/ReAct assistant loop 为主，默认使用 mock/local/offline provider，用于稳定开发、测试和演示；真实外部 Provider 只允许在显式 opt-in 的 smoke/pilot 场景中调用。
+本仓库实现一个本地优先的多模态自主工具调用 Agent。当前核心运行时以 LangGraph/ReAct assistant loop 为主，测试和无 key 环境默认使用 mock/local/offline provider；用户本机项目运行主要使用显式配置的真实 LLM。
 
 ## Current Status
 
@@ -8,7 +8,7 @@
 - Agent 层以 `AgentGraphRuntime` 和 assistant loop 为核心，负责意图理解、追问、工具选择、工具结果融合和最终回答。
 - 工具调用通过 `AssistantDecision -> ActionValidator -> ToolExecutor -> ToolRegistry -> Tool` 边界执行，不应绕过 validator、executor、policy 或 audit。
 - Provider 默认走 mock/local/offline 路径。API key 只用于显式 opt-in 的真实 Provider smoke/pilot，不会因为本地存在 key 自动启用真实调用。
-- API 身份默认仍来自请求体、路径或查询参数并标记为非 auth-bound；默认不会读取 auth-like header。受控 header auth 仅在显式设置 `MULTIMODAL_AGENT_AUTH_HEADER_ENABLED` 后作为 pilot 启用。
+- API 身份默认仍来自请求体、路径或查询参数并标记为非 auth-bound；默认不会读取 auth-like header。受控 header auth 仅在显式设置 `MULTIMODAL_AGENT_AUTH_HEADER_ENABLED=1` 或 `MULTIMODAL_AGENT_AUTH_MODE=header_pilot|trusted_header` 后启用。`MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY=true` 会拒绝 request-derived identity。
 - Memory、demo、eval、CLI 和 Web UI 均围绕同一套本地优先运行时组织。
 - Context engineering 已集中到 `AssistantContextPack` 和 `services/context/`，负责 session summary、预算、裁剪、工具 observation compaction 和 trace/debug 摘要；长期记忆写入仍由 Memory service / `MemoryWritePolicy` 管理。
 - Agent communication 目前实现本地同进程边界、inbound A2A JSON-RPC adapter、默认禁用的 outbound A2A pilot transport，以及 pilot readiness 摘要/回放辅助：默认 `/agent/run`、CLI、eval 和 Web demo 仍走单 `agent.default`；独立 `/agents/run` 提供显式多 Agent 网关入口；`/.well-known/agent-card.json` 和 `/a2a/rpc` 暴露本地 A2A 兼容入口；远程 outbound 只有显式配置 `a2a_json_rpc` transport、endpoint 和 allowlist 时才可用。LLM 自动选 agent 仍未实现。
@@ -32,6 +32,18 @@ $PY scripts/run_demo_flows.py
 $PY scripts/run_assistant_cli.py --text "帮我写一段商品介绍"
 ```
 
+本机真实 LLM 直跑：
+
+```bash
+export MULTIMODAL_AGENT_RUNTIME_PROFILE=pilot
+export MULTIMODAL_AGENT_CHAT_PROVIDER=qwen
+export QWEN_API_KEY="<set-in-local-shell>"
+
+$PY scripts/run_assistant_cli.py --text "用真实 LLM 总结当前项目状态"
+```
+
+可用 chat provider selector：`openai`、`qwen`、`deepseek`、`local`。对应 key、base URL、model 环境变量见 `.env.example`，真实 key 只能放在本机 shell 或未跟踪配置中。
+
 启动本地 mock 服务：
 
 ```bash
@@ -52,10 +64,11 @@ curl -s http://127.0.0.1:8000/agents/run \
   -d '{"user_id":"demo_user","session_id":"demo_session","text":"你好","collaboration_mode":"single"}'
 ```
 
-本地 header-auth pilot 需要显式开启；开启后 header 用户必须与请求体用户一致，header session 会成为绑定 session：
+本地 header-auth pilot 需要显式开启；开启后 header 用户必须与请求体用户一致，header session 会成为绑定 session。生产式身份策略可用 `MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY=true` 要求 auth-bound identity：
 
 ```bash
-MULTIMODAL_AGENT_AUTH_HEADER_ENABLED=1 \
+MULTIMODAL_AGENT_AUTH_MODE=header_pilot \
+MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY=true \
 curl -s http://127.0.0.1:8000/agents/run \
   -H 'content-type: application/json' \
   -H 'X-Multimodal-Agent-User-Id: demo_user' \
@@ -112,37 +125,37 @@ structured observations -> final answer / events / audit logs
 | `src/multimodal_agent/eval/` | 离线评测用例、评测 runner 和报告结构 |
 | `scripts/` | 环境检查、服务启动、CLI、demo、eval、smoke 脚本 |
 | `tests/` | pytest 测试，覆盖 unit/integration/API/demo/eval 等路径 |
-| `docs/` | 当前权威文档、架构文档、API 文档、历史归档 |
-| `docs/archive/` | 少量仍有参考价值的历史阶段材料 |
+| `docs/` | 只保留少量专项权威文档 |
 
 ## Runtime Modes
 
-默认规则：
+仓库安全默认值：
 
 - 默认使用 mock/local/offline provider。
 - 不自动调用真实 LLM、图片、视频、商品、通知或其他外部 Provider。
 - 不把 API key、token、真实 `.env`、真实用户数据、真实 provider raw response 写入仓库。
 - 不提交真实媒体、生成物、大文件或外部服务返回原文。
 
-真实 Provider 仅限显式 opt-in：
+本机真实 LLM 运行：
 
-- 需要任务明确要求真实 Provider smoke/pilot。
-- 需要使用受控 runtime profile，例如 `provider_smoke` 或 `pilot`。
-- 需要本地环境变量提供 key，且不能写入仓库。
-- 测试和 demo 默认仍应走 mock/local/offline。
+- 你后续可以把真实 LLM 作为日常项目运行方式。
+- 仍需要显式设置受控 runtime profile，例如 `MULTIMODAL_AGENT_RUNTIME_PROFILE=pilot` 或 `provider_smoke`。
+- 仍需要显式设置 provider，例如 `MULTIMODAL_AGENT_CHAT_PROVIDER=qwen|openai|deepseek|local`。
+- key 只来自本机环境变量或本机未跟踪配置，不能写入仓库。
+- pytest、eval 和无 key 环境仍应能走 mock/local/offline。
 
 ## Common Tasks
 
 | 要做什么 | 先看哪里 | 可改哪里 | 验收命令 |
 | --- | --- | --- | --- |
-| 理解当前项目 | `docs/CODEX_PROJECT_GUIDE.md`、`docs/DOCS_INDEX.md` | 通常不需要改文件 | `git diff --name-status` |
-| 修改文档 | `README.md`、`AGENTS.md`、`docs/CODEX_PROJECT_GUIDE.md` | `docs/**`、根目录入口文档 | `python scripts/check_env.py` |
-| 新增 demo 场景 | `scripts/run_demo_flows.py`、`docs/demo-flows.md` | `scripts/**`、`docs/**`、必要时测试 | `python scripts/run_demo_flows.py` |
-| 调整 provider mock | `docs/configuration.md`、`docs/provider-setup.md`、`src/multimodal_agent/providers/` | 按任务范围修改 provider/mock 与测试 | `python -m pytest` |
+| 理解当前项目 | `README.md`、`AGENTS.md` | 通常不需要改文件 | `git diff --name-status` |
+| 修改文档 | `README.md`、`AGENTS.md`、专项 docs | `docs/**`、根目录入口文档 | `python scripts/check_env.py` |
+| 新增 demo 场景 | `scripts/run_demo_flows.py`、`demo_data/` | `scripts/**`、`demo_data/**`、必要时测试 | `python scripts/run_demo_flows.py` |
+| 调整 provider/mock/真实 LLM | `.env.example`、`src/multimodal_agent/providers/` | 按任务范围修改 provider/mock 与测试 | `python -m pytest` |
 | 调整上下文工程 | `docs/CONTEXT_ENGINEERING_STATUS.md` 顶部快速交接和相关小节；按需读 walkthrough 或历史 plan | context services、assistant loop、相关测试 | `python -m pytest tests/test_assistant_context_renderer.py tests/test_conversation_context_compaction.py` |
 | 调整 memory 行为 | `docs/memory-service-architecture.md`、`src/multimodal_agent/memory/` | memory 模块和相关测试 | `python -m pytest tests` |
-| 更新 eval | `scripts/run_evals.py`、`tests/evals/eval_cases.json`、`docs/development.md` | eval 用例、脚本、文档 | `python scripts/run_evals.py` |
-| 更新 API 文档 | `docs/quickstart.md`、`docs/observability-local.md`、API routes | `docs/**`，必要时 API 测试 | `python -m pytest tests` |
+| 更新 eval | `scripts/run_evals.py`、`tests/evals/eval_cases.json` | eval 用例、脚本、文档 | `python scripts/run_evals.py` |
+| 更新 API 文档 | `README.md`、API routes | `docs/**`，必要时 API 测试 | `python -m pytest tests` |
 
 ## Documentation
 
@@ -150,32 +163,15 @@ structured observations -> final answer / events / audit logs
 
 - `README.md`：人类读者入口，说明项目定位、架构、运行方式和常用命令。
 - `AGENTS.md`：Codex / coding agent 的仓库级行为约束。
-- `docs/CODEX_PROJECT_GUIDE.md`：后续 Codex 快速理解当前项目的权威项目指南。
-- `docs/DOCS_INDEX.md`：文档清单和历史文档状态索引。
-- `docs/TESTS_REVIEW.md`：tests 目录的只读评估和后续整理建议。
 
-用户向文档：
+保留的专项文档：
 
-- [Quickstart](docs/quickstart.md)
-- [Architecture](docs/architecture.md)
 - [上下文工程走读](docs/context-engineering-walkthrough.md)
 - [Context Engineering Status](docs/CONTEXT_ENGINEERING_STATUS.md)
 - [Memory Service Architecture](docs/memory-service-architecture.md)
-- [Memory Kernel Hardening Plan](docs/development/memory-kernel-hardening-plan.md)
-- [Agent Control Plane Plan](docs/development/agent-control-plane-plan.md)
 - [Agent Communication Routing](docs/agent-communication-routing.md)
-- [Local Observability](docs/observability-local.md)
-- [Capabilities](docs/capabilities.md)
-- [Configuration](docs/configuration.md)
-- [Provider Setup](docs/provider-setup.md)
-- [Demo Flows](docs/demo-flows.md)
-- [Local Deployment](docs/deployment-local.md)
-- [Development](docs/development.md)
-- [Security](docs/security.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Release Checklist](docs/release-checklist.md)
 
-历史 `tasks/`、`prompts/` 和仓库内 `skills/` 构建材料已按用户确认删除；少量仍有参考价值的阶段背景保留在 `docs/archive/`，不在默认阅读路径。删除剩余文档前应先在 `docs/DOCS_INDEX.md` 标为 `delete-candidate`，写明重复、过期和已吸收位置，并经过人工确认。
+`docs/development/` 和 `docs/interview/` 作为按需资料目录暂不清理。历史 `tasks/`、`prompts/`、仓库内 `skills/` 和根目录通用文档已按用户确认删除；不要把旧 roadmap 当成当前真实架构。
 
 ## Validation
 
