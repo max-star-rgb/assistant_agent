@@ -13,7 +13,6 @@ Default runtime stays mock/local/offline.
 
 Use this document for follow-up implementation work. It is a development plan, not the architecture source. Before changing code, read:
 
-- `README.md`
 - `AGENTS.md`
 - `docs/CONTEXT_ENGINEERING_STATUS.md`
 - `docs/memory-service-architecture.md`
@@ -380,7 +379,6 @@ Required docs:
 
 Optional docs when API fields or workflows change:
 
-- `README.md`
 - `AGENTS.md`
 
 Update rule:

@@ -97,7 +97,7 @@ Goal: Make production auth and observability semantics explicit before adding ne
 
 Work:
 
-- Add API contract notes for auth-bound identity across `/agent/run`, `/agents/run`, `/a2a/rpc`, WebSocket, memory APIs, and beta APIs. First pass done in README, AGENTS, and agent communication routing docs.
+- Add API contract notes for auth-bound identity across `/agent/run`, `/agents/run`, `/a2a/rpc`, WebSocket, memory APIs, and beta APIs. First pass done in AGENTS and agent communication routing docs.
 - Define supported auth modes. First pass implemented in `api/auth.py`:
   - `anonymous`: current default local/offline behavior.
   - `header_pilot`: current disabled-by-default controlled-header pilot.

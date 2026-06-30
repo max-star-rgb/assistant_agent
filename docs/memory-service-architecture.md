@@ -396,7 +396,7 @@ Confirmation endpoints list pending or resolved explicit-memory confirmations an
 - Do not add embedding/vector/external memory by changing prompt builders or agent nodes directly; add an adapter behind `MemoryStore`/retrieval and keep deterministic local behavior for tests.
 - Keep default behavior mock/local/offline. A memory backend must not become a network provider merely because credentials exist.
 - When memory context rendering, conversation context, context budget, or prompt injection handling changes, also read `docs/CONTEXT_ENGINEERING_STATUS.md`.
-- Update this file, `README.md`, `AGENTS.md`, and any affected tests when the architecture changes.
+- Update this file, `AGENTS.md`, and any affected tests when the architecture changes. `README.md` remains a temporary placeholder until the project stabilizes.
 
 ## Validation
 

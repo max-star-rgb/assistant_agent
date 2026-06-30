@@ -321,7 +321,7 @@ The inbound MVP exposes this repository as an agent without changing default `/a
 
 - Read this document before designing or changing agent instance routing, agent-to-agent communication, or A2A adapters.
 - Keep `AGENTS.md` pointing to this file as the rule-routing entry.
-- Keep `README.md` and `AGENTS.md` synchronized when this document changes status, scope, or agent communication entry rules.
+- Keep `AGENTS.md` synchronized when this document changes status, scope, or agent communication entry rules. `README.md` remains a temporary placeholder until the project stabilizes.
 - If implementation affects architecture layering, update the boundary rules in `AGENTS.md`.
 - If delegation affects prompt/context content, also read and update `docs/CONTEXT_ENGINEERING_STATUS.md`.
 - If delegation reads or writes memory, also read and update `docs/memory-service-architecture.md`.

@@ -1,10 +1,10 @@
 # AGENTS.md
 
-本文件是给 Codex / coding agent 的仓库级指导。它应保持稳定、可自动加载，并只记录当前项目的通用规则。README 是人类入口；专项架构细节只保留在少量 `docs/` 文档中。
+本文件是给 Codex / coding agent 的仓库级指导。它是当前唯一工作入口，应保持稳定、可自动加载，并只记录当前项目的通用规则。README 暂时只是占位入口；专项架构细节只保留在少量 `docs/` 文档中。
 
 ## 1. 当前权威入口
 
-开始仓库内任何非纯问答/非单条无副作用命令任务前，优先阅读 `README.md`。只有与仓库无关的普通问答，或用户只要求执行单个简单命令时可跳过。
+开始仓库内任何非纯问答/非单条无副作用命令任务前，以本文件为准。只有与仓库无关的普通问答，或用户只要求执行单个简单命令时可跳过补充阅读。
 
 按任务范围补充阅读：
 
@@ -13,7 +13,7 @@
 - 涉及记忆服务工程化落地、Memory Kernel、SQLite/store migration、RequestIdentity、token-aware memory context、retention/export/audit 或 memory eval 时，必须阅读 `docs/development/memory-kernel-hardening-plan.md`。
 - 涉及多 agent 实例、agent directory/gateway、agent-to-agent 通信、A2A/JSON-RPC adapter、跨实例 session/task 路由或 `delegate_to_agent` 类工具时，必须阅读 `docs/agent-communication-routing.md`。
 - 涉及架构分层、模块归属、治理边界或重构判断时，以本文件的“当前架构边界”和“编码约定”为准；只有触及上下文、记忆或 agent communication 专项时才补读对应 docs。
-- 涉及文档盘点、入口路由、归档、删除、清理或新增文档时，优先保持 README、AGENTS 和少量专项 docs 同步；不要重新引入通用索引文档。
+- 涉及文档盘点、入口路由、归档、删除、清理或新增文档时，优先保持 AGENTS 和少量专项 docs 同步；README 只保留占位，不要重新引入通用索引文档。
 
 历史 task、prompt 和旧 runner skill 构建材料已按用户确认删除；少量剩余 phase/archive 背景文档只在用户明确点名、需要追溯历史决策或执行对应历史任务时阅读。不要把旧 roadmap 当成当前真实架构。
 
@@ -132,8 +132,8 @@ conda run -n hello_agent <command>
 
 ## 8. 文档维护规则
 
-- `README.md` 是人类入口，说明项目当前定位、架构、运行方式和常用命令。
-- `AGENTS.md` 是 agent 行为约束入口，应简短稳定，不塞入长篇历史设计。
+- `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定，不塞入长篇历史设计。
+- `README.md` 是临时占位入口，项目稳定后再重写，不承担实时架构和文档路由职责。
 - `docs/memory-service-architecture.md` 是记忆服务架构、边界、路由和更新规则的当前权威入口。
 - `docs/memory-module-walkthrough.md` 是面向项目负责人的记忆模块中文解释文档；它不是 agent 必读或补读入口，维护时只需保持与 `docs/memory-service-architecture.md` 不冲突。
 - `docs/development/memory-kernel-hardening-plan.md` 是后续 Memory Kernel 工程化落地的阶段计划。
@@ -142,7 +142,7 @@ conda run -n hello_agent <command>
 - `docs/development/context-engine-memory-policy-plan.md` 是已完成的上下文工程阶段实施记录，按需追溯历史，不是当前 active roadmap。
 - `docs/agent-communication-routing.md` 是多 agent 实例、agent 通信路由、A2A adapter 边界和更新规则的当前权威入口。
 - 历史 task/prompt/skill 构建材料和根目录通用文档已按用户确认删除；`docs/development/`、`docs/interview/` 暂不清理。
-- 新增文档必须有明确长期用途；优先更新 README、AGENTS 或现有专项文档。
+- 新增文档必须有明确长期用途；优先更新 AGENTS 或现有专项文档，README 暂不承载实时维护内容。
 
 ## 9. 测试与验收
 
