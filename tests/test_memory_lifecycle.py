@@ -218,6 +218,12 @@ def test_sensitive_explicit_memory_requires_confirmation_before_persisting() -> 
     assert metrics_after.counters["memory.write.allowed.count"] == 1
     assert metrics_after.counters["memory.write.needs_confirmation.count"] == 1
     assert metrics_after.counters["memory.confirmation.confirmed.count"] == 1
+    saved_events = [
+        event
+        for event in manager.list_audit_events_for_identity(identity)
+        if event.event_type == "memory_explicit_saved" and event.memory_id == saved.memory_id
+    ]
+    assert saved_events[-1].metadata["source_intent"] == "user_confirmed"
 
 
 def test_sensitive_explicit_memory_confirmation_can_be_rejected() -> None:

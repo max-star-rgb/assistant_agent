@@ -10,6 +10,7 @@ from multimodal_agent.services.provider_errors import sanitize_error_message
 
 
 MemoryPromotionKind = Literal["episodic_memory", "long_term_memory"]
+MemorySaveSourceIntent = Literal["user_explicit", "assistant_candidate", "user_confirmed"]
 MemoryWriteDestination = Literal[
     "reject",
     "session_summary",

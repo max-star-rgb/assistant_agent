@@ -174,6 +174,19 @@ It must not own or reimplement:
 
 If memory logic grows beyond identity binding, input adaptation, or result wrapping, move it into `MemoryManager`, `memory/` helpers, or a `services/memory_*` service before exposing it through a tool.
 
+## Memory Tool Selection Strategy
+
+Assistant-loop memory tool selection follows an LLM-first strategy:
+
+- In the assistant loop, the LLM is the decision maker for calling `memory_save` or `memory_retrieval` (also called memory search in higher-level discussions).
+- `memory_save` calls must declare `source_intent`, `source_reason`, `future_use`, and `evidence`.
+- `source_intent=user_explicit` means the LLM judged that the user explicitly asked to remember or save the content. If `MemoryWritePolicy` allows it, this path may write a durable `MemoryItem`.
+- `source_intent=assistant_candidate` means the LLM inferred a potentially useful future memory. If `MemoryWritePolicy` allows it, this path records candidate/audit output by default and does not write a durable `MemoryItem`.
+- `source_intent=user_confirmed` is reserved for confirmation service internals. LLM/tool calls using it are rejected before durable write.
+- Keyword and vector matching are not used in the current source-intent decision path. They may remain future extension points, but they must not override the LLM-declared source intent unless this architecture document and tests are updated.
+- Regardless of who triggers `memory_save`, durable writes still go through `ToolExecutor -> memory_save -> MemoryManager -> MemoryWritePolicy -> MemoryItem` validation before storage.
+- Audit/candidate records are not long-term memory. Automatic candidates do not directly write long-term memory by default.
+
 ## Storage
 
 Configured by `ProviderConfig`:

@@ -108,6 +108,49 @@ def test_memory_manager_save_explicit_for_identity_ignores_external_user_id() ->
     assert store.get("u1", "m1") is not None
 
 
+def test_memory_manager_assistant_candidate_records_audit_without_persisting() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    result = manager.save_explicit_for_identity(
+        identity,
+        text="用户喜欢短句回答",
+        source_intent="assistant_candidate",
+        source_reason="助手从当前请求推断出的偏好。",
+        future_use="后续回答可更简短。",
+        evidence="用户说以后回答短一点。",
+        created_at=NOW,
+    )
+
+    assert result.written is False
+    assert result.source_intent == "assistant_candidate"
+    assert store.list_by_user("u1") == []
+    events = manager.list_audit_events_for_identity(identity)
+    assert events[-1].event_type == "memory_promotion_decided"
+    assert events[-1].outcome == "skipped"
+    assert events[-1].metadata["source_intent"] == "assistant_candidate"
+
+
+def test_memory_manager_rejects_direct_user_confirmed_source_intent() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    try:
+        manager.save_explicit_for_identity(
+            identity,
+            text="已确认保存",
+            source_intent="user_confirmed",
+        )
+    except ValueError as exc:
+        assert "user_confirmed" in str(exc)
+    else:
+        raise AssertionError("user_confirmed source_intent should be rejected outside confirmation service")
+
+    assert store.list_by_user("u1") == []
+
+
 def test_memory_manager_identity_filters_project_tenant_and_scope() -> None:
     store = InMemoryStore()
     store.save(memory_item("global_pref", "preference", "用户喜欢浅色日系风格。"))

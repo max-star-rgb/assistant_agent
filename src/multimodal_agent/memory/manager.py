@@ -11,6 +11,7 @@ from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID, UserProfileM
 from multimodal_agent.memory.store import MemoryStore
 from multimodal_agent.memory.write_policy import (
     MemoryWritePolicy,
+    MemorySaveSourceIntent,
     build_explicit_memory_item,
     build_memory_item_from_promotion_candidate,
     build_run_summary_promotion_candidate,
@@ -84,6 +85,22 @@ class MemoryConfirmationRequired(ValueError):
     def __init__(self, confirmation: MemoryPendingConfirmation) -> None:
         super().__init__(confirmation.reason)
         self.confirmation = confirmation
+
+
+class MemorySaveCandidateResult(BaseModel):
+    """Audit-only result for a memory_save assistant candidate."""
+
+    candidate_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    source_intent: MemorySaveSourceIntent = "assistant_candidate"
+    summary: str = ""
+    memory_type: str = ""
+    source_reason: str = ""
+    future_use: str = ""
+    evidence: str = ""
+    written: bool = False
+    reason: str = ""
 
 
 class MemoryManager:
@@ -335,10 +352,49 @@ class MemoryManager:
         tenant_id: str | None = None,
         project_id: str | None = None,
         scope: MemoryScope | None = None,
+        source_intent: MemorySaveSourceIntent | None = None,
+        source_reason: str | None = None,
+        future_use: str | None = None,
+        evidence: str | None = None,
         created_at: datetime | None = None,
-    ) -> MemoryItem:
-        """Persist an explicit user-requested memory."""
+    ) -> MemoryItem | MemorySaveCandidateResult:
+        """Persist explicit memory or record an assistant memory candidate."""
 
+        resolved_source_intent = source_intent or "user_explicit"
+        if resolved_source_intent not in {"user_explicit", "assistant_candidate", "user_confirmed"}:
+            reason = "memory save source_intent is invalid"
+            self.record_audit_event(
+                "memory_explicit_saved",
+                user_id=user_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                session_id=session_id,
+                outcome="rejected",
+                summary="memory save source rejected",
+                counts={"attempted": 1, "written": 0, "rejected": 1},
+                metadata={"source_intent": str(resolved_source_intent), "reason": reason},
+            )
+            raise ValueError(reason)
+        source_metadata = _memory_save_source_metadata(
+            source_intent=cast(MemorySaveSourceIntent, resolved_source_intent),
+            source_reason=source_reason,
+            future_use=future_use,
+            evidence=evidence,
+        )
+        if resolved_source_intent == "user_confirmed":
+            reason = "source_intent=user_confirmed is reserved for confirmation service"
+            self.record_audit_event(
+                "memory_explicit_saved",
+                user_id=user_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                session_id=session_id,
+                outcome="rejected",
+                summary="memory save source rejected",
+                counts={"attempted": 1, "written": 0, "rejected": 1},
+                metadata={**source_metadata, "reason": reason},
+            )
+            raise ValueError(reason)
         decision = self.write_policy.evaluate_explicit_save(text=text, content=content, scope=scope)
         if not decision.allowed:
             if decision.require_user_confirmation:
@@ -365,6 +421,7 @@ class MemoryManager:
                     counts={"attempted": 1, "pending": 1, "written": 0, "rejected": 0},
                     metadata={
                         **promotion_decision_audit_record(decision),
+                        **source_metadata,
                         "confirmation_id": confirmation.confirmation_id,
                     },
                 )
@@ -378,9 +435,35 @@ class MemoryManager:
                 outcome="rejected",
                 summary="explicit memory rejected",
                 counts={"attempted": 1, "written": 0, "rejected": 1},
-                metadata=promotion_decision_audit_record(decision),
+                metadata={**promotion_decision_audit_record(decision), **source_metadata},
             )
             raise ValueError(decision.reason)
+        if resolved_source_intent == "assistant_candidate":
+            candidate = _memory_save_candidate_result(
+                user_id=user_id,
+                session_id=session_id,
+                decision=decision,
+                source_reason=source_reason,
+                future_use=future_use,
+                evidence=evidence,
+            )
+            self.record_audit_event(
+                "memory_promotion_decided",
+                user_id=user_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                session_id=session_id,
+                outcome="skipped",
+                summary="assistant memory candidate recorded",
+                counts={"candidates": 1, "written": 0, "rejected": 0},
+                metadata={
+                    **promotion_decision_audit_record(decision),
+                    **source_metadata,
+                    "candidate_id": candidate.candidate_id,
+                    "written": False,
+                },
+            )
+            return candidate
         item = build_explicit_memory_item(
             memory_id=memory_id or f"explicit_memory_{uuid4().hex}",
             user_id=user_id,
@@ -423,6 +506,7 @@ class MemoryManager:
                 "ttl_days": decision.ttl_days,
                 "preference_key": _preference_conflict_key(saved),
                 "supersedes_memory_ids": _supersedes_memory_ids(saved),
+                **source_metadata,
             },
         )
         return saved
@@ -436,9 +520,13 @@ class MemoryManager:
         memory_id: str | None = None,
         scope: MemoryScope | None = None,
         session_id: str | None = None,
+        source_intent: MemorySaveSourceIntent | None = None,
+        source_reason: str | None = None,
+        future_use: str | None = None,
+        evidence: str | None = None,
         created_at: datetime | None = None,
-    ) -> MemoryItem:
-        """Persist an explicit memory for an identity, ignoring caller user_id."""
+    ) -> MemoryItem | MemorySaveCandidateResult:
+        """Persist or record memory for an identity, ignoring caller user_id."""
 
         resolved_session_id = session_id or identity.session_id
         if not resolved_session_id:
@@ -452,6 +540,10 @@ class MemoryManager:
             tenant_id=identity.tenant_id,
             project_id=identity.project_id,
             scope=scope,
+            source_intent=source_intent,
+            source_reason=source_reason,
+            future_use=future_use,
+            evidence=evidence,
             created_at=created_at,
         )
 
@@ -705,6 +797,10 @@ class MemoryManager:
                 "destination": confirmation.destination,
                 "confirmed_from_confirmation": True,
                 "confirmation_id": confirmation_id,
+                "source_intent": "user_confirmed",
+                "source_reason": "user confirmed pending memory write",
+                "future_use": "confirmed memory can be used for future recall",
+                "evidence": f"confirmation_id={confirmation_id}",
                 "preference_key": _preference_conflict_key(saved),
                 "supersedes_memory_ids": _supersedes_memory_ids(saved),
             },
@@ -1357,6 +1453,50 @@ def _same_governance_scope(left: MemoryItem, right: MemoryItem) -> bool:
         and left.project_id == right.project_id
         and memory_scope_for_item(left) == memory_scope_for_item(right)
     )
+
+
+def _memory_save_candidate_result(
+    *,
+    user_id: str,
+    session_id: str,
+    decision: Any,
+    source_reason: str | None,
+    future_use: str | None,
+    evidence: str | None,
+) -> MemorySaveCandidateResult:
+    redacted_payload = decision.redacted_payload if isinstance(decision.redacted_payload, dict) else {}
+    summary = str(redacted_payload.get("summary") or "").strip()
+    memory_type = str(redacted_payload.get("memory_type") or "")
+    return MemorySaveCandidateResult(
+        candidate_id=f"memory_candidate_{uuid4().hex}",
+        user_id=user_id,
+        session_id=session_id,
+        summary=summary,
+        memory_type=memory_type,
+        source_reason=_safe_metadata_text(source_reason),
+        future_use=_safe_metadata_text(future_use),
+        evidence=_safe_metadata_text(evidence),
+        reason=sanitize_error_message(str(decision.reason or "")),
+    )
+
+
+def _memory_save_source_metadata(
+    *,
+    source_intent: MemorySaveSourceIntent,
+    source_reason: str | None,
+    future_use: str | None,
+    evidence: str | None,
+) -> dict[str, Any]:
+    return {
+        "source_intent": source_intent,
+        "source_reason": _safe_metadata_text(source_reason),
+        "future_use": _safe_metadata_text(future_use),
+        "evidence": _safe_metadata_text(evidence),
+    }
+
+
+def _safe_metadata_text(value: str | None) -> str:
+    return sanitize_error_message(str(value or "").strip())[:240]
 
 
 def _allowed_memory_scopes(identity: RequestIdentity) -> list[MemoryScope]:

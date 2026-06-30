@@ -18,3 +18,4 @@
 - `docs/memory-service-architecture.md`
 - `docs/memory-module-walkthrough.md`
 - `docs/agent-communication-routing.md`
+- `docs/agent-collaboration-walkthrough.md`

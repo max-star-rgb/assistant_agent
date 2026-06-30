@@ -26,6 +26,10 @@ def save_demo_memory(request: UserRequest, state: AgentState, tool_executor: Too
     memory_input = {
         "action": "save",
         "user_id": request.user_id,
+        "source_intent": "assistant_candidate",
+        "source_reason": "demo flow inferred a completed multi-tool task summary.",
+        "future_use": "future demo runs may reference the task flow if the user confirms it.",
+        "evidence": "video understanding, product search, price compare, and image generation all succeeded.",
         "content": {
             "summary": "完成视频鞋子识别、商品搜索、比价和日系海报生成。",
             "text": request.text,
@@ -41,6 +45,7 @@ def compose_response(state: AgentState) -> AgentResponse:
         return state.response
 
     memory_ref = None
+    memory_status = None
     memory_summaries = [item.summary for item in state.memory_context]
     memory_context_text = state.request.metadata.get("memory_context_text", "")
     successful_results = [result for result in state.tool_results if result.success]
@@ -89,6 +94,8 @@ def compose_response(state: AgentState) -> AgentResponse:
             image_url = result.data.get("image_url")
         elif result.tool_name == "memory_save":
             memory_ref = result.output_ref
+            if isinstance(result.data, dict):
+                memory_status = result.data.get("status")
 
     message = compose_contract_response(contracts, failures)
     parts = [message] if message and message != "已完成请求处理。" else []
@@ -97,7 +104,9 @@ def compose_response(state: AgentState) -> AgentResponse:
             parts.append(f"商品：{product_title}，最低价格：{best_price}")
         if image_url:
             parts.append(f"图片生成结果：{image_url}")
-    if memory_ref:
+    if memory_ref and memory_status == "candidate_recorded":
+        parts.append(f"记忆候选已记录：{memory_ref}")
+    elif memory_ref:
         parts.append(f"记忆已保存：{memory_ref}")
     if memory_summaries:
         parts.append(f"参考记忆：{memory_summaries[0]}")

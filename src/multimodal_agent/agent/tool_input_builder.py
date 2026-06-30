@@ -51,6 +51,10 @@ def build_tool_input(
             "session_id": request.session_id,
             "query": request.text,
             "content": build_memory_save_content(request, outputs_by_step),
+            "source_intent": "user_explicit",
+            "source_reason": "兼容 rule plan 命中显式保存记忆动作。",
+            "future_use": "后续任务可复用用户要求保存的信息。",
+            "evidence": request.text or "compatibility save_memory action",
         }
     return {}
 

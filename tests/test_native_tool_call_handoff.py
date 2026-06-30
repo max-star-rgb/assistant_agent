@@ -160,11 +160,17 @@ def test_native_copywriting_answer_does_not_force_memory_lookup_or_save() -> Non
 
     system_message = adapter.requests[0].messages[0]["content"]
     assert "Use memory_retrieval only when the user explicitly refers to prior chats" in system_message
+    assert "source_intent=user_explicit" in system_message
+    assert "Never use user_confirmed" in system_message
     assert state.tool_calls == []
     assert state.response is not None
     assert state.response.message == "这是一段小红书薯片文案。"
     assert state.request.metadata["auto_task_summary_memory"]["skipped"] is True
     assert store.list_by_user("u1") == []
+    selection = state.request.metadata["memory_tool_selection"]
+    assert selection["strategy"] == "llm_first_hybrid"
+    assert selection["action"] == "audit_only"
+    assert selection["selected_memory_tool"] is None
 
 
 def test_native_memory_save_only_when_llm_selects_tool() -> None:
@@ -173,7 +179,13 @@ def test_native_memory_save_only_when_llm_selects_tool() -> None:
         [
             native_result(
                 "memory_save",
-                {"query": "记住我喜欢小红书轻松口吻"},
+                {
+                    "query": "记住我喜欢小红书轻松口吻",
+                    "source_intent": "user_explicit",
+                    "source_reason": "用户明确说记住这个口吻偏好。",
+                    "future_use": "后续文案生成可沿用轻松口吻。",
+                    "evidence": "用户说：记住我喜欢小红书轻松口吻",
+                },
             ),
             final_result("已记住你喜欢小红书轻松口吻。"),
         ]
@@ -192,6 +204,177 @@ def test_native_memory_save_only_when_llm_selects_tool() -> None:
     persisted = store.list_by_user("u1")
     assert {item.source for item in persisted} == {"explicit_user_request", "user_profile"}
     assert store.search(MemoryQuery(user_id="u1", query="小红书轻松口吻")).items
+    selection = state.request.metadata["memory_tool_selection_history"][0]
+    assert selection["action"] == "llm_selected_memory_tool"
+    assert selection["selected_memory_tool"] == "memory_save"
+    assert selection["source_intent"] == "user_explicit"
+
+
+def test_native_explicit_save_keyword_does_not_override_llm_final_answer() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter([plain_final_result("好的，我会记住。")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="记住我喜欢极简中文回答"))
+
+    assert state.tool_calls == []
+    assert store.search(MemoryQuery(user_id="u1", query="极简中文回答")).items == []
+    selection = state.request.metadata["memory_tool_selection"]
+    assert selection["action"] == "audit_only"
+    assert selection["keyword_signals"] == []
+
+
+def test_native_assistant_candidate_memory_save_records_candidate_without_persisting() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "memory_save",
+                {
+                    "query": "用户喜欢短句回答",
+                    "source_intent": "assistant_candidate",
+                    "source_reason": "助手从当前请求推断出一个可能稳定的表达偏好。",
+                    "future_use": "后续回答可以更简短。",
+                    "evidence": "用户要求：以后回答短一点",
+                },
+            ),
+            final_result("我记录为候选，不会直接写入长期记忆。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="以后回答短一点"))
+
+    assert [call.tool_name for call in state.tool_calls] == ["memory_save"]
+    assert store.list_by_user("u1") == []
+    result = state.tool_results[0]
+    assert result.success is True
+    assert result.data["status"] == "candidate_recorded"
+    assert result.data["written"] is False
+    assert result.data["source_intent"] == "assistant_candidate"
+
+
+def test_native_missing_memory_save_source_intent_is_rejected_before_execution() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter([native_result("memory_save", {"query": "记住我喜欢短句回答"})])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="记住我喜欢短句回答"))
+
+    assert state.tool_calls == []
+    assert store.list_by_user("u1") == []
+    assert state.response is not None
+    assert state.response.data["validator_result"]["code"] == "invalid_tool_input"
+
+
+def test_native_legacy_memory_save_missing_source_intent_is_rejected_before_execution() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter(
+        [native_result("memory", {"action": "save", "user_id": "u1", "query": "记住我喜欢短句回答"})]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="记住我喜欢短句回答"))
+
+    assert state.tool_calls == []
+    assert store.list_by_user("u1") == []
+    assert state.response is not None
+    assert state.response.data["validator_result"]["code"] == "invalid_tool_input"
+    selection = state.request.metadata["memory_tool_selection"]
+    assert selection["selected_memory_tool"] == "memory"
+    assert selection["source_intent_present"] is False
+
+
+def test_native_memory_save_user_confirmed_is_rejected_before_execution() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "memory_save",
+                {
+                    "query": "已确认保存",
+                    "source_intent": "user_confirmed",
+                    "source_reason": "bad",
+                    "future_use": "bad",
+                    "evidence": "bad",
+                },
+            )
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="保存"))
+
+    assert state.tool_calls == []
+    assert store.list_by_user("u1") == []
+    assert state.response is not None
+    assert "user_confirmed" in state.response.data["validator_result"]["message"]
+
+
+def test_native_memory_save_missing_source_detail_is_rejected_before_execution() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter(
+        [native_result("memory_save", {"query": "记住我喜欢短句回答", "source_intent": "user_explicit"})]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="记住我喜欢短句回答"))
+
+    assert state.tool_calls == []
+    assert store.list_by_user("u1") == []
+    assert state.response is not None
+    assert "source_reason" in state.response.data["validator_result"]["message"]
+
+
+def test_native_mock_vector_metadata_does_not_participate_in_memory_selection() -> None:
+    store = InMemoryStore()
+    adapter = NativeToolChatAdapter([plain_final_result("可以，我直接回答。")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+        memory_store=store,
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="帮我写一句商品短文案",
+            metadata={"mock_memory_vector_hits": [{"memory_id": "pref_1", "score": 0.91}]},
+        )
+    )
+
+    assert state.tool_calls == []
+    assert store.list_by_user("u1") == []
+    selection = state.request.metadata["memory_tool_selection"]
+    assert selection["action"] == "audit_only"
+    assert selection["vector_shadow_signal"]["source"] == "disabled"
+    assert selection["vector_shadow_signal"]["hit_count"] == 0
+    assert selection["missed_signals"] == []
 
 
 def test_native_memory_save_binds_user_id_from_runtime_not_model_args() -> None:
@@ -204,6 +387,10 @@ def test_native_memory_save_binds_user_id_from_runtime_not_model_args() -> None:
                     "user_id": "user_default",
                     "session_id": "model_session",
                     "query": "记住我喜欢黄瓜味薯片",
+                    "source_intent": "user_explicit",
+                    "source_reason": "用户明确说记住这个口味偏好。",
+                    "future_use": "后续零食推荐可参考口味。",
+                    "evidence": "用户说：记住我喜欢黄瓜味薯片",
                 },
             ),
             final_result("已记住你喜欢黄瓜味薯片。"),

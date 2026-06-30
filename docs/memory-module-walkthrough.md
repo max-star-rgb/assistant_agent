@@ -1,448 +1,553 @@
-# 记忆模块负责人走读
+# 记忆模块新手走读
 
 最后更新：2026-06-30
 
-这份文档面向项目负责人和技术负责人。它解释当前记忆模块做到了什么、为什么这样分层、哪些风险已经被治理、哪些能力还不该急着做。它不是详细接口文档，也不是历史 roadmap。
+注：  1.当前 audit 不是独立事件总线，而是集中在 MemoryManager 边界记录。
+  这样做的原因是：MemoryManager 是当前读、写、删、确认、清理、修复的统一入口，新手能直接看到每个动作对应的审计记录。
+  这会让 MemoryManager 承担一部分 audit 责任，但在当前 Memory Kernel 阶段是有意的简单实现。
+  后续只有在需要多 audit 后端、异步事件或全局 observability 接入时，才需要抽成 MemoryAuditRecorder / AuditSink。
+    2.候选记忆变为长期记忆待开发：引入第二个LLM判断
+    3.memory提供摘要，llm在信息不足时需要调用工具根据 `memory_id`、`session_id`、`artifact_refs` 或 `output_ref` 
+    查询ConversationStore / ToolHistoryStore / ArtifactStore。
 
-当前权威设计入口仍是 `docs/memory-service-architecture.md`。后续开发计划看 `docs/development/memory-kernel-hardening-plan.md`。本文件用于快速建立判断框架。
+Agent，就是“能理解用户请求、选择工具、调用工具并回答的助手程序”。
 
-## 一句话理解
+这份文档面向刚开始参与 Agent 开发的人。它只解释当前 Memory 模块如何工作，不提出新的开发计划。
 
-记忆模块负责把“未来有用、经过策略允许、可审计、可删除”的用户历史信息，变成受身份、范围和预算控制的上下文。
+## 先用生活类比理解 Memory
 
-它不是：
+Memory，就是“长期笔记本”：它不是把每一句聊天都抄下来，而是把以后可能有用、经过筛选、能解释来源、能删除的内容整理成笔记。
 
-- 聊天记录数据库。
-- 向量 RAG 平台。
-- LLM 自由写入的长期用户画像。
-- 权限系统或安全策略的替代品。
-- 工具调用层的附属小功能。
+session，就是“一次连续对话的编号”：同一个用户今天的一次对话和明天的一次对话，可以是不同 session。
 
-当前最重要的设计原则是：
+如果用户说了十轮话，ConversationStore 更像“会议录音和临时会议纪要”；Memory 更像“会后整理出来、下次还会用的长期笔记”。
 
-```text
-LLM proposes.
-Policy disposes.
-Store persists.
-Context engine selects.
-Audit explains.
-User can delete.
-```
+比如：
 
-LLM 可以提出要记什么，或者通过 `memory_save` 表达候选动作；真正是否写入、写到哪里、是否要确认、何时过期、下次是否能注入上下文，由本地服务和策略决定。
+- 用户说“记住我喜欢深色极简风格”，这适合进入 Memory。
+- 用户刚才问“你好”，这只是 ConversationStore 里的会话历史，不适合进入 Memory。
+- provider，就是“外部模型或服务供应商”：工具返回一大段 provider 原始响应时，这些原文不能进入 Memory，只能保留安全摘要或引用。
 
-## 当前阶段判断
-
-当前记忆模块已经从“本地 demo 记忆”推进到“Memory Kernel 基础闭环”：
-
-- 有 `MemoryManager` 作为统一服务边界。
-- 有 `MemoryWritePolicy` 管写入。
-- 有 `MemoryStore` contract 和 InMemory/JSONL/SQLite 三类本地 store。
-- 有 SQLite schema version、migration、事务、索引、审计事件、确认队列、备份/恢复和 integrity/index helper。
-- 有 `RequestIdentity`，按 user/tenant/project/session/scope 过滤。
-- 有 token-aware 的 memory context 注入边界。
-- 有显式保存、敏感确认、删除、导出、retention sweep、profile rebuild、snapshot、metrics 和 audit。
-- 有 retrieval eval，覆盖误召回、跨用户泄漏、过期/敏感不注入、token budget、superseded preference。
-
-所以当前不是“还没做记忆”的阶段。更准确地说：
+一句话：
 
 ```text
-本地 Memory Kernel 已经可阶段性收口，
-但还不是多用户生产级长期记忆平台。
+ConversationStore 帮系统接上当前会话。
+Memory 帮系统在未来任务里记住稳定、有用、可治理的信息。
 ```
 
-下一步如果继续，不应追求“更聪明”，而应优先补可观测、auth-bound identity、scoped profile、生产备份/恢复演练、上线 UX 和运维闭环。
+## 先回答几个核心问题
 
-## 模块边界
+### Memory 和 ConversationStore 有什么区别？
 
-记忆模块拥有：
+ConversationStore，就是“当前会话记录本”：它保存用户和助手最近说过什么，帮助系统在同一个 session 里接着聊。
 
-- 长期记忆 item 的存储、读取、删除、导出。
-- 检索、排序、过滤、recent fallback。
-- prompt-safe memory context 分层和 token budget。
-- 显式保存、自动候选、写入策略、TTL、敏感确认。
-- compact `user_profile` 维护、冲突/supersedes 处理和 profile rebuild。
-- audit event、metrics、snapshot、retention sweep。
+Memory，就是“长期笔记本”：它保存跨 session 仍然有用的信息，例如用户偏好、项目事实、任务检查点、商品/产物引用。
 
-记忆模块不拥有：
+两者最大的区别是生命周期：
 
-- session conversation summary。
-- prompt-json/native-tool 渲染。
-- tool observation compaction。
-- 全局 AssistantContextPack 字符预算。
-- 真实 provider 调用。
-- auth/JWT/session principal。
-- ActionValidator、ToolExecutor、sandbox 和权限执行。
-
-最容易混淆的是这三类对象：
-
-| 概念 | 归属 | 生命周期 | 是否长期持久化 |
+| 对象 | 人话理解 | 典型内容 | 是否长期复用 |
 | --- | --- | --- | --- |
-| `context_summary` | context engineering / conversation store | 当前 session 摘要 | 否 |
-| `MemoryPromotionCandidate` | memory write policy | 候选长期记忆 | 默认否，只审计 |
-| `MemoryItem` | memory service / store | 经过策略允许的长期记忆 | 是 |
+| ConversationStore | 当前会话记录本 | 最近几轮对话、session summary | 主要用于当前 session |
+| Memory | 长期笔记本 | 用户偏好、项目事实、任务 checkpoint | 可以跨 session 使用 |
 
-判断规则很简单：只有进入 `MemoryStore` 的 `MemoryItem` 才是长期记忆。
+context_summary，就是“当前会话的压缩纪要”：它只服务当前 session，不等于长期 Memory。
 
-## 主链路
+对应代码位置：
 
-一次 Agent 运行中，记忆链路大致是：
+- `src/multimodal_agent/services/assistant_run_service.py`
+- `src/multimodal_agent/services/session_store.py`
+- `src/multimodal_agent/memory/manager.py`
 
-```text
-UserRequest
-  -> AgentGraphRuntime
-  -> load_memory node
-  -> MemoryManager.load_into_state(...)
-  -> MemoryStore.search(MemoryQuery)
-  -> MemoryRetrievalStrategy / KeywordMemoryRetriever
-  -> MemoryContextBuilder
-  -> AgentState.memory_context
-  -> request.metadata["memory_context_*"]
-  -> AssistantContextPack
-  -> prompt/native context
-  -> assistant decision
-  -> memory_retrieval / memory_save tool when selected
-  -> MemoryManager search/save
-  -> policy allow / reject / needs confirmation
-  -> MemoryStore save or audit-only
-  -> save_memory node evaluates promotion candidate when allowed
-```
+### Memory 是什么时候写入的？
 
-两个关键点：
+写入，就是“把一条信息正式记进长期笔记本”。
 
-- 每轮运行开始时，memory context 会被加载成 prompt-safe 数据。
-- 长期写入不是“运行结束自动写一段摘要”。默认 automatic promotion 会被策略拒绝，只留下审计候选；真实长期写入优先来自用户显式记忆意图或 `memory_save`。
+当前主要有两种入口：
 
-## 核心组件
+1. 用户明确要求记住，例如“记住我喜欢深色极简风格”。
+2. LLM，也就是“大语言模型助手的大脑”，通过 `memory_save` 工具提出保存动作。
 
-| 组件 | 文件 | 负责人视角 |
-| --- | --- | --- |
-| 服务边界 | `src/multimodal_agent/memory/manager.py` | 统一入口。Agent、API、工具都应该通过它或 service wrapper 操作记忆。 |
-| 写入策略 | `src/multimodal_agent/memory/write_policy.py` | 决定能不能写、写到哪里、是否要确认、TTL 和敏感等级。 |
-| 存储 contract | `src/multimodal_agent/memory/store.py` | 所有 store 必须实现的行为，包括 memory item 和 confirmation。 |
-| JSONL store | `src/multimodal_agent/memory/jsonl_store.py` | 本地/debug 可读持久化，包含 confirmation sidecar。 |
-| SQLite store | `src/multimodal_agent/memory/sqlite_store.py` | 当前工程化本地 store，带 schema/migration/audit/confirmation/backup。 |
-| 检索策略 | `src/multimodal_agent/memory/retrieval.py` | 本地确定性检索、过滤、fallback、排序。 |
-| 关键词检索 | `src/multimodal_agent/memory/retriever.py` | 关键词和中文短片段匹配。 |
-| 上下文注入 | `src/multimodal_agent/memory/context_builder.py` | 从检索结果里选出真正注入 prompt 的 memory 子集。 |
-| 用户画像 | `src/multimodal_agent/memory/profile.py` | compact `user_profile` 生成和合并逻辑。 |
-| 身份边界 | `src/multimodal_agent/schemas/identity.py` | user/tenant/project/session/scope 的访问边界。 |
-| 工具适配 | `src/multimodal_agent/tools/memory_tool.py` | Agent 可调用的 `memory_retrieval` / `memory_save`，只能做薄适配。 |
-| 审计服务 | `src/multimodal_agent/services/memory_audit.py` | list/get/export/delete/sweep/events/metrics/confirm/profile rebuild。 |
-| 快照服务 | `src/multimodal_agent/services/memory_snapshot.py` | 把 session、conversation、memory context、audit、storage 拼成只读快照。 |
+memory candidate，就是“候选笔记”：系统觉得某段信息可能值得记，但还没有真正写入长期笔记本。
 
-负责人判断某个改动该放哪里时，可以先问：
+MemoryWritePolicy，就是“写入守门员”：它决定候选笔记能不能写、是否要用户确认、保存多久、是否太敏感。
 
-- 是“是否允许写入”？放 `write_policy`。
-- 是“查哪些、怎么排序、是否 fallback”？放 retrieval。
-- 是“真正进入 prompt 的子集和预算”？放 `context_builder`。
-- 是“store schema、事务、迁移、确认持久化”？放 store。
-- 是“API 上看、删、导出、审计、确认”？放 `memory_audit` 或 `memory_snapshot`。
-- 是“工具输入输出包装”？才放 `tools/memory_tool.py`。
+MemoryItem，就是“已经批准并落库的正式笔记”：只有它才算真正的长期 Memory。
 
-## 存储策略
+默认规则很保守：
 
-当前有三类 store：
+- 明确、低敏的用户偏好可以写。
+- 高敏信息需要确认。
+- API key，就是“访问外部服务的密钥”；token，就是“访问系统或服务的令牌”；raw provider response，就是“供应商返回的未经整理的原文”；base64/raw media，就是“图片、视频、文件等媒体内容的原始数据”；secret，就是“不应该被保存或暴露的敏感秘密”。这些内容会被直接拒绝。
+- session `context_summary` 不会自动升级成长期 Memory。
+- run summary，就是“一次 Agent 运行结束后的摘要”。普通 run summary 默认只产生候选和审计，不自动写长期 Memory。
 
-| store | 用途 | 负责人判断 |
-| --- | --- | --- |
-| `InMemoryStore` | 单测、本地短生命周期 demo | 保留，不能作为真实持久化。 |
-| `JsonlMemoryStore` | 本地可读 debug、轻量持久化 | 保留，但不应承担生产并发和迁移压力。 |
-| `SQLiteMemoryStore` | 本地工程化持久化 | 当前重点 store，适合本地长期运行和工程化演练。 |
+对应代码位置：
 
-SQLite 当前承担：
-
-- `memory_items`。
-- `memory_audit_events`。
-- `memory_confirmations`。
-- schema version 和 migration。
-- soft delete / hard delete。
-- backup / restore / integrity_check / rebuild_indexes。
-
-它仍不是完整多租户生产数据库。当前 tenant/project/scope 过滤主要在服务层，数据库索引还没有完全按未来生产字段展开。
-
-## 读记忆
-
-读路径由 `MemoryQuery` 驱动，基本规则是：
-
-- `user_id` 隔离必做。
-- tenant/project/scope/session 可进一步收窄。
-- 非空 query 走本地关键词和中文短片段检索。
-- 空 query 主要用于浏览、审计、snapshot。
-- 只有“继续、上次、刚才、之前、这个、那个、同款”等承接型 query 才允许 recent fallback。
-- 过期 memory 默认不返回。
-- 被 supersede 的旧 memory 默认不进入主动检索和上下文注入。
-
-被检索到不等于会进入 prompt。`MemoryContextBuilder` 还会执行第二层选择：
-
-- expired 不注入。
-- sensitive 不注入。
-- 超出 memory token/char budget 的不注入。
-- 记录 `memory_context_omitted_count` 和 `memory_context_rejected_reasons`。
-- 通过 `memory_context_injected_ids` 标记实际进入上下文的 memory。
-
-负责人需要关注的是：memory store 可以有很多，但每轮 prompt 只能放一点。记忆系统的价值不是“全部塞进去”，而是“受控选择”。
-
-## 写记忆
-
-写入分两类。
-
-### 显式保存
-
-典型来源：
-
-- 用户说“记住我喜欢……”
-- assistant 选择 `memory_save` 工具。
-- API/service 直接调用 `MemoryManager.save_explicit_for_identity(...)`。
-
-流程：
-
-```text
-text/content
-  -> MemoryWritePolicy.evaluate_explicit_save(...)
-  -> allow / reject / require_user_confirmation
-  -> build_explicit_memory_item(...)
-  -> MemoryItem validation
-  -> duplicate merge / supersedes handling
-  -> MemoryStore.save(...)
-  -> user_profile update
-  -> audit event
-```
-
-低敏明确偏好可以直接写。高敏或可确认内容会创建 `MemoryPendingConfirmation`，用户确认后才写入。API key、token、bearer credential、raw provider payload、base64/raw media 即使用户要求记住，也会被拒绝。
-
-### 自动候选
-
-运行结束时可能生成 `MemoryPromotionCandidate`，但默认不写入长期记忆。它主要用于审计和未来可控 promotion。
-
-默认策略：
-
-- `allow_auto_write=False`。
-- `allow_long_term_promotion=False`。
-- preference/profile memory 需要显式用户意图。
-- `context_summary` 不允许自动提升为长期记忆。
-
-这条规则很重要：当前系统宁可少记，也不要乱记。
-
-## 用户画像与 supersedes
-
-`user_profile` 是一个普通 memory item：
-
-```text
-memory_id = user_profile
-memory_type = preference
-source = user_profile
-```
-
-它由显式 preference/product/task memory 合并而来，用来给模型提供紧凑画像。
-
-当前 conflict/supersedes 是第一版确定性规则，不做 LLM 语义推断：
-
-- 显式 preference 可带 `content["preference_key"]`。
-- 同一治理 scope 下，新 preference 与旧 preference 使用相同 key 且摘要不同，新项 supersede 旧项。
-- 旧项写入 `content["superseded_by_memory_id"]`。
-- 新项写入 `content["supersedes_memory_ids"]`。
-- active retrieval/context/profile 默认排除旧项。
-- snapshot debug 可用 `include_superseded=true` 查看链路。
-
-这解决的是“已确认偏好更新后，不再把旧偏好注入 prompt”。它还不是完整的语义冲突系统。
-
-## API 和负责人可见面
-
-当前 API 主要提供：
-
-- list/get memory items。
-- audit report。
-- events。
-- metrics。
-- pending confirmations list/confirm/reject。
-- profile status/rebuild。
-- export。
-- snapshot。
-- retention sweep。
-- item/session delete。
-
-负责人排查时优先看：
-
-- `GET /memory/users/{user_id}/snapshot`
-- `GET /memory/users/{user_id}/audit`
-- `GET /memory/users/{user_id}/events`
-- `GET /memory/users/{user_id}/metrics`
-- `GET /memory/users/{user_id}/profile/status`
-
-snapshot 用来回答“本轮会看到哪些记忆”。audit/events 用来回答“为什么写、为什么拒绝、为什么删”。profile/status 用来回答“用户画像是否从源记忆正确生成”。
-
-## 已治理的主要风险
-
-| 风险 | 当前治理 |
-| --- | --- |
-| 跨用户读取 | `RequestIdentity` + service/retrieval filtering。 |
-| body/path user 冒充 | API identity resolver 已集中处理，header auth 仍是 pilot。 |
-| raw provider response 入库 | `MemoryItem` validation + write policy 拒绝。 |
-| API key/token 入库 | secret-like payload 拒绝。 |
-| base64/raw media 入库 | payload key 和 data URI 拒绝。 |
-| 自动乱写长期记忆 | automatic promotion 默认 reject。 |
-| 敏感记忆直接落库 | `MemoryPendingConfirmation` 确认流。 |
-| 过期记忆继续注入 | retrieval/context builder 默认排除。 |
-| 旧偏好污染 prompt | superseded memory 默认排除 active context。 |
-| 删除不可见 | soft/hard delete、session delete、export、audit 已有本地闭环。 |
-| SQLite 损坏或迁移风险 | schema version、newer schema reject、integrity/backup/restore helpers。 |
-
-## 当前限制
-
-这些不是 bug，而是阶段边界：
-
-- 没有真实生产 auth principal；默认 API identity 仍可来自 request/path/query。
-- SQLite 是本地工程化 store，不是多租户生产数据库。
-- tenant/project/scope 主要在服务层过滤，数据库级索引和约束还不完整。
-- 检索是关键词/短片段 baseline，没有 embedding/vector DB。
-- `user_profile` 目前是全局用户画像，tenant/project scoped profile 尚未设计。
-- supersedes 只处理确定 key 的偏好冲突，不做语义冲突识别。
-- external metrics/export 到监控系统还没接。
-- confirmation UX 是 API/service 闭环，还不是完整产品体验。
-
-## 不该马上做的事
-
-当前不建议立刻做：
-
-- 默认接 Vector DB。
-- 默认接外部 memory service。
-- 让 LLM 自动长期写用户画像。
-- 把 session `context_summary` 自动升为长期 memory。
-- 为了 UI 文案重命名 internal layer 常量。
-- 让 Dify/MCP/A2A 直接操作 memory store。
-- 把 memory retrieval/ranking 写进 prompt renderer。
-- 把 `memory_save` 工具做成真正的 memory owner。
-
-原因不是这些永远不做，而是当前的核心价值在治理边界，不在“更智能地记”。
-
-## 排错入口
-
-### 怀疑记忆没被带进 prompt
-
-看：
-
-- `request.metadata["memory_context_text"]`
-- `request.metadata["memory_context_injected_ids"]`
-- `request.metadata["memory_context_rejected_reasons"]`
-- snapshot 的 `memory_context.blocks`
-
-相关测试：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_manager.py tests/test_memory_context_builder.py -q
-```
-
-### 怀疑检索误召回
-
-看：
-
-- `MemoryQuery.query`
-- 是否触发 recent fallback。
-- memory type / scope / tenant / project filters。
-- retrieval eval 是否需要新增 case。
-
-相关测试：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_retrieval_strategy.py tests/test_memory_retrieval_eval.py -q
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory
-```
-
-### 怀疑不该写的内容被写了
-
-看：
-
+- `src/multimodal_agent/tools/memory_tool.py`
+- `src/multimodal_agent/memory/write_policy.py`
+- `src/multimodal_agent/memory/manager.py`
+- `MemoryManager.save_explicit_for_identity(...)`
 - `MemoryWritePolicy.evaluate_explicit_save(...)`
-- `MemoryWriteDecision`
-- audit events 里的 reject/confirmation 记录。
-- `MemoryItem` validation 是否覆盖该 payload key。
 
-相关测试：
+### Memory 是什么时候被取出来塞进上下文的？
 
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_write_policy.py tests/test_memory_privacy_redaction.py tests/test_memory_tool_boundary.py -q
+context，就是“LLM 本轮回答前能看到的材料包”：里面可能有当前请求、会话摘要、最近对话、长期记忆、工具观察结果和工具说明。
+
+每次 Agent 运行开始时，系统会先尝试加载相关 Memory。加载出来后，不是全部塞给 LLM，而是经过筛选、分层、预算控制后，放进 `request.metadata["memory_context_*"]`，再交给上下文工程组装成最终 context。
+
+过程可以理解成：
+
+```text
+用户这轮说了什么
+  -> 系统拿这句话去长期笔记本里找相关笔记
+  -> 找到候选记忆
+  -> 再筛掉过期、敏感、无权限、被新记忆替代的内容
+  -> 按预算整理成 prompt-safe 文本
+  -> 放进本轮 context
 ```
 
-### 怀疑用户画像不对
+prompt，就是“发给 LLM 的指令和上下文文本”。prompt-safe，就是“可以安全给 LLM 看的版本”：它不能包含 raw provider response、secret、base64/raw media 等危险内容。
 
-看：
+对应代码位置：
 
-- `GET /memory/users/{user_id}/profile/status`
-- `source_memory_ids`
-- `superseded_source_memory_ids`
-- `profile_conflicts`
+- `src/multimodal_agent/memory/manager.py`
+- `src/multimodal_agent/memory/context_builder.py`
+- `src/multimodal_agent/memory/retrieval.py`
+- `MemoryManager.load_into_state(...)`
+- `MemoryManager.load_context_for_identity(...)`
 
-相关测试：
+### Memory 为什么需要 user_id/session_id/project scope 隔离？
 
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_manager.py tests/test_memory_audit_api.py -q
+isolation，就是“隔离”：A 用户的长期笔记不能被 B 用户看到，项目 A 的记忆不能随便混进项目 B。
+
+`user_id`，就是“这是谁的笔记本”。没有它，系统无法防止跨用户读写。
+
+`session_id`，就是“这次会话是哪一本临时记录”。它帮助区分同一用户不同会话里的上下文。
+
+`project_id`，就是“这条记忆属于哪个项目”。项目级记忆只应该在匹配项目里使用。
+
+tenant，就是“租户或组织边界”：它用于未来多组织隔离。
+
+scope，就是“记忆可见范围”：它告诉系统这条记忆是 session/task/project/user_profile/video/product 等哪类范围。
+
+RequestIdentity，就是“请求身份证”：它把 user、tenant、project、session、allowed scopes 绑在一起，作为读写 Memory 的身份边界。allowed scopes，就是“这次请求被允许看的记忆范围”。
+
+隔离存在的原因很实际：
+
+- 防止跨用户泄漏。
+- 防止一个项目的偏好污染另一个项目。
+- 防止工具或 LLM 自己传一个假的 user_id 越权读写。
+- 让删除、导出、审计都能按用户和范围准确执行。
+
+对应代码位置：
+
+- `src/multimodal_agent/schemas/identity.py`
+- `src/multimodal_agent/services/api_identity.py`
+- `src/multimodal_agent/memory/manager.py`
+- `src/multimodal_agent/schemas/memory.py`
+- `RequestIdentity`
+- `MemoryManager.search_for_identity(...)`
+- `MemoryManager.save_explicit_for_identity(...)`
+
+### audit、retention、export、repair 分别解决什么问题？
+
+audit，就是“记账”：记录谁在什么时候读、写、拒绝、删除或导出了什么记忆，方便解释和追责。
+
+retention，就是“定期清理过期记忆”：到期的任务记忆、商品记忆、会话类记忆不能无限期占着长期笔记本。
+
+export，就是“把记忆导出来”：用户、开发者或运维可以查看当前系统到底为某个用户保存了什么。
+
+repair，就是“修复不一致”：比如用户画像和源记忆不一致、旧偏好被新偏好替代后 profile 没同步，就需要检查或重建。
+
+这四个能力解决的是长期系统最常见的实际问题：
+
+| 能力 | 人话问题 | 当前用途 |
+| --- | --- | --- |
+| audit | “这条记忆为什么会出现？” | 查写入、拒绝、删除、确认、导出等事件 |
+| retention | “过期信息会不会一直留着？” | 扫描并删除过期记忆 |
+| export | “用户能不能看到系统记了什么？” | 导出用户可见记忆 |
+| repair | “数据派生结果错了怎么办？” | 重建 user_profile，报告冲突和 stale source |
+
+对应代码位置：
+
+- `src/multimodal_agent/services/memory_audit.py`
+- `src/multimodal_agent/services/memory_snapshot.py`
+- `src/multimodal_agent/schemas/memory_audit.py`
+- `MemoryAuditService.export_for_identity(...)`
+- `MemoryAuditService.sweep_expired_for_identity(...)`
+- `MemoryManager.rebuild_user_profile_for_identity(...)`
+
+## 按用户视角走一遍完整流程
+
+### 1. 用户说话
+
+用户说话后，系统会得到一个 UserRequest。UserRequest，就是“用户这轮请求的结构化表单”：里面有 text、user_id、session_id、图片/视频 ID、metadata 等。metadata，就是“附加信息袋子”，用于放运行时需要的补充字段。
+
+如果用户说：
+
+```text
+继续按我喜欢的深色极简风格，帮我生成一个商品展示图。
 ```
 
-### 怀疑 SQLite 慢或不稳定
+这句话里有两个信号：
 
-先区分：
+- “继续”和“我喜欢的”暗示可能需要查长期 Memory。
+- “生成商品展示图”暗示可能要调用工具。
 
-- 生产/runtime 默认应保留 durable pragmas。
-- 测试可以使用显式 fast pragmas。
-- 不要因为测试慢就把 runtime 改成不安全默认。
+对应代码位置：
 
-相关测试：
+- `src/multimodal_agent/schemas/requests.py`
+- `src/multimodal_agent/agent/runtime.py`
+- `src/multimodal_agent/agent/assistant_loop_nodes.py`
 
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_store_boundary.py -q
+### 2. 系统判断是否要读 Memory
+
+读 Memory，就是“去长期笔记本里找本轮可能相关的笔记”。
+
+系统不是每次都无脑相信 Memory，也不是每次都查出一堆塞给 LLM。当前策略会根据用户请求文本、能力类型、身份范围和检索规则来查。
+
+承接型表达，例如“继续、上次、刚才、之前、这个、那个、同款”，允许 recent fallback。recent fallback，就是“如果关键词没命中，但用户明显在接着上文说，就允许拿最近相关记忆兜底”。
+
+如果用户问一个全新的具体东西，没命中就返回空，不会为了显得聪明乱塞最近记忆。
+
+对应代码位置：
+
+- `src/multimodal_agent/memory/retrieval.py`
+- `src/multimodal_agent/memory/retriever.py`
+- `MemoryRetrievalStrategy.retrieve(...)`
+- `KeywordMemoryRetriever`
+
+### 3. MemoryManager 检索相关记忆
+
+MemoryManager，就是“记忆管家”：外部调用者想读、写、删、导出、修复记忆，都应该经过它，而不是直接翻底层文件或数据库。
+
+MemoryQuery，就是“检索条件单”：里面写着 user_id、query、session_id、project_id、scope、top_k、是否包含过期记忆等条件。top_k，就是“最多取几条结果”。
+
+MemoryStore，就是“存储柜”：它可以是内存、JSONL 文件或 SQLite 数据库，但对 MemoryManager 暴露同一套读写接口。JSONL，就是“一行一条 JSON 的本地文件格式”；SQLite，就是“本地单文件数据库”。
+
+检索时会做几类过滤：
+
+- 只看当前 user_id 的记忆。
+- tenant/project/scope 不匹配的记忆不看。
+- 过期记忆默认不看。
+- 被 supersede 的旧记忆默认不看。
+- session 条件不匹配时不看。
+
+supersede，就是“新笔记替代旧笔记”：例如用户以前喜欢浅色日系，现在明确说喜欢深色极简，旧偏好会被标记为已被新偏好替代。
+
+对应代码位置：
+
+- `src/multimodal_agent/memory/manager.py`
+- `src/multimodal_agent/memory/store.py`
+- `src/multimodal_agent/memory/jsonl_store.py`
+- `src/multimodal_agent/memory/sqlite_store.py`
+- `MemoryManager.search_for_identity(...)`
+- `MemoryStore.search(...)`
+
+### 4. 格式化后进入 context
+
+格式化，就是“把数据库里的记忆整理成 LLM 能读懂的短文本和分层列表”。
+
+MemoryContextBuilder，就是“上下文打包员”：它从检索结果里挑出真正适合放进本轮 context 的 Memory。
+
+它会把记忆分成几类：
+
+| layer | 人话理解 | 例子 |
+| --- | --- | --- |
+| semantic | 偏好/事实记忆 | 用户喜欢深色极简风格 |
+| session | 长期化对话 | 以前保存过的重要对话摘要 |
+| episodic | 任务/经历记忆 | 上次比较过某个商品 |
+| artifact | 产物/对象引用 | 图片、视频、商品、渲染结果引用 |
+| procedural | 过程/规则记忆 | 未来可能加入的操作规则 |
+
+token budget，就是“给记忆占用的字数/词元预算”：Memory 可以很多，但本轮给 LLM 的 context 有上限。
+
+metadata，就是运行时附加信息；如果前面已经读过，可以把它理解成“系统在请求旁边夹的小纸条”。
+
+所以即使检索到 20 条记忆，最终可能只注入 3 条。被丢弃的原因会记录在 metadata 里。
+
+对应代码位置：
+
+- `src/multimodal_agent/memory/context_builder.py`
+- `src/multimodal_agent/memory/manager.py`
+- `MemoryContextBuilder.build(...)`
+- `MemoryManager.build_context(...)`
+
+### 5. LLM 使用这些记忆回答
+
+LLM，就是“大语言模型”：它不会直接访问数据库，只能看到系统给它放进 context 的内容。
+
+对 LLM 来说，Memory 只是“用户历史数据”，不是系统指令。也就是说，一条 Memory 不能覆盖安全规则、不能绕过工具校验、不能要求系统越权。
+
+比如 Memory 里写着：
+
+```text
+用户喜欢深色极简风格。
 ```
 
-## 代码阅读顺序
+LLM 可以用它来调整回答风格，但不能把它当成“必须调用某个真实 provider”的命令。
 
-如果只想理解负责人边界：
+对应代码位置：
 
-1. `docs/memory-service-architecture.md`
-2. `docs/development/memory-kernel-hardening-plan.md`
-3. `src/multimodal_agent/memory/manager.py`
-4. `src/multimodal_agent/memory/write_policy.py`
-5. `src/multimodal_agent/memory/store.py`
-6. `src/multimodal_agent/memory/retrieval.py`
-7. `src/multimodal_agent/memory/context_builder.py`
-8. `src/multimodal_agent/services/memory_audit.py`
-9. `src/multimodal_agent/services/memory_snapshot.py`
-10. `src/multimodal_agent/tools/memory_tool.py`
+- `src/multimodal_agent/services/context/builder.py`
+- `src/multimodal_agent/services/context/renderer.py`
+- `src/multimodal_agent/agent/assistant_loop_nodes.py`
 
-如果要改上下文注入，再读 `docs/CONTEXT_ENGINEERING_STATUS.md`。如果要改多 Agent 记忆边界，再读 `docs/agent-communication-routing.md`。
+### 6. 需要时产生新的 memory candidate
 
-## 修改时的负责人检查清单
+memory candidate，就是“还没批准的候选笔记”。
 
-改 memory 前先确认：
+候选通常来自两种情况：
 
-- 默认 mock/local/offline 仍可跑。
-- 不引入默认网络依赖。
-- 不让工具或 API 直接绕过 `MemoryManager`。
-- 不让 model-supplied `user_id` 覆盖 runtime identity。
-- 不保存 raw provider/tool/media payload。
-- 不把 `context_summary` 当长期 memory。
-- 不让 superseded/expired/sensitive memory 默认进入 prompt。
-- 新 durable 字段有迁移、测试和文档。
-- 新 retrieval 行为有 eval case。
-- 删除、导出、audit 能解释新行为。
+- 用户明确说“记住……”。
+- 一次任务完成后，系统生成一个安全摘要，认为它可能未来有用。
 
-## 建议的停止点
+但候选不是 MemoryItem。候选还没进长期笔记本，必须先过策略。
 
-记忆模块当前已经适合阶段性停止连续开发。以后每轮 memory 工作应按小任务收口：
+举例：
 
-1. 明确一个治理或能力缺口。
-2. 修改代码。
-3. 补 focused tests。
-4. 更新 `docs/memory-service-architecture.md` 或本走读文档。
-5. 跑 memory pytest 和 memory eval。
-6. 明确下一步，但不自动继续扩散。
+```text
+用户：记住我喜欢深色极简风格。
+```
 
-当前最合理的下一组候选任务是：
+这会形成一个适合保存的候选。
 
-- auth-bound identity 真正接入生产身份。
-- memory health/metrics 面板化。
-- scoped user profile 设计。
-- SQLite backup/restore drill 和部署 runbook。
-- confirmation 的产品 UX。
-- retrieval eval corpus 扩展。
+再比如：
 
-这些都属于 Memory Kernel 工程化，不需要先上 Vector DB。
+```text
+用户：这是我的 API key：...
+```
+
+即使用户说“记住”，策略也应该拒绝，因为这是 secret。
+
+对应代码位置：
+
+- `src/multimodal_agent/memory/write_policy.py`
+- `src/multimodal_agent/tools/memory_tool.py`
+- `MemoryPromotionCandidate`
+- `MemorySaveTool`
+- `build_run_summary_promotion_candidate(...)`
+
+### 7. 通过策略后写入 Memory
+
+策略，就是“写入前的规则检查”。
+
+MemoryWritePolicy 会检查：
+
+- 内容是不是空。
+- 是否包含 API key、token、bearer credential。
+- 是否包含 raw provider response。
+- 是否包含 base64/raw media。
+- 是否需要用户确认。
+- 应该保存成 preference、product、task 等哪种类型。
+- 是否设置 TTL，也就是“有效期”。
+
+TTL，就是“保质期”：偏好类记忆通常不过期，任务/商品/产物类记忆通常有默认过期时间。
+
+确认流，就是“先让用户点头再落库”：敏感但可确认的内容不会直接变成 MemoryItem，而是先进入 MemoryPendingConfirmation。
+
+MemoryPendingConfirmation，就是“等待用户确认的草稿”：它只保存脱敏摘要和安全预览，用户确认后才写入正式 Memory。
+
+对应代码位置：
+
+- `src/multimodal_agent/memory/write_policy.py`
+- `src/multimodal_agent/memory/manager.py`
+- `src/multimodal_agent/schemas/memory_audit.py`
+- `MemoryWritePolicy.evaluate_explicit_save(...)`
+- `MemoryManager.save_explicit_for_identity(...)`
+- `MemoryManager.confirm_memory_for_identity(...)`
+
+### 8. audit 记录整件事
+
+audit，就是“记账”：系统会记录记忆上下文加载、显式保存、拒绝、需要确认、确认/拒绝、promotion decision、删除、导出、retention sweep 等事件。
+
+这不是为了给 LLM 看，而是为了让开发者、用户或运维能回答：
+
+- 为什么这条记忆被写入？
+- 为什么这条记忆被拒绝？
+- 为什么本轮 context 注入了这些记忆？
+- 用户删除后是否还会被检索？
+- 过期清理扫到了哪些记忆？
+
+metrics，就是“统计表”：它从 audit events 里汇总计数，例如写入成功多少、拒绝多少、确认多少、删除多少。
+
+snapshot，就是“现场快照”：它把当前 session、conversation、memory context、audit 和 storage 信息拼成一个只读视图，用来排查“本轮到底能看到什么记忆”。
+
+对应代码位置：
+
+- `src/multimodal_agent/services/memory_audit.py`
+- `src/multimodal_agent/services/memory_snapshot.py`
+- `src/multimodal_agent/schemas/memory_audit.py`
+- `src/multimodal_agent/schemas/memory_snapshot.py`
+- `MemoryManager.record_audit_event(...)`
+- `MemoryAuditService.metrics_for_identity(...)`
+- `MemorySnapshotService.snapshot_for_identity(...)`
+
+## 当前系统已经能做什么
+
+从新手视角看，当前 Memory 模块已经具备这些基础能力：
+
+- 保存明确的长期记忆。
+- 拒绝 secret、raw provider payload、base64/raw media。
+- 对敏感记忆走用户确认。
+- 按 user/session/project/scope 隔离读写。
+- 检索相关长期记忆。
+- 把记忆按预算整理进 context。
+- 默认不注入过期、敏感、被替代的旧记忆。
+- 导出用户记忆。
+- 删除用户记忆或 session 记忆。
+- 清理过期记忆。
+- 重建 user_profile。
+- 查看 audit、metrics 和 snapshot。
+
+这些能力服务的是“可控长期记忆”，不是“自动无限记住一切”。
+
+对应代码位置：
+
+- `src/multimodal_agent/memory/`
+- `src/multimodal_agent/services/memory_audit.py`
+- `src/multimodal_agent/services/memory_snapshot.py`
+- `tests/test_memory_manager.py`
+- `tests/test_memory_store_boundary.py`
+- `tests/test_memory_retrieval_eval.py`
+
+## 常见误解
+
+### 误解 1：Memory 就是聊天记录
+
+不是。聊天记录主要在 ConversationStore。Memory 是筛选后的长期笔记。
+
+### 误解 2：检索到的 Memory 都会进入 prompt
+
+不是。检索只是第一步，`MemoryContextBuilder` 还会按安全和预算筛选。
+
+### 误解 3：LLM 可以决定长期保存什么
+
+不是。LLM 可以提出候选，`MemoryWritePolicy` 决定能不能写。
+
+### 误解 4：context_summary 是长期记忆
+
+不是。`context_summary` 是当前 session 的压缩纪要，不自动写入 MemoryStore。
+
+### 误解 5：Memory 可以替代权限控制
+
+不是。Memory 只是上下文数据。identity 是“身份边界”，validator 是“工具调用校验员”，executor 是“真正执行工具的人”，policy 是“规则”，sandbox 是“隔离执行环境”；权限和安全仍由这些边界负责。
+
+对应代码位置：
+
+- `src/multimodal_agent/services/context/`
+- `src/multimodal_agent/memory/manager.py`
+- `src/multimodal_agent/memory/write_policy.py`
+- `src/multimodal_agent/tools/memory_tool.py`
+
+## 新手排查入口
+
+### 想知道本轮 LLM 看到了哪些记忆
+
+看 snapshot。snapshot，就是“当前记忆现场快照”。
+
+常用入口：
+
+```text
+GET /memory/users/{user_id}/snapshot
+```
+
+对应代码位置：
+
+- `src/multimodal_agent/services/memory_snapshot.py`
+- `src/multimodal_agent/schemas/memory_snapshot.py`
+
+### 想知道系统为用户记了什么
+
+看 list/export。export，就是“把记忆导出来给用户或运维查看”。
+
+常用入口：
+
+```text
+GET /memory/users/{user_id}/items
+GET /memory/users/{user_id}/export
+```
+
+对应代码位置：
+
+- `src/multimodal_agent/services/memory_audit.py`
+- `MemoryAuditService.list_items_for_identity(...)`
+- `MemoryAuditService.export_for_identity(...)`
+
+### 想知道为什么某条记忆被写入或拒绝
+
+看 audit events。audit events，就是“记忆操作账本里的单条流水”。
+
+常用入口：
+
+```text
+GET /memory/users/{user_id}/events
+GET /memory/users/{user_id}/audit
+```
+
+对应代码位置：
+
+- `src/multimodal_agent/services/memory_audit.py`
+- `MemoryAuditService.events_for_identity(...)`
+- `MemoryAuditService.audit_for_identity(...)`
+
+### 想知道用户画像是否正确
+
+看 profile status。user_profile，就是“从多条长期记忆合成的一张用户偏好摘要卡”。
+
+常用入口：
+
+```text
+GET /memory/users/{user_id}/profile/status
+```
+
+对应代码位置：
+
+- `src/multimodal_agent/memory/profile.py`
+- `src/multimodal_agent/memory/manager.py`
+- `MemoryManager.rebuild_user_profile_for_identity(...)`
+
+## 简单流程图
+
+```text
+用户说话
+  |
+  v
+UserRequest 形成
+  |
+  v
+系统带着 RequestIdentity 准备读 Memory
+  |
+  v
+MemoryManager 用 MemoryQuery 检索 MemoryStore
+  |
+  v
+MemoryRetrievalStrategy 过滤 user/session/project/scope/expired/superseded
+  |
+  v
+MemoryContextBuilder 按安全和预算整理记忆
+  |
+  v
+memory_context_* 写入 request.metadata
+  |
+  v
+AssistantContextPack 组装本轮 context
+  |
+  v
+LLM 基于请求、对话、记忆和工具结果回答或选择工具
+  |
+  v
+如需记住：产生 memory candidate 或调用 memory_save
+  |
+  v
+MemoryWritePolicy 判断 allow / reject / needs confirmation
+  |
+  +--> reject：不写入，只记录 audit
+  |
+  +--> needs confirmation：保存 MemoryPendingConfirmation，等用户确认
+  |
+  +--> allow：生成 MemoryItem，写入 MemoryStore
+  |
+  v
+audit 记录读写、拒绝、确认、删除、导出、清理等事件
+```

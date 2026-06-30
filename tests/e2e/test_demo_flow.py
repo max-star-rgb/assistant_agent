@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from multimodal_agent.api.app import create_app
 
 
-def test_demo_flow_runs_multitool_task_and_saves_memory() -> None:
+def test_demo_flow_runs_multitool_task_and_records_memory_candidate() -> None:
     client = TestClient(create_app())
 
     response = client.post(
@@ -39,5 +39,7 @@ def test_demo_flow_runs_multitool_task_and_saves_memory() -> None:
 
     assert image_result["data"]["image_url"] == "local://generated/poster.png"
     assert memory_result["success"] is True
-    assert memory_result["data"]["summary"] == "已保存用户偏好。"
-    assert memory_result["data"]["content"]["summary"] == "完成视频鞋子识别、商品搜索、比价和日系海报生成。"
+    assert memory_result["data"]["status"] == "candidate_recorded"
+    assert memory_result["data"]["written"] is False
+    assert memory_result["data"]["source_intent"] == "assistant_candidate"
+    assert memory_result["data"]["summary"] == "完成视频鞋子识别、商品搜索、比价和日系海报生成。"

@@ -160,15 +160,18 @@ _ACTION_USAGE: dict[str, dict[str, list[str]]] = {
     },
     "memory_save": {
         "when_to_use": [
-            "User explicitly asks to remember or save a preference, project fact, or task context.",
-            "After completing a task, the assistant may save a stable, non-sensitive user preference or project fact that is likely useful in future sessions.",
+            "User explicitly asks to remember or save a preference, project fact, or task context; set source_intent=user_explicit.",
+            "The assistant infers a stable, non-sensitive user preference or project fact may be useful later; set source_intent=assistant_candidate.",
         ],
         "when_not_to_use": [
             "Do not save sensitive data or incidental content without intent.",
             "Do not save ordinary one-off task outputs, generated copy, search results, or transient wording unless the user asks to remember them.",
+            "Do not use source_intent=user_confirmed; it is reserved for the confirmation service.",
         ],
         "runtime_constraints": [
             "Requires user_id and query, content.text, or content.summary.",
+            "Assistant-loop calls must include source_intent, source_reason, future_use, and evidence.",
+            "source_intent must be user_explicit or assistant_candidate for LLM calls.",
             "Memory writes must remain concise, auditable, and about long-term user/project value.",
         ],
     },

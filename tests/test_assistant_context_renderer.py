@@ -25,6 +25,7 @@ from multimodal_agent.services.context.renderer import (
     render_native_tool_context,
     render_prompt_json_context,
 )
+from multimodal_agent.tools.registry import create_default_registry
 
 
 class _FakeChatAdapter:
@@ -794,6 +795,25 @@ def test_prompt_json_rendering_uses_prompt_tool_specs_subset() -> None:
     assert '"name": "product_search"' in prompt
     assert '"name": "price_compare"' in prompt
     assert '"name": "render_3d"' not in prompt
+
+
+def test_prompt_json_default_registry_exposes_memory_tools_for_llm_first_choice() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="帮我找一款通勤耳机")
+    state = AgentState.from_request(request)
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=create_default_registry().list_specs(),
+        iteration=0,
+        max_iterations=5,
+    )
+
+    names = [spec.name for spec in pack.prompt_tool_specs]
+
+    assert "product_search" in names
+    assert "memory_retrieval" in names
+    assert "memory_save" in names
+    assert "llm_first_memory_tools: memory tools exposed for semantic LLM choice" in pack.tool_catalog_summary.selection_reasons
 
 
 def test_final_only_prompt_forbids_more_tool_calls() -> None:

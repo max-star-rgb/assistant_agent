@@ -17,6 +17,10 @@ from typing import Any, NotRequired, TypedDict, cast
 from multimodal_agent.agent.action_validator import ActionValidator
 from multimodal_agent.agent.intent import IntentDetector
 from multimodal_agent.agent.loop_guard import LoopGuard, LoopGuardDecision
+from multimodal_agent.agent.memory_tool_selection import (
+    build_memory_tool_selection_audit,
+    record_memory_tool_selection_audit,
+)
 from multimodal_agent.agent.plan_validator import PlanValidationResult, PlanValidator
 from multimodal_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from multimodal_agent.agent.router import ToolRouter
@@ -146,6 +150,7 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
         chat_adapter=chat_adapter,
         state=state,
     )
+    decision = _apply_memory_tool_selection_policy(graph_state, decision, context)
     decision = _apply_decision_guards(graph_state, decision, context)
     _record_react_decision(graph_state, decision, iterations, context=context)
     _apply_terminal_decision(graph_state, decision, context)
@@ -490,8 +495,10 @@ def _build_native_tool_messages(context: AssistantDecisionContext, state: AgentS
                 "If available tool results are sufficient, answer directly without another tool call. "
                 "Use memory_retrieval only when the user explicitly refers to prior chats, saved memory, previous/last context, "
                 "or their own remembered preferences; do not call memory tools for ordinary first-pass copywriting, search, "
-                "generation, or advice. Use memory_save only when the user asks to remember something, or after a task when "
-                "there is a stable non-sensitive preference or project fact worth future recall. "
+                "generation, or advice. When calling memory_save, you must provide source_intent, source_reason, "
+                "future_use, and evidence. Use source_intent=user_explicit only when the user explicitly asks to "
+                "remember/save/use this in the future or next time. Use source_intent=assistant_candidate when you infer "
+                "a stable non-sensitive preference or project fact may be useful later. Never use user_confirmed. "
                 "For multi-step work, you may return AssistantDecision JSON with enter_plan_mode or exit_plan_mode; "
                 "do not invent a separate planner/controller protocol. "
                 "For shopping recommendations or price comparisons, use product titles, prices, and URLs exactly from "
@@ -590,6 +597,25 @@ def _apply_decision_guards(
             reason=guard.message,
             safety_notes=[guard.code],
         )
+    return decision
+
+
+def _apply_memory_tool_selection_policy(
+    graph_state: AssistantLoopState,
+    decision: AssistantDecision,
+    context: AssistantDecisionContext,
+) -> AssistantDecision:
+    """Record LLM-first memory tool selection without local semantic override."""
+
+    audit = build_memory_tool_selection_audit(
+        request=context.request,
+        decision=decision,
+        state=graph_state["state"],
+        iteration=context.iterations,
+        max_iterations=context.max_iterations,
+        is_mock=context.is_mock,
+    )
+    record_memory_tool_selection_audit(context.request, audit)
     return decision
 
 
@@ -1646,6 +1672,7 @@ def _record_react_decision(
         steps = []
         state.request.metadata["assistant_loop_steps"] = steps
     trace_event = _decision_trace_event(decision, iteration)
+    memory_selection = _memory_tool_selection_trace(state.request.metadata)
     decision_trace = state.request.metadata.setdefault("decision_trace", [])
     if isinstance(decision_trace, list):
         decision_trace.append(trace_event)
@@ -1663,6 +1690,7 @@ def _record_react_decision(
             "safety_notes": decision.safety_notes,
             "plan_step_count": len(decision.plan.steps) if decision.plan is not None else (len(state.plan.steps) if state.plan is not None else 0),
             "plan_status": state.plan_status,
+            "memory_tool_selection": memory_selection,
         }
     )
     _emit_agent_trace_event(graph_state, trace_event)
@@ -1678,6 +1706,8 @@ def _record_react_decision(
     }
     if context_summary:
         output_summary["context"] = context_summary
+    if memory_selection:
+        output_summary["memory_tool_selection"] = memory_selection
     _append_trace(
         graph_state,
         event_type="assistant_decision",
@@ -1701,7 +1731,32 @@ def _context_trace_summary(context: AssistantDecisionContext | None) -> dict[str
         "context_summary_present": pack.context_summary is not None,
         "memory_promotion_candidates": _metadata_int(pack.request.metadata, "memory_promotion_candidates"),
         "memory_promotion_written": _metadata_int(pack.request.metadata, "memory_promotion_written"),
+        "memory_tool_selection": _memory_tool_selection_trace(pack.request.metadata),
     }
+
+
+def _memory_tool_selection_trace(metadata: dict[str, Any]) -> dict[str, Any]:
+    selection = metadata.get("memory_tool_selection")
+    if not isinstance(selection, dict):
+        return {}
+    return {
+        "strategy": selection.get("strategy"),
+        "action": selection.get("action"),
+        "selected_memory_tool": selection.get("selected_memory_tool"),
+        "keyword_signals": selection.get("keyword_signals", []),
+        "missed_signals": selection.get("missed_signals", []),
+        "candidate_mode": selection.get("candidate_mode"),
+        "auto_write": selection.get("auto_write"),
+        "vector_shadow_hit_count": _selection_vector_hit_count(selection),
+    }
+
+
+def _selection_vector_hit_count(selection: dict[str, Any]) -> int:
+    signal = selection.get("vector_shadow_signal")
+    if not isinstance(signal, dict):
+        return 0
+    value = signal.get("hit_count")
+    return value if isinstance(value, int) and value >= 0 else 0
 
 
 def _context_compaction_summary(observations: list[dict[str, Any]]) -> dict[str, int]:

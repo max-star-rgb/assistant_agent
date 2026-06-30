@@ -279,6 +279,7 @@ P0 progress:
 - 2026-06-30: Added first-pass deterministic profile conflict/supersedes handling. Explicit preference memories can carry a safe `preference_key`; new active preferences with the same key and governance scope supersede older conflicting preferences through `content["superseded_by_memory_id"]` / `content["supersedes_memory_ids"]`. User-profile rebuild now excludes superseded sources and reports `superseded_source_memory_ids` plus `profile_conflicts`; only multiple active conflicting memories are treated as unresolved conflicts. This is key-based governance, not semantic/LLM conflict inference.
 - 2026-06-30: Extended memory retrieval evals to cover superseded preference behavior. `MemoryRetrievalStrategy` excludes superseded items from active retrieval/context by default while leaving them available to audit/list/export paths. Retrieval eval setup can now create realistic state through explicit saves, and the memory eval suite asserts that old superseded preferences do not enter retrieval, injection, or active profile sources while the new preference remains recallable.
 - 2026-06-30: Added an explicit debug boundary for superseded retrieval. `MemoryQuery.include_superseded` defaults to false, so ordinary retrieval and agent context still exclude old superseded memories. `MemorySnapshotService` and `GET /memory/users/{user_id}/snapshot?include_superseded=true` can inspect the full chain for debugging, while agent-callable memory tools do not expose the flag through tool input.
+- 2026-06-30: Formalized LLM-first memory tool selection. In assistant-loop non-mock runs, the LLM remains the selector for `memory_save` and `memory_retrieval`; `memory_save` must declare `source_intent`, `source_reason`, `future_use`, and `evidence`. Keyword and vector signals do not participate in current source-intent decisions.
 
 SQLite P0 requirements:
 
@@ -348,6 +349,7 @@ memory_tokens
 rejected_memory_reasons
 write_candidates
 write_decisions
+memory_tool_selection
 ```
 
 Trace output must stay redacted.
@@ -399,7 +401,8 @@ Work:
 7. Add soft delete, export, and audit log foundation. Soft-delete behavior, user export, retention sweep, in-process audit events, SQLite durable audit-event/confirmation storage, local backup/restore helpers, and derived local metrics are implemented; external metrics export and production backup policy remain future work.
 8. Keep `InMemoryStore` and `JsonlMemoryStore` as local/offline paths.
 9. Add retrieval eval suite before vector work. Initial offline retrieval eval suite and summary metrics are implemented on 2026-06-29; broader corpus coverage and regression thresholds remain future work.
-10. Add store corruption, migration, and concurrency tests.
+10. Record LLM-first hybrid memory tool selection signals before enabling rule/vector-triggered candidates. Initial metadata and trace summary are implemented on 2026-06-30; candidate escalation remains future work.
+11. Add store corruption, migration, and concurrency tests.
 
 Acceptance:
 

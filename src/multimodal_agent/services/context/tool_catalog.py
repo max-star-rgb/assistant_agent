@@ -62,10 +62,15 @@ def select_prompt_tool_specs(request: UserRequest, tool_specs: list[ToolSpec]) -
         _add(selected_names, "render_3d")
         reasons.append("render_3d_keyword: explicit 3D/render/modeling request")
 
-    if _has_memory_intent(text):
+    memory_intent = _has_memory_intent(text)
+    if memory_intent:
         for name in ("memory_retrieval", "memory_save", "memory"):
             _add(selected_names, name)
         reasons.append("memory_keyword: remember/preference/history request")
+    elif selected_names:
+        for name in ("memory_retrieval", "memory_save"):
+            _add(selected_names, name)
+        reasons.append("llm_first_memory_tools: memory tools exposed for semantic LLM choice")
 
     available_by_name = {spec.name: spec for spec in tool_specs}
     prompt_specs = [available_by_name[name] for name in selected_names if name in available_by_name]

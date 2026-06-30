@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from multimodal_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
+from multimodal_agent.memory.manager import MemoryConfirmationRequired, MemoryManager, MemorySaveCandidateResult
 from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem
 from multimodal_agent.schemas.memory import MemoryQuery
@@ -22,6 +22,10 @@ class MemoryInput(BaseModel):
     session_id: str | None = None
     query: str | None = None
     content: dict = Field(default_factory=dict)
+    source_intent: Literal["user_explicit", "assistant_candidate", "user_confirmed"] | None = None
+    source_reason: str | None = None
+    future_use: str | None = None
+    evidence: str | None = None
 
 
 class MemoryRetrievalInput(BaseModel):
@@ -44,6 +48,10 @@ class MemorySaveInput(BaseModel):
     session_id: str | None = None
     query: str | None = None
     content: dict = Field(default_factory=dict)
+    source_intent: Literal["user_explicit", "assistant_candidate", "user_confirmed"] | None = None
+    source_reason: str | None = None
+    future_use: str | None = None
+    evidence: str | None = None
 
 
 class MemoryTool(MockTool):
@@ -106,6 +114,25 @@ class MemoryTool(MockTool):
         manager = _manager_from_context(context)
         if manager is not None:
             return _save_with_manager(input, context, manager, self.name)
+        if input.source_intent == "assistant_candidate":
+            return _candidate_recorded_result(
+                self.name,
+                MemorySaveCandidateResult(
+                    candidate_id=f"memory_candidate_{uuid4().hex}",
+                    user_id=input.user_id,
+                    session_id=input.session_id or str(input.content.get("session_id") or "default"),
+                    summary=text,
+                    source_reason=input.source_reason or "",
+                    future_use=input.future_use or "",
+                    evidence=input.evidence or "",
+                    reason="assistant candidate recorded without durable write",
+                ),
+            )
+        if input.source_intent == "user_confirmed":
+            return _memory_save_rejected_result(
+                self.name,
+                "source_intent=user_confirmed is reserved for confirmation service",
+            )
 
         item = build_explicit_memory_item(
             memory_id="m_saved_1",
@@ -176,6 +203,10 @@ def _dedicated_memory_input(
         session_id=context.session_id or input.session_id,
         query=input.query,
         content=input.content,
+        source_intent=getattr(input, "source_intent", None),
+        source_reason=getattr(input, "source_reason", None),
+        future_use=getattr(input, "future_use", None),
+        evidence=getattr(input, "evidence", None),
     )
 
 
@@ -241,20 +272,41 @@ def _save_with_manager(
             memory_id=f"explicit_memory_{uuid4().hex}",
             text=text,
             content=input.content,
+            source_intent=input.source_intent,
+            source_reason=input.source_reason,
+            future_use=input.future_use,
+            evidence=input.evidence,
         )
     except MemoryConfirmationRequired as exc:
         return _memory_confirmation_required_result(tool_name, exc)
     except ValueError as exc:
         return _memory_save_rejected_result(tool_name, str(exc))
+    if isinstance(item, MemorySaveCandidateResult):
+        return _candidate_recorded_result(tool_name, item)
     display_item = item.model_copy(update={"summary": "已保存用户偏好。"})
-    data = display_item.model_dump(mode="json")
+    data = {
+        **display_item.model_dump(mode="json"),
+        "status": "saved",
+        "written": True,
+        "source_intent": input.source_intent or "user_explicit",
+        "source_reason": input.source_reason,
+        "future_use": input.future_use,
+        "evidence": input.evidence,
+    }
     output_ref = f"local://memory/{item.memory_id}"
     contract = build_capability_output_contract(
         capability="memory_save",
         status="succeeded",
         output_ref=output_ref,
-        data={"memory_id": item.memory_id, "summary": display_item.summary, "memory_type": item.memory_type},
-        metadata={"provider": "local", "source": "memory_manager"},
+        data={
+            "status": "saved",
+            "written": True,
+            "memory_id": item.memory_id,
+            "summary": display_item.summary,
+            "memory_type": item.memory_type,
+            "source_intent": input.source_intent or "user_explicit",
+        },
+        metadata={"provider": "local", "source": "memory_manager", "written": True},
     )
     return ToolResult(
         tool_name=tool_name,
@@ -269,9 +321,11 @@ def _save_with_manager(
 def _memory_confirmation_required_result(tool_name: str, exc: MemoryConfirmationRequired) -> ToolResult:
     confirmation = exc.confirmation
     data = {
+        "status": "confirmation_required",
+        "written": False,
         "requires_confirmation": True,
         "confirmation_id": confirmation.confirmation_id,
-        "status": confirmation.status,
+        "confirmation_status": confirmation.status,
         "summary": confirmation.summary,
         "reason": confirmation.reason,
         "expires_at": confirmation.expires_at.isoformat() if confirmation.expires_at else None,
@@ -321,7 +375,38 @@ def _memory_save_rejected_result(tool_name: str, reason: str) -> ToolResult:
         error=reason or "记忆写入被策略拒绝。",
         latency_ms=1,
         contract=contract,
-        data={"contract": contract.model_dump(mode="json")},
+        data={"status": "rejected", "written": False, "contract": contract.model_dump(mode="json")},
+    )
+
+
+def _candidate_recorded_result(tool_name: str, candidate: MemorySaveCandidateResult) -> ToolResult:
+    data = {
+        "status": "candidate_recorded",
+        "written": False,
+        "candidate_id": candidate.candidate_id,
+        "source_intent": candidate.source_intent,
+        "summary": candidate.summary,
+        "memory_type": candidate.memory_type,
+        "source_reason": candidate.source_reason,
+        "future_use": candidate.future_use,
+        "evidence": candidate.evidence,
+        "reason": candidate.reason,
+    }
+    output_ref = f"local://memory/candidates/{candidate.candidate_id}"
+    contract = build_capability_output_contract(
+        capability="memory_save",
+        status="skipped",
+        output_ref=output_ref,
+        data=data,
+        metadata={"provider": "local", "source": "memory_manager", "written": False},
+    )
+    return ToolResult(
+        tool_name=tool_name,
+        success=True,
+        data={**data, "contract": contract.model_dump(mode="json")},
+        output_ref=output_ref,
+        latency_ms=1,
+        contract=contract,
     )
 
 

@@ -95,8 +95,16 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
         return _reject("invalid_tool_input", "price_compare requires query or items.")
     if tool_name == "memory_retrieval" and not tool_input.get("query"):
         return _reject("invalid_tool_input", "memory_retrieval requires query.")
+    if tool_name == "memory":
+        memory_error = _validate_legacy_memory_tool_input(tool_input)
+        if memory_error is not None:
+            return memory_error
     if tool_name == "memory_save" and not _has_memory_save_text(tool_input):
         return _reject("invalid_tool_input", "memory_save requires query, content.text, or content.summary.")
+    if tool_name == "memory_save":
+        source_error = _validate_memory_save_source(tool_input)
+        if source_error is not None:
+            return source_error
     if tool_name == "delegate_to_agent":
         if not tool_input.get("target_agent_id"):
             return _reject("invalid_tool_input", "delegate_to_agent requires target_agent_id.")
@@ -112,6 +120,33 @@ def _has_memory_save_text(tool_input: dict[str, Any]) -> bool:
     if not isinstance(content, dict):
         return False
     return bool(content.get("text") or content.get("summary"))
+
+
+def _validate_legacy_memory_tool_input(tool_input: dict[str, Any]) -> ActionValidationResult | None:
+    action = tool_input.get("action")
+    if action == "retrieve":
+        if not tool_input.get("query"):
+            return _reject("invalid_tool_input", "memory retrieve requires query.")
+        return None
+    if action == "save":
+        if not _has_memory_save_text(tool_input):
+            return _reject("invalid_tool_input", "memory save requires query, content.text, or content.summary.")
+        return _validate_memory_save_source(tool_input)
+    return _reject("invalid_tool_input", "memory tool requires action=retrieve or action=save.")
+
+
+def _validate_memory_save_source(tool_input: dict[str, Any]) -> ActionValidationResult | None:
+    source_intent = tool_input.get("source_intent")
+    if not isinstance(source_intent, str) or not source_intent.strip():
+        return _reject("invalid_tool_input", "assistant-loop memory_save requires source_intent.")
+    if source_intent not in {"user_explicit", "assistant_candidate", "user_confirmed"}:
+        return _reject("invalid_tool_input", "memory_save source_intent is invalid.")
+    if source_intent == "user_confirmed":
+        return _reject("invalid_tool_input", "memory_save source_intent=user_confirmed is reserved for confirmation service.")
+    for key in ("source_reason", "future_use", "evidence"):
+        if not isinstance(tool_input.get(key), str) or not tool_input[key].strip():
+            return _reject("invalid_tool_input", f"assistant-loop memory_save requires {key}.")
+    return None
 
 
 def _has_agent_delegation_payload(tool_input: dict[str, Any]) -> bool:

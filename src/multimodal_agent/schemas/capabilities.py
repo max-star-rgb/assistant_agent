@@ -144,8 +144,8 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
     ),
     "memory_save": CapabilityContract(
         name="memory_save",
-        input_requirements=["text or content", "user_id", "session_id"],
-        output_contract="MemoryItem",
+        input_requirements=["text or content", "user_id", "session_id", "source_intent for assistant-loop calls"],
+        output_contract="saved MemoryItem or candidate/confirmation/rejection status",
         tool_name="memory_save",
         media_optional=False,
     ),
