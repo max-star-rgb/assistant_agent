@@ -19,6 +19,8 @@ SQLite memory backup and restore covers:
 
 It does not cover external object storage, cloud backup policies, PostgreSQL, vector indexes, or real provider artifacts. Raw provider responses, base64/media bodies, API keys, and secrets must not be placed in memory backups.
 
+Runtime durability defaults are unchanged: normal SQLite stores use `synchronous=NORMAL`, a long `busy_timeout`, and WAL for newly created databases. Focused tests may explicitly pass validated fast pragmas such as `journal_mode="MEMORY"` and `synchronous="OFF"` to avoid local temp-filesystem fsync delays; do not use those fast settings for operator backup/restore runs.
+
 ## Default Paths
 
 Default SQLite memory path:

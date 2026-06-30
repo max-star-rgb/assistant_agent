@@ -12,11 +12,17 @@ from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
 from multimodal_agent.memory.store import InMemoryStore
 from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem
+from multimodal_agent.services.agent_control_plane import InMemoryAgentControlPlaneStore
 from multimodal_agent.services.memory_audit import MemoryAuditService
 from multimodal_agent.services.trace_store import InMemoryTraceStore
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+class AuditGateway:
+    def __init__(self) -> None:
+        self.control_plane_store = InMemoryAgentControlPlaneStore()
 
 
 def test_memory_audit_api_lists_and_gets_user_scoped_items(monkeypatch) -> None:
@@ -149,6 +155,38 @@ def test_memory_audit_api_exports_user_memory(monkeypatch) -> None:
     assert payload["items"][0]["content"] == {"style": "日系"}
     assert redacted.status_code == 200
     assert redacted.json()["items"][0]["content"] is None
+
+
+def test_memory_audit_api_records_redacted_control_plane_events(monkeypatch) -> None:
+    store = InMemoryStore()
+    runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
+    gateway = AuditGateway()
+    store.save(_memory("m1", "u1", "preference", "用户喜欢日系风格。", content={"style": "日系"}))
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    client = TestClient(create_app())
+
+    listed = client.get("/memory/users/u1/items")
+    exported = client.get("/memory/users/u1/export")
+    events = client.get("/control-plane/audit/events", params={"user_id": "u1"})
+    export_events = client.get(
+        "/control-plane/audit/events",
+        params={"user_id": "u1", "event_type": "memory_export"},
+    )
+
+    assert listed.status_code == 200
+    assert exported.status_code == 200
+    assert events.status_code == 200
+    event_types = {event["event_type"] for event in events.json()["events"]}
+    assert {"memory_access", "memory_export"}.issubset(event_types)
+    assert export_events.status_code == 200
+    export_payload = export_events.json()
+    assert export_payload["events"][0]["action"] == "export_memory"
+    assert export_payload["events"][0]["detail"]["item_count"] == 1
+    assert export_payload["events"][0]["detail"]["include_content"] is True
+    dumped = str(events.json())
+    assert "用户喜欢日系风格" not in dumped
+    assert "日系" not in dumped
 
 
 def test_memory_audit_api_sweeps_expired_memory(monkeypatch) -> None:

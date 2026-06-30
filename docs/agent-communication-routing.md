@@ -1,10 +1,10 @@
 # Agent Communication Routing
 
-Last updated: 2026-06-29
+Last updated: 2026-06-30
 
 This document is the current canonical entry for multi-agent instance routing, agent-to-agent communication, and A2A-style protocol adapter boundaries. Update it whenever agent directory/gateway behavior, agent communication services, `delegate_to_agent` tools, cross-instance sessions, A2A routes, JSON-RPC transport, or related safety policy changes.
 
-Current status: opt-in local gateway/delegation boundary, inbound A2A JSON-RPC adapter, and default-disabled outbound A2A JSON-RPC pilot transport implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and Web demo paths on one default `AgentGraphRuntime` and does not register delegation in the default `ToolRegistry`. It now has protocol-neutral schemas, an `AgentDirectory`, deterministic `AgentRoutingPolicy`, `AgentDelegationPolicy`, `LocalAgentTransport`, `A2AJsonRpcTransport`, `AgentCommunicationService`, a local multi-runtime factory, an opt-in `delegate_to_agent` tool, an `AgentGateway` service, a separate `POST /agents/run` API for same-process multi-agent routing, inbound `/.well-known/agent-card.json` plus `/a2a/rpc` routes with public card filtering and JSON-RPC error taxonomy, and outbound allowlist/timeout/payload/protocol-error controls. It does not implement public remote agent fabric, automatic Agent Card discovery/enablement, or LLM target-agent selection.
+Current status: opt-in local gateway/delegation boundary, inbound A2A JSON-RPC adapter, default-disabled outbound A2A JSON-RPC pilot transport, read-only control-plane observability, first-pass pilot operator workflow, read-only Web Console Control Plane surface, and strict local pilot evidence package implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and Web demo paths on one default `AgentGraphRuntime` and does not register delegation in the default `ToolRegistry`. It now has protocol-neutral schemas, an `AgentDirectory`, deterministic `AgentRoutingPolicy`, `AgentDelegationPolicy`, `LocalAgentTransport`, `A2AJsonRpcTransport`, `AgentCommunicationService`, a local multi-runtime factory, an opt-in `delegate_to_agent` tool, an `AgentGateway` service with a process-local redacted control-plane store, a separate `POST /agents/run` API for same-process multi-agent routing, read-only `/control-plane/...` route/delegation/budget/readiness/audit/replay-preview APIs, a local Web Console panel that queries those APIs, `scripts/check_pilot_readiness.py`, `scripts/collect_pilot_evidence.py`, inbound `/.well-known/agent-card.json` plus `/a2a/rpc` routes with public card filtering and JSON-RPC error taxonomy, and outbound allowlist/timeout/payload/protocol-error controls. It does not implement public remote agent fabric, automatic Agent Card discovery/enablement, durable audit storage, Web UI remote-control actions, or LLM target-agent selection.
 
 Current stage boundary:
 
@@ -107,15 +107,22 @@ Implemented files:
 | `src/multimodal_agent/services/agent_communication.py` | implemented | Service boundary and local multi-runtime factory for routing an `AgentTask` through an enabled transport. |
 | `src/multimodal_agent/services/agent_pilot_readiness.py` | implemented | Pilot readiness checks, redacted delegated-run metrics summaries, and preview-only failure replay payloads. |
 | `src/multimodal_agent/services/agent_gateway.py` | implemented | Local `AgentGateway` that manages `agent.default` plus `agent.worker`, supports `single` and `controller_delegate`, and returns `AgentRunResponse`. |
+| `src/multimodal_agent/schemas/agent_control_plane.py` | implemented | Stable redacted response schemas for read-only control-plane run, route, delegation, budget, audit-event, and replay-preview views. |
+| `src/multimodal_agent/services/agent_control_plane.py` | implemented | Process-local control-plane record/audit-event store and query service over gateway records plus trace summaries. |
 | `src/multimodal_agent/services/a2a_adapter.py` | implemented | Inbound A2A adapter that maps public agent card and JSON-RPC `SendMessage` requests to/from `AgentGateway`, with public skill filtering. |
 | `src/multimodal_agent/tools/agent_delegation_tool.py` | implemented | Opt-in `delegate_to_agent` tool backed by `AgentCommunicationService`. |
 | `src/multimodal_agent/api/routes_agent.py` | implemented | Existing `/agent/run` plus separate `/agents/run` gateway endpoint sharing trial access rules. |
+| `src/multimodal_agent/api/static/index.html` | implemented | Local Web Console includes a read-only Control Plane panel for runtime profile, pilot readiness, recent audit activity, run/trace summaries, gateway route, delegation tree, budget, replay preview, and redaction status. |
 | `src/multimodal_agent/api/routes_a2a.py` | implemented | Inbound A2A-compatible agent card and JSON-RPC endpoint over local gateway, including parse/invalid/method/params/internal error mapping. |
+| `scripts/check_pilot_readiness.py` | implemented | Local operator command for read-only pilot readiness checks without server startup, provider calls, or remote-agent calls. |
+| `scripts/collect_pilot_evidence.py` | implemented | Strict local/offline evidence package collector covering `/agent/run`, `/agents/run`, inbound `/a2a/rpc`, readiness, route, delegation, budget, audit, replay-preview, and trace summaries without server startup, real provider calls, remote-agent calls, or raw trace bodies. |
+| `docs/development/agent-pilot-operator-runbook.md` | implemented | Operator runbook for local/pilot startup, auth/readiness verification, smoke requests, redacted evidence collection, and backout. |
 | `tests/test_agent_communication_routing.py` | implemented | Offline tests for default routing, local transport, disabled/unknown agents, depth limits, opt-in registration, and local delegation tool behavior. |
 | `tests/test_a2a_json_rpc_transport.py` | implemented | Offline fake-server tests for outbound A2A allowlist, HTTPS/local opt-in, Agent Card validation, timeout, payload limit, protocol errors, and business failure normalization. |
 | `tests/test_agent_pilot_readiness.py` | implemented | Offline tests for pilot readiness checks, redacted metrics summaries, and failure replay payload redaction. |
 | `tests/test_agent_routing_policy.py` | implemented | Offline tests for deterministic gateway routing policy, routing-table overrides, ambiguous capabilities, and config loading. |
 | `tests/test_agent_gateway.py` | implemented | Offline tests for gateway routing, controller delegation registry shape, structured unknown-agent failure, and single-agent compatibility. |
+| `tests/test_api_agent_graph_runtime.py` | implemented | Offline API tests for read-only control-plane run, route, delegation tree, budget, audit events, replay preview, readiness, and trace-only summaries. |
 | `tests/test_api_a2a.py` | implemented | Offline API tests for public agent card filtering, JSON-RPC `SendMessage`, parse/invalid/method/params/internal errors, context mapping, artifacts, and failed task mapping. |
 
 ## Protocol Boundary
@@ -144,6 +151,9 @@ Rules:
 - `POST /agent/run` remains the default single-agent HTTP endpoint and must not use `AgentGateway`.
 - `POST /agents/run` is the explicit local multi-agent HTTP endpoint. It accepts `target_agent_id`, optional `capability`, and `collaboration_mode`.
 - `/agents/run` responses embed `data.agent_gateway.route_decision` and `runtime_info.agent_gateway.route_decision` with selected agent, requested target/capability, collaboration mode, deterministic route reason, route status, delegation enablement, and structured route error when applicable.
+- Gateway runs are recorded in a process-local redacted control-plane store. Read-only `/control-plane/runs/{run_id}`, `/control-plane/traces/{trace_id}`, `/control-plane/runs/{run_id}/route`, `/control-plane/runs/{run_id}/delegation-tree`, `/control-plane/runs/{run_id}/budget`, `/control-plane/runs/{run_id}/audit`, `/control-plane/audit/events`, `/control-plane/runs/{run_id}/replay-preview`, and `/control-plane/readiness` expose route, delegation, identity provenance, budget/latency, audit decisions, readiness, and replay-preview summaries without raw provider payloads, auth tokens, inline media bodies, hidden reasoning, raw memory content, or parent conversation history.
+- Current audit event types include `auth_decision`, `route_decision`, `delegation_decision`, `remote_a2a_decision`, `provider_opt_in_decision`, `memory_access`, `memory_export`, and `memory_delete`. Audit retention is process-local and replay-safe only; durable audit persistence/export is not implemented yet.
+- `scripts/check_pilot_readiness.py` provides an offline operator check for runtime profile, auth-bound identity policy, provider config, provider budget, remote A2A allowlist, and redaction gates. It does not start the server, call a real provider, or call a remote agent.
 - Gateway route priority is deterministic: explicit `target_agent_id`, configured capability routing table, unique capability match, `controller_delegate` fallback to `agent.default`, then default `agent.default`.
 - `GET /.well-known/agent-card.json` exposes a local A2A agent card. It advertises the local `/a2a/rpc` JSON-RPC endpoint, public supported methods, local/offline no-auth status, and enabled local agent skills with public capability filtering.
 - Agent Card output must not expose secrets, raw provider details, internal class names, or local file paths.
@@ -191,6 +201,8 @@ Module ownership:
 | `src/multimodal_agent/services/agent_routing_policy.py` | Deterministic route policy, capability match policy, routing-table policy, and gateway route decision assembly. |
 | `src/multimodal_agent/services/agent_delegation_policy.py` | Service-layer delegation policy, loop control, allowed-target checks, timeout validation, budget metadata, redaction, and audit event generation. |
 | `src/multimodal_agent/services/agent_gateway.py` | Gateway service that selects the initial local runtime and augments `AgentRunResponse` with gateway metadata. |
+| `src/multimodal_agent/services/agent_control_plane.py` | Process-local redacted control-plane run/audit store and query service. |
+| `src/multimodal_agent/schemas/agent_control_plane.py` | Control-plane response schemas for run, route, delegation, budget, audit, and replay-preview views. |
 | `src/multimodal_agent/services/a2a_adapter.py` | Protocol adapter between inbound A2A agent card/JSON-RPC payloads and internal gateway requests/responses. |
 | `src/multimodal_agent/services/agent_communication.py` | Service boundary for sending messages/tasks through transports. |
 | `src/multimodal_agent/services/agent_transports.py` | `LocalAgentTransport`, `A2AJsonRpcTransport`, outbound allowlist/card/timeout/payload/circuit-breaker controls, and transport result normalization. |
@@ -199,6 +211,7 @@ Module ownership:
 | `src/multimodal_agent/api/routes_a2a.py` | Inbound A2A-compatible agent card and local JSON-RPC endpoint. |
 | `tests/test_agent_communication_*.py` | Offline deterministic tests for directory, routing, transport, delegation, and safety policy. |
 | `tests/test_agent_gateway.py` | Offline deterministic tests for gateway behavior. |
+| `tests/test_api_agent_graph_runtime.py` | Offline deterministic API tests for `/agent/run`, `/agents/run`, and `/control-plane/...` views. |
 | `tests/test_api_a2a.py` | Offline deterministic tests for inbound A2A API behavior. |
 | `tests/test_a2a_json_rpc_transport.py` | Offline deterministic tests for the default-disabled outbound A2A pilot transport. |
 | `tests/test_agent_pilot_readiness.py` | Offline deterministic tests for readiness checks, redacted summaries, and replay payload redaction. |

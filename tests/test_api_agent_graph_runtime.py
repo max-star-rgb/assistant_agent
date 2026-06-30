@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.agent.state import AgentState
 from multimodal_agent.api import routes_agent
 from multimodal_agent.api.auth import (
@@ -11,10 +12,14 @@ from multimodal_agent.api.auth import (
     get_auth_context,
 )
 from multimodal_agent.api.app import create_app
+from multimodal_agent.schemas.agent_communication import DEFAULT_AGENT_ID
 from multimodal_agent.schemas.api import AgentRunResponse
 from multimodal_agent.schemas.planning import IntentResult
 from multimodal_agent.schemas.requests import AgentResponse, UserRequest
+from multimodal_agent.schemas.tools import ToolResult
+from multimodal_agent.services.agent_gateway import WORKER_AGENT_ID, AgentGateway
 from multimodal_agent.services.api_identity import AuthContext
+from multimodal_agent.services.trace_store import InMemoryTraceStore
 
 
 class RecordingRuntime:
@@ -49,6 +54,47 @@ class RecordingGateway:
             },
             runtime_info={"agent_gateway": {"offline": True}},
         )
+
+
+class ControlPlaneRecordingRuntime:
+    def __init__(self, *, agent_id: str, run_id: str, delegate: bool = False) -> None:
+        self.agent_id = agent_id
+        self.run_id = run_id
+        self.delegate = delegate
+        self.requests: list[UserRequest] = []
+
+    def run_state(self, request: UserRequest) -> AgentState:
+        self.requests.append(request)
+        state = AgentState.from_request(request, run_id=self.run_id)
+        state.set_intent(IntentResult(intent="chat", confidence=1.0, rationale="control plane test"))
+        if self.delegate:
+            state.tool_results.append(
+                ToolResult(
+                    tool_name="delegate_to_agent",
+                    success=True,
+                    data={
+                        "task_id": "agent_task_api",
+                        "target_agent_id": WORKER_AGENT_ID,
+                        "status": "completed",
+                        "run_id": "run_worker_child_api",
+                        "trace_id": "trace_worker_child_api",
+                        "artifacts": [{"kind": "text", "text": "child summary"}],
+                        "errors": [],
+                        "metadata": {
+                            "transport": "local",
+                            "latency_ms": 7,
+                            "child_context_budget": {"token_budget": 100, "tool_budget": 2},
+                        },
+                    },
+                )
+            )
+        state.set_response(
+            AgentResponse(
+                message=f"handled by {self.agent_id}",
+                data={"agent_id": self.agent_id},
+            )
+        )
+        return state
 
 
 def test_api_agent_run_defaults_to_graph_runtime(monkeypatch) -> None:
@@ -326,3 +372,131 @@ def test_api_agent_run_rejects_request_identity_when_auth_bound_required(monkeyp
     assert response.json()["detail"]["code"] == "IDENTITY_NOT_AUTH_BOUND"
     assert response.json()["detail"]["identity_policy"]["auth_bound_identity"] is False
     assert runtime.requests == []
+
+
+def test_control_plane_api_queries_gateway_run(monkeypatch) -> None:
+    runtime = AgentGraphRuntime(trace_store=InMemoryTraceStore())
+    gateway = AgentGateway(
+        {
+            DEFAULT_AGENT_ID: ControlPlaneRecordingRuntime(
+                agent_id=DEFAULT_AGENT_ID,
+                run_id="run_controller_api",
+                delegate=True,
+            ),
+            WORKER_AGENT_ID: ControlPlaneRecordingRuntime(
+                agent_id=WORKER_AGENT_ID,
+                run_id="run_worker_api",
+            ),
+        }
+    )
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    client = TestClient(create_app())
+
+    run_response = client.post(
+        "/agents/run",
+        json={
+            "user_id": "u1",
+            "session_id": "s1",
+            "text": "coordinate",
+            "collaboration_mode": "controller_delegate",
+        },
+    )
+    assert run_response.status_code == 200
+    run_id = run_response.json()["run_id"]
+
+    summary = client.get(f"/control-plane/runs/{run_id}").json()
+    route = client.get(f"/control-plane/runs/{run_id}/route").json()
+    tree = client.get(f"/control-plane/runs/{run_id}/delegation-tree").json()
+    budget = client.get(f"/control-plane/runs/{run_id}/budget").json()
+    replay = client.get(f"/control-plane/runs/{run_id}/replay-preview").json()
+    trace = client.get(f"/control-plane/traces/{run_response.json()['trace_id']}").json()
+    audit = client.get(f"/control-plane/runs/{run_id}/audit").json()
+    filtered_audit = client.get(
+        "/control-plane/audit/events",
+        params={"event_type": "route_decision"},
+    ).json()
+
+    assert summary["source"] == "agent_gateway"
+    assert summary["route_decision"]["reason"] == "controller_delegate_default"
+    assert summary["identity"]["identity_source"] == "request_body"
+    assert summary["redaction"]["provider_raw_responses_included"] is False
+    assert route["route_status"] == "routed"
+    assert tree["root"]["agent_id"] == DEFAULT_AGENT_ID
+    assert tree["children"][0]["task_id"] == "agent_task_api"
+    assert tree["children"][0]["agent_id"] == WORKER_AGENT_ID
+    assert budget["budget"]["delegated_task_count"] == 1
+    assert budget["latency_ms"] is not None
+    assert replay["request"]["message"] == "not_included"
+    assert replay["delegated_tasks"][0]["run_id"] == "run_worker_child_api"
+    assert trace["gateway"]["run_id"] == run_id
+    assert "trace" in trace
+    event_types = {event["event_type"] for event in audit["events"]}
+    assert {
+        "auth_decision",
+        "route_decision",
+        "provider_opt_in_decision",
+        "delegation_decision",
+    }.issubset(event_types)
+    route_event = next(event for event in audit["events"] if event["event_type"] == "route_decision")
+    assert route_event["detail"]["selected_agent_id"] == DEFAULT_AGENT_ID
+    assert route_event["detail"]["collaboration_mode"] == "controller_delegate"
+    assert audit["retention"]["durable"] is False
+    assert audit["redaction"]["conversation_history_included"] is False
+    assert any(event["run_id"] == run_id for event in filtered_audit["events"])
+    assert {event["event_type"] for event in filtered_audit["events"]} == {"route_decision"}
+
+
+def test_control_plane_api_can_summarize_default_agent_trace(monkeypatch) -> None:
+    trace_store = InMemoryTraceStore()
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+    gateway = AgentGateway(
+        {DEFAULT_AGENT_ID: ControlPlaneRecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="unused_gateway")}
+    )
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    client = TestClient(create_app())
+
+    run_response = client.post(
+        "/agent/run",
+        json={"user_id": "u1", "session_id": "s1", "text": "帮我找相似款"},
+    )
+    assert run_response.status_code == 200
+    run_id = run_response.json()["run_id"]
+
+    summary = client.get(f"/control-plane/runs/{run_id}")
+
+    assert summary.status_code == 200
+    payload = summary.json()
+    assert payload["source"] == "trace_store"
+    assert payload["run_id"] == run_id
+    assert payload["trace"]["event_count"] > 0
+    assert payload["redaction"]["raw_payloads_included"] is False
+
+
+def test_control_plane_readiness_reports_auth_requirement(monkeypatch) -> None:
+    monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "true")
+    runtime = AgentGraphRuntime(trace_store=InMemoryTraceStore())
+    gateway = AgentGateway(
+        {DEFAULT_AGENT_ID: ControlPlaneRecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="unused_gateway")}
+    )
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    client = TestClient(create_app())
+
+    response = client.get("/control-plane/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "agent_pilot_readiness_v1"
+    assert payload["status"] == "blocked"
+    auth_check = next(check for check in payload["checks"] if check["name"] == "auth_bound_identity")
+    assert auth_check["status"] == "failed"
+    audit = client.get(
+        "/control-plane/audit/events",
+        params={"event_type": "provider_opt_in_decision"},
+    )
+    assert audit.status_code == 200
+    events = audit.json()["events"]
+    assert events[-1]["action"] == "evaluate_runtime_profile"
+    assert events[-1]["outcome"] == "blocked_default"

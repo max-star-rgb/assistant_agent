@@ -1,6 +1,6 @@
 # Memory Kernel Hardening Plan
 
-Last updated: 2026-06-29
+Last updated: 2026-06-30
 
 This is the development plan for turning the current local-first memory service into an auditable, isolated, rollback-capable, token-aware, and testable Memory Kernel. Future memory engineering work should use this document as the phased execution plan, while `docs/memory-service-architecture.md` remains the current architecture and boundary source.
 
@@ -270,10 +270,15 @@ P0 progress:
 - 2026-06-29: Added first-pass user-scoped memory export and expired-memory retention sweep through `MemoryAuditService` and API routes. The sweep supports dry-run, soft-delete, and explicit hard-delete modes while preserving identity scoping. `InMemoryStore`, `JsonlMemoryStore`, and `SQLiteMemoryStore` expose a `hard_delete(...)` hook; production-grade audit log storage and rollback/rebuild remain future work.
 - 2026-06-29: Added bounded in-process `MemoryAuditEvent` and `MemoryMetricsReport` foundation. `MemoryManager` records context load, explicit save/reject, promotion decision, soft delete, hard delete, session delete, and user-clear events; `MemoryAuditService` records export and retention-sweep events and exposes `/events` and `/metrics` API views. This established the local/API event shape before the SQLite durable storage work below.
 - 2026-06-29: Added SQLite schema v2 durable audit-event storage. `SQLiteMemoryStore` now persists `MemoryAuditEvent` rows in `memory_audit_events`, migrates v0/v1 databases to v2, rejects newer schemas before mutating them, and supports user/type scoped event reads across runtime restarts. Tests cover v1 audit migration, corrupt database rejection, audit-event transaction rollback, persisted event identity filtering, and cross-instance event reads. External metrics export remains future work.
-- 2026-06-29: Added SQLite schema v3 durable memory-confirmation storage. `SQLiteMemoryStore` now persists `MemoryPendingConfirmation` rows in `memory_confirmations`, migrates v2 databases to v3, supports cross-runtime confirmation list/confirm/reject, and includes confirmations in backup/restore/index rebuild. Tests cover v2 migration, confirmation transaction rollback, cross-instance confirmation, and backup/restore coverage. JSONL confirmation sidecar persistence and a formal cross-backend confirmation-store contract remain future work.
+- 2026-06-29: Added SQLite schema v3 durable memory-confirmation storage. `SQLiteMemoryStore` now persists `MemoryPendingConfirmation` rows in `memory_confirmations`, migrates v2 databases to v3, supports cross-runtime confirmation list/confirm/reject, and includes confirmations in backup/restore/index rebuild. Tests cover v2 migration, confirmation transaction rollback, cross-instance confirmation, and backup/restore coverage.
 - 2026-06-29: Added local SQLite operator helpers and runbook. `SQLiteMemoryStore.backup_to(...)`, `restore_backup(...)`, `integrity_check()`, and `rebuild_indexes()` cover memory rows, audit events, and confirmations. Tests cover backup/restore contents, explicit overwrite behavior, failed restore preserving the current target, and index rebuild. `docs/development/memory-sqlite-operator-runbook.md` now documents backup, restore, corruption response, migration rollback, and validation steps. Remote backup policy and production retention remain future work.
 - 2026-06-29: Added first-pass `user_profile` rebuild/repair. `MemoryManager.rebuild_user_profile_for_identity(...)` derives the compact profile from current unexpired, unscoped preference/product/task memories, reports missing/stale/orphaned/out-of-sync state, and can create, update, or delete the `user_profile` item. `MemoryAuditService` and API routes expose status and rebuild operations, with `memory_profile_repaired` audit events and profile metrics. Scoped tenant/project profiles and richer conflict resolution remain future work.
 - 2026-06-29: Added first-pass consent policy and sensitive explicit-memory confirmation flow. `MemoryManager.save_explicit(...)` now creates `MemoryPendingConfirmation` state for `require_user_confirmation=True`, `memory_save` returns a recoverable partial result with `confirmation_id`, and `MemoryAuditService` plus API routes expose list/confirm/reject operations. Confirming a pending item re-runs the normal explicit-memory builder on the redacted payload before storage; rejecting leaves no durable memory item. SQLite persists pending/resolved confirmations; non-SQLite stores without confirmation methods still use the process-local fallback.
+- 2026-06-30: Added SQLite test/performance governance. `SQLiteMemoryStore` keeps production defaults but accepts validated constructor pragmas for focused tests; store-boundary tests use `synchronous="OFF"` locally, while manual test setup connections use fast pragmas, to avoid slow fsync-heavy temp filesystem behavior. The focused SQLite boundary duration dropped from roughly 100 seconds to roughly 12 seconds while preserving migration, rollback, backup/restore, confirmation, and concurrency coverage.
+- 2026-06-30: Formalized the cross-backend memory-confirmation store contract. `MemoryStore` now includes confirmation save/get/list/delete methods, and `JsonlMemoryStore` persists redacted pending/resolved confirmations in a sidecar file such as `long_term_memories.confirmations.jsonl`. Store-boundary tests now cover confirmation CRUD across InMemory, JSONL, and SQLite, plus JSONL cross-instance confirm-and-save behavior. The manager fallback remains only for legacy/non-conforming custom stores.
+- 2026-06-30: Added first-pass deterministic profile conflict/supersedes handling. Explicit preference memories can carry a safe `preference_key`; new active preferences with the same key and governance scope supersede older conflicting preferences through `content["superseded_by_memory_id"]` / `content["supersedes_memory_ids"]`. User-profile rebuild now excludes superseded sources and reports `superseded_source_memory_ids` plus `profile_conflicts`; only multiple active conflicting memories are treated as unresolved conflicts. This is key-based governance, not semantic/LLM conflict inference.
+- 2026-06-30: Extended memory retrieval evals to cover superseded preference behavior. `MemoryRetrievalStrategy` excludes superseded items from active retrieval/context by default while leaving them available to audit/list/export paths. Retrieval eval setup can now create realistic state through explicit saves, and the memory eval suite asserts that old superseded preferences do not enter retrieval, injection, or active profile sources while the new preference remains recallable.
+- 2026-06-30: Added an explicit debug boundary for superseded retrieval. `MemoryQuery.include_superseded` defaults to false, so ordinary retrieval and agent context still exclude old superseded memories. `MemorySnapshotService` and `GET /memory/users/{user_id}/snapshot?include_superseded=true` can inspect the full chain for debugging, while agent-callable memory tools do not expose the flag through tool input.
 
 SQLite P0 requirements:
 
@@ -364,6 +369,7 @@ Minimum eval cases:
 | cross-user query | no leakage |
 | high-sensitive memory | not injected |
 | tiny budget | respect memory token budget |
+| superseded preference | exclude old preference from active retrieval/context/profile and retrieve the new preference |
 
 Metrics:
 
@@ -388,7 +394,7 @@ Work:
 2. Add schema version and migration runner. Initial v1 schema, v2 audit-event migration, v3 confirmation migration, migration hook, newer-schema rejection, corrupt database rejection, audit/confirmation rollback tests, and local operator rollback runbook done on 2026-06-29; deployment-specific restore drills remain future work.
 3. Add transaction/lock behavior and user-scoped unique dedupe key.
 4. Shape `RequestIdentity` and thread it through service APIs where practical. Initial request-derived identity boundary is implemented on 2026-06-29; service-layer project/tenant/scope filtering is in place for scoped memories. Auth-bound principal integration and database-level tenant/project indexes remain future work.
-5. Promote `MemoryWritePolicy` into a decision object with allow/reject/confirmation reasons. Initial `MemoryWriteDecision` fields, explicit-save/promotion-candidate evaluation, first-pass user-facing confirmation workflow, and SQLite durable confirmation queue storage are implemented on 2026-06-29; JSONL sidecar persistence remains future work.
+5. Promote `MemoryWritePolicy` into a decision object with allow/reject/confirmation reasons. Initial `MemoryWriteDecision` fields, explicit-save/promotion-candidate evaluation, first-pass user-facing confirmation workflow, SQLite durable confirmation queue storage, and JSONL confirmation sidecar persistence are implemented.
 6. Add token-aware `MemoryContextBuilder` behind existing context metadata. Initial memory-local builder and metadata reporting are implemented on 2026-06-29; broader memory evals and trace metrics remain future work.
 7. Add soft delete, export, and audit log foundation. Soft-delete behavior, user export, retention sweep, in-process audit events, SQLite durable audit-event/confirmation storage, local backup/restore helpers, and derived local metrics are implemented; external metrics export and production backup policy remain future work.
 8. Keep `InMemoryStore` and `JsonlMemoryStore` as local/offline paths.
@@ -403,6 +409,7 @@ Acceptance:
 - Search/delete/export remain user-scoped.
 - Deleted memory is not retrieved or injected.
 - Expired memory is not injected by default.
+- Superseded memory is not retrieved or injected by default, but can be inspected through explicit debug/audit paths.
 - Memory context respects configured token budget.
 - SQLite path passes store contract tests.
 - JSONL remains supported for debug/local compatibility.
@@ -417,11 +424,11 @@ Work:
 2. Soft delete to hard delete flow.
 3. User export API/CLI.
 4. Profile rebuild/repair. First-pass global user-profile check and repair is implemented; scoped profiles and richer conflict resolution remain future work.
-5. Conflict detection and supersedes chain.
+5. Conflict detection and supersedes chain. First-pass deterministic `preference_key` conflict handling and profile reporting is implemented; semantic conflict inference, scoped profiles, and cross-backend schema indexes remain future work.
 6. Memory metrics.
 7. Migration rollback/index rebuild/backup restore runbook. Local SQLite runbook is implemented; production restore drills and deployment policy remain future work.
 8. Consent policy.
-9. Sensitive memory confirmation flow. First-pass confirmation state, SQLite durable confirmation persistence, tool partial result, service/API list/confirm/reject, audit events, and metrics are implemented; JSONL sidecar persistence and production auth-bound confirmation UX remain future work.
+9. Sensitive memory confirmation flow. First-pass confirmation state, SQLite durable confirmation persistence, JSONL confirmation sidecar persistence, tool partial result, service/API list/confirm/reject, audit events, and metrics are implemented; production auth-bound confirmation UX remains future work.
 
 Acceptance:
 
@@ -429,8 +436,9 @@ Acceptance:
 - System can explain why a memory was written, rejected, injected, omitted, or deleted.
 - Sweeper does not break audit.
 - Profile can be rebuilt from source memory items. First-pass global rebuild/repair is implemented.
+- Superseded profile sources are excluded from the active profile and remain explainable through profile status.
 - Sensitive memory cannot become durable without the configured confirmation path.
-- Pending confirmations can be listed, confirmed, rejected, audited, and persisted across SQLite runtime restarts.
+- Pending confirmations can be listed, confirmed, rejected, audited, and persisted across SQLite and JSONL runtime restarts.
 
 ### P2: Intelligence After Baselines
 

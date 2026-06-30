@@ -89,6 +89,54 @@ def test_memory_snapshot_api_can_include_sanitized_content(monkeypatch) -> None:
     assert item["content"] == {"style": "浅色日系"}
 
 
+def test_memory_snapshot_api_can_debug_include_superseded_memories(monkeypatch) -> None:
+    memory_store = InMemoryStore()
+    runtime = AgentGraphRuntime(
+        memory_store=memory_store,
+        trace_store=InMemoryTraceStore(),
+        session_store=InMemorySessionStore(),
+    )
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+    runtime.memory_manager.save_explicit_for_identity(
+        identity,
+        text="记住我喜欢浅色日系风格",
+        content={"preference_key": "style", "style": "浅色日系", "summary": "用户喜欢浅色日系风格。"},
+        memory_id="style_old",
+        created_at=NOW,
+    )
+    runtime.memory_manager.save_explicit_for_identity(
+        identity,
+        text="记住我现在喜欢深色极简风格",
+        content={"preference_key": "style", "style": "深色极简", "summary": "用户喜欢深色极简风格。"},
+        memory_id="style_new",
+        created_at=NOW,
+    )
+
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_default_conversation_store", lambda config=None: InMemoryConversationStore())
+    client = TestClient(create_app())
+
+    default_response = client.get(
+        "/memory/users/u1/snapshot",
+        params={"session_id": "s1", "query": "风格"},
+    )
+    debug_response = client.get(
+        "/memory/users/u1/snapshot",
+        params={"session_id": "s1", "query": "风格", "include_superseded": True},
+    )
+
+    assert default_response.status_code == 200
+    assert debug_response.status_code == 200
+    default_ids = _snapshot_memory_ids(default_response.json())
+    debug_ids = _snapshot_memory_ids(debug_response.json())
+    assert "style_new" in default_ids
+    assert "style_old" not in default_ids
+    assert "style_new" in debug_ids
+    assert "style_old" in debug_ids
+    assert default_response.json()["memory_context"]["include_superseded"] is False
+    assert debug_response.json()["memory_context"]["include_superseded"] is True
+
+
 def test_memory_snapshot_service_uses_request_identity_scope() -> None:
     memory_store = InMemoryStore()
     session_store = InMemorySessionStore()
@@ -130,6 +178,14 @@ def test_memory_snapshot_service_uses_request_identity_scope() -> None:
     assert snapshot.memory_context.total == 1
     assert snapshot.memory_context.blocks[0].items[0].memory_id == "pref"
     assert snapshot.audit.total == 1
+
+
+def _snapshot_memory_ids(payload: dict) -> list[str]:
+    return [
+        item["memory_id"]
+        for block in payload["memory_context"]["blocks"]
+        for item in block["items"]
+    ]
 
 
 def _memory(

@@ -105,6 +105,7 @@ class MemoryQuery(BaseModel):
     max_context_chars: int = Field(default=500, ge=50, le=4000)
     since: datetime | None = None
     include_expired: bool = False
+    include_superseded: bool = False
 
 
 class MemorySearchResult(BaseModel):

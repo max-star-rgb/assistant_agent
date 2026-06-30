@@ -126,6 +126,29 @@ def test_memory_retrieval_filters_by_tenant_project_and_scope() -> None:
     assert {item.memory_id for item in results} == {"global_pref", "project_a"}
 
 
+def test_memory_retrieval_excludes_superseded_by_default_and_allows_debug_include() -> None:
+    store = InMemoryStore()
+    store.save(
+        memory_item(
+            "style_old",
+            "preference",
+            "用户喜欢浅色日系风格。",
+            {"preference_key": "style", "superseded_by_memory_id": "style_new"},
+        )
+    )
+    store.save(memory_item("style_new", "preference", "用户喜欢深色极简风格。", {"preference_key": "style"}))
+
+    default_results = MemoryRetrievalStrategy(store).retrieve(
+        MemoryQuery(user_id="u1", query="风格", top_k=5)
+    )
+    debug_results = MemoryRetrievalStrategy(store).retrieve(
+        MemoryQuery(user_id="u1", query="风格", top_k=5, include_superseded=True)
+    )
+
+    assert [item.memory_id for item in default_results] == ["style_new"]
+    assert {item.memory_id for item in debug_results} == {"style_old", "style_new"}
+
+
 def test_jsonl_memory_retrieval_works_across_instances(tmp_path) -> None:
     path = tmp_path / "memories.jsonl"
     JsonlMemoryStore(path).save(memory_item("m1", "product", "用户关注黑色包"))

@@ -2,6 +2,7 @@
 
 from multimodal_agent.memory.manager import MemoryManager
 from multimodal_agent.schemas.identity import RequestIdentity
+from multimodal_agent.schemas.memory import MemoryQuery
 from multimodal_agent.schemas.memory_audit import MemoryAuditItem
 from multimodal_agent.schemas.memory_snapshot import (
     ConversationHistorySnapshot,
@@ -41,6 +42,7 @@ class MemorySnapshotService:
         top_k: int = 5,
         max_context_chars: int = 1000,
         include_content: bool = False,
+        include_superseded: bool = False,
     ) -> MemorySnapshot:
         """Return a read-only snapshot of session and long-term memory."""
 
@@ -50,6 +52,7 @@ class MemorySnapshotService:
             top_k=top_k,
             max_context_chars=max_context_chars,
             include_content=include_content,
+            include_superseded=include_superseded,
         )
 
     def snapshot_for_identity(
@@ -60,15 +63,31 @@ class MemorySnapshotService:
         top_k: int = 5,
         max_context_chars: int = 1000,
         include_content: bool = False,
+        include_superseded: bool = False,
     ) -> MemorySnapshot:
         """Return a read-only snapshot for an identity."""
 
         session_id = identity.session_id
-        context = self.memory_manager.load_context_for_identity(
+        result = self.memory_manager.search_for_identity(
             identity,
-            query_text=query,
-            top_k=top_k,
-            max_context_chars=max_context_chars,
+            MemoryQuery(
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                query=query,
+                allowed_scopes=[
+                    scope
+                    for scope in identity.allowed_scopes
+                    if scope in {"session", "task", "project", "user_profile", "video", "product"}
+                ],
+                top_k=top_k,
+                max_context_chars=max_context_chars,
+                include_superseded=include_superseded,
+            ),
+        )
+        context = self.memory_manager.build_context(
+            result.items,
+            max_chars=max_context_chars,
         )
         return MemorySnapshot(
             user_id=identity.user_id,
@@ -77,6 +96,7 @@ class MemorySnapshotService:
             conversation_history=self._conversation_history(user_id=identity.user_id, session_id=session_id),
             memory_context=MemoryContextSnapshot(
                 query=query,
+                include_superseded=include_superseded,
                 total=len(context.items),
                 context_text=context.text,
                 summaries=context.summaries,

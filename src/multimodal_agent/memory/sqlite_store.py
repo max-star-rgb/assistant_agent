@@ -19,8 +19,18 @@ SCHEMA_VERSION = 3
 class SQLiteMemoryStore:
     """Local SQLite memory store isolated by user_id."""
 
-    def __init__(self, path: Path | str = ".local/memory/long_term_memories.sqlite3") -> None:
+    def __init__(
+        self,
+        path: Path | str = ".local/memory/long_term_memories.sqlite3",
+        *,
+        journal_mode: str | None = None,
+        synchronous: str = "NORMAL",
+        busy_timeout_ms: int = 30000,
+    ) -> None:
         self.path = Path(path)
+        self._journal_mode = _sqlite_journal_mode(journal_mode) if journal_mode is not None else None
+        self._synchronous = _sqlite_synchronous(synchronous)
+        self._busy_timeout_ms = max(0, int(busy_timeout_ms))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize(new_database=not self.path.exists())
 
@@ -396,7 +406,13 @@ class SQLiteMemoryStore:
             raise FileExistsError(destination_path)
         if overwrite:
             _remove_sqlite_file_set(destination_path)
-        _backup_database(self.path, destination_path)
+        _backup_database(
+            self.path,
+            destination_path,
+            journal_mode=self._journal_mode,
+            synchronous=self._synchronous,
+            busy_timeout_ms=self._busy_timeout_ms,
+        )
         _assert_sqlite_integrity(destination_path)
         return destination_path
 
@@ -407,11 +423,17 @@ class SQLiteMemoryStore:
         destination: Path | str,
         *,
         overwrite: bool = False,
+        journal_mode: str | None = None,
+        synchronous: str = "NORMAL",
+        busy_timeout_ms: int = 30000,
     ) -> "SQLiteMemoryStore":
         """Restore a validated backup into a SQLite memory database path."""
 
         source_path = Path(source)
         destination_path = Path(destination)
+        resolved_journal_mode = _sqlite_journal_mode(journal_mode) if journal_mode is not None else None
+        resolved_synchronous = _sqlite_synchronous(synchronous)
+        resolved_busy_timeout_ms = max(0, int(busy_timeout_ms))
         if source_path == destination_path:
             raise ValueError("restore source and destination must differ")
         if not source_path.exists():
@@ -424,7 +446,13 @@ class SQLiteMemoryStore:
         staging_path = _staging_restore_path(destination_path)
         _remove_sqlite_file_set(staging_path)
         try:
-            _backup_database(source_path, staging_path)
+            _backup_database(
+                source_path,
+                staging_path,
+                journal_mode=resolved_journal_mode,
+                synchronous=resolved_synchronous,
+                busy_timeout_ms=resolved_busy_timeout_ms,
+            )
             _assert_sqlite_integrity(staging_path)
             _assert_supported_schema(staging_path)
             if overwrite:
@@ -432,7 +460,12 @@ class SQLiteMemoryStore:
             staging_path.replace(destination_path)
         finally:
             _remove_sqlite_file_set(staging_path)
-        return cls(destination_path)
+        return cls(
+            destination_path,
+            journal_mode=resolved_journal_mode,
+            synchronous=resolved_synchronous,
+            busy_timeout_ms=resolved_busy_timeout_ms,
+        )
 
     def integrity_check(self) -> list[str]:
         """Run SQLite integrity_check and return the raw result rows."""
@@ -496,12 +529,14 @@ class SQLiteMemoryStore:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(str(self.path), timeout=30)
+        connection = sqlite3.connect(str(self.path), timeout=max(1, self._busy_timeout_ms // 1000))
         try:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("PRAGMA busy_timeout=30000")
-            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
+            if self._journal_mode is not None:
+                connection.execute(f"PRAGMA journal_mode={self._journal_mode}")
+            connection.execute(f"PRAGMA synchronous={self._synchronous}")
             yield connection
             connection.commit()
         except Exception:
@@ -662,15 +697,47 @@ def _ensure_confirmation_schema(connection: sqlite3.Connection) -> None:
     )
 
 
-def _backup_database(source: Path, destination: Path) -> None:
-    source_connection = sqlite3.connect(str(source), timeout=30)
-    destination_connection = sqlite3.connect(str(destination), timeout=30)
+def _backup_database(
+    source: Path,
+    destination: Path,
+    *,
+    journal_mode: str | None = None,
+    synchronous: str = "NORMAL",
+    busy_timeout_ms: int = 30000,
+) -> None:
+    source_connection = sqlite3.connect(str(source), timeout=max(1, busy_timeout_ms // 1000))
+    destination_connection = sqlite3.connect(str(destination), timeout=max(1, busy_timeout_ms // 1000))
     try:
+        _configure_sqlite_connection(
+            source_connection,
+            journal_mode=journal_mode,
+            synchronous=synchronous,
+            busy_timeout_ms=busy_timeout_ms,
+        )
+        _configure_sqlite_connection(
+            destination_connection,
+            journal_mode=journal_mode,
+            synchronous=synchronous,
+            busy_timeout_ms=busy_timeout_ms,
+        )
         source_connection.backup(destination_connection)
         destination_connection.commit()
     finally:
         destination_connection.close()
         source_connection.close()
+
+
+def _configure_sqlite_connection(
+    connection: sqlite3.Connection,
+    *,
+    journal_mode: str | None,
+    synchronous: str,
+    busy_timeout_ms: int,
+) -> None:
+    connection.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
+    if journal_mode is not None:
+        connection.execute(f"PRAGMA journal_mode={_sqlite_journal_mode(journal_mode)}")
+    connection.execute(f"PRAGMA synchronous={_sqlite_synchronous(synchronous)}")
 
 
 def _assert_sqlite_integrity(path: Path) -> None:
@@ -708,3 +775,17 @@ def _remove_sqlite_file_set(path: Path) -> None:
     for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
         if candidate.exists():
             candidate.unlink()
+
+
+def _sqlite_journal_mode(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized not in {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}:
+        raise ValueError(f"unsupported SQLite journal_mode: {value}")
+    return normalized
+
+
+def _sqlite_synchronous(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized not in {"OFF", "NORMAL", "FULL", "EXTRA"}:
+        raise ValueError(f"unsupported SQLite synchronous mode: {value}")
+    return normalized

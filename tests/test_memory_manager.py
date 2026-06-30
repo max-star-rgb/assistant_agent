@@ -453,6 +453,39 @@ def test_memory_manager_updates_user_profile_from_preference() -> None:
     assert "浅色日系" in profile.summary
 
 
+def test_memory_manager_supersedes_conflicting_preference_in_user_profile() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+
+    first = manager.save_explicit(
+        user_id="u1",
+        session_id="s1",
+        text="记住我喜欢浅色日系海报",
+        content={"preference_key": "style", "style": "浅色日系", "summary": "用户喜欢浅色日系海报。"},
+        memory_id="style_old",
+        created_at=NOW,
+    )
+    second = manager.save_explicit(
+        user_id="u1",
+        session_id="s1",
+        text="记住我现在喜欢深色极简海报",
+        content={"preference_key": "style", "style": "深色极简", "summary": "用户喜欢深色极简海报。"},
+        memory_id="style_new",
+        created_at=NOW,
+    )
+
+    old_item = store.get("u1", first.memory_id)
+    profile = store.get("u1", USER_PROFILE_MEMORY_ID)
+
+    assert old_item is not None
+    assert old_item.content["superseded_by_memory_id"] == second.memory_id
+    assert second.content["supersedes_memory_ids"] == [first.memory_id]
+    assert second.content["preference_key"] == "style"
+    assert profile is not None
+    assert profile.content["source_memory_ids"] == [second.memory_id]
+    assert profile.content["preferences"] == ["用户喜欢深色极简海报。"]
+
+
 def test_memory_retrieval_tool_uses_manager_store_when_available() -> None:
     store = InMemoryStore()
     store.save(memory_item("m1", "product", "用户上次关注了一个黑色通勤包。"))

@@ -72,6 +72,8 @@ class MemoryRetrievalStrategy:
 
         filtered = []
         for item in items:
+            if _is_superseded(item) and not query.include_superseded:
+                continue
             if not memory_item_matches_query_scope(item, query):
                 continue
             item_session_id = item.session_id or item.content.get("session_id")
@@ -141,6 +143,10 @@ def _dedupe(items: list[MemoryItem]) -> list[MemoryItem]:
         seen.add(key)
         deduped.append(item)
     return deduped
+
+
+def _is_superseded(item: MemoryItem) -> bool:
+    return bool(str(item.content.get("superseded_by_memory_id") or "").strip())
 
 
 def _allows_recent_context_fallback(query: str) -> bool:

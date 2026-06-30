@@ -1617,6 +1617,59 @@
     }
   },
   {
+    "id": "memory_retrieval_superseded_preference_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_superseded_preference",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "风格",
+      "expected_memory_ids": [
+        "style_new"
+      ],
+      "expected_injected_ids": [
+        "style_new"
+      ],
+      "expected_profile_source_memory_ids": [
+        "style_new"
+      ],
+      "expected_profile_conflict_count": 1,
+      "forbidden_memory_ids": [
+        "style_old"
+      ],
+      "forbidden_injected_ids": [
+        "style_old"
+      ],
+      "forbidden_profile_source_memory_ids": [
+        "style_old"
+      ],
+      "explicit_saves": [
+        {
+          "memory_id": "style_old",
+          "text": "记住我喜欢浅色日系风格",
+          "content": {
+            "preference_key": "style",
+            "style": "浅色日系",
+            "summary": "用户喜欢浅色日系风格。"
+          },
+          "created_at": "2026-01-01T00:00:00+00:00"
+        },
+        {
+          "memory_id": "style_new",
+          "text": "记住我现在喜欢深色极简风格",
+          "content": {
+            "preference_key": "style",
+            "style": "深色极简",
+            "summary": "用户喜欢深色极简风格。"
+          },
+          "created_at": "2026-01-02T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
     "id": "memory_user_isolation_001",
     "category": "memory",
     "suite": "memory",

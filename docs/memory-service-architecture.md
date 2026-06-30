@@ -1,6 +1,6 @@
 # Memory Service Architecture
 
-Last updated: 2026-06-29
+Last updated: 2026-06-30
 
 This document is the current canonical entry for memory service architecture. Update it whenever `MemoryManager`, memory stores, retrieval, write policy, user profile behavior, memory tools, memory APIs, or memory context boundaries change.
 
@@ -96,9 +96,9 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | --- | --- |
 | `src/multimodal_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, pending confirmation flow, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
 | `src/multimodal_agent/memory/context_builder.py` | Token-aware, prompt-safe memory context selection and layer rendering. Produces injected items, rendered context, token count, omission count, rejection reasons, and retrieval version. |
-| `src/multimodal_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`, including soft-delete-compatible delete and hard-delete store boundary methods. |
-| `src/multimodal_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract. |
-| `src/multimodal_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, soft-delete-compatible delete behavior, and durable audit-event rows. |
+| `src/multimodal_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`, including soft-delete-compatible delete, hard-delete, and memory-confirmation methods. |
+| `src/multimodal_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract, with redacted confirmation state stored in a sidecar JSONL file. |
+| `src/multimodal_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, soft-delete-compatible delete behavior, durable audit-event rows, and durable confirmation rows. |
 | `src/multimodal_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
 | `src/multimodal_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
 | `src/multimodal_agent/memory/write_policy.py` | Safe memory item construction, TTL defaults, raw payload restrictions, explicit memory typing. |
@@ -190,7 +190,11 @@ Environment variables:
 
 Relative JSONL and SQLite paths resolve from the repository root. JSONL and SQLite are still local-first storage, not real external providers. Future PostgreSQL, vector DB, or external memory service adapters must sit behind `MemoryStore` and `MemoryManager`.
 
+Standard `MemoryStore` backends implement the confirmation workflow methods: `save_confirmation(...)`, `get_confirmation(...)`, `list_confirmations(...)`, and `delete_confirmation(...)`. InMemory keeps confirmation state in process memory. JSONL stores redacted pending/resolved confirmations in a sidecar file next to the memory JSONL file, for example `long_term_memories.confirmations.jsonl`. SQLite stores them in schema v3 `memory_confirmations`.
+
 `SQLiteMemoryStore` also exposes local operator helpers for `backup_to(...)`, `restore_backup(...)`, `integrity_check()`, and `rebuild_indexes()`. These helpers cover `memory_items`, `memory_audit_events`, and `memory_confirmations`. Operational steps and rollback guidance live in `docs/development/memory-sqlite-operator-runbook.md`.
+
+SQLite durability defaults remain production-oriented: normal runtime uses `synchronous=NORMAL`, a long `busy_timeout`, and WAL for newly created databases. Focused tests may pass explicit, validated pragmas such as `journal_mode="MEMORY"` and `synchronous="OFF"` to avoid slow filesystem fsyncs; those fast settings are test-only and must not become the runtime default.
 
 ## Contracts
 
@@ -264,6 +268,7 @@ Filters apply after candidate selection:
 - `user_id` isolation is mandatory.
 - Optional `session_id`, `memory_types`, `tags`, `since`, and expiration filters apply.
 - Expired memories are excluded unless `include_expired=True`.
+- Superseded memories, identified by `content["superseded_by_memory_id"]`, are excluded from active retrieval and context injection by default. Debug/read-only callers may set `MemoryQuery.include_superseded=True`; the current public debug route is the memory snapshot API. Agent-callable memory tools do not expose this flag.
 
 Ranking combines relevance, capability/type priority, artifact-ref signal, and recency. Capability-specific priorities currently exist for image generation, product search, render 3D, and direct chat.
 
@@ -276,7 +281,7 @@ Current local eval boundary:
 - `src/multimodal_agent/memory/retrieval_eval.py` runs deterministic `InMemoryStore + MemoryManager` retrieval and context-injection cases.
 - `scripts/run_evals.py --suite memory` includes the retrieval eval cases from `tests/evals/eval_cases.json`.
 - Metrics include Recall@k, MRR, false-positive rate, correct-empty rate, cross-user leakage rate, sensitive/expired injection rate, and token budget compliance.
-- Initial coverage includes black-bag recall, color preference recall, task/product resume, budget preference, unrelated empty recall, cross-user isolation, expired exclusion, sensitive non-injection, and token budget compliance.
+- Initial coverage includes black-bag recall, color preference recall, task/product resume, budget preference, unrelated empty recall, cross-user isolation, expired exclusion, sensitive non-injection, token budget compliance, and superseded-preference exclusion from active profile/context.
 
 ## Writes
 
@@ -286,7 +291,7 @@ Explicit saves:
 - Are evaluated by `MemoryWritePolicy.evaluate_explicit_save(...)` before any item is built.
 - Return a `MemoryWriteDecision` with `allowed`, `destination`, `reason`, `require_user_confirmation`, `sensitivity`, `ttl_days`, and `redacted_payload`.
 - If `allowed=True`, the durable `MemoryItem` is built through `build_explicit_memory_item(...)` and still passes `MemoryItem` payload validation before storage.
-- If `require_user_confirmation=True`, the write creates a `MemoryPendingConfirmation` with only redacted summary and safe content preview. SQLite schema v3 persists these confirmations in `memory_confirmations`; stores without confirmation methods use the in-process manager fallback. No durable memory item is stored until the user confirms it through the confirmation API/service path.
+- If `require_user_confirmation=True`, the write creates a `MemoryPendingConfirmation` with only redacted summary and safe content preview. Standard stores persist or retain these confirmations through the `MemoryStore` confirmation methods: SQLite uses `memory_confirmations`, JSONL uses the confirmation sidecar, and InMemory keeps process-local state. No durable memory item is stored until the user confirms it through the confirmation API/service path.
 - Confirming a pending explicit memory re-runs the normal explicit-memory builder on the redacted payload, stores the resulting item, and records both `memory_explicit_saved` and `memory_confirmation_decided` audit events.
 - Rejecting a pending explicit memory records `memory_confirmation_decided` and does not write a memory item.
 - Require non-empty text or summary.
@@ -328,7 +333,7 @@ Default TTL policy:
 
 Sensitive-looking summaries are sanitized. If task-summary sanitization changes the summary and `require_explicit_save_for_sensitive=True`, automatic task-summary saving is skipped.
 
-Current confirmation limit: SQLite-backed pending confirmations survive runtime restart; JSONL and other stores without `save_confirmation(...)` / `list_confirmations(...)` methods still use the process-local `MemoryManager` fallback. A formal cross-backend confirmation-store contract and JSONL sidecar persistence remain future work.
+Current confirmation limit: SQLite and JSONL-backed pending confirmations survive runtime restart; InMemory remains process-local by design. `MemoryManager` keeps a process-local fallback only for legacy/non-conforming custom stores, but standard backends should implement the confirmation methods directly.
 
 ## User Profile
 
@@ -349,7 +354,9 @@ Its content stores:
 
 This keeps profile retrieval compatible with the existing store/search/delete contract while avoiding a separate profile storage path.
 
-`MemoryManager.rebuild_user_profile_for_identity(...)` can check or repair the compact profile from current source memories. Source memories are identity-visible, unexpired, unscoped `preference`, `product`, and `task` items; tenant/project-scoped items are excluded until scoped profile storage is designed. The repair result reports missing, stale, orphaned, and out-of-sync profile state. Repair can create, update, delete, or no-op the `user_profile` item and records a prompt-safe `memory_profile_repaired` audit event when invoked through the repair path.
+Explicit preference memories may carry a deterministic `content["preference_key"]`, such as `style` or `budget`. When a new explicit preference uses the same key and governance scope as an older active preference with a different summary, `MemoryManager` marks the older memory with `content["superseded_by_memory_id"]` and marks the newer memory with `content["supersedes_memory_ids"]`. This is a deterministic conflict/supersedes chain, not semantic inference. The first-pass rules only use explicit `preference_key`, known structured fields such as `style` and `budget`, and a small budget-summary fallback.
+
+`MemoryManager.rebuild_user_profile_for_identity(...)` can check or repair the compact profile from current source memories. Source memories are identity-visible, unexpired, unscoped `preference`, `product`, and `task` items; tenant/project-scoped items are excluded until scoped profile storage is designed. Superseded source memories are excluded from the active profile and reported through `superseded_source_memory_ids` and `profile_conflicts`. The repair result reports missing, stale, orphaned, unresolved-conflict, and out-of-sync profile state. Repair can create, update, delete, or no-op the `user_profile` item and records a prompt-safe `memory_profile_repaired` audit event when invoked through the repair path.
 
 ## API And Audit
 
@@ -371,11 +378,11 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 - `DELETE /memory/users/{user_id}/items/{memory_id}`
 - `DELETE /memory/users/{user_id}/sessions/{session_id}`
 
-List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Export is identity-scoped and can omit content with `include_content=false`. Retention sweep scans only identity-visible memories, supports `dry_run=true`, soft-deletes expired items by default, and uses `MemoryManager.hard_delete_for_identity(...)` plus `MemoryStore.hard_delete(...)` when `hard_delete=true`. SQLite removes the row on hard delete; in-memory and JSONL stores already delete physically. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match. Session/user delete also clears identity-visible pending confirmations.
+List and snapshot endpoints do not include memory `content` by default. `include_content=True` returns sanitized content only. Snapshot also supports `include_superseded=True` for read-only debugging of supersedes chains without changing normal agent retrieval behavior. Export is identity-scoped and can omit content with `include_content=false`. Retention sweep scans only identity-visible memories, supports `dry_run=true`, soft-deletes expired items by default, and uses `MemoryManager.hard_delete_for_identity(...)` plus `MemoryStore.hard_delete(...)` when `hard_delete=true`. SQLite removes the row on hard delete; in-memory and JSONL stores already delete physically. Deletion is user-scoped and must not cross users even when memory IDs or session IDs match. Session/user delete also clears identity-visible pending confirmations.
 
 Confirmation endpoints list pending or resolved explicit-memory confirmations and let a user accept or reject a sensitive-but-redacted explicit memory. Confirmed entries become normal durable memory items; rejected or expired entries remain audit/governance state only.
 
-`MemoryManager` records prompt-safe lifecycle events: context load, explicit save/reject, confirmation create/decide, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. In-memory and JSONL paths keep a bounded in-process event list. SQLite schema v2 persists events in `memory_audit_events`, with common filter fields split into columns and the full redacted event saved as JSON payload, so events survive runtime restarts for the local SQLite backend. SQLite schema v3 persists redacted pending/resolved confirmations in `memory_confirmations`. Production-grade external metrics export, backup packaging, and full rollback/rebuild runbooks remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
+`MemoryManager` records prompt-safe lifecycle events: context load, explicit save/reject, confirmation create/decide, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. In-memory and JSONL paths keep a bounded in-process event list. SQLite schema v2 persists events in `memory_audit_events`, with common filter fields split into columns and the full redacted event saved as JSON payload, so events survive runtime restarts for the local SQLite backend. SQLite schema v3 persists redacted pending/resolved confirmations in `memory_confirmations`; JSONL persists the same confirmation payload shape in its sidecar file. Production-grade external metrics export, backup packaging, and full rollback/rebuild runbooks remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
 
 `DELETE /beta/users/{user_id}/data` clears memory through `runtime.memory_manager.clear_user(user_id)` as part of broader user-data deletion.
 

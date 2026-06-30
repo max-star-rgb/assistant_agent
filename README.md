@@ -12,6 +12,8 @@
 - Memory、demo、eval、CLI 和 Web UI 均围绕同一套本地优先运行时组织。
 - Context engineering 已集中到 `AssistantContextPack` 和 `services/context/`，负责 session summary、预算、裁剪、工具 observation compaction 和 trace/debug 摘要；长期记忆写入仍由 Memory service / `MemoryWritePolicy` 管理。
 - Agent communication 目前实现本地同进程边界、inbound A2A JSON-RPC adapter、默认禁用的 outbound A2A pilot transport，以及 pilot readiness 摘要/回放辅助：默认 `/agent/run`、CLI、eval 和 Web demo 仍走单 `agent.default`；独立 `/agents/run` 提供显式多 Agent 网关入口；`/.well-known/agent-card.json` 和 `/a2a/rpc` 暴露本地 A2A 兼容入口；远程 outbound 只有显式配置 `a2a_json_rpc` transport、endpoint 和 allowlist 时才可用。LLM 自动选 agent 仍未实现。
+- Agent control-plane observability 现在有只读 `/control-plane/...` 查询入口，可按 run/trace 查询脱敏 gateway route、delegation tree、identity provenance、budget/latency、audit events、pilot readiness 和 replay preview；Web Console 也有只读 Control Plane 面板复用这些 API；现有 `/runs/{run_id}`、`/traces/{trace_id}` 兼容保留。
+- Pilot 操作入口已固化为只读 readiness、离线 evidence 包和 runbook：`scripts/check_pilot_readiness.py`、`scripts/collect_pilot_evidence.py` 与 `docs/development/agent-pilot-operator-runbook.md`。
 
 ## Quick Start
 
@@ -80,6 +82,18 @@ curl -s http://127.0.0.1:8000/agents/run \
 
 ```bash
 curl -s http://127.0.0.1:8000/.well-known/agent-card.json
+```
+
+查看 control-plane 摘要：
+
+```bash
+$PY scripts/check_pilot_readiness.py
+$PY scripts/collect_pilot_evidence.py --strict --output .local/pilot/evidence-local.json
+curl -s http://127.0.0.1:8000/control-plane/readiness
+curl -s http://127.0.0.1:8000/control-plane/runs/<run_id>
+curl -s http://127.0.0.1:8000/control-plane/runs/<run_id>/delegation-tree
+curl -s http://127.0.0.1:8000/control-plane/runs/<run_id>/audit
+curl -s 'http://127.0.0.1:8000/control-plane/audit/events?event_type=route_decision'
 ```
 
 常用本地 URL：
@@ -168,8 +182,10 @@ structured observations -> final answer / events / audit logs
 
 - [上下文工程走读](docs/context-engineering-walkthrough.md)
 - [Context Engineering Status](docs/CONTEXT_ENGINEERING_STATUS.md)
+- [记忆模块负责人走读](docs/memory-module-walkthrough.md)
 - [Memory Service Architecture](docs/memory-service-architecture.md)
 - [Agent Communication Routing](docs/agent-communication-routing.md)
+- [Agent Pilot Operator Runbook](docs/development/agent-pilot-operator-runbook.md)
 
 `docs/development/` 和 `docs/interview/` 作为按需资料目录暂不清理。历史 `tasks/`、`prompts/`、仓库内 `skills/` 和根目录通用文档已按用户确认删除；不要把旧 roadmap 当成当前真实架构。
 

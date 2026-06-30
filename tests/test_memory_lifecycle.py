@@ -354,6 +354,47 @@ def test_profile_rebuild_updates_stale_profile_and_audit_warnings() -> None:
     assert profile.content["preferences"] == ["用户喜欢黑色包。"]
 
 
+def test_profile_status_reports_superseded_preference_conflicts() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+    service = MemoryAuditService(manager)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    old_item = manager.save_explicit_for_identity(
+        identity,
+        text="记住我喜欢浅色日系海报",
+        content={"preference_key": "style", "style": "浅色日系", "summary": "用户喜欢浅色日系海报。"},
+        memory_id="style_old",
+        created_at=NOW,
+    )
+    new_item = manager.save_explicit_for_identity(
+        identity,
+        text="记住我现在喜欢深色极简海报",
+        content={"preference_key": "style", "style": "深色极简", "summary": "用户喜欢深色极简海报。"},
+        memory_id="style_new",
+        created_at=NOW,
+    )
+
+    status = service.rebuild_profile_for_identity(identity, dry_run=True)
+    metrics = service.metrics_for_identity(identity)
+
+    assert status.dry_run is True
+    assert status.action == "none"
+    assert status.superseded_source_memory_ids == [old_item.memory_id]
+    assert status.expected_source_memory_ids == [new_item.memory_id]
+    assert status.profile_conflicts == [
+        {
+            "preference_key": "style",
+            "active_memory_id": new_item.memory_id,
+            "active_memory_ids": [new_item.memory_id],
+            "superseded_memory_ids": [old_item.memory_id],
+            "unresolved": False,
+        }
+    ]
+    assert "profile_unresolved_conflicts" not in status.issues
+    assert metrics.counters["memory.profile.conflict.count"] == 1
+
+
 def test_profile_rebuild_deletes_orphan_profile() -> None:
     store = InMemoryStore()
     store.save(

@@ -8,7 +8,7 @@ from multimodal_agent.schemas.memory_audit import MemoryPendingConfirmation
 
 
 class MemoryStore(Protocol):
-    """Storage contract for memory items."""
+    """Storage contract for memory items and confirmation workflow state."""
 
     def save(self, item: MemoryItem) -> MemoryItem:
         """Persist a memory item."""
@@ -33,6 +33,26 @@ class MemoryStore(Protocol):
 
     def clear_user(self, user_id: str) -> None:
         """Delete all memory items for a user."""
+
+    def save_confirmation(self, confirmation: MemoryPendingConfirmation) -> MemoryPendingConfirmation:
+        """Persist a pending or resolved memory confirmation."""
+
+    def get_confirmation(self, user_id: str, confirmation_id: str) -> MemoryPendingConfirmation | None:
+        """Return one memory confirmation for a user."""
+
+    def list_confirmations(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        include_resolved: bool = True,
+        limit: int = 1000,
+    ) -> list[MemoryPendingConfirmation]:
+        """Return visible memory confirmations for a user."""
+
+    def delete_confirmation(self, user_id: str, confirmation_id: str) -> bool:
+        """Delete one memory confirmation for a user."""
 
 
 class InMemoryStore:

@@ -230,6 +230,8 @@ class MemoryProfileRepairResult(BaseModel):
     current_source_memory_ids: list[str] = Field(default_factory=list)
     missing_source_memory_ids: list[str] = Field(default_factory=list)
     stale_source_memory_ids: list[str] = Field(default_factory=list)
+    superseded_source_memory_ids: list[str] = Field(default_factory=list)
+    profile_conflicts: list[dict[str, Any]] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     expected_summary: str | None = None
     current_summary: str | None = None

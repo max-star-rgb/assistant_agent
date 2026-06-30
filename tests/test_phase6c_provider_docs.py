@@ -1,16 +1,18 @@
 from pathlib import Path
 
 
-MATRIX_PATH = Path("docs/real-provider-smoke-matrix.md")
-SETUP_PATH = Path("docs/provider-setup.md")
-RUNBOOK_PATH = Path("docs/real-provider-smoke-runbook.md")
+README_PATH = Path("README.md")
+AGENTS_PATH = Path("AGENTS.md")
+CAPABILITIES_PATH = Path("src/multimodal_agent/schemas/capabilities.py")
+PROVIDER_VALIDATION_PATH = Path("src/multimodal_agent/services/provider_config_validation.py")
 ENV_EXAMPLE_PATH = Path(".env.example")
 
 
-def test_real_provider_docs_exist_and_cover_required_capabilities() -> None:
-    matrix = MATRIX_PATH.read_text(encoding="utf-8")
-    setup = SETUP_PATH.read_text(encoding="utf-8")
-    runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+def test_real_provider_contract_sources_cover_required_capabilities() -> None:
+    contract_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (CAPABILITIES_PATH, PROVIDER_VALIDATION_PATH, ENV_EXAMPLE_PATH)
+    )
 
     for capability in (
         "direct_chat",
@@ -21,35 +23,50 @@ def test_real_provider_docs_exist_and_cover_required_capabilities() -> None:
         "render_3d",
         "video_understanding",
     ):
-        assert capability in matrix
+        assert capability in contract_sources
 
-    for provider_section in (
-        "Vision Provider",
-        "Chat Provider",
-        "Image Generation Provider",
-        "Product Search Provider",
-        "Price Compare Provider",
-        "Render Provider",
-        "Video Understanding Provider",
+    env_example = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    for provider_key in (
+        "MULTIMODAL_AGENT_VISION_PROVIDER",
+        "MULTIMODAL_AGENT_CHAT_PROVIDER",
+        "MULTIMODAL_AGENT_IMAGE_PROVIDER",
+        "MULTIMODAL_AGENT_PRODUCT_PROVIDER",
+        "MULTIMODAL_AGENT_PRICE_PROVIDER",
+        "MULTIMODAL_AGENT_RENDER_PROVIDER",
+        "MULTIMODAL_AGENT_VIDEO_PROVIDER",
     ):
-        assert provider_section in setup
+        assert provider_key in env_example
 
-    assert "Do not run real Provider smoke commands" in runbook
+    readme = README_PATH.read_text(encoding="utf-8")
+    assert "API key 只用于显式 opt-in 的真实 Provider smoke/pilot" in readme
 
 
-def test_real_provider_smoke_matrix_is_default_disabled() -> None:
-    matrix = MATRIX_PATH.read_text(encoding="utf-8")
-    data_rows = [line for line in matrix.splitlines() if line.startswith("| ") and "`python scripts/" in line]
+def test_real_provider_sources_are_default_disabled() -> None:
+    env_example = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    readme = README_PATH.read_text(encoding="utf-8")
+    agents = AGENTS_PATH.read_text(encoding="utf-8")
 
-    assert data_rows
-    assert all("| false |" in row for row in data_rows)
-    assert "| true |" not in matrix
+    assert "MULTIMODAL_AGENT_RUNTIME_PROFILE=local_demo" in env_example
+    assert "RUN_INTEGRATION_TESTS=0" in env_example
+    for provider_key in (
+        "MULTIMODAL_AGENT_VISION_PROVIDER=mock",
+        "MULTIMODAL_AGENT_CHAT_PROVIDER=mock",
+        "MULTIMODAL_AGENT_IMAGE_PROVIDER=mock",
+        "MULTIMODAL_AGENT_PRODUCT_PROVIDER=mock",
+        "MULTIMODAL_AGENT_PRICE_PROVIDER=mock",
+        "MULTIMODAL_AGENT_RENDER_PROVIDER=mock",
+        "MULTIMODAL_AGENT_VIDEO_PROVIDER=mock",
+    ):
+        assert provider_key in env_example
+    assert "不会因为本地存在 key 自动启用真实调用" in readme
+    assert "provider_smoke" in agents
+    assert "pilot" in agents
 
 
 def test_provider_docs_and_env_example_do_not_contain_real_secrets() -> None:
     combined = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (MATRIX_PATH, SETUP_PATH, RUNBOOK_PATH, ENV_EXAMPLE_PATH)
+        for path in (README_PATH, AGENTS_PATH, ENV_EXAMPLE_PATH)
     )
 
     assert "sk-" not in combined.lower()

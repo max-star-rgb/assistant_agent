@@ -471,7 +471,10 @@ def _metrics_counters(events: list[MemoryAuditEvent]) -> dict[str, int]:
             counters["memory.ttl.deleted.count"] += event.counts.get("deleted", 0)
         elif event.event_type == "memory_profile_repaired":
             counters["memory.profile.update.count"] += event.counts.get("repaired", 0)
-            counters["memory.profile.conflict.count"] += event.counts.get("issues", 0)
+            counters["memory.profile.conflict.count"] += event.counts.get(
+                "conflicts",
+                event.counts.get("issues", 0),
+            )
     return dict(sorted(counters.items()))
 
 

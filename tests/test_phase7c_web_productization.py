@@ -107,6 +107,26 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "context_compaction" in html
     assert "[plan]" in html
     assert "[tool:" in html
+    assert "Control Plane" in html
+    assert "Pilot Readiness" in html
+    assert "Runtime Profile" in html
+    assert "Selected Run Trace" in html
+    assert "Gateway Route" in html
+    assert "Delegation Tree" in html
+    assert "Redaction Status" in html
+    assert "Recent Runs / Audit" in html
+    assert "control-plane-run-id" in html
+    assert "control-plane-trace-id" in html
+    assert "/control-plane/readiness" in html
+    assert "/control-plane/audit/events?limit=12" in html
+    assert "/control-plane/runs/" in html
+    assert "setControlPlaneRun(payload.run_id, payload.trace_id)" in html
+    assert "refreshControlPlaneReadiness" in html
+    assert "refreshControlPlaneRun" in html
+    assert "refreshControlPlaneRecent" in html
+    assert "sanitizeControlPlaneDisplay" in html
+    assert "remote control" not in html.lower()
+    assert "provider toggle" not in html.lower()
     assert "Final Decision Trace" not in html
     assert "Live events" not in html
     assert "formatReactSteps" not in html

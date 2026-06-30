@@ -8,6 +8,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from multimodal_agent.agent.runtime import AgentGraphRuntime
 from multimodal_agent.api.auth import get_auth_context, require_auth_bound_identity
+from multimodal_agent.schemas.agent_control_plane import (
+    AgentAuditEvent,
+    AgentAuditEventList,
+    AgentControlPlaneBudgetSummary,
+    AgentControlPlaneDelegationTree,
+    AgentControlPlaneReplayPreview,
+    AgentControlPlaneRouteSummary,
+    AgentControlPlaneRunSummary,
+)
 from multimodal_agent.schemas.agent_gateway import AgentGatewayRunRequest
 from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
 from multimodal_agent.schemas.identity import RequestIdentity
@@ -36,10 +45,12 @@ from multimodal_agent.services.assistant_run_service import (
     run_assistant_request,
     runtime_info,
 )
+from multimodal_agent.services.agent_control_plane import AgentControlPlaneQueryService, audit_event
 from multimodal_agent.services.agent_gateway import AgentGateway, create_default_agent_gateway
 from multimodal_agent.services.api_identity import (
     ApiIdentitySource,
     AuthContext,
+    IdentityPolicy,
     IdentityPolicyError,
     ResolvedRequestIdentity,
     enforce_identity_policy,
@@ -56,6 +67,9 @@ from multimodal_agent.services.beta_feedback import (
 from multimodal_agent.services.demo_examples import get_demo_examples
 from multimodal_agent.services.memory_audit import MemoryAuditService
 from multimodal_agent.services.memory_snapshot import MemorySnapshotService
+from multimodal_agent.services.agent_pilot_readiness import PilotReadinessChecker, PilotReadinessReport
+from multimodal_agent.services.provider_budget import ProviderCallBudget
+from multimodal_agent.services.provider_readiness import build_provider_readiness_report
 from multimodal_agent.services.trace_query import RunSummary, ToolCallSummary, TraceQueryService, TraceSummary
 from multimodal_agent.services.trial_access import (
     TrialAccessGate,
@@ -112,6 +126,7 @@ def run_agents(
 ) -> AgentRunResponse:
     identity_resolution = _identity_from_request(request, auth_context=auth_context)
     _require_trial_access_for_identity(identity_resolution)
+    _record_auth_audit_event(identity_resolution, action="agents_run_identity")
     request = _with_identity_metadata(request, identity_resolution)
     return get_agent_gateway().run(request)
 
@@ -241,6 +256,121 @@ def get_run_tool_calls(run_id: str) -> ToolCallSummary:
     return summary
 
 
+@router.get("/control-plane/readiness", response_model=PilotReadinessReport)
+def get_control_plane_readiness(auth_context: AuthContext = Depends(get_auth_context)) -> PilotReadinessReport:
+    identity_policy = IdentityPolicy().evaluate(
+        identity_source="auth_context" if auth_context.authenticated else "local_context",
+        auth_bound_identity=auth_context.authenticated,
+        production_required=require_auth_bound_identity(),
+    )
+    gateway = get_agent_gateway()
+    config = get_agent_runtime().config
+    report = PilotReadinessChecker().evaluate(
+        directory=getattr(gateway, "directory", None),
+        runtime_profile=config.runtime_profile,
+        auth_bound_identity=auth_context.authenticated,
+        identity_policy=identity_policy,
+        provider_readiness=build_provider_readiness_report(config),
+        provider_budget=ProviderCallBudget(allow_real_provider=config.runtime_profile.allows_real_providers),
+    )
+    _record_control_plane_audit_event(
+        audit_event(
+            event_type="provider_opt_in_decision",
+            component="provider_policy",
+            action="evaluate_runtime_profile",
+            outcome="allowed" if config.runtime_profile.allows_real_providers else "blocked_default",
+            detail={
+                "runtime_profile": config.runtime_profile.name,
+                "allows_real_providers": config.runtime_profile.allows_real_providers,
+                "requires_explicit_provider_config": config.runtime_profile.requires_explicit_provider_config,
+            },
+        )
+    )
+    return report
+
+
+@router.get("/control-plane/audit/events", response_model=AgentAuditEventList)
+def list_control_plane_audit_events(
+    run_id: str | None = Query(default=None),
+    trace_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    session_id: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> AgentAuditEventList:
+    if user_id:
+        identity = _require_trial_access_for_identity(
+            _identity_from_user_id(user_id, session_id=session_id, source="query", auth_context=auth_context)
+        )
+        user_id = identity.user_id
+        session_id = identity.session_id or session_id
+    return _control_plane_query_service().audit_events(
+        run_id=run_id,
+        trace_id=trace_id,
+        user_id=user_id,
+        session_id=session_id,
+        event_type=event_type,
+        limit=limit,
+    )
+
+
+@router.get("/control-plane/runs/{run_id}/audit", response_model=AgentAuditEventList)
+def get_control_plane_run_audit_events(
+    run_id: str,
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> AgentAuditEventList:
+    return _control_plane_query_service().audit_events_by_run(run_id, limit=limit)
+
+
+@router.get("/control-plane/runs/{run_id}", response_model=AgentControlPlaneRunSummary)
+def get_control_plane_run_summary(run_id: str) -> AgentControlPlaneRunSummary:
+    summary = _control_plane_query_service().run_summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return summary
+
+
+@router.get("/control-plane/traces/{trace_id}")
+def get_control_plane_trace_summary(trace_id: str) -> dict[str, Any]:
+    summary = _control_plane_query_service().trace_summary(trace_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="trace not found")
+    return summary
+
+
+@router.get("/control-plane/runs/{run_id}/route", response_model=AgentControlPlaneRouteSummary)
+def get_control_plane_route_summary(run_id: str) -> AgentControlPlaneRouteSummary:
+    summary = _control_plane_query_service().route_summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="gateway route not found")
+    return summary
+
+
+@router.get("/control-plane/runs/{run_id}/delegation-tree", response_model=AgentControlPlaneDelegationTree)
+def get_control_plane_delegation_tree(run_id: str) -> AgentControlPlaneDelegationTree:
+    summary = _control_plane_query_service().delegation_tree(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="gateway run not found")
+    return summary
+
+
+@router.get("/control-plane/runs/{run_id}/budget", response_model=AgentControlPlaneBudgetSummary)
+def get_control_plane_budget_summary(run_id: str) -> AgentControlPlaneBudgetSummary:
+    summary = _control_plane_query_service().budget_summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return summary
+
+
+@router.get("/control-plane/runs/{run_id}/replay-preview", response_model=AgentControlPlaneReplayPreview)
+def get_control_plane_replay_preview(run_id: str) -> AgentControlPlaneReplayPreview:
+    summary = _control_plane_query_service().replay_preview(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="gateway replay preview not found")
+    return summary
+
+
 @router.get("/memory/users/{user_id}/items", response_model=MemoryAuditList)
 def list_memory_items(
     user_id: str,
@@ -249,11 +379,22 @@ def list_memory_items(
     auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemoryAuditList:
     identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    return _memory_audit_service().list_items_for_identity(
+    result = _memory_audit_service().list_items_for_identity(
         identity,
         memory_type=memory_type,
         include_content=include_content,
     )
+    _record_memory_control_plane_event(
+        identity,
+        action="list_memory_items",
+        event_type="memory_access",
+        detail={
+            "memory_type": memory_type,
+            "include_content": include_content,
+            "item_count": result.total,
+        },
+    )
+    return result
 
 
 @router.get("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryAuditItem)
@@ -271,6 +412,16 @@ def get_memory_item(
     )
     if item is None:
         raise HTTPException(status_code=404, detail="memory item not found")
+    _record_memory_control_plane_event(
+        identity,
+        action="get_memory_item",
+        event_type="memory_access",
+        detail={
+            "memory_id": memory_id,
+            "include_content": include_content,
+            "content_included": include_content,
+        },
+    )
     return item
 
 
@@ -280,7 +431,21 @@ def audit_memory(
     auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemoryAuditReport:
     identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    return _memory_audit_service().audit_for_identity(identity)
+    result = _memory_audit_service().audit_for_identity(identity)
+    _record_memory_control_plane_event(
+        identity,
+        action="audit_memory",
+        event_type="memory_access",
+        detail={
+            "total": result.total,
+            "duplicate_group_count": len(result.duplicate_groups),
+            "warning_count": len(result.warnings),
+            "expired_count": result.expired_count,
+            "sensitive_count": result.sensitive_count,
+            "profile_present": result.profile_present,
+        },
+    )
+    return result
 
 
 @router.get("/memory/users/{user_id}/events", response_model=MemoryAuditEventList)
@@ -387,10 +552,20 @@ def export_memory(
     auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemoryExport:
     identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    return _memory_audit_service().export_for_identity(
+    result = _memory_audit_service().export_for_identity(
         identity,
         include_content=include_content,
     )
+    _record_memory_control_plane_event(
+        identity,
+        action="export_memory",
+        event_type="memory_export",
+        detail={
+            "include_content": include_content,
+            "item_count": len(result.items),
+        },
+    )
+    return result
 
 
 @router.post("/memory/users/{user_id}/retention/sweep", response_model=MemoryRetentionSweepResult)
@@ -416,18 +591,35 @@ def get_memory_snapshot(
     top_k: int = Query(default=5, ge=1, le=50),
     max_context_chars: int = Query(default=1000, ge=50, le=4000),
     include_content: bool = Query(default=False),
+    include_superseded: bool = Query(default=False),
     auth_context: AuthContext = Depends(get_auth_context),
 ) -> MemorySnapshot:
     identity = _require_trial_access_for_identity(
         _identity_from_user_id(user_id, session_id=session_id, source="path", auth_context=auth_context)
     )
-    return _memory_snapshot_service().snapshot_for_identity(
+    result = _memory_snapshot_service().snapshot_for_identity(
         identity,
         query=query,
         top_k=top_k,
         max_context_chars=max_context_chars,
         include_content=include_content,
+        include_superseded=include_superseded,
     )
+    _record_memory_control_plane_event(
+        identity,
+        action="memory_snapshot",
+        event_type="memory_access",
+        detail={
+            "top_k": top_k,
+            "max_context_chars": max_context_chars,
+            "include_content": include_content,
+            "include_superseded": include_superseded,
+            "memory_context_total": result.memory_context.total,
+            "memory_block_count": len(result.memory_context.blocks),
+            "conversation_turn_count": result.conversation_history.total,
+        },
+    )
+    return result
 
 
 @router.delete("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryDeleteResult)
@@ -443,6 +635,15 @@ def delete_memory_item(
     )
     if result.deleted.get("memory_items", 0) == 0:
         raise HTTPException(status_code=404, detail="memory item not found")
+    _record_memory_control_plane_event(
+        identity,
+        action="delete_memory_item",
+        event_type="memory_delete",
+        detail={
+            "memory_id": memory_id,
+            "deleted": result.deleted,
+        },
+    )
     return result
 
 
@@ -455,9 +656,19 @@ def delete_memory_session(
     identity = _require_trial_access_for_identity(
         _identity_from_user_id(user_id, session_id=session_id, source="path", auth_context=auth_context)
     )
-    return _memory_audit_service().delete_session_for_identity(
+    result = _memory_audit_service().delete_session_for_identity(
         identity,
     )
+    _record_memory_control_plane_event(
+        identity,
+        action="delete_memory_session",
+        event_type="memory_delete",
+        detail={
+            "session_id": session_id,
+            "deleted": result.deleted,
+        },
+    )
+    return result
 
 
 @router.post("/beta/feedback", response_model=BetaFeedbackRecord)
@@ -553,6 +764,57 @@ def _memory_snapshot_service() -> MemorySnapshotService:
             conversation_store=type(conversation_store).__name__,
             checkpointer=type(runtime.checkpointer).__name__ if runtime.checkpointer is not None else "none",
         ),
+    )
+
+
+def _control_plane_query_service() -> AgentControlPlaneQueryService:
+    return AgentControlPlaneQueryService(
+        trace_query=TraceQueryService(get_agent_runtime().trace_store),
+        gateway_store=_control_plane_store(),
+    )
+
+
+def _control_plane_store():
+    return getattr(get_agent_gateway(), "control_plane_store", None)
+
+
+def _record_control_plane_audit_event(event: AgentAuditEvent) -> None:
+    store = _control_plane_store()
+    if store is not None:
+        store.append_audit_event(event)
+
+
+def _record_auth_audit_event(resolution: ResolvedRequestIdentity, *, action: str) -> None:
+    _record_control_plane_audit_event(
+        audit_event(
+            event_type="auth_decision",
+            component="api_identity",
+            action=action,
+            outcome="allowed" if resolution.auth_bound else "warning",
+            user_id=resolution.identity.user_id,
+            session_id=resolution.identity.session_id,
+            detail=resolution.metadata(),
+        )
+    )
+
+
+def _record_memory_control_plane_event(
+    identity: RequestIdentity,
+    *,
+    action: str,
+    event_type: str,
+    detail: dict[str, Any],
+) -> None:
+    _record_control_plane_audit_event(
+        audit_event(
+            event_type=event_type,
+            component="memory_api",
+            action=action,
+            outcome="allowed",
+            user_id=identity.user_id,
+            session_id=identity.session_id,
+            detail=detail,
+        )
     )
 
 

@@ -844,6 +844,108 @@
         font-weight: 750;
       }
 
+      .control-plane-block {
+        border-top: 1px solid #d9dee7;
+        margin-top: 16px;
+        padding-top: 14px;
+      }
+
+      .control-plane-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .control-plane-header h2 {
+        margin: 0;
+      }
+
+      .control-plane-refresh {
+        min-height: 32px;
+        padding: 6px 10px;
+        font-size: 13px;
+      }
+
+      .control-plane-id-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+        margin: 10px 0;
+      }
+
+      .control-plane-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 8px 0 12px;
+      }
+
+      .control-plane-actions button {
+        min-height: 32px;
+        padding: 6px 8px;
+        font-size: 13px;
+      }
+
+      .control-plane-summary {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 10px 0 12px;
+      }
+
+      .control-plane-stat {
+        min-width: 0;
+        border: 1px solid #e1e6ef;
+        border-radius: 6px;
+        padding: 8px;
+        background: #fbfcfe;
+      }
+
+      .control-plane-stat-label {
+        color: #667085;
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .control-plane-stat-value {
+        margin-top: 4px;
+        color: #20242c;
+        font-size: 16px;
+        font-weight: 750;
+        overflow-wrap: anywhere;
+      }
+
+      .control-plane-subtitle {
+        color: #344054;
+        font-size: 13px;
+        font-weight: 750;
+        margin: 12px 0 8px;
+      }
+
+      .control-plane-output {
+        min-height: 96px;
+        max-height: 340px;
+        font-size: 12px;
+      }
+
+      .control-plane-row {
+        border-left: 3px solid #cfd7e4;
+        padding: 4px 0 8px 8px;
+        margin-bottom: 8px;
+        color: #344054;
+        font-size: 13px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
+
+      .control-plane-row-meta {
+        color: #667085;
+        font-size: 12px;
+        margin-bottom: 3px;
+      }
+
       .memory-empty {
         color: #667085;
         font-size: 13px;
@@ -1025,6 +1127,32 @@
             <summary>技术信息</summary>
             <div id="memory-storage"></div>
           </details>
+          <div class="control-plane-block" id="control-plane-panel">
+            <div class="control-plane-header">
+              <h2>Control Plane</h2>
+              <button class="control-plane-refresh" id="control-plane-readiness-refresh" type="button">Readiness</button>
+            </div>
+            <div class="status" id="control-plane-status">ready</div>
+            <div class="control-plane-summary" id="control-plane-summary"></div>
+            <div class="control-plane-id-grid">
+              <div class="field">
+                <label for="control-plane-run-id">Run ID</label>
+                <input id="control-plane-run-id" type="text" placeholder="run_id" />
+              </div>
+              <div class="field">
+                <label for="control-plane-trace-id">Trace ID</label>
+                <input id="control-plane-trace-id" type="text" placeholder="trace_id" />
+              </div>
+            </div>
+            <div class="control-plane-actions">
+              <button id="control-plane-load-run" type="button">Inspect</button>
+              <button id="control-plane-load-recent" type="button">Recent</button>
+            </div>
+            <div class="control-plane-subtitle">Selected Run Trace / Gateway Route / Delegation Tree / Redaction Status</div>
+            <pre class="control-plane-output" id="control-plane-run-output"></pre>
+            <div class="control-plane-subtitle">Recent Runs / Audit</div>
+            <div id="control-plane-recent"></div>
+          </div>
         </aside>
       </div>
     </main>
@@ -1060,6 +1188,15 @@
       const memoryLayers = document.querySelector("#memory-layers");
       const memoryConversation = document.querySelector("#memory-conversation");
       const memoryStorage = document.querySelector("#memory-storage");
+      const controlPlaneReadinessButton = document.querySelector("#control-plane-readiness-refresh");
+      const controlPlaneLoadRunButton = document.querySelector("#control-plane-load-run");
+      const controlPlaneLoadRecentButton = document.querySelector("#control-plane-load-recent");
+      const controlPlaneStatus = document.querySelector("#control-plane-status");
+      const controlPlaneSummary = document.querySelector("#control-plane-summary");
+      const controlPlaneRunIdInput = document.querySelector("#control-plane-run-id");
+      const controlPlaneTraceIdInput = document.querySelector("#control-plane-trace-id");
+      const controlPlaneRunOutput = document.querySelector("#control-plane-run-output");
+      const controlPlaneRecent = document.querySelector("#control-plane-recent");
       let runtimeInfo = null;
       let verifiedTrialUserId = "";
       let sessions = {};
@@ -1111,6 +1248,25 @@
       memoryQueryInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           void refreshMemorySnapshot();
+        }
+      });
+      controlPlaneReadinessButton.addEventListener("click", () => {
+        void refreshControlPlaneReadiness();
+      });
+      controlPlaneLoadRunButton.addEventListener("click", () => {
+        void refreshControlPlaneRun();
+      });
+      controlPlaneLoadRecentButton.addEventListener("click", () => {
+        void refreshControlPlaneRecent();
+      });
+      controlPlaneRunIdInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          void refreshControlPlaneRun();
+        }
+      });
+      controlPlaneTraceIdInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          void refreshControlPlaneRun();
         }
       });
       // Logout button
@@ -1173,6 +1329,9 @@
           }
           updateResultsDisplay();
           reactProcess.textContent = formatReactProcess(payload, payload._timeline_lines || null);
+          setControlPlaneRun(payload.run_id, payload.trace_id);
+          void refreshControlPlaneRun({ silent: true });
+          void refreshControlPlaneRecent({ silent: true });
           memoryQueryInput.value = text;
           void refreshMemorySnapshot({ query: text });
           setStatus(`done | run_id=${payload.run_id} | trace_id=${payload.trace_id}`);
@@ -1347,6 +1506,12 @@
         reactProcess.textContent = '';
         setStatus('ready');
         renderSessionsList();
+        const lastRun = [...(session.history || [])].reverse().find((turn) => turn.run_id || turn.trace_id);
+        if (lastRun) {
+          setControlPlaneRun(lastRun.run_id, lastRun.trace_id);
+        } else {
+          resetControlPlaneView();
+        }
         void refreshMemorySnapshot();
       }
 
@@ -1389,6 +1554,7 @@
             updateResultsDisplay();
             reactProcess.textContent = '';
             renderMemorySnapshot(null);
+            resetControlPlaneView();
           }
         }
         renderSessionsList();
@@ -1468,6 +1634,8 @@
           }
           setStatus("ready");
           void refreshMemorySnapshot();
+          void refreshControlPlaneReadiness({ silent: true });
+          void refreshControlPlaneRecent({ silent: true });
         } catch (error) {
           verifiedTrialUserId = "";
           localStorage.removeItem(USER_STORAGE_KEY);
@@ -2023,6 +2191,260 @@
         }
       }
 
+      async function refreshControlPlaneReadiness(options = {}) {
+        setControlPlaneBusy(true);
+        if (!options.silent) {
+          setControlPlaneStatus("loading readiness...");
+        }
+        try {
+          const report = await fetchJson("/control-plane/readiness");
+          renderControlPlaneReadiness(report);
+          setControlPlaneStatus(`readiness: ${report.status || "unknown"}`);
+          return true;
+        } catch (error) {
+          setControlPlaneStatus(errorMessage(error), true);
+          return false;
+        } finally {
+          setControlPlaneBusy(false);
+        }
+      }
+
+      async function refreshControlPlaneRun(options = {}) {
+        const runId = normalizeControlPlaneId(controlPlaneRunIdInput.value);
+        const traceId = normalizeControlPlaneId(controlPlaneTraceIdInput.value);
+        if (!runId && !traceId) {
+          setControlPlaneStatus("请输入 run_id 或 trace_id。", true);
+          return false;
+        }
+        setControlPlaneBusy(true);
+        if (!options.silent) {
+          setControlPlaneStatus("loading run...");
+        }
+        try {
+          const sections = [];
+          let effectiveRunId = runId;
+          if (runId) {
+            const runSummary = await fetchOptionalJson(`/control-plane/runs/${encodeURIComponent(runId)}`);
+            appendControlPlaneSection(sections, "Run Summary", runSummary);
+            if (runSummary.ok && runSummary.payload.trace_id && !traceId) {
+              controlPlaneTraceIdInput.value = runSummary.payload.trace_id;
+            }
+          }
+          if (traceId) {
+            const traceSummary = await fetchOptionalJson(`/control-plane/traces/${encodeURIComponent(traceId)}`);
+            appendControlPlaneSection(sections, "Selected Run Trace", traceSummary);
+            if (!effectiveRunId && traceSummary.ok && traceSummary.payload.run_id) {
+              effectiveRunId = traceSummary.payload.run_id;
+              controlPlaneRunIdInput.value = effectiveRunId;
+            }
+          }
+          if (effectiveRunId) {
+            appendControlPlaneSection(
+              sections,
+              "Gateway Route",
+              await fetchOptionalJson(`/control-plane/runs/${encodeURIComponent(effectiveRunId)}/route`),
+            );
+            appendControlPlaneSection(
+              sections,
+              "Delegation Tree",
+              await fetchOptionalJson(`/control-plane/runs/${encodeURIComponent(effectiveRunId)}/delegation-tree`),
+            );
+            appendControlPlaneSection(
+              sections,
+              "Budget",
+              await fetchOptionalJson(`/control-plane/runs/${encodeURIComponent(effectiveRunId)}/budget`),
+            );
+            appendControlPlaneSection(
+              sections,
+              "Audit Events",
+              await fetchOptionalJson(`/control-plane/runs/${encodeURIComponent(effectiveRunId)}/audit`),
+            );
+            appendControlPlaneSection(
+              sections,
+              "Replay Preview",
+              await fetchOptionalJson(`/control-plane/runs/${encodeURIComponent(effectiveRunId)}/replay-preview`),
+            );
+          }
+          controlPlaneRunOutput.textContent = sections.join("\n\n");
+          setControlPlaneStatus("run loaded");
+          return true;
+        } catch (error) {
+          setControlPlaneStatus(errorMessage(error), true);
+          return false;
+        } finally {
+          setControlPlaneBusy(false);
+        }
+      }
+
+      async function refreshControlPlaneRecent(options = {}) {
+        setControlPlaneBusy(true);
+        if (!options.silent) {
+          setControlPlaneStatus("loading recent activity...");
+        }
+        try {
+          const events = await fetchJson("/control-plane/audit/events?limit=12");
+          renderControlPlaneRecent(events.events || []);
+          if (!options.silent) {
+            setControlPlaneStatus(`recent audit events: ${events.total || 0}`);
+          }
+          return true;
+        } catch (error) {
+          setControlPlaneStatus(errorMessage(error), true);
+          return false;
+        } finally {
+          setControlPlaneBusy(false);
+        }
+      }
+
+      function renderControlPlaneReadiness(report) {
+        clearElement(controlPlaneSummary);
+        const checks = report.checks || [];
+        const counts = checks.reduce((acc, check) => {
+          acc[check.status] = (acc[check.status] || 0) + 1;
+          return acc;
+        }, {});
+        const stats = [
+          ["Pilot Readiness", report.status || "unknown"],
+          ["Runtime Profile", readinessRuntimeProfile(report) || "unknown"],
+          ["Passed Checks", counts.passed || 0],
+          ["Warnings / Failed", `${counts.warning || 0} / ${counts.failed || 0}`],
+        ];
+        for (const [label, value] of stats) {
+          appendControlPlaneStat(label, value);
+        }
+        controlPlaneRunOutput.textContent = ["Pilot Readiness", formatControlPlaneJson(report)].join("\n\n");
+      }
+
+      function readinessRuntimeProfile(report) {
+        for (const check of report.checks || []) {
+          const detail = check.detail || {};
+          if (detail.profile) {
+            return detail.profile;
+          }
+          if (detail.runtime_profile) {
+            return detail.runtime_profile;
+          }
+        }
+        return runtimeInfo && runtimeInfo.runtime_profile ? runtimeInfo.runtime_profile : "";
+      }
+
+      function appendControlPlaneStat(label, value) {
+        const item = document.createElement("div");
+        item.className = "control-plane-stat";
+        const labelEl = document.createElement("div");
+        labelEl.className = "control-plane-stat-label";
+        labelEl.textContent = label;
+        const valueEl = document.createElement("div");
+        valueEl.className = "control-plane-stat-value";
+        valueEl.textContent = String(value);
+        item.append(labelEl, valueEl);
+        controlPlaneSummary.appendChild(item);
+      }
+
+      function renderControlPlaneRecent(events) {
+        clearElement(controlPlaneRecent);
+        if (!events.length) {
+          appendControlPlaneRow(controlPlaneRecent, "Recent Runs", "No audit events recorded in this process.");
+          return;
+        }
+        events.slice().reverse().forEach((event) => {
+          const meta = [event.event_type, event.outcome].filter(Boolean).join(" · ");
+          const text = [
+            event.run_id ? `run=${event.run_id}` : null,
+            event.trace_id ? `trace=${event.trace_id}` : null,
+            event.component ? `component=${event.component}` : null,
+            event.action ? `action=${event.action}` : null,
+          ].filter(Boolean).join("\n");
+          appendControlPlaneRow(controlPlaneRecent, meta || "audit event", text || event.created_at || "");
+        });
+      }
+
+      function appendControlPlaneRow(parent, meta, text) {
+        const row = document.createElement("div");
+        row.className = "control-plane-row";
+        const metaEl = document.createElement("div");
+        metaEl.className = "control-plane-row-meta";
+        metaEl.textContent = meta;
+        const textEl = document.createElement("div");
+        textEl.textContent = text;
+        row.append(metaEl, textEl);
+        parent.appendChild(row);
+      }
+
+      function appendControlPlaneSection(sections, title, result) {
+        if (result.ok) {
+          sections.push([title, formatControlPlaneJson(result.payload)].join("\n"));
+          return;
+        }
+        sections.push([title, `(not available: ${result.status || "error"} ${result.error || ""})`].join("\n"));
+      }
+
+      async function fetchOptionalJson(url) {
+        try {
+          return { ok: true, payload: await fetchJson(url) };
+        } catch (error) {
+          return { ok: false, error: errorMessage(error) };
+        }
+      }
+
+      function formatControlPlaneJson(value) {
+        return JSON.stringify(sanitizeControlPlaneDisplay(value), null, 2);
+      }
+
+      function sanitizeControlPlaneDisplay(value) {
+        if (Array.isArray(value)) {
+          return value.map((item) => sanitizeControlPlaneDisplay(item));
+        }
+        if (value && typeof value === "object") {
+          const result = {};
+          for (const [key, item] of Object.entries(value)) {
+            if (/api[_-]?key|authorization|bearer|secret|credential|signature/i.test(key)) {
+              result[key] = "[redacted]";
+            } else {
+              result[key] = sanitizeControlPlaneDisplay(item);
+            }
+          }
+          return result;
+        }
+        if (typeof value === "string") {
+          return safeDisplayValue(value);
+        }
+        return value;
+      }
+
+      function setControlPlaneRun(runId, traceId) {
+        if (runId) {
+          controlPlaneRunIdInput.value = runId;
+        }
+        if (traceId) {
+          controlPlaneTraceIdInput.value = traceId;
+        }
+      }
+
+      function normalizeControlPlaneId(value) {
+        return String(value || "").trim().slice(0, 160);
+      }
+
+      function setControlPlaneStatus(text, isError = false) {
+        controlPlaneStatus.textContent = text;
+        controlPlaneStatus.classList.toggle("error", isError);
+      }
+
+      function setControlPlaneBusy(isBusy) {
+        controlPlaneReadinessButton.disabled = isBusy;
+        controlPlaneLoadRunButton.disabled = isBusy;
+        controlPlaneLoadRecentButton.disabled = isBusy;
+      }
+
+      function resetControlPlaneView() {
+        clearElement(controlPlaneSummary);
+        clearElement(controlPlaneRecent);
+        controlPlaneRunOutput.textContent = "";
+        controlPlaneRunIdInput.value = "";
+        controlPlaneTraceIdInput.value = "";
+        setControlPlaneStatus("ready");
+      }
+
       function appendLongTermMemoryRow(parent, layer, item, query) {
         const row = document.createElement("div");
         row.className = "memory-row memory-long-term-row";
@@ -2563,6 +2985,7 @@
           renderConversationHistory([]);
           updateResultsDisplay();
           renderMemorySnapshot(null);
+          resetControlPlaneView();
           setStatus("请先验证工号。");
         }
       }

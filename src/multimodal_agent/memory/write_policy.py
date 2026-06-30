@@ -442,6 +442,7 @@ def build_explicit_memory_item(
     safe_content: dict[str, Any] = {"explicit": True}
     for key in (
         "summary",
+        "preference_key",
         "style",
         "budget",
         "product_ref",
@@ -521,6 +522,7 @@ def _redacted_explicit_payload(
 ) -> dict[str, Any]:
     safe_keys = {
         "summary",
+        "preference_key",
         "style",
         "budget",
         "product_ref",

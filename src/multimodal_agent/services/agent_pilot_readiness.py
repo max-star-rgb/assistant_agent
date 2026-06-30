@@ -12,6 +12,7 @@ from multimodal_agent.services.agent_directory import AgentDirectory
 from multimodal_agent.services.api_identity import IdentityPolicy, IdentityPolicyDecision
 from multimodal_agent.services.provider_budget import ProviderCallBudget
 from multimodal_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+from multimodal_agent.services.provider_readiness import ProviderReadinessReport
 
 
 PilotCheckStatus = Literal["passed", "warning", "failed"]
@@ -74,9 +75,12 @@ class PilotReadinessChecker:
         allowlisted_hosts: list[str] | None = None,
         auth_bound_identity: bool = False,
         identity_policy: IdentityPolicyDecision | None = None,
+        provider_readiness: ProviderReadinessReport | None = None,
+        provider_budget: ProviderCallBudget | None = None,
     ) -> PilotReadinessReport:
+        profile = runtime_profile or get_runtime_profile()
         checks = [
-            self._runtime_profile_check(runtime_profile or get_runtime_profile()),
+            self._runtime_profile_check(profile),
             self._remote_opt_in_check(directory=directory, allowlisted_hosts=allowlisted_hosts or []),
             self._identity_check(
                 identity_policy=identity_policy
@@ -85,12 +89,18 @@ class PilotReadinessChecker:
                     auth_bound_identity=auth_bound_identity,
                 )
             ),
+            self._provider_budget_check(
+                provider_budget
+                or ProviderCallBudget(allow_real_provider=profile.allows_real_providers)
+            ),
             PilotReadinessCheck(
                 name="trace_redaction_default",
                 status="passed",
                 detail={"redaction_boundary": "sanitize_error_detail and TraceStore redaction"},
             ),
         ]
+        if provider_readiness is not None:
+            checks.insert(3, self._provider_readiness_check(provider_readiness))
         status: PilotReadinessStatus = "ready"
         if any(check.status == "failed" for check in checks):
             status = "blocked"
@@ -177,6 +187,70 @@ class PilotReadinessChecker:
         return PilotReadinessCheck(
             name="auth_bound_identity",
             status=identity_policy.status,
+            detail=detail,
+        )
+
+    def _provider_readiness_check(self, report: ProviderReadinessReport) -> PilotReadinessCheck:
+        not_ready = [check for check in report.checks if check.status == "not_ready"]
+        detail = {
+            "runtime_profile": report.runtime_profile,
+            "ready": report.ready,
+            "checks": [
+                {
+                    "capability": check.capability,
+                    "provider": check.provider,
+                    "status": check.status,
+                    "real_provider_allowed": check.real_provider_allowed,
+                    "issue_codes": [issue.code for issue in check.issues],
+                    "missing": [
+                        missing
+                        for issue in check.issues
+                        for missing in issue.missing
+                    ],
+                }
+                for check in report.checks
+            ],
+        }
+        if not_ready:
+            return PilotReadinessCheck(
+                name="provider_config_explicit",
+                status="failed",
+                detail=detail,
+            )
+        return PilotReadinessCheck(
+            name="provider_config_explicit",
+            status="passed",
+            detail=detail,
+        )
+
+    def _provider_budget_check(self, budget: ProviderCallBudget) -> PilotReadinessCheck:
+        detail = budget.summary()
+        detail.update(
+            {
+                "max_estimated_cost_per_run": budget.max_estimated_cost_per_run,
+                "max_input_bytes_per_run": budget.max_input_bytes_per_run,
+                "budget_gate": "provider_call_budget",
+            }
+        )
+        if budget.max_provider_calls_per_run == 0:
+            return PilotReadinessCheck(
+                name="provider_budget_defaults",
+                status="warning",
+                detail={**detail, "reason": "provider calls are disabled by budget"},
+            )
+        if (
+            budget.allow_real_provider
+            and budget.max_estimated_cost_per_run is None
+            and budget.max_input_bytes_per_run is None
+        ):
+            return PilotReadinessCheck(
+                name="provider_budget_defaults",
+                status="warning",
+                detail={**detail, "reason": "call-count budget is set; cost/input byte caps are not set"},
+            )
+        return PilotReadinessCheck(
+            name="provider_budget_defaults",
+            status="passed",
             detail=detail,
         )
 

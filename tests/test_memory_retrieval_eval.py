@@ -83,6 +83,54 @@ def test_memory_retrieval_eval_summary_tracks_empty_and_safety_rates() -> None:
     assert summary["token_budget_compliance"] == 1.0
 
 
+def test_memory_retrieval_eval_excludes_superseded_profile_sources() -> None:
+    result = evaluate_memory_retrieval_case(
+        {
+            "id": "superseded_preference",
+            "query": "风格",
+            "expected_memory_ids": ["style_new"],
+            "expected_injected_ids": ["style_new"],
+            "expected_profile_source_memory_ids": ["style_new"],
+            "expected_profile_conflict_count": 1,
+            "forbidden_memory_ids": ["style_old"],
+            "forbidden_injected_ids": ["style_old"],
+            "forbidden_profile_source_memory_ids": ["style_old"],
+            "explicit_saves": [
+                {
+                    "memory_id": "style_old",
+                    "text": "记住我喜欢浅色日系风格",
+                    "content": {
+                        "preference_key": "style",
+                        "style": "浅色日系",
+                        "summary": "用户喜欢浅色日系风格。",
+                    },
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                },
+                {
+                    "memory_id": "style_new",
+                    "text": "记住我现在喜欢深色极简风格",
+                    "content": {
+                        "preference_key": "style",
+                        "style": "深色极简",
+                        "summary": "用户喜欢深色极简风格。",
+                    },
+                    "created_at": "2026-01-02T00:00:00+00:00",
+                },
+            ],
+        }
+    )
+
+    assert result.passed is True
+    assert "style_new" in result.retrieved_memory_ids
+    assert "style_new" in result.injected_memory_ids
+    assert "style_old" not in result.retrieved_memory_ids
+    assert "style_old" not in result.injected_memory_ids
+    assert result.profile_source_memory_ids == ["style_new"]
+    assert result.profile_conflicts[0]["superseded_memory_ids"] == ["style_old"]
+    assert result.forbidden_retrieved_ids == []
+    assert result.forbidden_profile_source_ids == []
+
+
 def test_run_evals_memory_suite_includes_retrieval_metrics() -> None:
     cases = filter_cases_by_suite(load_cases(), "memory")
 
@@ -90,7 +138,7 @@ def test_run_evals_memory_suite_includes_retrieval_metrics() -> None:
 
     assert summary["failed"] == 0
     retrieval_summary = summary["memory_retrieval_eval"]
-    assert retrieval_summary["total"] >= 8
+    assert retrieval_summary["total"] >= 10
     assert retrieval_summary["recall_at_k"] == 1.0
     assert retrieval_summary["correct_empty_rate"] == 1.0
     assert retrieval_summary["cross_user_leakage_rate"] == 0.0

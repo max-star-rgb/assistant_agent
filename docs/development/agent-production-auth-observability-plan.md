@@ -1,8 +1,8 @@
 # Agent Production Auth And Observability Plan
 
-Last updated: 2026-06-29
+Last updated: 2026-06-30
 
-Status: in progress. Phase A and Phase B have first-pass implementation.
+Status: in progress. Phase A, Phase B, Phase C, Phase D, and Phase E have first-pass implementation.
 
 This plan defines the next hardening stage after the local multi-agent gateway,
 inbound A2A adapter, default-disabled outbound A2A pilot, request identity
@@ -63,7 +63,8 @@ Implemented baseline:
 - `MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY=true` rejects request-derived identity across HTTP, WebSocket, memory APIs, and inbound A2A before dispatch.
 - `IdentityPolicy` can classify request-derived identity as warning/failed and auth-bound identity as passed.
 - `PilotReadinessChecker` reports runtime profile, remote A2A opt-in, identity policy, and trace redaction checks.
-- Trace/run query APIs, memory audit APIs, and local observability docs already exist, but they are not yet a unified control-plane audit surface.
+- Trace/run query APIs, memory audit APIs, and local observability docs now feed the first-pass control-plane audit surface.
+- Control-plane audit events now cover gateway auth/route/provider/delegation decisions plus selected memory access/export/delete API actions in a process-local redacted store. Durable audit storage is still deferred.
 
 ## Architecture Boundary
 
@@ -96,7 +97,7 @@ Goal: Make production auth and observability semantics explicit before adding ne
 
 Work:
 
-- Add API contract notes for auth-bound identity across `/agent/run`, `/agents/run`, `/a2a/rpc`, WebSocket, memory APIs, and beta APIs. First pass done in README, Codex guide, and agent communication routing docs.
+- Add API contract notes for auth-bound identity across `/agent/run`, `/agents/run`, `/a2a/rpc`, WebSocket, memory APIs, and beta APIs. First pass done in README, AGENTS, and agent communication routing docs.
 - Define supported auth modes. First pass implemented in `api/auth.py`:
   - `anonymous`: current default local/offline behavior.
   - `header_pilot`: current disabled-by-default controlled-header pilot.
@@ -175,26 +176,29 @@ Suggested tests:
 
 ## Phase C: Control-Plane Observability API
 
+Status: first-pass implemented on 2026-06-30.
+
 Goal: Provide redacted query surfaces for run, gateway, delegation, identity, budget, and readiness state.
 
 Work:
 
-- Add or extend read-only control-plane endpoints for:
-  - run summary by `run_id`.
-  - trace summary by `trace_id`.
-  - gateway route decision by run.
-  - delegation tree by parent run.
-  - pilot readiness report.
-  - failure replay preview payload.
-  - budget/cost/latency summary.
-- Keep responses redacted by default:
+- Add or extend read-only control-plane endpoints. First pass implemented:
+  - `GET /control-plane/runs/{run_id}`
+  - `GET /control-plane/traces/{trace_id}`
+  - `GET /control-plane/runs/{run_id}/route`
+  - `GET /control-plane/runs/{run_id}/delegation-tree`
+  - `GET /control-plane/readiness`
+  - `GET /control-plane/runs/{run_id}/replay-preview`
+  - `GET /control-plane/runs/{run_id}/budget`
+- Keep responses redacted by default. First pass implemented:
   - no raw provider responses.
   - no full auth tokens.
   - no base64/media payloads.
   - no hidden reasoning.
   - no raw parent conversation history in child-run views.
-- Add stable response schemas for observability views instead of ad hoc dictionaries.
-- Preserve existing `/runs/{run_id}` and `/traces/{trace_id}` compatibility.
+- Add stable response schemas for observability views instead of ad hoc dictionaries. Done in `schemas/agent_control_plane.py`.
+- Preserve existing `/runs/{run_id}` and `/traces/{trace_id}` compatibility. Done.
+- `AgentGateway` now records each gateway run into a process-local redacted control-plane store. Durable audit storage remains deferred.
 
 Acceptance:
 
@@ -216,26 +220,34 @@ Suggested tests:
 
 ## Phase D: Audit Events And Replay Hygiene
 
+Status: first-pass implemented on 2026-06-30.
+
 Goal: Make pilot failures replayable enough for debugging without leaking secrets or raw payloads.
 
 Work:
 
-- Add structured audit events for:
+- Add structured audit events. First pass implemented:
   - auth decision.
   - route decision.
   - delegation allowed/blocked.
   - remote A2A blocked/allowed.
   - provider opt-in decision.
   - memory access/export/delete where relevant.
-- Attach correlation IDs across parent and child runs.
-- Store only replay-safe previews and references.
-- Add redaction tests for:
+- Add query APIs. First pass implemented:
+  - `GET /control-plane/audit/events`
+  - `GET /control-plane/runs/{run_id}/audit`
+- Attach correlation IDs across parent and child runs. First pass implemented where delegation metadata provides `correlation_id`.
+- Store only replay-safe previews and references. First pass implemented with process-local retention metadata:
+  - `storage=process_local_memory`
+  - `durable=false`
+  - `retention_policy=process_lifetime_only`
+- Add redaction tests. First pass implemented through gateway, API, memory audit, trace, and sensitive-redaction tests:
   - authorization headers.
   - API keys.
   - raw provider responses.
   - base64/media bodies.
   - raw memory content unless explicitly requested and sanitized.
-- Define retention and export behavior for audit events separately from long-term memory.
+- Define retention and export behavior for audit events separately from long-term memory. First pass defines retention metadata only; durable export remains deferred.
 
 Acceptance:
 
@@ -248,6 +260,8 @@ Suggested tests:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_agent_gateway.py \
+  tests/test_api_agent_graph_runtime.py \
   tests/test_agent_pilot_readiness.py \
   tests/test_trace_redaction.py \
   tests/test_sensitive_redaction.py \
@@ -256,18 +270,22 @@ Suggested tests:
 
 ## Phase E: Pilot Profile And Operational Runbook
 
+Status: first-pass implemented on 2026-06-30.
+
 Goal: Make a small controlled pilot operable without changing default developer behavior.
 
 Work:
 
-- Define `pilot` profile requirements:
+- Define `pilot` profile requirements. First pass implemented through runtime profile, readiness checks, and runbook:
   - explicit real provider opt-in.
   - auth-bound identity required.
   - remote A2A allowlist required if remote agents are configured.
   - trace redaction required.
   - cost/budget limits required.
-- Add a pilot readiness command or API view that returns `ready`, `ready_with_warnings`, or `blocked`.
-- Add an operator runbook for:
+- Add a pilot readiness command or API view that returns `ready`, `ready_with_warnings`, or `blocked`. First pass implemented:
+  - `GET /control-plane/readiness`
+  - `scripts/check_pilot_readiness.py`
+- Add an operator runbook. First pass implemented in `docs/development/agent-pilot-operator-runbook.md` for:
   - starting local/pilot server.
   - verifying auth mode.
   - checking readiness.
@@ -277,15 +295,16 @@ Work:
 
 Acceptance:
 
-- Default local/mock/offline path remains green.
-- Pilot mode fails closed when auth-bound identity is missing.
-- Real provider or remote agent calls remain impossible unless explicit profile/config/allowlist gates are satisfied.
-- Operator docs include commands that do not write secrets to the repo.
+- Default local/mock/offline path remains green. Done.
+- Pilot mode fails closed when auth-bound identity is missing. Done for readiness command/API and route-level identity enforcement.
+- Real provider or remote agent calls remain impossible unless explicit profile/config/allowlist gates are satisfied. Done for first-pass readiness and existing transport/provider guards.
+- Operator docs include commands that do not write secrets to the repo. Done.
 
 Suggested validation:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_pilot_readiness.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
 ```
@@ -293,6 +312,8 @@ Suggested validation:
 ## Phase F: Optional UI Surface
 
 Goal: Add a local operator-friendly view only after backend contracts are stable.
+
+Status: first-pass implemented in the Web Console as a read-only Control Plane panel. It reuses the existing observability APIs and does not add remote control actions, secret entry, real provider toggles, or new backend privileges.
 
 Work:
 
@@ -309,9 +330,34 @@ Work:
 
 Acceptance:
 
-- UI uses the same observability APIs as tests.
-- Text does not expose raw secrets or raw provider payloads.
-- Default demo console behavior remains unchanged.
+- UI uses the same observability APIs as tests. Done for `/control-plane/readiness`, `/control-plane/audit/events`, `/control-plane/runs/{run_id}`, `/control-plane/traces/{trace_id}`, and run-scoped route/delegation/budget/audit/replay-preview endpoints.
+- Text does not expose raw secrets or raw provider payloads. Done by relying on redacted control-plane APIs plus display-side sensitive-key masking.
+- Default demo console behavior remains unchanged. Done: existing WebSocket/HTTP fallback chat flow still uses `/agent/run`; the Control Plane panel is observational only.
+
+## Phase G: Pilot Readiness Evidence Freeze
+
+Goal: Close this control-plane stage with a repeatable, redacted pilot evidence package rather than adding new agent/network complexity.
+
+Status: first-pass implemented through `scripts/collect_pilot_evidence.py`.
+
+Work:
+
+- Add a default-offline evidence collector that:
+  - disables dotenv loading.
+  - forces `local_demo` and mock providers unless explicitly told to use current env.
+  - enables header-bound identity for in-process API calls.
+  - exercises `/agent/run`, `/agents/run`, inbound `/a2a/rpc`, agent card, readiness, audit, run/trace, route, delegation, budget, and replay-preview APIs.
+  - emits a compact JSON evidence package with no raw request text, raw provider payload, auth headers, inline media bodies, or full trace event bodies.
+- Keep real provider and remote A2A validation opt-in only; this evidence script must not perform real provider calls or remote-agent calls in default mode.
+- Use this phase as the cutoff for the current Agent Control Plane route. Future work should be tracked as a new plan, not appended as more hidden scope here.
+
+Acceptance:
+
+- `scripts/collect_pilot_evidence.py --strict` exits 0 in a clean local/offline environment.
+- Evidence includes successful single-agent, explicit gateway, and inbound A2A smoke paths.
+- Evidence includes readiness, route, delegation, budget, audit, replay-preview, and trace summaries.
+- Evidence redaction checks pass and the package does not contain secret-like markers.
+- Existing `/agent/run`, CLI, eval, and Web demo defaults remain unchanged.
 
 ## Implementation Order
 
@@ -323,8 +369,9 @@ Recommended sequence:
 4. Phase D: audit events and replay hygiene.
 5. Phase E: pilot profile and operator runbook.
 6. Phase F: optional read-only UI.
+7. Phase G: pilot readiness evidence freeze.
 
-Do not begin Phase F before Phases A-C are test-covered.
+Do not begin Phase F before Phases A-C are test-covered. Do not expand beyond Phase G in this plan; open a new plan for durable audit storage, production auth, or real pilot operations.
 
 ## Success Criteria
 
@@ -337,11 +384,12 @@ This stage is complete when:
 - Pilot readiness reflects runtime profile, auth, remote allowlist, redaction, and budget gates.
 - Failure replay payloads are useful for debugging and safe to store.
 - Operator docs describe how to run, verify, observe, and back out of a pilot.
+- A strict local evidence package can be generated with `scripts/collect_pilot_evidence.py --strict`.
 
 ## Open Questions
 
 - Which production auth mode should be implemented first: trusted proxy headers, JWT, or server-side session?
 - Should `AuthContext.allowed_scopes` become the single source for memory API authorization, or remain advisory until a larger permission model exists?
-- Should observability events be stored in the existing `TraceStore`, a new audit store, or memory-audit-adjacent storage?
+- Should durable observability events be stored in the existing `TraceStore`, a new audit store, or memory-audit-adjacent storage?
 - What is the minimum useful retention policy for pilot audit events?
 - Should A2A inbound Agent Card advertise auth requirements differently when production auth is required?

@@ -48,6 +48,7 @@ class MemoryContextSnapshot(BaseModel):
     """Long-term memory context that would be available to the assistant."""
 
     query: str = ""
+    include_superseded: bool = False
     total: int = Field(ge=0)
     context_text: str = ""
     summaries: list[str] = Field(default_factory=list)

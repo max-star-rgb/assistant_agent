@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -23,6 +24,12 @@ from multimodal_agent.schemas.agent_gateway import (
 )
 from multimodal_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION, api_error
 from multimodal_agent.schemas.requests import UserRequest
+from multimodal_agent.services.agent_control_plane import (
+    AgentControlPlaneStore,
+    InMemoryAgentControlPlaneStore,
+    audit_events_from_gateway_record,
+    build_gateway_run_record,
+)
 from multimodal_agent.services.agent_communication import (
     AgentCommunicationService,
     create_local_agent_communication_service,
@@ -51,6 +58,7 @@ class AgentGateway:
         controller_runtime: Any | None = None,
         routing_policy: AgentRoutingPolicy | None = None,
         routing_table: Mapping[str, str] | None = None,
+        control_plane_store: AgentControlPlaneStore | None = None,
     ) -> None:
         if not runtimes:
             raise ValueError("at least one agent runtime is required")
@@ -65,10 +73,12 @@ class AgentGateway:
             controller_agent_id=controller_agent_id,
             routing_table=routing_table,
         )
+        self.control_plane_store = control_plane_store or InMemoryAgentControlPlaneStore()
 
     def run(self, request: AgentGatewayRunRequest | UserRequest) -> AgentRunResponse:
         """Run one request through the selected local agent."""
 
+        started_at = time.monotonic()
         gateway_request = _coerce_gateway_request(request)
         mode = gateway_request.effective_collaboration_mode()
         route_decision = self.routing_policy.resolve(
@@ -83,17 +93,19 @@ class AgentGateway:
                 message="Agent route failed.",
                 recoverable=True,
             )
-            return _failed_response(
+            response = _failed_response(
                 gateway_request,
                 error=error,
                 mode=mode,
                 route_reason=route_decision.reason,
             )
+            self._record_control_plane(gateway_request, response=response, started_at=started_at)
+            return response
 
         agent_id = route.instance.agent_id
         runtime = self.controller_runtime if route_decision.use_controller_runtime else self.runtimes.get(agent_id)
         if runtime is None:
-            return _failed_response(
+            response = _failed_response(
                 gateway_request,
                 error=AgentCommunicationError(
                     code="agent_runtime_not_found",
@@ -105,12 +117,14 @@ class AgentGateway:
                 agent_id=agent_id,
                 route_reason=route_decision.reason,
             )
+            self._record_control_plane(gateway_request, response=response, started_at=started_at)
+            return response
 
         runtime_request = gateway_request.to_user_request(
             metadata=_request_metadata(gateway_request, agent_id=agent_id, mode=mode)
         )
         response = run_assistant_request(runtime_request, runtime=runtime).api_response()
-        return _augment_response(
+        response = _augment_response(
             response,
             request=gateway_request,
             agent_id=agent_id,
@@ -119,6 +133,25 @@ class AgentGateway:
             route_instance=route.instance,
             runtime=runtime,
         )
+        self._record_control_plane(gateway_request, response=response, started_at=started_at)
+        return response
+
+    def _record_control_plane(
+        self,
+        request: AgentGatewayRunRequest,
+        *,
+        response: AgentRunResponse,
+        started_at: float,
+    ) -> None:
+        latency_ms = int((time.monotonic() - started_at) * 1000)
+        record = build_gateway_run_record(
+            request=request,
+            response=response,
+            latency_ms=latency_ms,
+        )
+        self.control_plane_store.record(record)
+        for event in audit_events_from_gateway_record(record):
+            self.control_plane_store.append_audit_event(event)
 
 
 def create_default_agent_gateway(

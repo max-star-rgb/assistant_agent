@@ -53,6 +53,7 @@ _VALID_MEMORY_TYPES = {
 }
 _SAFE_EXPLICIT_CONTENT_KEYS = {
     "summary",
+    "preference_key",
     "style",
     "budget",
     "product_ref",
@@ -408,13 +409,20 @@ class MemoryManager:
             session_id=saved.session_id,
             memory_id=saved.memory_id,
             summary="explicit memory saved",
-            counts={"attempted": 1, "written": 1, "rejected": 0},
+            counts={
+                "attempted": 1,
+                "written": 1,
+                "rejected": 0,
+                "superseded": len(_supersedes_memory_ids(saved)),
+            },
             metadata={
                 "memory_type": saved.memory_type,
                 "scope": memory_scope_for_item(saved),
                 "sensitivity": saved.sensitivity,
                 "destination": decision.destination,
                 "ttl_days": decision.ttl_days,
+                "preference_key": _preference_conflict_key(saved),
+                "supersedes_memory_ids": _supersedes_memory_ids(saved),
             },
         )
         return saved
@@ -684,7 +692,12 @@ class MemoryManager:
             session_id=saved.session_id,
             memory_id=saved.memory_id,
             summary="confirmed explicit memory saved",
-            counts={"attempted": 1, "written": 1, "rejected": 0},
+            counts={
+                "attempted": 1,
+                "written": 1,
+                "rejected": 0,
+                "superseded": len(_supersedes_memory_ids(saved)),
+            },
             metadata={
                 "memory_type": saved.memory_type,
                 "scope": memory_scope_for_item(saved),
@@ -692,6 +705,8 @@ class MemoryManager:
                 "destination": confirmation.destination,
                 "confirmed_from_confirmation": True,
                 "confirmation_id": confirmation_id,
+                "preference_key": _preference_conflict_key(saved),
+                "supersedes_memory_ids": _supersedes_memory_ids(saved),
             },
         )
         self.record_audit_event(
@@ -775,7 +790,10 @@ class MemoryManager:
 
         now = datetime.now(timezone.utc)
         existing = self.get_for_identity(identity, USER_PROFILE_MEMORY_ID)
-        source_items = _profile_source_items(self.list_for_identity(identity))
+        all_profile_items = _profile_all_source_items(self.list_for_identity(identity))
+        source_items = _profile_source_items(all_profile_items)
+        superseded_source_ids = _profile_superseded_source_ids(all_profile_items)
+        profile_conflicts = _profile_conflict_groups(all_profile_items)
         expected_profile = UserProfileMemory.empty(identity.user_id, now=now)
         for item in sorted(source_items, key=lambda item: item.created_at):
             expected_profile.merge_memory(item, now=item.updated_at or item.created_at)
@@ -793,6 +811,7 @@ class MemoryManager:
             source_count=len(source_items),
             missing_source_ids=missing_source_ids,
             stale_source_ids=stale_source_ids,
+            profile_conflicts=profile_conflicts,
         )
         action = _profile_repair_action(existing=existing, source_count=len(source_items), issues=issues)
         repaired = False
@@ -818,6 +837,8 @@ class MemoryManager:
             current_source_memory_ids=current_source_ids,
             missing_source_memory_ids=missing_source_ids,
             stale_source_memory_ids=stale_source_ids,
+            superseded_source_memory_ids=superseded_source_ids,
+            profile_conflicts=profile_conflicts,
             issues=issues,
             expected_summary=expected_item.summary if source_items else None,
             current_summary=existing.summary if existing is not None else None,
@@ -834,6 +855,8 @@ class MemoryManager:
                 summary="user profile repair checked" if dry_run else "user profile repair applied",
                 counts={
                     "source_items": result.source_count,
+                    "superseded_sources": len(result.superseded_source_memory_ids),
+                    "conflicts": len(result.profile_conflicts),
                     "issues": len(result.issues),
                     "repaired": 1 if result.repaired else 0,
                 },
@@ -842,6 +865,8 @@ class MemoryManager:
                     "issues": result.issues,
                     "missing_source_memory_ids": result.missing_source_memory_ids[:50],
                     "stale_source_memory_ids": result.stale_source_memory_ids[:50],
+                    "superseded_source_memory_ids": result.superseded_source_memory_ids[:50],
+                    "profile_conflicts": result.profile_conflicts[:20],
                 },
             )
         return result
@@ -980,7 +1005,7 @@ class MemoryManager:
     def _merge_or_save(self, item: MemoryItem) -> MemoryItem:
         duplicate = self._find_duplicate(item)
         if duplicate is None:
-            return self.store.save(item)
+            return self.store.save(self._apply_supersedes_chain(item))
 
         observation_count = _observation_count(duplicate) + 1
         merged = duplicate.model_copy(
@@ -998,6 +1023,56 @@ class MemoryManager:
             }
         )
         return self.store.save(merged)
+
+    def _apply_supersedes_chain(self, item: MemoryItem) -> MemoryItem:
+        preference_key = _preference_conflict_key(item)
+        if not preference_key:
+            return item
+
+        superseded_ids: list[str] = []
+        for existing in self.store.list_by_user(item.user_id):
+            if not _is_supersedable_preference(existing, item, preference_key):
+                continue
+            superseded_ids.append(existing.memory_id)
+            self.store.save(
+                existing.model_copy(
+                    update={
+                        "content": {
+                            **existing.content,
+                            "preference_key": preference_key,
+                            "conflict_key": preference_key,
+                            "superseded_by_memory_id": item.memory_id,
+                            "superseded_at": item.created_at.isoformat(),
+                            "conflict_reason": "newer_explicit_preference_for_same_key",
+                        },
+                        "updated_at": item.created_at,
+                    }
+                )
+            )
+
+        if not superseded_ids:
+            return item.model_copy(
+                update={
+                    "content": {
+                        **item.content,
+                        "preference_key": preference_key,
+                        "conflict_key": preference_key,
+                    }
+                }
+            )
+
+        return item.model_copy(
+            update={
+                "content": {
+                    **item.content,
+                    "preference_key": preference_key,
+                    "conflict_key": preference_key,
+                    "supersedes_memory_id": superseded_ids[0],
+                    "supersedes_memory_ids": superseded_ids,
+                    "conflict_reason": "newer_explicit_preference_for_same_key",
+                }
+            }
+        )
 
     def _find_duplicate(self, item: MemoryItem) -> MemoryItem | None:
         item_key = _dedupe_key(item)
@@ -1021,18 +1096,24 @@ class MemoryManager:
             return None
 
         existing = self.store.get(item.user_id, USER_PROFILE_MEMORY_ID)
-        profile = (
-            UserProfileMemory.from_memory_item(existing)
-            if existing is not None
-            else UserProfileMemory.empty(item.user_id, now=item.created_at)
-        )
-        changed = profile.merge_memory(item, now=item.updated_at or item.created_at)
-        if not changed and existing is not None:
+        source_items = _profile_source_items(self.store.list_by_user(item.user_id))
+        if not source_items:
             return existing
 
-        profile_item = profile.to_memory_item(session_id=item.session_id)
+        profile = UserProfileMemory.empty(item.user_id, now=item.updated_at or item.created_at)
+        for source_item in sorted(source_items, key=lambda source: source.created_at):
+            profile.merge_memory(source_item, now=source_item.updated_at or source_item.created_at)
+
+        profile_item = profile.to_memory_item(session_id=existing.session_id if existing else item.session_id)
         if existing is not None:
             profile_item = profile_item.model_copy(update={"created_at": existing.created_at})
+            if (
+                existing.summary == profile_item.summary
+                and existing.content.get("preferences") == profile_item.content.get("preferences")
+                and existing.content.get("facts") == profile_item.content.get("facts")
+                and existing.content.get("source_memory_ids") == profile_item.content.get("source_memory_ids")
+            ):
+                return existing
         return self.store.save(profile_item)
 
 
@@ -1115,17 +1196,50 @@ def _safe_explicit_content_preview(payload: dict[str, Any], *, summary: str) -> 
     return preview
 
 
-def _profile_source_items(items: list[MemoryItem]) -> list[MemoryItem]:
+def _profile_all_source_items(items: list[MemoryItem]) -> list[MemoryItem]:
     return [
         item
         for item in items
-        if item.source != "user_profile"
-        and item.memory_type in {"preference", "product", "task"}
-        and item.tenant_id is None
-        and item.project_id is None
-        and memory_scope_for_item(item) != "project"
-        and not _is_expired(item)
+        if _is_profile_source_candidate(item)
     ]
+
+
+def _profile_source_items(items: list[MemoryItem]) -> list[MemoryItem]:
+    return [item for item in _profile_all_source_items(items) if not _is_superseded(item)]
+
+
+def _profile_superseded_source_ids(items: list[MemoryItem]) -> list[str]:
+    return [item.memory_id for item in _profile_all_source_items(items) if _is_superseded(item)]
+
+
+def _profile_conflict_groups(items: list[MemoryItem]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[MemoryItem]] = {}
+    for item in _profile_all_source_items(items):
+        if item.memory_type != "preference":
+            continue
+        preference_key = _preference_conflict_key(item)
+        if preference_key:
+            grouped.setdefault(preference_key, []).append(item)
+
+    conflicts: list[dict[str, Any]] = []
+    for preference_key, group_items in sorted(grouped.items()):
+        active_items = [item for item in group_items if not _is_superseded(item)]
+        superseded_items = [item for item in group_items if _is_superseded(item)]
+        active_summaries = {_normalize_for_dedupe(item.summary) for item in active_items}
+        unresolved = len(active_summaries) > 1
+        if not superseded_items and not unresolved:
+            continue
+        latest_active = max(active_items, key=lambda item: item.created_at, default=None)
+        conflicts.append(
+            {
+                "preference_key": preference_key,
+                "active_memory_id": latest_active.memory_id if latest_active else None,
+                "active_memory_ids": [item.memory_id for item in active_items],
+                "superseded_memory_ids": [item.memory_id for item in superseded_items],
+                "unresolved": unresolved,
+            }
+        )
+    return conflicts
 
 
 def _profile_source_ids(item: MemoryItem | None) -> list[str]:
@@ -1144,6 +1258,7 @@ def _profile_repair_issues(
     source_count: int,
     missing_source_ids: list[str],
     stale_source_ids: list[str],
+    profile_conflicts: list[dict[str, Any]],
 ) -> list[str]:
     issues: list[str] = []
     if existing is None and source_count > 0:
@@ -1161,7 +1276,64 @@ def _profile_repair_issues(
             issues.append("profile_preferences_out_of_sync")
         if existing.content.get("facts") != expected_item.content.get("facts"):
             issues.append("profile_facts_out_of_sync")
+    if any(conflict.get("unresolved") is True for conflict in profile_conflicts):
+        issues.append("profile_unresolved_conflicts")
     return list(dict.fromkeys(issues))
+
+
+def _is_profile_source_candidate(item: MemoryItem) -> bool:
+    return (
+        item.source != "user_profile"
+        and item.memory_type in {"preference", "product", "task"}
+        and item.tenant_id is None
+        and item.project_id is None
+        and memory_scope_for_item(item) != "project"
+        and not _is_expired(item)
+    )
+
+
+def _is_superseded(item: MemoryItem) -> bool:
+    return bool(str(item.content.get("superseded_by_memory_id") or "").strip())
+
+
+def _is_supersedable_preference(existing: MemoryItem, item: MemoryItem, preference_key: str) -> bool:
+    return (
+        existing.memory_id != item.memory_id
+        and existing.source != "user_profile"
+        and existing.memory_type == "preference"
+        and not _is_superseded(existing)
+        and not _is_expired(existing)
+        and _same_governance_scope(existing, item)
+        and _preference_conflict_key(existing) == preference_key
+        and _normalize_for_dedupe(existing.summary) != _normalize_for_dedupe(item.summary)
+    )
+
+
+def _preference_conflict_key(item: MemoryItem) -> str | None:
+    if item.memory_type != "preference" or item.source == "user_profile":
+        return None
+    raw_key = item.content.get("preference_key") or item.content.get("conflict_key")
+    if raw_key not in (None, "", [], {}):
+        return _normalize_conflict_key(str(raw_key))
+    for key in ("style", "budget"):
+        if item.content.get(key) not in (None, "", [], {}):
+            return key
+    if "预算" in item.summary:
+        return "budget"
+    return None
+
+
+def _normalize_conflict_key(value: str) -> str:
+    normalized = "".join(ch for ch in value.strip().lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+    return normalized or "preference"
+
+
+def _supersedes_memory_ids(item: MemoryItem) -> list[str]:
+    values = item.content.get("supersedes_memory_ids")
+    if isinstance(values, list):
+        return [str(value) for value in values if str(value).strip()]
+    value = item.content.get("supersedes_memory_id")
+    return [str(value)] if value not in (None, "", [], {}) else []
 
 
 def _profile_repair_action(

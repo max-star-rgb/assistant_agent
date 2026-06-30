@@ -8,7 +8,7 @@ import pytest
 
 from multimodal_agent.memory.jsonl_store import JsonlMemoryStore
 from multimodal_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
-from multimodal_agent.memory.sqlite_store import SCHEMA_VERSION, SQLiteMemoryStore
+from multimodal_agent.memory.sqlite_store import SCHEMA_VERSION, SQLiteMemoryStore as BaseSQLiteMemoryStore
 from multimodal_agent.memory.store import InMemoryStore, MemoryStore
 from multimodal_agent.schemas.identity import RequestIdentity
 from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
@@ -16,6 +16,30 @@ from multimodal_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendin
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+class SQLiteMemoryStore(BaseSQLiteMemoryStore):
+    """Fast SQLite settings for store-boundary tests on slow local filesystems."""
+
+    def __init__(self, path: Path | str = ".local/memory/long_term_memories.sqlite3", **kwargs) -> None:
+        kwargs.setdefault("synchronous", "OFF")
+        kwargs.setdefault("busy_timeout_ms", 1000)
+        super().__init__(path, **kwargs)
+
+
+def restore_sqlite_backup_for_test(
+    source: Path,
+    destination: Path,
+    *,
+    overwrite: bool = False,
+) -> SQLiteMemoryStore:
+    return SQLiteMemoryStore.restore_backup(
+        source,
+        destination,
+        overwrite=overwrite,
+        synchronous="OFF",
+        busy_timeout_ms=1000,
+    )
 
 
 def make_memory(memory_id: str, user_id: str = "u1", summary: str = "用户喜欢白色运动鞋") -> MemoryItem:
@@ -65,6 +89,65 @@ def test_jsonl_store_keeps_legacy_search_call_compatible(tmp_path) -> None:
     assert [item.memory_id for item in result] == ["m1"]
 
 
+@pytest.mark.parametrize("store_backend", ["memory", "jsonl", "sqlite"])
+def test_store_boundary_confirmation_contract(store_backend: str, tmp_path) -> None:
+    if store_backend == "memory":
+        store: MemoryStore = InMemoryStore()
+    elif store_backend == "jsonl":
+        store = JsonlMemoryStore(tmp_path / "memories.jsonl")
+    else:
+        store = SQLiteMemoryStore(tmp_path / "memories.sqlite3")
+
+    saved = store.save_confirmation(make_confirmation("confirmation_1"))
+    store.save_confirmation(make_confirmation("confirmation_2", user_id="u2"))
+    resolved = saved.model_copy(update={"status": "rejected", "decided_at": NOW})
+    store.save_confirmation(resolved)
+
+    assert store.get_confirmation("u1", "confirmation_1") == resolved
+    assert store.list_confirmations(user_id="u1", include_resolved=False) == []
+    assert [item.confirmation_id for item in store.list_confirmations(user_id="u1", include_resolved=True)] == [
+        "confirmation_1"
+    ]
+    assert store.delete_confirmation("u1", "confirmation_1") is True
+    assert store.delete_confirmation("u1", "confirmation_1") is False
+    assert store.get_confirmation("u1", "confirmation_1") is None
+    assert [item.confirmation_id for item in store.list_confirmations(user_id="u2", include_resolved=True)] == [
+        "confirmation_2"
+    ]
+
+
+def test_jsonl_store_persists_memory_confirmations_across_instances(tmp_path) -> None:
+    path = tmp_path / "memories.jsonl"
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+    manager = MemoryManager(JsonlMemoryStore(path))
+
+    with pytest.raises(MemoryConfirmationRequired) as raised:
+        manager.save_explicit_for_identity(
+            identity,
+            text="记住我的项目路径是 /home/alice/private/project",
+        )
+    confirmation_id = raised.value.confirmation.confirmation_id
+
+    reloaded = MemoryManager(JsonlMemoryStore(path))
+    pending = reloaded.list_confirmations_for_identity(identity)
+    confirmed = reloaded.confirm_memory_for_identity(identity, confirmation_id)
+
+    assert (tmp_path / "memories.confirmations.jsonl").exists()
+    assert [confirmation.confirmation_id for confirmation in pending] == [confirmation_id]
+    assert confirmed is not None
+    assert confirmed.status == "confirmed"
+
+    final_store = JsonlMemoryStore(path)
+    saved = final_store.get("u1", confirmed.confirmed_memory_id or "")
+    resolved = final_store.get_confirmation("u1", confirmation_id)
+
+    assert saved is not None
+    assert saved.summary == "我的项目路径是 [redacted]"
+    assert resolved is not None
+    assert resolved.status == "confirmed"
+    assert resolved.confirmed_memory_id == saved.memory_id
+
+
 def test_sqlite_store_persists_across_instances(tmp_path) -> None:
     path = tmp_path / "memories.sqlite3"
     SQLiteMemoryStore(path).save(make_memory("m1"))
@@ -97,6 +180,13 @@ def test_sqlite_store_rejects_newer_schema_version(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="newer than supported"):
         SQLiteMemoryStore(path)
+
+
+def test_sqlite_store_rejects_unsupported_pragma_options(tmp_path) -> None:
+    with pytest.raises(ValueError, match="journal_mode"):
+        BaseSQLiteMemoryStore(tmp_path / "bad_journal.sqlite3", journal_mode="WAL;DROP TABLE memory_items")
+    with pytest.raises(ValueError, match="synchronous"):
+        BaseSQLiteMemoryStore(tmp_path / "bad_sync.sqlite3", synchronous="NORMAL;DROP TABLE memory_items")
 
 
 def test_sqlite_store_migrates_older_schema_version(tmp_path) -> None:
@@ -342,7 +432,7 @@ def test_sqlite_store_backup_restore_includes_memories_audit_and_rebuilds_indexe
         )
     confirmation_id = raised.value.confirmation.confirmation_id
     store.backup_to(backup_path)
-    restored = SQLiteMemoryStore.restore_backup(backup_path, restored_path)
+    restored = restore_sqlite_backup_for_test(backup_path, restored_path)
 
     assert restored.integrity_check() == ["ok"]
     assert [item.memory_id for item in restored.list_by_user("u1") if item.memory_id == saved.memory_id] == [
@@ -384,9 +474,9 @@ def test_sqlite_store_backup_and_restore_overwrite_are_explicit(tmp_path) -> Non
         source.backup_to(backup_path)
     source.backup_to(backup_path, overwrite=True)
     with pytest.raises(FileExistsError):
-        SQLiteMemoryStore.restore_backup(backup_path, restore_path)
+        restore_sqlite_backup_for_test(backup_path, restore_path)
 
-    restored = SQLiteMemoryStore.restore_backup(backup_path, restore_path, overwrite=True)
+    restored = restore_sqlite_backup_for_test(backup_path, restore_path, overwrite=True)
 
     assert [item.memory_id for item in restored.list_by_user("u1")] == ["source_memory"]
 
@@ -398,7 +488,7 @@ def test_sqlite_store_failed_restore_preserves_destination(tmp_path) -> None:
     source_path.write_text("not a sqlite database", encoding="utf-8")
 
     with pytest.raises(sqlite3.DatabaseError):
-        SQLiteMemoryStore.restore_backup(source_path, destination_path, overwrite=True)
+        restore_sqlite_backup_for_test(source_path, destination_path, overwrite=True)
 
     assert [item.memory_id for item in SQLiteMemoryStore(destination_path).list_by_user("u1")] == ["existing_memory"]
 
@@ -466,6 +556,9 @@ def _sqlite_index_names(path: Path) -> set[str]:
 def _sqlite_connection(path: Path):
     connection = sqlite3.connect(path)
     try:
+        connection.execute("PRAGMA journal_mode=MEMORY")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("PRAGMA busy_timeout=1000")
         yield connection
         connection.commit()
     except Exception:

@@ -35,6 +35,22 @@ def test_static_console_asset_is_served() -> None:
     assert "renderProductGallery" in response.text
     assert "collectImageArtifacts" in response.text
     assert "normalizeArtifactUrl" in response.text
+    assert "Control Plane" in response.text
+    assert "Pilot Readiness" in response.text
+    assert "Recent Runs / Audit" in response.text
+    assert "Gateway Route" in response.text
+    assert "Delegation Tree" in response.text
+    assert "Redaction Status" in response.text
+    assert "control-plane-run-id" in response.text
+    assert "control-plane-trace-id" in response.text
+    assert "/control-plane/readiness" in response.text
+    assert "/control-plane/audit/events?limit=12" in response.text
+    assert "/control-plane/runs/" in response.text
+    assert "refreshControlPlaneReadiness" in response.text
+    assert "refreshControlPlaneRun" in response.text
+    assert "refreshControlPlaneRecent" in response.text
+    assert "remote control" not in response.text.lower()
+    assert "provider toggle" not in response.text.lower()
 
 
 def test_generated_artifact_static_path_is_served(monkeypatch, tmp_path) -> None:

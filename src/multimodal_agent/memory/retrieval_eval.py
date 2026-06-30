@@ -52,6 +52,20 @@ class MemoryRetrievalEvalFixture(BaseModel):
         )
 
 
+class MemoryRetrievalExplicitSave(BaseModel):
+    """One explicit save operation used to build realistic eval state."""
+
+    text: str
+    content: dict[str, Any] = Field(default_factory=dict)
+    memory_id: str | None = None
+    user_id: str | None = None
+    tenant_id: str | None = None
+    project_id: str | None = None
+    session_id: str | None = None
+    scope: MemoryScope | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+
 class MemoryRetrievalEvalCase(BaseModel):
     """A deterministic offline memory retrieval and injection eval case."""
 
@@ -68,11 +82,15 @@ class MemoryRetrievalEvalCase(BaseModel):
     max_context_chars: int = Field(default=500, ge=50, le=4000)
     max_context_tokens: int | None = Field(default=None, ge=1)
     fixtures: list[MemoryRetrievalEvalFixture] = Field(default_factory=list)
+    explicit_saves: list[MemoryRetrievalExplicitSave] = Field(default_factory=list)
     expected_memory_ids: list[str] = Field(default_factory=list)
     expected_injected_ids: list[str] | None = None
+    expected_profile_source_memory_ids: list[str] | None = None
+    expected_profile_conflict_count: int | None = None
     expected_empty: bool = False
     forbidden_memory_ids: list[str] = Field(default_factory=list)
     forbidden_injected_ids: list[str] = Field(default_factory=list)
+    forbidden_profile_source_memory_ids: list[str] = Field(default_factory=list)
 
 
 class MemoryRetrievalEvalResult(BaseModel):
@@ -85,9 +103,13 @@ class MemoryRetrievalEvalResult(BaseModel):
     retrieved_memory_ids: list[str]
     expected_injected_ids: list[str] | None = None
     injected_memory_ids: list[str]
+    expected_profile_source_memory_ids: list[str] | None = None
+    profile_source_memory_ids: list[str] = Field(default_factory=list)
+    profile_conflicts: list[dict[str, Any]] = Field(default_factory=list)
     missing_expected_ids: list[str] = Field(default_factory=list)
     forbidden_retrieved_ids: list[str] = Field(default_factory=list)
     forbidden_injected_ids: list[str] = Field(default_factory=list)
+    forbidden_profile_source_ids: list[str] = Field(default_factory=list)
     recall_at_k: float = Field(ge=0.0, le=1.0)
     reciprocal_rank: float = Field(ge=0.0, le=1.0)
     expected_empty: bool = False
@@ -107,10 +129,27 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
 
     case = MemoryRetrievalEvalCase.model_validate(payload)
     store = InMemoryStore()
+    manager = MemoryManager(store)
     for fixture in case.fixtures:
         store.save(fixture.to_memory_item())
+    for explicit_save in case.explicit_saves:
+        save_identity = RequestIdentity.for_user(
+            tenant_id=explicit_save.tenant_id or case.tenant_id,
+            user_id=explicit_save.user_id or case.user_id,
+            project_id=explicit_save.project_id or case.project_id,
+            session_id=explicit_save.session_id or case.session_id,
+            allowed_scopes=case.allowed_scopes,
+        )
+        manager.save_explicit_for_identity(
+            save_identity,
+            text=explicit_save.text,
+            content=explicit_save.content,
+            memory_id=explicit_save.memory_id,
+            scope=explicit_save.scope,
+            session_id=explicit_save.session_id or case.session_id,
+            created_at=explicit_save.created_at,
+        )
 
-    manager = MemoryManager(store)
     identity = RequestIdentity.for_user(
         tenant_id=case.tenant_id,
         user_id=case.user_id,
@@ -136,17 +175,41 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
         max_chars=case.max_context_chars,
         max_tokens=case.max_context_tokens,
     )
+    profile_status = manager.rebuild_user_profile_for_identity(
+        identity,
+        dry_run=True,
+        record_event=False,
+    )
 
     retrieved_ids = [item.memory_id for item in result.items]
     injected_ids = [item.memory_id for item in context.items]
+    profile_source_ids = list(profile_status.expected_source_memory_ids)
     expected_ids = list(case.expected_memory_ids)
     missing_expected = [memory_id for memory_id in expected_ids if memory_id not in retrieved_ids]
+    missing_profile_expected = (
+        []
+        if case.expected_profile_source_memory_ids is None
+        else [
+            memory_id
+            for memory_id in case.expected_profile_source_memory_ids
+            if memory_id not in profile_source_ids
+        ]
+    )
     forbidden_retrieved = [memory_id for memory_id in case.forbidden_memory_ids if memory_id in retrieved_ids]
     forbidden_injected = [memory_id for memory_id in case.forbidden_injected_ids if memory_id in injected_ids]
+    forbidden_profile_source = [
+        memory_id
+        for memory_id in case.forbidden_profile_source_memory_ids
+        if memory_id in profile_source_ids
+    ]
     expected_injected_missing = (
         []
         if case.expected_injected_ids is None
         else [memory_id for memory_id in case.expected_injected_ids if memory_id not in injected_ids]
+    )
+    profile_conflict_count_ok = (
+        case.expected_profile_conflict_count is None
+        or len(profile_status.profile_conflicts) == case.expected_profile_conflict_count
     )
     empty_correct = case.expected_empty and not retrieved_ids
     false_positive = case.expected_empty and bool(retrieved_ids)
@@ -161,6 +224,9 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
         expected_retrieval_ok
         and not forbidden_retrieved
         and not forbidden_injected
+        and not forbidden_profile_source
+        and not missing_profile_expected
+        and profile_conflict_count_ok
         and not expected_injected_missing
         and not sensitive_injected
         and not expired_injected
@@ -175,9 +241,13 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
         retrieved_memory_ids=retrieved_ids,
         expected_injected_ids=case.expected_injected_ids,
         injected_memory_ids=injected_ids,
-        missing_expected_ids=[*missing_expected, *expected_injected_missing],
+        expected_profile_source_memory_ids=case.expected_profile_source_memory_ids,
+        profile_source_memory_ids=profile_source_ids,
+        profile_conflicts=profile_status.profile_conflicts,
+        missing_expected_ids=[*missing_expected, *expected_injected_missing, *missing_profile_expected],
         forbidden_retrieved_ids=forbidden_retrieved,
         forbidden_injected_ids=forbidden_injected,
+        forbidden_profile_source_ids=forbidden_profile_source,
         recall_at_k=recall_at_k,
         reciprocal_rank=reciprocal_rank,
         expected_empty=case.expected_empty,
