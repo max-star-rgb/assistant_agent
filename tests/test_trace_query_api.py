@@ -1,10 +1,10 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.app import create_app
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.api import routes_agent
+from assistant_agent.api.app import create_app
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
 def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:

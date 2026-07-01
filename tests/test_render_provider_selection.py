@@ -1,6 +1,6 @@
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.render_adapter import HttpRenderAdapter, MockRenderAdapter, RenderRequest, create_render_adapter
-from multimodal_agent.tools.registry import create_default_registry
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.render_adapter import HttpRenderAdapter, MockRenderAdapter, RenderRequest, create_render_adapter
+from assistant_agent.tools.registry import create_default_registry
 
 
 def test_create_render_adapter_defaults_to_mock() -> None:

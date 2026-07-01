@@ -1,6 +1,6 @@
 import pytest
 
-from multimodal_agent.config import ProviderConfig
+from assistant_agent.config import ProviderConfig
 
 
 def test_real_provider_integration_requires_explicit_configuration() -> None:

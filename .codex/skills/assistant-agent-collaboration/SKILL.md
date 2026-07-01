@@ -12,7 +12,7 @@ The repository documentation and source code remain authoritative. This skill ro
 ## Start
 
 1. Locate the project root.
-   - Prefer the current working directory when it contains `AGENTS.md` and `src/multimodal_agent/`.
+   - Prefer the current working directory when it contains `AGENTS.md` and `src/assistant_agent/`.
    - If those files are absent, ask for the `assistant_agent` repository path before editing.
 2. Read `AGENTS.md`.
 3. Read `docs/agent-communication-routing.md` for multi-agent, gateway, A2A, delegation, control-plane, pilot readiness or transport work.
@@ -28,17 +28,17 @@ The repository documentation and source code remain authoritative. This skill ro
 
 Inspect these areas as relevant:
 
-- `src/multimodal_agent/schemas/agent_communication.py`: protocol-neutral message, task, artifact, session and directory contracts.
-- `src/multimodal_agent/services/agent_directory.py`: agent IDs, capabilities, enablement and directory config.
-- `src/multimodal_agent/services/agent_communication.py`: service boundary for sending tasks through enabled transports.
-- `src/multimodal_agent/services/agent_gateway.py`: explicit local gateway and controller/worker factory.
-- `src/multimodal_agent/services/agent_routing_policy.py`: deterministic gateway route selection.
-- `src/multimodal_agent/services/agent_delegation_policy.py`: permission, allowed-target, depth, timeout and loop controls.
-- `src/multimodal_agent/services/agent_delegation_context.py`: child-safe context filtering and artifact summaries.
-- `src/multimodal_agent/services/agent_transports.py`: local and outbound A2A transport implementations.
-- `src/multimodal_agent/services/a2a_adapter.py` and `api/routes_a2a.py`: inbound agent card and JSON-RPC adapter.
-- `src/multimodal_agent/services/agent_control_plane.py`: redacted gateway run, route, delegation, budget, audit and replay-preview records.
-- `src/multimodal_agent/tools/agent_delegation_tool.py`: thin agent-callable `delegate_to_agent` tool.
+- `src/assistant_agent/schemas/agent_communication.py`: protocol-neutral message, task, artifact, session and directory contracts.
+- `src/assistant_agent/services/agent_directory.py`: agent IDs, capabilities, enablement and directory config.
+- `src/assistant_agent/services/agent_communication.py`: service boundary for sending tasks through enabled transports.
+- `src/assistant_agent/services/agent_gateway.py`: explicit local gateway and controller/worker factory.
+- `src/assistant_agent/services/agent_routing_policy.py`: deterministic gateway route selection.
+- `src/assistant_agent/services/agent_delegation_policy.py`: permission, allowed-target, depth, timeout and loop controls.
+- `src/assistant_agent/services/agent_delegation_context.py`: child-safe context filtering and artifact summaries.
+- `src/assistant_agent/services/agent_transports.py`: local and outbound A2A transport implementations.
+- `src/assistant_agent/services/a2a_adapter.py` and `api/routes_a2a.py`: inbound agent card and JSON-RPC adapter.
+- `src/assistant_agent/services/agent_control_plane.py`: redacted gateway run, route, delegation, budget, audit and replay-preview records.
+- `src/assistant_agent/tools/agent_delegation_tool.py`: thin agent-callable `delegate_to_agent` tool.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`: local readiness and evidence workflows.
 - `tests/test_agent_communication_routing.py`, `tests/test_agent_gateway.py`, `tests/test_agent_routing_policy.py`, `tests/test_api_a2a.py`, `tests/test_a2a_json_rpc_transport.py`, and `tests/test_agent_pilot_readiness.py`.
 

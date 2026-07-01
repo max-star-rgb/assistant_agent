@@ -1,12 +1,12 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.memory.jsonl_store import JsonlMemoryStore
-from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy, format_memory_context
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.memory.jsonl_store import JsonlMemoryStore
+from assistant_agent.memory.retrieval import MemoryRetrievalStrategy, format_memory_context
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
+from assistant_agent.schemas.requests import UserRequest
 
 
 def memory_item(

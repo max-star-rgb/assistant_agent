@@ -1,5 +1,5 @@
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.product_adapter import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.product_adapter import (
     HttpProductSearchAdapter,
     LocalJsonProductSearchAdapter,
     MockProductSearchAdapter,

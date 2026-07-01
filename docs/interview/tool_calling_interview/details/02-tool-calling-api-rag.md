@@ -82,13 +82,13 @@ LLM / provider-native tool call
 
 ## 本项目代码位置
 
-- `src/multimodal_agent/schemas/assistant_decision.py`: `AssistantDecision` 与 provider-native tool call 归一化。
-- `src/multimodal_agent/schemas/tools.py`: `ToolSpec`、`ToolResult`、`ToolCallRecord`。
-- `src/multimodal_agent/schemas/tool_spec_adapters.py`: `ToolSpec` 到 OpenAI-compatible tools 和 MCP tool schema 的转换。
-- `src/multimodal_agent/tools/registry.py`: 工具注册、查找、执行和 `list_specs()`。
-- `src/multimodal_agent/agent/action_validator.py`: 工具执行前校验。
-- `src/multimodal_agent/agent/tool_executor.py`: 工具执行、身份绑定、预算、retry/recovery、event/history/trace。
-- `src/multimodal_agent/agent/assistant_loop_nodes.py`: assistant loop 中的决策、校验、执行和 observation 回传。
+- `src/assistant_agent/schemas/assistant_decision.py`: `AssistantDecision` 与 provider-native tool call 归一化。
+- `src/assistant_agent/schemas/tools.py`: `ToolSpec`、`ToolResult`、`ToolCallRecord`。
+- `src/assistant_agent/schemas/tool_spec_adapters.py`: `ToolSpec` 到 OpenAI-compatible tools 和 MCP tool schema 的转换。
+- `src/assistant_agent/tools/registry.py`: 工具注册、查找、执行和 `list_specs()`。
+- `src/assistant_agent/agent/action_validator.py`: 工具执行前校验。
+- `src/assistant_agent/agent/tool_executor.py`: 工具执行、身份绑定、预算、retry/recovery、event/history/trace。
+- `src/assistant_agent/agent/assistant_loop_nodes.py`: assistant loop 中的决策、校验、执行和 observation 回传。
 - `tests/test_native_tool_call_handoff.py`: provider-native tool call 进入 validator/executor 并回传 observation。
 - `tests/unit/test_tool_spec_adapters.py`: ToolSpec schema 转 OpenAI/MCP tool schema。
 - `tests/test_tool_executor.py`: ToolExecutor 成功执行并更新状态。

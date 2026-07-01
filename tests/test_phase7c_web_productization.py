@@ -1,9 +1,9 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.app import create_app
-from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.api import routes_agent
+from assistant_agent.api.app import create_app
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 
 
 class ScriptedChatAdapter:
@@ -49,7 +49,7 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "请输入你的工号：00xxxx" in html
     assert ">确认<" in html
     assert "trial-user-id" in html
-    assert "multimodal_agent_trial_user_id" in html
+    assert "assistant_agent_trial_user_id" in html
     assert "Examples" in html
     assert "Input" in html
     assert "Plan Mode" in html

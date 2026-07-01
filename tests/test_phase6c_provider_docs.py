@@ -3,8 +3,8 @@ from pathlib import Path
 
 README_PATH = Path("README.md")
 AGENTS_PATH = Path("AGENTS.md")
-CAPABILITIES_PATH = Path("src/multimodal_agent/schemas/capabilities.py")
-PROVIDER_VALIDATION_PATH = Path("src/multimodal_agent/services/provider_config_validation.py")
+CAPABILITIES_PATH = Path("src/assistant_agent/schemas/capabilities.py")
+PROVIDER_VALIDATION_PATH = Path("src/assistant_agent/services/provider_config_validation.py")
 ENV_EXAMPLE_PATH = Path(".env.example")
 
 

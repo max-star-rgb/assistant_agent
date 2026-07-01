@@ -1,4 +1,4 @@
-from multimodal_agent.services.provider_errors import (
+from assistant_agent.services.provider_errors import (
     ProviderAdapterError,
     ProviderError,
     build_provider_error,

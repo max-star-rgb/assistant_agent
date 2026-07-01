@@ -3,13 +3,13 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from multimodal_agent.schemas.generation import ImageGenerationResult, RenderResult
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.schemas.perception import PerceptionBundle, VisualUnderstandingResult
-from multimodal_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
-from multimodal_agent.schemas.products import PriceCompareResult, ProductResult
-from multimodal_agent.schemas.requests import AgentResponse, UserRequest
-from multimodal_agent.schemas.tools import ToolCallRecord, ToolResult, ToolSelection
+from assistant_agent.schemas.generation import ImageGenerationResult, RenderResult
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.schemas.perception import PerceptionBundle, VisualUnderstandingResult
+from assistant_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
+from assistant_agent.schemas.products import PriceCompareResult, ProductResult
+from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.schemas.tools import ToolCallRecord, ToolResult, ToolSelection
 
 
 def test_user_request_serializes_and_deserializes() -> None:

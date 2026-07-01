@@ -60,14 +60,14 @@ UserRequest
 
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
-| 上下文 schema | `src/multimodal_agent/schemas/context.py` | 定义 `AssistantContextPack`、`ContextPolicy`、`ContextSummary`、`ContextBudgetReport`。 |
-| 上下文构建器 | `src/multimodal_agent/services/context/builder.py` | 每轮助手决策前组装上下文包，计算预算，触发压缩，执行预算裁剪。 |
-| 对话格式化器 | `src/multimodal_agent/services/context/conversation.py` | 把会话 turn 格式化成最近原文 + 较早摘要。 |
-| 压缩触发策略 | `src/multimodal_agent/services/context/policy.py` | 根据预算、工具观察结果、供应商上下文溢出、显式 `/compact` 判断是否压缩。 |
-| 上下文摘要器 | `src/multimodal_agent/services/context/compactor.py` | 生成会话范围的 `context_summary`；默认使用确定性实现，真实 LLM 仅在显式供应商运行 profile 下启用。 |
-| 工具观察裁剪器 | `src/multimodal_agent/services/context/compaction.py` | 工具结果进入 prompt 前裁剪 raw payload、base64、长命令输出和大列表。 |
-| 渲染器 | `src/multimodal_agent/services/context/renderer.py` | 把上下文包渲染成 prompt-json、原生工具调用的 user message 或 final-only prompt。 |
-| 助手循环接入点 | `src/multimodal_agent/agent/assistant_loop_nodes.py` | 调用上下文构建器，把渲染后的上下文交给助手，并写追踪上下文摘要。 |
+| 上下文 schema | `src/assistant_agent/schemas/context.py` | 定义 `AssistantContextPack`、`ContextPolicy`、`ContextSummary`、`ContextBudgetReport`。 |
+| 上下文构建器 | `src/assistant_agent/services/context/builder.py` | 每轮助手决策前组装上下文包，计算预算，触发压缩，执行预算裁剪。 |
+| 对话格式化器 | `src/assistant_agent/services/context/conversation.py` | 把会话 turn 格式化成最近原文 + 较早摘要。 |
+| 压缩触发策略 | `src/assistant_agent/services/context/policy.py` | 根据预算、工具观察结果、供应商上下文溢出、显式 `/compact` 判断是否压缩。 |
+| 上下文摘要器 | `src/assistant_agent/services/context/compactor.py` | 生成会话范围的 `context_summary`；默认使用确定性实现，真实 LLM 仅在显式供应商运行 profile 下启用。 |
+| 工具观察裁剪器 | `src/assistant_agent/services/context/compaction.py` | 工具结果进入 prompt 前裁剪 raw payload、base64、长命令输出和大列表。 |
+| 渲染器 | `src/assistant_agent/services/context/renderer.py` | 把上下文包渲染成 prompt-json、原生工具调用的 user message 或 final-only prompt。 |
+| 助手循环接入点 | `src/assistant_agent/agent/assistant_loop_nodes.py` | 调用上下文构建器，把渲染后的上下文交给助手，并写追踪上下文摘要。 |
 
 ## AssistantContextPack
 
@@ -401,15 +401,15 @@ trace/API 只暴露已脱敏摘要，不暴露：
 
 ## 读代码的推荐顺序
 
-1. `src/multimodal_agent/schemas/context.py`
-2. `src/multimodal_agent/services/context/builder.py`
-3. `src/multimodal_agent/services/context/policy.py`
-4. `src/multimodal_agent/services/context/compaction.py`
-5. `src/multimodal_agent/services/context/compactor.py`
-6. `src/multimodal_agent/services/context/renderer.py`
-7. `src/multimodal_agent/agent/assistant_loop_nodes.py`
-8. `src/multimodal_agent/services/assistant_run_service.py`
-9. `src/multimodal_agent/memory/manager.py`
+1. `src/assistant_agent/schemas/context.py`
+2. `src/assistant_agent/services/context/builder.py`
+3. `src/assistant_agent/services/context/policy.py`
+4. `src/assistant_agent/services/context/compaction.py`
+5. `src/assistant_agent/services/context/compactor.py`
+6. `src/assistant_agent/services/context/renderer.py`
+7. `src/assistant_agent/agent/assistant_loop_nodes.py`
+8. `src/assistant_agent/services/assistant_run_service.py`
+9. `src/assistant_agent/memory/manager.py`
 
 如果你只想理解架构，不用一开始读阶段计划。
 

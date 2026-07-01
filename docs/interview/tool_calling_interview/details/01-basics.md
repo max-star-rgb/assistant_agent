@@ -138,5 +138,5 @@ def validate_tool_call(tool_name: str, observations: list) -> tuple[bool, str]:
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/schemas/tools.py` - ToolSpec 定义
-- `src/multimodal_agent/agent/tool_executor.py` - 工具执行校验逻辑
+- `src/assistant_agent/schemas/tools.py` - ToolSpec 定义
+- `src/assistant_agent/agent/tool_executor.py` - 工具执行校验逻辑

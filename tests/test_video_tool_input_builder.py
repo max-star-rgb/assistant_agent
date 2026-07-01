@@ -1,6 +1,6 @@
-from multimodal_agent.agent.tool_input_builder import build_tool_input
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
+from assistant_agent.agent.tool_input_builder import build_tool_input
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
 
 
 VIDEO_DATA = {

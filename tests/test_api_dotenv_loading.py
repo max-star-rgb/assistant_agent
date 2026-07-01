@@ -1,7 +1,7 @@
 import os
 
-from multimodal_agent.api.app import load_repo_env_file
-from multimodal_agent.services.assistant_run_service import create_runtime
+from assistant_agent.api.app import load_repo_env_file
+from assistant_agent.services.assistant_run_service import create_runtime
 
 
 def test_api_dotenv_loader_reads_values_without_overriding_existing_env(tmp_path, monkeypatch) -> None:

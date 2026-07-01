@@ -1,8 +1,8 @@
 import pytest
 
-from multimodal_agent.schemas.perception import VisualUnderstandingResult
-from multimodal_agent.services.vision_adapter import MockVisionUnderstandingAdapter, VisionUnderstandingInput
-from multimodal_agent.tools.vision_tool import VisionUnderstandingTool
+from assistant_agent.schemas.perception import VisualUnderstandingResult
+from assistant_agent.services.vision_adapter import MockVisionUnderstandingAdapter, VisionUnderstandingInput
+from assistant_agent.tools.vision_tool import VisionUnderstandingTool
 
 
 def test_mock_vision_adapter_returns_visual_understanding_schema() -> None:

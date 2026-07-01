@@ -95,6 +95,6 @@
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/services/context/builder.py` - 预算计算和裁剪执行
-- `src/multimodal_agent/services/context/policy.py` - 压缩触发策略
-- `src/multimodal_agent/services/context/compactor.py` - 摘要生成器
+- `src/assistant_agent/services/context/builder.py` - 预算计算和裁剪执行
+- `src/assistant_agent/services/context/policy.py` - 压缩触发策略
+- `src/assistant_agent/services/context/compactor.py` - 摘要生成器

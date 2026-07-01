@@ -2,15 +2,15 @@ import json
 
 from pydantic import BaseModel
 
-from multimodal_agent.agent.plan_validator import PlanValidator
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.schemas.planning import TaskPlan, TaskStep
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
-from multimodal_agent.services.trace_store import InMemoryTraceStore
-from multimodal_agent.tools.base import MockTool, ToolContext
-from multimodal_agent.tools.registry import ToolRegistry
+from assistant_agent.agent.plan_validator import PlanValidator
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.schemas.planning import TaskPlan, TaskStep
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class ScriptedChatAdapter:

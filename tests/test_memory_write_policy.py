@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from multimodal_agent.memory.write_policy import (
+from assistant_agent.memory.write_policy import (
     MemoryWritePolicy,
     build_memory_promotion_candidate,
     build_explicit_memory_item,
@@ -12,7 +12,7 @@ from multimodal_agent.memory.write_policy import (
     build_task_summary_memory_item,
     promotion_decision_audit_record,
 )
-from multimodal_agent.schemas.memory import MemoryItem
+from assistant_agent.schemas.memory import MemoryItem
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

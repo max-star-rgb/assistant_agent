@@ -1,7 +1,7 @@
-from multimodal_agent.schemas.capability_output import CapabilityOutputContract
-from multimodal_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
-from multimodal_agent.services.video_adapter import MockVideoUnderstandingAdapter
-from multimodal_agent.tools.video_tool import VideoUnderstandingTool
+from assistant_agent.schemas.capability_output import CapabilityOutputContract
+from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
+from assistant_agent.services.video_adapter import MockVideoUnderstandingAdapter
+from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
 def test_video_understanding_request_supports_video_ref_context_fields() -> None:

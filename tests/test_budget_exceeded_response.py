@@ -1,9 +1,9 @@
-from multimodal_agent.agent.response_composer import compose_response
-from multimodal_agent.agent.state import AgentError, AgentState
-from multimodal_agent.schemas.capability_output import build_capability_output_contract
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.provider_budget import ProviderCallBudget
+from assistant_agent.agent.response_composer import compose_response
+from assistant_agent.agent.state import AgentError, AgentState
+from assistant_agent.schemas.capability_output import build_capability_output_contract
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.provider_budget import ProviderCallBudget
 
 
 def test_response_composer_summarizes_budget_failure_with_partial_result() -> None:

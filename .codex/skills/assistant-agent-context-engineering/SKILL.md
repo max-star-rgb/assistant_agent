@@ -10,7 +10,7 @@ Use this skill as the execution wrapper for context-engineering work in the `ass
 ## Start
 
 1. Locate the project root.
-   - Prefer the current working directory when it contains `AGENTS.md` and `src/multimodal_agent/`.
+   - Prefer the current working directory when it contains `AGENTS.md` and `src/assistant_agent/`.
    - If those files are absent, ask for the `assistant_agent` repository path before editing.
 2. Read `AGENTS.md`.
 3. Read the "new conversation handoff" section at the top of `docs/CONTEXT_ENGINEERING_STATUS.md`.
@@ -22,10 +22,10 @@ Use this skill as the execution wrapper for context-engineering work in the `ass
 
 Inspect these areas as relevant:
 
-- `src/multimodal_agent/services/`: context services, trace/session behavior and runtime context assembly.
-- `src/multimodal_agent/agent/`: assistant loop, message flow, prompt rendering and tool observation integration.
-- `src/multimodal_agent/memory/`: memory context interfaces and retrieval outputs when context uses memory.
-- `src/multimodal_agent/tools/`: observation shape and tool-result compaction inputs.
+- `src/assistant_agent/services/`: context services, trace/session behavior and runtime context assembly.
+- `src/assistant_agent/agent/`: assistant loop, message flow, prompt rendering and tool observation integration.
+- `src/assistant_agent/memory/`: memory context interfaces and retrieval outputs when context uses memory.
+- `src/assistant_agent/tools/`: observation shape and tool-result compaction inputs.
 - `tests/`: targeted tests for context rendering, history handling, budget behavior and assistant loop flow.
 
 ## Working Rules

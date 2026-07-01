@@ -55,7 +55,7 @@ Verify SQLite integrity:
 ```bash
 $PY - <<'PY'
 from pathlib import Path
-from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 
 path = Path(".local/memory/long_term_memories.sqlite3")
 print(SQLiteMemoryStore(path).integrity_check())
@@ -76,7 +76,7 @@ Create a consistent local backup:
 $PY - <<'PY'
 from datetime import datetime
 from pathlib import Path
-from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 
 source = Path(".local/memory/long_term_memories.sqlite3")
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -101,7 +101,7 @@ Create a safety backup of the current target first:
 $PY - <<'PY'
 from datetime import datetime
 from pathlib import Path
-from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 
 target = Path(".local/memory/long_term_memories.sqlite3")
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -117,7 +117,7 @@ Restore from a selected backup:
 ```bash
 $PY - <<'PY'
 from pathlib import Path
-from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 
 backup = Path(".local/memory/backups/long_term_memories-YYYYMMDD-HHMMSS.sqlite3")
 target = Path(".local/memory/long_term_memories.sqlite3")
@@ -136,7 +136,7 @@ Rebuild local indexes after manual repair or suspected index damage:
 ```bash
 $PY - <<'PY'
 from pathlib import Path
-from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 
 path = Path(".local/memory/long_term_memories.sqlite3")
 store = SQLiteMemoryStore(path)
@@ -194,7 +194,7 @@ Broader offline validation:
 
 ```bash
 $PY scripts/check_env.py
-$PY -m compileall -q src/multimodal_agent scripts
+$PY -m compileall -q src/assistant_agent scripts
 $PY scripts/run_evals.py
 ```
 

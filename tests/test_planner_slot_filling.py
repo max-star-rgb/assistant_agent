@@ -1,5 +1,5 @@
-from multimodal_agent.agent.planner import RuleBasedTaskPlanner
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.planner import RuleBasedTaskPlanner
+from assistant_agent.schemas.requests import UserRequest
 
 
 def test_query_only_price_compare_auto_adds_search_before_compare() -> None:

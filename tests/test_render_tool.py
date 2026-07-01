@@ -1,5 +1,5 @@
-from multimodal_agent.services.render_adapter import MockRenderAdapter
-from multimodal_agent.tools.render_tool import Render3DTool
+from assistant_agent.services.render_adapter import MockRenderAdapter
+from assistant_agent.tools.render_tool import Render3DTool
 
 
 def test_render_tool_supports_text_only_request() -> None:

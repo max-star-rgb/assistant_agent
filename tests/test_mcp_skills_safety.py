@@ -1,11 +1,11 @@
 from pathlib import Path
 
-from multimodal_agent.mcp.server import OfflineMCPServer
+from assistant_agent.mcp.server import OfflineMCPServer
 from scripts.run_evals import filter_cases_by_suite, load_cases, run_evals
 
 
 def test_mcp_server_source_uses_runtime_and_registry_not_provider_sdks() -> None:
-    source = Path("src/multimodal_agent/mcp/server.py").read_text(encoding="utf-8")
+    source = Path("src/assistant_agent/mcp/server.py").read_text(encoding="utf-8")
 
     assert "AgentGraphRuntime" in source
     assert "ToolRegistry" in source

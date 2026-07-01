@@ -2,13 +2,13 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.app import create_app
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.services.beta_feedback import InMemoryBetaFeedbackStore
-from multimodal_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.api import routes_agent
+from assistant_agent.api.app import create_app
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.services.beta_feedback import InMemoryBetaFeedbackStore
+from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
 def test_beta_feedback_is_bound_to_run_user(monkeypatch) -> None:

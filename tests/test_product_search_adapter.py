@@ -1,6 +1,6 @@
 import json
 
-from multimodal_agent.services.product_adapter import (
+from assistant_agent.services.product_adapter import (
     LocalJsonProductSearchAdapter,
     MockProductSearchAdapter,
     ProductSearchInput,

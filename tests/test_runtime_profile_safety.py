@@ -1,15 +1,15 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.chat_adapter import UnconfiguredChatAdapter, create_chat_adapter
-from multimodal_agent.services.image_generation_adapter import (
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.chat_adapter import UnconfiguredChatAdapter, create_chat_adapter
+from assistant_agent.services.image_generation_adapter import (
     ImageGenerationInput,
     UnconfiguredImageGenerationAdapter,
     create_image_generation_adapter,
 )
-from multimodal_agent.services.provider_selection import create_vision_adapter
-from multimodal_agent.services.real_vision_adapter import HttpVisionProviderAdapter
-from multimodal_agent.services.vision_adapter import MockVisionUnderstandingAdapter
+from assistant_agent.services.provider_selection import create_vision_adapter
+from assistant_agent.services.real_vision_adapter import HttpVisionProviderAdapter
+from assistant_agent.services.vision_adapter import MockVisionUnderstandingAdapter
 
 
 def test_offline_eval_blocks_real_provider_selectors_from_environment() -> None:

@@ -3,10 +3,10 @@
 import os
 from unittest.mock import patch
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.assistant_decision import AssistantDecision
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.assistant_decision import AssistantDecision
+from assistant_agent.schemas.requests import UserRequest
 
 
 def test_default_graph_mode_is_assistant_loop() -> None:
@@ -101,7 +101,7 @@ def test_assistant_decision_falls_back_on_missing_fields() -> None:
 
 def test_tool_registry_describe_tools_returns_safe_description() -> None:
     """Verify ToolRegistry.describe_tools() returns safe tool info (no secrets)."""
-    from multimodal_agent.tools.registry import ToolRegistry, create_default_registry
+    from assistant_agent.tools.registry import ToolRegistry, create_default_registry
     registry = create_default_registry()
     tool_descriptions = registry.describe_tools()
 
@@ -125,7 +125,7 @@ def test_tool_registry_describe_tools_returns_safe_description() -> None:
 def test_assistant_loop_graph_can_be_initialized_without_errors() -> None:
     """Verify the assistant loop graph can be built without errors."""
     # Test that the import works and graph can be built
-    from multimodal_agent.agent.assistant_loop_graph import build_assistant_loop_graph
+    from assistant_agent.agent.assistant_loop_graph import build_assistant_loop_graph
     graph = build_assistant_loop_graph()
     assert graph is not None
 
@@ -147,7 +147,7 @@ def test_runtime_can_use_assistant_loop_graph_via_config() -> None:
 
 def test_assistant_loop_nodes_import_without_errors() -> None:
     """Verify all assistant loop node functions can be imported."""
-    from multimodal_agent.agent.assistant_loop_nodes import (
+    from assistant_agent.agent.assistant_loop_nodes import (
         assistant_node,
         execute_requested_tool_node,
         route_after_assistant,

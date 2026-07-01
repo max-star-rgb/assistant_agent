@@ -1,9 +1,9 @@
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.provider_diagnostics import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.provider_diagnostics import (
     build_provider_diagnostics_summary,
     redact_provider_diagnostic_payload,
 )
-from multimodal_agent.services.provider_policy import ProviderExecutionPolicy
+from assistant_agent.services.provider_policy import ProviderExecutionPolicy
 
 
 def test_provider_diagnostics_default_summary_is_offline_and_safe() -> None:

@@ -124,5 +124,5 @@ budget_report.trimmed_keywords.append(keywords)
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/services/context/builder.py` 第 394 行 - 裁剪逻辑，可以在这里加裁剪标记
-- `src/multimodal_agent/services/context/renderer.py` - 渲染时加分栏边界
+- `src/assistant_agent/services/context/builder.py` 第 394 行 - 裁剪逻辑，可以在这里加裁剪标记
+- `src/assistant_agent/services/context/renderer.py` - 渲染时加分栏边界

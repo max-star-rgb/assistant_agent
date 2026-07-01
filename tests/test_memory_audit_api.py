@@ -3,18 +3,18 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.auth import AUTH_MODE_ENV, AUTH_REQUIRE_BOUND_IDENTITY_ENV, AUTH_USER_ID_HEADER
-from multimodal_agent.api.app import create_app
-from multimodal_agent.memory.manager import MemoryConfirmationRequired
-from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.identity import RequestIdentity
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.services.agent_control_plane import InMemoryAgentControlPlaneStore
-from multimodal_agent.services.memory_audit import MemoryAuditService
-from multimodal_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.api import routes_agent
+from assistant_agent.api.auth import AUTH_MODE_ENV, AUTH_REQUIRE_BOUND_IDENTITY_ENV, AUTH_USER_ID_HEADER
+from assistant_agent.api.app import create_app
+from assistant_agent.memory.manager import MemoryConfirmationRequired
+from assistant_agent.memory.profile import USER_PROFILE_MEMORY_ID
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.services.agent_control_plane import InMemoryAgentControlPlaneStore
+from assistant_agent.services.memory_audit import MemoryAuditService
+from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

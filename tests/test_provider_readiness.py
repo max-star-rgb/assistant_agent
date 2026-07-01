@@ -1,5 +1,5 @@
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.provider_readiness import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.provider_readiness import (
     build_provider_readiness_report,
     build_smoke_contract,
 )

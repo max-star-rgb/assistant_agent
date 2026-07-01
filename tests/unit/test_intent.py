@@ -1,7 +1,7 @@
 import pytest
 
-from multimodal_agent.agent.intent import IntentDetector
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.intent import IntentDetector
+from assistant_agent.schemas.requests import UserRequest
 
 
 def request(text: str, image_ids: list[str] | None = None, video_ids: list[str] | None = None) -> UserRequest:

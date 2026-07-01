@@ -2,10 +2,10 @@ import re
 
 import pytest
 
-from multimodal_agent.agent.state import AgentState, new_run_id, new_session_id
-from multimodal_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
-from multimodal_agent.schemas.requests import AgentResponse, UserRequest
-from multimodal_agent.schemas.tools import ToolResult
+from assistant_agent.agent.state import AgentState, new_run_id, new_session_id
+from assistant_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
+from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.schemas.tools import ToolResult
 
 
 def make_request() -> UserRequest:

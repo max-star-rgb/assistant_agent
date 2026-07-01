@@ -1,9 +1,9 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services import assistant_run_service as run_service
-from multimodal_agent.services.assistant_run_service import (
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services import assistant_run_service as run_service
+from assistant_agent.services.assistant_run_service import (
     ConversationTurn,
     InMemoryConversationStore,
     JsonlConversationStore,
@@ -12,7 +12,7 @@ from multimodal_agent.services.assistant_run_service import (
     run_assistant_query,
     run_assistant_request,
 )
-from multimodal_agent.services.context.builder import build_assistant_context_pack
+from assistant_agent.services.context.builder import build_assistant_context_pack
 
 
 def test_shared_assistant_run_service_returns_cli_and_api_shapes() -> None:

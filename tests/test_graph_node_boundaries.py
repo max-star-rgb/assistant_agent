@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from multimodal_agent.agent.conditional_graph import run_conditional_agent_graph
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.conditional_graph import run_conditional_agent_graph
+from assistant_agent.schemas.requests import UserRequest
 
 
 PRIVATE_WORKFLOW_METHODS = ("._build_tool_input", "._run_tool", "._compose_response", "._save_demo_memory")
@@ -9,9 +9,9 @@ PRIVATE_WORKFLOW_METHODS = ("._build_tool_input", "._run_tool", "._compose_respo
 
 def test_graph_files_do_not_call_workflow_private_methods() -> None:
     for path in (
-        Path("src/multimodal_agent/agent/graph.py"),
-        Path("src/multimodal_agent/agent/conditional_graph.py"),
-        Path("src/multimodal_agent/agent/graph_nodes.py"),
+        Path("src/assistant_agent/agent/graph.py"),
+        Path("src/assistant_agent/agent/conditional_graph.py"),
+        Path("src/assistant_agent/agent/graph_nodes.py"),
     ):
         source = path.read_text()
         assert all(method not in source for method in PRIVATE_WORKFLOW_METHODS)

@@ -199,7 +199,7 @@ def build_assistant_context_pack(...):
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/services/assistant_run_service.py` - 会话注入阶段
-- `src/multimodal_agent/services/context/builder.py` - 组装、预算、裁剪阶段
-- `src/multimodal_agent/services/context/renderer.py` - Prompt 渲染阶段
-- `src/multimodal_agent/services/context/compactor.py` - 摘要压缩阶段
+- `src/assistant_agent/services/assistant_run_service.py` - 会话注入阶段
+- `src/assistant_agent/services/context/builder.py` - 组装、预算、裁剪阶段
+- `src/assistant_agent/services/context/renderer.py` - Prompt 渲染阶段
+- `src/assistant_agent/services/context/compactor.py` - 摘要压缩阶段

@@ -19,13 +19,13 @@ REQUIRED_IMPORTS = (
     "langgraph",
     "pydantic",
     "pytest",
-    "multimodal_agent.agent.runtime",
+    "assistant_agent.agent.runtime",
 )
 
 REQUIRED_PATHS = (
-    "src/multimodal_agent/agent/runtime.py",
-    "src/multimodal_agent/agent/conditional_graph.py",
-    "src/multimodal_agent/agent/graph_nodes.py",
+    "src/assistant_agent/agent/runtime.py",
+    "src/assistant_agent/agent/conditional_graph.py",
+    "src/assistant_agent/agent/graph_nodes.py",
     "tests/evals/eval_cases.json",
 )
 

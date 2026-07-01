@@ -1,8 +1,8 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.app import create_app
-from multimodal_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
+from assistant_agent.api import routes_agent
+from assistant_agent.api.app import create_app
+from assistant_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
 
 
 def test_demo_scenarios_endpoint_lists_offline_scenarios() -> None:

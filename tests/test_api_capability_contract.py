@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.api.app import create_app
+from assistant_agent.api.app import create_app
 
 
 def test_api_tool_results_include_capability_contracts() -> None:

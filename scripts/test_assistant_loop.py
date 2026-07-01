@@ -10,9 +10,9 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.assistant_decision import AssistantDecision
-from multimodal_agent.tools.registry import create_default_registry
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.assistant_decision import AssistantDecision
+from assistant_agent.tools.registry import create_default_registry
 
 
 def test_config_defaults_to_assistant_loop():
@@ -36,8 +36,8 @@ def test_assistant_decision_logic():
     print("=" * 70)
 
     # Import here to keep the function self-contained
-    from multimodal_agent.agent.assistant_loop_nodes import _mock_assistant_decision
-    from multimodal_agent.schemas.requests import UserRequest
+    from assistant_agent.agent.assistant_loop_nodes import _mock_assistant_decision
+    from assistant_agent.schemas.requests import UserRequest
 
     registry = create_default_registry()
     available_tools = registry.list()
@@ -124,8 +124,8 @@ def test_observations_flow():
     print("Test 5: Tool Observation Handling")
     print("=" * 70)
 
-    from multimodal_agent.agent.assistant_loop_nodes import _mock_assistant_decision
-    from multimodal_agent.schemas.requests import UserRequest
+    from assistant_agent.agent.assistant_loop_nodes import _mock_assistant_decision
+    from assistant_agent.schemas.requests import UserRequest
 
     registry = create_default_registry()
     available_tools = registry.list()
@@ -176,8 +176,8 @@ def test_max_iterations_limit():
     print("Test 6: Max Iterations Safety Limit")
     print("=" * 70)
 
-    from multimodal_agent.agent.assistant_loop_nodes import _mock_assistant_decision
-    from multimodal_agent.schemas.requests import UserRequest
+    from assistant_agent.agent.assistant_loop_nodes import _mock_assistant_decision
+    from assistant_agent.schemas.requests import UserRequest
 
     registry = create_default_registry()
     available_tools = registry.list()
@@ -212,7 +212,7 @@ def test_conditional_graph_still_exists():
 
     # Check that the file still exists on disk
     import os
-    file_path = os.path.join(str(SRC_ROOT), "multimodal_agent", "agent", "conditional_graph.py")
+    file_path = os.path.join(str(SRC_ROOT), "assistant_agent", "agent", "conditional_graph.py")
 
     assert os.path.exists(file_path), f"conditional_graph.py not found at {file_path}"
 

@@ -1,5 +1,5 @@
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.provider_config_validation import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.provider_config_validation import (
     validate_provider_config,
     validation_issue_to_provider_error,
 )

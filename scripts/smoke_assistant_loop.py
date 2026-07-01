@@ -9,9 +9,9 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.schemas.assistant_decision import AssistantDecision
-from multimodal_agent.tools.registry import create_default_registry
-from multimodal_agent.config import ProviderConfig
+from assistant_agent.schemas.assistant_decision import AssistantDecision
+from assistant_agent.tools.registry import create_default_registry
+from assistant_agent.config import ProviderConfig
 
 
 def test_assistant_decision_parsing() -> bool:
@@ -151,14 +151,14 @@ def test_imports() -> bool:
     print("\nTesting module imports...")
 
     # Test schemas
-    from multimodal_agent.schemas import assistant_decision
+    from assistant_agent.schemas import assistant_decision
     assert assistant_decision is not None
     assert hasattr(assistant_decision, "AssistantDecision")
     print("  ✓ assistant_decision schema imported")
 
     # Test nodes - handle optional langgraph import
     try:
-        from multimodal_agent.agent import assistant_loop_nodes
+        from assistant_agent.agent import assistant_loop_nodes
         assert assistant_loop_nodes is not None
         assert hasattr(assistant_loop_nodes, "assistant_node")
         assert hasattr(assistant_loop_nodes, "execute_requested_tool_node")
@@ -169,7 +169,7 @@ def test_imports() -> bool:
 
     # Test graph - handle optional langgraph import
     try:
-        from multimodal_agent.agent import assistant_loop_graph
+        from assistant_agent.agent import assistant_loop_graph
         assert assistant_loop_graph is not None
         assert hasattr(assistant_loop_graph, "build_assistant_loop_graph")
         print("  ✓ assistant_loop_graph imported")
@@ -177,7 +177,7 @@ def test_imports() -> bool:
         print(f"  ⚠️ assistant_loop_graph skipped (dependency missing): {e}")
 
     # Verify conditional graph is still there (not deleted) - this should always work
-    from multimodal_agent.agent import conditional_graph
+    from assistant_agent.agent import conditional_graph
     assert conditional_graph is not None
     assert hasattr(conditional_graph, "build_conditional_agent_graph")
     print("  ✓ conditional_graph still exists (not deleted)")

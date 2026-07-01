@@ -86,5 +86,5 @@ ToolCallRecord (持久化记录 → 存数据库/日志)
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/schemas/tools.py` - 工具各层 schema 定义
-- `src/multimodal_agent/schemas/tool_observation.py` - ToolObservation 实现
+- `src/assistant_agent/schemas/tools.py` - 工具各层 schema 定义
+- `src/assistant_agent/schemas/tool_observation.py` - ToolObservation 实现

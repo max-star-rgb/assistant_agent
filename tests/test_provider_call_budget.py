@@ -1,4 +1,4 @@
-from multimodal_agent.services.provider_budget import ProviderCallBudget
+from assistant_agent.services.provider_budget import ProviderCallBudget
 
 
 def test_provider_call_budget_counts_calls_and_estimated_cost() -> None:

@@ -1,4 +1,4 @@
-from multimodal_agent.config import ProviderConfig, should_run_integration_tests
+from assistant_agent.config import ProviderConfig, should_run_integration_tests
 
 
 def test_provider_config_allows_empty_environment() -> None:

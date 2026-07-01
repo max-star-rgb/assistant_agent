@@ -1,13 +1,13 @@
 import base64
 import json
 
-from multimodal_agent.services.real_vision_adapter import (
+from assistant_agent.services.real_vision_adapter import (
     build_openai_vision_payload,
     chat_completions_url,
     image_to_data_url,
     parse_openai_vision_response,
 )
-from multimodal_agent.services.vision_adapter import VisionUnderstandingInput
+from assistant_agent.services.vision_adapter import VisionUnderstandingInput
 
 
 def test_chat_completions_url_accepts_base_url_or_full_endpoint() -> None:

@@ -1,12 +1,12 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult, ToolSelection
-from multimodal_agent.tools.image_generation_tool import ImageGenerationTool
-from multimodal_agent.tools.memory_tool import MemorySaveTool
-from multimodal_agent.tools.product_search_tool import ProductSearchTool
-from multimodal_agent.tools.registry import ToolRegistry
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult, ToolSelection
+from assistant_agent.tools.image_generation_tool import ImageGenerationTool
+from assistant_agent.tools.memory_tool import MemorySaveTool
+from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class StaticIntentDetector:

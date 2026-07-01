@@ -15,8 +15,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.product_adapter import ProductSearchInput, create_product_search_adapter
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.product_adapter import ProductSearchInput, create_product_search_adapter
 
 
 PRODUCT_PROVIDER_REQUIREMENTS = {

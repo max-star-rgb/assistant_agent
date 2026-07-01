@@ -1,6 +1,6 @@
-from multimodal_agent.schemas.generation import RenderResult
-from multimodal_agent.services.render_adapter import MockRenderAdapter, RenderInput, RenderRequest
-from multimodal_agent.tools.render_tool import Render3DTool
+from assistant_agent.schemas.generation import RenderResult
+from assistant_agent.services.render_adapter import MockRenderAdapter, RenderInput, RenderRequest
+from assistant_agent.tools.render_tool import Render3DTool
 
 
 def test_mock_render_adapter_creates_living_room_render_task() -> None:

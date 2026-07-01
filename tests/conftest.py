@@ -51,8 +51,8 @@ def isolate_api_singletons_between_tests():
 
 
 def _reset_api_singletons() -> None:
-    from multimodal_agent.api import routes_agent
-    from multimodal_agent.services import assistant_run_service
+    from assistant_agent.api import routes_agent
+    from assistant_agent.services import assistant_run_service
 
     routes_agent._RUNTIME = None
     routes_agent._FEEDBACK_STORE = None

@@ -103,6 +103,6 @@
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/services/context/builder.py` - 上下文工程入口，只接收 `memory_text` 参数，不直接调用 MemoryManager
-- `src/multimodal_agent/memory/manager.py` - MemoryManager 只负责返回记忆文本，不负责渲染
-- `src/multimodal_agent/agent/assistant_loop_nodes.py` - 上层编排，负责调用两个模块并传递数据
+- `src/assistant_agent/services/context/builder.py` - 上下文工程入口，只接收 `memory_text` 参数，不直接调用 MemoryManager
+- `src/assistant_agent/memory/manager.py` - MemoryManager 只负责返回记忆文本，不负责渲染
+- `src/assistant_agent/agent/assistant_loop_nodes.py` - 上层编排，负责调用两个模块并传递数据

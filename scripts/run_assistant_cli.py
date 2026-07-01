@@ -22,10 +22,10 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.api import api_error_from_agent_error
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.api import api_error_from_agent_error
+from assistant_agent.schemas.requests import UserRequest
 
 from scripts.run_demo_flows import GENERIC_RESPONSE_TEXT, run_demo_flows
 

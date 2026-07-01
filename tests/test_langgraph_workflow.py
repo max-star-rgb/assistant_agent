@@ -1,6 +1,6 @@
-from multimodal_agent.agent.graph import build_agent_graph, run_agent_graph
-from multimodal_agent.agent.workflow import AgentWorkflow
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.graph import build_agent_graph, run_agent_graph
+from assistant_agent.agent.workflow import AgentWorkflow
+from assistant_agent.schemas.requests import UserRequest
 
 
 def test_langgraph_workflow_can_compile() -> None:

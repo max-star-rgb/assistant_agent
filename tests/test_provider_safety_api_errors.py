@@ -1,10 +1,10 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.app import create_app
-from multimodal_agent.schemas.api import api_error
-from multimodal_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.agent.state import AgentState
+from assistant_agent.api import routes_agent
+from assistant_agent.api.app import create_app
+from assistant_agent.schemas.api import api_error
+from assistant_agent.schemas.requests import AgentResponse, UserRequest
 
 
 def test_provider_api_error_redacts_sensitive_fields() -> None:

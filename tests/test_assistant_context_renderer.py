@@ -1,17 +1,17 @@
 from datetime import datetime, timezone
 import json
 
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.runtime_profile import get_runtime_profile
-from multimodal_agent.schemas.context import ContextSummary
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.schemas.planning import TaskPlan, TaskStep
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolSpec
-from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
-from multimodal_agent.services.context.builder import build_assistant_context_pack
-from multimodal_agent.services.context.compactor import (
+from assistant_agent.agent.state import AgentState
+from assistant_agent.config import ProviderConfig
+from assistant_agent.runtime_profile import get_runtime_profile
+from assistant_agent.schemas.context import ContextSummary
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.schemas.planning import TaskPlan, TaskStep
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.context.builder import build_assistant_context_pack
+from assistant_agent.services.context.compactor import (
     COMPACTOR_DETERMINISTIC,
     COMPACTOR_LLM,
     COMPACTOR_LLM_FALLBACK,
@@ -20,12 +20,12 @@ from multimodal_agent.services.context.compactor import (
     SummaryValidator,
     create_context_compactor,
 )
-from multimodal_agent.services.context.renderer import (
+from assistant_agent.services.context.renderer import (
     render_final_only_context,
     render_native_tool_context,
     render_prompt_json_context,
 )
-from multimodal_agent.tools.registry import create_default_registry
+from assistant_agent.tools.registry import create_default_registry
 
 
 class _FakeChatAdapter:

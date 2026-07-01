@@ -1,5 +1,5 @@
-from multimodal_agent.agent.intent import IntentDetector
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.intent import IntentDetector
+from assistant_agent.schemas.requests import UserRequest
 
 
 def _request(

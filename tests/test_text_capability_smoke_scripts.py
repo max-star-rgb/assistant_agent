@@ -132,9 +132,9 @@ def test_direct_chat_smoke_uses_explicit_environment(monkeypatch) -> None:
             called["chat_provider"] = config.chat_provider
 
         def run_state(self, request):
-            from multimodal_agent.agent.state import AgentState
-            from multimodal_agent.schemas.planning import IntentResult
-            from multimodal_agent.schemas.requests import AgentResponse
+            from assistant_agent.agent.state import AgentState
+            from assistant_agent.schemas.planning import IntentResult
+            from assistant_agent.schemas.requests import AgentResponse
 
             state = AgentState.from_request(request)
             state.set_intent(IntentResult(intent="direct_chat", confidence=1.0, rationale="test"))

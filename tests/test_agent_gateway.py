@@ -1,12 +1,12 @@
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.agent_communication import DEFAULT_AGENT_ID, AgentInstance
-from multimodal_agent.schemas.agent_gateway import AgentGatewayRunRequest
-from multimodal_agent.schemas.planning import IntentResult
-from multimodal_agent.schemas.requests import AgentResponse, UserRequest
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.agent_directory import AgentDirectory, default_agent_instance
-from multimodal_agent.services.agent_gateway import WORKER_AGENT_ID, AgentGateway, create_default_agent_gateway
+from assistant_agent.agent.state import AgentState
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID, AgentInstance
+from assistant_agent.schemas.agent_gateway import AgentGatewayRunRequest
+from assistant_agent.schemas.planning import IntentResult
+from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.agent_directory import AgentDirectory, default_agent_instance
+from assistant_agent.services.agent_gateway import WORKER_AGENT_ID, AgentGateway, create_default_agent_gateway
 
 
 class RecordingRuntime:

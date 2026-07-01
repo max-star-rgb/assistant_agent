@@ -4,15 +4,15 @@ from datetime import datetime, timezone
 
 import pytest
 
-from multimodal_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
-from multimodal_agent.memory.profile import USER_PROFILE_MEMORY_ID
-from multimodal_agent.memory.retrieval import MemoryRetrievalStrategy
-from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.memory.write_policy import MemoryWritePolicy, build_task_summary_memory_item
-from multimodal_agent.schemas.identity import RequestIdentity
-from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
-from multimodal_agent.services.memory_audit import MemoryAuditService
+from assistant_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
+from assistant_agent.memory.profile import USER_PROFILE_MEMORY_ID
+from assistant_agent.memory.retrieval import MemoryRetrievalStrategy
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.memory.write_policy import MemoryWritePolicy, build_task_summary_memory_item
+from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
+from assistant_agent.services.memory_audit import MemoryAuditService
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

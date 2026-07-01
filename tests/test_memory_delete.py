@@ -2,9 +2,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from multimodal_agent.memory.jsonl_store import JsonlMemoryStore
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem
+from assistant_agent.memory.jsonl_store import JsonlMemoryStore
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.memory import MemoryItem
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

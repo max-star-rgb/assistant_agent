@@ -1,12 +1,12 @@
-from multimodal_agent.schemas.agent_communication import (
+from assistant_agent.schemas.agent_communication import (
     DEFAULT_AGENT_ID,
     AgentDirectoryConfig,
     AgentInstance,
     AgentInstanceConfig,
 )
-from multimodal_agent.schemas.agent_gateway import AgentGatewayRunRequest
-from multimodal_agent.services.agent_directory import AgentDirectory, default_agent_instance
-from multimodal_agent.services.agent_routing_policy import AgentRoutingPolicy
+from assistant_agent.schemas.agent_gateway import AgentGatewayRunRequest
+from assistant_agent.services.agent_directory import AgentDirectory, default_agent_instance
+from assistant_agent.services.agent_routing_policy import AgentRoutingPolicy
 
 
 def test_routing_policy_explicit_target_wins_over_routing_table() -> None:

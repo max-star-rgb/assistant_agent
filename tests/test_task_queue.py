@@ -1,5 +1,5 @@
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.task_queue import AgentTask, InMemoryTaskQueue, InlineTaskQueue
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.task_queue import AgentTask, InMemoryTaskQueue, InlineTaskQueue
 
 
 def make_task(text: str = "帮我找相似款") -> AgentTask:

@@ -1,7 +1,7 @@
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.sessions import SessionCreate
-from multimodal_agent.services import session_store as session_store_module
-from multimodal_agent.services.session_store import InMemorySessionStore, JsonlSessionStore, create_session_store
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.sessions import SessionCreate
+from assistant_agent.services import session_store as session_store_module
+from assistant_agent.services.session_store import InMemorySessionStore, JsonlSessionStore, create_session_store
 
 
 def test_in_memory_session_store_treats_session_id_as_thread_id() -> None:

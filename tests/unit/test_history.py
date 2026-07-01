@@ -1,12 +1,12 @@
 from pydantic import BaseModel
 
-from multimodal_agent.agent.workflow import AgentWorkflow
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.run_history import RunHistoryStore
-from multimodal_agent.services.tool_history import ToolHistoryStore
-from multimodal_agent.tools.base import MockTool, ToolContext
-from multimodal_agent.tools.registry import ToolRegistry
+from assistant_agent.agent.workflow import AgentWorkflow
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.run_history import RunHistoryStore
+from assistant_agent.services.tool_history import ToolHistoryStore
+from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.registry import ToolRegistry
 
 
 def test_history_records_successful_agent_run_and_tool_calls(tmp_path) -> None:

@@ -16,15 +16,15 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.api.auth import require_auth_bound_identity, resolve_auth_mode
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.agent_communication import AgentInstance
-from multimodal_agent.services.agent_directory import AgentDirectory, default_agent_instance
-from multimodal_agent.services.agent_pilot_readiness import PilotReadinessChecker
-from multimodal_agent.services.api_identity import AuthContext, IdentityPolicy, resolve_request_identity
-from multimodal_agent.services.provider_budget import ProviderCallBudget
-from multimodal_agent.services.provider_errors import sanitize_error_detail
-from multimodal_agent.services.provider_readiness import build_provider_readiness_report
+from assistant_agent.api.auth import require_auth_bound_identity, resolve_auth_mode
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.agent_communication import AgentInstance
+from assistant_agent.services.agent_directory import AgentDirectory, default_agent_instance
+from assistant_agent.services.agent_pilot_readiness import PilotReadinessChecker
+from assistant_agent.services.api_identity import AuthContext, IdentityPolicy, resolve_request_identity
+from assistant_agent.services.provider_budget import ProviderCallBudget
+from assistant_agent.services.provider_errors import sanitize_error_detail
+from assistant_agent.services.provider_readiness import build_provider_readiness_report
 
 
 REMOTE_ALLOWLIST_ENV = "MULTIMODAL_AGENT_REMOTE_A2A_ALLOWLIST"

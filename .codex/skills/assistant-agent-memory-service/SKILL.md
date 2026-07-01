@@ -10,7 +10,7 @@ Use this skill as the execution wrapper for memory-service work in the `assistan
 ## Start
 
 1. Locate the project root.
-   - Prefer the current working directory when it contains `AGENTS.md` and `src/multimodal_agent/`.
+   - Prefer the current working directory when it contains `AGENTS.md` and `src/assistant_agent/`.
    - If those files are absent, ask for the `assistant_agent` repository path before editing.
 2. Read `AGENTS.md`.
 3. Read `docs/memory-service-architecture.md` completely enough for the task.
@@ -22,10 +22,10 @@ Use this skill as the execution wrapper for memory-service work in the `assistan
 
 Inspect these areas as relevant:
 
-- `src/multimodal_agent/memory/`: memory manager, store, retrieval, write policy and profile behavior.
-- `src/multimodal_agent/tools/memory_tool.py`: thin tool adapter for agent-facing memory calls.
-- `src/multimodal_agent/services/`: memory-related runtime services, identity and context integration.
-- `src/multimodal_agent/agent/`: assistant loop decisions around memory tool calls and memory context.
+- `src/assistant_agent/memory/`: memory manager, store, retrieval, write policy and profile behavior.
+- `src/assistant_agent/tools/memory_tool.py`: thin tool adapter for agent-facing memory calls.
+- `src/assistant_agent/services/`: memory-related runtime services, identity and context integration.
+- `src/assistant_agent/agent/`: assistant loop decisions around memory tool calls and memory context.
 - `tests/`: targeted tests for memory boundary, retrieval eval, tool adapter and identity behavior.
 
 ## Working Rules

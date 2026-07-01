@@ -1,10 +1,10 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 
 
 class FakeRealChatAdapter:

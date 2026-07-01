@@ -1,6 +1,6 @@
-from multimodal_agent.schemas.products import ProductResult
-from multimodal_agent.services.product_adapter import MockPriceCompareAdapter
-from multimodal_agent.tools.price_compare_tool import PriceCompareTool
+from assistant_agent.schemas.products import ProductResult
+from assistant_agent.services.product_adapter import MockPriceCompareAdapter
+from assistant_agent.tools.price_compare_tool import PriceCompareTool
 
 
 def test_price_compare_tool_returns_offers_and_best_offer() -> None:

@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from multimodal_agent.schemas.capability_output import build_capability_output_contract
-from multimodal_agent.schemas.memory import MemoryItem, memory_item_from_capability_contract
+from assistant_agent.schemas.capability_output import build_capability_output_contract
+from assistant_agent.schemas.memory import MemoryItem, memory_item_from_capability_contract
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

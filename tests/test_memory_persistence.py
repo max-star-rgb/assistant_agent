@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.memory.jsonl_store import JsonlMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem
+from assistant_agent.memory.jsonl_store import JsonlMemoryStore
+from assistant_agent.schemas.memory import MemoryItem
 
 
 def make_memory(memory_id: str = "m1") -> MemoryItem:

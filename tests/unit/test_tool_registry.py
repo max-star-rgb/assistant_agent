@@ -1,8 +1,8 @@
 import pytest
 
-from multimodal_agent.schemas.tools import ToolResult, ToolSpec
-from multimodal_agent.tools.product_search_tool import ProductSearchTool
-from multimodal_agent.tools.registry import ToolRegistry, create_default_registry
+from assistant_agent.schemas.tools import ToolResult, ToolSpec
+from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
 def test_register_get_and_list_tool() -> None:

@@ -85,5 +85,5 @@
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/memory/manager.py` - 记忆加载逻辑
-- `src/multimodal_agent/memory/write_policy.py` - 记忆写入策略
+- `src/assistant_agent/memory/manager.py` - 记忆加载逻辑
+- `src/assistant_agent/memory/write_policy.py` - 记忆写入策略

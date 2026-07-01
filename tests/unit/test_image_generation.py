@@ -1,10 +1,10 @@
-from multimodal_agent.schemas.generation import ImageGenerationResult
-from multimodal_agent.services.image_generation_adapter import (
+from assistant_agent.schemas.generation import ImageGenerationResult
+from assistant_agent.services.image_generation_adapter import (
     ImageGenerationInput,
     MockImageGenerationAdapter,
     build_image_prompt,
 )
-from multimodal_agent.tools.image_generation_tool import ImageGenerationTool
+from assistant_agent.tools.image_generation_tool import ImageGenerationTool
 
 
 def test_build_prompt_contains_product_and_japanese_poster_style() -> None:

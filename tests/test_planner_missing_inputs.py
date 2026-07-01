@@ -1,5 +1,5 @@
-from multimodal_agent.agent.planner import RuleBasedTaskPlanner
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.planner import RuleBasedTaskPlanner
+from assistant_agent.schemas.requests import UserRequest
 
 
 def test_missing_image_for_image_understanding_requires_followup() -> None:

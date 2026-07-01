@@ -45,16 +45,16 @@ UserRequest
 
 相关源码：
 
-- `src/multimodal_agent/agent/runtime.py`: 组装 registry、memory manager、chat adapter、tool executor、trace store 和 graph。
-- `src/multimodal_agent/agent/assistant_loop_nodes.py`: ReAct 决策、native tool handoff、validator 调用、observation 回传和 loop guard。
-- `src/multimodal_agent/agent/action_validator.py`: 工具执行前的本地校验边界。
-- `src/multimodal_agent/agent/tool_executor.py`: 工具执行、预算、retry/recovery、event/history/trace 的统一边界。
-- `src/multimodal_agent/tools/registry.py`: 工具注册、ToolSpec 生成和默认工具集合。
-- `src/multimodal_agent/tools/base.py`: `ToolContext`、`BaseTool`、`MockTool` 基础契约。
-- `src/multimodal_agent/schemas/tools.py`: `ToolSpec`、`ToolResult`、`ToolCallRecord`。
-- `src/multimodal_agent/schemas/assistant_decision.py`: 内部 assistant decision 和 native tool call 归一化。
-- `src/multimodal_agent/schemas/tool_spec_adapters.py`: ToolSpec 到 OpenAI/MCP 工具 schema 的转换。
-- `src/multimodal_agent/schemas/tool_observation.py`: assistant-facing observation 摘要和脱敏。
+- `src/assistant_agent/agent/runtime.py`: 组装 registry、memory manager、chat adapter、tool executor、trace store 和 graph。
+- `src/assistant_agent/agent/assistant_loop_nodes.py`: ReAct 决策、native tool handoff、validator 调用、observation 回传和 loop guard。
+- `src/assistant_agent/agent/action_validator.py`: 工具执行前的本地校验边界。
+- `src/assistant_agent/agent/tool_executor.py`: 工具执行、预算、retry/recovery、event/history/trace 的统一边界。
+- `src/assistant_agent/tools/registry.py`: 工具注册、ToolSpec 生成和默认工具集合。
+- `src/assistant_agent/tools/base.py`: `ToolContext`、`BaseTool`、`MockTool` 基础契约。
+- `src/assistant_agent/schemas/tools.py`: `ToolSpec`、`ToolResult`、`ToolCallRecord`。
+- `src/assistant_agent/schemas/assistant_decision.py`: 内部 assistant decision 和 native tool call 归一化。
+- `src/assistant_agent/schemas/tool_spec_adapters.py`: ToolSpec 到 OpenAI/MCP 工具 schema 的转换。
+- `src/assistant_agent/schemas/tool_observation.py`: assistant-facing observation 摘要和脱敏。
 
 ## 两种 assistant tool calling 模式
 

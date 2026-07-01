@@ -1,8 +1,8 @@
-from multimodal_agent.agent.prompt_builder import build_image_generation_request
-from multimodal_agent.agent.tool_input_builder import build_tool_input
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.product_adapter import MockPriceCompareAdapter, MockProductSearchAdapter, PriceCompareInput, ProductSearchInput
+from assistant_agent.agent.prompt_builder import build_image_generation_request
+from assistant_agent.agent.tool_input_builder import build_tool_input
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.product_adapter import MockPriceCompareAdapter, MockProductSearchAdapter, PriceCompareInput, ProductSearchInput
 
 
 def test_product_search_output_flows_into_price_compare() -> None:

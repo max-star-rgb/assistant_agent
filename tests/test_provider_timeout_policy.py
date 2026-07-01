@@ -1,4 +1,4 @@
-from multimodal_agent.services.provider_policy import TimeoutPolicy
+from assistant_agent.services.provider_policy import TimeoutPolicy
 
 
 def test_timeout_policy_defaults_are_conservative() -> None:

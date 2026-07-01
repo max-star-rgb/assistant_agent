@@ -2,10 +2,10 @@ import json
 
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.app import create_app
-from multimodal_agent.config import ProviderConfig
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.api import routes_agent
+from assistant_agent.api.app import create_app
+from assistant_agent.config import ProviderConfig
 
 
 def test_explicit_memory_save_survives_runtime_restart_and_snapshot_recall(tmp_path, monkeypatch) -> None:

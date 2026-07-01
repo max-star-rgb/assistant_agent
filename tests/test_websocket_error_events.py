@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.api.app import create_app
+from assistant_agent.api.app import create_app
 
 
 def test_websocket_task_failed_error_uses_stable_error_shape() -> None:

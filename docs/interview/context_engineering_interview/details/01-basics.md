@@ -51,5 +51,5 @@
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/services/context/compactor.py` - 上下文摘要生成器
-- `src/multimodal_agent/memory/write_policy.py` - 记忆写入策略
+- `src/assistant_agent/services/context/compactor.py` - 上下文摘要生成器
+- `src/assistant_agent/memory/write_policy.py` - 记忆写入策略

@@ -316,7 +316,7 @@ def live_server():
             sys.executable,
             "-m",
             "uvicorn",
-            "multimodal_agent.api.app:create_app",
+            "assistant_agent.api.app:create_app",
             "--factory",
             "--host",
             "127.0.0.1",

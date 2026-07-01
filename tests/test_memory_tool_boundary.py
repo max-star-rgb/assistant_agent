@@ -2,15 +2,15 @@ import ast
 from datetime import datetime, timezone
 from pathlib import Path
 
-from multimodal_agent.memory.manager import MemoryManager
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.tools.base import ToolContext
-from multimodal_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool
+from assistant_agent.memory.manager import MemoryManager
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MEMORY_TOOL_PATH = PROJECT_ROOT / "src/multimodal_agent/tools/memory_tool.py"
+MEMORY_TOOL_PATH = PROJECT_ROOT / "src/assistant_agent/tools/memory_tool.py"
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
@@ -19,11 +19,11 @@ def test_memory_tool_does_not_import_memory_store_or_retrieval_backends() -> Non
     imported_modules = _imported_modules(tree)
 
     prohibited = {
-        "multimodal_agent.memory.store",
-        "multimodal_agent.memory.jsonl_store",
-        "multimodal_agent.memory.retrieval",
-        "multimodal_agent.memory.retriever",
-        "multimodal_agent.memory.profile",
+        "assistant_agent.memory.store",
+        "assistant_agent.memory.jsonl_store",
+        "assistant_agent.memory.retrieval",
+        "assistant_agent.memory.retriever",
+        "assistant_agent.memory.profile",
     }
 
     assert imported_modules.isdisjoint(prohibited)

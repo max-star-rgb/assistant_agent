@@ -1,12 +1,12 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.memory.context_builder import MemoryContextBuilder
-from multimodal_agent.memory.manager import MemoryManager
-from multimodal_agent.memory.retrieval import format_memory_context
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.state import AgentState
+from assistant_agent.memory.context_builder import MemoryContextBuilder
+from assistant_agent.memory.manager import MemoryManager
+from assistant_agent.memory.retrieval import format_memory_context
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.schemas.requests import UserRequest
 
 
 def test_memory_context_builder_respects_max_chars_and_includes_refs() -> None:

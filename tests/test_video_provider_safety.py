@@ -1,9 +1,9 @@
 import socket
 
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.perception import VideoUnderstandingRequest
-from multimodal_agent.services.video_adapter import HttpVideoUnderstandingAdapter, create_video_understanding_adapter
-from multimodal_agent.tools.video_tool import VideoUnderstandingTool
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.perception import VideoUnderstandingRequest
+from assistant_agent.services.video_adapter import HttpVideoUnderstandingAdapter, create_video_understanding_adapter
+from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
 def test_http_video_provider_missing_base_url_returns_provider_unconfigured() -> None:

@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.api.app import create_app
+from assistant_agent.api.app import create_app
 
 
 def test_http_agent_run_uses_graph_runtime_and_exposes_tool_observability() -> None:

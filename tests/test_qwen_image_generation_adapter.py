@@ -4,8 +4,8 @@ import urllib.error
 
 import pytest
 
-from multimodal_agent.providers import qwen_image_generation as qwen_image
-from multimodal_agent.providers.qwen_image_generation import (
+from assistant_agent.providers import qwen_image_generation as qwen_image
+from assistant_agent.providers.qwen_image_generation import (
     QwenImageGenerationAdapter,
     QwenImageGenerationConfig,
     build_qwen_image_payload,
@@ -13,8 +13,8 @@ from multimodal_agent.providers.qwen_image_generation import (
     parse_qwen_image_urls,
     qwen_image_generation_url,
 )
-from multimodal_agent.services.image_generation_adapter import ImageGenerationInput
-from multimodal_agent.services.provider_errors import ProviderAdapterError
+from assistant_agent.services.image_generation_adapter import ImageGenerationInput
+from assistant_agent.services.provider_errors import ProviderAdapterError
 
 
 def test_build_qwen_image_payload_matches_dashscope_shape() -> None:

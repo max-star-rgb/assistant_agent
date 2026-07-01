@@ -1,9 +1,9 @@
 import pytest
 
-from multimodal_agent.config import ProviderConfig, should_run_integration_tests
-from multimodal_agent.services.provider_selection import create_vision_adapter
-from multimodal_agent.services.real_vision_adapter import HttpVisionProviderAdapter
-from multimodal_agent.services.vision_adapter import VisionUnderstandingInput
+from assistant_agent.config import ProviderConfig, should_run_integration_tests
+from assistant_agent.services.provider_selection import create_vision_adapter
+from assistant_agent.services.real_vision_adapter import HttpVisionProviderAdapter
+from assistant_agent.services.vision_adapter import VisionUnderstandingInput
 
 
 def configured_real_vision_provider() -> ProviderConfig:

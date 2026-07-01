@@ -1,7 +1,7 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.capability_output import CapabilityOutputContract
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.capability_output import CapabilityOutputContract
+from assistant_agent.schemas.requests import UserRequest
 
 
 def test_direct_chat_response_has_capability_contract() -> None:

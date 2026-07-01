@@ -1,9 +1,9 @@
 import pytest
 
-from multimodal_agent.agent.action_validator import ActionValidator
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.schemas.assistant_decision import AssistantDecision
-from multimodal_agent.schemas.agent_communication import (
+from assistant_agent.agent.action_validator import ActionValidator
+from assistant_agent.agent.state import AgentState
+from assistant_agent.schemas.assistant_decision import AssistantDecision
+from assistant_agent.schemas.agent_communication import (
     DEFAULT_AGENT_ID,
     AgentInstance,
     AgentMessage,
@@ -11,15 +11,15 @@ from multimodal_agent.schemas.agent_communication import (
     AgentSessionRef,
     AgentTask,
 )
-from multimodal_agent.schemas.planning import IntentResult
-from multimodal_agent.schemas.requests import AgentResponse, UserRequest
-from multimodal_agent.services.agent_communication import AgentCommunicationService
-from multimodal_agent.services.agent_communication import create_local_agent_communication_service
-from multimodal_agent.services.agent_directory import AgentDirectory
-from multimodal_agent.services.agent_transports import LocalAgentTransport
-from multimodal_agent.tools.agent_delegation_tool import AgentDelegationTool
-from multimodal_agent.tools.base import ToolContext
-from multimodal_agent.tools.registry import create_default_registry
+from assistant_agent.schemas.planning import IntentResult
+from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.services.agent_communication import AgentCommunicationService
+from assistant_agent.services.agent_communication import create_local_agent_communication_service
+from assistant_agent.services.agent_directory import AgentDirectory
+from assistant_agent.services.agent_transports import LocalAgentTransport
+from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
+from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.registry import create_default_registry
 
 
 class RecordingRuntime:

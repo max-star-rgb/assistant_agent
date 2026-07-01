@@ -5,16 +5,16 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from multimodal_agent.schemas.agent_communication import (
+from assistant_agent.schemas.agent_communication import (
     DEFAULT_AGENT_ID,
     AgentInstance,
     AgentMessage,
     AgentSessionRef,
     AgentTask,
 )
-from multimodal_agent.services.agent_communication import AgentCommunicationService
-from multimodal_agent.services.agent_directory import AgentDirectory
-from multimodal_agent.services.agent_transports import (
+from assistant_agent.services.agent_communication import AgentCommunicationService
+from assistant_agent.services.agent_directory import AgentDirectory
+from assistant_agent.services.agent_transports import (
     A2AJsonRpcTransport,
     RemoteAgentAllowlist,
 )

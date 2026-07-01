@@ -1,10 +1,10 @@
-from multimodal_agent.services.product_adapter import (
+from assistant_agent.services.product_adapter import (
     MockProductSearchAdapter,
     PriceCompareInput,
     ProductSearchInput,
 )
-from multimodal_agent.tools.price_compare_tool import PriceCompareTool
-from multimodal_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.price_compare_tool import PriceCompareTool
+from assistant_agent.tools.product_search_tool import ProductSearchTool
 
 
 def test_mock_product_search_returns_products_for_white_low_top_sneaker() -> None:

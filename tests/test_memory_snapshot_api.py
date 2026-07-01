@@ -2,18 +2,18 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.app import create_app
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.identity import RequestIdentity
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.schemas.sessions import SessionCreate
-from multimodal_agent.schemas.memory_snapshot import MemoryStorageSnapshot
-from multimodal_agent.services.assistant_run_service import ConversationTurn, InMemoryConversationStore
-from multimodal_agent.services.memory_snapshot import MemorySnapshotService
-from multimodal_agent.services.session_store import InMemorySessionStore
-from multimodal_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.api import routes_agent
+from assistant_agent.api.app import create_app
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.schemas.sessions import SessionCreate
+from assistant_agent.schemas.memory_snapshot import MemoryStorageSnapshot
+from assistant_agent.services.assistant_run_service import ConversationTurn, InMemoryConversationStore
+from assistant_agent.services.memory_snapshot import MemorySnapshotService
+from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

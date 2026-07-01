@@ -1,4 +1,4 @@
-from multimodal_agent.memory.retrieval_eval import (
+from assistant_agent.memory.retrieval_eval import (
     evaluate_memory_retrieval_case,
     summarize_memory_retrieval_eval,
 )

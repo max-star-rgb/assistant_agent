@@ -9,16 +9,16 @@ import json
 
 import pytest
 
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.providers.haodanku_product_search import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.providers.haodanku_product_search import (
     HaodankuConfig,
     HaodankuPriceCompareAdapter,
     HaodankuProductSearchAdapter,
     build_haodanku_search_url,
     map_haodanku_items,
 )
-from multimodal_agent.schemas.products import ProductSearchResult
-from multimodal_agent.services.product_adapter import (
+from assistant_agent.schemas.products import ProductSearchResult
+from assistant_agent.services.product_adapter import (
     MockProductSearchAdapter,
     PriceCompareInput,
     ProductSearchInput,

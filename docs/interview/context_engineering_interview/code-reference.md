@@ -5,7 +5,7 @@
 ## 核心目录结构
 
 ```
-src/multimodal_agent/
+src/assistant_agent/
 ├── services/context/          # 上下文工程核心
 │   ├── builder.py            # 上下文组装、预算计算、裁剪执行
 │   ├── policy.py             # 压缩触发策略

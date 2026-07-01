@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from multimodal_agent.memory.write_policy import build_explicit_memory_item, build_task_summary_memory_item
+from assistant_agent.memory.write_policy import build_explicit_memory_item, build_task_summary_memory_item
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

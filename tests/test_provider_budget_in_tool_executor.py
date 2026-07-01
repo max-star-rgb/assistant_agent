@@ -1,13 +1,13 @@
 from pydantic import BaseModel
 
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.agent.tool_executor import ToolExecutor
-from multimodal_agent.schemas.planning import TaskStep
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.provider_budget import ProviderCallBudget
-from multimodal_agent.tools.base import MockTool, ToolContext
-from multimodal_agent.tools.registry import ToolRegistry
+from assistant_agent.agent.state import AgentState
+from assistant_agent.agent.tool_executor import ToolExecutor
+from assistant_agent.schemas.planning import TaskStep
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.provider_budget import ProviderCallBudget
+from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class BudgetInput(BaseModel):

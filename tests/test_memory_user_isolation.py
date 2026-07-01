@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

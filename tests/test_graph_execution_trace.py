@@ -1,9 +1,9 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.trace_store import InMemoryTraceStore
-from multimodal_agent.tools.product_search_tool import ProductSearchTool
-from multimodal_agent.tools.registry import ToolRegistry
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class SensitiveFailingProductSearchTool(ProductSearchTool):

@@ -1,4 +1,4 @@
-from multimodal_agent.mcp.server import OfflineMCPServer
+from assistant_agent.mcp.server import OfflineMCPServer
 
 
 def test_offline_mcp_server_lists_tools() -> None:

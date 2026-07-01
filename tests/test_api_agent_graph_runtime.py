@@ -1,9 +1,9 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.auth import (
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.agent.state import AgentState
+from assistant_agent.api import routes_agent
+from assistant_agent.api.auth import (
     AUTH_HEADER_ENABLED_ENV,
     AUTH_MODE_ENV,
     AUTH_REQUIRE_BOUND_IDENTITY_ENV,
@@ -11,15 +11,15 @@ from multimodal_agent.api.auth import (
     AUTH_USER_ID_HEADER,
     get_auth_context,
 )
-from multimodal_agent.api.app import create_app
-from multimodal_agent.schemas.agent_communication import DEFAULT_AGENT_ID
-from multimodal_agent.schemas.api import AgentRunResponse
-from multimodal_agent.schemas.planning import IntentResult
-from multimodal_agent.schemas.requests import AgentResponse, UserRequest
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.agent_gateway import WORKER_AGENT_ID, AgentGateway
-from multimodal_agent.services.api_identity import AuthContext
-from multimodal_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.api.app import create_app
+from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
+from assistant_agent.schemas.api import AgentRunResponse
+from assistant_agent.schemas.planning import IntentResult
+from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.agent_gateway import WORKER_AGENT_ID, AgentGateway
+from assistant_agent.services.api_identity import AuthContext
+from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
 class RecordingRuntime:

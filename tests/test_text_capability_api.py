@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.api.app import create_app
+from assistant_agent.api.app import create_app
 
 
 def test_direct_chat_api_returns_capability_contract_without_tools() -> None:

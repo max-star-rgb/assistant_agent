@@ -1,8 +1,8 @@
 import pytest
 
-from multimodal_agent.agent.router import ToolRouter
-from multimodal_agent.schemas.capabilities import CANONICAL_INTENTS, canonical_intent
-from multimodal_agent.schemas.planning import IntentResult
+from assistant_agent.agent.router import ToolRouter
+from assistant_agent.schemas.capabilities import CANONICAL_INTENTS, canonical_intent
+from assistant_agent.schemas.planning import IntentResult
 
 
 @pytest.mark.parametrize(

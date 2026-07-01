@@ -1,10 +1,10 @@
-from multimodal_agent.services.vision_adapter import (
+from assistant_agent.services.vision_adapter import (
     MockVisionUnderstandingAdapter,
     VisionUnderstandingInput,
 )
-from multimodal_agent.services.real_vision_adapter import RealVisionProviderConfig
-from multimodal_agent.schemas.perception import VisualUnderstandingResult
-from multimodal_agent.tools.vision_tool import VisionUnderstandingTool
+from assistant_agent.services.real_vision_adapter import RealVisionProviderConfig
+from assistant_agent.schemas.perception import VisualUnderstandingResult
+from assistant_agent.tools.vision_tool import VisionUnderstandingTool
 
 
 def test_mock_vision_adapter_understands_video() -> None:

@@ -1,0 +1,899 @@
+"""Agent HTTP routes."""
+
+import json
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
+from assistant_agent.schemas.agent_control_plane import (
+    AgentAuditEvent,
+    AgentAuditEventList,
+    AgentControlPlaneBudgetSummary,
+    AgentControlPlaneDelegationTree,
+    AgentControlPlaneReplayPreview,
+    AgentControlPlaneRouteSummary,
+    AgentControlPlaneRunSummary,
+)
+from assistant_agent.schemas.agent_gateway import AgentGatewayRunRequest
+from assistant_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
+from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.schemas.memory import MemoryType
+from assistant_agent.schemas.memory_audit import (
+    MemoryAuditEventList,
+    MemoryAuditItem,
+    MemoryAuditList,
+    MemoryAuditReport,
+    MemoryConfirmationList,
+    MemoryConfirmationResult,
+    MemoryDeleteResult,
+    MemoryExport,
+    MemoryMetricsReport,
+    MemoryProfileRepairResult,
+    MemoryRetentionSweepResult,
+)
+from assistant_agent.schemas.memory_snapshot import MemorySnapshot, MemoryStorageSnapshot
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.sessions import SessionCreate, SessionDeleteResult, SessionList, SessionRecord
+from assistant_agent.services.assistant_run_service import (
+    clear_conversation_history,
+    clear_user_conversation_history,
+    create_runtime,
+    get_default_conversation_store,
+    run_assistant_request,
+    runtime_info,
+)
+from assistant_agent.services.agent_control_plane import AgentControlPlaneQueryService, audit_event
+from assistant_agent.services.agent_gateway import AgentGateway, create_default_agent_gateway
+from assistant_agent.services.api_identity import (
+    ApiIdentitySource,
+    AuthContext,
+    IdentityPolicy,
+    IdentityPolicyError,
+    ResolvedRequestIdentity,
+    enforce_identity_policy,
+    resolve_request_identity,
+)
+from assistant_agent.services.beta_feedback import (
+    BetaEvaluationExport,
+    BetaEvaluationItem,
+    BetaFeedbackCreate,
+    BetaFeedbackRecord,
+    BetaFeedbackStore,
+    summarize_feedback,
+)
+from assistant_agent.services.demo_examples import get_demo_examples
+from assistant_agent.services.memory_audit import MemoryAuditService
+from assistant_agent.services.memory_snapshot import MemorySnapshotService
+from assistant_agent.services.agent_pilot_readiness import PilotReadinessChecker, PilotReadinessReport
+from assistant_agent.services.provider_budget import ProviderCallBudget
+from assistant_agent.services.provider_readiness import build_provider_readiness_report
+from assistant_agent.services.trace_query import RunSummary, ToolCallSummary, TraceQueryService, TraceSummary
+from assistant_agent.services.trial_access import (
+    TrialAccessGate,
+    TrialAccessStatus,
+    trial_access_gate_from_env,
+)
+
+
+router = APIRouter()
+_RUNTIME: AgentGraphRuntime | None = None
+_AGENT_GATEWAY: AgentGateway | None = None
+_FEEDBACK_STORE: BetaFeedbackStore | None = None
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
+
+
+def get_agent_runtime() -> AgentGraphRuntime:
+    global _RUNTIME
+    if _RUNTIME is None:
+        _RUNTIME = create_runtime()
+    return _RUNTIME
+
+
+def get_agent_gateway() -> AgentGateway:
+    global _AGENT_GATEWAY
+    if _AGENT_GATEWAY is None:
+        _AGENT_GATEWAY = create_default_agent_gateway()
+    return _AGENT_GATEWAY
+
+
+def get_beta_feedback_store() -> BetaFeedbackStore:
+    global _FEEDBACK_STORE
+    if _FEEDBACK_STORE is None:
+        _FEEDBACK_STORE = BetaFeedbackStore()
+    return _FEEDBACK_STORE
+
+
+def get_trial_access_gate() -> TrialAccessGate:
+    return trial_access_gate_from_env(base_dir=_REPO_ROOT)
+
+
+@router.post("/agent/run", response_model=AgentRunResponse)
+def run_agent(request: UserRequest, auth_context: AuthContext = Depends(get_auth_context)) -> AgentRunResponse:
+    identity_resolution = _identity_from_request(request, auth_context=auth_context)
+    _require_trial_access_for_identity(identity_resolution)
+    request = _with_identity_metadata(request, identity_resolution)
+    return run_assistant_request(request, runtime=get_agent_runtime()).api_response()
+
+
+@router.post("/agents/run", response_model=AgentRunResponse)
+def run_agents(
+    request: AgentGatewayRunRequest,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> AgentRunResponse:
+    identity_resolution = _identity_from_request(request, auth_context=auth_context)
+    _require_trial_access_for_identity(identity_resolution)
+    _record_auth_audit_event(identity_resolution, action="agents_run_identity")
+    request = _with_identity_metadata(request, identity_resolution)
+    return get_agent_gateway().run(request)
+
+
+@router.get("/demo/scenarios")
+def list_demo_scenarios() -> dict[str, Any]:
+    scenarios = json.loads(_SCENARIO_PATH.read_text(encoding="utf-8"))
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "offline": True,
+        "total": len(scenarios),
+        "scenarios": [_public_scenario(scenario) for scenario in scenarios],
+    }
+
+
+@router.get("/demo/examples")
+def list_demo_examples() -> dict[str, Any]:
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "examples": get_demo_examples(),
+    }
+
+
+@router.get("/demo/runtime-info")
+def demo_runtime_info() -> dict[str, Any]:
+    """Return a redacted runtime summary for the local Web Console."""
+
+    config = get_agent_runtime().config
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        **runtime_info(config),
+    }
+
+
+@router.get("/demo/access", response_model=TrialAccessStatus)
+def demo_access(user_id: str = Query(...)) -> TrialAccessStatus:
+    """Validate a Web Console trial user id before enabling the demo UI."""
+
+    return get_trial_access_gate().check(user_id)
+
+
+@router.post("/sessions", response_model=SessionRecord)
+def create_session(
+    session: SessionCreate,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> SessionRecord:
+    _require_trial_access_for_identity(_identity_from_user_id(session.user_id, source="request_body", auth_context=auth_context))
+    return get_agent_runtime().session_store.create(session)
+
+
+@router.get("/sessions", response_model=SessionList)
+def list_sessions(
+    user_id: str = Query(...),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> SessionList:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="query", auth_context=auth_context))
+    sessions = get_agent_runtime().session_store.list_by_user(identity.user_id)
+    return SessionList(user_id=identity.user_id, total=len(sessions), sessions=sessions)
+
+
+@router.get("/sessions/{session_id}", response_model=SessionRecord)
+def get_session(
+    session_id: str,
+    user_id: str = Query(...),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> SessionRecord:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(user_id, session_id=session_id, source="query", auth_context=auth_context)
+    )
+    record = get_agent_runtime().session_store.get(identity.user_id, session_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return record
+
+
+@router.delete("/sessions/{session_id}", response_model=SessionDeleteResult)
+def delete_session(
+    session_id: str,
+    user_id: str = Query(...),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> SessionDeleteResult:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(user_id, session_id=session_id, source="query", auth_context=auth_context)
+    )
+    runtime = get_agent_runtime()
+    deleted = 1 if runtime.session_store.delete(identity.user_id, session_id) else 0
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="session not found")
+    clear_conversation_history(identity.user_id, session_id, config=runtime.config)
+    return SessionDeleteResult(user_id=identity.user_id, deleted={"sessions": deleted})
+
+
+@router.get("/runs/{run_id}", response_model=RunSummary)
+def get_run_summary(run_id: str) -> RunSummary:
+    summary = TraceQueryService(get_agent_runtime().trace_store).run_summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return summary
+
+
+def _public_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(scenario.get("metadata", {}))
+    return {
+        "scenario_id": scenario["scenario_id"],
+        "title": scenario["title"],
+        "user_query": scenario["user_query"],
+        "input_type": metadata.get("input_type", "text"),
+        "expected_tools": list(scenario.get("expected_tools", [])),
+        "expected_response_contains": list(scenario.get("expected_response_contains", [])),
+        "mock_only": bool(metadata.get("mock_only") or metadata.get("mock_media")),
+    }
+
+
+@router.get("/traces/{trace_id}", response_model=TraceSummary)
+def get_trace_summary(trace_id: str) -> TraceSummary:
+    summary = TraceQueryService(get_agent_runtime().trace_store).trace_summary(trace_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="trace not found")
+    return summary
+
+
+@router.get("/runs/{run_id}/tool-calls", response_model=ToolCallSummary)
+def get_run_tool_calls(run_id: str) -> ToolCallSummary:
+    summary = TraceQueryService(get_agent_runtime().trace_store).tool_calls_by_run(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return summary
+
+
+@router.get("/control-plane/readiness", response_model=PilotReadinessReport)
+def get_control_plane_readiness(auth_context: AuthContext = Depends(get_auth_context)) -> PilotReadinessReport:
+    identity_policy = IdentityPolicy().evaluate(
+        identity_source="auth_context" if auth_context.authenticated else "local_context",
+        auth_bound_identity=auth_context.authenticated,
+        production_required=require_auth_bound_identity(),
+    )
+    gateway = get_agent_gateway()
+    config = get_agent_runtime().config
+    report = PilotReadinessChecker().evaluate(
+        directory=getattr(gateway, "directory", None),
+        runtime_profile=config.runtime_profile,
+        auth_bound_identity=auth_context.authenticated,
+        identity_policy=identity_policy,
+        provider_readiness=build_provider_readiness_report(config),
+        provider_budget=ProviderCallBudget(allow_real_provider=config.runtime_profile.allows_real_providers),
+    )
+    _record_control_plane_audit_event(
+        audit_event(
+            event_type="provider_opt_in_decision",
+            component="provider_policy",
+            action="evaluate_runtime_profile",
+            outcome="allowed" if config.runtime_profile.allows_real_providers else "blocked_default",
+            detail={
+                "runtime_profile": config.runtime_profile.name,
+                "allows_real_providers": config.runtime_profile.allows_real_providers,
+                "requires_explicit_provider_config": config.runtime_profile.requires_explicit_provider_config,
+            },
+        )
+    )
+    return report
+
+
+@router.get("/control-plane/audit/events", response_model=AgentAuditEventList)
+def list_control_plane_audit_events(
+    run_id: str | None = Query(default=None),
+    trace_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    session_id: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> AgentAuditEventList:
+    if user_id:
+        identity = _require_trial_access_for_identity(
+            _identity_from_user_id(user_id, session_id=session_id, source="query", auth_context=auth_context)
+        )
+        user_id = identity.user_id
+        session_id = identity.session_id or session_id
+    return _control_plane_query_service().audit_events(
+        run_id=run_id,
+        trace_id=trace_id,
+        user_id=user_id,
+        session_id=session_id,
+        event_type=event_type,
+        limit=limit,
+    )
+
+
+@router.get("/control-plane/runs/{run_id}/audit", response_model=AgentAuditEventList)
+def get_control_plane_run_audit_events(
+    run_id: str,
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> AgentAuditEventList:
+    return _control_plane_query_service().audit_events_by_run(run_id, limit=limit)
+
+
+@router.get("/control-plane/runs/{run_id}", response_model=AgentControlPlaneRunSummary)
+def get_control_plane_run_summary(run_id: str) -> AgentControlPlaneRunSummary:
+    summary = _control_plane_query_service().run_summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return summary
+
+
+@router.get("/control-plane/traces/{trace_id}")
+def get_control_plane_trace_summary(trace_id: str) -> dict[str, Any]:
+    summary = _control_plane_query_service().trace_summary(trace_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="trace not found")
+    return summary
+
+
+@router.get("/control-plane/runs/{run_id}/route", response_model=AgentControlPlaneRouteSummary)
+def get_control_plane_route_summary(run_id: str) -> AgentControlPlaneRouteSummary:
+    summary = _control_plane_query_service().route_summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="gateway route not found")
+    return summary
+
+
+@router.get("/control-plane/runs/{run_id}/delegation-tree", response_model=AgentControlPlaneDelegationTree)
+def get_control_plane_delegation_tree(run_id: str) -> AgentControlPlaneDelegationTree:
+    summary = _control_plane_query_service().delegation_tree(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="gateway run not found")
+    return summary
+
+
+@router.get("/control-plane/runs/{run_id}/budget", response_model=AgentControlPlaneBudgetSummary)
+def get_control_plane_budget_summary(run_id: str) -> AgentControlPlaneBudgetSummary:
+    summary = _control_plane_query_service().budget_summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return summary
+
+
+@router.get("/control-plane/runs/{run_id}/replay-preview", response_model=AgentControlPlaneReplayPreview)
+def get_control_plane_replay_preview(run_id: str) -> AgentControlPlaneReplayPreview:
+    summary = _control_plane_query_service().replay_preview(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="gateway replay preview not found")
+    return summary
+
+
+@router.get("/memory/users/{user_id}/items", response_model=MemoryAuditList)
+def list_memory_items(
+    user_id: str,
+    memory_type: MemoryType | None = Query(default=None),
+    include_content: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryAuditList:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    result = _memory_audit_service().list_items_for_identity(
+        identity,
+        memory_type=memory_type,
+        include_content=include_content,
+    )
+    _record_memory_control_plane_event(
+        identity,
+        action="list_memory_items",
+        event_type="memory_access",
+        detail={
+            "memory_type": memory_type,
+            "include_content": include_content,
+            "item_count": result.total,
+        },
+    )
+    return result
+
+
+@router.get("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryAuditItem)
+def get_memory_item(
+    user_id: str,
+    memory_id: str,
+    include_content: bool = Query(default=True),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryAuditItem:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    item = _memory_audit_service().get_item_for_identity(
+        identity,
+        memory_id=memory_id,
+        include_content=include_content,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory item not found")
+    _record_memory_control_plane_event(
+        identity,
+        action="get_memory_item",
+        event_type="memory_access",
+        detail={
+            "memory_id": memory_id,
+            "include_content": include_content,
+            "content_included": include_content,
+        },
+    )
+    return item
+
+
+@router.get("/memory/users/{user_id}/audit", response_model=MemoryAuditReport)
+def audit_memory(
+    user_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryAuditReport:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    result = _memory_audit_service().audit_for_identity(identity)
+    _record_memory_control_plane_event(
+        identity,
+        action="audit_memory",
+        event_type="memory_access",
+        detail={
+            "total": result.total,
+            "duplicate_group_count": len(result.duplicate_groups),
+            "warning_count": len(result.warnings),
+            "expired_count": result.expired_count,
+            "sensitive_count": result.sensitive_count,
+            "profile_present": result.profile_present,
+        },
+    )
+    return result
+
+
+@router.get("/memory/users/{user_id}/events", response_model=MemoryAuditEventList)
+def list_memory_events(
+    user_id: str,
+    event_type: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryAuditEventList:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    return _memory_audit_service().events_for_identity(
+        identity,
+        event_type=event_type,
+        limit=limit,
+    )
+
+
+@router.get("/memory/users/{user_id}/metrics", response_model=MemoryMetricsReport)
+def get_memory_metrics(
+    user_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryMetricsReport:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    return _memory_audit_service().metrics_for_identity(identity)
+
+
+@router.get("/memory/users/{user_id}/confirmations", response_model=MemoryConfirmationList)
+def list_memory_confirmations(
+    user_id: str,
+    include_resolved: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryConfirmationList:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    return _memory_audit_service().confirmations_for_identity(
+        identity,
+        include_resolved=include_resolved,
+    )
+
+
+@router.post("/memory/users/{user_id}/confirmations/{confirmation_id}/confirm", response_model=MemoryConfirmationResult)
+def confirm_memory_confirmation(
+    user_id: str,
+    confirmation_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryConfirmationResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    try:
+        result = _memory_audit_service().confirm_memory_for_identity(
+            identity,
+            confirmation_id=confirmation_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="memory confirmation not found")
+    return result
+
+
+@router.post("/memory/users/{user_id}/confirmations/{confirmation_id}/reject", response_model=MemoryConfirmationResult)
+def reject_memory_confirmation(
+    user_id: str,
+    confirmation_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryConfirmationResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    try:
+        result = _memory_audit_service().reject_memory_for_identity(
+            identity,
+            confirmation_id=confirmation_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="memory confirmation not found")
+    return result
+
+
+@router.get("/memory/users/{user_id}/profile/status", response_model=MemoryProfileRepairResult)
+def get_memory_profile_status(
+    user_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryProfileRepairResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    return _memory_audit_service().profile_status_for_identity(identity)
+
+
+@router.post("/memory/users/{user_id}/profile/rebuild", response_model=MemoryProfileRepairResult)
+def rebuild_memory_profile(
+    user_id: str,
+    dry_run: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryProfileRepairResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    return _memory_audit_service().rebuild_profile_for_identity(
+        identity,
+        dry_run=dry_run,
+    )
+
+
+@router.get("/memory/users/{user_id}/export", response_model=MemoryExport)
+def export_memory(
+    user_id: str,
+    include_content: bool = Query(default=True),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryExport:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    result = _memory_audit_service().export_for_identity(
+        identity,
+        include_content=include_content,
+    )
+    _record_memory_control_plane_event(
+        identity,
+        action="export_memory",
+        event_type="memory_export",
+        detail={
+            "include_content": include_content,
+            "item_count": len(result.items),
+        },
+    )
+    return result
+
+
+@router.post("/memory/users/{user_id}/retention/sweep", response_model=MemoryRetentionSweepResult)
+def sweep_expired_memory(
+    user_id: str,
+    hard_delete: bool = Query(default=False),
+    dry_run: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryRetentionSweepResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    return _memory_audit_service().sweep_expired_for_identity(
+        identity,
+        hard_delete=hard_delete,
+        dry_run=dry_run,
+    )
+
+
+@router.get("/memory/users/{user_id}/snapshot", response_model=MemorySnapshot)
+def get_memory_snapshot(
+    user_id: str,
+    session_id: str | None = Query(default=None),
+    query: str = Query(default=""),
+    top_k: int = Query(default=5, ge=1, le=50),
+    max_context_chars: int = Query(default=1000, ge=50, le=4000),
+    include_content: bool = Query(default=False),
+    include_superseded: bool = Query(default=False),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemorySnapshot:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(user_id, session_id=session_id, source="path", auth_context=auth_context)
+    )
+    result = _memory_snapshot_service().snapshot_for_identity(
+        identity,
+        query=query,
+        top_k=top_k,
+        max_context_chars=max_context_chars,
+        include_content=include_content,
+        include_superseded=include_superseded,
+    )
+    _record_memory_control_plane_event(
+        identity,
+        action="memory_snapshot",
+        event_type="memory_access",
+        detail={
+            "top_k": top_k,
+            "max_context_chars": max_context_chars,
+            "include_content": include_content,
+            "include_superseded": include_superseded,
+            "memory_context_total": result.memory_context.total,
+            "memory_block_count": len(result.memory_context.blocks),
+            "conversation_turn_count": result.conversation_history.total,
+        },
+    )
+    return result
+
+
+@router.delete("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryDeleteResult)
+def delete_memory_item(
+    user_id: str,
+    memory_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryDeleteResult:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    result = _memory_audit_service().delete_item_for_identity(
+        identity,
+        memory_id=memory_id,
+    )
+    if result.deleted.get("memory_items", 0) == 0:
+        raise HTTPException(status_code=404, detail="memory item not found")
+    _record_memory_control_plane_event(
+        identity,
+        action="delete_memory_item",
+        event_type="memory_delete",
+        detail={
+            "memory_id": memory_id,
+            "deleted": result.deleted,
+        },
+    )
+    return result
+
+
+@router.delete("/memory/users/{user_id}/sessions/{session_id}", response_model=MemoryDeleteResult)
+def delete_memory_session(
+    user_id: str,
+    session_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryDeleteResult:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(user_id, session_id=session_id, source="path", auth_context=auth_context)
+    )
+    result = _memory_audit_service().delete_session_for_identity(
+        identity,
+    )
+    _record_memory_control_plane_event(
+        identity,
+        action="delete_memory_session",
+        event_type="memory_delete",
+        detail={
+            "session_id": session_id,
+            "deleted": result.deleted,
+        },
+    )
+    return result
+
+
+@router.post("/beta/feedback", response_model=BetaFeedbackRecord)
+def submit_beta_feedback(
+    feedback: BetaFeedbackCreate,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> BetaFeedbackRecord:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(feedback.user_id, source="request_body", auth_context=auth_context)
+    )
+    _assert_run_belongs_to_user(feedback.run_id, identity.user_id)
+    return get_beta_feedback_store().append(feedback)
+
+
+@router.get("/beta/evaluations", response_model=BetaEvaluationExport)
+def export_beta_evaluations(
+    user_id: str | None = Query(default=None),
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> BetaEvaluationExport:
+    store = get_beta_feedback_store()
+    identity = (
+        _require_trial_access_for_identity(_identity_from_user_id(user_id, source="query", auth_context=auth_context))
+        if user_id
+        else None
+    )
+    records = store.list_by_user(identity.user_id) if identity is not None else store.read_all()
+    trace_service = TraceQueryService(get_agent_runtime().trace_store)
+    items: list[BetaEvaluationItem] = []
+    for record in records:
+        summary = trace_service.run_summary(record.run_id)
+        run_payload = summary.model_dump(mode="json") if summary is not None else {"run_id": record.run_id, "missing": True}
+        items.append(BetaEvaluationItem(feedback=record, run=run_payload))
+    return BetaEvaluationExport(
+        user_id=identity.user_id if identity is not None else None,
+        summary=summarize_feedback(records, user_id=identity.user_id if identity is not None else None),
+        items=items,
+    )
+
+
+@router.delete("/beta/users/{user_id}/data")
+def delete_beta_user_data(
+    user_id: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> dict[str, Any]:
+    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
+    user_id = identity.user_id
+    runtime = get_agent_runtime()
+    memory_items = runtime.memory_manager.list_by_user(user_id)
+    runtime.memory_manager.clear_user(user_id)
+    run_history_deleted = runtime.run_history.delete_by_user(user_id) if runtime.run_history is not None else 0
+    tool_history_deleted = runtime.tool_history.delete_by_user(user_id) if runtime.tool_history is not None else 0
+    trace_deleted = runtime.trace_store.delete_by_user(user_id)
+    feedback_deleted = get_beta_feedback_store().delete_by_user(user_id)
+    conversation_sessions_deleted = clear_user_conversation_history(user_id, config=runtime.config)
+    session_records_deleted = runtime.session_store.delete_by_user(user_id)
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "user_id": user_id,
+        "deleted": {
+            "memory_items": len(memory_items),
+            "run_history_records": run_history_deleted,
+            "tool_history_records": tool_history_deleted,
+            "trace_events": trace_deleted,
+            "feedback_records": feedback_deleted,
+            "conversation_sessions": conversation_sessions_deleted,
+            "session_records": session_records_deleted,
+        },
+    }
+
+
+def _assert_run_belongs_to_user(run_id: str, user_id: str) -> None:
+    summary = TraceQueryService(get_agent_runtime().trace_store).run_summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if summary.user_id != user_id:
+        raise HTTPException(status_code=403, detail="run does not belong to user")
+
+
+def _memory_audit_service() -> MemoryAuditService:
+    return MemoryAuditService(get_agent_runtime().memory_manager)
+
+
+def _memory_snapshot_service() -> MemorySnapshotService:
+    runtime = get_agent_runtime()
+    conversation_store = get_default_conversation_store(runtime.config)
+    return MemorySnapshotService(
+        memory_manager=runtime.memory_manager,
+        session_store=runtime.session_store,
+        conversation_store=conversation_store,
+        storage=MemoryStorageSnapshot(
+            memory_store=type(runtime.memory_store).__name__,
+            session_store=type(runtime.session_store).__name__,
+            conversation_store=type(conversation_store).__name__,
+            checkpointer=type(runtime.checkpointer).__name__ if runtime.checkpointer is not None else "none",
+        ),
+    )
+
+
+def _control_plane_query_service() -> AgentControlPlaneQueryService:
+    return AgentControlPlaneQueryService(
+        trace_query=TraceQueryService(get_agent_runtime().trace_store),
+        gateway_store=_control_plane_store(),
+    )
+
+
+def _control_plane_store():
+    return getattr(get_agent_gateway(), "control_plane_store", None)
+
+
+def _record_control_plane_audit_event(event: AgentAuditEvent) -> None:
+    store = _control_plane_store()
+    if store is not None:
+        store.append_audit_event(event)
+
+
+def _record_auth_audit_event(resolution: ResolvedRequestIdentity, *, action: str) -> None:
+    _record_control_plane_audit_event(
+        audit_event(
+            event_type="auth_decision",
+            component="api_identity",
+            action=action,
+            outcome="allowed" if resolution.auth_bound else "warning",
+            user_id=resolution.identity.user_id,
+            session_id=resolution.identity.session_id,
+            detail=resolution.metadata(),
+        )
+    )
+
+
+def _record_memory_control_plane_event(
+    identity: RequestIdentity,
+    *,
+    action: str,
+    event_type: str,
+    detail: dict[str, Any],
+) -> None:
+    _record_control_plane_audit_event(
+        audit_event(
+            event_type=event_type,
+            component="memory_api",
+            action=action,
+            outcome="allowed",
+            user_id=identity.user_id,
+            session_id=identity.session_id,
+            detail=detail,
+        )
+    )
+
+
+def _identity_from_request(
+    request: UserRequest,
+    *,
+    auth_context: AuthContext | None = None,
+) -> ResolvedRequestIdentity:
+    metadata = request.metadata or {}
+    try:
+        resolution = resolve_request_identity(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            source="request_body",
+            tenant_id=_metadata_string(metadata, "tenant_id"),
+            project_id=_metadata_string(metadata, "project_id"),
+            auth_context=auth_context,
+        )
+        return _enforce_identity_policy(resolution)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _identity_from_user_id(
+    user_id: str | None,
+    *,
+    session_id: str | None = None,
+    source: ApiIdentitySource,
+    auth_context: AuthContext | None = None,
+) -> ResolvedRequestIdentity:
+    try:
+        resolution = resolve_request_identity(
+            user_id=user_id or "",
+            session_id=session_id,
+            source=source,
+            auth_context=auth_context,
+        )
+        return _enforce_identity_policy(resolution)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _enforce_identity_policy(resolution: ResolvedRequestIdentity) -> ResolvedRequestIdentity:
+    try:
+        enforce_identity_policy(
+            resolution,
+            production_required=require_auth_bound_identity(),
+        )
+    except IdentityPolicyError as exc:
+        raise HTTPException(status_code=403, detail=exc.detail()) from exc
+    return resolution
+
+
+def _metadata_string(metadata: dict[str, Any], key: str) -> str | None:
+    value = metadata.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _with_identity_metadata(request: UserRequest, resolution: ResolvedRequestIdentity):
+    metadata = dict(request.metadata)
+    metadata.setdefault("request_identity", resolution.metadata())
+    return request.model_copy(
+        update={
+            "user_id": resolution.identity.user_id,
+            "session_id": resolution.identity.session_id or request.session_id,
+            "metadata": metadata,
+        }
+    )
+
+
+def _require_trial_access_for_identity(resolution: ResolvedRequestIdentity) -> RequestIdentity:
+    status = resolution.trial_access(get_trial_access_gate())
+    if not status.allowed:
+        raise HTTPException(status_code=403, detail=status.reason or "trial user is not allowed")
+    return resolution.identity
+
+
+def _require_trial_access(user_id: str) -> None:
+    _require_trial_access_for_identity(_identity_from_user_id(user_id, source="local_context"))

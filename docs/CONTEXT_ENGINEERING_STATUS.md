@@ -133,22 +133,22 @@ Last updated: 2026-06-29
 
 ## Key Files
 
-- `src/multimodal_agent/services/context/builder.py`
-- `src/multimodal_agent/services/context/conversation.py`
-- `src/multimodal_agent/services/context/compaction.py`
-- `src/multimodal_agent/services/context/policy.py`
-- `src/multimodal_agent/services/context/token_budget.py`
-- `src/multimodal_agent/services/context/compactor.py`
-- `src/multimodal_agent/services/context/renderer.py`
-- `src/multimodal_agent/services/agent_delegation_context.py`
-- `src/multimodal_agent/schemas/context.py`
-- `src/multimodal_agent/services/assistant_run_service.py`
-- `src/multimodal_agent/services/chat_adapter.py`
-- `src/multimodal_agent/services/provider_errors.py`
-- `src/multimodal_agent/memory/context_builder.py`
-- `src/multimodal_agent/memory/manager.py`
-- `src/multimodal_agent/memory/retrieval.py`
-- `src/multimodal_agent/agent/assistant_loop_nodes.py`
+- `src/assistant_agent/services/context/builder.py`
+- `src/assistant_agent/services/context/conversation.py`
+- `src/assistant_agent/services/context/compaction.py`
+- `src/assistant_agent/services/context/policy.py`
+- `src/assistant_agent/services/context/token_budget.py`
+- `src/assistant_agent/services/context/compactor.py`
+- `src/assistant_agent/services/context/renderer.py`
+- `src/assistant_agent/services/agent_delegation_context.py`
+- `src/assistant_agent/schemas/context.py`
+- `src/assistant_agent/services/assistant_run_service.py`
+- `src/assistant_agent/services/chat_adapter.py`
+- `src/assistant_agent/services/provider_errors.py`
+- `src/assistant_agent/memory/context_builder.py`
+- `src/assistant_agent/memory/manager.py`
+- `src/assistant_agent/memory/retrieval.py`
+- `src/assistant_agent/agent/assistant_loop_nodes.py`
 
 ## Relevant Tests
 

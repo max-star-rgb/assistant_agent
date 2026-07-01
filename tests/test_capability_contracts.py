@@ -1,9 +1,9 @@
-from multimodal_agent.schemas.capabilities import (
+from assistant_agent.schemas.capabilities import (
     CANONICAL_INTENTS,
     CAPABILITY_CONTRACTS,
     contract_for_intent,
 )
-from multimodal_agent.tools.registry import create_default_registry
+from assistant_agent.tools.registry import create_default_registry
 
 
 def test_each_required_capability_has_contract() -> None:

@@ -2,12 +2,12 @@ import json
 import sys
 import types
 
-from multimodal_agent.providers.ark_video_understanding import (
+from assistant_agent.providers.ark_video_understanding import (
     ArkVideoUnderstandingAdapter,
     ArkVideoUnderstandingConfig,
     build_ark_video_input,
 )
-from multimodal_agent.schemas.perception import VideoUnderstandingRequest
+from assistant_agent.schemas.perception import VideoUnderstandingRequest
 
 
 def test_build_ark_video_input_uses_recent_frame_refs(tmp_path) -> None:

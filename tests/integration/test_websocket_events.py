@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.api.app import create_app
+from assistant_agent.api.app import create_app
 
 
 def _receive_until(websocket, event_type: str, limit: int = 20) -> list[dict]:

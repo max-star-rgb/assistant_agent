@@ -1,7 +1,7 @@
-from multimodal_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
-from multimodal_agent.services.video_adapter import MockVideoUnderstandingAdapter
-from multimodal_agent.tools.registry import create_default_registry
-from multimodal_agent.tools.video_tool import VideoUnderstandingTool
+from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
+from assistant_agent.services.video_adapter import MockVideoUnderstandingAdapter
+from assistant_agent.tools.registry import create_default_registry
+from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
 def test_video_understanding_tool_returns_structured_result() -> None:

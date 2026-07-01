@@ -1,6 +1,6 @@
-from multimodal_agent.agent.capability_validator import CapabilityValidator
-from multimodal_agent.schemas.intent_decision import IntentDecision
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.capability_validator import CapabilityValidator
+from assistant_agent.schemas.intent_decision import IntentDecision
+from assistant_agent.schemas.requests import UserRequest
 
 
 def _request(

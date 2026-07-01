@@ -1,8 +1,8 @@
 import pytest
 
-from multimodal_agent.config import ProviderConfig, should_run_integration_tests
-from multimodal_agent.services.provider_selection import create_vision_adapter
-from multimodal_agent.services.vision_adapter import VisionUnderstandingInput
+from assistant_agent.config import ProviderConfig, should_run_integration_tests
+from assistant_agent.services.provider_selection import create_vision_adapter
+from assistant_agent.services.vision_adapter import VisionUnderstandingInput
 
 
 def test_optional_real_vision_provider_requires_explicit_env() -> None:

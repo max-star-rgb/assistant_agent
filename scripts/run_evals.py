@@ -16,26 +16,26 @@ if str(ROOT) not in sys.path:
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from multimodal_agent.agent.workflow import AgentWorkflow
-from multimodal_agent.agent.intent_router_adapter import create_intent_router_adapter
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.memory.retrieval_eval import (
+from assistant_agent.agent.workflow import AgentWorkflow
+from assistant_agent.agent.intent_router_adapter import create_intent_router_adapter
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.memory.retrieval_eval import (
     evaluate_memory_retrieval_case,
     summarize_memory_retrieval_eval_dicts,
 )
-from multimodal_agent.schemas.api import agent_run_response_from_state
-from multimodal_agent.schemas.capabilities import canonical_intent
-from multimodal_agent.schemas.intent_router import IntentRouterRequest
-from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
-from multimodal_agent.services.provider_budget import ProviderCallBudget
-from multimodal_agent.services.provider_errors import build_provider_error
-from multimodal_agent.services.provider_policy import RetryPolicy
-from multimodal_agent.services.trace_store import InMemoryTraceStore
-from multimodal_agent.mcp.server import OfflineMCPServer
+from assistant_agent.schemas.api import agent_run_response_from_state
+from assistant_agent.schemas.capabilities import canonical_intent
+from assistant_agent.schemas.intent_router import IntentRouterRequest
+from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.provider_budget import ProviderCallBudget
+from assistant_agent.services.provider_errors import build_provider_error
+from assistant_agent.services.provider_policy import RetryPolicy
+from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.mcp.server import OfflineMCPServer
 
 
 DEFAULT_CASES_PATH = ROOT / "tests" / "evals" / "eval_cases.json"

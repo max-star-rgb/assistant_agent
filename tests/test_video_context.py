@@ -1,11 +1,11 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.assistant_run_service import run_assistant_request
-from multimodal_agent.services.video_adapter import MockVideoUnderstandingAdapter
-from multimodal_agent.services.video_context import InMemoryVideoContextStore, VideoFrame, load_demo_video_frames
-from multimodal_agent.tools.registry import create_default_registry
-from multimodal_agent.tools.video_tool import VideoUnderstandingTool
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.assistant_run_service import run_assistant_request
+from assistant_agent.services.video_adapter import MockVideoUnderstandingAdapter
+from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame, load_demo_video_frames
+from assistant_agent.tools.registry import create_default_registry
+from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
 def test_video_context_store_keeps_recent_three_frame_window() -> None:

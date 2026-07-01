@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.schemas.requests import UserRequest
 
 
 def test_langgraph_loop_executes_multistep_task_one_step_at_a_time() -> None:
@@ -26,7 +26,7 @@ def test_langgraph_loop_executes_multistep_task_one_step_at_a_time() -> None:
 
 
 def test_conditional_graph_uses_explicit_multistep_loop_nodes() -> None:
-    source = Path("src/multimodal_agent/agent/conditional_graph.py").read_text()
+    source = Path("src/assistant_agent/agent/conditional_graph.py").read_text()
 
     assert 'graph.add_node("select_next_step", select_next_step_node)' in source
     assert 'graph.add_node("execute_step", execute_step_node)' in source

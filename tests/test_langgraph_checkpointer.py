@@ -1,9 +1,9 @@
 from langgraph.checkpoint.memory import MemorySaver
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.checkpointer import create_checkpointer
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.checkpointer import create_checkpointer
 
 
 def test_langgraph_checkpointer_uses_memory_by_default() -> None:

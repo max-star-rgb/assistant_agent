@@ -22,13 +22,13 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.assistant_run_service import load_env_file, runtime_info
-from multimodal_agent.services.provider_specs import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.assistant_run_service import load_env_file, runtime_info
+from assistant_agent.services.provider_specs import (
     supported_chat_providers,
     supported_image_generation_providers,
 )
-from multimodal_agent.services.trial_access import (
+from assistant_agent.services.trial_access import (
     TRIAL_USER_IDS_ENV,
     parse_trial_user_ids,
     trial_access_gate_from_env,
@@ -179,10 +179,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import uvicorn
 
-    # Surface multimodal_agent INFO logs (e.g. WebSocket request/response lines).
+    # Surface assistant_agent INFO logs (e.g. WebSocket request/response lines).
     # uvicorn does not configure the root logger, so attach our own handler
     # instead of relying on propagation.
-    pkg_logger = logging.getLogger("multimodal_agent")
+    pkg_logger = logging.getLogger("assistant_agent")
     pkg_logger.setLevel(logging.INFO)
     if not pkg_logger.handlers:
         handler = logging.StreamHandler()
@@ -202,7 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Share URL format: http://<your-machine-ip>:{args.port}/demo/console")
     print("Press Ctrl+C to stop.")
     uvicorn.run(
-        "multimodal_agent.api.app:create_app",
+        "assistant_agent.api.app:create_app",
         factory=True,
         host=args.host,
         port=args.port,

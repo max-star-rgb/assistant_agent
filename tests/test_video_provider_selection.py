@@ -1,12 +1,12 @@
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.video_adapter import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.video_adapter import (
     HttpVideoUnderstandingAdapter,
     MockVideoUnderstandingAdapter,
     create_video_understanding_adapter,
 )
-from multimodal_agent.providers.ark_video_understanding import ArkVideoUnderstandingAdapter
-from multimodal_agent.tools.registry import create_default_registry
-from multimodal_agent.tools.video_tool import VideoUnderstandingTool
+from assistant_agent.providers.ark_video_understanding import ArkVideoUnderstandingAdapter
+from assistant_agent.tools.registry import create_default_registry
+from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
 def test_create_video_adapter_defaults_to_mock() -> None:

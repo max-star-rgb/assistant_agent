@@ -61,4 +61,4 @@
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/services/context/builder.py` 第 360-432 行 `_enforce_context_budget()` - 裁剪逻辑实现
+- `src/assistant_agent/services/context/builder.py` 第 360-432 行 `_enforce_context_budget()` - 裁剪逻辑实现

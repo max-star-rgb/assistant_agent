@@ -1,7 +1,7 @@
-from multimodal_agent.agent.recovery import sanitize_error_message as sanitize_recovery_error_message
-from multimodal_agent.schemas.api import api_error
-from multimodal_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
-from multimodal_agent.services.trace_store import sanitize_trace_value
+from assistant_agent.agent.recovery import sanitize_error_message as sanitize_recovery_error_message
+from assistant_agent.schemas.api import api_error
+from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+from assistant_agent.services.trace_store import sanitize_trace_value
 
 
 def test_sensitive_tokens_are_redacted_everywhere() -> None:

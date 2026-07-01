@@ -1,7 +1,7 @@
-from multimodal_agent.agent.intent_router_adapter import HybridIntentRouterAdapter, MockLLMIntentRouter
-from multimodal_agent.schemas.intent_decision import IntentDecision
-from multimodal_agent.schemas.intent_router import IntentRouterRequest
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.intent_router_adapter import HybridIntentRouterAdapter, MockLLMIntentRouter
+from assistant_agent.schemas.intent_decision import IntentDecision
+from assistant_agent.schemas.intent_router import IntentRouterRequest
+from assistant_agent.schemas.requests import UserRequest
 
 
 class StaticRuleRouter:

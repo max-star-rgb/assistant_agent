@@ -1,10 +1,10 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.provider_selection import create_vision_adapter
-from multimodal_agent.providers.ark_vision import ArkVisionProviderAdapter
-from multimodal_agent.services.real_vision_adapter import HttpVisionProviderAdapter
-from multimodal_agent.services.vision_adapter import MockVisionUnderstandingAdapter
-from multimodal_agent.tools.registry import create_default_registry
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.provider_selection import create_vision_adapter
+from assistant_agent.providers.ark_vision import ArkVisionProviderAdapter
+from assistant_agent.services.real_vision_adapter import HttpVisionProviderAdapter
+from assistant_agent.services.vision_adapter import MockVisionUnderstandingAdapter
+from assistant_agent.tools.registry import create_default_registry
 
 
 def test_default_vision_provider_is_mock() -> None:

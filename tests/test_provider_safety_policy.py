@@ -1,10 +1,10 @@
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.chat_adapter import ChatRequest, create_chat_adapter
-from multimodal_agent.services.image_generation_adapter import ImageGenerationInput, create_image_generation_adapter
-from multimodal_agent.services.provider_errors import ProviderSafetyPolicy, build_provider_error
-from multimodal_agent.services.real_vision_adapter import RealVisionProviderConfig
-from multimodal_agent.services.provider_selection import create_vision_adapter
-from multimodal_agent.services.vision_adapter import VisionUnderstandingInput
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.chat_adapter import ChatRequest, create_chat_adapter
+from assistant_agent.services.image_generation_adapter import ImageGenerationInput, create_image_generation_adapter
+from assistant_agent.services.provider_errors import ProviderSafetyPolicy, build_provider_error
+from assistant_agent.services.real_vision_adapter import RealVisionProviderConfig
+from assistant_agent.services.provider_selection import create_vision_adapter
+from assistant_agent.services.vision_adapter import VisionUnderstandingInput
 
 
 def test_provider_unconfigured_uses_structured_safe_error() -> None:

@@ -4,8 +4,8 @@ import urllib.error
 
 import pytest
 
-from multimodal_agent.providers import ark_image_generation as ark_image
-from multimodal_agent.providers.ark_image_generation import (
+from assistant_agent.providers import ark_image_generation as ark_image
+from assistant_agent.providers.ark_image_generation import (
     ArkImageGenerationAdapter,
     ArkImageGenerationConfig,
     ark_image_generation_url,
@@ -13,8 +13,8 @@ from multimodal_agent.providers.ark_image_generation import (
     normalize_ark_image_size,
     parse_ark_image_urls,
 )
-from multimodal_agent.services.image_generation_adapter import ImageGenerationInput
-from multimodal_agent.services.provider_errors import ProviderAdapterError
+from assistant_agent.services.image_generation_adapter import ImageGenerationInput
+from assistant_agent.services.provider_errors import ProviderAdapterError
 
 
 def test_build_ark_image_payload_matches_openai_images_shape() -> None:

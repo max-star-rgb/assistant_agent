@@ -1,7 +1,7 @@
 import pytest
 
-from multimodal_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
-from multimodal_agent.services.video_adapter import (
+from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
+from assistant_agent.services.video_adapter import (
     MockVideoUnderstandingAdapter,
     VideoUnderstandingAdapter,
     create_video_understanding_adapter,

@@ -1,9 +1,9 @@
-from multimodal_agent.tools.image_generation_tool import ImageGenerationTool
-from multimodal_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool, MemoryTool
-from multimodal_agent.tools.price_compare_tool import PriceCompareTool
-from multimodal_agent.tools.product_search_tool import ProductSearchTool
-from multimodal_agent.tools.render_tool import Render3DTool
-from multimodal_agent.tools.vision_tool import VisionUnderstandingTool
+from assistant_agent.tools.image_generation_tool import ImageGenerationTool
+from assistant_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool, MemoryTool
+from assistant_agent.tools.price_compare_tool import PriceCompareTool
+from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.render_tool import Render3DTool
+from assistant_agent.tools.vision_tool import VisionUnderstandingTool
 
 
 def test_vision_tool_returns_stable_visual_result() -> None:

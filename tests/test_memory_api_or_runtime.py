@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
 
 
 def test_runtime_level_memory_save_search_delete_flow() -> None:

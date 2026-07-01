@@ -102,8 +102,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 def collect_evidence(*, user_id: str, session_id: str) -> dict[str, Any]:
     from fastapi.testclient import TestClient
 
-    from multimodal_agent.api import routes_agent
-    from multimodal_agent.api.app import create_app
+    from assistant_agent.api import routes_agent
+    from assistant_agent.api.app import create_app
 
     routes_agent._RUNTIME = None
     routes_agent._AGENT_GATEWAY = None

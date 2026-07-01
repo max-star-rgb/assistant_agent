@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from multimodal_agent.schemas.intent_decision import IntentDecision, PlanStep
+from assistant_agent.schemas.intent_decision import IntentDecision, PlanStep
 
 
 def test_valid_direct_chat_intent_decision() -> None:

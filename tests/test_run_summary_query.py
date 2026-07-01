@@ -1,5 +1,5 @@
-from multimodal_agent.services.trace_query import TraceQueryService
-from multimodal_agent.services.trace_store import InMemoryTraceStore, TraceEvent
+from assistant_agent.services.trace_query import TraceQueryService
+from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
 
 
 def test_run_summary_query_returns_debug_summary() -> None:

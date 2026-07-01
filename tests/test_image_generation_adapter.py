@@ -1,16 +1,16 @@
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.generation import ImageGenerationResult
-from multimodal_agent.services import generated_artifacts
-from multimodal_agent.services.generated_artifacts import materialize_image_generation_result
-from multimodal_agent.services.image_generation_adapter import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.generation import ImageGenerationResult
+from assistant_agent.services import generated_artifacts
+from assistant_agent.services.generated_artifacts import materialize_image_generation_result
+from assistant_agent.services.image_generation_adapter import (
     ImageGenerationInput,
     ImageGenerationRequest,
     MockImageGenerationAdapter,
     create_image_generation_adapter,
 )
-from multimodal_agent.providers.ark_image_generation import ArkImageGenerationAdapter
-from multimodal_agent.providers.qwen_image_generation import QwenImageGenerationAdapter
-from multimodal_agent.tools.image_generation_tool import ImageGenerationTool
+from assistant_agent.providers.ark_image_generation import ArkImageGenerationAdapter
+from assistant_agent.providers.qwen_image_generation import QwenImageGenerationAdapter
+from assistant_agent.tools.image_generation_tool import ImageGenerationTool
 
 
 def test_image_generation_request_alias_accepts_text_only_prompt() -> None:
@@ -181,7 +181,7 @@ def test_image_generation_tool_outputs_backend_download_url(monkeypatch) -> None
             }
         )
 
-    monkeypatch.setattr("multimodal_agent.tools.image_generation_tool.materialize_image_generation_result", fake_materialize)
+    monkeypatch.setattr("assistant_agent.tools.image_generation_tool.materialize_image_generation_result", fake_materialize)
     result = ImageGenerationTool(adapter=RemoteImageAdapter()).run({"prompt": "生成一张图"})
 
     assert result.success is True

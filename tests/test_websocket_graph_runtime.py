@@ -1,24 +1,24 @@
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.auth import (
+from assistant_agent.agent.state import AgentState
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.api import routes_agent
+from assistant_agent.api.auth import (
     AUTH_HEADER_ENABLED_ENV,
     AUTH_MODE_ENV,
     AUTH_REQUIRE_BOUND_IDENTITY_ENV,
     AUTH_SESSION_ID_HEADER,
     AUTH_USER_ID_HEADER,
 )
-from multimodal_agent.api.app import create_app
-from multimodal_agent.api.websocket import mock_agent_events
-from multimodal_agent.schemas.planning import IntentResult
-from multimodal_agent.schemas.requests import AgentResponse, UserRequest
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
-from multimodal_agent.tools.base import MockTool, ToolContext
-from multimodal_agent.tools.registry import ToolRegistry
+from assistant_agent.api.app import create_app
+from assistant_agent.api.websocket import mock_agent_events
+from assistant_agent.schemas.planning import IntentResult
+from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class ScriptedChatAdapter:

@@ -1,11 +1,11 @@
-from multimodal_agent.agent.intent_router_adapter import (
+from assistant_agent.agent.intent_router_adapter import (
     HybridIntentRouterAdapter,
     MockLLMIntentRouter,
     OpenAICompatibleIntentRouter,
     RuleIntentRouterAdapter,
     create_intent_router_adapter,
 )
-from multimodal_agent.config import ProviderConfig
+from assistant_agent.config import ProviderConfig
 
 
 def test_default_intent_router_is_rule() -> None:

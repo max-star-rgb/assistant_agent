@@ -16,12 +16,12 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.api import api_error_from_agent_error
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.assistant_run_service import load_env_file
-from multimodal_agent.services.provider_specs import (
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.api import api_error_from_agent_error
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.assistant_run_service import load_env_file
+from assistant_agent.services.provider_specs import (
     resolve_image_generation_provider,
     supported_image_generation_providers,
 )

@@ -1,6 +1,6 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.event_sink import ListEventSink
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.event_sink import ListEventSink
 
 
 def test_runtime_emits_ordered_task_graph_tool_and_final_events() -> None:

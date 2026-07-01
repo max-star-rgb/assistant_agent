@@ -1,8 +1,8 @@
 import pytest
 
-from multimodal_agent.schemas.generation import ImageGenerationResult
-from multimodal_agent.services.image_generation_adapter import ImageGenerationInput, MockImageGenerationAdapter
-from multimodal_agent.tools.image_generation_tool import ImageGenerationTool
+from assistant_agent.schemas.generation import ImageGenerationResult
+from assistant_agent.services.image_generation_adapter import ImageGenerationInput, MockImageGenerationAdapter
+from assistant_agent.tools.image_generation_tool import ImageGenerationTool
 
 
 def test_mock_image_generation_adapter_returns_generation_schema() -> None:

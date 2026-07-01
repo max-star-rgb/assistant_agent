@@ -66,12 +66,12 @@ Goal:
 
 Implemented files:
 
-- `src/multimodal_agent/schemas/context.py`
-- `src/multimodal_agent/services/context/policy.py`
-- `src/multimodal_agent/services/context/compactor.py`
-- `src/multimodal_agent/services/context/builder.py`
-- `src/multimodal_agent/services/context/renderer.py`
-- `src/multimodal_agent/services/assistant_run_service.py`
+- `src/assistant_agent/schemas/context.py`
+- `src/assistant_agent/services/context/policy.py`
+- `src/assistant_agent/services/context/compactor.py`
+- `src/assistant_agent/services/context/builder.py`
+- `src/assistant_agent/services/context/renderer.py`
+- `src/assistant_agent/services/assistant_run_service.py`
 
 Regression tests:
 
@@ -133,10 +133,10 @@ Done:
 
 Implemented files:
 
-- `src/multimodal_agent/agent/assistant_loop_nodes.py`
-- `src/multimodal_agent/services/chat_adapter.py`
-- `src/multimodal_agent/services/context/compactor.py`
-- `src/multimodal_agent/services/provider_errors.py`
+- `src/assistant_agent/agent/assistant_loop_nodes.py`
+- `src/assistant_agent/services/chat_adapter.py`
+- `src/assistant_agent/services/context/compactor.py`
+- `src/assistant_agent/services/provider_errors.py`
 
 Regression tests:
 
@@ -182,11 +182,11 @@ Done:
 
 Implemented files:
 
-- `src/multimodal_agent/memory/write_policy.py`
-- `src/multimodal_agent/memory/manager.py`
-- `src/multimodal_agent/schemas/memory.py`
-- `src/multimodal_agent/services/trace_store.py`
-- `src/multimodal_agent/services/trace_query.py`
+- `src/assistant_agent/memory/write_policy.py`
+- `src/assistant_agent/memory/manager.py`
+- `src/assistant_agent/schemas/memory.py`
+- `src/assistant_agent/services/trace_store.py`
+- `src/assistant_agent/services/trace_query.py`
 
 Regression tests:
 
@@ -233,9 +233,9 @@ Scope:
 
 Implemented files:
 
-- `src/multimodal_agent/schemas/context.py`
-- `src/multimodal_agent/services/context/token_budget.py`
-- `src/multimodal_agent/services/context/builder.py`
+- `src/assistant_agent/schemas/context.py`
+- `src/assistant_agent/services/context/token_budget.py`
+- `src/assistant_agent/services/context/builder.py`
 
 Done:
 
@@ -279,8 +279,8 @@ Scope:
 
 Implemented files:
 
-- `src/multimodal_agent/agent/assistant_loop_nodes.py`
-- `src/multimodal_agent/services/context/token_budget.py`
+- `src/assistant_agent/agent/assistant_loop_nodes.py`
+- `src/assistant_agent/services/context/token_budget.py`
 
 Done:
 
@@ -317,8 +317,8 @@ Scope:
 
 Implemented files:
 
-- `src/multimodal_agent/services/context/compaction.py`
-- `src/multimodal_agent/agent/assistant_loop_nodes.py`
+- `src/assistant_agent/services/context/compaction.py`
+- `src/assistant_agent/agent/assistant_loop_nodes.py`
 
 Done:
 

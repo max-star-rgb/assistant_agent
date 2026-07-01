@@ -1,4 +1,4 @@
-from multimodal_agent.services.trace_store import InMemoryTraceStore, TraceEvent, trace_debug_summary
+from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent, trace_debug_summary
 
 
 def test_trace_store_redacts_sensitive_input_and_output_summaries() -> None:

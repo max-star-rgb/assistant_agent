@@ -1,7 +1,7 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.agent.workflow import AgentWorkflow
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.agent.workflow import AgentWorkflow
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.requests import AgentResponse, UserRequest
 
 
 class CapturingGraph:

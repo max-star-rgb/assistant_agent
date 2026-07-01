@@ -1,10 +1,10 @@
 import json
 
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.services.real_vision_adapter import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.real_vision_adapter import (
     parse_openai_vision_response,
 )
-from multimodal_agent.tools.registry import create_default_registry
+from assistant_agent.tools.registry import create_default_registry
 
 
 def response(content) -> dict:

@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.memory.retriever import KeywordMemoryRetriever
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.memory import MemoryItem
+from assistant_agent.memory.retriever import KeywordMemoryRetriever
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.memory import MemoryItem
 
 
 def memory_item(

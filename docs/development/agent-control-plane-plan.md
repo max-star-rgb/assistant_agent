@@ -119,10 +119,10 @@ Acceptance checks:
 
 Implemented files:
 
-- `src/multimodal_agent/schemas/agent_gateway.py`
-- `src/multimodal_agent/services/agent_gateway.py`
-- `src/multimodal_agent/schemas/a2a.py`
-- `src/multimodal_agent/services/a2a_adapter.py`
+- `src/assistant_agent/schemas/agent_gateway.py`
+- `src/assistant_agent/services/agent_gateway.py`
+- `src/assistant_agent/schemas/a2a.py`
+- `src/assistant_agent/services/a2a_adapter.py`
 - `tests/test_agent_gateway.py`
 - `tests/test_api_a2a.py`
 
@@ -188,11 +188,11 @@ Acceptance checks:
 
 Implemented files:
 
-- `src/multimodal_agent/schemas/agent_communication.py`
-- `src/multimodal_agent/schemas/agent_gateway.py`
-- `src/multimodal_agent/services/agent_directory.py`
-- `src/multimodal_agent/services/agent_routing_policy.py`
-- `src/multimodal_agent/services/agent_gateway.py`
+- `src/assistant_agent/schemas/agent_communication.py`
+- `src/assistant_agent/schemas/agent_gateway.py`
+- `src/assistant_agent/services/agent_directory.py`
+- `src/assistant_agent/services/agent_routing_policy.py`
+- `src/assistant_agent/services/agent_gateway.py`
 - `tests/test_agent_routing_policy.py`
 - `tests/test_agent_gateway.py`
 
@@ -248,13 +248,13 @@ Acceptance checks:
 
 Implemented files:
 
-- `src/multimodal_agent/schemas/agent_communication.py`
-- `src/multimodal_agent/services/agent_delegation_policy.py`
-- `src/multimodal_agent/services/agent_communication.py`
-- `src/multimodal_agent/services/agent_directory.py`
-- `src/multimodal_agent/services/agent_gateway.py`
-- `src/multimodal_agent/services/agent_transports.py`
-- `src/multimodal_agent/tools/agent_delegation_tool.py`
+- `src/assistant_agent/schemas/agent_communication.py`
+- `src/assistant_agent/services/agent_delegation_policy.py`
+- `src/assistant_agent/services/agent_communication.py`
+- `src/assistant_agent/services/agent_directory.py`
+- `src/assistant_agent/services/agent_gateway.py`
+- `src/assistant_agent/services/agent_transports.py`
+- `src/assistant_agent/tools/agent_delegation_tool.py`
 - `tests/test_agent_communication_routing.py`
 
 Validation run on 2026-06-29:
@@ -307,9 +307,9 @@ Acceptance checks:
 
 Implemented files:
 
-- `src/multimodal_agent/schemas/a2a.py`
-- `src/multimodal_agent/services/a2a_adapter.py`
-- `src/multimodal_agent/api/routes_a2a.py`
+- `src/assistant_agent/schemas/a2a.py`
+- `src/assistant_agent/services/a2a_adapter.py`
+- `src/assistant_agent/api/routes_a2a.py`
 - `tests/test_api_a2a.py`
 
 Validation run on 2026-06-29:

@@ -1,4 +1,4 @@
-from multimodal_agent.schemas.assistant_decision import (
+from assistant_agent.schemas.assistant_decision import (
     native_tool_call_to_assistant_decision,
     openai_tool_call_to_assistant_decision,
     openai_tool_call_to_native_tool_call,

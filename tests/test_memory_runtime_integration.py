@@ -1,15 +1,15 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.memory import factory as memory_factory
-from multimodal_agent.memory.factory import create_memory_store
-from multimodal_agent.memory.jsonl_store import JsonlMemoryStore
-from multimodal_agent.memory.sqlite_store import SQLiteMemoryStore
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.memory.write_policy import MemoryWritePolicy
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.memory import factory as memory_factory
+from assistant_agent.memory.factory import create_memory_store
+from assistant_agent.memory.jsonl_store import JsonlMemoryStore
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.memory.write_policy import MemoryWritePolicy
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.schemas.requests import UserRequest
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

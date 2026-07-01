@@ -73,5 +73,5 @@
 
 ### 【本项目代码位置】
 
-- `src/multimodal_agent/services/context/compaction.py` - 工具观察裁剪逻辑
-- `src/multimodal_agent/services/context/renderer.py` - prompt 渲染边界标记
+- `src/assistant_agent/services/context/compaction.py` - 工具观察裁剪逻辑
+- `src/assistant_agent/services/context/renderer.py` - prompt 渲染边界标记

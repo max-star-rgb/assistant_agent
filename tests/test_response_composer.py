@@ -1,8 +1,8 @@
-from multimodal_agent.agent.response_composer import compose_response
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.schemas.planning import IntentResult
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
+from assistant_agent.agent.response_composer import compose_response
+from assistant_agent.agent.state import AgentState
+from assistant_agent.schemas.planning import IntentResult
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
 
 
 def test_compose_response_includes_price_and_image_result() -> None:

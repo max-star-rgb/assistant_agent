@@ -22,7 +22,7 @@
 
 本仓库项目名为 `assistant_agent`，实现一个本地优先的多模态自主工具调用 Agent。Agent 负责理解用户输入、选择工具、执行受控调用、融合结果并给出最终回答；具体能力由工具、provider adapter、memory service、demo/eval/API 层协作提供。
 
-当前项目展示名/发行名已改为 `assistant_agent`；Python 包目录仍为 `src/multimodal_agent/`，本地 conda 环境仍为 `hello_agent`，除非用户明确要求执行代码级迁移，不要擅自重命名包目录或环境路径。
+当前项目展示名/发行名和 Python 包名均为 `assistant_agent`，包目录为 `src/assistant_agent/`；本地 conda 环境仍为 `hello_agent`，除非用户明确要求，不要擅自重命名环境路径。
 
 当前核心运行时以 LangGraph/ReAct assistant loop 为主，同时保留 mock/local/offline 路径用于稳定测试和演示。用户已确认后续本机项目运行主要使用真实 LLM；真实外部 Provider 仍必须通过 `provider_smoke` 或 `pilot` profile 和本机未跟踪配置显式启用。
 
@@ -103,13 +103,13 @@ conda run -n hello_agent <command>
 
 | path | responsibility | default edit policy |
 | --- | --- | --- |
-| `src/multimodal_agent/api/` | FastAPI app、routes、server/client integration | 按任务要求修改 |
-| `src/multimodal_agent/agent/` | LangGraph runtime、assistant loop、决策、验证、执行 | 按任务要求修改 |
-| `src/multimodal_agent/services/` | runtime services、context、trace、session、agent communication、provider 管理 | 按任务要求修改 |
-| `src/multimodal_agent/providers/` | Provider adapter、runtime profile、mock/real 边界 | 谨慎修改，默认 mock 优先 |
-| `src/multimodal_agent/tools/` | Tool registry、工具实现、策略、审计 | 按任务要求修改 |
-| `src/multimodal_agent/memory/` | 记忆服务、检索、存储 | 按任务要求修改 |
-| `src/multimodal_agent/eval/` | 离线评测逻辑 | 按任务要求修改 |
+| `src/assistant_agent/api/` | FastAPI app、routes、server/client integration | 按任务要求修改 |
+| `src/assistant_agent/agent/` | LangGraph runtime、assistant loop、决策、验证、执行 | 按任务要求修改 |
+| `src/assistant_agent/services/` | runtime services、context、trace、session、agent communication、provider 管理 | 按任务要求修改 |
+| `src/assistant_agent/providers/` | Provider adapter、runtime profile、mock/real 边界 | 谨慎修改，默认 mock 优先 |
+| `src/assistant_agent/tools/` | Tool registry、工具实现、策略、审计 | 按任务要求修改 |
+| `src/assistant_agent/memory/` | 记忆服务、检索、存储 | 按任务要求修改 |
+| `src/assistant_agent/eval/` | 离线评测逻辑 | 按任务要求修改 |
 | `tests/` | pytest 测试 | 修改行为时同步维护，除非用户限制只读 |
 | `scripts/` | 本地验证、服务、demo、eval、smoke 脚本 | 可按任务修改 |
 | `docs/` | 当前权威文档、参考文档、历史归档 | 文档任务优先修改 |
@@ -121,7 +121,7 @@ conda run -n hello_agent <command>
 
 ## 7. 编码约定
 
-- 新代码优先放入 `src/multimodal_agent/` 的既有分层。
+- 新代码优先放入 `src/assistant_agent/` 的既有分层。
 - 公共数据结构优先使用 Pydantic model。
 - 工具调用结果必须结构化，不允许只返回散乱字符串。
 - 外部模型/API 先维护 adapter interface 和 mock implementation，不要直接绑定具体供应商。

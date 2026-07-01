@@ -10,7 +10,7 @@ Use this skill as the execution wrapper for tool-calling work in the `assistant_
 ## Start
 
 1. Locate the project root.
-   - Prefer the current working directory when it contains `AGENTS.md` and `src/multimodal_agent/`.
+   - Prefer the current working directory when it contains `AGENTS.md` and `src/assistant_agent/`.
    - If those files are absent, ask for the `assistant_agent` repository path before editing.
 2. Read `AGENTS.md`.
 3. Read `docs/tool-calling-architecture.md` completely enough for the task.
@@ -21,10 +21,10 @@ Use this skill as the execution wrapper for tool-calling work in the `assistant_
 
 Inspect these areas as relevant:
 
-- `src/multimodal_agent/agent/`: assistant loop, decision handling, validation and execution flow.
-- `src/multimodal_agent/tools/`: registry, tool implementations, policy and audit behavior.
-- `src/multimodal_agent/services/`: runtime services, MCP or tool-adjacent orchestration.
-- `src/multimodal_agent/providers/`: provider-native tool call adapters and mock/real boundaries.
+- `src/assistant_agent/agent/`: assistant loop, decision handling, validation and execution flow.
+- `src/assistant_agent/tools/`: registry, tool implementations, policy and audit behavior.
+- `src/assistant_agent/services/`: runtime services, MCP or tool-adjacent orchestration.
+- `src/assistant_agent/providers/`: provider-native tool call adapters and mock/real boundaries.
 - `tests/`: targeted tests for validators, executor, assistant loop, registry and provider integration.
 
 ## Working Rules

@@ -1,12 +1,12 @@
-from multimodal_agent.agent.conditional_graph import (
+from assistant_agent.agent.conditional_graph import (
     build_conditional_agent_graph,
     route_by_intent,
     run_conditional_agent_graph,
 )
-from multimodal_agent.agent.state import AgentState
-from multimodal_agent.agent.workflow import AgentWorkflow
-from multimodal_agent.schemas.planning import IntentResult
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.state import AgentState
+from assistant_agent.agent.workflow import AgentWorkflow
+from assistant_agent.schemas.planning import IntentResult
+from assistant_agent.schemas.requests import UserRequest
 
 
 def graph_state_for_intent(intent_name: str) -> dict:

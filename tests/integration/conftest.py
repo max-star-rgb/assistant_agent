@@ -1,6 +1,6 @@
 import pytest
 
-from multimodal_agent.config import should_run_integration_tests
+from assistant_agent.config import should_run_integration_tests
 
 
 def pytest_collection_modifyitems(config, items):

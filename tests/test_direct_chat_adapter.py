@@ -1,7 +1,7 @@
-from multimodal_agent.config import ProviderConfig
+from assistant_agent.config import ProviderConfig
 import json
 
-from multimodal_agent.services.chat_adapter import ChatRequest, HttpChatAdapter, MockChatAdapter, create_chat_adapter
+from assistant_agent.services.chat_adapter import ChatRequest, HttpChatAdapter, MockChatAdapter, create_chat_adapter
 
 
 def chat_request(text: str = "帮我写一段商品介绍") -> ChatRequest:

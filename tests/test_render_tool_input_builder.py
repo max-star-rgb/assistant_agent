@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.agent.tool_input_builder import build_tool_input
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
+from assistant_agent.agent.tool_input_builder import build_tool_input
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
 
 
 def test_text_to_render_builds_scene_description() -> None:

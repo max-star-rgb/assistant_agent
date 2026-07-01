@@ -3,9 +3,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.runtime_profile import get_runtime_profile
-from multimodal_agent.schemas.agent_communication import (
+from assistant_agent.config import ProviderConfig
+from assistant_agent.runtime_profile import get_runtime_profile
+from assistant_agent.schemas.agent_communication import (
     DEFAULT_AGENT_ID,
     AgentArtifact,
     AgentCommunicationError,
@@ -15,15 +15,15 @@ from multimodal_agent.schemas.agent_communication import (
     AgentTask,
     AgentTaskResult,
 )
-from multimodal_agent.services.agent_directory import AgentDirectory
-from multimodal_agent.services.agent_pilot_readiness import (
+from assistant_agent.services.agent_directory import AgentDirectory
+from assistant_agent.services.agent_pilot_readiness import (
     PilotReadinessChecker,
     build_failure_replay_payload,
     build_pilot_run_summary,
 )
-from multimodal_agent.services.api_identity import IdentityPolicy, resolve_request_identity
-from multimodal_agent.services.provider_budget import ProviderCallBudget
-from multimodal_agent.services.provider_readiness import build_provider_readiness_report
+from assistant_agent.services.api_identity import IdentityPolicy, resolve_request_identity
+from assistant_agent.services.provider_budget import ProviderCallBudget
+from assistant_agent.services.provider_readiness import build_provider_readiness_report
 
 
 SCRIPT_PATH = Path("scripts/check_pilot_readiness.py")

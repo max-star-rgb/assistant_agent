@@ -1,7 +1,7 @@
-from multimodal_agent.agent.prompt_builder import build_text_capability_output
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.prompt_builder import build_text_capability_output
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.requests import UserRequest
 
 
 def test_text_capability_output_contract_shape() -> None:

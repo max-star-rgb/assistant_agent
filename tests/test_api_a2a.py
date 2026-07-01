@@ -1,18 +1,18 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.api import routes_a2a
-from multimodal_agent.api.auth import (
+from assistant_agent.api import routes_a2a
+from assistant_agent.api.auth import (
     AUTH_HEADER_ENABLED_ENV,
     AUTH_MODE_ENV,
     AUTH_REQUIRE_BOUND_IDENTITY_ENV,
     AUTH_SESSION_ID_HEADER,
     AUTH_USER_ID_HEADER,
 )
-from multimodal_agent.api.app import create_app
-from multimodal_agent.schemas.a2a import A2AAgentCard, A2ATaskResult
-from multimodal_agent.schemas.agent_communication import DEFAULT_AGENT_ID, AgentInstance
-from multimodal_agent.schemas.api import AgentRunResponse
-from multimodal_agent.services.agent_directory import AgentDirectory, default_agent_instance
+from assistant_agent.api.app import create_app
+from assistant_agent.schemas.a2a import A2AAgentCard, A2ATaskResult
+from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID, AgentInstance
+from assistant_agent.schemas.api import AgentRunResponse
+from assistant_agent.services.agent_directory import AgentDirectory, default_agent_instance
 
 
 class RecordingGateway:

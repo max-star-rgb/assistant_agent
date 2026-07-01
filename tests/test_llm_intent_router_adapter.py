@@ -1,9 +1,9 @@
-from multimodal_agent.agent.intent_router_adapter import (
+from assistant_agent.agent.intent_router_adapter import (
     MockLLMIntentRouter,
     OpenAICompatibleIntentRouter,
 )
-from multimodal_agent.schemas.intent_router import IntentRouterRequest
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.intent_router import IntentRouterRequest
+from assistant_agent.schemas.requests import UserRequest
 
 
 def _router_request(text: str, image_ids: list[str] | None = None) -> IntentRouterRequest:

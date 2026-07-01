@@ -28,8 +28,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from multimodal_agent.schemas.events import AgentEvent
-from multimodal_agent.services.demo_examples import get_demo_examples
+from assistant_agent.schemas.events import AgentEvent
+from assistant_agent.services.demo_examples import get_demo_examples
 
 
 DEFAULT_SERVER = "http://127.0.0.1:8000"

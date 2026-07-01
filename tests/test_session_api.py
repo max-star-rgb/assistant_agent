@@ -1,13 +1,13 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.api import routes_agent
-from multimodal_agent.api.app import create_app
-from multimodal_agent.config import ProviderConfig
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.services.assistant_run_service import ConversationTurn, get_default_conversation_store
-from multimodal_agent.services.session_store import InMemorySessionStore
-from multimodal_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.api import routes_agent
+from assistant_agent.api.app import create_app
+from assistant_agent.config import ProviderConfig
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.services.assistant_run_service import ConversationTurn, get_default_conversation_store
+from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
 def test_session_api_can_create_list_get_and_delete_sessions(monkeypatch) -> None:

@@ -1,7 +1,7 @@
 import pytest
 
-from multimodal_agent.agent.router import ToolRouter
-from multimodal_agent.schemas.planning import IntentResult
+from assistant_agent.agent.router import ToolRouter
+from assistant_agent.schemas.planning import IntentResult
 
 
 def intent(name: str) -> IntentResult:

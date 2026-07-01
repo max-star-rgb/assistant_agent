@@ -1,12 +1,12 @@
-from multimodal_agent.schemas.tool_spec_adapters import (
+from assistant_agent.schemas.tool_spec_adapters import (
     tool_spec_to_json_schema,
     tool_spec_to_mcp_tool,
     tool_spec_to_openai_tool,
     tool_specs_to_mcp_tools,
     tool_specs_to_openai_tools,
 )
-from multimodal_agent.schemas.tools import ToolSpec
-from multimodal_agent.tools.registry import create_default_registry
+from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.tools.registry import create_default_registry
 
 
 def sample_spec() -> ToolSpec:

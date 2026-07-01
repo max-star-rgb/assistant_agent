@@ -1,10 +1,10 @@
-from multimodal_agent.agent.prompt_builder import (
+from assistant_agent.agent.prompt_builder import (
     build_direct_chat_request,
     build_image_generation_request,
     build_image_prompt_text,
 )
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
 
 
 def test_direct_chat_prompt_injects_memory_context() -> None:

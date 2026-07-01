@@ -1,12 +1,12 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.agent.response_templates import compose_contract_response
-from multimodal_agent.api.app import create_app
-from multimodal_agent.schemas.products import PriceOffer, ProductResult, ProductSearchResult, RankingReason
-from multimodal_agent.schemas.tool_observation import observation_from_tool_result
-from multimodal_agent.schemas.tools import ToolResult
-from multimodal_agent.services.product_adapter import MockPriceCompareAdapter, MockProductSearchAdapter, PriceCompareInput, ProductSearchInput
-from multimodal_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.agent.response_templates import compose_contract_response
+from assistant_agent.api.app import create_app
+from assistant_agent.schemas.products import PriceOffer, ProductResult, ProductSearchResult, RankingReason
+from assistant_agent.schemas.tool_observation import observation_from_tool_result
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.product_adapter import MockPriceCompareAdapter, MockProductSearchAdapter, PriceCompareInput, ProductSearchInput
+from assistant_agent.tools.product_search_tool import ProductSearchTool
 
 
 def test_product_result_contract_exposes_stable_fields() -> None:

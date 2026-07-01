@@ -1,6 +1,6 @@
-from multimodal_agent.agent.prompt_builder import build_image_generation_request
-from multimodal_agent.agent.tool_input_builder import build_render_request_input
-from multimodal_agent.schemas.requests import UserRequest
+from assistant_agent.agent.prompt_builder import build_image_generation_request
+from assistant_agent.agent.tool_input_builder import build_render_request_input
+from assistant_agent.schemas.requests import UserRequest
 
 
 def test_loaded_memory_context_flows_to_image_generation_prompt() -> None:

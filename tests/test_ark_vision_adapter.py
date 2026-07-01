@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from multimodal_agent.providers.ark_vision import (
+from assistant_agent.providers.ark_vision import (
     ArkVisionProviderAdapter,
     ArkVisionProviderConfig,
     ark_image_url,
     build_ark_vision_input,
     extract_ark_response_text,
 )
-from multimodal_agent.services.provider_errors import ProviderAdapterError
-from multimodal_agent.services.vision_adapter import VisionUnderstandingInput
+from assistant_agent.services.provider_errors import ProviderAdapterError
+from assistant_agent.services.vision_adapter import VisionUnderstandingInput
 
 
 def test_build_ark_vision_input_uses_file_url_for_local_images(tmp_path) -> None:

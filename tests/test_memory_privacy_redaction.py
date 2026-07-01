@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.memory.retrieval import format_memory_context
-from multimodal_agent.schemas.memory import MemoryItem
-from multimodal_agent.services.trace_store import summarize_graph_state
+from assistant_agent.memory.retrieval import format_memory_context
+from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.services.trace_store import summarize_graph_state
 
 
 def test_sensitive_text_is_redacted_in_memory_item_and_context() -> None:

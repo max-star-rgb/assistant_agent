@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-import multimodal_agent.api.app as app_module
-from multimodal_agent.api.app import create_app
+import assistant_agent.api.app as app_module
+from assistant_agent.api.app import create_app
 
 
 def test_demo_console_page_is_served() -> None:

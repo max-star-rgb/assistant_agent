@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from multimodal_agent.memory.jsonl_store import JsonlMemoryStore
-from multimodal_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
-from multimodal_agent.memory.sqlite_store import SCHEMA_VERSION, SQLiteMemoryStore as BaseSQLiteMemoryStore
-from multimodal_agent.memory.store import InMemoryStore, MemoryStore
-from multimodal_agent.schemas.identity import RequestIdentity
-from multimodal_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
-from multimodal_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
+from assistant_agent.memory.jsonl_store import JsonlMemoryStore
+from assistant_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
+from assistant_agent.memory.sqlite_store import SCHEMA_VERSION, SQLiteMemoryStore as BaseSQLiteMemoryStore
+from assistant_agent.memory.store import InMemoryStore, MemoryStore
+from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
+from assistant_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)

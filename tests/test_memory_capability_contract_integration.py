@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from multimodal_agent.memory.store import InMemoryStore
-from multimodal_agent.schemas.capability_output import build_capability_output_contract
-from multimodal_agent.schemas.memory import MemoryQuery, memory_item_from_capability_contract
+from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.capability_output import build_capability_output_contract
+from assistant_agent.schemas.memory import MemoryQuery, memory_item_from_capability_contract
 
 
 def test_memory_save_can_store_capability_contract_summary() -> None:

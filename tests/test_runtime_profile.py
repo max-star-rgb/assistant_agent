@@ -1,6 +1,6 @@
 import pytest
 
-from multimodal_agent.runtime_profile import (
+from assistant_agent.runtime_profile import (
     DEFAULT_RUNTIME_PROFILE,
     PROFILE_ENV_VAR,
     RUNTIME_PROFILES,

@@ -54,9 +54,9 @@ context_summary，就是“当前会话的压缩纪要”：它只服务当前 s
 
 对应代码位置：
 
-- `src/multimodal_agent/services/assistant_run_service.py`
-- `src/multimodal_agent/services/session_store.py`
-- `src/multimodal_agent/memory/manager.py`
+- `src/assistant_agent/services/assistant_run_service.py`
+- `src/assistant_agent/services/session_store.py`
+- `src/assistant_agent/memory/manager.py`
 
 ### Memory 是什么时候写入的？
 
@@ -83,9 +83,9 @@ MemoryItem，就是“已经批准并落库的正式笔记”：只有它才算�
 
 对应代码位置：
 
-- `src/multimodal_agent/tools/memory_tool.py`
-- `src/multimodal_agent/memory/write_policy.py`
-- `src/multimodal_agent/memory/manager.py`
+- `src/assistant_agent/tools/memory_tool.py`
+- `src/assistant_agent/memory/write_policy.py`
+- `src/assistant_agent/memory/manager.py`
 - `MemoryManager.save_explicit_for_identity(...)`
 - `MemoryWritePolicy.evaluate_explicit_save(...)`
 
@@ -110,9 +110,9 @@ prompt，就是“发给 LLM 的指令和上下文文本”。prompt-safe，就�
 
 对应代码位置：
 
-- `src/multimodal_agent/memory/manager.py`
-- `src/multimodal_agent/memory/context_builder.py`
-- `src/multimodal_agent/memory/retrieval.py`
+- `src/assistant_agent/memory/manager.py`
+- `src/assistant_agent/memory/context_builder.py`
+- `src/assistant_agent/memory/retrieval.py`
 - `MemoryManager.load_into_state(...)`
 - `MemoryManager.load_context_for_identity(...)`
 
@@ -141,10 +141,10 @@ RequestIdentity，就是“请求身份证”：它把 user、tenant、project�
 
 对应代码位置：
 
-- `src/multimodal_agent/schemas/identity.py`
-- `src/multimodal_agent/services/api_identity.py`
-- `src/multimodal_agent/memory/manager.py`
-- `src/multimodal_agent/schemas/memory.py`
+- `src/assistant_agent/schemas/identity.py`
+- `src/assistant_agent/services/api_identity.py`
+- `src/assistant_agent/memory/manager.py`
+- `src/assistant_agent/schemas/memory.py`
 - `RequestIdentity`
 - `MemoryManager.search_for_identity(...)`
 - `MemoryManager.save_explicit_for_identity(...)`
@@ -170,9 +170,9 @@ repair，就是“修复不一致”：比如用户画像和源记忆不一致�
 
 对应代码位置：
 
-- `src/multimodal_agent/services/memory_audit.py`
-- `src/multimodal_agent/services/memory_snapshot.py`
-- `src/multimodal_agent/schemas/memory_audit.py`
+- `src/assistant_agent/services/memory_audit.py`
+- `src/assistant_agent/services/memory_snapshot.py`
+- `src/assistant_agent/schemas/memory_audit.py`
 - `MemoryAuditService.export_for_identity(...)`
 - `MemoryAuditService.sweep_expired_for_identity(...)`
 - `MemoryManager.rebuild_user_profile_for_identity(...)`
@@ -196,9 +196,9 @@ repair，就是“修复不一致”：比如用户画像和源记忆不一致�
 
 对应代码位置：
 
-- `src/multimodal_agent/schemas/requests.py`
-- `src/multimodal_agent/agent/runtime.py`
-- `src/multimodal_agent/agent/assistant_loop_nodes.py`
+- `src/assistant_agent/schemas/requests.py`
+- `src/assistant_agent/agent/runtime.py`
+- `src/assistant_agent/agent/assistant_loop_nodes.py`
 
 ### 2. 系统判断是否要读 Memory
 
@@ -212,8 +212,8 @@ repair，就是“修复不一致”：比如用户画像和源记忆不一致�
 
 对应代码位置：
 
-- `src/multimodal_agent/memory/retrieval.py`
-- `src/multimodal_agent/memory/retriever.py`
+- `src/assistant_agent/memory/retrieval.py`
+- `src/assistant_agent/memory/retriever.py`
 - `MemoryRetrievalStrategy.retrieve(...)`
 - `KeywordMemoryRetriever`
 
@@ -237,10 +237,10 @@ supersede，就是“新笔记替代旧笔记”：例如用户以前喜欢浅�
 
 对应代码位置：
 
-- `src/multimodal_agent/memory/manager.py`
-- `src/multimodal_agent/memory/store.py`
-- `src/multimodal_agent/memory/jsonl_store.py`
-- `src/multimodal_agent/memory/sqlite_store.py`
+- `src/assistant_agent/memory/manager.py`
+- `src/assistant_agent/memory/store.py`
+- `src/assistant_agent/memory/jsonl_store.py`
+- `src/assistant_agent/memory/sqlite_store.py`
 - `MemoryManager.search_for_identity(...)`
 - `MemoryStore.search(...)`
 
@@ -268,8 +268,8 @@ metadata，就是运行时附加信息；如果前面已经读过，可以把它
 
 对应代码位置：
 
-- `src/multimodal_agent/memory/context_builder.py`
-- `src/multimodal_agent/memory/manager.py`
+- `src/assistant_agent/memory/context_builder.py`
+- `src/assistant_agent/memory/manager.py`
 - `MemoryContextBuilder.build(...)`
 - `MemoryManager.build_context(...)`
 
@@ -289,9 +289,9 @@ LLM 可以用它来调整回答风格，但不能把它当成“必须调用某�
 
 对应代码位置：
 
-- `src/multimodal_agent/services/context/builder.py`
-- `src/multimodal_agent/services/context/renderer.py`
-- `src/multimodal_agent/agent/assistant_loop_nodes.py`
+- `src/assistant_agent/services/context/builder.py`
+- `src/assistant_agent/services/context/renderer.py`
+- `src/assistant_agent/agent/assistant_loop_nodes.py`
 
 ### 6. 需要时产生新的 memory candidate
 
@@ -322,8 +322,8 @@ memory candidate，就是“还没批准的候选笔记”。
 
 对应代码位置：
 
-- `src/multimodal_agent/memory/write_policy.py`
-- `src/multimodal_agent/tools/memory_tool.py`
+- `src/assistant_agent/memory/write_policy.py`
+- `src/assistant_agent/tools/memory_tool.py`
 - `MemoryPromotionCandidate`
 - `MemorySaveTool`
 - `build_run_summary_promotion_candidate(...)`
@@ -350,9 +350,9 @@ MemoryPendingConfirmation，就是“等待用户确认的草稿”：它只保�
 
 对应代码位置：
 
-- `src/multimodal_agent/memory/write_policy.py`
-- `src/multimodal_agent/memory/manager.py`
-- `src/multimodal_agent/schemas/memory_audit.py`
+- `src/assistant_agent/memory/write_policy.py`
+- `src/assistant_agent/memory/manager.py`
+- `src/assistant_agent/schemas/memory_audit.py`
 - `MemoryWritePolicy.evaluate_explicit_save(...)`
 - `MemoryManager.save_explicit_for_identity(...)`
 - `MemoryManager.confirm_memory_for_identity(...)`
@@ -375,10 +375,10 @@ snapshot，就是“现场快照”：它把当前 session、conversation、memo
 
 对应代码位置：
 
-- `src/multimodal_agent/services/memory_audit.py`
-- `src/multimodal_agent/services/memory_snapshot.py`
-- `src/multimodal_agent/schemas/memory_audit.py`
-- `src/multimodal_agent/schemas/memory_snapshot.py`
+- `src/assistant_agent/services/memory_audit.py`
+- `src/assistant_agent/services/memory_snapshot.py`
+- `src/assistant_agent/schemas/memory_audit.py`
+- `src/assistant_agent/schemas/memory_snapshot.py`
 - `MemoryManager.record_audit_event(...)`
 - `MemoryAuditService.metrics_for_identity(...)`
 - `MemorySnapshotService.snapshot_for_identity(...)`
@@ -404,9 +404,9 @@ snapshot，就是“现场快照”：它把当前 session、conversation、memo
 
 对应代码位置：
 
-- `src/multimodal_agent/memory/`
-- `src/multimodal_agent/services/memory_audit.py`
-- `src/multimodal_agent/services/memory_snapshot.py`
+- `src/assistant_agent/memory/`
+- `src/assistant_agent/services/memory_audit.py`
+- `src/assistant_agent/services/memory_snapshot.py`
 - `tests/test_memory_manager.py`
 - `tests/test_memory_store_boundary.py`
 - `tests/test_memory_retrieval_eval.py`
@@ -435,10 +435,10 @@ snapshot，就是“现场快照”：它把当前 session、conversation、memo
 
 对应代码位置：
 
-- `src/multimodal_agent/services/context/`
-- `src/multimodal_agent/memory/manager.py`
-- `src/multimodal_agent/memory/write_policy.py`
-- `src/multimodal_agent/tools/memory_tool.py`
+- `src/assistant_agent/services/context/`
+- `src/assistant_agent/memory/manager.py`
+- `src/assistant_agent/memory/write_policy.py`
+- `src/assistant_agent/tools/memory_tool.py`
 
 ## 新手排查入口
 
@@ -454,8 +454,8 @@ GET /memory/users/{user_id}/snapshot
 
 对应代码位置：
 
-- `src/multimodal_agent/services/memory_snapshot.py`
-- `src/multimodal_agent/schemas/memory_snapshot.py`
+- `src/assistant_agent/services/memory_snapshot.py`
+- `src/assistant_agent/schemas/memory_snapshot.py`
 
 ### 想知道系统为用户记了什么
 
@@ -470,7 +470,7 @@ GET /memory/users/{user_id}/export
 
 对应代码位置：
 
-- `src/multimodal_agent/services/memory_audit.py`
+- `src/assistant_agent/services/memory_audit.py`
 - `MemoryAuditService.list_items_for_identity(...)`
 - `MemoryAuditService.export_for_identity(...)`
 
@@ -487,7 +487,7 @@ GET /memory/users/{user_id}/audit
 
 对应代码位置：
 
-- `src/multimodal_agent/services/memory_audit.py`
+- `src/assistant_agent/services/memory_audit.py`
 - `MemoryAuditService.events_for_identity(...)`
 - `MemoryAuditService.audit_for_identity(...)`
 
@@ -503,8 +503,8 @@ GET /memory/users/{user_id}/profile/status
 
 对应代码位置：
 
-- `src/multimodal_agent/memory/profile.py`
-- `src/multimodal_agent/memory/manager.py`
+- `src/assistant_agent/memory/profile.py`
+- `src/assistant_agent/memory/manager.py`
 - `MemoryManager.rebuild_user_profile_for_identity(...)`
 
 ## 简单流程图

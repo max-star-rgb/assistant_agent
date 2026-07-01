@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from multimodal_agent.api.app import create_app
-from multimodal_agent.api.auth import (
+from assistant_agent.api.app import create_app
+from assistant_agent.api.auth import (
     AUTH_HEADER_ENABLED_ENV,
     AUTH_MODE_ENV,
     AUTH_PROJECT_ID_HEADER,
@@ -15,7 +15,7 @@ from multimodal_agent.api.auth import (
     require_auth_bound_identity,
     resolve_auth_mode,
 )
-from multimodal_agent.services.api_identity import (
+from assistant_agent.services.api_identity import (
     IDENTITY_NOT_AUTH_BOUND_ERROR,
     AuthContext,
     IdentityPolicy,
@@ -23,7 +23,7 @@ from multimodal_agent.services.api_identity import (
     enforce_identity_policy,
     resolve_request_identity,
 )
-from multimodal_agent.services.trial_access import (
+from assistant_agent.services.trial_access import (
     TRIAL_USER_ID_FILE_ENV,
     TRIAL_USER_IDS_ENV,
     trial_access_gate_from_env,

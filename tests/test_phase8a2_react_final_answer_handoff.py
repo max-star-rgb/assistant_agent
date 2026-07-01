@@ -1,7 +1,7 @@
-from multimodal_agent.agent.runtime import AgentGraphRuntime
-from multimodal_agent.schemas.api import agent_run_response_from_state
-from multimodal_agent.schemas.requests import UserRequest
-from multimodal_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.schemas.api import agent_run_response_from_state
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 
 
 class ScriptedChatAdapter:
