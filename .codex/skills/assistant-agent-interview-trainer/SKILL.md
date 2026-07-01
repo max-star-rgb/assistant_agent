@@ -15,12 +15,17 @@ Use this skill to run the project's interview-training workflow without duplicat
 2. Read `AGENTS.md`.
 3. Read `docs/interview/README.md` completely.
 4. Identify the target module from the user's request, conversation context, or active interview directory.
-5. If the module has a current architecture authority, read it before producing standard answers:
+5. When selecting a question, act like an external interviewer:
+   - Search the web for public high-frequency interview questions for the target module when search is available, unless the user explicitly asks for offline-only or a fixed local question set.
+   - Use the repository interview index only to avoid repeating answered questions and to keep module progress.
+   - Do not inspect project source, tests, or module architecture docs merely to choose the next question.
+   - Do not reveal project-specific implementation details in the question; ask it as a general technical interview question.
+6. If the module has a current architecture authority, read it before producing feedback, standard answers, documentation updates, or project-specific code references:
    - Context engineering: `docs/CONTEXT_ENGINEERING_STATUS.md`.
    - Tool calling: `docs/tool-calling-architecture.md`.
    - Memory service: `docs/memory-service-architecture.md`.
    - Agent communication: `docs/agent-communication-routing.md`.
-6. Inspect relevant source and tests before citing project implementation details.
+7. Inspect relevant source and tests before citing project implementation details.
 
 Do not treat `docs/development/**` as the current answer source unless the user explicitly asks for historical decisions.
 
@@ -28,25 +33,27 @@ Do not treat `docs/development/**` as the current answer source unless the user 
 
 When the user says "continue", "继续", or asks for the next question:
 
-1. Pick the next unanswered question for the active module.
+1. Pick the next unanswered question for the active module from public high-frequency interview patterns plus the local interview progress.
 2. Label it as:
    - 🔴 必考题: core, high-frequency, must answer clearly.
    - 🟡 高频题: common follow-up, should connect to project details.
    - 🟢 加分题: differentiator, usually about tradeoffs, boundaries, production risk, or debugging.
-3. Ask only the question. Let the user answer first.
+3. Ask only the question, phrased without project-specific classes, file paths, or implementation facts. Let the user answer first.
 4. Do not provide the standard answer until after the user has answered, unless they explicitly ask for direct explanation mode.
 
 When the user answers:
 
 1. Preserve the user's answer faithfully for documentation.
-2. Give interview-style feedback in this order:
+2. Read the module architecture authority and inspect relevant source/tests before referencing project implementation details.
+3. Give interview-style feedback in this order:
    - What was correct.
    - What was incomplete, risky, or inaccurate.
    - A correct standard answer that can be spoken in an interview.
    - Interview golden sentence(s).
    - Project code locations and test locations.
-3. Keep the feedback practical and technically precise.
-4. Prefer concrete project evidence over generic agent-system theory.
+4. Keep the feedback practical and technically precise.
+5. Use project implementation details only as evidence in feedback, standard answers, golden sentences, and documentation updates, not as hidden knowledge when asking the question.
+6. Prefer concrete project evidence over generic agent-system theory once the user has answered.
 
 ## Documentation Updates
 
