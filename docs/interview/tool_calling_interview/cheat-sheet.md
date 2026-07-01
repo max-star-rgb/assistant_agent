@@ -73,6 +73,37 @@
 
 ---
 
+## ⚙️ 工具执行器篇
+
+### 工具执行器与失败处理
+
+**核心原则**：LLM 只提出调用意图，真实执行权必须在受控 runtime。
+
+**ToolExecutor 职责**：
+- 绑定 runtime user/session/run 身份，不相信模型传入身份
+- 执行前检查 provider budget、policy 和工具可用性
+- 记录 state、tool history、event、trace
+- 统一调用 registry/tool，捕获异常并返回结构化 `ToolResult`
+- 按 retry/recovery policy 决定重试、partial、skip 或 stop
+
+**失败处理速记**：
+
+| 错误 | 处理 |
+| --- | --- |
+| unknown tool / invalid input | reject，不进入 executor |
+| timeout / rate limit | 幂等且 policy 允许时 retry |
+| auth failed / unconfigured | 不重试，stop 或降级 |
+| budget exceeded | 执行前阻断；关键步骤 stop，可选步骤 partial |
+| optional step failed | skip 或 `continue_with_partial_result` |
+| 已有成功 observation | 不重复失败工具，基于已有结果回答或换工具 |
+
+**Observation 要求**：脱敏、结构化、带 `error_code` / `error_message` / `next_step_hint`，不要暴露 raw exception、API key、Authorization、provider raw response 或 base64 大 payload。
+
+**面试金句**：
+> 工具失败不是异常字符串，而是下一轮推理的数据；它必须结构化、脱敏，并带恢复提示。
+
+---
+
 ## 💡 万能套话
 
 ### 工具调用设计三大原则

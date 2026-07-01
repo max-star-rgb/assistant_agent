@@ -12,6 +12,7 @@
 - 涉及 tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、provider-native tool calls、MCP `tool_run`、工具 observation、工具执行预算/retry/recovery 或新增/修改工具调用链时，如可用优先使用项目内 `.codex/skills/assistant-agent-tool-calling` skill。
 - 涉及记忆服务设计、`MemoryManager`、Memory Kernel、memory store/retrieval/write policy/user profile、memory tool、memory API、SQLite/store migration、RequestIdentity、token-aware memory context、retention/export/audit、memory eval 或长期记忆边界时，如可用优先使用项目内 `.codex/skills/assistant-agent-memory-service` skill。
 - 涉及多 agent 实例、agent directory、AgentGateway、agent-to-agent 通信、`/agents/run`、A2A/JSON-RPC adapter、跨实例 session/task 路由、`delegate_to_agent`、pilot readiness、gateway evidence 或 OpenClaw 概念映射时，如可用优先使用项目内 `.codex/skills/assistant-agent-collaboration` skill。
+- 涉及 `assistant_agent.runtime_gateway`、realtime phone/runtime gateway、wire protocol frame、`message.user`/`run.started`/`stream.chunk`/`run.end`/`run.cancel` 语义、session history、cancel/interrupt/multiturn 行为、WebSocket runtime bridge，或需要对照 `/home/lenovo1/pycharm_project/runTime` 的兼容实现时，如可用必须使用项目内 `.codex/skills/assistant-runtime-reference` skill；该 skill 只用于查看旧 runtime 参考实现，不把 `runTime` 重新作为当前项目入口。
 - 涉及面试训练、模拟面试、题目分级、回答点评、标准答案、面试金句或 `docs/interview/` 文档更新时，如可用优先使用项目内 `.codex/skills/assistant-agent-interview-trainer` skill。
 - 涉及架构分层、模块归属、治理边界或重构判断时，以本文件的“当前架构边界”和“编码约定”为准；只有触及上下文、tool calling、记忆、agent collaboration 或 OpenClaw 参考映射专项时才使用对应项目 skill/权威材料。
 - 涉及文档盘点、入口路由、归档、删除、清理或新增文档时，优先保持 AGENTS 和少量专项 docs 同步；README 只保留占位，不要重新引入通用索引文档。
@@ -148,7 +149,7 @@ conda run -n hello_agent <command>
 - `docs/development/context-engine-memory-policy-plan.md` 是已完成的上下文工程阶段实施记录，按需追溯历史，不是当前 active roadmap。
 - `docs/agent-communication-routing.md` 是多 agent 实例、agent 通信路由、A2A adapter 边界和更新规则的当前权威入口。
 - `docs/interview/README.md` 是面试训练模式、题库目录结构和更新规则的当前权威入口；各模块面试题按 `docs/interview/{module}_interview/` 独立维护。
-- `.codex/skills/assistant-agent-tool-calling`、`.codex/skills/assistant-agent-context-engineering`、`.codex/skills/assistant-agent-memory-service`、`.codex/skills/assistant-agent-collaboration` 和 `.codex/skills/assistant-agent-interview-trainer` 是本项目的项目内 skills；它们只包装工作流和入口路由，不取代对应权威 docs，也不要当作通用全局 skill 维护。
+- `.codex/skills/assistant-agent-tool-calling`、`.codex/skills/assistant-agent-context-engineering`、`.codex/skills/assistant-agent-memory-service`、`.codex/skills/assistant-agent-collaboration`、`.codex/skills/assistant-runtime-reference` 和 `.codex/skills/assistant-agent-interview-trainer` 是本项目的项目内 skills；它们只包装工作流和入口路由，不取代对应权威 docs，也不要当作通用全局 skill 维护。
 - 历史 task/prompt/skill 构建材料和根目录通用文档已按用户确认删除；`docs/development/` 暂不清理。
 - 新增文档必须有明确长期用途；优先更新 AGENTS 或现有专项文档，README 暂不承载实时维护内容。
 

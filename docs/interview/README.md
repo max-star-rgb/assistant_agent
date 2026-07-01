@@ -167,7 +167,7 @@ docs/interview/
 | 模块 | 题目数 | 状态 | 链接 |
 |-----|-------|------|-----|
 | 上下文工程面试题库 | 8 题 | ✅ 已完成 | [context_engineering_interview/](context_engineering_interview/index.md) |
-| 工具调用面试题库 | 3 题 | 🔄 进行中 | [tool_calling_interview/](tool_calling_interview/index.md) |
+| 工具调用面试题库 | 4 题 | 🔄 进行中 | [tool_calling_interview/](tool_calling_interview/index.md) |
 
 ---
 

@@ -10,7 +10,7 @@
 
 - [x] 一、基础概念篇
 - [x] 二、ToolSpec 设计篇
-- [ ] 三、工具执行器篇
+- [x] 三、工具执行器篇
 - [ ] 四、多工具调度篇
 - [ ] 五、故障处理篇
 - [ ] 六、流式工具调用篇
@@ -58,6 +58,23 @@
 - 工具选择、使用边界、前置条件、状态校验、预算、重试、错误治理必须由描述、usage 规则、validator 和 executor 分层处理
 
 [👉 详情解答](details/03-tool-spec-design.md)
+
+---
+
+## 三、工具执行器篇 ⚙️
+
+### Q4. 工具执行器与失败处理 🔴
+
+**我的回答**：
+> 1.LLM返回的调用结果不一定准，需要依靠规则强行介入。2.LLM生成校验：工具是否存在，是否有API等敏感内容。3.不清楚。4.提取工具调用的名称、描述、和失败原因，给LLM
+
+**核心考点**：
+- LLM 只能提出工具调用意图，不能拥有真实执行权和异常处置权
+- ToolExecutor 负责身份绑定、预算、状态记录、事件/history/trace、retry/recovery 和异常结构化
+- 失败处理要按错误类型、是否可重试、步骤是否可选、是否已有部分结果来决定 retry/fallback/replan/partial/stop
+- 给 LLM 的失败 observation 应该是脱敏、结构化、可恢复的摘要，不是 raw exception 或 provider 原始响应
+
+[👉 详情解答](details/04-tool-executor-failures.md)
 
 ---
 
