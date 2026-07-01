@@ -49,6 +49,30 @@
 
 ---
 
+## 🧩 ToolSpec 设计篇
+
+### 工具定义 / Schema 设计
+
+**核心结构**：`name`、`description`、`input_schema`、`required_inputs`、`when_to_use`、`when_not_to_use`、`runtime_constraints`
+
+**分层边界**：
+
+| 层 | 负责内容 |
+| --- | --- |
+| JSON schema | 字段、类型、required、枚举、范围、`additionalProperties=False` |
+| 描述和 usage 规则 | 什么时候用、什么时候不用、避免工具混淆 |
+| ActionValidator | 未知工具、非 object 输入、语义缺参、特殊安全条件 |
+| ToolExecutor | 身份绑定、预算、retry/recovery、event/history/trace、异常转结构化失败 |
+
+**常见坑**：把“如何执行”写进 ToolSpec。准确表达是：ToolSpec 写执行约束，具体执行实现留在 runtime/executor/tool class。
+
+**项目链路**：`ToolRegistry.list_specs()` 生成 ToolSpec；prompt-json 渲染进 prompt，provider-native 转 OpenAI tools，MCP 转 MCP tool schema。
+
+**面试金句**：
+> JSON schema 只能保证参数长得对，不能保证工具选得对、步骤走得对、执行边界守得住。
+
+---
+
 ## 💡 万能套话
 
 ### 工具调用设计三大原则

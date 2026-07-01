@@ -1,6 +1,6 @@
 # 工具调用面试题库
 
-最后更新：2026-06-30
+最后更新：2026-07-01
 
 > 按模块分类，点击「详情」查看完整解答和点评
 
@@ -9,7 +9,7 @@
 ## 模块覆盖进度
 
 - [x] 一、基础概念篇
-- [ ] 二、ToolSpec 设计篇
+- [x] 二、ToolSpec 设计篇
 - [ ] 三、工具执行器篇
 - [ ] 四、多工具调度篇
 - [ ] 五、故障处理篇
@@ -42,6 +42,22 @@
 - 生产级实现必须讲清楚执行边界、validator/executor、失败 observation、重试和可观测性
 
 [👉 详情解答](details/02-tool-calling-api-rag.md)
+
+---
+
+## 二、ToolSpec 设计篇 🧩
+
+### Q3. 工具定义 / Schema 设计 🔴
+
+**我的回答**：
+> 一个好的 tool specification 应该包含tool的基本信息：name、描述、如何执行，以及结构化参数，用于工具所需要的具体参数，还有语义信息，说明为何用？何时用、何时不能用。下面一个问题无法回答。
+
+**核心考点**：
+- ToolSpec 是给模型和协议看的工具契约，不应暴露具体执行实现
+- JSON schema 解决字段、类型、required、additionalProperties 这类结构问题
+- 工具选择、使用边界、前置条件、状态校验、预算、重试、错误治理必须由描述、usage 规则、validator 和 executor 分层处理
+
+[👉 详情解答](details/03-tool-spec-design.md)
 
 ---
 
