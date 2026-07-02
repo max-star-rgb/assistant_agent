@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.agent_routing import AgentRouteRequest, AgentRouter, create_default_agent_router
 from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
 from assistant_agent.schemas.agent_control_plane import (
     AgentAuditEvent,
@@ -17,7 +18,6 @@ from assistant_agent.schemas.agent_control_plane import (
     AgentControlPlaneRouteSummary,
     AgentControlPlaneRunSummary,
 )
-from assistant_agent.schemas.agent_gateway import AgentGatewayRunRequest
 from assistant_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryType
@@ -46,7 +46,6 @@ from assistant_agent.services.assistant_run_service import (
     runtime_info,
 )
 from assistant_agent.services.agent_control_plane import AgentControlPlaneQueryService, audit_event
-from assistant_agent.services.agent_gateway import AgentGateway, create_default_agent_gateway
 from assistant_agent.services.api_identity import (
     ApiIdentitySource,
     AuthContext,
@@ -80,7 +79,7 @@ from assistant_agent.services.trial_access import (
 
 router = APIRouter()
 _RUNTIME: AgentGraphRuntime | None = None
-_AGENT_GATEWAY: AgentGateway | None = None
+_AGENT_ROUTER: AgentRouter | None = None
 _FEEDBACK_STORE: BetaFeedbackStore | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
@@ -93,11 +92,11 @@ def get_agent_runtime() -> AgentGraphRuntime:
     return _RUNTIME
 
 
-def get_agent_gateway() -> AgentGateway:
-    global _AGENT_GATEWAY
-    if _AGENT_GATEWAY is None:
-        _AGENT_GATEWAY = create_default_agent_gateway()
-    return _AGENT_GATEWAY
+def get_agent_router() -> AgentRouter:
+    global _AGENT_ROUTER
+    if _AGENT_ROUTER is None:
+        _AGENT_ROUTER = create_default_agent_router()
+    return _AGENT_ROUTER
 
 
 def get_beta_feedback_store() -> BetaFeedbackStore:
@@ -121,14 +120,14 @@ def run_agent(request: UserRequest, auth_context: AuthContext = Depends(get_auth
 
 @router.post("/agents/run", response_model=AgentRunResponse)
 def run_agents(
-    request: AgentGatewayRunRequest,
+    request: AgentRouteRequest,
     auth_context: AuthContext = Depends(get_auth_context),
 ) -> AgentRunResponse:
     identity_resolution = _identity_from_request(request, auth_context=auth_context)
     _require_trial_access_for_identity(identity_resolution)
     _record_auth_audit_event(identity_resolution, action="agents_run_identity")
     request = _with_identity_metadata(request, identity_resolution)
-    return get_agent_gateway().run(request)
+    return get_agent_router().run(request)
 
 
 @router.get("/demo/scenarios")
@@ -263,10 +262,10 @@ def get_control_plane_readiness(auth_context: AuthContext = Depends(get_auth_con
         auth_bound_identity=auth_context.authenticated,
         production_required=require_auth_bound_identity(),
     )
-    gateway = get_agent_gateway()
+    agent_router = get_agent_router()
     config = get_agent_runtime().config
     report = PilotReadinessChecker().evaluate(
-        directory=getattr(gateway, "directory", None),
+        directory=getattr(agent_router, "directory", None),
         runtime_profile=config.runtime_profile,
         auth_bound_identity=auth_context.authenticated,
         identity_policy=identity_policy,
@@ -770,12 +769,12 @@ def _memory_snapshot_service() -> MemorySnapshotService:
 def _control_plane_query_service() -> AgentControlPlaneQueryService:
     return AgentControlPlaneQueryService(
         trace_query=TraceQueryService(get_agent_runtime().trace_store),
-        gateway_store=_control_plane_store(),
+        router_store=_control_plane_store(),
     )
 
 
 def _control_plane_store():
-    return getattr(get_agent_gateway(), "control_plane_store", None)
+    return getattr(get_agent_router(), "control_plane_store", None)
 
 
 def _record_control_plane_audit_event(event: AgentAuditEvent) -> None:

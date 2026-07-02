@@ -1,11 +1,11 @@
 ---
 name: assistant-runtime-reference
-description: Project-local workflow for assistant_agent runtime gateway work. Use when Codex needs to design, review, debug, migrate, or test assistant_agent.runtime_gateway, realtime phone/runtime gateway protocol frames, session history, cancel, interrupt, multiturn behavior, WebSocket frame transport, or compatibility with the legacy /home/lenovo1/pycharm_project/runTime implementation.
+description: Project-local workflow for assistant_agent Gateway work. Use when Codex needs to design, review, debug, migrate, or test assistant_agent.gateway, realtime phone/gateway protocol frames, session history, cancel, interrupt, multiturn behavior, WebSocket frame transport, or compare with the legacy /home/lenovo1/pycharm_project/runTime implementation.
 ---
 
 # Assistant Runtime Reference
 
-Use this skill when runtime gateway behavior in `assistant_agent` must be compared with the legacy compatibility project at `/home/lenovo1/pycharm_project/runTime`.
+Use this skill when Gateway behavior in `assistant_agent` must be compared with the legacy compatibility project at `/home/lenovo1/pycharm_project/runTime`.
 
 `assistant_agent` remains the authoritative project. `runTime` is reference material for protocol compatibility and regression behavior only.
 
@@ -14,7 +14,7 @@ Use this skill when runtime gateway behavior in `assistant_agent` must be compar
 Read the legacy implementation when the task touches any of these:
 
 - Gateway wire protocol frame names or payload semantics: `message.user`, `run.started`, `stream.chunk`, `run.end`, `run.cancel`, `ping`/`pong`, call frames, config frames, or unknown-frame errors.
-- Runtime lifecycle behavior: session tracking, generated `turn_id`/`run_id`, active run registration, run end reasons, default `expects_reply`, backend error conversion, or active-run cleanup.
+- Gateway session lifecycle behavior: user session tracking, generated `turn_id`/`run_id`, active run registration, run end reasons, default `expects_reply`, backend error conversion, active-run cleanup, idle timeout, hangup grace, or config update behavior.
 - Cancel and interrupt behavior: explicit `run.cancel`, new message interrupting an active run in the same session, cancellation by session/run id, or `run_not_found` behavior.
 - Multiturn behavior: per-session user text history, history snapshots passed to the backend, and history assertions in compatibility tests.
 - Transport behavior: in-memory endpoint pairs, WebSocket JSON frame encoding/decoding, bridge forwarding rules, or client disconnect cancellation.
@@ -48,17 +48,19 @@ Avoid `runTime/src/openclaw_gateway_runtime/agent_runtime/**`, `skills/**`, and 
 ## Working Rules
 
 - Preserve the assistant public backend interface: `RealtimeAgentRequest`, `RealtimeAgentEvent`, `RealtimeAgentResult`, `RealtimeAgentBackend`, and `RealtimeCancelToken`.
-- Default new assistant runtime gateway code to `AgentGraphRealtimeBackend`; do not add a second agent loop.
+- Default new assistant Gateway session code to `AgentGraphRealtimeBackend`; do not add a second agent loop.
+- Use `assistant_agent.gateway` for current Gateway code. Do not add removed runtime-compatibility entrypoints.
 - Keep wire frame names stable unless the user explicitly requests a protocol break.
 - Treat `runTime` as compatibility reference and regression-test source, not as code to import from `assistant_agent`.
 - If `runTime` behavior conflicts with current `assistant_agent` docs or explicit user direction, follow `assistant_agent` and explain the compatibility difference.
 
 ## Validation
 
-For assistant runtime gateway changes, run the smallest relevant subset:
+For assistant Gateway changes, run the smallest relevant subset:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_runtime_gateway.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway_session.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_realtime_agent_backend.py tests/test_realtime_event_mapping.py tests/test_realtime_backend_types.py
 ```
 
@@ -72,5 +74,5 @@ cd /home/lenovo1/pycharm_project/runTime && conda run -n hello_agent env PYTHONP
 For skill/doc-only changes:
 
 ```bash
-git diff --check -- AGENTS.md .codex/skills/assistant-runtime-reference
+git diff --check -- AGENTS.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway tests/test_gateway.py tests/test_gateway_session.py
 ```

@@ -11,8 +11,8 @@
 - 涉及上下文工程、assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 时，如可用优先使用项目内 `.codex/skills/assistant-agent-context-engineering` skill。
 - 涉及 tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、provider-native tool calls、MCP `tool_run`、工具 observation、工具执行预算/retry/recovery 或新增/修改工具调用链时，如可用优先使用项目内 `.codex/skills/assistant-agent-tool-calling` skill。
 - 涉及记忆服务设计、`MemoryManager`、Memory Kernel、memory store/retrieval/write policy/user profile、memory tool、memory API、SQLite/store migration、RequestIdentity、token-aware memory context、retention/export/audit、memory eval 或长期记忆边界时，如可用优先使用项目内 `.codex/skills/assistant-agent-memory-service` skill。
-- 涉及多 agent 实例、agent directory、AgentGateway、agent-to-agent 通信、`/agents/run`、A2A/JSON-RPC adapter、跨实例 session/task 路由、`delegate_to_agent`、pilot readiness、gateway evidence 或 OpenClaw 概念映射时，如可用优先使用项目内 `.codex/skills/assistant-agent-collaboration` skill。
-- 涉及 `assistant_agent.runtime_gateway`、realtime phone/runtime gateway、wire protocol frame、`message.user`/`run.started`/`stream.chunk`/`run.end`/`run.cancel` 语义、session history、cancel/interrupt/multiturn 行为、WebSocket runtime bridge，或需要对照 `/home/lenovo1/pycharm_project/runTime` 的兼容实现时，如可用必须使用项目内 `.codex/skills/assistant-runtime-reference` skill；该 skill 只用于查看旧 runtime 参考实现，不把 `runTime` 重新作为当前项目入口。
+- 涉及多 agent 实例、`assistant_agent.agent_routing` 聚合入口、agent directory、AgentRouter、agent-to-agent 通信、`/agents/run`、A2A/JSON-RPC adapter、跨实例 session/task 路由、`delegate_to_agent`、pilot readiness、agent router evidence 或 OpenClaw 概念映射时，如可用优先使用项目内 `.codex/skills/assistant-agent-collaboration` skill。
+- 涉及 `assistant_agent.gateway`、realtime phone/gateway、wire protocol frame、`message.user`/`run.started`/`stream.chunk`/`run.end`/`run.cancel` 语义、session history、cancel/interrupt/multiturn 行为、WebSocket gateway bridge，或需要对照 `/home/lenovo1/pycharm_project/runTime` 的参考实现时，如可用必须使用项目内 `.codex/skills/assistant-runtime-reference` skill；该 skill 只用于查看旧 runtime 参考实现，不把 `runTime` 重新作为当前项目入口。
 - 涉及面试训练、模拟面试、题目分级、回答点评、标准答案、面试金句或 `docs/interview/` 文档更新时，如可用优先使用项目内 `.codex/skills/assistant-agent-interview-trainer` skill。
 - 涉及架构分层、模块归属、治理边界或重构判断时，以本文件的“当前架构边界”和“编码约定”为准；只有触及上下文、tool calling、记忆、agent collaboration 或 OpenClaw 参考映射专项时才使用对应项目 skill/权威材料。
 - 涉及文档盘点、入口路由、归档、删除、清理或新增文档时，优先保持 AGENTS 和少量专项 docs 同步；README 只保留占位，不要重新引入通用索引文档。
@@ -54,7 +54,9 @@ ToolRegistry -> tools -> provider adapters / memory / local services
 - Provider adapter 负责真实或 mock 能力接入；默认 profile 必须是 mock/local/offline。
 - Memory 行为应通过 memory service/provider 管理，不把临时状态散落到无关模块；设计记忆服务时按第 1 节使用对应项目 skill。
 - Memory tools 只是 Agent 可调用适配器，不是记忆服务所有者；检索、写入策略、TTL、去重、用户画像、审计和 store 选择必须留在 `MemoryManager`、`memory/` 或 `services/memory_*`。
-- 多 agent / A2A 行为应通过 agent communication service、gateway/directory、transport adapter 和工具治理边界管理；设计 agent collaboration 时按第 1 节使用对应项目 skill。
+- 多 agent / A2A 行为应通过 `assistant_agent.agent_routing` 聚合入口、AgentRouter、agent communication service、directory、transport adapter 和工具治理边界管理；设计 agent collaboration 时按第 1 节使用对应项目 skill。
+- Gateway 是参考 `runTime` / OpenClaw 的外层业务入口，负责外部连接、通话生命周期、session/run/cancel/interrupt、用户级 session 复用和初始 agent 选择。AgentRouter 只负责内部 agent 选择、capability routing、controller/worker route 和控制面记录；面向调用方的多 agent 导入优先走 `assistant_agent.agent_routing`，底层实现仍保留在 `schemas/`、`services/` 等分层。
+- 不要把 `runTime` 的旧 OpenClaw/Anthropic agent loop 引入本项目；当前 agent 内部执行器仍是 `AgentGraphRuntime` / assistant loop，`runtime` 一词优先留给这类内部执行器。
 - API、demo、eval、CLI 应尽量复用同一套 runtime 行为，避免各自实现一套不一致的 Agent 逻辑。
 
 ## 4. 运行与安全规则

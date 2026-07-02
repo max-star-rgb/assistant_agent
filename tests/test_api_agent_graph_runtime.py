@@ -12,12 +12,12 @@ from assistant_agent.api.auth import (
     get_auth_context,
 )
 from assistant_agent.api.app import create_app
+from assistant_agent.agent_routing import WORKER_AGENT_ID, AgentRouter
 from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
 from assistant_agent.schemas.api import AgentRunResponse
 from assistant_agent.schemas.planning import IntentResult
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.agent_gateway import WORKER_AGENT_ID, AgentGateway
 from assistant_agent.services.api_identity import AuthContext
 from assistant_agent.services.trace_store import InMemoryTraceStore
 
@@ -34,25 +34,25 @@ class RecordingRuntime:
         return state
 
 
-class RecordingGateway:
+class RecordingRouter:
     def __init__(self) -> None:
         self.requests: list[object] = []
 
     def run(self, request) -> AgentRunResponse:
         self.requests.append(request)
         return AgentRunResponse(
-            run_id="run_gateway_test",
-            trace_id="trace_gateway_test",
+            run_id="run_router_test",
+            trace_id="trace_router_test",
             status="completed",
             intent="chat",
-            response_text="gateway runtime",
+            response_text="router runtime",
             data={
-                "agent_gateway": {
+                "agent_router": {
                     "agent_id": request.target_agent_id or "agent.default",
                     "collaboration_mode": request.effective_collaboration_mode(),
-                }
+                },
             },
-            runtime_info={"agent_gateway": {"offline": True}},
+            runtime_info={"agent_router": {"offline": True}},
         )
 
 
@@ -117,9 +117,9 @@ def test_api_agent_run_defaults_to_graph_runtime(monkeypatch) -> None:
     assert runtime.requests[0].metadata["request_identity"]["auth_bound_identity"] is False
 
 
-def test_api_agents_run_uses_agent_gateway(monkeypatch) -> None:
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+def test_api_agents_run_uses_agent_router(monkeypatch) -> None:
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_agent, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -135,17 +135,17 @@ def test_api_agents_run_uses_agent_gateway(monkeypatch) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["run_id"] == "run_gateway_test"
-    assert payload["response_text"] == "gateway runtime"
-    assert payload["data"]["agent_gateway"]["agent_id"] == "agent.worker"
-    assert len(gateway.requests) == 1
-    assert gateway.requests[0].metadata["request_identity"]["identity_source"] == "request_body"
+    assert payload["run_id"] == "run_router_test"
+    assert payload["response_text"] == "router runtime"
+    assert payload["data"]["agent_router"]["agent_id"] == "agent.worker"
+    assert len(router.requests) == 1
+    assert router.requests[0].metadata["request_identity"]["identity_source"] == "request_body"
 
 
 def test_api_agents_run_uses_enabled_header_auth(monkeypatch) -> None:
     monkeypatch.setenv(AUTH_HEADER_ENABLED_ENV, "1")
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_agent, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -160,18 +160,18 @@ def test_api_agents_run_uses_enabled_header_auth(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert len(gateway.requests) == 1
-    assert gateway.requests[0].user_id == "auth_user"
-    assert gateway.requests[0].session_id == "header_session"
-    metadata = gateway.requests[0].metadata["request_identity"]
+    assert len(router.requests) == 1
+    assert router.requests[0].user_id == "auth_user"
+    assert router.requests[0].session_id == "header_session"
+    metadata = router.requests[0].metadata["request_identity"]
     assert metadata["identity_source"] == "auth_context"
     assert metadata["auth_bound_identity"] is True
 
 
 def test_api_agents_run_rejects_enabled_header_auth_user_mismatch(monkeypatch) -> None:
     monkeypatch.setenv(AUTH_HEADER_ENABLED_ENV, "1")
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_agent, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -187,13 +187,13 @@ def test_api_agents_run_rejects_enabled_header_auth_user_mismatch(monkeypatch) -
 
     assert response.status_code == 403
     assert "auth context" in response.json()["detail"]
-    assert gateway.requests == []
+    assert router.requests == []
 
 
 def test_api_agents_run_rejects_request_identity_when_auth_bound_required(monkeypatch) -> None:
     monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "1")
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_agent, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -208,16 +208,16 @@ def test_api_agents_run_rejects_request_identity_when_auth_bound_required(monkey
 
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "IDENTITY_NOT_AUTH_BOUND"
-    assert gateway.requests == []
+    assert router.requests == []
 
 
-def test_api_agent_run_does_not_use_agent_gateway(monkeypatch) -> None:
+def test_api_agent_run_does_not_use_agent_router(monkeypatch) -> None:
     runtime = RecordingRuntime()
     monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
     monkeypatch.setattr(
         routes_agent,
-        "get_agent_gateway",
-        lambda: (_ for _ in ()).throw(AssertionError("gateway should not be used")),
+        "get_agent_router",
+        lambda: (_ for _ in ()).throw(AssertionError("router should not be used")),
     )
     client = TestClient(create_app())
 
@@ -374,9 +374,9 @@ def test_api_agent_run_rejects_request_identity_when_auth_bound_required(monkeyp
     assert runtime.requests == []
 
 
-def test_control_plane_api_queries_gateway_run(monkeypatch) -> None:
+def test_control_plane_api_queries_agent_router_run(monkeypatch) -> None:
     runtime = AgentGraphRuntime(trace_store=InMemoryTraceStore())
-    gateway = AgentGateway(
+    router = AgentRouter(
         {
             DEFAULT_AGENT_ID: ControlPlaneRecordingRuntime(
                 agent_id=DEFAULT_AGENT_ID,
@@ -390,7 +390,7 @@ def test_control_plane_api_queries_gateway_run(monkeypatch) -> None:
         }
     )
     monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
-    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    monkeypatch.setattr(routes_agent, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     run_response = client.post(
@@ -417,7 +417,7 @@ def test_control_plane_api_queries_gateway_run(monkeypatch) -> None:
         params={"event_type": "route_decision"},
     ).json()
 
-    assert summary["source"] == "agent_gateway"
+    assert summary["source"] == "agent_router"
     assert summary["route_decision"]["reason"] == "controller_delegate_default"
     assert summary["identity"]["identity_source"] == "request_body"
     assert summary["redaction"]["provider_raw_responses_included"] is False
@@ -429,7 +429,7 @@ def test_control_plane_api_queries_gateway_run(monkeypatch) -> None:
     assert budget["latency_ms"] is not None
     assert replay["request"]["message"] == "not_included"
     assert replay["delegated_tasks"][0]["run_id"] == "run_worker_child_api"
-    assert trace["gateway"]["run_id"] == run_id
+    assert trace["agent_router"]["run_id"] == run_id
     assert "trace" in trace
     event_types = {event["event_type"] for event in audit["events"]}
     assert {
@@ -450,11 +450,11 @@ def test_control_plane_api_queries_gateway_run(monkeypatch) -> None:
 def test_control_plane_api_can_summarize_default_agent_trace(monkeypatch) -> None:
     trace_store = InMemoryTraceStore()
     runtime = AgentGraphRuntime(trace_store=trace_store)
-    gateway = AgentGateway(
-        {DEFAULT_AGENT_ID: ControlPlaneRecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="unused_gateway")}
+    router = AgentRouter(
+        {DEFAULT_AGENT_ID: ControlPlaneRecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="unused_router")}
     )
     monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
-    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    monkeypatch.setattr(routes_agent, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     run_response = client.post(
@@ -477,11 +477,11 @@ def test_control_plane_api_can_summarize_default_agent_trace(monkeypatch) -> Non
 def test_control_plane_readiness_reports_auth_requirement(monkeypatch) -> None:
     monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "true")
     runtime = AgentGraphRuntime(trace_store=InMemoryTraceStore())
-    gateway = AgentGateway(
-        {DEFAULT_AGENT_ID: ControlPlaneRecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="unused_gateway")}
+    router = AgentRouter(
+        {DEFAULT_AGENT_ID: ControlPlaneRecordingRuntime(agent_id=DEFAULT_AGENT_ID, run_id="unused_router")}
     )
     monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
-    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    monkeypatch.setattr(routes_agent, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.get("/control-plane/readiness")

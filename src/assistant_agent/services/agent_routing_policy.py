@@ -1,4 +1,4 @@
-"""Deterministic routing policy for the optional agent gateway."""
+"""Deterministic routing policy for the optional agent router."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ from pydantic import BaseModel
 from assistant_agent.schemas.agent_communication import (
     DEFAULT_AGENT_ID,
     AgentDirectoryConfig,
-    AgentRouteRequest,
+    AgentRouteRequest as DirectoryRouteRequest,
     AgentRouteResult,
 )
-from assistant_agent.schemas.agent_gateway import (
+from assistant_agent.schemas.agent_router import (
     AgentCollaborationMode,
-    AgentGatewayRouteReason,
-    AgentGatewayRunRequest,
+    AgentRouteReason,
+    AgentRouteRequest,
 )
 from assistant_agent.services.agent_directory import AgentDirectory
 
@@ -50,7 +50,7 @@ class CapabilityMatchPolicy:
         source_agent_id: str,
     ) -> AgentRouteResult:
         return directory.resolve(
-            AgentRouteRequest(
+            DirectoryRouteRequest(
                 capability=capability,
                 source_agent_id=source_agent_id,
             )
@@ -58,16 +58,16 @@ class CapabilityMatchPolicy:
 
 
 class AgentRoutingDecision(BaseModel):
-    """Internal route decision consumed by AgentGateway."""
+    """Internal route decision consumed by AgentRouter."""
 
     route: AgentRouteResult
-    reason: AgentGatewayRouteReason
+    reason: AgentRouteReason
     collaboration_mode: AgentCollaborationMode
     use_controller_runtime: bool = False
 
 
 class AgentRoutingPolicy:
-    """Select a gateway target through deterministic, auditable rules."""
+    """Select an agent-router target through deterministic, auditable rules."""
 
     def __init__(
         self,
@@ -100,12 +100,12 @@ class AgentRoutingPolicy:
 
     def resolve(
         self,
-        request: AgentGatewayRunRequest,
+        request: AgentRouteRequest,
         *,
         directory: AgentDirectory,
         source_agent_id: str | None = None,
     ) -> AgentRoutingDecision:
-        """Resolve the initial agent for a gateway request."""
+        """Resolve the initial agent for a route request."""
 
         mode = request.effective_collaboration_mode()
         source = source_agent_id or self.controller_agent_id
@@ -113,7 +113,7 @@ class AgentRoutingPolicy:
         if request.target_agent_id:
             return self._decision(
                 route=directory.resolve(
-                    AgentRouteRequest(
+                    DirectoryRouteRequest(
                         target_agent_id=request.target_agent_id,
                         source_agent_id=source,
                     )
@@ -128,7 +128,7 @@ class AgentRoutingPolicy:
             if table_target:
                 return self._decision(
                     route=directory.resolve(
-                        AgentRouteRequest(
+                        DirectoryRouteRequest(
                             target_agent_id=table_target,
                             source_agent_id=source,
                         )
@@ -151,7 +151,7 @@ class AgentRoutingPolicy:
         if mode == "controller_delegate":
             return self._decision(
                 route=directory.resolve(
-                    AgentRouteRequest(
+                    DirectoryRouteRequest(
                         target_agent_id=self.controller_agent_id,
                         source_agent_id=source,
                     )
@@ -163,7 +163,7 @@ class AgentRoutingPolicy:
 
         return self._decision(
             route=directory.resolve(
-                AgentRouteRequest(
+                DirectoryRouteRequest(
                     target_agent_id=self.default_agent_id,
                     source_agent_id=source,
                 )
@@ -177,9 +177,9 @@ class AgentRoutingPolicy:
         self,
         *,
         route: AgentRouteResult,
-        reason: AgentGatewayRouteReason,
+        reason: AgentRouteReason,
         mode: AgentCollaborationMode,
-        request: AgentGatewayRunRequest,
+        request: AgentRouteRequest,
     ) -> AgentRoutingDecision:
         agent_id = route.instance.agent_id if route.instance is not None else None
         return AgentRoutingDecision(
