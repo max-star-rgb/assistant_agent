@@ -1,4 +1,4 @@
-"""Inbound A2A JSON-RPC adapter over the local AgentGateway."""
+"""Inbound A2A JSON-RPC adapter over the local AgentRouter."""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ from assistant_agent.schemas.a2a import (
     A2ATaskResult,
     A2ATaskStatus,
 )
-from assistant_agent.schemas.agent_gateway import AgentCollaborationMode, AgentGatewayRunRequest
+from assistant_agent.agent_routing import ROUTER_METADATA_KEY, AgentRouter
+from assistant_agent.schemas.agent_router import AgentCollaborationMode, AgentRouteRequest
 from assistant_agent.schemas.api import AgentRunResponse
-from assistant_agent.services.agent_gateway import AgentGateway
 
 
 DEFAULT_A2A_USER_ID = "a2a_user"
@@ -48,15 +48,15 @@ class A2AInvalidParams(ValueError):
     """Raised when an inbound A2A message cannot be mapped safely."""
 
 
-def build_agent_card(*, base_url: str, gateway: AgentGateway | None = None) -> dict[str, Any]:
+def build_agent_card(*, base_url: str, router: AgentRouter | None = None) -> dict[str, Any]:
     """Build a local A2A agent card for discovery."""
 
     normalized_base = base_url.rstrip("/")
-    skills = _skills_from_gateway(gateway)
+    skills = _skills_from_router(router)
     card = A2AAgentCard(
         protocolVersion=A2A_PROTOCOL_VERSION,
         name="Multimodal Agent",
-        description="Local-first multimodal assistant with explicit local multi-agent gateway routing.",
+        description="Local-first multimodal assistant with explicit local multi-agent router support.",
         url=f"{normalized_base}/a2a/rpc",
         preferredTransport="JSONRPC",
         additionalInterfaces=[
@@ -83,8 +83,8 @@ def build_agent_card(*, base_url: str, gateway: AgentGateway | None = None) -> d
     return card.model_dump(mode="json")
 
 
-def gateway_request_from_a2a_params(params: Mapping[str, Any]) -> AgentGatewayRunRequest:
-    """Convert A2A SendMessage params into an internal gateway request."""
+def route_request_from_a2a_params(params: Mapping[str, Any]) -> AgentRouteRequest:
+    """Convert A2A SendMessage params into an internal agent route request."""
 
     message = _mapping(params.get("message"), field_name="message")
     metadata = _merged_metadata(params, message)
@@ -104,7 +104,7 @@ def gateway_request_from_a2a_params(params: Mapping[str, Any]) -> AgentGatewayRu
     collaboration_mode = _collaboration_mode(
         _metadata_string(metadata, "collaboration_mode", "collaborationMode", "mode")
     )
-    return AgentGatewayRunRequest(
+    return AgentRouteRequest(
         user_id=user_id,
         session_id=session_id,
         text=text or None,
@@ -126,13 +126,13 @@ def gateway_request_from_a2a_params(params: Mapping[str, Any]) -> AgentGatewayRu
     )
 
 
-def task_from_gateway_response(
+def task_from_router_response(
     response: AgentRunResponse,
     *,
-    request: AgentGatewayRunRequest,
+    request: AgentRouteRequest,
     source_message: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Convert an internal gateway response into an A2A task-like result."""
+    """Convert an internal router response into an A2A task-like result."""
 
     context_id = _string(source_message.get("contextId")) or request.session_id
     source_message_id = _string(source_message.get("messageId")) or f"msg_{uuid4().hex}"
@@ -163,15 +163,15 @@ def task_from_gateway_response(
         metadata={
             "trace_id": response.trace_id,
             "runtime_status": response.status,
-            "agent_gateway": response.data.get("agent_gateway", {}),
+            "agent_router": _router_payload(response),
             "errors": [error.model_dump(mode="json") for error in response.errors],
         },
     )
     return task.model_dump(mode="json")
 
 
-def _skills_from_gateway(gateway: AgentGateway | None) -> list[dict[str, Any]]:
-    if gateway is None:
+def _skills_from_router(router: AgentRouter | None) -> list[dict[str, Any]]:
+    if router is None:
         return [
             {
                 "id": "agent.default",
@@ -183,7 +183,7 @@ def _skills_from_gateway(gateway: AgentGateway | None) -> list[dict[str, Any]]:
             }
         ]
     skills = []
-    for instance in gateway.directory.list():
+    for instance in router.directory.list():
         skills.append(
             {
                 "id": instance.agent_id,
@@ -321,3 +321,11 @@ def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
 
 def _string(value: Any) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _router_payload(response: AgentRunResponse) -> dict[str, Any]:
+    if isinstance(response.data, dict):
+        value = response.data.get(ROUTER_METADATA_KEY)
+        if isinstance(value, dict):
+            return value
+    return {}

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 
 from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
-from assistant_agent.api.routes_agent import get_agent_gateway, get_trial_access_gate
+from assistant_agent.api.routes_agent import get_agent_router, get_trial_access_gate
 from assistant_agent.schemas.a2a import (
     A2AAgentCard,
     A2A_JSONRPC_VERSION,
@@ -24,8 +24,8 @@ from assistant_agent.schemas.a2a import (
 from assistant_agent.services.a2a_adapter import (
     A2AInvalidParams,
     build_agent_card,
-    gateway_request_from_a2a_params,
-    task_from_gateway_response,
+    route_request_from_a2a_params,
+    task_from_router_response,
 )
 from assistant_agent.services.api_identity import (
     AuthContext,
@@ -42,7 +42,7 @@ router = APIRouter()
 def get_agent_card(request: Request) -> dict[str, Any]:
     """Expose a local A2A agent card for discovery."""
 
-    return build_agent_card(base_url=str(request.base_url), gateway=get_agent_gateway())
+    return build_agent_card(base_url=str(request.base_url), router=get_agent_router())
 
 
 @router.post("/a2a/rpc", response_model=A2AJsonRpcResponse)
@@ -50,7 +50,7 @@ async def a2a_json_rpc(
     request: Request,
     auth_context: AuthContext = Depends(get_auth_context),
 ) -> A2AJsonRpcResponse:
-    """Handle A2A JSON-RPC requests over the local gateway."""
+    """Handle A2A JSON-RPC requests over the local agent router."""
 
     payload = await _read_json_payload(request)
     if isinstance(payload, _JsonParseFailure):
@@ -91,7 +91,7 @@ async def a2a_json_rpc(
             data={"method": rpc_request.method},
         )
     try:
-        gateway_request = gateway_request_from_a2a_params(rpc_request.params)
+        route_request = route_request_from_a2a_params(rpc_request.params)
     except A2AInvalidParams as exc:
         return _error_response(
             rpc_request.id,
@@ -100,8 +100,8 @@ async def a2a_json_rpc(
         )
     try:
         identity = resolve_request_identity(
-            user_id=gateway_request.user_id,
-            session_id=gateway_request.session_id,
+            user_id=route_request.user_id,
+            session_id=route_request.session_id,
             source="a2a_metadata",
             auth_context=auth_context,
         )
@@ -130,18 +130,18 @@ async def a2a_json_rpc(
             access.reason or "trial user is not allowed",
             data={"user_id": identity.identity.user_id},
         )
-    gateway_request = gateway_request.model_copy(
+    route_request = route_request.model_copy(
         update={
             "user_id": identity.identity.user_id,
-            "session_id": identity.identity.session_id or gateway_request.session_id,
+            "session_id": identity.identity.session_id or route_request.session_id,
             "metadata": {
-                **dict(gateway_request.metadata),
+                **dict(route_request.metadata),
                 "request_identity": identity.metadata(),
             },
         }
     )
     try:
-        response = get_agent_gateway().run(gateway_request)
+        response = get_agent_router().run(route_request)
     except Exception as exc:  # pragma: no cover - defensive protocol boundary
         return _error_response(
             rpc_request.id,
@@ -153,9 +153,9 @@ async def a2a_json_rpc(
     return A2AJsonRpcResponse(
         jsonrpc=A2A_JSONRPC_VERSION,
         id=rpc_request.id,
-        result=task_from_gateway_response(
+        result=task_from_router_response(
             response,
-            request=gateway_request,
+            request=route_request,
             source_message=source_message,
         ),
     )

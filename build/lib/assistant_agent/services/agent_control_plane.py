@@ -15,7 +15,7 @@ from assistant_agent.schemas.agent_control_plane import (
     AgentControlPlaneRunRecord,
     AgentControlPlaneRunSummary,
 )
-from assistant_agent.schemas.agent_gateway import AgentGatewayRunRequest
+from assistant_agent.schemas.agent_router import AgentRouteRequest
 from assistant_agent.schemas.api import AgentRunResponse
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.trace_query import RunSummary, TraceQueryService, TraceSummary
@@ -110,19 +110,19 @@ class InMemoryAgentControlPlaneStore:
 
 
 class AgentControlPlaneQueryService:
-    """Compose run, trace, gateway, delegation, and budget summaries."""
+    """Compose run, trace, router, delegation, and budget summaries."""
 
     def __init__(
         self,
         *,
         trace_query: TraceQueryService,
-        gateway_store: AgentControlPlaneStore | None = None,
+        router_store: AgentControlPlaneStore | None = None,
     ) -> None:
         self.trace_query = trace_query
-        self.gateway_store = gateway_store
+        self.router_store = router_store
 
     def run_summary(self, run_id: str) -> AgentControlPlaneRunSummary | None:
-        record = self.gateway_store.get(run_id) if self.gateway_store is not None else None
+        record = self.router_store.get(run_id) if self.router_store is not None else None
         trace = self.trace_query.run_summary(run_id)
         if record is None and trace is None:
             return None
@@ -130,20 +130,20 @@ class AgentControlPlaneQueryService:
 
     def trace_summary(self, trace_id: str) -> dict[str, Any] | None:
         trace = self.trace_query.trace_summary(trace_id)
-        record = self.gateway_store.get_by_trace_id(trace_id) if self.gateway_store is not None else None
+        record = self.router_store.get_by_trace_id(trace_id) if self.router_store is not None else None
         if trace is None and record is None:
             return None
         return {
             "schema_version": "agent_control_plane_trace_v1",
             "trace_id": trace_id,
             "run_id": trace.run_id if trace is not None else record.run_id if record is not None else None,
-            "gateway": _record_payload(record),
+            "agent_router": _record_payload(record),
             "trace": trace.model_dump(mode="json") if trace is not None else {},
             "redaction": CONTROL_PLANE_REDACTION,
         }
 
     def route_summary(self, run_id: str) -> AgentControlPlaneRouteSummary | None:
-        record = self.gateway_store.get(run_id) if self.gateway_store is not None else None
+        record = self.router_store.get(run_id) if self.router_store is not None else None
         if record is None:
             return None
         return AgentControlPlaneRouteSummary(
@@ -156,7 +156,7 @@ class AgentControlPlaneQueryService:
         )
 
     def delegation_tree(self, run_id: str) -> AgentControlPlaneDelegationTree | None:
-        record = self.gateway_store.get(run_id) if self.gateway_store is not None else None
+        record = self.router_store.get(run_id) if self.router_store is not None else None
         if record is None:
             return None
         route_agent_id = _string_or_none(record.route_decision.get("selected_agent_id"))
@@ -174,7 +174,7 @@ class AgentControlPlaneQueryService:
         )
 
     def budget_summary(self, run_id: str) -> AgentControlPlaneBudgetSummary | None:
-        record = self.gateway_store.get(run_id) if self.gateway_store is not None else None
+        record = self.router_store.get(run_id) if self.router_store is not None else None
         trace = self.trace_query.run_summary(run_id)
         if record is None and trace is None:
             return None
@@ -193,7 +193,7 @@ class AgentControlPlaneQueryService:
         )
 
     def replay_preview(self, run_id: str) -> AgentControlPlaneReplayPreview | None:
-        record = self.gateway_store.get(run_id) if self.gateway_store is not None else None
+        record = self.router_store.get(run_id) if self.router_store is not None else None
         if record is None:
             return None
         return AgentControlPlaneReplayPreview(
@@ -228,7 +228,7 @@ class AgentControlPlaneQueryService:
         limit: int = 100,
     ) -> AgentAuditEventList:
         events = (
-            self.gateway_store.list_audit_events(
+            self.router_store.list_audit_events(
                 run_id=run_id,
                 trace_id=trace_id,
                 user_id=user_id,
@@ -236,7 +236,7 @@ class AgentControlPlaneQueryService:
                 event_type=event_type,
                 limit=limit,
             )
-            if self.gateway_store is not None
+            if self.router_store is not None
             else []
         )
         return AgentAuditEventList(
@@ -250,17 +250,17 @@ class AgentControlPlaneQueryService:
         return self.audit_events(run_id=run_id, limit=limit)
 
 
-def build_gateway_run_record(
+def build_agent_router_run_record(
     *,
-    request: AgentGatewayRunRequest,
+    request: AgentRouteRequest,
     response: AgentRunResponse,
     latency_ms: int | None,
 ) -> AgentControlPlaneRunRecord:
-    """Build a redacted control-plane record from one gateway response."""
+    """Build a redacted control-plane record from one AgentRouter response."""
 
-    gateway = _gateway_payload(response)
-    route_decision = _dict_or_empty(gateway.get("route_decision"))
-    delegated_tasks = _delegated_tasks(response=response, gateway=gateway)
+    router = _router_payload(response)
+    route_decision = _dict_or_empty(router.get("route_decision"))
+    delegated_tasks = _delegated_tasks(response=response, router=router)
     identity = _identity_payload(request.metadata.get("request_identity"))
     budget = _budget_payload(response=response, delegated_tasks=delegated_tasks)
     cost = _cost_payload(budget)
@@ -314,8 +314,8 @@ def audit_event(
     )
 
 
-def audit_events_from_gateway_record(record: AgentControlPlaneRunRecord) -> list[AgentAuditEvent]:
-    """Build structured audit events from one gateway run record."""
+def audit_events_from_agent_router_record(record: AgentControlPlaneRunRecord) -> list[AgentAuditEvent]:
+    """Build structured audit events from one AgentRouter run record."""
 
     events = [
         audit_event(
@@ -336,7 +336,7 @@ def audit_events_from_gateway_record(record: AgentControlPlaneRunRecord) -> list
         ),
         audit_event(
             event_type="route_decision",
-            component="agent_gateway",
+            component="agent_router",
             action="route_request",
             outcome="allowed" if record.route_decision.get("status") == "routed" else "blocked",
             user_id=record.user_id,
@@ -363,7 +363,7 @@ def audit_events_from_gateway_record(record: AgentControlPlaneRunRecord) -> list
     return events
 
 
-def response_user_id(request: AgentGatewayRunRequest, identity: dict[str, Any]) -> str:
+def response_user_id(request: AgentRouteRequest, identity: dict[str, Any]) -> str:
     requested = identity.get("requested_user_id")
     return str(requested) if isinstance(requested, str) and requested else request.user_id
 
@@ -465,7 +465,7 @@ def _run_summary(
             user_id=record.user_id,
             session_id=record.session_id,
             status=record.status,
-            source="agent_gateway",
+            source="agent_router",
             route_decision=dict(record.route_decision),
             delegated_tasks=list(record.delegated_tasks),
             identity=dict(record.identity),
@@ -513,21 +513,21 @@ def _delegation_node(task: dict[str, Any]) -> AgentControlPlaneDelegationNode:
     )
 
 
-def _gateway_payload(response: AgentRunResponse) -> dict[str, Any]:
-    data = response.data.get("agent_gateway") if isinstance(response.data, dict) else None
+def _router_payload(response: AgentRunResponse) -> dict[str, Any]:
+    data = response.data.get("agent_router") if isinstance(response.data, dict) else None
     if isinstance(data, dict):
         return data
-    runtime = response.runtime_info.get("agent_gateway") if isinstance(response.runtime_info, dict) else None
+    runtime = response.runtime_info.get("agent_router") if isinstance(response.runtime_info, dict) else None
     return dict(runtime) if isinstance(runtime, dict) else {}
 
 
 def _delegated_tasks(
     *,
     response: AgentRunResponse,
-    gateway: dict[str, Any],
+    router: dict[str, Any],
 ) -> list[dict[str, Any]]:
     metadata_by_task_id = _delegated_task_metadata_by_id(response)
-    tasks = gateway.get("delegated_tasks")
+    tasks = router.get("delegated_tasks")
     if isinstance(tasks, list) and tasks:
         merged: list[dict[str, Any]] = []
         for task in tasks:
@@ -644,7 +644,7 @@ def _failure_class(
         return None
     route_status = route_decision.get("status")
     if route_status == "failed":
-        return "gateway_failure"
+        return "router_failure"
     codes = {str(error.code) for error in response.errors}
     codes.update(
         str(code)
@@ -660,7 +660,7 @@ def _failure_class(
         return "worker_failure"
     if route_decision.get("collaboration_mode") == "controller_delegate":
         return "controller_failure"
-    return "gateway_failure"
+    return "router_failure"
 
 
 def _find_dict_by_key(value: Any, key: str) -> dict[str, Any]:

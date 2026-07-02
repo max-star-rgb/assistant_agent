@@ -15,7 +15,7 @@ from assistant_agent.schemas.api import AgentRunResponse
 from assistant_agent.services.agent_directory import AgentDirectory, default_agent_instance
 
 
-class RecordingGateway:
+class RecordingRouter:
     def __init__(self, *, failed: bool = False, include_private_card_data: bool = False) -> None:
         self.failed = failed
         self.requests = []
@@ -50,7 +50,7 @@ class RecordingGateway:
                 status="failed",
                 intent=None,
                 response_text="Agent not found: agent.missing",
-                data={"agent_gateway": {"agent_id": None, "target_agent_id": request.target_agent_id}},
+                data={"agent_router": {"agent_id": None, "target_agent_id": request.target_agent_id}},
             )
         return AgentRunResponse(
             run_id="run_a2a_test",
@@ -59,7 +59,7 @@ class RecordingGateway:
             intent="chat",
             response_text="a2a response",
             data={
-                "agent_gateway": {
+                "agent_router": {
                     "agent_id": request.target_agent_id or DEFAULT_AGENT_ID,
                     "collaboration_mode": request.effective_collaboration_mode(),
                 }
@@ -67,14 +67,14 @@ class RecordingGateway:
         )
 
 
-class ExplodingGateway(RecordingGateway):
+class ExplodingRouter(RecordingRouter):
     def run(self, request) -> AgentRunResponse:
         raise RuntimeError("provider secret should not leak")
 
 
 def test_a2a_agent_card_exposes_json_rpc_endpoint(monkeypatch) -> None:
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.get("/.well-known/agent-card.json")
@@ -91,8 +91,8 @@ def test_a2a_agent_card_exposes_json_rpc_endpoint(monkeypatch) -> None:
 
 
 def test_a2a_agent_card_filters_private_skill_details(monkeypatch) -> None:
-    gateway = RecordingGateway(include_private_card_data=True)
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter(include_private_card_data=True)
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.get("/.well-known/agent-card.json")
@@ -107,9 +107,9 @@ def test_a2a_agent_card_filters_private_skill_details(monkeypatch) -> None:
     assert private_skill["tags"] == ["chat", "local"]
 
 
-def test_a2a_send_message_routes_to_agent_gateway(monkeypatch) -> None:
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+def test_a2a_send_message_routes_to_agent_router(monkeypatch) -> None:
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -146,8 +146,8 @@ def test_a2a_send_message_routes_to_agent_gateway(monkeypatch) -> None:
     assert result["status"]["message"]["parts"][0]["text"] == "a2a response"
     assert result["metadata"]["trace_id"] == "trace_a2a_test"
     assert result["artifacts"][0]["parts"][0]["text"] == "a2a response"
-    assert len(gateway.requests) == 1
-    request = gateway.requests[0]
+    assert len(router.requests) == 1
+    request = router.requests[0]
     assert request.user_id == "u1"
     assert request.session_id == "ctx_1"
     assert request.text == "hello from A2A"
@@ -156,8 +156,8 @@ def test_a2a_send_message_routes_to_agent_gateway(monkeypatch) -> None:
 
 def test_a2a_send_message_uses_enabled_header_auth(monkeypatch) -> None:
     monkeypatch.setenv(AUTH_HEADER_ENABLED_ENV, "1")
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -185,8 +185,8 @@ def test_a2a_send_message_uses_enabled_header_auth(monkeypatch) -> None:
     payload = response.json()
     assert response.status_code == 200
     assert payload["error"] is None
-    assert len(gateway.requests) == 1
-    request = gateway.requests[0]
+    assert len(router.requests) == 1
+    request = router.requests[0]
     assert request.user_id == "auth_user"
     assert request.session_id == "header_session"
     metadata = request.metadata["request_identity"]
@@ -198,8 +198,8 @@ def test_a2a_send_message_uses_enabled_header_auth(monkeypatch) -> None:
 def test_a2a_send_message_uses_trusted_header_auth_mode_when_required(monkeypatch) -> None:
     monkeypatch.setenv(AUTH_MODE_ENV, "trusted_header")
     monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "1")
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -227,8 +227,8 @@ def test_a2a_send_message_uses_trusted_header_auth_mode_when_required(monkeypatc
     payload = response.json()
     assert response.status_code == 200
     assert payload["error"] is None
-    assert len(gateway.requests) == 1
-    request = gateway.requests[0]
+    assert len(router.requests) == 1
+    request = router.requests[0]
     assert request.user_id == "auth_user"
     assert request.session_id == "trusted_session"
     assert request.metadata["request_identity"]["auth_context_source"] == "header"
@@ -236,8 +236,8 @@ def test_a2a_send_message_uses_trusted_header_auth_mode_when_required(monkeypatc
 
 def test_a2a_send_message_rejects_request_identity_when_auth_bound_required(monkeypatch) -> None:
     monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "true")
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -267,13 +267,13 @@ def test_a2a_send_message_rejects_request_identity_when_auth_bound_required(monk
     assert payload["id"] == "rpc_auth_required"
     assert payload["error"]["code"] == -32602
     assert payload["error"]["data"]["code"] == "IDENTITY_NOT_AUTH_BOUND"
-    assert gateway.requests == []
+    assert router.requests == []
 
 
 def test_a2a_send_message_rejects_enabled_header_auth_user_mismatch(monkeypatch) -> None:
     monkeypatch.setenv(AUTH_HEADER_ENABLED_ENV, "1")
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -304,12 +304,12 @@ def test_a2a_send_message_rejects_enabled_header_auth_user_mismatch(monkeypatch)
     assert payload["id"] == "rpc_auth_mismatch"
     assert payload["error"]["code"] == -32602
     assert "auth context" in payload["error"]["message"]
-    assert gateway.requests == []
+    assert router.requests == []
 
 
 def test_a2a_send_message_uses_params_context_id_when_message_context_missing(monkeypatch) -> None:
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -334,12 +334,12 @@ def test_a2a_send_message_uses_params_context_id_when_message_context_missing(mo
     assert response.status_code == 200
     assert payload["error"] is None
     assert payload["result"]["contextId"] == "ctx_from_params"
-    assert gateway.requests[0].session_id == "ctx_from_params"
+    assert router.requests[0].session_id == "ctx_from_params"
 
 
 def test_a2a_send_message_failed_agent_run_returns_failed_task(monkeypatch) -> None:
-    gateway = RecordingGateway(failed=True)
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter(failed=True)
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -363,12 +363,12 @@ def test_a2a_send_message_failed_agent_run_returns_failed_task(monkeypatch) -> N
     assert payload["error"] is None
     assert payload["result"]["status"]["state"] == "failed"
     assert payload["result"]["metadata"]["runtime_status"] == "failed"
-    assert gateway.requests[0].target_agent_id == "agent.missing"
+    assert router.requests[0].target_agent_id == "agent.missing"
 
 
 def test_a2a_invalid_json_returns_parse_error(monkeypatch) -> None:
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -382,12 +382,12 @@ def test_a2a_invalid_json_returns_parse_error(monkeypatch) -> None:
     assert payload["result"] is None
     assert payload["id"] is None
     assert payload["error"]["code"] == -32700
-    assert gateway.requests == []
+    assert router.requests == []
 
 
 def test_a2a_non_object_request_returns_invalid_request(monkeypatch) -> None:
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post("/a2a/rpc", json=[])
@@ -397,12 +397,12 @@ def test_a2a_non_object_request_returns_invalid_request(monkeypatch) -> None:
     assert payload["result"] is None
     assert payload["id"] is None
     assert payload["error"]["code"] == -32600
-    assert gateway.requests == []
+    assert router.requests == []
 
 
 def test_a2a_unknown_method_returns_json_rpc_error(monkeypatch) -> None:
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -414,12 +414,12 @@ def test_a2a_unknown_method_returns_json_rpc_error(monkeypatch) -> None:
     assert response.status_code == 200
     assert payload["result"] is None
     assert payload["error"]["code"] == -32601
-    assert gateway.requests == []
+    assert router.requests == []
 
 
 def test_a2a_params_must_be_object(monkeypatch) -> None:
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -432,12 +432,12 @@ def test_a2a_params_must_be_object(monkeypatch) -> None:
     assert payload["result"] is None
     assert payload["id"] == "rpc_params"
     assert payload["error"]["code"] == -32602
-    assert gateway.requests == []
+    assert router.requests == []
 
 
 def test_a2a_invalid_message_params_return_json_rpc_error(monkeypatch) -> None:
-    gateway = RecordingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+    router = RecordingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(
@@ -454,12 +454,12 @@ def test_a2a_invalid_message_params_return_json_rpc_error(monkeypatch) -> None:
     assert response.status_code == 200
     assert payload["result"] is None
     assert payload["error"]["code"] == -32602
-    assert gateway.requests == []
+    assert router.requests == []
 
 
-def test_a2a_gateway_exception_returns_internal_json_rpc_error(monkeypatch) -> None:
-    gateway = ExplodingGateway()
-    monkeypatch.setattr(routes_a2a, "get_agent_gateway", lambda: gateway)
+def test_a2a_router_exception_returns_internal_json_rpc_error(monkeypatch) -> None:
+    router = ExplodingRouter()
+    monkeypatch.setattr(routes_a2a, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     response = client.post(

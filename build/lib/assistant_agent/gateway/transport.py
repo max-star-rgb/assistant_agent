@@ -1,4 +1,4 @@
-"""Transport-agnostic endpoint primitives for runtime gateway tests and embedding."""
+"""Transport-agnostic endpoint primitives for gateway tests and embedding."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Optional
 
-from assistant_agent.runtime_gateway.protocol import Frame
+from assistant_agent.gateway.protocol import Frame
 
 
 class Closed(Exception):
@@ -16,7 +16,7 @@ class Closed(Exception):
 
 @dataclass
 class InMemoryDuplex:
-    """A minimal bidirectional channel for Gateway<->Runtime frame streams."""
+    """A minimal bidirectional channel for Gateway<->session frame streams."""
 
     _a_to_b: "asyncio.Queue[Optional[Frame]]"
     _b_to_a: "asyncio.Queue[Optional[Frame]]"

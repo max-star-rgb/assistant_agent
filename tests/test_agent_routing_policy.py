@@ -4,7 +4,7 @@ from assistant_agent.schemas.agent_communication import (
     AgentInstance,
     AgentInstanceConfig,
 )
-from assistant_agent.schemas.agent_gateway import AgentGatewayRunRequest
+from assistant_agent.agent_routing import AgentRouteRequest
 from assistant_agent.services.agent_directory import AgentDirectory, default_agent_instance
 from assistant_agent.services.agent_routing_policy import AgentRoutingPolicy
 
@@ -20,7 +20,7 @@ def test_routing_policy_explicit_target_wins_over_routing_table() -> None:
     policy = AgentRoutingPolicy(routing_table={"worker_specialist": "agent.other"})
 
     decision = policy.resolve(
-        AgentGatewayRunRequest(
+        AgentRouteRequest(
             user_id="u1",
             session_id="s1",
             text="route explicitly",
@@ -45,7 +45,7 @@ def test_routing_policy_routes_unique_capability_match() -> None:
     )
 
     decision = AgentRoutingPolicy().resolve(
-        AgentGatewayRunRequest(
+        AgentRouteRequest(
             user_id="u1",
             session_id="s1",
             text="route by capability",
@@ -70,7 +70,7 @@ def test_routing_policy_returns_ambiguous_capability_without_table() -> None:
     )
 
     decision = AgentRoutingPolicy().resolve(
-        AgentGatewayRunRequest(
+        AgentRouteRequest(
             user_id="u1",
             session_id="s1",
             text="ambiguous",
@@ -96,7 +96,7 @@ def test_routing_policy_routing_table_resolves_ambiguous_capability() -> None:
     policy = AgentRoutingPolicy(routing_table={"worker_specialist": "agent.worker_b"})
 
     decision = policy.resolve(
-        AgentGatewayRunRequest(
+        AgentRouteRequest(
             user_id="u1",
             session_id="s1",
             text="route through table",
@@ -121,7 +121,7 @@ def test_routing_policy_routing_table_target_must_be_enabled() -> None:
     policy = AgentRoutingPolicy(routing_table={"worker_specialist": "agent.worker"})
 
     decision = policy.resolve(
-        AgentGatewayRunRequest(
+        AgentRouteRequest(
             user_id="u1",
             session_id="s1",
             text="disabled",
@@ -141,11 +141,11 @@ def test_routing_policy_default_and_controller_fallbacks() -> None:
     policy = AgentRoutingPolicy()
 
     default_decision = policy.resolve(
-        AgentGatewayRunRequest(user_id="u1", session_id="s1", text="default"),
+        AgentRouteRequest(user_id="u1", session_id="s1", text="default"),
         directory=directory,
     )
     controller_decision = policy.resolve(
-        AgentGatewayRunRequest(
+        AgentRouteRequest(
             user_id="u1",
             session_id="s1",
             text="delegate",
@@ -185,7 +185,7 @@ def test_directory_and_policy_can_be_built_from_config() -> None:
     directory = AgentDirectory.from_config(config)
     policy = AgentRoutingPolicy.from_config(config)
     decision = policy.resolve(
-        AgentGatewayRunRequest(
+        AgentRouteRequest(
             user_id="u1",
             session_id="s1",
             text="config route",

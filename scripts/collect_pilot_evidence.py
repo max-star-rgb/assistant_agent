@@ -106,7 +106,7 @@ def collect_evidence(*, user_id: str, session_id: str) -> dict[str, Any]:
     from assistant_agent.api.app import create_app
 
     routes_agent._RUNTIME = None
-    routes_agent._AGENT_GATEWAY = None
+    routes_agent._AGENT_ROUTER = None
     client = TestClient(create_app())
     headers = {
         "content-type": "application/json",
@@ -117,7 +117,7 @@ def collect_evidence(*, user_id: str, session_id: str) -> dict[str, Any]:
     readiness = _request(client, "GET", "/control-plane/readiness", headers=headers)
     agent_card = _request(client, "GET", "/.well-known/agent-card.json", headers=headers)
     single = _single_agent_evidence(client, headers=headers, user_id=user_id, session_id=session_id)
-    gateway = _gateway_evidence(client, headers=headers, user_id=user_id, session_id=session_id)
+    agent_router = _agent_router_evidence(client, headers=headers, user_id=user_id, session_id=session_id)
     a2a = _a2a_evidence(client, headers=headers, user_id=user_id, session_id=session_id)
     recent_audit = _request(client, "GET", "/control-plane/audit/events?limit=20", headers=headers)
 
@@ -128,7 +128,7 @@ def collect_evidence(*, user_id: str, session_id: str) -> dict[str, Any]:
         "readiness": readiness,
         "agent_card": _agent_card_summary(agent_card),
         "single_agent_run": single,
-        "gateway_run": gateway,
+        "agent_router_run": agent_router,
         "a2a_inbound_run": a2a,
         "control_plane_recent_audit": recent_audit,
     }
@@ -159,7 +159,7 @@ def _single_agent_evidence(client: Any, *, headers: Mapping[str, str], user_id: 
     }
 
 
-def _gateway_evidence(client: Any, *, headers: Mapping[str, str], user_id: str, session_id: str) -> dict[str, Any]:
+def _agent_router_evidence(client: Any, *, headers: Mapping[str, str], user_id: str, session_id: str) -> dict[str, Any]:
     response = _request(
         client,
         "POST",
@@ -168,7 +168,7 @@ def _gateway_evidence(client: Any, *, headers: Mapping[str, str], user_id: str, 
         json={
             "user_id": user_id,
             "session_id": session_id,
-            "text": "pilot evidence gateway smoke",
+            "text": "pilot evidence agent router smoke",
             "collaboration_mode": "single",
             "target_agent_id": "agent.worker",
             "metadata": {"source": "pilot_evidence", "entrypoint": "agents_run"},
@@ -276,7 +276,7 @@ def _run_response_summary(response: dict[str, Any]) -> dict[str, Any]:
     body = response.get("body") if isinstance(response.get("body"), dict) else {}
     errors = body.get("errors") if isinstance(body, dict) else []
     data = body.get("data") if isinstance(body, dict) else {}
-    gateway = data.get("agent_gateway", {}) if isinstance(data, dict) else {}
+    agent_router = data.get("agent_router", {}) if isinstance(data, dict) else {}
     return {
         "ok": response["ok"],
         "status_code": response["status_code"],
@@ -285,7 +285,7 @@ def _run_response_summary(response: dict[str, Any]) -> dict[str, Any]:
         "status": body.get("status"),
         "intent": body.get("intent"),
         "error_count": len(errors or []),
-        "agent_gateway": _safe_value(gateway),
+        "agent_router": _safe_value(agent_router),
     }
 
 
@@ -322,12 +322,12 @@ def _compact_response_body(url: str, body: Any) -> Any:
         return body
     if url.startswith("/control-plane/traces/"):
         trace = body.get("trace", {}) if isinstance(body.get("trace"), dict) else {}
-        gateway = body.get("gateway", {}) if isinstance(body.get("gateway"), dict) else {}
+        agent_router = body.get("agent_router", {}) if isinstance(body.get("agent_router"), dict) else {}
         return {
             "schema_version": body.get("schema_version"),
             "run_id": body.get("run_id"),
             "trace_id": body.get("trace_id"),
-            "gateway": _compact_gateway_record(gateway),
+            "agent_router": _compact_agent_router_record(agent_router),
             "trace": _compact_trace_summary(trace),
             "redaction": body.get("redaction", {}),
         }
@@ -409,22 +409,22 @@ def _compact_run_summary(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compact_gateway_record(gateway: dict[str, Any]) -> dict[str, Any]:
-    if not gateway:
+def _compact_agent_router_record(agent_router: dict[str, Any]) -> dict[str, Any]:
+    if not agent_router:
         return {}
     return {
-        "run_id": gateway.get("run_id"),
-        "trace_id": gateway.get("trace_id"),
-        "status": gateway.get("status"),
-        "entrypoint": gateway.get("entrypoint"),
-        "route_decision": gateway.get("route_decision", {}),
-        "delegated_task_count": len(gateway.get("delegated_tasks") or []),
-        "identity": gateway.get("identity", {}),
-        "budget": gateway.get("budget", {}),
-        "cost": gateway.get("cost", {}),
-        "latency_ms": gateway.get("latency_ms"),
-        "error_count": gateway.get("error_count"),
-        "redaction": gateway.get("redaction", {}),
+        "run_id": agent_router.get("run_id"),
+        "trace_id": agent_router.get("trace_id"),
+        "status": agent_router.get("status"),
+        "entrypoint": agent_router.get("entrypoint"),
+        "route_decision": agent_router.get("route_decision", {}),
+        "delegated_task_count": len(agent_router.get("delegated_tasks") or []),
+        "identity": agent_router.get("identity", {}),
+        "budget": agent_router.get("budget", {}),
+        "cost": agent_router.get("cost", {}),
+        "latency_ms": agent_router.get("latency_ms"),
+        "error_count": agent_router.get("error_count"),
+        "redaction": agent_router.get("redaction", {}),
     }
 
 
@@ -504,12 +504,12 @@ def _overall_status(payload: dict[str, Any]) -> str:
         ("single_agent_run", "response"),
         ("single_agent_run", "control_plane", "run"),
         ("single_agent_run", "control_plane", "trace"),
-        ("gateway_run", "response"),
-        ("gateway_run", "control_plane", "route"),
-        ("gateway_run", "control_plane", "delegation_tree"),
-        ("gateway_run", "control_plane", "budget"),
-        ("gateway_run", "control_plane", "audit"),
-        ("gateway_run", "control_plane", "replay_preview"),
+        ("agent_router_run", "response"),
+        ("agent_router_run", "control_plane", "route"),
+        ("agent_router_run", "control_plane", "delegation_tree"),
+        ("agent_router_run", "control_plane", "budget"),
+        ("agent_router_run", "control_plane", "audit"),
+        ("agent_router_run", "control_plane", "replay_preview"),
         ("a2a_inbound_run", "response"),
         ("a2a_inbound_run", "control_plane", "route"),
         ("control_plane_recent_audit",),

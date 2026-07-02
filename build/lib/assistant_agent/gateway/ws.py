@@ -1,4 +1,4 @@
-"""JSON WebSocket endpoint adapter for runtime gateway frames."""
+"""JSON WebSocket endpoint adapter for gateway frames."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from assistant_agent.runtime_gateway.protocol import Frame
+from assistant_agent.gateway.protocol import Frame
 
 
 class WsProtocolError(Exception):

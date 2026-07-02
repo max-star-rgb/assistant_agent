@@ -1,4 +1,4 @@
-"""Optional local multi-agent gateway entrypoint."""
+"""Optional local multi-agent router entrypoint."""
 
 from __future__ import annotations
 
@@ -14,38 +14,39 @@ from assistant_agent.schemas.agent_communication import (
     AgentCommunicationError,
     AgentInstance,
 )
-from assistant_agent.schemas.agent_gateway import (
+from assistant_agent.schemas.agent_router import (
     AgentCollaborationMode,
-    AgentGatewayDelegatedTaskSummary,
-    AgentGatewayRouteDecision,
-    AgentGatewayRouteReason,
-    AgentGatewayRunMetadata,
-    AgentGatewayRunRequest,
+    AgentRouteDecision,
+    AgentRouteDelegatedTaskSummary,
+    AgentRouteMetadata,
+    AgentRouteReason,
+    AgentRouteRequest,
 )
-from assistant_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION, api_error
+from assistant_agent.schemas.api import PROTOCOL_VERSION, AgentRunResponse, api_error
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.agent_control_plane import (
-    AgentControlPlaneStore,
-    InMemoryAgentControlPlaneStore,
-    audit_events_from_gateway_record,
-    build_gateway_run_record,
-)
 from assistant_agent.services.agent_communication import (
     AgentCommunicationService,
     create_local_agent_communication_service,
 )
+from assistant_agent.services.agent_control_plane import (
+    AgentControlPlaneStore,
+    InMemoryAgentControlPlaneStore,
+    audit_events_from_agent_router_record,
+    build_agent_router_run_record,
+)
 from assistant_agent.services.agent_directory import AgentDirectory, default_agent_instance
 from assistant_agent.services.agent_routing_policy import AgentRoutingPolicy
-from assistant_agent.services.assistant_run_service import run_assistant_request, resolve_runtime_config
+from assistant_agent.services.assistant_run_service import resolve_runtime_config, run_assistant_request
 from assistant_agent.services.trace_store import new_trace_id
 from assistant_agent.services.video_context import InMemoryVideoContextStore
 from assistant_agent.tools.registry import create_default_registry
 
 
 WORKER_AGENT_ID = "agent.worker"
+ROUTER_METADATA_KEY = "agent_router"
 
 
-class AgentGateway:
+class AgentRouter:
     """Route inbound requests to local agent runtime instances."""
 
     def __init__(
@@ -75,14 +76,14 @@ class AgentGateway:
         )
         self.control_plane_store = control_plane_store or InMemoryAgentControlPlaneStore()
 
-    def run(self, request: AgentGatewayRunRequest | UserRequest) -> AgentRunResponse:
+    def run(self, request: AgentRouteRequest | UserRequest) -> AgentRunResponse:
         """Run one request through the selected local agent."""
 
         started_at = time.monotonic()
-        gateway_request = _coerce_gateway_request(request)
-        mode = gateway_request.effective_collaboration_mode()
+        route_request = _coerce_route_request(request)
+        mode = route_request.effective_collaboration_mode()
         route_decision = self.routing_policy.resolve(
-            gateway_request,
+            route_request,
             directory=self.directory,
             source_agent_id=self.controller_agent_id,
         )
@@ -94,19 +95,19 @@ class AgentGateway:
                 recoverable=True,
             )
             response = _failed_response(
-                gateway_request,
+                route_request,
                 error=error,
                 mode=mode,
                 route_reason=route_decision.reason,
             )
-            self._record_control_plane(gateway_request, response=response, started_at=started_at)
+            self._record_control_plane(route_request, response=response, started_at=started_at)
             return response
 
         agent_id = route.instance.agent_id
         runtime = self.controller_runtime if route_decision.use_controller_runtime else self.runtimes.get(agent_id)
         if runtime is None:
             response = _failed_response(
-                gateway_request,
+                route_request,
                 error=AgentCommunicationError(
                     code="agent_runtime_not_found",
                     message=f"No local runtime registered for agent: {agent_id}",
@@ -117,50 +118,50 @@ class AgentGateway:
                 agent_id=agent_id,
                 route_reason=route_decision.reason,
             )
-            self._record_control_plane(gateway_request, response=response, started_at=started_at)
+            self._record_control_plane(route_request, response=response, started_at=started_at)
             return response
 
-        runtime_request = gateway_request.to_user_request(
-            metadata=_request_metadata(gateway_request, agent_id=agent_id, mode=mode)
+        runtime_request = route_request.to_user_request(
+            metadata=_request_metadata(route_request, agent_id=agent_id, mode=mode)
         )
         response = run_assistant_request(runtime_request, runtime=runtime).api_response()
         response = _augment_response(
             response,
-            request=gateway_request,
+            request=route_request,
             agent_id=agent_id,
             mode=mode,
             route_reason=route_decision.reason,
             route_instance=route.instance,
             runtime=runtime,
         )
-        self._record_control_plane(gateway_request, response=response, started_at=started_at)
+        self._record_control_plane(route_request, response=response, started_at=started_at)
         return response
 
     def _record_control_plane(
         self,
-        request: AgentGatewayRunRequest,
+        request: AgentRouteRequest,
         *,
         response: AgentRunResponse,
         started_at: float,
     ) -> None:
         latency_ms = int((time.monotonic() - started_at) * 1000)
-        record = build_gateway_run_record(
+        record = build_agent_router_run_record(
             request=request,
             response=response,
             latency_ms=latency_ms,
         )
         self.control_plane_store.record(record)
-        for event in audit_events_from_gateway_record(record):
+        for event in audit_events_from_agent_router_record(record):
             self.control_plane_store.append_audit_event(event)
 
 
-def create_default_agent_gateway(
+def create_default_agent_router(
     *,
     config: ProviderConfig | None = None,
     load_env: bool = True,
     worker_agent_id: str = WORKER_AGENT_ID,
-) -> AgentGateway:
-    """Create the default offline/local gateway with one controller and one worker."""
+) -> AgentRouter:
+    """Create the default offline/local router with one controller and one worker."""
 
     resolved_config = resolve_runtime_config(config=config, load_env=load_env)
     default_runtime = AgentGraphRuntime(config=resolved_config)
@@ -170,7 +171,7 @@ def create_default_agent_gateway(
         AgentInstance(
             agent_id=worker_agent_id,
             display_name="Worker Agent",
-            description="Local same-process worker runtime for explicit gateway routing.",
+            description="Local same-process worker runtime for explicit agent routing.",
             role="worker",
             capabilities=["chat", "tool_calling"],
             transports=["local"],
@@ -195,7 +196,7 @@ def create_default_agent_gateway(
         registry=controller_registry,
         video_context_store=controller_video_context,
     )
-    return AgentGateway(
+    return AgentRouter(
         {
             DEFAULT_AGENT_ID: default_runtime,
             worker_agent_id: worker_runtime,
@@ -206,10 +207,10 @@ def create_default_agent_gateway(
     )
 
 
-def _coerce_gateway_request(request: AgentGatewayRunRequest | UserRequest) -> AgentGatewayRunRequest:
-    if isinstance(request, AgentGatewayRunRequest):
+def _coerce_route_request(request: AgentRouteRequest | UserRequest) -> AgentRouteRequest:
+    if isinstance(request, AgentRouteRequest):
         return request
-    return AgentGatewayRunRequest(
+    return AgentRouteRequest(
         user_id=request.user_id,
         session_id=request.session_id,
         text=request.text,
@@ -222,34 +223,35 @@ def _coerce_gateway_request(request: AgentGatewayRunRequest | UserRequest) -> Ag
 
 
 def _request_metadata(
-    request: AgentGatewayRunRequest,
+    request: AgentRouteRequest,
     *,
     agent_id: str,
     mode: AgentCollaborationMode,
 ) -> dict[str, Any]:
     metadata = dict(request.metadata)
-    metadata["agent_gateway"] = {
+    router_info = {
         "agent_id": agent_id,
         "collaboration_mode": mode,
         "target_agent_id": request.target_agent_id,
         "capability": request.capability,
     }
+    metadata[ROUTER_METADATA_KEY] = router_info
     return metadata
 
 
 def _augment_response(
     response: AgentRunResponse,
     *,
-    request: AgentGatewayRunRequest,
+    request: AgentRouteRequest,
     agent_id: str,
     mode: AgentCollaborationMode,
-    route_reason: AgentGatewayRouteReason,
+    route_reason: AgentRouteReason,
     route_instance: AgentInstance,
     runtime: Any,
 ) -> AgentRunResponse:
     delegation_enabled = "delegate_to_agent" in _runtime_tool_names(runtime)
-    metadata = AgentGatewayRunMetadata(
-        route_decision=AgentGatewayRouteDecision(
+    metadata = AgentRouteMetadata(
+        route_decision=AgentRouteDecision(
             selected_agent_id=agent_id,
             requested_target_agent_id=request.target_agent_id,
             requested_capability=request.capability,
@@ -261,24 +263,24 @@ def _augment_response(
         delegated_tasks=_delegated_task_summary(response),
         route=route_instance.model_dump(mode="json"),
     )
-    gateway_info = metadata.public_payload()
+    router_info = metadata.public_payload()
     data = dict(response.data)
-    data["agent_gateway"] = gateway_info
+    data[ROUTER_METADATA_KEY] = router_info
     runtime_info = dict(response.runtime_info)
-    runtime_info["agent_gateway"] = gateway_info
+    runtime_info[ROUTER_METADATA_KEY] = router_info
     return response.model_copy(update={"data": data, "runtime_info": runtime_info}, deep=True)
 
 
 def _failed_response(
-    request: AgentGatewayRunRequest,
+    request: AgentRouteRequest,
     *,
     error: AgentCommunicationError,
     mode: AgentCollaborationMode,
-    route_reason: AgentGatewayRouteReason,
+    route_reason: AgentRouteReason,
     agent_id: str | None = None,
 ) -> AgentRunResponse:
-    metadata = AgentGatewayRunMetadata(
-        route_decision=AgentGatewayRouteDecision(
+    metadata = AgentRouteMetadata(
+        route_decision=AgentRouteDecision(
             selected_agent_id=agent_id,
             requested_target_agent_id=request.target_agent_id,
             requested_capability=request.capability,
@@ -289,7 +291,7 @@ def _failed_response(
             error_message=error.message,
         ),
     )
-    gateway_info = metadata.public_payload()
+    router_info = metadata.public_payload()
     return AgentRunResponse(
         protocol_version=PROTOCOL_VERSION,
         run_id=new_run_id(),
@@ -297,8 +299,8 @@ def _failed_response(
         status="failed",
         intent=None,
         response_text=error.message,
-        data={"agent_gateway": gateway_info},
-        runtime_info={"agent_gateway": gateway_info},
+        data={ROUTER_METADATA_KEY: router_info},
+        runtime_info={ROUTER_METADATA_KEY: router_info},
         current_stage="failed",
         blocked_reason=error.message,
         errors=[
@@ -323,8 +325,8 @@ def _runtime_tool_names(runtime: Any) -> list[str]:
     return [str(name) for name in names]
 
 
-def _delegated_task_summary(response: AgentRunResponse) -> list[AgentGatewayDelegatedTaskSummary]:
-    tasks: list[AgentGatewayDelegatedTaskSummary] = []
+def _delegated_task_summary(response: AgentRunResponse) -> list[AgentRouteDelegatedTaskSummary]:
+    tasks: list[AgentRouteDelegatedTaskSummary] = []
     for result in response.tool_results:
         if result.get("tool_name") != "delegate_to_agent":
             continue
@@ -332,7 +334,7 @@ def _delegated_task_summary(response: AgentRunResponse) -> list[AgentGatewayDele
         errors = data.get("errors") if isinstance(data, dict) else []
         artifacts = data.get("artifacts") if isinstance(data, dict) else []
         tasks.append(
-            AgentGatewayDelegatedTaskSummary(
+            AgentRouteDelegatedTaskSummary(
                 task_id=data.get("task_id"),
                 target_agent_id=data.get("target_agent_id"),
                 status=data.get("status"),

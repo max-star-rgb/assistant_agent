@@ -208,10 +208,10 @@ def test_collect_pilot_evidence_script_runs_offline_and_redacted() -> None:
     assert payload["operator_context"]["real_provider_calls"] == "not_performed"
     assert payload["readiness"]["body"]["status"] == "ready"
     assert payload["single_agent_run"]["response"]["ok"] is True
-    assert payload["gateway_run"]["response"]["ok"] is True
+    assert payload["agent_router_run"]["response"]["ok"] is True
     assert payload["a2a_inbound_run"]["response"]["ok"] is True
-    assert payload["gateway_run"]["control_plane"]["route"]["ok"] is True
-    assert payload["gateway_run"]["control_plane"]["audit"]["body"]["event_types"]
+    assert payload["agent_router_run"]["control_plane"]["route"]["ok"] is True
+    assert payload["agent_router_run"]["control_plane"]["audit"]["body"]["event_types"]
     assert payload["a2a_inbound_run"]["control_plane"]["replay_preview"]["body"]["request"]["message"] == "not_included"
     assert payload["redaction_checks"]["passed"] is True
     assert "Traceback" not in rendered

@@ -1,4 +1,4 @@
-"""Wire protocol helpers for assistant runtime gateway integrations."""
+"""Wire protocol helpers for assistant gateway integrations."""
 
 from __future__ import annotations
 

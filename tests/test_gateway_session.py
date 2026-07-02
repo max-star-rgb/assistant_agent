@@ -3,15 +3,15 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from assistant_agent.gateway import InMemoryDuplex, GatewaySessionService, dumps_frame, frame, loads_frame
 from assistant_agent.realtime import RealtimeAgentEvent, RealtimeAgentResult
-from assistant_agent.runtime_gateway import InMemoryDuplex, RuntimeService, dumps_frame, frame, loads_frame
 
 
-async def _close_runtime(client_ep, runtime_ep, runtime_task) -> None:
+async def _close_session(client_ep, session_ep, session_task) -> None:
     await client_ep.close()
-    await runtime_ep.close()
-    runtime_task.cancel()
-    await asyncio.gather(runtime_task, return_exceptions=True)
+    await session_ep.close()
+    session_task.cancel()
+    await asyncio.gather(session_task, return_exceptions=True)
 
 
 async def _collect_until_run_end(client_ep, *, timeout_s: float = 3.0):
@@ -27,7 +27,7 @@ async def _collect_until_run_end(client_ep, *, timeout_s: float = 3.0):
     return await asyncio.wait_for(_read(), timeout=timeout_s)
 
 
-class RuntimeGatewayTests(unittest.IsolatedAsyncioTestCase):
+class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_user_streams_via_realtime_backend(self) -> None:
         class RecordingBackend:
             def __init__(self) -> None:
@@ -40,9 +40,9 @@ class RuntimeGatewayTests(unittest.IsolatedAsyncioTestCase):
                 return RealtimeAgentResult(status="completed", response_text="assistant smoke", expects_reply=True)
 
         backend = RecordingBackend()
-        runtime = RuntimeService(backend=backend)
-        client_ep, runtime_ep = InMemoryDuplex.create_pair()
-        runtime_task = asyncio.create_task(runtime.serve(runtime_ep))
+        session = GatewaySessionService(backend=backend)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
 
         try:
             await client_ep.send(
@@ -55,7 +55,7 @@ class RuntimeGatewayTests(unittest.IsolatedAsyncioTestCase):
             )
             frames = await _collect_until_run_end(client_ep)
         finally:
-            await _close_runtime(client_ep, runtime_ep, runtime_task)
+            await _close_session(client_ep, session_ep, session_task)
 
         assert [received["type"] for received in frames] == [
             "run.started",
@@ -86,9 +86,9 @@ class RuntimeGatewayTests(unittest.IsolatedAsyncioTestCase):
                 return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
 
         backend = CancellableBackend()
-        runtime = RuntimeService(backend=backend)
-        client_ep, runtime_ep = InMemoryDuplex.create_pair()
-        runtime_task = asyncio.create_task(runtime.serve(runtime_ep))
+        session = GatewaySessionService(backend=backend)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
         frames = []
 
         async def _read_cancel_flow():
@@ -119,7 +119,7 @@ class RuntimeGatewayTests(unittest.IsolatedAsyncioTestCase):
             frames = await asyncio.wait_for(_read_cancel_flow(), timeout=3.0)
         finally:
             backend.release.set()
-            await _close_runtime(client_ep, runtime_ep, runtime_task)
+            await _close_session(client_ep, session_ep, session_task)
 
         assert frames[0]["type"] == "run.started"
         assert frames[-1]["type"] == "run.end"
@@ -139,9 +139,9 @@ class RuntimeGatewayTests(unittest.IsolatedAsyncioTestCase):
                 await event_sink(RealtimeAgentEvent(type="response.chunk", text="second done"))
                 return RealtimeAgentResult(status="completed", run_id=request.run_id, expects_reply=True)
 
-        runtime = RuntimeService(backend=InterruptBackend())
-        client_ep, runtime_ep = InMemoryDuplex.create_pair()
-        runtime_task = asyncio.create_task(runtime.serve(runtime_ep))
+        session = GatewaySessionService(backend=InterruptBackend())
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
         first_run = None
         second_run = None
         saw_first_cancelled = False
@@ -176,7 +176,7 @@ class RuntimeGatewayTests(unittest.IsolatedAsyncioTestCase):
 
             await asyncio.wait_for(_read_until_both_runs_end(), timeout=3.0)
         finally:
-            await _close_runtime(client_ep, runtime_ep, runtime_task)
+            await _close_session(client_ep, session_ep, session_task)
 
         assert first_run is not None
         assert second_run is not None
@@ -197,9 +197,9 @@ class RuntimeGatewayTests(unittest.IsolatedAsyncioTestCase):
                 )
                 return RealtimeAgentResult(status="completed", run_id=request.run_id, expects_reply=True)
 
-        runtime = RuntimeService(backend=HistoryBackend())
-        client_ep, runtime_ep = InMemoryDuplex.create_pair()
-        runtime_task = asyncio.create_task(runtime.serve(runtime_ep))
+        session = GatewaySessionService(backend=HistoryBackend())
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
 
         async def one_turn(text: str) -> str:
             await client_ep.send(frame(type="message.user", session_id="history-session", payload={"text": text}))
@@ -216,7 +216,7 @@ class RuntimeGatewayTests(unittest.IsolatedAsyncioTestCase):
             out2 = await one_turn("two")
             out3 = await one_turn("three")
         finally:
-            await _close_runtime(client_ep, runtime_ep, runtime_task)
+            await _close_session(client_ep, session_ep, session_task)
 
         assert "history:one" in out1
         assert "history:one|two" in out2

@@ -1,13 +1,17 @@
-"""Runtime service backed directly by assistant_agent realtime backends."""
+"""Gateway session service and per-user session manager."""
 
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
+from assistant_agent.gateway.event_mapping import realtime_event_to_frame
+from assistant_agent.gateway.protocol import Frame, frame
+from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
 from assistant_agent.realtime import (
     AgentGraphRealtimeBackend,
     RealtimeAgentBackend,
@@ -15,9 +19,6 @@ from assistant_agent.realtime import (
     RealtimeAgentRequest,
     RealtimeAgentResult,
 )
-from assistant_agent.runtime_gateway.event_mapping import realtime_event_to_frame
-from assistant_agent.runtime_gateway.protocol import Frame, frame
-from assistant_agent.runtime_gateway.transport import Endpoint
 
 
 @dataclass
@@ -44,12 +45,12 @@ class CancelToken:
         return self._evt.is_set()
 
 
-class RuntimeService:
-    """Runtime side of the Gateway<->Runtime stream.
+class GatewaySessionService:
+    """Gateway-managed session side of the Gateway<->agent stream.
 
-    This service owns session history, run lifecycle, cooperative cancellation,
-    and event mapping. Agent execution is delegated directly to a
-    RealtimeAgentBackend; by default this is AgentGraphRealtimeBackend.
+    This service owns session history, active run lifecycle, cooperative
+    cancellation, and event mapping. Agent execution is delegated to a
+    RealtimeAgentBackend; by default this remains AgentGraphRealtimeBackend.
     """
 
     def __init__(
@@ -58,13 +59,22 @@ class RuntimeService:
         user_id: str = "default",
         backend: RealtimeAgentBackend | None = None,
         backend_factory: Callable[[], RealtimeAgentBackend] | None = None,
+        config: Mapping[str, Any] | None = None,
     ) -> None:
         self._user_id = user_id
         self._backend = backend
         self._backend_factory = backend_factory
+        self._config: dict[str, Any] = dict(config or {})
         self._active_by_session: dict[str, ActiveRun] = {}
         self._history_by_session: dict[str, list[str]] = {}
         self._lock = asyncio.Lock()
+
+    @property
+    def config(self) -> dict[str, Any]:
+        return dict(self._config)
+
+    def update_config(self, values: Mapping[str, Any]) -> None:
+        self._config.update({str(key): value for key, value in values.items()})
 
     async def serve(self, ep: Endpoint) -> None:
         async for f in ep:
@@ -304,13 +314,12 @@ class RuntimeService:
         payload: dict[str, Any],
     ) -> RealtimeAgentRequest:
         metadata = dict(payload.get("metadata") or {})
-        runtime_metadata = metadata.get("runtime")
-        if isinstance(runtime_metadata, dict):
-            runtime = dict(runtime_metadata)
-        else:
-            runtime = {}
-        runtime["history"] = list(history)
-        metadata["runtime"] = runtime
+        gateway_metadata = metadata.get("gateway")
+        gateway_payload = dict(gateway_metadata) if isinstance(gateway_metadata, dict) else {}
+        gateway_payload["history"] = list(history)
+        gateway_payload["session_config"] = dict(self._config)
+        metadata["gateway"] = gateway_payload
+        metadata["runtime"] = gateway_payload
 
         return RealtimeAgentRequest(
             user_id=user_id,
@@ -323,6 +332,269 @@ class RuntimeService:
             audio_id=_optional_string(payload.get("audio_id")),
             metadata=metadata,
         )
+
+
+@dataclass
+class GatewaySessionHandle:
+    user_id: str
+    endpoint: Endpoint
+    created: bool
+    resumed: bool
+    active_count: int
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GatewayConfigUpdateResult:
+    user_id: str
+    online: bool
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+class _TouchableEndpoint:
+    """Proxy endpoint that refreshes session activity on every frame."""
+
+    def __init__(self, inner: Endpoint, touch_fn: Callable[[], None]) -> None:
+        self._inner = inner
+        self._touch = touch_fn
+
+    async def send(self, f: Frame) -> None:
+        self._touch()
+        await self._inner.send(f)
+
+    def _inject(self, f: Frame) -> None:
+        self._touch()
+        self._inner._inject(f)
+
+    async def close(self) -> None:
+        await self._inner.close()
+
+    async def __aiter__(self) -> AsyncIterator[Frame]:
+        async for f in self._inner:
+            self._touch()
+            yield f
+
+
+class _GatewaySessionEntry:
+    def __init__(
+        self,
+        *,
+        user_id: str,
+        service: GatewaySessionService,
+        gateway_ep: Endpoint,
+        session_ep: Endpoint,
+    ) -> None:
+        self.user_id = user_id
+        self.service = service
+        self.gateway_ep = _TouchableEndpoint(gateway_ep, self.touch)
+        self.session_ep = session_ep
+        self.last_active = time.monotonic()
+        self.hung_up_at: float | None = None
+        self.task: asyncio.Task[None] | None = None
+
+    def touch(self) -> None:
+        self.last_active = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self.last_active
+
+    def hangup_seconds(self) -> float | None:
+        if self.hung_up_at is None:
+            return None
+        return time.monotonic() - self.hung_up_at
+
+    def start(self) -> None:
+        self.task = asyncio.create_task(
+            self.service.serve(self.session_ep),
+            name=f"gateway-session-{self.user_id}",
+        )
+
+    def stop(self) -> None:
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+
+
+class GatewaySessionManager:
+    """Manage per-user GatewaySessionService instances.
+
+    The manager keeps one in-process session service per user, reuses it across
+    reconnects, marks hangups for a grace period, updates live session config,
+    and evicts idle sessions.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_sessions: int = 20,
+        idle_timeout_s: float = 300.0,
+        hangup_grace_s: float | None = None,
+        reaper_interval_s: float = 30.0,
+        backend_factory: Callable[[], RealtimeAgentBackend] | None = None,
+        service_factory: Callable[[str, Mapping[str, Any]], GatewaySessionService] | None = None,
+        start_reaper: bool = True,
+    ) -> None:
+        self.max_sessions = max_sessions
+        self.idle_timeout_s = idle_timeout_s
+        self.hangup_grace_s = idle_timeout_s if hangup_grace_s is None else hangup_grace_s
+        self.reaper_interval_s = reaper_interval_s
+        self.backend_factory = backend_factory
+        self.service_factory = service_factory
+        self._entries: dict[str, _GatewaySessionEntry] = {}
+        self._deferred_config: dict[str, dict[str, Any]] = {}
+        self._lock = asyncio.Lock()
+        self._reaper_task: asyncio.Task[None] | None = None
+        self._start_reaper = start_reaper
+
+    async def get_or_create(
+        self,
+        user_id: str,
+        config: Mapping[str, Any] | None = None,
+    ) -> Endpoint:
+        """Return the Gateway-side endpoint for a user session."""
+
+        return (await self.acquire(user_id=user_id, config=config)).endpoint
+
+    async def acquire(
+        self,
+        *,
+        user_id: str,
+        config: Mapping[str, Any] | None = None,
+    ) -> GatewaySessionHandle:
+        async with self._lock:
+            if user_id in self._entries:
+                entry = self._entries[user_id]
+                if config:
+                    entry.service.update_config(config)
+                resumed = entry.hung_up_at is not None
+                if resumed:
+                    entry.hung_up_at = None
+                entry.touch()
+                return GatewaySessionHandle(
+                    user_id=user_id,
+                    endpoint=entry.gateway_ep,  # type: ignore[arg-type]
+                    created=False,
+                    resumed=resumed,
+                    active_count=len(self._entries),
+                    config=entry.service.config,
+                )
+
+            if len(self._entries) >= self.max_sessions:
+                raise RuntimeError(
+                    f"gateway_session_limit_reached: max {self.max_sessions} sessions already running"
+                )
+
+            merged_config = dict(self._deferred_config.pop(user_id, {}))
+            if config:
+                merged_config.update(dict(config))
+            entry = self._new_entry(user_id=user_id, config=merged_config)
+            entry.start()
+            self._entries[user_id] = entry
+            self._ensure_reaper()
+            return GatewaySessionHandle(
+                user_id=user_id,
+                endpoint=entry.gateway_ep,  # type: ignore[arg-type]
+                created=True,
+                resumed=False,
+                active_count=len(self._entries),
+                config=entry.service.config,
+            )
+
+    async def mark_hangup(self, user_id: str) -> bool:
+        async with self._lock:
+            entry = self._entries.get(user_id)
+            if entry is None:
+                return False
+            if entry.hung_up_at is None:
+                entry.hung_up_at = time.monotonic()
+            return True
+
+    async def update_config(
+        self,
+        user_id: str,
+        values: Mapping[str, Any],
+    ) -> GatewayConfigUpdateResult:
+        payload = {str(key): value for key, value in values.items()}
+        async with self._lock:
+            entry = self._entries.get(user_id)
+            if entry is not None:
+                entry.service.update_config(payload)
+                return GatewayConfigUpdateResult(
+                    user_id=user_id,
+                    online=True,
+                    config=entry.service.config,
+                )
+            deferred = self._deferred_config.setdefault(user_id, {})
+            deferred.update(payload)
+            return GatewayConfigUpdateResult(
+                user_id=user_id,
+                online=False,
+                config=dict(deferred),
+            )
+
+    async def destroy(self, user_id: str) -> bool:
+        async with self._lock:
+            entry = self._entries.pop(user_id, None)
+        if entry is None:
+            return False
+        entry.stop()
+        await entry.gateway_ep.close()
+        await entry.session_ep.close()
+        return True
+
+    async def reap_once(self) -> list[str]:
+        evict: list[str] = []
+        async with self._lock:
+            for user_id, entry in self._entries.items():
+                hung_s = entry.hangup_seconds()
+                if hung_s is not None:
+                    if hung_s >= self.hangup_grace_s and entry.idle_seconds() >= self.hangup_grace_s:
+                        evict.append(user_id)
+                elif entry.idle_seconds() >= self.idle_timeout_s:
+                    evict.append(user_id)
+        for user_id in evict:
+            await self.destroy(user_id)
+        return evict
+
+    def active_count(self) -> int:
+        return len(self._entries)
+
+    def session_config(self, user_id: str) -> dict[str, Any] | None:
+        entry = self._entries.get(user_id)
+        if entry is not None:
+            return entry.service.config
+        deferred = self._deferred_config.get(user_id)
+        return dict(deferred) if deferred is not None else None
+
+    def _new_entry(self, *, user_id: str, config: Mapping[str, Any]) -> _GatewaySessionEntry:
+        gateway_ep, session_ep = InMemoryDuplex.create_pair()
+        if self.service_factory is not None:
+            service = self.service_factory(user_id, config)
+        else:
+            service = GatewaySessionService(
+                user_id=user_id,
+                backend_factory=self.backend_factory,
+                config=config,
+            )
+        return _GatewaySessionEntry(
+            user_id=user_id,
+            service=service,
+            gateway_ep=gateway_ep,
+            session_ep=session_ep,
+        )
+
+    def _ensure_reaper(self) -> None:
+        if not self._start_reaper:
+            return
+        if self._reaper_task is None or self._reaper_task.done():
+            self._reaper_task = asyncio.create_task(
+                self._reaper_loop(),
+                name="gateway-session-reaper",
+            )
+
+    async def _reaper_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.reaper_interval_s)
+            await self.reap_once()
 
 
 def _payload_dict(f: Frame) -> dict[str, Any]:

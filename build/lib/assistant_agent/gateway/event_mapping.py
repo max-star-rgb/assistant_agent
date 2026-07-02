@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from assistant_agent.gateway.protocol import Frame, frame
 from assistant_agent.realtime import RealtimeAgentEvent
-from assistant_agent.runtime_gateway.protocol import Frame, frame
 
 
 def realtime_event_to_frame(

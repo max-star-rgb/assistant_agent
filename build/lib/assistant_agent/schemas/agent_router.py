@@ -1,4 +1,4 @@
-"""External request contract for the optional multi-agent gateway."""
+"""External request contract for optional multi-agent routing."""
 
 from __future__ import annotations
 
@@ -10,17 +10,17 @@ from assistant_agent.schemas.requests import UserRequest
 
 
 AgentCollaborationMode = Literal["single", "controller_delegate"]
-AgentGatewayRouteReason = Literal[
+AgentRouteReason = Literal[
     "explicit_target_agent_id",
     "capability_match",
     "routing_table",
     "controller_delegate_default",
     "default_agent",
 ]
-AgentGatewayRouteStatus = Literal["routed", "failed"]
+AgentRouteStatus = Literal["routed", "failed"]
 
 
-class AgentGatewayDelegatedTaskSummary(BaseModel):
+class AgentRouteDelegatedTaskSummary(BaseModel):
     """Public summary for one delegated child task."""
 
     task_id: str | None = None
@@ -32,29 +32,29 @@ class AgentGatewayDelegatedTaskSummary(BaseModel):
     error_codes: list[str] = Field(default_factory=list)
 
 
-class AgentGatewayRouteDecision(BaseModel):
-    """Deterministic route decision exposed by the gateway control plane."""
+class AgentRouteDecision(BaseModel):
+    """Deterministic route decision exposed by the agent router control plane."""
 
     selected_agent_id: str | None = None
     requested_target_agent_id: str | None = None
     requested_capability: str | None = None
     collaboration_mode: AgentCollaborationMode
-    reason: AgentGatewayRouteReason
-    status: AgentGatewayRouteStatus
+    reason: AgentRouteReason
+    status: AgentRouteStatus
     delegation_enabled: bool = False
     error_code: str | None = None
     error_message: str | None = None
 
 
-class AgentGatewayRunMetadata(BaseModel):
-    """Stable gateway metadata embedded in AgentRunResponse data/runtime_info."""
+class AgentRouteMetadata(BaseModel):
+    """Stable router metadata embedded in AgentRunResponse data/runtime_info."""
 
-    route_decision: AgentGatewayRouteDecision
-    delegated_tasks: list[AgentGatewayDelegatedTaskSummary] = Field(default_factory=list)
+    route_decision: AgentRouteDecision
+    delegated_tasks: list[AgentRouteDelegatedTaskSummary] = Field(default_factory=list)
     route: dict[str, Any] | None = None
 
     def public_payload(self) -> dict[str, Any]:
-        """Return metadata with legacy flat keys retained for compatibility."""
+        """Return metadata with flat keys retained for compatibility."""
 
         payload = self.model_dump(mode="json")
         decision = self.route_decision
@@ -70,8 +70,8 @@ class AgentGatewayRunMetadata(BaseModel):
         return payload
 
 
-class AgentGatewayRunRequest(UserRequest):
-    """Request accepted by the optional `/agents/run` gateway entrypoint."""
+class AgentRouteRequest(UserRequest):
+    """Request accepted by the optional `/agents/run` route entrypoint."""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -92,7 +92,7 @@ class AgentGatewayRunRequest(UserRequest):
                 {
                     "user_id": "auth_bound_user",
                     "session_id": "body_session",
-                    "text": "Run through the gateway with header-auth pilot enabled.",
+                    "text": "Run through the agent router with header-auth pilot enabled.",
                     "target_agent_id": "agent.worker",
                     "collaboration_mode": "single",
                     "metadata": {
@@ -119,7 +119,7 @@ class AgentGatewayRunRequest(UserRequest):
         return self.mode or self.collaboration_mode
 
     def to_user_request(self, *, metadata: dict[str, Any] | None = None) -> UserRequest:
-        """Drop gateway-only fields before entering an AgentGraphRuntime."""
+        """Drop router-only fields before entering an AgentGraphRuntime."""
 
         return UserRequest(
             user_id=self.user_id,

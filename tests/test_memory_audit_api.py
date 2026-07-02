@@ -20,7 +20,7 @@ from assistant_agent.services.trace_store import InMemoryTraceStore
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-class AuditGateway:
+class AuditRouter:
     def __init__(self) -> None:
         self.control_plane_store = InMemoryAgentControlPlaneStore()
 
@@ -160,10 +160,10 @@ def test_memory_audit_api_exports_user_memory(monkeypatch) -> None:
 def test_memory_audit_api_records_redacted_control_plane_events(monkeypatch) -> None:
     store = InMemoryStore()
     runtime = AgentGraphRuntime(memory_store=store, trace_store=InMemoryTraceStore())
-    gateway = AuditGateway()
+    router = AuditRouter()
     store.save(_memory("m1", "u1", "preference", "用户喜欢日系风格。", content={"style": "日系"}))
     monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
-    monkeypatch.setattr(routes_agent, "get_agent_gateway", lambda: gateway)
+    monkeypatch.setattr(routes_agent, "get_agent_router", lambda: router)
     client = TestClient(create_app())
 
     listed = client.get("/memory/users/u1/items")
