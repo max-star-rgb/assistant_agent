@@ -27,6 +27,19 @@ async def _collect_until_run_end(client_ep, *, timeout_s: float = 3.0):
     return await asyncio.wait_for(_read(), timeout=timeout_s)
 
 
+async def _assert_no_frame(client_ep, *, timeout_s: float = 0.08) -> None:
+    async def _read_one():
+        async for received in client_ep:
+            return received
+        return None
+
+    try:
+        received = await asyncio.wait_for(_read_one(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return
+    raise AssertionError(f"unexpected frame after run end: {received}")
+
+
 class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_user_streams_via_realtime_backend(self) -> None:
         class RecordingBackend:
@@ -130,16 +143,89 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert backend.requests[0].text == "cancel realtime"
         assert backend.cancel_metadata["cancel_source"] == "gateway_cancel"
 
+    async def test_cancel_suppresses_backend_events_emitted_after_cancel(self) -> None:
+        class StaleEventBackend:
+            def __init__(self) -> None:
+                self.finished = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                await cancel_token.cancelled()
+                assert event_sink is not None
+                for event in [
+                    RealtimeAgentEvent(type="response.chunk", text="stale chunk"),
+                    RealtimeAgentEvent(type="response.final", text="stale final"),
+                    RealtimeAgentEvent(
+                        type="tool.started",
+                        text="stale tool",
+                        payload={"tool_name": "stale_tool"},
+                    ),
+                    RealtimeAgentEvent(
+                        type="trace.decision",
+                        text="stale trace",
+                        payload={"decision_trace": {"action": "stale"}},
+                    ),
+                    RealtimeAgentEvent(type="error", text="stale error"),
+                ]:
+                    await event_sink(event)
+                self.finished.set()
+                return RealtimeAgentResult(
+                    status="completed",
+                    run_id=request.run_id,
+                    response_text="stale final",
+                    expects_reply=False,
+                )
+
+        backend = StaleEventBackend()
+        session = GatewaySessionService(backend=backend)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+        frames = []
+
+        async def _read_cancel_flow():
+            async for received in client_ep:
+                frames.append(received)
+                if received["type"] == "run.started":
+                    await client_ep.send(
+                        frame(
+                            type="run.cancel",
+                            session_id="stale-cancel-session",
+                            run_id=received["run_id"],
+                        )
+                    )
+                if received["type"] == "run.end":
+                    return frames
+            raise AssertionError("endpoint closed before run.end")
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="stale-cancel-session",
+                    payload={"text": "cancel stale events"},
+                )
+            )
+            frames = await asyncio.wait_for(_read_cancel_flow(), timeout=3.0)
+            await asyncio.wait_for(backend.finished.wait(), timeout=2.0)
+            await _assert_no_frame(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert [received["type"] for received in frames] == ["run.started", "run.end"]
+        assert frames[-1]["reason"] == "cancelled"
+        assert frames[-1]["payload"]["expects_reply"] is True
+
     async def test_interrupt_cancels_previous_run_then_starts_new(self) -> None:
         class InterruptBackend:
             def __init__(self) -> None:
                 self.first_cancel_metadata = None
+                self.first_cancel_seen = asyncio.Event()
 
             async def run_turn(self, request, *, event_sink=None, cancel_token=None):
                 if request.text == "first":
                     while not cancel_token.is_cancelled():
                         await asyncio.sleep(0.01)
                     self.first_cancel_metadata = cancel_token.cancel_metadata
+                    self.first_cancel_seen.set()
                     return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
                 assert event_sink is not None
                 await event_sink(RealtimeAgentEvent(type="response.chunk", text="second done"))
@@ -190,7 +276,89 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert first_run != second_run
         assert saw_first_cancelled is True
         assert saw_second_completed is True
+        await asyncio.wait_for(backend.first_cancel_seen.wait(), timeout=2.0)
         assert backend.first_cancel_metadata["cancel_source"] == "gateway_interrupt"
+
+    async def test_interrupt_suppresses_previous_run_events_after_new_message(self) -> None:
+        class InterruptStaleEventBackend:
+            def __init__(self) -> None:
+                self.first_finished = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                assert event_sink is not None
+                if request.text == "first":
+                    await cancel_token.cancelled()
+                    await event_sink(RealtimeAgentEvent(type="response.chunk", text="first stale"))
+                    await event_sink(
+                        RealtimeAgentEvent(
+                            type="tool.finished",
+                            text="first tool stale",
+                            payload={"tool_name": "first_tool"},
+                        )
+                    )
+                    self.first_finished.set()
+                    return RealtimeAgentResult(
+                        status="completed",
+                        run_id=request.run_id,
+                        response_text="first stale final",
+                    )
+                await event_sink(RealtimeAgentEvent(type="response.chunk", text="second done"))
+                return RealtimeAgentResult(
+                    status="completed",
+                    run_id=request.run_id,
+                    response_text="second done",
+                    expects_reply=True,
+                )
+
+        backend = InterruptStaleEventBackend()
+        session = GatewaySessionService(backend=backend)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+        first_run = None
+        second_run = None
+        ended: dict[str, str] = {}
+        chunks_by_run: dict[str, list[str]] = {}
+
+        try:
+            await client_ep.send(
+                frame(type="message.user", session_id="interrupt-stale-session", payload={"text": "first"})
+            )
+
+            async def _read_until_both_runs_end() -> None:
+                nonlocal first_run, second_run
+                async for received in client_ep:
+                    if received["type"] == "run.started" and first_run is None:
+                        first_run = received["run_id"]
+                        await client_ep.send(
+                            frame(
+                                type="message.user",
+                                session_id="interrupt-stale-session",
+                                payload={"text": "second"},
+                            )
+                        )
+                    elif received["type"] == "run.started":
+                        second_run = received["run_id"]
+                    elif received["type"] == "stream.chunk":
+                        chunks_by_run.setdefault(received["run_id"], []).append(
+                            received["payload"]["text"]
+                        )
+                    elif received["type"] == "run.end":
+                        ended[received["run_id"]] = received["reason"]
+                    if first_run is not None and second_run is not None:
+                        if ended.get(first_run) == "cancelled" and ended.get(second_run) == "completed":
+                            return
+
+            await asyncio.wait_for(_read_until_both_runs_end(), timeout=3.0)
+            await asyncio.wait_for(backend.first_finished.wait(), timeout=2.0)
+            await _assert_no_frame(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert first_run is not None
+        assert second_run is not None
+        assert first_run != second_run
+        assert chunks_by_run.get(first_run, []) == []
+        assert chunks_by_run.get(second_run) == ["second done"]
 
     async def test_run_deadline_from_session_config_cancels_backend(self) -> None:
         class DeadlineBackend:
@@ -225,6 +393,7 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
 
         assert frames[-1]["reason"] == "cancelled"
         assert frames[-1]["payload"]["expects_reply"] is True
+        await asyncio.wait_for(backend.cancel_seen.wait(), timeout=2.0)
         assert backend.cancel_seen.is_set()
         assert backend.cancel_metadata == {
             "deadline_ms": 30,
@@ -237,10 +406,12 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         class DeadlineBackend:
             def __init__(self) -> None:
                 self.cancel_metadata = None
+                self.cancel_seen = asyncio.Event()
 
             async def run_turn(self, request, *, event_sink=None, cancel_token=None):
                 await cancel_token.cancelled()
                 self.cancel_metadata = cancel_token.cancel_metadata
+                self.cancel_seen.set()
                 return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
 
         backend = DeadlineBackend()
@@ -264,8 +435,52 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
             await _close_session(client_ep, session_ep, session_task)
 
         assert frames[-1]["reason"] == "cancelled"
+        await asyncio.wait_for(backend.cancel_seen.wait(), timeout=2.0)
         assert backend.cancel_metadata["cancel_source"] == "deadline"
         assert backend.cancel_metadata["deadline_ms"] == 25
+
+    async def test_deadline_suppresses_backend_events_emitted_after_timeout(self) -> None:
+        class DeadlineStaleEventBackend:
+            def __init__(self) -> None:
+                self.finished = asyncio.Event()
+                self.cancel_metadata = None
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                await cancel_token.cancelled()
+                self.cancel_metadata = cancel_token.cancel_metadata
+                assert event_sink is not None
+                await event_sink(RealtimeAgentEvent(type="response.chunk", text="deadline stale"))
+                await event_sink(RealtimeAgentEvent(type="error", text="deadline stale error"))
+                self.finished.set()
+                return RealtimeAgentResult(status="completed", run_id=request.run_id)
+
+        backend = DeadlineStaleEventBackend()
+        session = GatewaySessionService(backend=backend, config={"run_timeout_ms": 20})
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="deadline-stale-session",
+                    payload={"text": "deadline stale events"},
+                )
+            )
+            frames = await _collect_until_run_end(client_ep)
+            await asyncio.wait_for(backend.finished.wait(), timeout=2.0)
+            await _assert_no_frame(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert [received["type"] for received in frames] == ["run.started", "run.end"]
+        assert frames[-1]["reason"] == "cancelled"
+        assert frames[-1]["payload"]["expects_reply"] is True
+        assert backend.cancel_metadata == {
+            "deadline_ms": 20,
+            "cancel_source": "deadline",
+            "cancel_reason": "run_deadline_expired",
+        }
 
     async def test_completed_run_cleans_deadline_monitor(self) -> None:
         class FastBackend:

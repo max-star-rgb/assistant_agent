@@ -1,5 +1,6 @@
 """Direct chat adapter contracts and local implementations."""
 
+from dataclasses import dataclass
 import time
 from typing import Any, Literal, Protocol
 
@@ -21,6 +22,31 @@ from assistant_agent.services.provider_errors import ProviderAdapterError, build
 
 
 ChatProviderName = Literal["mock", "openai", "qwen", "deepseek", "local"]
+
+
+@dataclass(frozen=True)
+class ProviderChatCapabilities:
+    """OpenAI-compatible chat payload switches for one provider."""
+
+    supports_response_format: bool = True
+    supports_native_tools: bool = True
+    supports_tool_choice: bool = True
+    max_tokens_param: str | None = "max_tokens"
+    include_stream_usage: bool = False
+
+
+_OPENAI_COMPATIBLE_CHAT_CAPABILITIES = ProviderChatCapabilities()
+_PROVIDER_CHAT_CAPABILITIES: dict[str, ProviderChatCapabilities] = {
+    "openai": _OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
+    "qwen": _OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
+    "deepseek": _OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
+}
+
+
+def chat_capabilities_for_provider(provider: str) -> ProviderChatCapabilities:
+    """Return conservative OpenAI-compatible chat capabilities for a provider."""
+
+    return _PROVIDER_CHAT_CAPABILITIES.get(provider.lower(), _OPENAI_COMPATIBLE_CHAT_CAPABILITIES)
 
 
 class ChatRequest(BaseModel):
@@ -126,7 +152,7 @@ class UnconfiguredChatAdapter:
         )
 
 
-class HttpChatAdapter:
+class OpenAICompatibleChatAdapter:
     """OpenAI-compatible SDK chat adapter for explicit real provider smoke."""
 
     def __init__(
@@ -146,6 +172,7 @@ class HttpChatAdapter:
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.stream = stream
+        self.capabilities = chat_capabilities_for_provider(provider)
         self._client = (
             client
             if client is not None
@@ -154,12 +181,15 @@ class HttpChatAdapter:
 
     def chat(self, request: ChatRequest) -> ChatResult:
         started_at = time.perf_counter()
-        payload = _build_openai_chat_payload(request, self.model)
+        payload = _build_chat_completions_payload(
+            request,
+            self.model,
+            self.capabilities,
+            stream=self.stream,
+        )
         try:
             if self.stream:
-                stream_payload = dict(payload)
-                stream_payload["stream"] = True
-                stream = self._client.chat.completions.create(**stream_payload)
+                stream = self._client.chat.completions.create(**payload)
                 return _parse_openai_chat_stream(
                     stream,
                     provider=self.provider,
@@ -199,7 +229,7 @@ def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
     if missing:
         return UnconfiguredChatAdapter(resolved.chat_provider, ", ".join(missing))
     if settings.spec.adapter_kind == "openai_compatible":
-        return HttpChatAdapter(
+        return OpenAICompatibleChatAdapter(
             provider=settings.provider,
             api_key=settings.api_key or "",
             base_url=settings.base_url or "",
@@ -209,7 +239,16 @@ def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
     return MockChatAdapter()
 
 
-def _build_openai_chat_payload(request: ChatRequest, model: str) -> dict[str, Any]:
+HttpChatAdapter = OpenAICompatibleChatAdapter
+
+
+def _build_chat_completions_payload(
+    request: ChatRequest,
+    model: str,
+    capabilities: ProviderChatCapabilities,
+    *,
+    stream: bool = False,
+) -> dict[str, Any]:
     if request.messages:
         messages = request.messages
     else:
@@ -223,13 +262,19 @@ def _build_openai_chat_payload(request: ChatRequest, model: str) -> dict[str, An
         "model": model,
         "messages": messages,
         "temperature": request.temperature,
-        "max_tokens": request.max_tokens,
     }
-    if request.tools:
+    if capabilities.max_tokens_param:
+        payload[capabilities.max_tokens_param] = request.max_tokens
+    if request.tools and capabilities.supports_native_tools:
         payload["tools"] = request.tools
-        payload["tool_choice"] = request.tool_choice or "auto"
-    if request.response_format:
+        if capabilities.supports_tool_choice:
+            payload["tool_choice"] = request.tool_choice or "auto"
+    if request.response_format and capabilities.supports_response_format:
         payload["response_format"] = request.response_format
+    if stream:
+        payload["stream"] = True
+        if capabilities.include_stream_usage:
+            payload["stream_options"] = {"include_usage": True}
     return payload
 
 

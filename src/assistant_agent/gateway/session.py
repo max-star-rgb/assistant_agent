@@ -234,18 +234,31 @@ class GatewaySessionService:
                     )
                 )
         except Exception as exc:  # noqa: BLE001 - protocol boundary.
-            end_reason = "error"
-            await ep.send(
-                frame(
-                    type="run.end",
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    run_id=run_id,
-                    reason="error",
-                    error={"message": str(exc), "error_type": type(exc).__name__},
-                    payload={"expects_reply": True},
+            if cancel.is_cancelled():
+                end_reason = "cancelled"
+                await ep.send(
+                    frame(
+                        type="run.end",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        run_id=run_id,
+                        reason="cancelled",
+                        payload={"expects_reply": True},
+                    )
                 )
-            )
+            else:
+                end_reason = "error"
+                await ep.send(
+                    frame(
+                        type="run.end",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        run_id=run_id,
+                        reason="error",
+                        error={"message": str(exc), "error_type": type(exc).__name__},
+                        payload={"expects_reply": True},
+                    )
+                )
         finally:
             deadline_task: asyncio.Task[None] | None = None
             async with self._lock:
@@ -268,13 +281,15 @@ class GatewaySessionService:
         queue: asyncio.Queue[Frame] = asyncio.Queue()
 
         async def event_sink(event: RealtimeAgentEvent) -> None:
+            if cancel.is_cancelled():
+                return
             mapped = realtime_event_to_frame(
                 event,
                 session_id=request.session_id,
                 turn_id=turn_id,
                 run_id=request.run_id or "",
             )
-            if mapped is not None:
+            if mapped is not None and not cancel.is_cancelled():
                 await queue.put(mapped)
 
         task = asyncio.create_task(
@@ -284,15 +299,52 @@ class GatewaySessionService:
                 cancel_token=cancel,
             )
         )
-        while not task.done() or not queue.empty():
-            try:
-                outbound = await asyncio.wait_for(queue.get(), timeout=0.05)
-            except asyncio.TimeoutError:
-                continue
-            if not cancel.is_cancelled():
-                await ep.send(outbound)
+        cancel_wait = asyncio.create_task(cancel.cancelled())
+        queue_wait: asyncio.Task[Frame] | None = None
 
-        return await task
+        try:
+            while True:
+                if cancel.is_cancelled():
+                    _discard_queued_frames(queue)
+                    _consume_background_task(task)
+                    return _cancelled_realtime_result(request=request, cancel=cancel)
+
+                while not queue.empty():
+                    outbound = queue.get_nowait()
+                    if cancel.is_cancelled():
+                        _discard_queued_frames(queue)
+                        _consume_background_task(task)
+                        return _cancelled_realtime_result(request=request, cancel=cancel)
+                    await ep.send(outbound)
+
+                if task.done():
+                    return await task
+
+                if queue_wait is None or queue_wait.done():
+                    queue_wait = asyncio.create_task(queue.get())
+
+                done, _ = await asyncio.wait(
+                    {task, cancel_wait, queue_wait},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if cancel_wait in done or cancel.is_cancelled():
+                    _discard_queued_frames(queue)
+                    _consume_background_task(task)
+                    return _cancelled_realtime_result(request=request, cancel=cancel)
+
+                if queue_wait in done:
+                    outbound = queue_wait.result()
+                    queue_wait = None
+                    if not cancel.is_cancelled():
+                        await ep.send(outbound)
+        finally:
+            cancel_wait.cancel()
+            pending: list[asyncio.Task[Any]] = [cancel_wait]
+            if queue_wait is not None and not queue_wait.done():
+                queue_wait.cancel()
+                pending.append(queue_wait)
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _interrupt_if_needed(self, *, session_id: str) -> None:
         async with self._lock:
@@ -393,6 +445,46 @@ class GatewaySessionService:
             audio_id=_optional_string(payload.get("audio_id")),
             metadata=metadata,
         )
+
+
+def _cancelled_realtime_result(
+    *,
+    request: RealtimeAgentRequest,
+    cancel: CancelToken,
+) -> RealtimeAgentResult:
+    return RealtimeAgentResult(
+        status="cancelled",
+        run_id=request.run_id,
+        expects_reply=True,
+        metadata={
+            **cancel.cancel_metadata,
+            "cancel_phase": "gateway_output_gate",
+            "best_effort": True,
+        },
+    )
+
+
+def _discard_queued_frames(queue: asyncio.Queue[Frame]) -> None:
+    while True:
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+
+
+def _consume_background_task(task: asyncio.Task[Any]) -> None:
+    def _consume(done: asyncio.Task[Any]) -> None:
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+
+    if task.done():
+        _consume(task)
+    else:
+        task.add_done_callback(_consume)
 
 
 @dataclass

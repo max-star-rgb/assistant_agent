@@ -27,8 +27,8 @@ The target behavior is:
 - When cancellation is observed, the run stops with a structured cancelled
   result instead of continuing to produce stale output.
 
-This does not require true token streaming. Phase 3 streaming improves user
-experience, but Phase 2 can be completed while model output is still
+This does not require true token streaming. Phase 3 improves the realtime
+client experience at the Gateway output boundary while model output can remain
 non-streaming.
 
 ## Current State
@@ -67,6 +67,18 @@ Implemented in Phase 2:
   runTime/OpenClaw types.
 - API error mapping exposes `AGENT_RUN_CANCELLED` with safe cancellation detail
   such as `cancel_phase`, `node_name`, and `tool_name`.
+
+Implemented in Phase 3:
+
+- `GatewaySessionService` treats its per-run `CancelToken` as the authoritative
+  outbound gate.
+- Once `run.cancel`, same-session interrupt, or a run deadline marks the token,
+  the Gateway stops forwarding queued or late realtime events for that run.
+- The Gateway still emits the terminal `run.end` frame with
+  `reason="cancelled"` and `expects_reply=true`.
+- The backend/agent task is allowed to finish naturally in the background; any
+  late `response.chunk`, `response.final`, tool, trace, or error events are
+  discarded at the Gateway boundary.
 
 Known limits:
 
@@ -111,7 +123,8 @@ Known limits:
    - Current synchronous `ChatAdapter.chat(...)` compatibility is preserved.
    - Provider/model calls are protected by graph node boundary checks and
      configured provider timeouts.
-   - Provider-level hard cancel or delta streaming remains Phase 3 work.
+   - Provider-level hard cancel and provider delta streaming are not required
+     for Phase 3; they remain optional later enhancements.
 
 6. Preserve Gateway wire behavior.
 
@@ -137,21 +150,27 @@ provider token streaming.
 
 ## Phase 3 Relationship
 
-Phase 3 should improve realtime output, not block Phase 2.
+Phase 3 is scoped to Gateway outbound correctness and run lifecycle behavior.
+It does not require hard-cancelling an in-flight provider/tool call, converting
+`ChatAdapter.chat(...)` to async, or adding provider-level delta streaming.
 
-Phase 3 remains responsible for:
+Phase 3 is responsible for:
 
-- Provider-level response delta support.
-- Real `response.chunk` events from model deltas.
-- First-token/first-chunk latency metrics.
-- Fine-grained progress events for memory load, graph nodes, and provider calls.
-- More precise cancellation latency metrics.
-- Optional out-of-process realtime transport that depends on
-  `RealtimeAgentBackend`, not Gateway/runTime internals.
+- Suppressing stale outbound frames after `run.cancel`, same-session interrupt,
+  or deadline cancellation.
+- Dropping queued or late `response.chunk`, `response.final`, tool, trace, and
+  error events from the cancelled run.
+- Emitting exactly the cancelled run's terminal `run.end` frame with
+  `reason="cancelled"` and `expects_reply=true`.
+- Letting the backend/agent finish its current synchronous work naturally and
+  consuming its eventual result or exception without affecting the client.
+- Keeping deadline metadata diagnostic-only:
+  `cancel_source="deadline"`, `cancel_reason="run_deadline_expired"`, and
+  `deadline_ms`.
 
-Without Phase 3, interruption can still be semantically correct but may not feel
-instant when the current provider call is blocking. With Phase 3, interruption
-can become both semantically correct and perceptually responsive.
+Provider delta streaming, first-token metrics, richer progress events, and
+optional out-of-process transport are future realtime enhancements. They are no
+longer Phase 3 acceptance blockers.
 
 ## Test Plan
 
@@ -170,6 +189,8 @@ Covered tests:
   `cancelled` and emits no final response.
 - Gateway `run.cancel` still emits `run.end reason=cancelled`.
 - Same-session interrupt still cancels the previous run and starts the new run.
+- Gateway suppresses stale backend events emitted after explicit cancel,
+  interrupt, or deadline cancellation.
 - `/agent/run` and existing WebSocket behavior remain unchanged when no cancel
   token is provided.
 - No imports from `openclaw_gateway_runtime` are introduced.
@@ -201,7 +222,7 @@ Phase 2 is complete when:
 - `ToolContext` exposes cancellation without forcing every tool to become async.
 - Provider/chat blocking calls remain timeout-protected and are checked before
   and after execution.
-- Cancelled runs do not emit stale final response events after cancellation is
-  observed.
+- Cancelled runs do not emit stale outbound response, tool, trace, or error
+  events after Gateway cancellation is observed.
 - Existing non-realtime `/agent/run` and WebSocket paths are unchanged unless
   they explicitly pass a cancel token.

@@ -234,13 +234,29 @@ Important constraint:
 
 ## Phase 3
 
-Enhance streaming and realtime semantics after the neutral backend is stable.
+Converge Gateway output gating and lightweight realtime semantics after the
+neutral backend is stable.
 
-Possible improvements:
+Required behavior:
 
-- Add provider-level response delta support.
+- Keep one run-scoped cancel token owned by the Gateway/session layer.
+- When `run.cancel`, same-session interrupt, or deadline expiry cancels that
+  token, immediately stop forwarding queued or late outbound events for the old
+  run.
+- Drop old-run `response.chunk`, `response.final`, tool, trace, and error events
+  after cancellation is observed at the Gateway boundary.
+- Still emit the old run's terminal `run.end` frame with
+  `reason="cancelled"` and `expects_reply=true`.
+- Let the backend/agent finish current synchronous provider or tool work
+  naturally; Phase 3 does not hard-cancel provider calls.
+- Preserve deadline diagnostics through cancel metadata such as
+  `cancel_source="deadline"`, `cancel_reason="run_deadline_expired"`, and
+  `deadline_ms`.
+
+Optional future improvements:
+
+- Add provider-level response delta support when provider adapters expose it.
 - Emit real `response.chunk` events from model deltas when provider support exists.
-- Implement run-level deadline handling.
 - Add richer realtime progress events for memory load, graph nodes, and provider calls.
 - Add multimodal realtime request mapping for image/video/audio references.
 - Add optional out-of-process transport that still depends on `RealtimeAgentBackend`, not runTime internals.

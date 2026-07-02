@@ -14,6 +14,8 @@ from assistant_agent.services.chat_adapter import (
     ChatRequest,
     HttpChatAdapter,
     MockChatAdapter,
+    OpenAICompatibleChatAdapter,
+    ProviderChatCapabilities,
     create_chat_adapter,
 )
 
@@ -65,8 +67,39 @@ def sdk_adapter(monkeypatch, *, response=None, error: Exception | None = None, s
             chat_stream=stream,
         )
     )
-    assert isinstance(adapter, HttpChatAdapter)
+    assert isinstance(adapter, OpenAICompatibleChatAdapter)
     return adapter, completions, captured
+
+
+def fake_http_adapter(
+    monkeypatch,
+    capabilities: ProviderChatCapabilities,
+    *,
+    response=None,
+    stream: bool = False,
+):
+    completions = FakeCompletions(
+        response=response
+        or {
+            "model": "fake-chat",
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {},
+        }
+    )
+    monkeypatch.setattr(
+        chat_adapter_module,
+        "chat_capabilities_for_provider",
+        lambda _provider: capabilities,
+    )
+    adapter = OpenAICompatibleChatAdapter(
+        provider="fake",
+        api_key="test-key",
+        base_url="https://fake.example/v1",
+        model="fake-chat",
+        stream=stream,
+        client=FakeSDKClient(completions),
+    )
+    return adapter, completions
 
 
 def _openai_request() -> httpx.Request:
@@ -99,6 +132,10 @@ def test_create_chat_adapter_defaults_to_mock() -> None:
 
     assert result.success is True
     assert result.provider == "mock"
+
+
+def test_legacy_http_chat_adapter_alias_points_to_openai_compatible_adapter() -> None:
+    assert HttpChatAdapter is OpenAICompatibleChatAdapter
 
 
 def test_real_chat_provider_without_key_returns_provider_unconfigured() -> None:
@@ -150,6 +187,33 @@ def test_deepseek_chat_provider_uses_openai_sdk(monkeypatch) -> None:
     assert completions.calls[0]["model"] == "deepseek-chat"
     assert completions.calls[0]["messages"][-1]["content"] == "请用一句话介绍项目"
     assert "stream" not in completions.calls[0]
+
+
+def test_openai_compatible_chat_payload_sends_default_chat_fields(monkeypatch) -> None:
+    adapter, completions, _ = sdk_adapter(
+        monkeypatch,
+        response={
+            "model": "deepseek-chat",
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {},
+        },
+    )
+
+    adapter.chat(
+        ChatRequest(
+            user_id="u1",
+            session_id="s1",
+            user_query="hello",
+            temperature=0.7,
+            max_tokens=123,
+        )
+    )
+
+    payload = completions.calls[0]
+    assert payload["model"] == "deepseek-chat"
+    assert payload["messages"] == [{"role": "user", "content": "hello"}]
+    assert payload["temperature"] == 0.7
+    assert payload["max_tokens"] == 123
 
 
 def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -> None:
@@ -231,6 +295,54 @@ def test_openai_compatible_chat_payload_sends_native_tools(monkeypatch) -> None:
     assert payload["response_format"] == {"type": "json_object"}
 
 
+def test_openai_compatible_chat_payload_omits_unsupported_response_format(monkeypatch) -> None:
+    adapter, completions = fake_http_adapter(
+        monkeypatch,
+        ProviderChatCapabilities(supports_response_format=False),
+    )
+
+    adapter.chat(
+        ChatRequest(
+            user_id="u1",
+            session_id="s1",
+            user_query="hello",
+            response_format={"type": "json_object"},
+        )
+    )
+
+    assert "response_format" not in completions.calls[0]
+
+
+def test_openai_compatible_chat_payload_omits_unsupported_native_tools(monkeypatch) -> None:
+    adapter, completions = fake_http_adapter(
+        monkeypatch,
+        ProviderChatCapabilities(supports_native_tools=False),
+    )
+
+    adapter.chat(
+        ChatRequest(
+            user_id="u1",
+            session_id="s1",
+            user_query="帮我找通勤耳机",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "product_search",
+                        "description": "Search products.",
+                        "parameters": {"type": "object", "properties": {}, "required": []},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+    )
+
+    payload = completions.calls[0]
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
+
+
 def test_openai_compatible_chat_response_parses_refusal(monkeypatch) -> None:
     adapter, _, _ = sdk_adapter(
         monkeypatch,
@@ -279,6 +391,7 @@ def test_stream_chunks_aggregate_content(monkeypatch) -> None:
     assert result.message_kind == "final_answer"
     assert result.usage == {"prompt_tokens": 4, "completion_tokens": 3}
     assert completions.calls[0]["stream"] is True
+    assert "stream_options" not in completions.calls[0]
 
 
 def test_stream_chunks_aggregate_tool_call_arguments(monkeypatch) -> None:
