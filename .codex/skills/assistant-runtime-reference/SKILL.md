@@ -5,9 +5,15 @@ description: Project-local workflow for assistant_agent Gateway work. Use when C
 
 # Assistant Runtime Reference
 
-Use this skill when Gateway behavior in `assistant_agent` must be compared with the legacy compatibility project at `/home/lenovo1/pycharm_project/runTime`.
+Use this skill when Gateway behavior in `assistant_agent` must be designed, reviewed, debugged, migrated, tested, or compared with the legacy compatibility project at `/home/lenovo1/pycharm_project/runTime`.
 
 `assistant_agent` remains the authoritative project. `runTime` is reference material for protocol compatibility and regression behavior only.
+
+## Primary Project Entry
+
+Read `docs/gateway-architecture.md` first for current `assistant_agent` Gateway responsibilities, entry-layer boundaries, realtime backend contract, code map, OpenClaw reference boundary, and update rules.
+
+Use the legacy `runTime` files only after that current project entry, and only when protocol compatibility or behavior comparison is needed.
 
 ## When To Read runTime
 
@@ -47,6 +53,7 @@ Avoid `runTime/src/openclaw_gateway_runtime/agent_runtime/**`, `skills/**`, and 
 
 ## Working Rules
 
+- Treat `docs/gateway-architecture.md` as the current Gateway architecture authority.
 - Preserve the assistant public backend interface: `RealtimeAgentRequest`, `RealtimeAgentEvent`, `RealtimeAgentResult`, `RealtimeAgentBackend`, and `RealtimeCancelToken`.
 - Default new assistant Gateway session code to `AgentGraphRealtimeBackend`; do not add a second agent loop.
 - Use `assistant_agent.gateway` for current Gateway code. Do not add removed runtime-compatibility entrypoints.
@@ -61,6 +68,7 @@ For assistant Gateway changes, run the smallest relevant subset:
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway_session.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway_api.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_realtime_agent_backend.py tests/test_realtime_event_mapping.py tests/test_realtime_backend_types.py
 ```
 
@@ -74,5 +82,5 @@ cd /home/lenovo1/pycharm_project/runTime && conda run -n hello_agent env PYTHONP
 For skill/doc-only changes:
 
 ```bash
-git diff --check -- AGENTS.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway tests/test_gateway.py tests/test_gateway_session.py
+git diff --check -- AGENTS.md docs/gateway-architecture.md docs/development/gateway-entry-layer-development-plan.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway src/assistant_agent/api/gateway_runtime.py src/assistant_agent/api/gateway_websocket.py tests/test_gateway.py tests/test_gateway_session.py tests/test_gateway_api.py scripts/run_gateway_client.py
 ```

@@ -1,11 +1,19 @@
 """Direct chat adapter contracts and local implementations."""
 
-import json
+from dataclasses import dataclass
 import time
-import urllib.error
-import urllib.request
 from typing import Any, Literal, Protocol
 
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AuthenticationError,
+    OpenAI,
+    OpenAIError,
+    PermissionDeniedError,
+    RateLimitError,
+)
 from pydantic import BaseModel, Field
 
 from assistant_agent.config import ProviderConfig
@@ -14,6 +22,31 @@ from assistant_agent.services.provider_errors import ProviderAdapterError, build
 
 
 ChatProviderName = Literal["mock", "openai", "qwen", "deepseek", "local"]
+
+
+@dataclass(frozen=True)
+class ProviderChatCapabilities:
+    """OpenAI-compatible chat payload switches for one provider."""
+
+    supports_response_format: bool = True
+    supports_native_tools: bool = True
+    supports_tool_choice: bool = True
+    max_tokens_param: str | None = "max_tokens"
+    include_stream_usage: bool = False
+
+
+_OPENAI_COMPATIBLE_CHAT_CAPABILITIES = ProviderChatCapabilities()
+_PROVIDER_CHAT_CAPABILITIES: dict[str, ProviderChatCapabilities] = {
+    "openai": _OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
+    "qwen": _OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
+    "deepseek": _OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
+}
+
+
+def chat_capabilities_for_provider(provider: str) -> ProviderChatCapabilities:
+    """Return conservative OpenAI-compatible chat capabilities for a provider."""
+
+    return _PROVIDER_CHAT_CAPABILITIES.get(provider.lower(), _OPENAI_COMPATIBLE_CHAT_CAPABILITIES)
 
 
 class ChatRequest(BaseModel):
@@ -119,8 +152,8 @@ class UnconfiguredChatAdapter:
         )
 
 
-class HttpChatAdapter:
-    """OpenAI-compatible HTTP chat adapter for explicit real provider smoke."""
+class OpenAICompatibleChatAdapter:
+    """OpenAI-compatible SDK chat adapter for explicit real provider smoke."""
 
     def __init__(
         self,
@@ -130,43 +163,61 @@ class HttpChatAdapter:
         base_url: str,
         model: str,
         timeout_seconds: float = 30.0,
+        stream: bool = False,
+        client: Any | None = None,
     ) -> None:
         self.provider = provider
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self.stream = stream
+        self.capabilities = chat_capabilities_for_provider(provider)
+        self._client = (
+            client
+            if client is not None
+            else OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
+        )
 
     def chat(self, request: ChatRequest) -> ChatResult:
         started_at = time.perf_counter()
-        payload = _build_openai_chat_payload(request, self.model)
-        http_request = urllib.request.Request(
-            _chat_completions_url(self.base_url),
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        payload = _build_chat_completions_payload(
+            request,
+            self.model,
+            self.capabilities,
+            stream=self.stream,
         )
         try:
-            with urllib.request.urlopen(http_request, timeout=self.timeout_seconds) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            if self.stream:
+                stream = self._client.chat.completions.create(**payload)
+                return _parse_openai_chat_stream(
+                    stream,
+                    provider=self.provider,
+                    model=self.model,
+                    latency_ms=int((time.perf_counter() - started_at) * 1000),
+                )
+            data = self._client.chat.completions.create(**payload)
             return _parse_openai_chat_response(
                 data,
                 provider=self.provider,
                 model=self.model,
                 latency_ms=int((time.perf_counter() - started_at) * 1000),
             )
-        except TimeoutError as exc:
-            return _chat_error(self.provider, "provider_timeout", str(exc), recoverable=True)
-        except urllib.error.HTTPError as exc:
-            return _chat_error(self.provider, _http_error_code(exc.code), f"HTTP {exc.code}")
-        except urllib.error.URLError as exc:
-            return _chat_error(self.provider, "provider_unavailable", str(exc.reason), recoverable=True)
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError, ProviderAdapterError) as exc:
-            code = exc.code if isinstance(exc, ProviderAdapterError) else "provider_bad_response"
-            return _chat_error(self.provider, code, str(exc))
+        except (
+            ProviderAdapterError,
+            APITimeoutError,
+            TimeoutError,
+            AuthenticationError,
+            PermissionDeniedError,
+            RateLimitError,
+            APIConnectionError,
+            APIStatusError,
+            OpenAIError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            return _chat_error_from_exception(self.provider, exc)
 
 
 def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
@@ -178,16 +229,23 @@ def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
     if missing:
         return UnconfiguredChatAdapter(resolved.chat_provider, ", ".join(missing))
     if settings.spec.adapter_kind == "openai_compatible":
-        return HttpChatAdapter(
+        return OpenAICompatibleChatAdapter(
             provider=settings.provider,
             api_key=settings.api_key or "",
             base_url=settings.base_url or "",
             model=settings.model or "",
+            stream=resolved.chat_stream,
         )
     return MockChatAdapter()
 
 
-def _build_openai_chat_payload(request: ChatRequest, model: str) -> dict[str, Any]:
+def _build_chat_completions_payload(
+    request: ChatRequest,
+    model: str,
+    capabilities: ProviderChatCapabilities,
+    *,
+    stream: bool = False,
+) -> dict[str, Any]:
     if request.messages:
         messages = request.messages
     else:
@@ -201,25 +259,41 @@ def _build_openai_chat_payload(request: ChatRequest, model: str) -> dict[str, An
         "model": model,
         "messages": messages,
         "temperature": request.temperature,
-        "max_tokens": request.max_tokens,
     }
-    if request.tools:
+    if capabilities.max_tokens_param:
+        payload[capabilities.max_tokens_param] = request.max_tokens
+    if request.tools and capabilities.supports_native_tools:
         payload["tools"] = request.tools
-        payload["tool_choice"] = request.tool_choice or "auto"
-    if request.response_format:
+        if capabilities.supports_tool_choice:
+            payload["tool_choice"] = request.tool_choice or "auto"
+    if request.response_format and capabilities.supports_response_format:
         payload["response_format"] = request.response_format
+    if stream:
+        payload["stream"] = True
+        if capabilities.include_stream_usage:
+            payload["stream_options"] = {"include_usage": True}
     return payload
 
 
 def _parse_openai_chat_response(
-    data: dict[str, Any],
+    data: Any,
     *,
     provider: str,
     model: str,
     latency_ms: int,
 ) -> ChatResult:
-    choice = data["choices"][0]
-    message = choice["message"]
+    data = _to_plain_data(data)
+    if not isinstance(data, dict):
+        raise ProviderAdapterError("provider_bad_response", "chat provider returned a non-object response")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ProviderAdapterError("provider_bad_response", "chat provider returned no choices")
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise ProviderAdapterError("provider_bad_response", "chat provider returned an invalid choice")
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise ProviderAdapterError("provider_bad_response", "chat provider returned an invalid message")
     content = message.get("content") or ""
     if isinstance(content, list):
         content = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
@@ -240,6 +314,73 @@ def _parse_openai_chat_response(
         usage=usage if isinstance(usage, dict) else {},
         latency_ms=latency_ms,
         output_ref=f"provider://chat/{provider}",
+    )
+
+
+def _parse_openai_chat_stream(
+    stream: Any,
+    *,
+    provider: str,
+    model: str,
+    latency_ms: int,
+) -> ChatResult:
+    content_parts: list[str] = []
+    refusal_parts: list[str] = []
+    tool_call_deltas: dict[int, dict[str, Any]] = {}
+    response_model = model
+    finish_reason: str | None = None
+    usage: dict[str, Any] = {}
+
+    for chunk in stream:
+        data = _to_plain_data(chunk)
+        if not isinstance(data, dict):
+            continue
+        if data.get("model"):
+            response_model = str(data["model"])
+        chunk_usage = data.get("usage")
+        if isinstance(chunk_usage, dict):
+            usage = chunk_usage
+        choices = data.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            if choice.get("finish_reason") is not None:
+                finish_reason = str(choice["finish_reason"])
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            content = delta.get("content")
+            if isinstance(content, str):
+                content_parts.append(content)
+            elif isinstance(content, list):
+                content_parts.append(
+                    "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+                )
+            refusal = delta.get("refusal")
+            if isinstance(refusal, str):
+                refusal_parts.append(refusal)
+            _merge_stream_tool_call_deltas(tool_call_deltas, delta.get("tool_calls"))
+
+    message: dict[str, Any] = {
+        "content": "".join(content_parts),
+    }
+    refusal = "".join(refusal_parts)
+    if refusal:
+        message["refusal"] = refusal
+    tool_calls = [_finalize_stream_tool_call(value) for _, value in sorted(tool_call_deltas.items())]
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return _parse_openai_chat_response(
+        {
+            "model": response_model,
+            "choices": [{"message": message, "finish_reason": finish_reason}],
+            "usage": usage,
+        },
+        provider=provider,
+        model=model,
+        latency_ms=latency_ms,
     )
 
 
@@ -267,11 +408,71 @@ def _parse_openai_tool_calls(value: Any) -> list[NativeToolCall]:
     return calls
 
 
-def _chat_completions_url(base_url: str) -> str:
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/chat/completions"):
-        return normalized
-    return f"{normalized}/chat/completions"
+def _merge_stream_tool_call_deltas(tool_call_deltas: dict[int, dict[str, Any]], value: Any) -> None:
+    if not isinstance(value, list):
+        return
+    for position, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        index = item.get("index")
+        if not isinstance(index, int):
+            index = position
+        current = tool_call_deltas.setdefault(
+            index,
+            {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
+        )
+        if item.get("id") is not None:
+            current["id"] = str(item["id"])
+        if item.get("type") is not None:
+            current["type"] = str(item["type"])
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        current_function = current.setdefault("function", {"name": "", "arguments": ""})
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            existing_name = current_function.get("name")
+            if not isinstance(existing_name, str) or not existing_name:
+                current_function["name"] = name
+            elif name == existing_name:
+                current_function["name"] = existing_name
+            elif name.startswith(existing_name):
+                current_function["name"] = name
+            else:
+                current_function["name"] = existing_name + name
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            current_function["arguments"] = str(current_function.get("arguments") or "") + arguments
+
+
+def _finalize_stream_tool_call(value: dict[str, Any]) -> dict[str, Any]:
+    function = value.get("function") if isinstance(value.get("function"), dict) else {}
+    return {
+        "id": value.get("id"),
+        "type": value.get("type") or "function",
+        "function": {
+            "name": function.get("name") or "",
+            "arguments": function.get("arguments") or "",
+        },
+    }
+
+
+def _to_plain_data(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {key: _to_plain_data(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_to_plain_data(item) for item in value]
+    if hasattr(value, "model_dump"):
+        return _to_plain_data(value.model_dump(mode="json"))
+    if hasattr(value, "__dict__") and not isinstance(value, type):
+        return {
+            key: _to_plain_data(child)
+            for key, child in vars(value).items()
+            if not key.startswith("_")
+        }
+    return value
 
 
 def _chat_error(provider: str, code: str, message: object, *, recoverable: bool | None = None) -> ChatResult:
@@ -294,6 +495,53 @@ def _chat_error(provider: str, code: str, message: object, *, recoverable: bool 
             )
         ],
     )
+
+
+def _chat_error_from_exception(provider: str, exc: Exception) -> ChatResult:
+    if isinstance(exc, ProviderAdapterError):
+        return _chat_error(provider, exc.code, exc.message)
+    if isinstance(exc, (APITimeoutError, TimeoutError)):
+        return _chat_error(provider, "provider_timeout", str(exc), recoverable=True)
+    if isinstance(exc, (AuthenticationError, PermissionDeniedError)):
+        return _chat_error(provider, "provider_auth_failed", str(exc))
+    if isinstance(exc, RateLimitError):
+        return _chat_error(provider, "provider_rate_limited", str(exc), recoverable=True)
+    if isinstance(exc, APIConnectionError):
+        return _chat_error(provider, "provider_network_error", str(exc), recoverable=True)
+    if isinstance(exc, APIStatusError):
+        return _chat_error(provider, _api_status_error_code(exc), str(exc))
+    if isinstance(exc, OpenAIError):
+        return _chat_error(provider, "provider_unavailable", str(exc), recoverable=True)
+    if isinstance(exc, (KeyError, TypeError, ValueError)):
+        return _chat_error(provider, "provider_bad_response", str(exc))
+    return _chat_error(provider, "provider_unknown_error", str(exc))
+
+
+def _api_status_error_code(exc: APIStatusError) -> str:
+    status_code = getattr(exc, "status_code", None)
+    if not isinstance(status_code, int):
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    if _looks_like_context_overflow(exc) or status_code == 413:
+        return "provider_context_overflow"
+    if isinstance(status_code, int):
+        return _http_error_code(status_code)
+    return "provider_bad_response"
+
+
+def _looks_like_context_overflow(exc: APIStatusError) -> bool:
+    body = getattr(exc, "body", None)
+    text = f"{exc} {body}".lower()
+    markers = (
+        "context_length_exceeded",
+        "context length",
+        "maximum context",
+        "max context",
+        "token limit",
+        "too many tokens",
+        "request too large",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _http_error_code(status_code: int) -> str:

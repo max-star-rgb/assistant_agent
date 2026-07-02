@@ -711,6 +711,18 @@ class GatewaySessionManager:
     def active_count(self) -> int:
         return len(self._entries)
 
+    async def close(self) -> None:
+        """Stop the reaper and close all managed user sessions."""
+
+        if self._reaper_task is not None and not self._reaper_task.done():
+            self._reaper_task.cancel()
+            await asyncio.gather(self._reaper_task, return_exceptions=True)
+        self._reaper_task = None
+        async with self._lock:
+            user_ids = list(self._entries)
+        for user_id in user_ids:
+            await self.destroy(user_id)
+
     def session_config(self, user_id: str) -> dict[str, Any] | None:
         entry = self._entries.get(user_id)
         if entry is not None:

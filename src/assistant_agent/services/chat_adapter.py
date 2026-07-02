@@ -239,9 +239,6 @@ def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
     return MockChatAdapter()
 
 
-HttpChatAdapter = OpenAICompatibleChatAdapter
-
-
 def _build_chat_completions_payload(
     request: ChatRequest,
     model: str,

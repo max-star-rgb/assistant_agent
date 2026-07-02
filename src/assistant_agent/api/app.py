@@ -1,6 +1,7 @@
 """FastAPI application factory."""
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,6 +9,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from assistant_agent.api.gateway_runtime import shutdown_gateway_runtime
+from assistant_agent.api.gateway_websocket import router as gateway_websocket_router
 from assistant_agent.api.routes_a2a import router as a2a_router
 from assistant_agent.api.routes_agent import router as agent_router
 from assistant_agent.api.websocket import router as websocket_router
@@ -19,7 +22,7 @@ SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 
 def create_app() -> FastAPI:
     load_repo_env_file()
-    app = FastAPI(title="Multimodal Agent")
+    app = FastAPI(title="Multimodal Agent", lifespan=_lifespan)
     static_dir = Path(__file__).resolve().parent / "static"
 
     @app.exception_handler(RequestValidationError)
@@ -53,7 +56,17 @@ def create_app() -> FastAPI:
     app.include_router(agent_router)
     app.include_router(a2a_router)
     app.include_router(websocket_router)
+    app.include_router(gateway_websocket_router)
     return app
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _ = app
+    try:
+        yield
+    finally:
+        await shutdown_gateway_runtime()
 
 
 def load_repo_env_file(path: Path | None = None, *, override: bool = False) -> dict[str, str]:

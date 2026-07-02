@@ -12,7 +12,6 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.services import chat_adapter as chat_adapter_module
 from assistant_agent.services.chat_adapter import (
     ChatRequest,
-    HttpChatAdapter,
     MockChatAdapter,
     OpenAICompatibleChatAdapter,
     ProviderChatCapabilities,
@@ -132,10 +131,6 @@ def test_create_chat_adapter_defaults_to_mock() -> None:
 
     assert result.success is True
     assert result.provider == "mock"
-
-
-def test_legacy_http_chat_adapter_alias_points_to_openai_compatible_adapter() -> None:
-    assert HttpChatAdapter is OpenAICompatibleChatAdapter
 
 
 def test_real_chat_provider_without_key_returns_provider_unconfigured() -> None:
