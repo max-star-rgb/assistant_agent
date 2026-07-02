@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, NotRequired, TypedDict, cast
 
 from assistant_agent.agent.action_validator import ActionValidator
+from assistant_agent.agent.cancellation import AgentRunCancelled
 from assistant_agent.agent.intent import IntentDetector
 from assistant_agent.agent.loop_guard import LoopGuard, LoopGuardDecision
 from assistant_agent.agent.memory_tool_selection import (
@@ -1354,6 +1355,8 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
             "tool_observations": _record_react_observation(graph_state, tool_observations, observation),
             "outputs_by_step": outputs_by_step,
         }
+    except AgentRunCancelled:
+        raise
     except Exception as e:
         error = AgentError(
             message=f"工具执行异常：{str(e)}",

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any
 
+from assistant_agent.agent.cancellation import cancellation_metadata
 from assistant_agent.realtime.backend import RealtimeEventSink
 from assistant_agent.realtime.event_mapping import (
     map_agent_event,
@@ -71,7 +72,11 @@ class AgentGraphRealtimeBackend:
             return RealtimeAgentResult(
                 status="cancelled",
                 run_id=request.run_id,
-                metadata={"cancel_phase": "pre_run", "best_effort": True},
+                metadata={
+                    **cancellation_metadata(cancel_token),
+                    "cancel_phase": "pre_run",
+                    "best_effort": True,
+                },
             )
 
         user_request = realtime_request_to_user_request(request)
@@ -86,12 +91,27 @@ class AgentGraphRealtimeBackend:
                 event_sink=forwarder,
                 load_env=self._load_env,
                 enable_conversation_history=self._enable_conversation_history,
+                cancel_token=cancel_token,
             )
             await forwarder.drain()
 
             state = artifacts.state
             result_run_id = request.run_id or state.run_id
             result_metadata = {"assistant_run_id": state.run_id}
+
+            if state.status == "cancelled":
+                state_cancel_metadata = _cancel_metadata_from_state(state)
+                return RealtimeAgentResult(
+                    status="cancelled",
+                    run_id=result_run_id,
+                    trace_id=state.trace_id,
+                    metadata={
+                        **result_metadata,
+                        **state_cancel_metadata,
+                        "cancel_phase": _cancel_phase_from_state(state) or "agent_run",
+                        "best_effort": True,
+                    },
+                )
 
             if _is_cancelled(cancel_token):
                 return RealtimeAgentResult(
@@ -100,6 +120,7 @@ class AgentGraphRealtimeBackend:
                     trace_id=state.trace_id,
                     metadata={
                         **result_metadata,
+                        **cancellation_metadata(cancel_token),
                         "cancel_phase": "post_run",
                         "best_effort": True,
                     },
@@ -237,3 +258,28 @@ async def _emit_backend_error(
 
 def _is_cancelled(cancel_token: RealtimeCancelToken | None) -> bool:
     return cancel_token is not None and cancel_token.is_cancelled()
+
+
+def _cancel_phase_from_state(state: Any) -> str | None:
+    errors = getattr(state, "errors", None)
+    if not errors:
+        return None
+    details = getattr(errors[-1], "details", None)
+    if not isinstance(details, dict):
+        return None
+    phase = details.get("cancel_phase")
+    return phase if isinstance(phase, str) and phase else None
+
+
+def _cancel_metadata_from_state(state: Any) -> dict[str, Any]:
+    errors = getattr(state, "errors", None)
+    if not errors:
+        return {}
+    details = getattr(errors[-1], "details", None)
+    if not isinstance(details, dict):
+        return {}
+    metadata: dict[str, Any] = {}
+    for key in ("cancel_source", "cancel_reason", "deadline_ms"):
+        if key in details:
+            metadata[key] = details[key]
+    return metadata

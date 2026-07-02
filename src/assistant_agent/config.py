@@ -83,6 +83,7 @@ class ProviderConfig:
     chat_base_url: str | None = None
     chat_model: str | None = None
     chat_adapter_kind: str = "mock"
+    chat_stream: bool = False
     openai_chat_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
     qwen_chat_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -214,6 +215,7 @@ class ProviderConfig:
             chat_base_url=chat_settings.base_url,
             chat_model=chat_settings.model,
             chat_adapter_kind=chat_settings.spec.adapter_kind,
+            chat_stream=_chat_stream(source, chat_provider),
             openai_chat_base_url=source.get("OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"),
             openai_chat_model=source.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
             qwen_chat_base_url=source.get("QWEN_CHAT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
@@ -571,6 +573,24 @@ def _assistant_tool_call_mode(value: str | None) -> AssistantToolCallMode:
     if value == "auto":
         return "auto"
     return "auto"
+
+
+def _chat_stream(source: Mapping[str, str], chat_provider: ChatProviderName) -> bool:
+    provider_override = source.get("DEEPSEEK_CHAT_STREAM") if chat_provider == "deepseek" else None
+    if provider_override is not None:
+        return _bool_env(provider_override, False)
+    return _bool_env(source.get("CHAT_STREAM"), False)
+
+
+def _bool_env(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
 
 
 def _float_env(value: str | None, default: float) -> float:

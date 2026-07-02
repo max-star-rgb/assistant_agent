@@ -49,7 +49,8 @@ ERROR_CODE_MAP = {
     "agent_transport_unavailable": "AGENT_TRANSPORT_UNAVAILABLE",
     "agent_transport_failed": "AGENT_TRANSPORT_FAILED",
     "agent_delegation_depth_exceeded": "AGENT_DELEGATION_DEPTH_EXCEEDED",
-    "task_cancelled": "TASK_FAILED",
+    "agent_run_cancelled": "AGENT_RUN_CANCELLED",
+    "task_cancelled": "AGENT_RUN_CANCELLED",
     "unknown_error": "INTERNAL_ERROR",
 }
 
@@ -165,7 +166,17 @@ def normalize_error_code(code: str) -> str:
 
 
 def _public_detail(error: AgentError) -> dict[str, Any]:
-    allowed_keys = {"source", "step_id", "recovery_action", "optional_step", "retryable", "call_id"}
+    allowed_keys = {
+        "source",
+        "step_id",
+        "recovery_action",
+        "optional_step",
+        "retryable",
+        "call_id",
+        "cancel_phase",
+        "node_name",
+        "tool_name",
+    }
     detail = sanitize_error_detail({key: value for key, value in error.details.items() if key in allowed_keys})
     if error.source is not None:
         detail.setdefault("source", error.source)

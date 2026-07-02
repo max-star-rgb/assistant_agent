@@ -143,17 +143,21 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 `ToolExecutor.run_tool()` 是唯一工具执行入口。它负责：
 
 - 对 memory 工具用 `AgentState.user_id/session_id` 覆盖模型参数。
+- 检查 run-scoped cancel token；取消时跳过工具执行或停止 retry，并把 run 交回 runtime 标记为 `cancelled`。
 - 创建 `ToolCallRecord` 并更新 `AgentState.status`。
 - 在真正执行前调用 `ProviderCallBudget.check_before_call()`。
 - 发出 `tool_started`、`tool_finished`、`tool_failed` 事件。
 - 写入 `ToolHistoryStore` 的 started/succeeded/failed 记录。
 - 通过 `ProviderExecutionPolicy.retry` 对 retryable provider 错误重试。
 - 把 registry/tool 异常转为失败 `ToolResult`，不让异常穿透给 Agent。
+- `AgentRunCancelled` 是例外：它是运行时控制信号，会穿透 graph node 并由 `AgentGraphRuntime` 收口。
 - 记录 provider budget call record。
 - 用 `RecoveryPolicy` 决定失败后 stop、partial continue 或 optional step skip。
 - 写入 trace event，失败时包含 sanitized error 和 input/output summary。
 
 只有 `ToolExecutor._run_once()` 可以直接调用 `registry.run(...)`。新增入口、API、MCP、graph node 或 service 不应直接调用 registry。
+
+`ToolContext` 携带 `run_id/user_id/session_id`、运行时 metadata，以及可选的 `cancel_token`。工具若有自然轮询点，可以调用 `context.is_cancelled()` 提前返回；不要求现有同步工具在本阶段改成 async。
 
 ## ToolResult 和 observation
 
@@ -244,7 +248,7 @@ MCP server 不直接依赖 provider SDK，不直接访问 OpenAI/DashScope/httpx
 
 - registry spec 暴露和 schema 转换。
 - ActionValidator 接受合法输入、拒绝缺参/未知工具/危险输入。
-- ToolExecutor 成功、失败、预算阻断和 retry/recovery。
+- ToolExecutor 成功、失败、预算阻断、retry/recovery 和 cooperative cancellation。
 - assistant_loop prompt-json 路径和 provider-native 路径。
 - observation 和 trace/event 中不出现 raw provider payload、API key、Authorization、Bearer token。
 - 若工具可默认注册，离线 pytest 和 demo flow 不能依赖真实 provider。

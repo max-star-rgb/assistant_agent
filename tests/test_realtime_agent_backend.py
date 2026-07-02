@@ -8,14 +8,19 @@ from assistant_agent.schemas.requests import AgentResponse, UserRequest
 
 
 class MutableCancelToken:
-    def __init__(self, cancelled: bool = False) -> None:
+    def __init__(self, cancelled: bool = False, metadata: dict[str, object] | None = None) -> None:
         self.cancelled = cancelled
+        self._metadata = dict(metadata or {})
 
     def is_cancelled(self) -> bool:
         return self.cancelled
 
     async def cancelled(self) -> None:
         return None
+
+    @property
+    def cancel_metadata(self) -> dict[str, object]:
+        return dict(self._metadata)
 
 
 def _completed_artifacts(
@@ -165,6 +170,119 @@ def test_agent_graph_realtime_backend_post_run_cancel_skips_final_events() -> No
         "best_effort": True,
     }
     assert [event.type for event in events] == []
+
+
+def test_agent_graph_realtime_backend_post_run_cancel_includes_token_metadata() -> None:
+    token = MutableCancelToken(
+        metadata={
+            "cancel_source": "deadline",
+            "cancel_reason": "run_deadline_expired",
+            "deadline_ms": 50,
+        }
+    )
+
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        token.cancelled = True
+        return _completed_artifacts(request, run_id="assistant-run-1", trace_id="trace-1")
+
+    backend = AgentGraphRealtimeBackend(run_request=fake_run_assistant_request)
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(user_id="user-1", session_id="session-1", text="hello"),
+            cancel_token=token,
+        )
+    )
+
+    assert result.status == "cancelled"
+    assert result.metadata == {
+        "assistant_run_id": "assistant-run-1",
+        "cancel_source": "deadline",
+        "cancel_reason": "run_deadline_expired",
+        "deadline_ms": 50,
+        "cancel_phase": "post_run",
+        "best_effort": True,
+    }
+
+
+def test_agent_graph_realtime_backend_maps_internal_agent_cancel_without_final_events() -> None:
+    token = MutableCancelToken()
+    events = []
+
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        assert kwargs["cancel_token"] is token
+        state = AgentState.from_request(request, run_id="assistant-run-1")
+        state.trace_id = "trace-1"
+        state.cancel(
+            details={
+                "cancel_phase": "after_node",
+                "node_name": "assistant_decision",
+            }
+        )
+        return SimpleNamespace(state=state)
+
+    async def collect(event) -> None:
+        events.append(event)
+
+    backend = AgentGraphRealtimeBackend(run_request=fake_run_assistant_request)
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(
+                user_id="user-1",
+                session_id="session-1",
+                run_id="runtime-run-1",
+                text="hello",
+            ),
+            event_sink=collect,
+            cancel_token=token,
+        )
+    )
+
+    assert result.status == "cancelled"
+    assert result.run_id == "runtime-run-1"
+    assert result.trace_id == "trace-1"
+    assert result.metadata == {
+        "assistant_run_id": "assistant-run-1",
+        "cancel_phase": "after_node",
+        "best_effort": True,
+    }
+    assert [event.type for event in events] == []
+
+
+def test_agent_graph_realtime_backend_maps_internal_agent_cancel_metadata() -> None:
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        state = AgentState.from_request(request, run_id="assistant-run-1")
+        state.trace_id = "trace-1"
+        state.cancel(
+            details={
+                "cancel_phase": "after_node",
+                "cancel_source": "deadline",
+                "cancel_reason": "run_deadline_expired",
+                "deadline_ms": 75,
+            }
+        )
+        return SimpleNamespace(state=state)
+
+    backend = AgentGraphRealtimeBackend(run_request=fake_run_assistant_request)
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(
+                user_id="user-1",
+                session_id="session-1",
+                run_id="runtime-run-1",
+                text="hello",
+            )
+        )
+    )
+
+    assert result.status == "cancelled"
+    assert result.metadata == {
+        "assistant_run_id": "assistant-run-1",
+        "cancel_source": "deadline",
+        "cancel_reason": "run_deadline_expired",
+        "deadline_ms": 75,
+        "cancel_phase": "after_node",
+        "best_effort": True,
+    }
 
 
 def test_agent_graph_realtime_backend_completed_run_sends_chunk_then_final() -> None:

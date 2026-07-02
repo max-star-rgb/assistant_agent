@@ -1,11 +1,84 @@
-from assistant_agent.config import ProviderConfig
-import json
+import httpx
+import pytest
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AuthenticationError,
+    RateLimitError,
+)
 
-from assistant_agent.services.chat_adapter import ChatRequest, HttpChatAdapter, MockChatAdapter, create_chat_adapter
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services import chat_adapter as chat_adapter_module
+from assistant_agent.services.chat_adapter import (
+    ChatRequest,
+    HttpChatAdapter,
+    MockChatAdapter,
+    create_chat_adapter,
+)
+
+
+class FakeCompletions:
+    def __init__(self, *, response=None, error: Exception | None = None) -> None:
+        self.response = response
+        self.error = error
+        self.calls: list[dict] = []
+
+    def create(self, **payload):
+        self.calls.append(payload)
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+class FakeChat:
+    def __init__(self, completions: FakeCompletions) -> None:
+        self.completions = completions
+
+
+class FakeSDKClient:
+    def __init__(self, completions: FakeCompletions) -> None:
+        self.chat = FakeChat(completions)
 
 
 def chat_request(text: str = "帮我写一段商品介绍") -> ChatRequest:
     return ChatRequest(user_id="u1", session_id="s1", user_query=text)
+
+
+def sdk_adapter(monkeypatch, *, response=None, error: Exception | None = None, stream: bool = False):
+    captured: dict[str, object] = {}
+    completions = FakeCompletions(response=response, error=error)
+
+    def fake_openai(**kwargs):
+        captured["init_kwargs"] = kwargs
+        client = FakeSDKClient(completions)
+        captured["client"] = client
+        return client
+
+    monkeypatch.setattr(chat_adapter_module, "OpenAI", fake_openai)
+    adapter = create_chat_adapter(
+        ProviderConfig(
+            chat_provider="deepseek",
+            deepseek_api_key="test-deepseek-key",
+            deepseek_chat_base_url="https://api.deepseek.com/v1",
+            deepseek_chat_model="deepseek-chat",
+            chat_stream=stream,
+        )
+    )
+    assert isinstance(adapter, HttpChatAdapter)
+    return adapter, completions, captured
+
+
+def _openai_request() -> httpx.Request:
+    return httpx.Request("POST", "https://api.deepseek.com/v1/chat/completions")
+
+
+def _status_error(status_code: int, message: str = "provider error") -> APIStatusError:
+    return APIStatusError(
+        message,
+        response=httpx.Response(status_code, request=_openai_request()),
+        body=None,
+    )
 
 
 def test_mock_chat_adapter_returns_structured_result() -> None:
@@ -50,45 +123,16 @@ def test_deepseek_chat_provider_without_key_returns_provider_unconfigured() -> N
     assert "DEEPSEEK_CHAT_API_KEY" in result.errors[0].message
 
 
-def test_deepseek_chat_provider_uses_openai_compatible_http(monkeypatch) -> None:
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-        def read(self):
-            return json.dumps(
-                {
-                    "model": "deepseek-chat",
-                    "choices": [{"message": {"content": "真实 DeepSeek 回复"}, "finish_reason": "stop"}],
-                    "usage": {"prompt_tokens": 4, "completion_tokens": 3},
-                }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["headers"] = dict(request.header_items())
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        captured["timeout"] = timeout
-        return FakeResponse()
-
-    import urllib.request
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    adapter = create_chat_adapter(
-        ProviderConfig(
-            chat_provider="deepseek",
-            deepseek_api_key="test-deepseek-key",
-            deepseek_chat_base_url="https://api.deepseek.com",
-            deepseek_chat_model="deepseek-chat",
-        )
+def test_deepseek_chat_provider_uses_openai_sdk(monkeypatch) -> None:
+    adapter, completions, captured = sdk_adapter(
+        monkeypatch,
+        response={
+            "model": "deepseek-chat",
+            "choices": [{"message": {"content": "真实 DeepSeek 回复"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+        },
     )
 
-    assert isinstance(adapter, HttpChatAdapter)
     result = adapter.chat(chat_request("请用一句话介绍项目"))
 
     assert result.success is True
@@ -98,58 +142,41 @@ def test_deepseek_chat_provider_uses_openai_compatible_http(monkeypatch) -> None
     assert result.finish_reason == "stop"
     assert result.message_kind == "final_answer"
     assert result.output_ref == "provider://chat/deepseek"
-    assert captured["url"] == "https://api.deepseek.com/chat/completions"
-    assert captured["payload"]["model"] == "deepseek-chat"
-    assert captured["payload"]["messages"][-1]["content"] == "请用一句话介绍项目"
+    assert captured["init_kwargs"] == {
+        "api_key": "test-deepseek-key",
+        "base_url": "https://api.deepseek.com/v1",
+        "timeout": 30.0,
+    }
+    assert completions.calls[0]["model"] == "deepseek-chat"
+    assert completions.calls[0]["messages"][-1]["content"] == "请用一句话介绍项目"
+    assert "stream" not in completions.calls[0]
 
 
 def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -> None:
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-        def read(self):
-            return json.dumps(
+    adapter, _, _ = sdk_adapter(
+        monkeypatch,
+        response={
+            "model": "deepseek-chat",
+            "choices": [
                 {
-                    "model": "deepseek-chat",
-                    "choices": [
-                        {
-                            "message": {
-                                "content": None,
-                                "tool_calls": [
-                                    {
-                                        "id": "call_1",
-                                        "type": "function",
-                                        "function": {
-                                            "name": "product_search",
-                                            "arguments": '{"query": "通勤耳机", "limit": 2}',
-                                        },
-                                    }
-                                ],
-                            },
-                            "finish_reason": "tool_calls",
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "product_search",
+                                    "arguments": '{"query": "通勤耳机", "limit": 2}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
                 }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        return FakeResponse()
-
-    import urllib.request
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    adapter = create_chat_adapter(
-        ProviderConfig(
-            chat_provider="deepseek",
-            deepseek_api_key="test-deepseek-key",
-            deepseek_chat_base_url="https://api.deepseek.com",
-            deepseek_chat_model="deepseek-chat",
-        )
+            ],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+        },
     )
 
     result = adapter.chat(chat_request("帮我找通勤耳机"))
@@ -164,38 +191,13 @@ def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -
 
 
 def test_openai_compatible_chat_payload_sends_native_tools(monkeypatch) -> None:
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-        def read(self):
-            return json.dumps(
-                {
-                    "model": "deepseek-chat",
-                    "choices": [{"message": {"content": "done"}}],
-                    "usage": {},
-                }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
-
-    import urllib.request
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    adapter = create_chat_adapter(
-        ProviderConfig(
-            chat_provider="deepseek",
-            deepseek_api_key="test-deepseek-key",
-            deepseek_chat_base_url="https://api.deepseek.com",
-            deepseek_chat_model="deepseek-chat",
-        )
+    adapter, completions, _ = sdk_adapter(
+        monkeypatch,
+        response={
+            "model": "deepseek-chat",
+            "choices": [{"message": {"content": "done"}}],
+            "usage": {},
+        },
     )
 
     adapter.chat(
@@ -222,47 +224,26 @@ def test_openai_compatible_chat_payload_sends_native_tools(monkeypatch) -> None:
         )
     )
 
-    assert captured["payload"]["messages"][0]["role"] == "system"
-    assert captured["payload"]["tools"][0]["function"]["name"] == "product_search"
-    assert captured["payload"]["tool_choice"] == "auto"
-    assert captured["payload"]["response_format"] == {"type": "json_object"}
+    payload = completions.calls[0]
+    assert payload["messages"][0]["role"] == "system"
+    assert payload["tools"][0]["function"]["name"] == "product_search"
+    assert payload["tool_choice"] == "auto"
+    assert payload["response_format"] == {"type": "json_object"}
 
 
 def test_openai_compatible_chat_response_parses_refusal(monkeypatch) -> None:
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-        def read(self):
-            return json.dumps(
+    adapter, _, _ = sdk_adapter(
+        monkeypatch,
+        response={
+            "model": "deepseek-chat",
+            "choices": [
                 {
-                    "model": "deepseek-chat",
-                    "choices": [
-                        {
-                            "message": {"content": None, "refusal": "我不能帮助完成这个请求。"},
-                            "finish_reason": "stop",
-                        }
-                    ],
-                    "usage": {},
+                    "message": {"content": None, "refusal": "我不能帮助完成这个请求。"},
+                    "finish_reason": "stop",
                 }
-            ).encode("utf-8")
-
-    def fake_urlopen(request, timeout):
-        return FakeResponse()
-
-    import urllib.request
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    adapter = create_chat_adapter(
-        ProviderConfig(
-            chat_provider="deepseek",
-            deepseek_api_key="test-deepseek-key",
-            deepseek_chat_base_url="https://api.deepseek.com",
-            deepseek_chat_model="deepseek-chat",
-        )
+            ],
+            "usage": {},
+        },
     )
 
     result = adapter.chat(chat_request("敏感请求"))
@@ -272,3 +253,123 @@ def test_openai_compatible_chat_response_parses_refusal(monkeypatch) -> None:
     assert result.refusal == "我不能帮助完成这个请求。"
     assert result.finish_reason == "stop"
     assert result.message_kind == "refusal"
+
+
+def test_stream_chunks_aggregate_content(monkeypatch) -> None:
+    adapter, completions, _ = sdk_adapter(
+        monkeypatch,
+        stream=True,
+        response=[
+            {
+                "model": "deepseek-chat",
+                "choices": [{"delta": {"content": "真实"}, "finish_reason": None}],
+            },
+            {
+                "choices": [{"delta": {"content": " DeepSeek 回复"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+            },
+        ],
+    )
+
+    result = adapter.chat(chat_request("请用一句话介绍项目"))
+
+    assert result.success is True
+    assert result.response_text == "真实 DeepSeek 回复"
+    assert result.finish_reason == "stop"
+    assert result.message_kind == "final_answer"
+    assert result.usage == {"prompt_tokens": 4, "completion_tokens": 3}
+    assert completions.calls[0]["stream"] is True
+
+
+def test_stream_chunks_aggregate_tool_call_arguments(monkeypatch) -> None:
+    adapter, completions, _ = sdk_adapter(
+        monkeypatch,
+        stream=True,
+        response=[
+            {
+                "model": "deepseek-chat",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "product_search",
+                                        "arguments": '{"query": "通勤',
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "arguments": '耳机", "limit": 2}',
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            },
+        ],
+    )
+
+    result = adapter.chat(chat_request("帮我找通勤耳机"))
+
+    assert result.success is True
+    assert result.finish_reason == "tool_calls"
+    assert result.message_kind == "tool_call"
+    assert completions.calls[0]["stream"] is True
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].id == "call_1"
+    assert result.tool_calls[0].name == "product_search"
+    assert result.tool_calls[0].arguments == {"query": "通勤耳机", "limit": 2}
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_code"),
+    [
+        (APITimeoutError(request=_openai_request()), "provider_timeout"),
+        (
+            AuthenticationError(
+                "unauthorized",
+                response=httpx.Response(401, request=_openai_request()),
+                body=None,
+            ),
+            "provider_auth_failed",
+        ),
+        (
+            RateLimitError(
+                "too many requests",
+                response=httpx.Response(429, request=_openai_request()),
+                body=None,
+            ),
+            "provider_rate_limited",
+        ),
+        (_status_error(413, "request too large"), "provider_context_overflow"),
+        (
+            APIConnectionError(message="connection failed", request=_openai_request()),
+            "provider_network_error",
+        ),
+    ],
+)
+def test_openai_sdk_exceptions_map_to_provider_errors(monkeypatch, exc: Exception, expected_code: str) -> None:
+    adapter, _, _ = sdk_adapter(monkeypatch, error=exc)
+
+    result = adapter.chat(chat_request("hello"))
+
+    assert result.success is False
+    assert result.errors[0].code == expected_code

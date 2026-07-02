@@ -353,7 +353,7 @@ class AssistantRunArtifacts:
         response = self.api_response()
         trace_summary = trace_debug_summary(self.runtime.trace_store.list_by_run(self.state.run_id))
         return {
-            "status": "success" if self.state.status != "failed" else "failed",
+            "status": _cli_status(self.state.status),
             "provider": self.runtime.config.chat_provider,
             "model": self.runtime.config.chat_model,
             "runtime_profile": self.runtime.config.runtime_profile.name,
@@ -444,6 +444,7 @@ def run_assistant_request(
     load_env: bool = True,
     conversation_store: ConversationStore | None = None,
     enable_conversation_history: bool = True,
+    cancel_token: Any | None = None,
 ) -> AssistantRunArtifacts:
     """Run one request and return shared artifacts."""
 
@@ -457,7 +458,7 @@ def run_assistant_request(
         conversation_store=resolved_store,
         enable_conversation_history=enable_conversation_history,
     )
-    state = _run_state_with_sink(resolved_runtime, resolved_request, sink)
+    state = _run_state_with_sink(resolved_runtime, resolved_request, sink, cancel_token=cancel_token)
     _record_conversation_turn(
         state,
         conversation_store=resolved_store,
@@ -468,15 +469,26 @@ def run_assistant_request(
     return AssistantRunArtifacts(runtime=resolved_runtime, state=state, events=events)
 
 
-def _run_state_with_sink(runtime: AgentGraphRuntime, request: UserRequest, sink: EventSink) -> AgentState:
-    """Call run_state with a per-run sink, tolerating runtimes/test doubles that omit the param."""
+def _run_state_with_sink(
+    runtime: AgentGraphRuntime,
+    request: UserRequest,
+    sink: EventSink,
+    *,
+    cancel_token: Any | None = None,
+) -> AgentState:
+    """Call run_state with per-run options, tolerating test doubles that omit params."""
 
     try:
-        accepts_sink = "event_sink" in inspect.signature(runtime.run_state).parameters
+        parameters = inspect.signature(runtime.run_state).parameters
     except (TypeError, ValueError):
-        accepts_sink = False
-    if accepts_sink:
-        return runtime.run_state(request, event_sink=sink)
+        parameters = {}
+    kwargs: dict[str, Any] = {}
+    if "event_sink" in parameters:
+        kwargs["event_sink"] = sink
+    if cancel_token is not None and "cancel_token" in parameters:
+        kwargs["cancel_token"] = cancel_token
+    if kwargs:
+        return runtime.run_state(request, **kwargs)
     return runtime.run_state(request)
 
 
@@ -502,6 +514,7 @@ def run_assistant_query(
     metadata: dict[str, Any] | None = None,
     conversation_store: ConversationStore | None = None,
     enable_conversation_history: bool = True,
+    cancel_token: Any | None = None,
 ) -> AssistantRunArtifacts:
     """Run a text query through the shared assistant backend."""
 
@@ -520,6 +533,7 @@ def run_assistant_query(
         load_env=load_env,
         conversation_store=conversation_store,
         enable_conversation_history=enable_conversation_history,
+        cancel_token=cancel_token,
     )
 
 
@@ -547,6 +561,8 @@ def current_stage(state: AgentState) -> str:
 
     if state.status == "failed":
         return "failed"
+    if state.status == "cancelled":
+        return "cancelled"
     steps = _safe_steps(state.request.metadata.get("assistant_loop_steps"))
     if not steps:
         return "final_response" if state.response else "not_started"
@@ -561,6 +577,14 @@ def current_stage(state: AgentState) -> str:
     if decision_type == "final_answer":
         return "final_answer"
     return "assistant_decision"
+
+
+def _cli_status(status: str) -> str:
+    if status == "failed":
+        return "failed"
+    if status == "cancelled":
+        return "cancelled"
+    return "success"
 
 
 def blocked_reason(state: AgentState) -> str | None:
@@ -677,7 +701,7 @@ def _record_conversation_turn(
     conversation_store: ConversationStore,
     enable_conversation_history: bool,
 ) -> None:
-    if not enable_conversation_history or state.response is None or state.status == "failed":
+    if not enable_conversation_history or state.response is None or state.status != "completed":
         return
     _record_session_summary(state, conversation_store=conversation_store)
     user_text = (state.request.text or "").strip()

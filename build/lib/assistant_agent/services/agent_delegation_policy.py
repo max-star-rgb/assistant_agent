@@ -187,7 +187,7 @@ class AgentDelegationPolicy:
         return _audit_event(
             task,
             event_type="delegation_completed",
-            status="failed" if status == "failed" else "completed",
+            status=_completion_audit_status(status),
         )
 
     def _metadata_for_dispatch(self, task: AgentTask) -> dict[str, Any]:
@@ -222,6 +222,14 @@ def _delegation_pairs(metadata: dict[str, Any]) -> list[list[str]]:
         ):
             pairs.append([pair[0], pair[1]])
     return pairs
+
+
+def _completion_audit_status(status: str) -> Literal["completed", "failed", "cancelled"]:
+    if status == "failed":
+        return "failed"
+    if status == "cancelled":
+        return "cancelled"
+    return "completed"
 
 
 def _audit_event(

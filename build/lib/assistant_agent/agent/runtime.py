@@ -1,8 +1,9 @@
 """Default LangGraph runtime for agent execution."""
 
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
+from assistant_agent.agent.cancellation import AgentRunCancelled, raise_if_cancelled
 from assistant_agent.agent.conditional_graph import build_conditional_agent_graph
 from assistant_agent.agent.assistant_loop_graph import build_assistant_loop_graph
 from assistant_agent.agent.graph_runtime import GraphRuntimeContext
@@ -73,7 +74,12 @@ class AgentGraphRuntime:
         self._react_graph = build_assistant_loop_graph()
         self._graph = self._react_graph if self.config.agent_graph_mode == "assistant_loop" else self._conditional_graph
 
-    def run_state(self, request: UserRequest, event_sink: EventSink | None = None) -> AgentState:
+    def run_state(
+        self,
+        request: UserRequest,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+    ) -> AgentState:
         """Run the graph and return the full state for compatibility callers.
 
         ``event_sink`` overrides the runtime-level sink for this run only. The
@@ -89,6 +95,7 @@ class AgentGraphRuntime:
             tool_history=self.tool_history,
             event_sink=run_event_sink,
             context_metadata={"memory_manager": self.memory_manager},
+            cancel_token=cancel_token,
         )
         state = AgentState.from_request(request)
         run_started_at = perf_counter()
@@ -112,6 +119,7 @@ class AgentGraphRuntime:
             context_compactor=self.context_compactor,
             memory_manager=self.memory_manager,
             trace_store=self.trace_store,
+            cancel_token=cancel_token,
         )
         initial_state = {
             "request": request,
@@ -124,19 +132,47 @@ class AgentGraphRuntime:
             "max_plan_steps": self.config.max_plan_steps,
             "max_plan_revisions": self.config.max_plan_revisions,
         }
-        self._emit(AgentEvent(type="graph_node_started", session_id=state.session_id, run_id=state.run_id, node_name="agent_graph"), run_event_sink)
-        final_state = self._select_graph(request, runtime_context=runtime_context).invoke(
-            initial_state,
-            config=self._langgraph_config(request, state),
-        )
-        state = final_state["state"]
-        self._emit(AgentEvent(type="graph_node_finished", session_id=state.session_id, run_id=state.run_id, node_name="agent_graph"), run_event_sink)
+        try:
+            raise_if_cancelled(cancel_token, phase="pre_graph", state=state)
+        except AgentRunCancelled as exc:
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+        else:
+            self._emit(
+                AgentEvent(
+                    type="graph_node_started",
+                    session_id=state.session_id,
+                    run_id=state.run_id,
+                    node_name="agent_graph",
+                ),
+                run_event_sink,
+            )
+            try:
+                final_state = self._select_graph(request, runtime_context=runtime_context).invoke(
+                    initial_state,
+                    config=self._langgraph_config(request, state),
+                )
+                state = final_state["state"]
+                raise_if_cancelled(cancel_token, phase="post_graph", state=state)
+            except AgentRunCancelled as exc:
+                if isinstance(exc.state, AgentState):
+                    state = exc.state
+                state.cancel(exc.message, source=exc.source, details=exc.details)
+            finally:
+                self._emit(
+                    AgentEvent(
+                        type="graph_node_finished",
+                        session_id=state.session_id,
+                        run_id=state.run_id,
+                        node_name="agent_graph",
+                    ),
+                    run_event_sink,
+                )
         if self.run_history is not None:
             self.run_history.record_end(
                 state.run_id,
                 state.user_id,
                 state.session_id,
-                "failed" if state.status == "failed" else "completed",
+                _terminal_history_status(state.status),
                 state.intent.intent if state.intent else None,
                 [tool.tool_name for tool in state.selected_tools],
                 int((perf_counter() - run_started_at) * 1000),
@@ -148,7 +184,7 @@ class AgentGraphRuntime:
             run_id=state.run_id,
             trace_id=state.trace_id,
             message_preview=request.text or "",
-            status="failed" if state.status == "failed" else "completed",
+            status=_terminal_history_status(state.status),
         )
         if state.status == "failed":
             self._emit(
@@ -160,6 +196,25 @@ class AgentGraphRuntime:
                         api_error_from_agent_error(state.errors[-1]).model_dump(mode="json")
                         if state.errors
                         else {"code": "TASK_FAILED", "message": "Agent run failed.", "detail": {}, "recoverable": False}
+                    ),
+                ),
+                run_event_sink,
+            )
+        elif state.status == "cancelled":
+            self._emit(
+                AgentEvent(
+                    type="task_cancelled",
+                    session_id=state.session_id,
+                    run_id=state.run_id,
+                    error=(
+                        api_error_from_agent_error(state.errors[-1]).model_dump(mode="json")
+                        if state.errors
+                        else {
+                            "code": "AGENT_RUN_CANCELLED",
+                            "message": "Agent run cancelled.",
+                            "detail": {},
+                            "recoverable": False,
+                        }
                     ),
                 ),
                 run_event_sink,
@@ -206,12 +261,25 @@ class AgentGraphRuntime:
             }
         }
 
-    def run(self, request: UserRequest, event_sink: EventSink | None = None) -> AgentResponse:
+    def run(
+        self,
+        request: UserRequest,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+    ) -> AgentResponse:
         """Run the graph and return the final AgentResponse."""
 
-        state = self.run_state(request, event_sink=event_sink)
+        state = self.run_state(request, event_sink=event_sink, cancel_token=cancel_token)
         if state.response is not None:
             return state.response
+        if state.status == "cancelled":
+            return AgentResponse(
+                message="请求已取消。",
+                data={
+                    "status": state.status,
+                    "errors": [error.model_dump(mode="json") for error in state.errors],
+                },
+            )
         return AgentResponse(
             message="请求处理失败。",
             data={
@@ -225,3 +293,11 @@ class AgentGraphRuntime:
         sink = event_sink or self.event_sink
         if sink is not None:
             sink.emit(event)
+
+
+def _terminal_history_status(status: str) -> Literal["completed", "failed", "cancelled"]:
+    if status == "failed":
+        return "failed"
+    if status == "cancelled":
+        return "cancelled"
+    return "completed"

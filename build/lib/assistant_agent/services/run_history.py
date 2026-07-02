@@ -14,7 +14,7 @@ class RunHistoryRecord(BaseModel):
     run_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
-    status: Literal["started", "completed", "failed"]
+    status: Literal["started", "completed", "failed", "cancelled"]
     intent: str | None = None
     selected_tools: list[str] = Field(default_factory=list)
     latency_ms: int | None = Field(default=None, ge=0)
@@ -49,7 +49,7 @@ class RunHistoryStore:
         run_id: str,
         user_id: str,
         session_id: str,
-        status: Literal["completed", "failed"],
+        status: Literal["completed", "failed", "cancelled"],
         intent: str | None,
         selected_tools: list[str],
         latency_ms: int,

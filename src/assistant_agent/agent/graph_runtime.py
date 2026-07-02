@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
+from assistant_agent.agent.cancellation import raise_if_cancelled
 from assistant_agent.agent.intent import IntentDetector
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.tool_executor import ToolExecutor
@@ -33,6 +34,7 @@ RUNTIME_STATE_KEYS = frozenset(
         "memory_manager",
         "trace_store",
         "current_node_name",
+        "cancel_token",
     }
 )
 
@@ -48,6 +50,7 @@ class GraphRuntimeContext:
     intent_detector: IntentDetector | None = None
     router: ToolRouter | None = None
     trace_store: TraceStore | None = None
+    cancel_token: Any | None = None
 
 
 def bind_runtime_node(
@@ -64,8 +67,15 @@ def bind_runtime_node(
         return executable
 
     def wrapped(graph_state: GraphStateT) -> GraphStateT:
+        raise_if_cancelled(runtime_context.cancel_token, phase="before_node", node_name=node_name)
         enriched_state = _with_runtime_context(graph_state, runtime_context)
         result = executable(enriched_state)
+        raise_if_cancelled(
+            runtime_context.cancel_token,
+            phase="after_node",
+            node_name=node_name,
+            state=result.get("state") if isinstance(result, dict) else None,
+        )
         return cast(GraphStateT, strip_runtime_context(result))
 
     return wrapped
@@ -93,4 +103,6 @@ def _with_runtime_context(graph_state: GraphStateT, runtime_context: GraphRuntim
     enriched_state["memory_manager"] = runtime_context.memory_manager
     if runtime_context.trace_store is not None:
         enriched_state["trace_store"] = runtime_context.trace_store
+    if runtime_context.cancel_token is not None:
+        enriched_state["cancel_token"] = runtime_context.cancel_token
     return cast(GraphStateT, enriched_state)

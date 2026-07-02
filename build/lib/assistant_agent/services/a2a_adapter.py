@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 from uuid import uuid4
 
 from assistant_agent.schemas.a2a import (
@@ -141,7 +141,7 @@ def task_from_router_response(
         context_id=context_id,
         task_id=response.run_id,
     )
-    state = "failed" if response.status == "failed" else "completed"
+    state = _a2a_task_state(response.status)
     task = A2ATaskResult(
         id=response.run_id,
         contextId=context_id,
@@ -168,6 +168,14 @@ def task_from_router_response(
         },
     )
     return task.model_dump(mode="json")
+
+
+def _a2a_task_state(status: str) -> Literal["completed", "failed", "cancelled"]:
+    if status == "failed":
+        return "failed"
+    if status == "cancelled":
+        return "cancelled"
+    return "completed"
 
 
 def _skills_from_router(router: AgentRouter | None) -> list[dict[str, Any]]:

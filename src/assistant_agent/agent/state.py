@@ -6,16 +6,17 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.services.trace_store import new_trace_id
+from assistant_agent.agent.cancellation import CANCELLATION_ERROR_CODE, DEFAULT_CANCELLATION_MESSAGE
 from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.perception import PerceptionBundle
 from assistant_agent.schemas.planning import IntentResult, TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolCallRecord, ToolResult, ToolSelection
 from assistant_agent.services.provider_budget import ProviderCallBudget
+from assistant_agent.services.trace_store import new_trace_id
 
 
-AgentStatus = Literal["created", "running", "waiting_user", "completed", "failed"]
+AgentStatus = Literal["created", "running", "waiting_user", "completed", "failed", "cancelled"]
 ExecutionStrategyName = Literal["react", "plan_and_solve"]
 PlanStatus = Literal["none", "active", "replanning", "completed", "failed"]
 
@@ -162,6 +163,29 @@ class AgentState(BaseModel):
 
         self.response = response
         self.status = "completed"
+
+    def cancel(
+        self,
+        message: str = DEFAULT_CANCELLATION_MESSAGE,
+        *,
+        source: str = "agent_runtime",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Mark the run as cancelled without preserving a stale final response."""
+
+        error_details = {"code": CANCELLATION_ERROR_CODE}
+        if details is not None:
+            error_details.update(details)
+        if not self.errors or self.errors[-1].details.get("code") != CANCELLATION_ERROR_CODE:
+            self.errors.append(
+                AgentError(
+                    message=message,
+                    source=source,
+                    details=error_details,
+                )
+            )
+        self.response = None
+        self.status = "cancelled"
 
     def _get_tool_call(self, call_id: str) -> ToolCallRecord:
         for record in self.tool_calls:

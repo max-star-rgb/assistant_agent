@@ -58,7 +58,12 @@ class InlineTaskQueue:
         task.status = "running"
         try:
             state = self.runtime_factory(event_sink=sink).run_state(task.request)
-            task.status = "failed" if state.status == "failed" else "success"
+            if state.status == "failed":
+                task.status = "failed"
+            elif state.status == "cancelled":
+                task.status = "cancelled"
+            else:
+                task.status = "success"
         except Exception as exc:
             task.status = "failed"
             sink.emit(

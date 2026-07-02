@@ -197,9 +197,14 @@ def _tool_result_from_task(result: AgentTaskResult) -> ToolResult:
     data = _task_result_payload(result)
     output_ref = f"local://agent-task/{result.task_id}"
     errors = [error.model_dump(mode="json") for error in result.errors]
+    error_message = (
+        result.errors[0].message
+        if result.errors
+        else ("Agent task cancelled." if result.status == "cancelled" else None)
+    )
     contract = build_capability_output_contract(
         capability="agent_delegation",
-        status="failed" if result.status == "failed" else "succeeded",
+        status="succeeded" if result.status == "completed" else "failed",
         output_ref=output_ref,
         data=data,
         errors=errors,
@@ -210,9 +215,9 @@ def _tool_result_from_task(result: AgentTaskResult) -> ToolResult:
     )
     return ToolResult(
         tool_name=AgentDelegationTool.name,
-        success=result.status != "failed",
+        success=result.status == "completed",
         data={**data, "contract": contract.model_dump(mode="json")},
-        error=result.errors[0].message if result.errors else None,
+        error=error_message,
         output_ref=output_ref,
         contract=contract,
     )

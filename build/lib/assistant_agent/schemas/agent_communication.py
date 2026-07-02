@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 
 AgentTransportName = Literal["local", "a2a_json_rpc"]
-AgentTaskStatus = Literal["created", "running", "completed", "failed"]
+AgentTaskStatus = Literal["created", "running", "completed", "failed", "cancelled"]
 AgentMessageRole = Literal["user", "assistant", "system", "tool"]
 AgentArtifactKind = Literal["text", "data", "output_ref", "error"]
 AgentDelegationAuditEventType = Literal[
@@ -171,7 +171,7 @@ class AgentDelegationAuditEvent(BaseModel):
     source_agent_id: str = Field(min_length=1)
     target_agent_id: str = Field(min_length=1)
     correlation_id: str = Field(min_length=1)
-    status: Literal["allowed", "blocked", "completed", "failed"]
+    status: Literal["allowed", "blocked", "completed", "failed", "cancelled"]
     policy_code: str | None = None
     detail: dict[str, Any] = Field(default_factory=dict)
 
@@ -192,7 +192,7 @@ class AgentTaskResult(BaseModel):
 
     task_id: str = Field(min_length=1)
     target_agent_id: str = Field(min_length=1)
-    status: Literal["completed", "failed"]
+    status: Literal["completed", "failed", "cancelled"]
     artifacts: list[AgentArtifact] = Field(default_factory=list)
     run_id: str | None = None
     trace_id: str | None = None

@@ -3,6 +3,12 @@
 from time import perf_counter, sleep
 from typing import Any
 
+from assistant_agent.agent.cancellation import (
+    AgentRunCancelled,
+    CANCELLATION_ERROR_CODE,
+    DEFAULT_CANCELLATION_MESSAGE,
+    raise_if_cancelled,
+)
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.recovery import RecoveryPolicy, classify_error
 from assistant_agent.schemas.api import api_error
@@ -31,6 +37,7 @@ class ToolExecutor:
         recovery_policy: RecoveryPolicy | None = None,
         execution_policy: ProviderExecutionPolicy | None = None,
         context_metadata: dict[str, Any] | None = None,
+        cancel_token: Any | None = None,
     ) -> None:
         self.registry = registry or create_default_registry()
         self.tool_history = tool_history
@@ -38,6 +45,7 @@ class ToolExecutor:
         self.recovery_policy = recovery_policy or RecoveryPolicy()
         self.execution_policy = execution_policy or ProviderExecutionPolicy.from_env()
         self.context_metadata = dict(context_metadata or {})
+        self.cancel_token = cancel_token
 
     def run_tool(
         self,
@@ -50,6 +58,14 @@ class ToolExecutor:
         trace_id: str | None = None,
         node_name: str | None = None,
     ) -> ToolResult:
+        raise_if_cancelled(
+            self.cancel_token,
+            phase="before_tool",
+            node_name=node_name or "tool_executor",
+            source="tool_executor",
+            details={"tool_name": tool_name, "step_id": step_id},
+            state=state,
+        )
         tool_input = _bind_runtime_identity(tool_name, tool_input, state)
         call = state.add_tool_call(tool_name, tool_input)
         capability = _capability_name(tool_name, step)
@@ -135,16 +151,97 @@ class ToolExecutor:
                 session_id=state.session_id,
             )
         started_at = perf_counter()
-        result, retry_count = self._run_with_retry(
-            tool_name,
-            tool_input,
-            ToolContext(
-                run_id=state.run_id,
-                user_id=state.user_id,
-                session_id=state.session_id,
-                metadata=dict(self.context_metadata),
-            ),
-        )
+        try:
+            result, retry_count = self._run_with_retry(
+                tool_name,
+                tool_input,
+                ToolContext(
+                    run_id=state.run_id,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
+                    metadata=dict(self.context_metadata),
+                    cancel_token=self.cancel_token,
+                ),
+            )
+        except AgentRunCancelled as exc:
+            latency_ms = int((perf_counter() - started_at) * 1000)
+            result = _cancelled_tool_result(tool_name, latency_ms=latency_ms)
+            error_details = {
+                **exc.details,
+                "step_id": step_id,
+                "tool_name": tool_name,
+                "retryable": False,
+            }
+            state.fail_tool_call(
+                call.call_id,
+                DEFAULT_CANCELLATION_MESSAGE,
+                result,
+                error_details=error_details,
+                stop_run=True,
+            )
+            self._emit(
+                AgentEvent(
+                    type="tool_failed",
+                    session_id=state.session_id,
+                    run_id=state.run_id,
+                    tool_name=tool_name,
+                    error=api_error(
+                        CANCELLATION_ERROR_CODE,
+                        DEFAULT_CANCELLATION_MESSAGE,
+                        detail={"step_id": step_id, "source": tool_name},
+                        recoverable=False,
+                    ).model_dump(mode="json"),
+                    payload={
+                        "call_id": call.call_id,
+                        "step_id": step_id,
+                        "latency_ms": latency_ms,
+                        "retry_count": 0,
+                        "code": CANCELLATION_ERROR_CODE,
+                    },
+                )
+            )
+            if self.tool_history is not None:
+                self.tool_history.record_end(
+                    state.run_id,
+                    call.call_id,
+                    tool_name,
+                    "failed",
+                    latency_ms,
+                    error=DEFAULT_CANCELLATION_MESSAGE,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
+                )
+            if trace_store is not None and trace_id is not None:
+                trace_store.append(
+                    TraceEvent(
+                        trace_id=trace_id,
+                        run_id=state.run_id,
+                        user_id=state.user_id,
+                        session_id=state.session_id,
+                        node_name=node_name or "tool_executor",
+                        event_type="tool_failed",
+                        capability=capability,
+                        tool_name=tool_name,
+                        status="failed",
+                        latency_ms=latency_ms,
+                        error_code=CANCELLATION_ERROR_CODE,
+                        input_summary=_input_summary(tool_input),
+                        output_summary={"cancelled": True},
+                        error={
+                            "code": CANCELLATION_ERROR_CODE,
+                            "message": DEFAULT_CANCELLATION_MESSAGE,
+                            "step_id": step_id,
+                        },
+                    )
+                )
+            raise AgentRunCancelled(
+                DEFAULT_CANCELLATION_MESSAGE,
+                phase=exc.phase or "tool",
+                node_name=exc.node_name or node_name or "tool_executor",
+                source=exc.source,
+                details=error_details,
+                state=state,
+            ) from exc
         latency_ms = int((perf_counter() - started_at) * 1000)
         if result.latency_ms is None:
             result.latency_ms = latency_ms
@@ -275,7 +372,19 @@ class ToolExecutor:
         failed_attempts = 0
         retry_count = 0
         while True:
+            raise_if_cancelled(
+                self.cancel_token,
+                phase="before_tool_attempt",
+                source="tool_executor",
+                details={"tool_name": tool_name, "retry_count": retry_count},
+            )
             result = self._run_once(tool_name, tool_input, context)
+            raise_if_cancelled(
+                self.cancel_token,
+                phase="after_tool_attempt",
+                source="tool_executor",
+                details={"tool_name": tool_name, "retry_count": retry_count},
+            )
             if result.success:
                 return result, retry_count
 
@@ -286,11 +395,25 @@ class ToolExecutor:
 
             retry_count += 1
             if self.execution_policy.retry.backoff_seconds > 0:
+                raise_if_cancelled(
+                    self.cancel_token,
+                    phase="before_tool_retry_sleep",
+                    source="tool_executor",
+                    details={"tool_name": tool_name, "retry_count": retry_count},
+                )
                 sleep(self.execution_policy.retry.backoff_seconds)
+                raise_if_cancelled(
+                    self.cancel_token,
+                    phase="after_tool_retry_sleep",
+                    source="tool_executor",
+                    details={"tool_name": tool_name, "retry_count": retry_count},
+                )
 
     def _run_once(self, tool_name: str, tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         try:
             return self.registry.run(tool_name, tool_input, context)
+        except AgentRunCancelled:
+            raise
         except Exception as exc:  # pragma: no cover - registry boundary
             return ToolResult(tool_name=tool_name, success=False, error=sanitize_error_message(exc))
 
@@ -324,6 +447,16 @@ def _capability_name(tool_name: str, step: TaskStep | None) -> str:
         "memory_save": "memory_save",
     }
     return tool_map.get(tool_name, tool_name)
+
+
+def _cancelled_tool_result(tool_name: str, *, latency_ms: int) -> ToolResult:
+    return ToolResult(
+        tool_name=tool_name,
+        success=False,
+        error=f"{CANCELLATION_ERROR_CODE}: {DEFAULT_CANCELLATION_MESSAGE}",
+        data={"cancelled": True},
+        latency_ms=latency_ms,
+    )
 
 
 def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:

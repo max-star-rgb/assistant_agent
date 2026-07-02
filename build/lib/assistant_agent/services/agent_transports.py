@@ -6,7 +6,7 @@ import json
 import socket
 import time
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -478,7 +478,7 @@ def _result_from_state(task: AgentTask, state: AgentState, *, transport_name: st
                 metadata={"source": "agent_response"},
             )
         )
-    status = "failed" if state.status == "failed" else "completed"
+    status = _agent_task_result_status(state.status)
     return AgentTaskResult(
         task_id=task.task_id,
         target_agent_id=task.target_agent_id,
@@ -494,6 +494,14 @@ def _result_from_state(task: AgentTask, state: AgentState, *, transport_name: st
             "correlation_id": task.session.correlation_id,
         },
     )
+
+
+def _agent_task_result_status(status: str) -> Literal["completed", "failed", "cancelled"]:
+    if status == "failed":
+        return "failed"
+    if status == "cancelled":
+        return "cancelled"
+    return "completed"
 
 
 def _failed_result(

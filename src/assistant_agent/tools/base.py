@@ -15,6 +15,16 @@ class ToolContext(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    cancel_token: Any | None = Field(default=None, exclude=True)
+
+    def is_cancelled(self) -> bool:
+        """Return whether the current run has requested cooperative cancellation."""
+
+        checker = getattr(self.cancel_token, "is_cancelled", None)
+        if callable(checker):
+            return bool(checker())
+        cancelled = getattr(self.cancel_token, "cancelled", None)
+        return bool(cancelled) if isinstance(cancelled, bool) else False
 
 
 class BaseTool(Protocol):

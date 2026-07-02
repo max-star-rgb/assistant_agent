@@ -26,6 +26,7 @@ EventType = Literal[
     "agent_trace_final_answer",
     "final_response",
     "task_failed",
+    "task_cancelled",
 ]
 
 

@@ -27,6 +27,7 @@ class ActiveRun:
     turn_id: str
     cancel: "CancelToken"
     task: "asyncio.Task[None]"
+    deadline_task: "asyncio.Task[None] | None" = None
 
 
 class CancelToken:
@@ -34,8 +35,22 @@ class CancelToken:
 
     def __init__(self) -> None:
         self._evt = asyncio.Event()
+        self._metadata: dict[str, Any] = {}
 
-    def cancel(self) -> None:
+    def cancel(
+        self,
+        *,
+        source: str = "gateway_cancel",
+        reason: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        if self._evt.is_set():
+            return
+        cancel_metadata = dict(metadata or {})
+        cancel_metadata["cancel_source"] = source
+        if reason is not None:
+            cancel_metadata["cancel_reason"] = reason
+        self._metadata = cancel_metadata
         self._evt.set()
 
     async def cancelled(self) -> None:
@@ -43,6 +58,14 @@ class CancelToken:
 
     def is_cancelled(self) -> bool:
         return self._evt.is_set()
+
+    @property
+    def cancel_metadata(self) -> dict[str, Any]:
+        return dict(self._metadata)
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return self.cancel_metadata
 
 
 class GatewaySessionService:
@@ -115,6 +138,7 @@ class GatewaySessionService:
 
         cancel = CancelToken()
         registered = asyncio.Event()
+        deadline_ms = _run_timeout_ms(payload, self._config)
 
         async def _runner() -> None:
             await registered.wait()
@@ -131,12 +155,19 @@ class GatewaySessionService:
             )
 
         task = asyncio.create_task(_runner())
+        deadline_task = self._start_deadline_monitor(
+            session_id=session_id,
+            run_id=run_id,
+            cancel=cancel,
+            deadline_ms=deadline_ms,
+        )
         async with self._lock:
             self._active_by_session[session_id] = ActiveRun(
                 run_id=run_id,
                 turn_id=turn_id,
                 cancel=cancel,
                 task=task,
+                deadline_task=deadline_task,
             )
         registered.set()
 
@@ -216,10 +247,15 @@ class GatewaySessionService:
                 )
             )
         finally:
+            deadline_task: asyncio.Task[None] | None = None
             async with self._lock:
                 cur = self._active_by_session.get(session_id)
                 if cur and cur.run_id == run_id:
+                    deadline_task = cur.deadline_task
                     self._active_by_session.pop(session_id, None)
+            if deadline_task is not None:
+                deadline_task.cancel()
+                await asyncio.gather(deadline_task, return_exceptions=True)
 
     async def _run_backend(
         self,
@@ -263,7 +299,7 @@ class GatewaySessionService:
             cur = self._active_by_session.get(session_id)
             if not cur:
                 return
-            cur.cancel.cancel()
+            cur.cancel.cancel(source="gateway_interrupt")
 
     async def _handle_cancel(self, ep: Endpoint, f: Frame) -> None:
         run_id = f.get("run_id")
@@ -274,12 +310,12 @@ class GatewaySessionService:
             if session_id:
                 cur = self._active_by_session.get(session_id)
                 if cur and (run_id is None or cur.run_id == run_id):
-                    cur.cancel.cancel()
+                    cur.cancel.cancel(source="gateway_cancel")
                     did_cancel = True
             elif run_id:
                 for cur in self._active_by_session.values():
                     if cur.run_id == run_id:
-                        cur.cancel.cancel()
+                        cur.cancel.cancel(source="gateway_cancel")
                         did_cancel = True
                         break
 
@@ -301,6 +337,31 @@ class GatewaySessionService:
         else:
             self._backend = AgentGraphRealtimeBackend()
         return self._backend
+
+    def _start_deadline_monitor(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        cancel: CancelToken,
+        deadline_ms: int | None,
+    ) -> asyncio.Task[None] | None:
+        if deadline_ms is None:
+            return None
+
+        async def _monitor() -> None:
+            await asyncio.sleep(deadline_ms / 1000)
+            async with self._lock:
+                cur = self._active_by_session.get(session_id)
+                if cur is None or cur.run_id != run_id or cur.cancel is not cancel:
+                    return
+                cur.cancel.cancel(
+                    source="deadline",
+                    reason="run_deadline_expired",
+                    metadata={"deadline_ms": deadline_ms},
+                )
+
+        return asyncio.create_task(_monitor(), name=f"gateway-run-deadline-{run_id}")
 
     def _build_request(
         self,
@@ -600,6 +661,33 @@ class GatewaySessionManager:
 def _payload_dict(f: Frame) -> dict[str, Any]:
     payload = f.get("payload")
     return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _run_timeout_ms(payload: Mapping[str, Any], session_config: Mapping[str, Any]) -> int | None:
+    metadata = payload.get("metadata")
+    gateway_metadata = metadata.get("gateway") if isinstance(metadata, Mapping) else None
+    if isinstance(gateway_metadata, Mapping) and "run_timeout_ms" in gateway_metadata:
+        return _positive_int(gateway_metadata.get("run_timeout_ms"))
+    return _positive_int(session_config.get("run_timeout_ms"))
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        parsed = int(value) if value.is_integer() else None
+    elif isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
 
 
 def _string_list(value: Any) -> list[str]:

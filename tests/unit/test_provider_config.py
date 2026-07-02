@@ -10,6 +10,7 @@ def test_provider_config_allows_empty_environment() -> None:
     assert config.seed_api_key is None
     assert config.comfyui_base_url is None
     assert config.chat_provider == "mock"
+    assert config.chat_stream is False
     assert config.image_generation_provider == "mock"
     assert config.product_search_provider == "mock"
     assert config.price_compare_provider == "mock"
@@ -215,6 +216,43 @@ def test_provider_config_reads_deepseek_chat_provider() -> None:
     assert config.chat_adapter_kind == "openai_compatible"
     assert config.deepseek_chat_base_url == "https://api.deepseek.com/v1"
     assert config.deepseek_chat_model == "deepseek-chat"
+    assert config.chat_stream is False
+
+
+def test_provider_config_reads_common_chat_stream_switch() -> None:
+    config = ProviderConfig.from_env({"CHAT_STREAM": "true"})
+
+    assert config.chat_stream is True
+
+
+def test_provider_config_reads_deepseek_chat_stream_override() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
+            "CHAT_STREAM": "false",
+            "DEEPSEEK_CHAT_STREAM": "true",
+        }
+    )
+
+    assert config.chat_provider == "deepseek"
+    assert config.chat_stream is True
+
+
+def test_provider_config_deepseek_chat_stream_override_can_disable_common_switch() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
+            "CHAT_STREAM": "true",
+            "DEEPSEEK_CHAT_STREAM": "false",
+        }
+    )
+
+    assert config.chat_provider == "deepseek"
+    assert config.chat_stream is False
 
 
 def test_provider_config_accepts_legacy_deepseek_api_key_as_fallback() -> None:

@@ -98,7 +98,7 @@ class A2AArtifact(BaseModel):
 class A2ATaskStatus(BaseModel):
     """A2A task status returned by the inbound adapter."""
 
-    state: Literal["completed", "failed"]
+    state: Literal["completed", "failed", "cancelled"]
     message: A2AMessage
 
 

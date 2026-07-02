@@ -82,6 +82,7 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
                 while not cancel_token.is_cancelled():
                     await asyncio.sleep(0.01)
                 self.cancel_seen.set()
+                self.cancel_metadata = cancel_token.cancel_metadata
                 await self.release.wait()
                 return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
 
@@ -127,19 +128,25 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert frames[-1]["payload"]["expects_reply"] is True
         assert len(backend.requests) == 1
         assert backend.requests[0].text == "cancel realtime"
+        assert backend.cancel_metadata["cancel_source"] == "gateway_cancel"
 
     async def test_interrupt_cancels_previous_run_then_starts_new(self) -> None:
         class InterruptBackend:
+            def __init__(self) -> None:
+                self.first_cancel_metadata = None
+
             async def run_turn(self, request, *, event_sink=None, cancel_token=None):
                 if request.text == "first":
                     while not cancel_token.is_cancelled():
                         await asyncio.sleep(0.01)
+                    self.first_cancel_metadata = cancel_token.cancel_metadata
                     return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
                 assert event_sink is not None
                 await event_sink(RealtimeAgentEvent(type="response.chunk", text="second done"))
                 return RealtimeAgentResult(status="completed", run_id=request.run_id, expects_reply=True)
 
-        session = GatewaySessionService(backend=InterruptBackend())
+        backend = InterruptBackend()
+        session = GatewaySessionService(backend=backend)
         client_ep, session_ep = InMemoryDuplex.create_pair()
         session_task = asyncio.create_task(session.serve(session_ep))
         first_run = None
@@ -183,6 +190,147 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert first_run != second_run
         assert saw_first_cancelled is True
         assert saw_second_completed is True
+        assert backend.first_cancel_metadata["cancel_source"] == "gateway_interrupt"
+
+    async def test_run_deadline_from_session_config_cancels_backend(self) -> None:
+        class DeadlineBackend:
+            def __init__(self) -> None:
+                self.cancel_seen = asyncio.Event()
+                self.cancel_metadata = None
+                self.requests = []
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.requests.append(request)
+                await cancel_token.cancelled()
+                self.cancel_metadata = cancel_token.cancel_metadata
+                self.cancel_seen.set()
+                return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+
+        backend = DeadlineBackend()
+        session = GatewaySessionService(backend=backend, config={"run_timeout_ms": 30})
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="deadline-session",
+                    payload={"text": "deadline please"},
+                )
+            )
+            frames = await _collect_until_run_end(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert frames[-1]["reason"] == "cancelled"
+        assert frames[-1]["payload"]["expects_reply"] is True
+        assert backend.cancel_seen.is_set()
+        assert backend.cancel_metadata == {
+            "deadline_ms": 30,
+            "cancel_source": "deadline",
+            "cancel_reason": "run_deadline_expired",
+        }
+        assert backend.requests[0].metadata["runtime"]["session_config"]["run_timeout_ms"] == 30
+
+    async def test_run_deadline_from_message_metadata_overrides_session_config(self) -> None:
+        class DeadlineBackend:
+            def __init__(self) -> None:
+                self.cancel_metadata = None
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                await cancel_token.cancelled()
+                self.cancel_metadata = cancel_token.cancel_metadata
+                return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+
+        backend = DeadlineBackend()
+        session = GatewaySessionService(backend=backend, config={"run_timeout_ms": 5000})
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="deadline-override-session",
+                    payload={
+                        "text": "deadline override",
+                        "metadata": {"gateway": {"run_timeout_ms": 25}},
+                    },
+                )
+            )
+            frames = await _collect_until_run_end(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert frames[-1]["reason"] == "cancelled"
+        assert backend.cancel_metadata["cancel_source"] == "deadline"
+        assert backend.cancel_metadata["deadline_ms"] == 25
+
+    async def test_completed_run_cleans_deadline_monitor(self) -> None:
+        class FastBackend:
+            def __init__(self) -> None:
+                self.cancel_token = None
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.cancel_token = cancel_token
+                return RealtimeAgentResult(status="completed", run_id=request.run_id, expects_reply=True)
+
+        backend = FastBackend()
+        session = GatewaySessionService(backend=backend, config={"run_timeout_ms": 50})
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="deadline-cleanup-session",
+                    payload={"text": "fast"},
+                )
+            )
+            frames = await _collect_until_run_end(client_ep)
+            await asyncio.sleep(0.08)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert frames[-1]["reason"] == "completed"
+        assert backend.cancel_token is not None
+        assert backend.cancel_token.is_cancelled() is False
+
+    async def test_message_timeout_zero_disables_session_config_deadline(self) -> None:
+        class SlowCompletedBackend:
+            def __init__(self) -> None:
+                self.cancel_token = None
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.cancel_token = cancel_token
+                await asyncio.sleep(0.04)
+                return RealtimeAgentResult(status="completed", run_id=request.run_id, expects_reply=True)
+
+        backend = SlowCompletedBackend()
+        session = GatewaySessionService(backend=backend, config={"run_timeout_ms": 10})
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="deadline-disabled-session",
+                    payload={
+                        "text": "disable deadline",
+                        "metadata": {"gateway": {"run_timeout_ms": 0}},
+                    },
+                )
+            )
+            frames = await _collect_until_run_end(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert frames[-1]["reason"] == "completed"
+        assert backend.cancel_token is not None
+        assert backend.cancel_token.is_cancelled() is False
 
     async def test_multiturn_history_is_passed_to_backend_metadata(self) -> None:
         class HistoryBackend:
