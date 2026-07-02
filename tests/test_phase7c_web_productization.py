@@ -52,6 +52,19 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "assistant_agent_trial_user_id" in html
     assert "Examples" in html
     assert "Input" in html
+    assert "Mode" in html
+    assert "Realtime Gateway" in html
+    assert "Media Service Simulator" in html
+    assert "realtime-mode-tab" in html
+    assert "chat-panel" in html
+    assert "realtime-panel" in html
+    assert "realtime-connect" in html
+    assert "realtime-send" in html
+    assert "realtime-cancel" in html
+    assert "realtime-end" in html
+    assert "media-connect" in html
+    assert "media-send" in html
+    assert "media-end" in html
     assert "Plan Mode" in html
     assert "普通 ReAct" in html
     assert "计划优先" in html
@@ -135,6 +148,17 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "execution_strategy: currentExecutionStrategy()" in html
     assert "socket.send(JSON.stringify(requestPayload))" in html
     assert "/ws/agent/" in html
+    assert "/ws/gateway" in html
+    assert "/ws/realtime/media" in html
+    assert "call.incoming" in html
+    assert "message.user" in html
+    assert "run.cancel" in html
+    assert "call.hangup" in html
+    assert "stream.chunk" in html
+    assert "run.started" in html
+    assert "run.end" in html
+    assert "sendGatewayFrame" in html
+    assert "sendMediaEvent" in html
     assert "Run detail panel" not in html
     assert "Trace detail panel" not in html
     assert "Browser-session request history" not in html

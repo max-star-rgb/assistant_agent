@@ -578,7 +578,9 @@ def _assistant_tool_call_mode(value: str | None) -> AssistantToolCallMode:
 def _chat_stream(source: Mapping[str, str], chat_provider: ChatProviderName) -> bool:
     provider_override = source.get("DEEPSEEK_CHAT_STREAM") if chat_provider == "deepseek" else None
     if provider_override is not None:
-        return _bool_env(provider_override, False)
+        return _bool_env(provider_override, True)
+    if chat_provider == "deepseek":
+        return _bool_env(source.get("CHAT_STREAM"), True)
     return _bool_env(source.get("CHAT_STREAM"), False)
 
 

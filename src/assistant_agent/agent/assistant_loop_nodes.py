@@ -260,9 +260,10 @@ def _decide_with_llm(
 ) -> tuple[AssistantDecision, AssistantDecisionContext]:
     """Ask the real chat adapter for the next ReAct action."""
 
+    use_native_tools = _use_native_tool_calling(context, chat_adapter)
     request = (
         _build_native_tool_chat_request(context, state)
-        if _use_native_tool_calling(context)
+        if use_native_tools
         else _build_prompt_json_chat_request(context, state)
     )
     result = chat_adapter.chat(request)
@@ -270,9 +271,10 @@ def _decide_with_llm(
     if _is_provider_context_overflow_result(result) and _can_retry_provider_context_overflow(state):
         _record_provider_context_overflow(state, result)
         retry_context = _rebuild_context_after_provider_overflow(graph_state, context)
+        use_native_tools = _use_native_tool_calling(retry_context, chat_adapter)
         retry_request = (
             _build_native_tool_chat_request(retry_context, state)
-            if _use_native_tool_calling(retry_context)
+            if use_native_tools
             else _build_prompt_json_chat_request(retry_context, state)
         )
         result = chat_adapter.chat(retry_request)
@@ -282,10 +284,10 @@ def _decide_with_llm(
             _record_provider_context_overflow(state, result, retry_failed=True)
             return _provider_context_overflow_final_answer(result), context
     raw_output = result.response_text if result.success else ""
-    if _use_native_tool_calling(context) and result.success and result.tool_calls:
+    if use_native_tools and result.success and result.tool_calls:
         _record_native_tool_call(state, result.tool_calls[0])
         decision = native_tool_call_to_assistant_decision(result.tool_calls[0])
-    elif _use_native_tool_calling(context) and result.success:
+    elif use_native_tools and result.success:
         decision = _native_final_decision(result)
     else:
         decision = AssistantDecision.from_llm_output(raw_output)
@@ -417,8 +419,17 @@ def _assistant_tool_call_mode(graph_state: AssistantLoopState) -> str:
     return "auto"
 
 
-def _use_native_tool_calling(context: AssistantDecisionContext) -> bool:
-    return context.tool_call_mode in {"auto", "native_tools"} and not context.is_mock
+def _use_native_tool_calling(context: AssistantDecisionContext, chat_adapter: ChatAdapter) -> bool:
+    if context.tool_call_mode not in {"auto", "native_tools"} or context.is_mock:
+        return False
+    return _chat_adapter_supports_native_tools(chat_adapter)
+
+
+def _chat_adapter_supports_native_tools(chat_adapter: ChatAdapter) -> bool:
+    capabilities = getattr(chat_adapter, "capabilities", None)
+    if capabilities is None:
+        return True
+    return bool(getattr(capabilities, "supports_native_tools", True))
 
 
 def _native_final_decision(result: ChatResult) -> AssistantDecision:
@@ -432,8 +443,6 @@ def _native_final_decision(result: ChatResult) -> AssistantDecision:
             safety_notes=["provider_refusal"],
         )
     raw_output = result.response_text.strip()
-    if _looks_like_assistant_decision_json(raw_output):
-        return AssistantDecision.from_llm_output(raw_output)
     if raw_output:
         return AssistantDecision(
             type="final_answer",
@@ -446,10 +455,6 @@ def _native_final_decision(result: ChatResult) -> AssistantDecision:
         reason=_native_finish_reason(result, fallback="Provider finished without content or tool calls."),
         safety_notes=["empty_native_final_answer"],
     )
-
-
-def _looks_like_assistant_decision_json(text: str) -> bool:
-    return "{" in text and '"type"' in text
 
 
 def _native_finish_reason(result: ChatResult, *, fallback: str) -> str:
@@ -500,8 +505,9 @@ def _build_native_tool_messages(context: AssistantDecisionContext, state: AgentS
                 "future_use, and evidence. Use source_intent=user_explicit only when the user explicitly asks to "
                 "remember/save/use this in the future or next time. Use source_intent=assistant_candidate when you infer "
                 "a stable non-sensitive preference or project fact may be useful later. Never use user_confirmed. "
-                "For multi-step work, you may return AssistantDecision JSON with enter_plan_mode or exit_plan_mode; "
-                "do not invent a separate planner/controller protocol. "
+                "For multi-step work, request one provider tool call at a time when external data is needed, "
+                "or answer directly when available context is sufficient. Do not invent a separate "
+                "planner/controller protocol in provider-native tool mode. "
                 "For shopping recommendations or price comparisons, use product titles, prices, and URLs exactly from "
                 "tool observations or structured outputs; include the URL when present and do not say a link is clickable "
                 "if no URL is present."

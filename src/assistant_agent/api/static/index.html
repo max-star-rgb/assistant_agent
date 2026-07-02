@@ -347,6 +347,136 @@
 	        box-shadow: 0 1px 2px rgb(16 24 40 / 10%);
 	      }
 
+      .experience-tabs {
+        display: inline-grid;
+        grid-template-columns: repeat(2, minmax(116px, 1fr));
+        gap: 2px;
+        padding: 2px;
+        border: 1px solid #cfd7e4;
+        border-radius: 8px;
+        background: #eef2f7;
+      }
+
+      .experience-tab {
+        min-height: 34px;
+        border-radius: 6px;
+        padding: 7px 12px;
+        background: transparent;
+        color: #344054;
+        font-size: 13px;
+      }
+
+      .experience-tab.active {
+        background: #ffffff;
+        color: #175cd3;
+        box-shadow: 0 1px 2px rgb(16 24 40 / 10%);
+      }
+
+      .experience-panel[hidden] {
+        display: none;
+      }
+
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .section-header h2,
+      .section-header h3 {
+        margin: 0;
+      }
+
+      .realtime-controls,
+      .media-simulator-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .secondary-button {
+        border: 1px solid #cfd7e4;
+        background: #eef2f7;
+        color: #344054;
+      }
+
+      .danger-button {
+        border: 1px solid #f4b7ae;
+        background: #b42318;
+        color: #ffffff;
+      }
+
+      .realtime-status-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .realtime-stat {
+        min-width: 0;
+        border: 1px solid #e1e6ef;
+        border-radius: 6px;
+        padding: 8px;
+        background: #fbfcfe;
+      }
+
+      .realtime-stat-label {
+        color: #667085;
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .realtime-stat-value {
+        margin-top: 4px;
+        color: #20242c;
+        font-size: 14px;
+        font-weight: 750;
+        overflow-wrap: anywhere;
+      }
+
+      .realtime-send-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 136px;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .realtime-output-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 0.72fr);
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .realtime-output-grid h3,
+      .media-simulator h3 {
+        margin: 0 0 8px;
+        color: #344054;
+        font-size: 13px;
+      }
+
+      .realtime-live-output,
+      .realtime-event-log {
+        min-height: 220px;
+        max-height: 380px;
+      }
+
+      .media-simulator {
+        margin-top: 14px;
+        border-top: 1px solid #e1e6ef;
+        padding-top: 14px;
+      }
+
+      .media-simulator-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(180px, 0.56fr);
+        gap: 10px;
+        align-items: end;
+      }
+
       .trial-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
@@ -998,6 +1128,13 @@
 	          grid-template-columns: 1fr;
 	        }
 
+        .realtime-status-grid,
+        .realtime-output-grid,
+        .media-simulator-grid,
+        .realtime-send-row {
+          grid-template-columns: 1fr;
+        }
+
 	        .strategy-row {
 	          align-items: stretch;
 	          flex-direction: column;
@@ -1044,6 +1181,14 @@
           </section>
 
           <section>
+            <h2>Mode</h2>
+            <div class="experience-tabs" role="tablist" aria-label="Experience Mode">
+              <button class="experience-tab active" id="chat-mode-tab" data-experience-mode="chat" type="button">Chat</button>
+              <button class="experience-tab" id="realtime-mode-tab" data-experience-mode="realtime" type="button">Realtime</button>
+            </div>
+          </section>
+
+          <section class="experience-panel active" id="chat-panel">
             <h2>Input</h2>
             <div class="input-row">
               <textarea id="message">你好，简单介绍一下你能做什么。</textarea>
@@ -1067,6 +1212,76 @@
               </div>
             </fieldset>
             <div class="status" id="status">ready</div>
+          </section>
+
+          <section class="experience-panel" id="realtime-panel" hidden>
+            <div class="section-header">
+              <h2>Realtime Gateway</h2>
+              <div class="realtime-controls">
+                <button id="realtime-connect" type="button">Connect</button>
+                <button class="secondary-button" id="realtime-end" type="button" disabled>End</button>
+                <button class="danger-button" id="realtime-cancel" type="button" disabled>Cancel</button>
+              </div>
+            </div>
+            <div class="realtime-status-grid">
+              <div class="realtime-stat">
+                <div class="realtime-stat-label">Gateway</div>
+                <div class="realtime-stat-value" id="realtime-connection-state">disconnected</div>
+              </div>
+              <div class="realtime-stat">
+                <div class="realtime-stat-label">Session</div>
+                <div class="realtime-stat-value" id="realtime-session-id">none</div>
+              </div>
+              <div class="realtime-stat">
+                <div class="realtime-stat-label">Run</div>
+                <div class="realtime-stat-value" id="realtime-run-id">idle</div>
+              </div>
+            </div>
+            <div class="field">
+              <label for="realtime-message">Message</label>
+              <textarea id="realtime-message">你好，用实时 Gateway 回复我。</textarea>
+            </div>
+            <div class="media-row">
+              <input id="realtime-image-ids" type="text" placeholder="Image IDs（逗号或换行分隔，可选）" />
+              <input id="realtime-video-ids" type="text" placeholder="Video IDs（逗号或换行分隔，可选）" />
+            </div>
+            <div class="realtime-send-row">
+              <div class="status" id="realtime-status">disconnected</div>
+              <button id="realtime-send" type="button" disabled>Send Realtime</button>
+            </div>
+            <div class="realtime-output-grid">
+              <div>
+                <h3>Live Output</h3>
+                <pre class="realtime-live-output" id="realtime-output"></pre>
+              </div>
+              <div>
+                <h3>Gateway Events</h3>
+                <pre class="realtime-event-log" id="realtime-events"></pre>
+              </div>
+            </div>
+            <div class="media-simulator">
+              <div class="section-header">
+                <h3>Media Service Simulator</h3>
+                <div class="media-simulator-actions">
+                  <button class="secondary-button" id="media-connect" type="button">Connect Media</button>
+                  <button class="secondary-button" id="media-end" type="button" disabled>End Media</button>
+                </div>
+              </div>
+              <div class="media-simulator-grid">
+                <div class="field">
+                  <label for="media-transcript">Transcript</label>
+                  <input id="media-transcript" type="text" placeholder="媒体服务转写文本" />
+                </div>
+                <div class="field">
+                  <label for="media-video-ids">Video IDs</label>
+                  <input id="media-video-ids" type="text" placeholder="video_ref_001" />
+                </div>
+              </div>
+              <div class="realtime-send-row">
+                <div class="status" id="media-status">disconnected</div>
+                <button id="media-send" type="button" disabled>Send Media Event</button>
+              </div>
+            </div>
           </section>
 
           <!-- Results Tab Section -->
@@ -1197,16 +1412,47 @@
       const controlPlaneTraceIdInput = document.querySelector("#control-plane-trace-id");
       const controlPlaneRunOutput = document.querySelector("#control-plane-run-output");
       const controlPlaneRecent = document.querySelector("#control-plane-recent");
+      const experienceTabs = document.querySelectorAll(".experience-tab");
+      const chatPanel = document.querySelector("#chat-panel");
+      const realtimePanel = document.querySelector("#realtime-panel");
+      const realtimeConnectButton = document.querySelector("#realtime-connect");
+      const realtimeEndButton = document.querySelector("#realtime-end");
+      const realtimeCancelButton = document.querySelector("#realtime-cancel");
+      const realtimeSendButton = document.querySelector("#realtime-send");
+      const realtimeMessageInput = document.querySelector("#realtime-message");
+      const realtimeImageIdsInput = document.querySelector("#realtime-image-ids");
+      const realtimeVideoIdsInput = document.querySelector("#realtime-video-ids");
+      const realtimeStatus = document.querySelector("#realtime-status");
+      const realtimeConnectionState = document.querySelector("#realtime-connection-state");
+      const realtimeSessionIdOutput = document.querySelector("#realtime-session-id");
+      const realtimeRunIdOutput = document.querySelector("#realtime-run-id");
+      const realtimeOutput = document.querySelector("#realtime-output");
+      const realtimeEvents = document.querySelector("#realtime-events");
+      const mediaConnectButton = document.querySelector("#media-connect");
+      const mediaEndButton = document.querySelector("#media-end");
+      const mediaSendButton = document.querySelector("#media-send");
+      const mediaTranscriptInput = document.querySelector("#media-transcript");
+      const mediaVideoIdsInput = document.querySelector("#media-video-ids");
+      const mediaStatus = document.querySelector("#media-status");
       let runtimeInfo = null;
       let verifiedTrialUserId = "";
       let sessions = {};
       let currentSessionId = null;
+      let gatewaySocket = null;
+      let mediaSocket = null;
+      let realtimeConnected = false;
+      let mediaConnected = false;
+      let realtimeRunActive = false;
+      let realtimeActiveRunId = "";
+      let realtimeOutputText = "";
+      let realtimeEventLines = [];
       const USER_STORAGE_KEY = "assistant_agent_trial_user_id";
       const SESSIONS_STORAGE_KEY = "assistant_agent_sessions";
 
       document.querySelector("#examples").addEventListener("click", (event) => {
         if (event.target.matches("button.example")) {
           messageInput.value = event.target.textContent;
+          realtimeMessageInput.value = event.target.textContent;
           messageInput.focus();
         }
       });
@@ -1267,6 +1513,42 @@
       controlPlaneTraceIdInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           void refreshControlPlaneRun();
+        }
+      });
+      experienceTabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          switchExperienceMode(tab.dataset.experienceMode || "chat");
+        });
+      });
+      realtimeConnectButton.addEventListener("click", () => {
+        void connectRealtimeGateway();
+      });
+      realtimeEndButton.addEventListener("click", () => {
+        disconnectRealtimeGateway({ sendHangup: true });
+      });
+      realtimeCancelButton.addEventListener("click", () => {
+        cancelRealtimeRun();
+      });
+      realtimeSendButton.addEventListener("click", () => {
+        sendRealtimeMessage();
+      });
+      realtimeMessageInput.addEventListener("keydown", (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+          sendRealtimeMessage();
+        }
+      });
+      mediaConnectButton.addEventListener("click", () => {
+        void connectRealtimeMedia();
+      });
+      mediaEndButton.addEventListener("click", () => {
+        disconnectRealtimeMedia({ sendEnd: true });
+      });
+      mediaSendButton.addEventListener("click", () => {
+        sendRealtimeMediaEvent();
+      });
+      mediaTranscriptInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          sendRealtimeMediaEvent();
         }
       });
       // Logout button
@@ -1455,6 +1737,417 @@
         return String(error && error.message ? error.message : error).includes("WebSocket 连接失败");
       }
 
+      function switchExperienceMode(mode) {
+        const targetMode = mode === "realtime" ? "realtime" : "chat";
+        experienceTabs.forEach((tab) => {
+          tab.classList.toggle("active", tab.dataset.experienceMode === targetMode);
+        });
+        chatPanel.hidden = targetMode !== "chat";
+        realtimePanel.hidden = targetMode !== "realtime";
+        if (targetMode === "realtime") {
+          syncRealtimeSessionDisplay();
+          if (!realtimeMessageInput.value.trim()) {
+            realtimeMessageInput.value = messageInput.value.trim();
+          }
+        }
+      }
+
+      function realtimeWebSocketUrl(path, params) {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        return `${protocol}//${window.location.host}${path}?${params.toString()}`;
+      }
+
+      async function ensureRealtimeSession() {
+        const userId = currentTrialUserId();
+        if (!userId) {
+          setRealtimeStatus("请先验证工号。", true);
+          trialUserIdInput.focus();
+          return null;
+        }
+        if (!currentSessionId) {
+          return await createNewSession();
+        }
+        return currentSessionId;
+      }
+
+      async function connectRealtimeGateway() {
+        const userId = currentTrialUserId();
+        const sessionId = await ensureRealtimeSession();
+        if (!userId || !sessionId) {
+          return;
+        }
+        disconnectRealtimeMedia({ sendEnd: false });
+        if (gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN) {
+          setRealtimeStatus("Gateway already connected.");
+          return;
+        }
+        resetRealtimeRunView();
+        setRealtimeConnectionState("connecting");
+        setRealtimeStatus("connecting...");
+        const params = new URLSearchParams();
+        params.set("user_id", userId);
+        params.set("session_id", sessionId);
+        params.set("client", "web");
+        const socket = new WebSocket(realtimeWebSocketUrl("/ws/gateway", params));
+        gatewaySocket = socket;
+        socket.onopen = () => {
+          setRealtimeConnectionState("connected");
+          setRealtimeStatus("connected");
+          sendGatewayFrame({
+            v: 1,
+            type: "call.incoming",
+            session_id: sessionId,
+            user_id: userId,
+            payload: {
+              session_id: sessionId,
+              config: {
+                entry: "web_realtime",
+                locale: "zh-CN",
+              },
+            },
+          });
+        };
+        socket.onmessage = (message) => {
+          handleRealtimeSocketMessage(message.data, "gateway");
+        };
+        socket.onerror = () => {
+          setRealtimeStatus("Gateway WebSocket 连接失败。", true);
+        };
+        socket.onclose = () => {
+          if (gatewaySocket === socket) {
+            gatewaySocket = null;
+          }
+          setRealtimeConnectionState("disconnected");
+          setRealtimeRunActive(false, "");
+          setRealtimeStatus("disconnected");
+        };
+      }
+
+      function disconnectRealtimeGateway(options = {}) {
+        const sendHangup = options.sendHangup !== false;
+        const socket = gatewaySocket;
+        if (!socket) {
+          setRealtimeConnectionState("disconnected");
+          setRealtimeRunActive(false, "");
+          return;
+        }
+        if (socket.readyState === WebSocket.OPEN && sendHangup) {
+          sendGatewayFrame({
+            v: 1,
+            type: "call.hangup",
+            session_id: currentSessionId,
+            user_id: currentTrialUserId(),
+          });
+        }
+        socket.close(1000, "client_end");
+      }
+
+      function sendRealtimeMessage() {
+        const userId = currentTrialUserId();
+        const text = realtimeMessageInput.value.trim();
+        if (!userId) {
+          setRealtimeStatus("请先验证工号。", true);
+          return;
+        }
+        if (!currentSessionId) {
+          setRealtimeStatus("请先连接 Gateway。", true);
+          return;
+        }
+        if (!text) {
+          setRealtimeStatus("请输入实时消息。", true);
+          return;
+        }
+        realtimeOutputText = "";
+        renderRealtimeOutput();
+        const sent = sendGatewayFrame({
+          v: 1,
+          type: "message.user",
+          session_id: currentSessionId,
+          user_id: userId,
+          payload: {
+            text,
+            modality: "text",
+            image_ids: parseIds(realtimeImageIdsInput.value),
+            video_ids: parseIds(realtimeVideoIdsInput.value),
+            metadata: {
+              source: "web_realtime",
+              transport: "websocket",
+              execution_strategy: currentExecutionStrategy(),
+            },
+          },
+        });
+        if (sent) {
+          setRealtimeStatus(realtimeRunActive ? "interrupt sent" : "message sent");
+        }
+      }
+
+      function cancelRealtimeRun() {
+        const frame = {
+          v: 1,
+          type: "run.cancel",
+          session_id: currentSessionId,
+          run_id: realtimeActiveRunId || undefined,
+          user_id: currentTrialUserId(),
+        };
+        const sent = realtimeConnected ? sendGatewayFrame(frame) : sendMediaEvent({ type: "run.cancel", ...frame });
+        if (sent) {
+          setRealtimeStatus("cancel sent");
+        }
+      }
+
+      function sendGatewayFrame(frame) {
+        if (!gatewaySocket || gatewaySocket.readyState !== WebSocket.OPEN) {
+          setRealtimeStatus("Gateway 未连接。", true);
+          return false;
+        }
+        gatewaySocket.send(JSON.stringify(frame));
+        appendRealtimeEvent(formatClientFrameLine(frame, "gateway"));
+        return true;
+      }
+
+      async function connectRealtimeMedia() {
+        const userId = currentTrialUserId();
+        const sessionId = await ensureRealtimeSession();
+        if (!userId || !sessionId) {
+          return;
+        }
+        disconnectRealtimeGateway({ sendHangup: false });
+        if (mediaSocket && mediaSocket.readyState === WebSocket.OPEN) {
+          setMediaStatus("Media already connected.");
+          return;
+        }
+        resetRealtimeRunView();
+        setMediaConnectionState("connecting");
+        setMediaStatus("connecting...");
+        const params = new URLSearchParams();
+        params.set("user_id", userId);
+        params.set("session_id", sessionId);
+        params.set("client", "web");
+        const socket = new WebSocket(realtimeWebSocketUrl("/ws/realtime/media", params));
+        mediaSocket = socket;
+        socket.onopen = () => {
+          setMediaConnectionState("connected");
+          setMediaStatus("connected");
+          sendMediaEvent({
+            type: "session.start",
+            session_id: sessionId,
+            user_id: userId,
+            payload: {
+              session_id: sessionId,
+              config: {
+                entry: "web_media_simulator",
+                locale: "zh-CN",
+              },
+            },
+          });
+        };
+        socket.onmessage = (message) => {
+          handleRealtimeSocketMessage(message.data, "media");
+        };
+        socket.onerror = () => {
+          setMediaStatus("Media WebSocket 连接失败。", true);
+        };
+        socket.onclose = () => {
+          if (mediaSocket === socket) {
+            mediaSocket = null;
+          }
+          setMediaConnectionState("disconnected");
+          setRealtimeRunActive(false, "");
+          setMediaStatus("disconnected");
+        };
+      }
+
+      function disconnectRealtimeMedia(options = {}) {
+        const sendEnd = options.sendEnd !== false;
+        const socket = mediaSocket;
+        if (!socket) {
+          setMediaConnectionState("disconnected");
+          return;
+        }
+        if (socket.readyState === WebSocket.OPEN && sendEnd) {
+          sendMediaEvent({
+            type: "session.end",
+            session_id: currentSessionId,
+            user_id: currentTrialUserId(),
+          });
+        }
+        socket.close(1000, "client_end");
+      }
+
+      function sendRealtimeMediaEvent() {
+        const text = mediaTranscriptInput.value.trim();
+        const videoIds = parseIds(mediaVideoIdsInput.value);
+        if (!text && !videoIds.length) {
+          setMediaStatus("请输入 transcript 或 video id。", true);
+          return;
+        }
+        const sent = sendMediaEvent({
+          type: "transcript.final",
+          session_id: currentSessionId,
+          user_id: currentTrialUserId(),
+          payload: {
+            text,
+            video_ids: videoIds,
+            metadata: {
+              source: "web_media_simulator",
+              transport: "websocket",
+            },
+          },
+        });
+        if (sent) {
+          realtimeOutputText = "";
+          renderRealtimeOutput();
+          setMediaStatus("media event sent");
+        }
+      }
+
+      function sendMediaEvent(event) {
+        if (!mediaSocket || mediaSocket.readyState !== WebSocket.OPEN) {
+          setMediaStatus("Media 未连接。", true);
+          return false;
+        }
+        mediaSocket.send(JSON.stringify(event));
+        appendRealtimeEvent(formatClientFrameLine(event, "media"));
+        return true;
+      }
+
+      function handleRealtimeSocketMessage(raw, source) {
+        let frame;
+        try {
+          frame = JSON.parse(raw);
+        } catch (error) {
+          appendRealtimeEvent(`[${source}] invalid json: ${errorMessage(error)}`);
+          return;
+        }
+        handleRealtimeFrame(frame, source);
+      }
+
+      function handleRealtimeFrame(frame, source) {
+        appendRealtimeEvent(formatRealtimeFrameLine(frame, source));
+        const frameType = frame.type || "";
+        if (frameType === "call.ready") {
+          setRealtimeStatus("call ready");
+          return;
+        }
+        if (frameType === "call.hangup_ack") {
+          setRealtimeStatus("call ended");
+          return;
+        }
+        if (frameType === "run.started") {
+          setRealtimeRunActive(true, frame.run_id || "");
+          setRealtimeStatus(`run started${frame.run_id ? ` | ${frame.run_id}` : ""}`);
+          return;
+        }
+        if (frameType === "stream.chunk") {
+          const chunk = frame.payload && typeof frame.payload === "object" ? frame.payload.text : "";
+          if (chunk) {
+            realtimeOutputText += String(chunk);
+            renderRealtimeOutput();
+          }
+          return;
+        }
+        if (frameType === "run.end") {
+          setRealtimeRunActive(false, "");
+          if (frame.run_id) {
+            setControlPlaneRun(frame.run_id, "");
+            void refreshControlPlaneRecent({ silent: true });
+          }
+          setRealtimeStatus(`run ended: ${frame.reason || "completed"}`, frame.reason === "error");
+          return;
+        }
+        if (frameType === "error") {
+          setRealtimeStatus(eventErrorMessage(frame.error || "Gateway error"), true);
+        }
+      }
+
+      function resetRealtimeRunView() {
+        realtimeOutputText = "";
+        realtimeEventLines = [];
+        renderRealtimeOutput();
+        renderRealtimeEvents();
+        setRealtimeRunActive(false, "");
+        syncRealtimeSessionDisplay();
+      }
+
+      function renderRealtimeOutput() {
+        realtimeOutput.textContent = realtimeOutputText || "";
+      }
+
+      function appendRealtimeEvent(line) {
+        if (!line) {
+          return;
+        }
+        realtimeEventLines.push(line);
+        realtimeEventLines = realtimeEventLines.slice(-80);
+        renderRealtimeEvents();
+      }
+
+      function renderRealtimeEvents() {
+        realtimeEvents.textContent = realtimeEventLines.join("\n");
+        realtimeEvents.scrollTop = realtimeEvents.scrollHeight;
+      }
+
+      function formatClientFrameLine(frame, source) {
+        return formatRealtimeFrameLine({ ...frame, type: `client.${frame.type || "event"}` }, source);
+      }
+
+      function formatRealtimeFrameLine(frame, source) {
+        const type = frame.type || "unknown";
+        const parts = [`[${source}] ${type}`];
+        if (frame.session_id) {
+          parts.push(`session=${frame.session_id}`);
+        }
+        if (frame.run_id) {
+          parts.push(`run=${frame.run_id}`);
+        }
+        if (frame.reason) {
+          parts.push(`reason=${frame.reason}`);
+        }
+        const payload = frame.payload && typeof frame.payload === "object" ? frame.payload : {};
+        const text = payload.text || payload.message || "";
+        const error = frame.error ? eventErrorMessage(frame.error) : "";
+        const suffix = text || error;
+        return suffix ? `${parts.join(" | ")}\n  ${clipText(suffix, 220)}` : parts.join(" | ");
+      }
+
+      function setRealtimeConnectionState(state) {
+        realtimeConnected = state === "connected";
+        const pending = state === "connecting";
+        realtimeConnectionState.textContent = state;
+        realtimeConnectButton.disabled = realtimeConnected || pending;
+        realtimeEndButton.disabled = !realtimeConnected && !pending;
+        realtimeSendButton.disabled = !realtimeConnected;
+      }
+
+      function setMediaConnectionState(state) {
+        mediaConnected = state === "connected";
+        const pending = state === "connecting";
+        mediaConnectButton.disabled = mediaConnected || pending;
+        mediaEndButton.disabled = !mediaConnected && !pending;
+        mediaSendButton.disabled = !mediaConnected;
+      }
+
+      function setRealtimeRunActive(active, runId) {
+        realtimeRunActive = Boolean(active);
+        realtimeActiveRunId = runId || "";
+        realtimeRunIdOutput.textContent = realtimeActiveRunId || (realtimeRunActive ? "running" : "idle");
+        realtimeCancelButton.disabled = !realtimeRunActive || (!realtimeConnected && !mediaConnected);
+      }
+
+      function syncRealtimeSessionDisplay() {
+        realtimeSessionIdOutput.textContent = currentSessionId || "none";
+      }
+
+      function setRealtimeStatus(text, isError = false) {
+        realtimeStatus.textContent = text;
+        realtimeStatus.classList.toggle("error", isError);
+      }
+
+      function setMediaStatus(text, isError = false) {
+        mediaStatus.textContent = text;
+        mediaStatus.classList.toggle("error", isError);
+      }
+
       // Session Management Functions
       function generateSessionId() {
         return 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
@@ -1499,6 +2192,7 @@
         const session = sessions[sessionId];
         if (!session) return;
         currentSessionId = sessionId;
+        syncRealtimeSessionDisplay();
         renderConversationHistory(session.history);
         // Rebuild and display results by round
         rebuildSessionResultsFromHistory(session);
@@ -1555,6 +2249,7 @@
             reactProcess.textContent = '';
             renderMemorySnapshot(null);
             resetControlPlaneView();
+            syncRealtimeSessionDisplay();
           }
         }
         renderSessionsList();
@@ -2974,6 +3669,8 @@
         document.getElementById('login-section').hidden = enabled;
         document.getElementById('logout-btn').hidden = !enabled;
         if (!enabled) {
+          disconnectRealtimeGateway({ sendHangup: false });
+          disconnectRealtimeMedia({ sendEnd: false });
           // Reset all state
           sessions = {};
           currentSessionId = null;
@@ -2986,6 +3683,7 @@
           updateResultsDisplay();
           renderMemorySnapshot(null);
           resetControlPlaneView();
+          syncRealtimeSessionDisplay();
           setStatus("请先验证工号。");
         }
       }

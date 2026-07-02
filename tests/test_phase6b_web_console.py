@@ -14,6 +14,8 @@ def test_demo_console_page_is_served() -> None:
     assert "请输入你的工号：00xxxx" in response.text
     assert "new WebSocket" in response.text
     assert "/ws/agent/" in response.text
+    assert "/ws/gateway" in response.text
+    assert "/ws/realtime/media" in response.text
 
 
 def test_static_console_asset_is_served() -> None:
@@ -27,6 +29,15 @@ def test_static_console_asset_is_served() -> None:
     assert "Product Results" in response.text
     assert "Generated Images" in response.text
     assert "Assistant ReAct Process" in response.text
+    assert "Realtime Gateway" in response.text
+    assert "Media Service Simulator" in response.text
+    assert "realtime-connect" in response.text
+    assert "realtime-cancel" in response.text
+    assert "media-connect" in response.text
+    assert "sendGatewayFrame" in response.text
+    assert "sendMediaEvent" in response.text
+    assert "/ws/gateway" in response.text
+    assert "/ws/realtime/media" in response.text
     assert "/demo/access" in response.text
     assert "/demo/examples" in response.text
     assert "renderExamples" in response.text

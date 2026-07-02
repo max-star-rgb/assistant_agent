@@ -1,10 +1,12 @@
+import json
+
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult, ProviderChatCapabilities
 
 
 class NativeToolChatAdapter:
@@ -20,6 +22,12 @@ class NativeToolChatAdapter:
         index = min(self.calls, len(self.outputs) - 1)
         self.calls += 1
         return self.outputs[index]
+
+
+class CapabilityAwareChatAdapter(NativeToolChatAdapter):
+    def __init__(self, outputs: list[ChatResult], *, supports_native_tools: bool) -> None:
+        super().__init__(outputs)
+        self.capabilities = ProviderChatCapabilities(supports_native_tools=supports_native_tools)
 
 
 def native_result(name: str, arguments: dict[str, object]) -> ChatResult:
@@ -46,15 +54,26 @@ def native_result(name: str, arguments: dict[str, object]) -> ChatResult:
 
 def final_result(message: str) -> ChatResult:
     return ChatResult(
-        response_text=(
-            '{"type": "final_answer", '
-            f'"message": "{message}", '
-            '"reason": "已有 native tool observation"}'
-        ),
+        response_text=message,
         finish_reason="stop",
         message_kind="final_answer",
         provider="scripted-native",
         model="native-test",
+    )
+
+
+def prompt_json_tool_result(name: str, arguments: dict[str, object]) -> ChatResult:
+    return ChatResult(
+        response_text=(
+            '{"type": "tool_call", '
+            f'"tool_name": "{name}", '
+            f'"tool_input": {json.dumps(arguments, ensure_ascii=False)}, '
+            '"reason": "prompt-json fallback selected this tool"}'
+        ),
+        finish_reason="stop",
+        message_kind="final_answer",
+        provider="scripted-no-native",
+        model="prompt-json-test",
     )
 
 
@@ -132,6 +151,44 @@ def test_auto_tool_call_mode_uses_native_tools_for_non_mock_adapter() -> None:
     assert "finish_reason=stop" in state.request.metadata["assistant_loop_steps"][-1]["reason"]
 
 
+def test_auto_mode_falls_back_to_prompt_json_when_adapter_does_not_support_native_tools() -> None:
+    adapter = CapabilityAwareChatAdapter(
+        [
+            prompt_json_tool_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            final_result("已通过 prompt-json 兼容路径完成回答。"),
+        ],
+        supports_native_tools=False,
+    )
+    runtime = AgentGraphRuntime(chat_adapter=adapter)
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机"))
+
+    assert adapter.requests[0].tools == []
+    assert adapter.requests[0].messages == []
+    assert "只输出严格 JSON" in adapter.requests[0].user_query
+    assert "可用工具 ToolSpec 列表" in adapter.requests[0].user_query
+    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert state.response is not None
+    assert state.response.message == "已通过 prompt-json 兼容路径完成回答。"
+
+
+def test_native_tool_prompt_does_not_ask_for_assistant_decision_json_text() -> None:
+    adapter = NativeToolChatAdapter([plain_final_result("直接回答。")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+    )
+
+    runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="你好"))
+
+    system_message = adapter.requests[0].messages[0]["content"]
+    user_message = adapter.requests[0].messages[1]["content"]
+    assert adapter.requests[0].tools
+    assert "只输出严格 JSON" not in system_message
+    assert "AssistantDecision JSON" not in system_message
+    assert "可用工具 ToolSpec 列表" not in user_message
+
+
 def test_native_plain_text_final_answer_uses_finish_reason_without_json_contract() -> None:
     adapter = NativeToolChatAdapter([plain_final_result("这是原生 final answer 文本。")])
     runtime = AgentGraphRuntime(chat_adapter=adapter)
@@ -143,6 +200,22 @@ def test_native_plain_text_final_answer_uses_finish_reason_without_json_contract
     assert state.response is not None
     assert state.response.message == "这是原生 final answer 文本。"
     assert "finish_reason=stop" in state.response.data["reason"]
+
+
+def test_native_json_shaped_text_final_answer_is_not_parsed_as_assistant_decision() -> None:
+    raw = '{"type": "tool_call", "tool_name": "product_search", "tool_input": {"query": "耳机"}}'
+    adapter = NativeToolChatAdapter([plain_final_result(raw)])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找耳机"))
+
+    assert adapter.requests[0].tools
+    assert state.tool_calls == []
+    assert state.response is not None
+    assert state.response.message == raw
 
 
 def test_native_copywriting_answer_does_not_force_memory_lookup_or_save() -> None:

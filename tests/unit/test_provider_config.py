@@ -216,13 +216,27 @@ def test_provider_config_reads_deepseek_chat_provider() -> None:
     assert config.chat_adapter_kind == "openai_compatible"
     assert config.deepseek_chat_base_url == "https://api.deepseek.com/v1"
     assert config.deepseek_chat_model == "deepseek-chat"
-    assert config.chat_stream is False
+    assert config.chat_stream is True
 
 
 def test_provider_config_reads_common_chat_stream_switch() -> None:
     config = ProviderConfig.from_env({"CHAT_STREAM": "true"})
 
     assert config.chat_stream is True
+
+
+def test_provider_config_common_chat_stream_can_disable_deepseek_default_stream() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
+            "CHAT_STREAM": "false",
+        }
+    )
+
+    assert config.chat_provider == "deepseek"
+    assert config.chat_stream is False
 
 
 def test_provider_config_reads_deepseek_chat_stream_override() -> None:
