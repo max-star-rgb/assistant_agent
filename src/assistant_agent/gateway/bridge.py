@@ -81,7 +81,10 @@ class GatewayBridge:
                 _cancel_event=cancel_event,
             )
 
-        async def ensure_runtime_endpoint(uid: str | None, config: dict[str, Any] | None = None) -> Endpoint | None:
+        async def ensure_runtime_endpoint(
+            uid: str | None,
+            config: dict[str, Any] | None = None,
+        ) -> Endpoint | None:
             if runtime_ep_ref["endpoint"] is not None:
                 return runtime_ep_ref["endpoint"]
             if self._session_manager is None:
@@ -104,6 +107,9 @@ class GatewayBridge:
                 runtime_ep=runtime_ep,
             )
 
+        def current_runtime_endpoint() -> Endpoint | None:
+            return runtime_ep_ref["endpoint"]
+
         async def _client_to_session() -> None:
             async for incoming in client_ep:
                 endpoint = await self._handle_client_frame(
@@ -112,6 +118,7 @@ class GatewayBridge:
                     incoming=incoming,
                     user_id=user_id,
                     ensure_runtime_endpoint=ensure_runtime_endpoint,
+                    current_runtime_endpoint=current_runtime_endpoint,
                 )
                 if endpoint is not None:
                     runtime_ep_ref["endpoint"] = endpoint
@@ -179,6 +186,7 @@ class GatewayBridge:
         incoming: Frame,
         user_id: Optional[str],
         ensure_runtime_endpoint,
+        current_runtime_endpoint,
     ) -> Endpoint | None:
         frame_type = incoming.get("type")
         payload = incoming.get("payload") if isinstance(incoming.get("payload"), dict) else {}
@@ -186,7 +194,10 @@ class GatewayBridge:
 
         if frame_type == CALL_INCOMING:
             session_id = incoming.get("session_id") or payload.get("session_id")
-            endpoint = await ensure_runtime_endpoint(_optional_string(uid), _config_from_payload(payload))
+            endpoint = await ensure_runtime_endpoint(
+                _optional_string(uid),
+                _config_from_payload(payload),
+            )
             async with self._lock:
                 conn = self._clients.get(client_id)
                 if conn:
@@ -203,10 +214,48 @@ class GatewayBridge:
             return endpoint
 
         if frame_type == CALL_HANGUP:
-            await client_ep.send(frame(type=CALL_HANGUP_ACK, user_id=_optional_string(uid)))
+            session_id = incoming.get("session_id") or payload.get("session_id")
+            run_id = incoming.get("run_id") or payload.get("run_id")
+            async with self._lock:
+                conn = self._clients.get(client_id)
+                if conn is not None:
+                    session_id = session_id or conn.session_id
+                    run_id = run_id or conn.active_run_id
+            endpoint = current_runtime_endpoint()
+            if (
+                endpoint is None
+                and self._session_manager is not None
+                and uid
+                and self._session_manager.has_active_session(str(uid))
+            ):
+                endpoint = await ensure_runtime_endpoint(_optional_string(uid), None)
+            cancel_requested = endpoint is not None and (
+                session_id is not None or run_id is not None
+            )
+            if cancel_requested:
+                await endpoint.send(
+                    frame(
+                        type="run.cancel",
+                        session_id=_optional_string(session_id),
+                        run_id=_optional_string(run_id),
+                        user_id=_optional_string(uid),
+                        payload={
+                            "source": "gateway_hangup",
+                            "reason": "call_hangup",
+                        },
+                    )
+                )
+            await client_ep.send(
+                frame(
+                    type=CALL_HANGUP_ACK,
+                    session_id=_optional_string(session_id),
+                    user_id=_optional_string(uid),
+                    payload={"cancelled_active_run": cancel_requested},
+                )
+            )
             if self._session_manager is not None and uid:
                 await self._session_manager.mark_hangup(str(uid))
-            return None
+            return endpoint
 
         if frame_type == CONFIG_UPDATE:
             if self._session_manager is not None and uid:

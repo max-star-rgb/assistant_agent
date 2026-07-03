@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes.
 
@@ -11,7 +11,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default backend remains `AgentGraphRealtimeBackend`.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
 - Existing `/agent/run`, CLI, eval, and Web demo paths may continue to call the shared assistant run service directly when they do not need Gateway session/run lifecycle semantics.
-- The main FastAPI app exposes `/ws/gateway` for Gateway JSON frames and `/ws/realtime/media` for media-service events that are adapted into Gateway frames.
+- The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for App + Media Relay events that are validated before being adapted into Gateway frames.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
 
 ## Layering
@@ -23,6 +23,21 @@ CLI / Web UI / app / HTTP route / WebSocket route / realtime call transport
         |
         v
 entry adapter: auth, transport IO, product payload parsing, user experience contract
+```
+
+For realtime calls, the product path is:
+
+```text
+App / telephony SDK
+        |
+        v
+Media Relay: STT/TTS/media references, transport details, app identity forwarding
+        |
+        v
+/ws/realtime/media
+        |
+        v
+Gateway lifecycle and session config boundary
 ```
 
 Gateway is the normalized realtime run boundary behind those entry adapters:
@@ -65,6 +80,7 @@ That path is valid when the caller only needs one request/response run and does 
 Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normalized traffic:
 
 - Accept normalized frames such as `message.user`, `run.cancel`, `ping`, `call.incoming`, `call.hangup`, and `config.update`.
+- Accept validated media-entry events from `/ws/realtime/media` and adapt them to the normalized Gateway frames.
 - Validate Gateway-level modality support before dispatching to the assistant backend.
 - Bind or preserve `user_id`, `session_id`, `turn_id`, and `run_id`.
 - Maintain per-session user text history for Gateway turns.
@@ -72,6 +88,7 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Convert realtime backend events into Gateway wire frames.
 - Convert backend failures into protocol-level `run.end` or `error` frames.
 - Cancel active runs on explicit `run.cancel`, disconnect, deadline expiry, or same-session interrupt.
+- Cancel active runs immediately on `call.hangup` / media `session.end`, then return `call.hangup_ack`.
 - Manage per-user session reuse, reconnect, hangup grace, idle eviction, and live session config.
 - Keep external connection lifecycle separate from the assistant runtime internals.
 
@@ -90,6 +107,25 @@ Entry adapters own product and transport concerns before a request reaches Gatew
 - Authentication dependency resolution and trial-access gates at the API boundary.
 
 Entry adapters should not own assistant loop decisions, tool execution, memory policy, provider selection, or long-running run lifecycle rules that belong behind Gateway.
+
+## Media Relay WebSocket
+
+`/ws/realtime/media` is the primary realtime call entry for Media Relay integrations. It accepts media-entry events, validates identity and session binding against the WebSocket query/auth context, and maps valid events to Gateway frames:
+
+The Web demo may expose an App + Media Relay simulator for local testing, but it must not add a separate Web realtime/runtime mode or make the browser a second primary Gateway client path.
+
+| media event | required shape | Gateway mapping |
+| --- | --- | --- |
+| `session.start` | `session_id` from event/payload/query; optional `call_id`; optional `payload.config` | `call.incoming`; creates or resumes Gateway session and freezes session config |
+| `transcript.final` | `text`, `audio_id`, `video_ids`, or `image_ids` | `message.user`; starts an agent turn and interrupts any active run in the same session |
+| `run.cancel` | `session_id` or `run_id` from event/payload/query | `run.cancel`; cooperative cancellation of the active run |
+| `config.update` | non-empty `config` object | `config.update`; updates live session config before future turns |
+| `session.end` | `session_id` from event/payload/query | `call.hangup`; cancels the active run and emits `call.hangup_ack` |
+| `ping` | no payload required | `pong` |
+
+Invalid JSON, unsupported event types, unknown config fields, missing transcript content, identity mismatch, or session mismatch produce an `error` frame and do not enter the assistant backend.
+
+Media Relay v1 does not stream raw audio or video through Gateway. It sends references such as `audio_id`, `video_ids`, and `image_ids`; the assistant runtime receives those references through `RealtimeAgentRequest`.
 
 ## Realtime Backend Contract
 

@@ -172,6 +172,129 @@ def test_realtime_media_websocket_maps_text_and_video_to_gateway_message() -> No
     assert backend.requests[0].metadata["gateway"]["session_config"] == {"locale": "zh-CN"}
 
 
+def test_realtime_media_websocket_validates_media_event_schema() -> None:
+    backend = RecordingRealtimeBackend()
+    _install_gateway_backend(backend)
+    try:
+        client = TestClient(create_app())
+
+        with client.websocket_connect("/ws/realtime/media?user_id=media-user&session_id=media-session") as websocket:
+            websocket.send_json({"type": "message.user", "payload": {"text": "wrong protocol"}})
+            unknown = websocket.receive_json()
+
+            websocket.send_json({"type": "transcript.final", "payload": {}})
+            invalid = websocket.receive_json()
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+    assert unknown["type"] == "error"
+    assert unknown["error"]["code"] == "unknown_media_event"
+    assert "transcript.final" in unknown["error"]["detail"]["supported_types"]
+    assert invalid["type"] == "error"
+    assert invalid["error"]["code"] == "invalid_media_event"
+    assert backend.requests == []
+
+
+def test_realtime_media_websocket_rejects_identity_and_session_mismatch() -> None:
+    backend = RecordingRealtimeBackend()
+    _install_gateway_backend(backend)
+    try:
+        client = TestClient(create_app())
+
+        with client.websocket_connect("/ws/realtime/media?user_id=media-user&session_id=media-session") as websocket:
+            websocket.send_json(
+                {
+                    "type": "session.start",
+                    "user_id": "other-user",
+                    "session_id": "media-session",
+                    "payload": {"config": {"locale": "zh-CN"}},
+                }
+            )
+            identity_error = websocket.receive_json()
+
+            websocket.send_json(
+                {
+                    "type": "session.start",
+                    "user_id": "media-user",
+                    "session_id": "other-session",
+                    "payload": {"config": {"locale": "zh-CN"}},
+                }
+            )
+            session_error = websocket.receive_json()
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+    assert identity_error["type"] == "error"
+    assert identity_error["error"]["code"] == "identity_mismatch"
+    assert session_error["type"] == "error"
+    assert session_error["error"]["code"] == "session_mismatch"
+    assert backend.requests == []
+
+
+def test_realtime_media_websocket_config_update_is_injected_into_session_config() -> None:
+    backend = RecordingRealtimeBackend()
+    _install_gateway_backend(backend)
+    try:
+        client = TestClient(create_app())
+
+        with client.websocket_connect("/ws/realtime/media?user_id=media-user&session_id=media-session") as websocket:
+            websocket.send_json({"type": "session.start", "payload": {"config": {"locale": "zh-CN"}}})
+            ready = websocket.receive_json()
+
+            websocket.send_json(
+                {
+                    "type": "config.update",
+                    "payload": {
+                        "config": {
+                            "mode": "voice",
+                            "run_timeout_ms": 500,
+                            "interrupt_policy": "cancel_previous",
+                        }
+                    },
+                }
+            )
+            websocket.send_json({"type": "transcript.final", "payload": {"text": "hello after config"}})
+            frames = _receive_until(websocket, "run.end")
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+    assert ready["type"] == "call.ready"
+    assert frames[-1]["reason"] == "completed"
+    assert backend.requests[0].metadata["gateway"]["session_config"] == {
+        "locale": "zh-CN",
+        "mode": "voice",
+        "run_timeout_ms": 500,
+        "interrupt_policy": "cancel_previous",
+    }
+
+
+def test_realtime_media_websocket_session_end_cancels_active_run_and_acks() -> None:
+    backend = CancellableRealtimeBackend()
+    _install_gateway_backend(backend)
+    try:
+        client = TestClient(create_app())
+
+        with client.websocket_connect("/ws/realtime/media?user_id=media-user&session_id=media-session") as websocket:
+            websocket.send_json({"type": "session.start", "payload": {"config": {"locale": "zh-CN"}}})
+            ready = websocket.receive_json()
+
+            websocket.send_json({"type": "transcript.final", "payload": {"text": "keep running"}})
+            started = websocket.receive_json()
+            websocket.send_json({"type": "session.end", "payload": {"reason": "user_hangup"}})
+            frames = _receive_until_all(websocket, {"call.hangup_ack", "run.end"})
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+    assert ready["type"] == "call.ready"
+    assert started["type"] == "run.started"
+    ack = _first_frame(frames, "call.hangup_ack")
+    run_end = _first_frame(frames, "run.end")
+    assert ack["session_id"] == "media-session"
+    assert ack["payload"]["cancelled_active_run"] is True
+    assert run_end["reason"] == "cancelled"
+    assert len(backend.requests) == 1
+
+
 def _install_gateway_backend(backend) -> None:
     manager = GatewaySessionManager(backend_factory=lambda: backend, start_reaper=False)
     gateway_runtime.set_gateway_runtime_for_tests(
@@ -188,3 +311,22 @@ def _receive_until(websocket, frame_type: str, *, limit: int = 20):
         if frame["type"] == frame_type:
             return frames
     raise AssertionError(f"websocket did not receive {frame_type}: {frames}")
+
+
+def _receive_until_all(websocket, frame_types: set[str], *, limit: int = 20):
+    frames = []
+    remaining = set(frame_types)
+    for _ in range(limit):
+        frame = websocket.receive_json()
+        frames.append(frame)
+        remaining.discard(frame["type"])
+        if not remaining:
+            return frames
+    raise AssertionError(f"websocket did not receive {sorted(remaining)}: {frames}")
+
+
+def _first_frame(frames, frame_type: str):
+    for frame in frames:
+        if frame["type"] == frame_type:
+            return frame
+    raise AssertionError(f"missing frame {frame_type}: {frames}")

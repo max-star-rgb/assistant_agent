@@ -347,7 +347,7 @@
 	        box-shadow: 0 1px 2px rgb(16 24 40 / 10%);
 	      }
 
-      .experience-tabs {
+      .entry-tabs {
         display: inline-grid;
         grid-template-columns: repeat(2, minmax(116px, 1fr));
         gap: 2px;
@@ -357,7 +357,7 @@
         background: #eef2f7;
       }
 
-      .experience-tab {
+      .entry-tab {
         min-height: 34px;
         border-radius: 6px;
         padding: 7px 12px;
@@ -366,13 +366,13 @@
         font-size: 13px;
       }
 
-      .experience-tab.active {
+      .entry-tab.active {
         background: #ffffff;
         color: #175cd3;
         box-shadow: 0 1px 2px rgb(16 24 40 / 10%);
       }
 
-      .experience-panel[hidden] {
+      .entry-panel[hidden] {
         display: none;
       }
 
@@ -1181,14 +1181,14 @@
           </section>
 
           <section>
-            <h2>Mode</h2>
-            <div class="experience-tabs" role="tablist" aria-label="Experience Mode">
-              <button class="experience-tab active" id="chat-mode-tab" data-experience-mode="chat" type="button">Chat</button>
-              <button class="experience-tab" id="realtime-mode-tab" data-experience-mode="realtime" type="button">Realtime</button>
+            <h2>Entry</h2>
+            <div class="entry-tabs" role="tablist" aria-label="Entry Type">
+              <button class="entry-tab active" id="chat-entry-tab" data-entry-mode="chat" type="button">Chat</button>
+              <button class="entry-tab" id="app-media-entry-tab" data-entry-mode="app_media" type="button">App + Media</button>
             </div>
           </section>
 
-          <section class="experience-panel active" id="chat-panel">
+          <section class="entry-panel active" id="chat-panel">
             <h2>Input</h2>
             <div class="input-row">
               <textarea id="message">你好，简单介绍一下你能做什么。</textarea>
@@ -1214,22 +1214,23 @@
             <div class="status" id="status">ready</div>
           </section>
 
-          <section class="experience-panel" id="realtime-panel" hidden>
+          <section class="entry-panel" id="app-media-panel" hidden>
             <div class="section-header">
-              <h2>Realtime Gateway</h2>
+              <h2>App + Media Relay</h2>
               <div class="realtime-controls">
-                <button id="realtime-connect" type="button">Connect</button>
-                <button class="secondary-button" id="realtime-end" type="button" disabled>End</button>
-                <button class="danger-button" id="realtime-cancel" type="button" disabled>Cancel</button>
+                <button id="realtime-connect" type="button">Start Call</button>
+                <button class="secondary-button" id="realtime-ping" type="button" disabled>Ping Gateway</button>
+                <button class="secondary-button" id="realtime-end" type="button" disabled>Hang Up</button>
+                <button class="danger-button" id="realtime-cancel" type="button" disabled>Cancel Agent</button>
               </div>
             </div>
             <div class="realtime-status-grid">
               <div class="realtime-stat">
-                <div class="realtime-stat-label">Gateway</div>
+                <div class="realtime-stat-label">Media WS</div>
                 <div class="realtime-stat-value" id="realtime-connection-state">disconnected</div>
               </div>
               <div class="realtime-stat">
-                <div class="realtime-stat-label">Session</div>
+                <div class="realtime-stat-label">Identity / Session</div>
                 <div class="realtime-stat-value" id="realtime-session-id">none</div>
               </div>
               <div class="realtime-stat">
@@ -1238,8 +1239,8 @@
               </div>
             </div>
             <div class="field">
-              <label for="realtime-message">Message</label>
-              <textarea id="realtime-message">你好，用实时 Gateway 回复我。</textarea>
+              <label for="realtime-message">Transcript Text</label>
+              <textarea id="realtime-message">你好，这是终端 App 经媒体服务转发来的文字。</textarea>
             </div>
             <div class="media-row">
               <input id="realtime-image-ids" type="text" placeholder="Image IDs（逗号或换行分隔，可选）" />
@@ -1247,39 +1248,19 @@
             </div>
             <div class="realtime-send-row">
               <div class="status" id="realtime-status">disconnected</div>
-              <button id="realtime-send" type="button" disabled>Send Realtime</button>
+              <button id="realtime-send" type="button" disabled>Send Media Event</button>
+            </div>
+            <div class="realtime-controls">
+              <button class="secondary-button" id="realtime-interrupt" type="button" disabled>Interrupt With Text</button>
             </div>
             <div class="realtime-output-grid">
               <div>
-                <h3>Live Output</h3>
+                <h3>Agent Output</h3>
                 <pre class="realtime-live-output" id="realtime-output"></pre>
               </div>
               <div>
-                <h3>Gateway Events</h3>
+                <h3>Media / Gateway Timeline</h3>
                 <pre class="realtime-event-log" id="realtime-events"></pre>
-              </div>
-            </div>
-            <div class="media-simulator">
-              <div class="section-header">
-                <h3>Media Service Simulator</h3>
-                <div class="media-simulator-actions">
-                  <button class="secondary-button" id="media-connect" type="button">Connect Media</button>
-                  <button class="secondary-button" id="media-end" type="button" disabled>End Media</button>
-                </div>
-              </div>
-              <div class="media-simulator-grid">
-                <div class="field">
-                  <label for="media-transcript">Transcript</label>
-                  <input id="media-transcript" type="text" placeholder="媒体服务转写文本" />
-                </div>
-                <div class="field">
-                  <label for="media-video-ids">Video IDs</label>
-                  <input id="media-video-ids" type="text" placeholder="video_ref_001" />
-                </div>
-              </div>
-              <div class="realtime-send-row">
-                <div class="status" id="media-status">disconnected</div>
-                <button id="media-send" type="button" disabled>Send Media Event</button>
               </div>
             </div>
           </section>
@@ -1412,13 +1393,15 @@
       const controlPlaneTraceIdInput = document.querySelector("#control-plane-trace-id");
       const controlPlaneRunOutput = document.querySelector("#control-plane-run-output");
       const controlPlaneRecent = document.querySelector("#control-plane-recent");
-      const experienceTabs = document.querySelectorAll(".experience-tab");
+      const entryTabs = document.querySelectorAll(".entry-tab");
       const chatPanel = document.querySelector("#chat-panel");
-      const realtimePanel = document.querySelector("#realtime-panel");
+      const appMediaPanel = document.querySelector("#app-media-panel");
       const realtimeConnectButton = document.querySelector("#realtime-connect");
+      const realtimePingButton = document.querySelector("#realtime-ping");
       const realtimeEndButton = document.querySelector("#realtime-end");
       const realtimeCancelButton = document.querySelector("#realtime-cancel");
       const realtimeSendButton = document.querySelector("#realtime-send");
+      const realtimeInterruptButton = document.querySelector("#realtime-interrupt");
       const realtimeMessageInput = document.querySelector("#realtime-message");
       const realtimeImageIdsInput = document.querySelector("#realtime-image-ids");
       const realtimeVideoIdsInput = document.querySelector("#realtime-video-ids");
@@ -1428,20 +1411,12 @@
       const realtimeRunIdOutput = document.querySelector("#realtime-run-id");
       const realtimeOutput = document.querySelector("#realtime-output");
       const realtimeEvents = document.querySelector("#realtime-events");
-      const mediaConnectButton = document.querySelector("#media-connect");
-      const mediaEndButton = document.querySelector("#media-end");
-      const mediaSendButton = document.querySelector("#media-send");
-      const mediaTranscriptInput = document.querySelector("#media-transcript");
-      const mediaVideoIdsInput = document.querySelector("#media-video-ids");
-      const mediaStatus = document.querySelector("#media-status");
       let runtimeInfo = null;
       let verifiedTrialUserId = "";
       let sessions = {};
       let currentSessionId = null;
-      let gatewaySocket = null;
       let mediaSocket = null;
       let realtimeConnected = false;
-      let mediaConnected = false;
       let realtimeRunActive = false;
       let realtimeActiveRunId = "";
       let realtimeOutputText = "";
@@ -1515,39 +1490,31 @@
           void refreshControlPlaneRun();
         }
       });
-      experienceTabs.forEach((tab) => {
+      entryTabs.forEach((tab) => {
         tab.addEventListener("click", () => {
-          switchExperienceMode(tab.dataset.experienceMode || "chat");
+          switchEntryMode(tab.dataset.entryMode || "chat");
         });
       });
       realtimeConnectButton.addEventListener("click", () => {
-        void connectRealtimeGateway();
+        void connectRealtimeMedia();
+      });
+      realtimePingButton.addEventListener("click", () => {
+        sendRealtimePing();
       });
       realtimeEndButton.addEventListener("click", () => {
-        disconnectRealtimeGateway({ sendHangup: true });
+        disconnectRealtimeMedia({ sendEnd: true });
       });
       realtimeCancelButton.addEventListener("click", () => {
         cancelRealtimeRun();
       });
       realtimeSendButton.addEventListener("click", () => {
-        sendRealtimeMessage();
+        sendRealtimeMediaEvent();
+      });
+      realtimeInterruptButton.addEventListener("click", () => {
+        sendRealtimeMediaEvent({ interrupt: true });
       });
       realtimeMessageInput.addEventListener("keydown", (event) => {
         if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-          sendRealtimeMessage();
-        }
-      });
-      mediaConnectButton.addEventListener("click", () => {
-        void connectRealtimeMedia();
-      });
-      mediaEndButton.addEventListener("click", () => {
-        disconnectRealtimeMedia({ sendEnd: true });
-      });
-      mediaSendButton.addEventListener("click", () => {
-        sendRealtimeMediaEvent();
-      });
-      mediaTranscriptInput.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
           sendRealtimeMediaEvent();
         }
       });
@@ -1737,14 +1704,14 @@
         return String(error && error.message ? error.message : error).includes("WebSocket 连接失败");
       }
 
-      function switchExperienceMode(mode) {
-        const targetMode = mode === "realtime" ? "realtime" : "chat";
-        experienceTabs.forEach((tab) => {
-          tab.classList.toggle("active", tab.dataset.experienceMode === targetMode);
+      function switchEntryMode(mode) {
+        const targetEntry = mode === "app_media" ? "app_media" : "chat";
+        entryTabs.forEach((tab) => {
+          tab.classList.toggle("active", tab.dataset.entryMode === targetEntry);
         });
-        chatPanel.hidden = targetMode !== "chat";
-        realtimePanel.hidden = targetMode !== "realtime";
-        if (targetMode === "realtime") {
+        chatPanel.hidden = targetEntry !== "chat";
+        appMediaPanel.hidden = targetEntry !== "app_media";
+        if (targetEntry === "app_media") {
           syncRealtimeSessionDisplay();
           if (!realtimeMessageInput.value.trim()) {
             realtimeMessageInput.value = messageInput.value.trim();
@@ -1770,139 +1737,16 @@
         return currentSessionId;
       }
 
-      async function connectRealtimeGateway() {
-        const userId = currentTrialUserId();
-        const sessionId = await ensureRealtimeSession();
-        if (!userId || !sessionId) {
-          return;
-        }
-        disconnectRealtimeMedia({ sendEnd: false });
-        if (gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN) {
-          setRealtimeStatus("Gateway already connected.");
-          return;
-        }
-        resetRealtimeRunView();
-        setRealtimeConnectionState("connecting");
-        setRealtimeStatus("connecting...");
-        const params = new URLSearchParams();
-        params.set("user_id", userId);
-        params.set("session_id", sessionId);
-        params.set("client", "web");
-        const socket = new WebSocket(realtimeWebSocketUrl("/ws/gateway", params));
-        gatewaySocket = socket;
-        socket.onopen = () => {
-          setRealtimeConnectionState("connected");
-          setRealtimeStatus("connected");
-          sendGatewayFrame({
-            v: 1,
-            type: "call.incoming",
-            session_id: sessionId,
-            user_id: userId,
-            payload: {
-              session_id: sessionId,
-              config: {
-                entry: "web_realtime",
-                locale: "zh-CN",
-              },
-            },
-          });
-        };
-        socket.onmessage = (message) => {
-          handleRealtimeSocketMessage(message.data, "gateway");
-        };
-        socket.onerror = () => {
-          setRealtimeStatus("Gateway WebSocket 连接失败。", true);
-        };
-        socket.onclose = () => {
-          if (gatewaySocket === socket) {
-            gatewaySocket = null;
-          }
-          setRealtimeConnectionState("disconnected");
-          setRealtimeRunActive(false, "");
-          setRealtimeStatus("disconnected");
-        };
-      }
-
-      function disconnectRealtimeGateway(options = {}) {
-        const sendHangup = options.sendHangup !== false;
-        const socket = gatewaySocket;
-        if (!socket) {
-          setRealtimeConnectionState("disconnected");
-          setRealtimeRunActive(false, "");
-          return;
-        }
-        if (socket.readyState === WebSocket.OPEN && sendHangup) {
-          sendGatewayFrame({
-            v: 1,
-            type: "call.hangup",
-            session_id: currentSessionId,
-            user_id: currentTrialUserId(),
-          });
-        }
-        socket.close(1000, "client_end");
-      }
-
-      function sendRealtimeMessage() {
-        const userId = currentTrialUserId();
-        const text = realtimeMessageInput.value.trim();
-        if (!userId) {
-          setRealtimeStatus("请先验证工号。", true);
-          return;
-        }
-        if (!currentSessionId) {
-          setRealtimeStatus("请先连接 Gateway。", true);
-          return;
-        }
-        if (!text) {
-          setRealtimeStatus("请输入实时消息。", true);
-          return;
-        }
-        realtimeOutputText = "";
-        renderRealtimeOutput();
-        const sent = sendGatewayFrame({
-          v: 1,
-          type: "message.user",
-          session_id: currentSessionId,
-          user_id: userId,
-          payload: {
-            text,
-            modality: "text",
-            image_ids: parseIds(realtimeImageIdsInput.value),
-            video_ids: parseIds(realtimeVideoIdsInput.value),
-            metadata: {
-              source: "web_realtime",
-              transport: "websocket",
-              execution_strategy: currentExecutionStrategy(),
-            },
-          },
-        });
-        if (sent) {
-          setRealtimeStatus(realtimeRunActive ? "interrupt sent" : "message sent");
-        }
-      }
-
       function cancelRealtimeRun() {
-        const frame = {
-          v: 1,
+        const sent = sendMediaEvent({
           type: "run.cancel",
           session_id: currentSessionId,
           run_id: realtimeActiveRunId || undefined,
           user_id: currentTrialUserId(),
-        };
-        const sent = realtimeConnected ? sendGatewayFrame(frame) : sendMediaEvent({ type: "run.cancel", ...frame });
+        });
         if (sent) {
           setRealtimeStatus("cancel sent");
         }
-      }
-
-      function sendGatewayFrame(frame) {
-        if (!gatewaySocket || gatewaySocket.readyState !== WebSocket.OPEN) {
-          setRealtimeStatus("Gateway 未连接。", true);
-          return false;
-        }
-        gatewaySocket.send(JSON.stringify(frame));
-        appendRealtimeEvent(formatClientFrameLine(frame, "gateway"));
-        return true;
       }
 
       async function connectRealtimeMedia() {
@@ -1911,23 +1755,22 @@
         if (!userId || !sessionId) {
           return;
         }
-        disconnectRealtimeGateway({ sendHangup: false });
         if (mediaSocket && mediaSocket.readyState === WebSocket.OPEN) {
-          setMediaStatus("Media already connected.");
+          setRealtimeStatus("media already connected.");
           return;
         }
         resetRealtimeRunView();
-        setMediaConnectionState("connecting");
-        setMediaStatus("connecting...");
+        setRealtimeConnectionState("connecting");
+        setRealtimeStatus("connecting media...");
         const params = new URLSearchParams();
         params.set("user_id", userId);
         params.set("session_id", sessionId);
-        params.set("client", "web");
+        params.set("client", "media_service");
         const socket = new WebSocket(realtimeWebSocketUrl("/ws/realtime/media", params));
         mediaSocket = socket;
         socket.onopen = () => {
-          setMediaConnectionState("connected");
-          setMediaStatus("connected");
+          setRealtimeConnectionState("connected");
+          setRealtimeStatus("call started");
           sendMediaEvent({
             type: "session.start",
             session_id: sessionId,
@@ -1935,25 +1778,26 @@
             payload: {
               session_id: sessionId,
               config: {
-                entry: "web_media_simulator",
+                entry: "terminal_app_media_relay",
+                identity_bound: true,
                 locale: "zh-CN",
               },
             },
           });
         };
         socket.onmessage = (message) => {
-          handleRealtimeSocketMessage(message.data, "media");
+          handleRealtimeSocketMessage(message.data, "gateway -> media");
         };
         socket.onerror = () => {
-          setMediaStatus("Media WebSocket 连接失败。", true);
+          setRealtimeStatus("Media WebSocket 连接失败。", true);
         };
         socket.onclose = () => {
           if (mediaSocket === socket) {
             mediaSocket = null;
           }
-          setMediaConnectionState("disconnected");
+          setRealtimeConnectionState("disconnected");
           setRealtimeRunActive(false, "");
-          setMediaStatus("disconnected");
+          setRealtimeStatus("disconnected");
         };
       }
 
@@ -1961,7 +1805,7 @@
         const sendEnd = options.sendEnd !== false;
         const socket = mediaSocket;
         if (!socket) {
-          setMediaConnectionState("disconnected");
+          setRealtimeConnectionState("disconnected");
           return;
         }
         if (socket.readyState === WebSocket.OPEN && sendEnd) {
@@ -1970,15 +1814,23 @@
             session_id: currentSessionId,
             user_id: currentTrialUserId(),
           });
+          setRealtimeStatus("hangup sent");
+          window.setTimeout(() => {
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.close(1000, "client_end");
+            }
+          }, 160);
+          return;
         }
         socket.close(1000, "client_end");
       }
 
-      function sendRealtimeMediaEvent() {
-        const text = mediaTranscriptInput.value.trim();
-        const videoIds = parseIds(mediaVideoIdsInput.value);
-        if (!text && !videoIds.length) {
-          setMediaStatus("请输入 transcript 或 video id。", true);
+      function sendRealtimeMediaEvent(options = {}) {
+        const text = realtimeMessageInput.value.trim();
+        const imageIds = parseIds(realtimeImageIdsInput.value);
+        const videoIds = parseIds(realtimeVideoIdsInput.value);
+        if (!text && !imageIds.length && !videoIds.length) {
+          setRealtimeStatus("请输入 transcript、image id 或 video id。", true);
           return;
         }
         const sent = sendMediaEvent({
@@ -1987,27 +1839,40 @@
           user_id: currentTrialUserId(),
           payload: {
             text,
+            image_ids: imageIds,
             video_ids: videoIds,
             metadata: {
-              source: "web_media_simulator",
+              source: "terminal_app_media_relay",
               transport: "websocket",
+              control: options.interrupt ? "interrupt" : "message",
             },
           },
         });
         if (sent) {
           realtimeOutputText = "";
           renderRealtimeOutput();
-          setMediaStatus("media event sent");
+          setRealtimeStatus(options.interrupt ? "interrupt media event sent" : "media event sent");
+        }
+      }
+
+      function sendRealtimePing() {
+        const sent = sendMediaEvent({
+          type: "ping",
+          session_id: currentSessionId,
+          user_id: currentTrialUserId(),
+        });
+        if (sent) {
+          setRealtimeStatus("ping sent");
         }
       }
 
       function sendMediaEvent(event) {
         if (!mediaSocket || mediaSocket.readyState !== WebSocket.OPEN) {
-          setMediaStatus("Media 未连接。", true);
+          setRealtimeStatus("Media 未连接。", true);
           return false;
         }
         mediaSocket.send(JSON.stringify(event));
-        appendRealtimeEvent(formatClientFrameLine(event, "media"));
+        appendRealtimeEvent(formatClientFrameLine(event, "media -> gateway"));
         return true;
       }
 
@@ -2031,6 +1896,10 @@
         }
         if (frameType === "call.hangup_ack") {
           setRealtimeStatus("call ended");
+          return;
+        }
+        if (frameType === "pong") {
+          setRealtimeStatus("pong");
           return;
         }
         if (frameType === "run.started") {
@@ -2088,7 +1957,7 @@
       }
 
       function formatClientFrameLine(frame, source) {
-        return formatRealtimeFrameLine({ ...frame, type: `client.${frame.type || "event"}` }, source);
+        return formatRealtimeFrameLine({ ...frame, type: `media.${frame.type || "event"}` }, source);
       }
 
       function formatRealtimeFrameLine(frame, source) {
@@ -2116,36 +1985,27 @@
         realtimeConnectionState.textContent = state;
         realtimeConnectButton.disabled = realtimeConnected || pending;
         realtimeEndButton.disabled = !realtimeConnected && !pending;
+        realtimePingButton.disabled = !realtimeConnected;
         realtimeSendButton.disabled = !realtimeConnected;
-      }
-
-      function setMediaConnectionState(state) {
-        mediaConnected = state === "connected";
-        const pending = state === "connecting";
-        mediaConnectButton.disabled = mediaConnected || pending;
-        mediaEndButton.disabled = !mediaConnected && !pending;
-        mediaSendButton.disabled = !mediaConnected;
+        realtimeInterruptButton.disabled = !realtimeConnected;
+        setRealtimeRunActive(realtimeRunActive, realtimeActiveRunId);
       }
 
       function setRealtimeRunActive(active, runId) {
         realtimeRunActive = Boolean(active);
         realtimeActiveRunId = runId || "";
         realtimeRunIdOutput.textContent = realtimeActiveRunId || (realtimeRunActive ? "running" : "idle");
-        realtimeCancelButton.disabled = !realtimeRunActive || (!realtimeConnected && !mediaConnected);
+        realtimeCancelButton.disabled = !realtimeRunActive || !realtimeConnected;
       }
 
       function syncRealtimeSessionDisplay() {
-        realtimeSessionIdOutput.textContent = currentSessionId || "none";
+        const userId = currentTrialUserId();
+        realtimeSessionIdOutput.textContent = currentSessionId ? `${userId || "unknown"} / ${currentSessionId}` : "none";
       }
 
       function setRealtimeStatus(text, isError = false) {
         realtimeStatus.textContent = text;
         realtimeStatus.classList.toggle("error", isError);
-      }
-
-      function setMediaStatus(text, isError = false) {
-        mediaStatus.textContent = text;
-        mediaStatus.classList.toggle("error", isError);
       }
 
       // Session Management Functions
@@ -3669,7 +3529,6 @@
         document.getElementById('login-section').hidden = enabled;
         document.getElementById('logout-btn').hidden = !enabled;
         if (!enabled) {
-          disconnectRealtimeGateway({ sendHangup: false });
           disconnectRealtimeMedia({ sendEnd: false });
           // Reset all state
           sessions = {};

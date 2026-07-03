@@ -52,19 +52,30 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "assistant_agent_trial_user_id" in html
     assert "Examples" in html
     assert "Input" in html
-    assert "Mode" in html
-    assert "Realtime Gateway" in html
-    assert "Media Service Simulator" in html
-    assert "realtime-mode-tab" in html
+    assert "Entry" in html
+    assert ">Mode</h2>" not in html
+    assert "App + Media Relay" in html
+    assert "App + Media" in html
+    assert "Start Call" in html
+    assert "Hang Up" in html
+    assert "Cancel Agent" in html
+    assert "Ping Gateway" in html
+    assert "Send Media Event" in html
+    assert "Interrupt With Text" in html
+    assert "chat-entry-tab" in html
+    assert "app-media-entry-tab" in html
     assert "chat-panel" in html
-    assert "realtime-panel" in html
+    assert "app-media-panel" in html
     assert "realtime-connect" in html
+    assert "realtime-ping" in html
     assert "realtime-send" in html
     assert "realtime-cancel" in html
     assert "realtime-end" in html
-    assert "media-connect" in html
-    assert "media-send" in html
-    assert "media-end" in html
+    assert "realtime-interrupt" in html
+    assert "Realtime Media Relay" not in html
+    assert "realtime-mode-tab" not in html
+    assert "realtime-panel" not in html
+    assert "data-experience-mode" not in html
     assert "Plan Mode" in html
     assert "普通 ReAct" in html
     assert "计划优先" in html
@@ -148,16 +159,17 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "execution_strategy: currentExecutionStrategy()" in html
     assert "socket.send(JSON.stringify(requestPayload))" in html
     assert "/ws/agent/" in html
-    assert "/ws/gateway" in html
     assert "/ws/realtime/media" in html
-    assert "call.incoming" in html
-    assert "message.user" in html
+    assert "/ws/gateway" not in html
+    assert "session.start" in html
+    assert "transcript.final" in html
     assert "run.cancel" in html
-    assert "call.hangup" in html
+    assert "session.end" in html
+    assert "media -> gateway" in html
+    assert "gateway -> media" in html
     assert "stream.chunk" in html
     assert "run.started" in html
     assert "run.end" in html
-    assert "sendGatewayFrame" in html
     assert "sendMediaEvent" in html
     assert "Run detail panel" not in html
     assert "Trace detail panel" not in html

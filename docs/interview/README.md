@@ -1,6 +1,6 @@
 # 面试题库总览
 
-最后更新：2026-07-01
+最后更新：2026-07-03
 
 ---
 
@@ -168,12 +168,12 @@ docs/interview/
 |-----|-------|------|-----|
 | 上下文工程面试题库 | 8 题 | ✅ 已完成 | [context_engineering_interview/](context_engineering_interview/index.md) |
 | 工具调用面试题库 | 4 题 | 🔄 进行中 | [tool_calling_interview/](tool_calling_interview/index.md) |
+| 记忆服务面试题库 | 1 题 | 🔄 进行中 | [memory_service_interview/](memory_service_interview/index.md) |
 
 ---
 
 ## 计划模块
 
-- [ ] 记忆系统面试题库
 - [ ] Agent 编排系统面试题库
 - [ ] 多模态处理面试题库
 - [ ] 可观测性与 Debug 面试题库

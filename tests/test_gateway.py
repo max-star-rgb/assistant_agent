@@ -146,6 +146,67 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
         assert ack["user_id"] == "u1"
 
+    async def test_bridge_call_hangup_cancels_active_run(self) -> None:
+        class CancellableBackend:
+            def __init__(self) -> None:
+                self.cancel_metadata = None
+                self.cancel_seen = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                await cancel_token.cancelled()
+                self.cancel_metadata = cancel_token.cancel_metadata
+                self.cancel_seen.set()
+                return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+
+        backend = CancellableBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            start_reaper=False,
+        )
+        bridge = GatewayBridge(session_manager=manager)
+        client_ep, bridge_ep = InMemoryDuplex.create_pair()
+        bridge_task = asyncio.create_task(
+            bridge.bridge(client_id="client-1", client_ep=bridge_ep)
+        )
+
+        try:
+            await client_ep.send(
+                frame(
+                    type=CALL_INCOMING,
+                    user_id="u1",
+                    session_id="s1",
+                    payload={"config": {"locale": "zh-CN"}},
+                )
+            )
+            ready = await _read_until(client_ep, CALL_READY)
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    user_id="u1",
+                    session_id="s1",
+                    payload={"text": "long running"},
+                )
+            )
+            started = await _read_until(client_ep, "run.started")
+
+            await client_ep.send(frame(type=CALL_HANGUP, user_id="u1", session_id="s1"))
+            ack = await _read_until(client_ep, CALL_HANGUP_ACK)
+            run_end = await _read_until(client_ep, "run.end")
+        finally:
+            await _close_bridge(client_ep, bridge_ep, bridge_task)
+            await manager.destroy("u1")
+
+        assert ready["type"] == CALL_READY
+        assert started["type"] == "run.started"
+        assert ack["session_id"] == "s1"
+        assert ack["payload"]["cancelled_active_run"] is True
+        assert run_end["reason"] == "cancelled"
+        await asyncio.wait_for(backend.cancel_seen.wait(), timeout=2.0)
+        assert backend.cancel_metadata == {
+            "cancel_source": "gateway_hangup",
+            "cancel_reason": "call_hangup",
+        }
+
 
 if __name__ == "__main__":
     unittest.main()

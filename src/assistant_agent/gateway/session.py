@@ -356,18 +356,21 @@ class GatewaySessionService:
     async def _handle_cancel(self, ep: Endpoint, f: Frame) -> None:
         run_id = f.get("run_id")
         session_id = f.get("session_id")
+        payload = _payload_dict(f)
+        cancel_source = _cancel_source_from_payload(payload)
+        cancel_reason = _optional_string(payload.get("reason"))
         did_cancel = False
 
         async with self._lock:
             if session_id:
                 cur = self._active_by_session.get(session_id)
                 if cur and (run_id is None or cur.run_id == run_id):
-                    cur.cancel.cancel(source="gateway_cancel")
+                    cur.cancel.cancel(source=cancel_source, reason=cancel_reason)
                     did_cancel = True
             elif run_id:
                 for cur in self._active_by_session.values():
                     if cur.run_id == run_id:
-                        cur.cancel.cancel(source="gateway_cancel")
+                        cur.cancel.cancel(source=cancel_source, reason=cancel_reason)
                         did_cancel = True
                         break
 
@@ -711,6 +714,9 @@ class GatewaySessionManager:
     def active_count(self) -> int:
         return len(self._entries)
 
+    def has_active_session(self, user_id: str) -> bool:
+        return user_id in self._entries
+
     async def close(self) -> None:
         """Stop the reaper and close all managed user sessions."""
 
@@ -792,6 +798,13 @@ def _positive_int(value: Any) -> int | None:
     if parsed is None or parsed <= 0:
         return None
     return parsed
+
+
+def _cancel_source_from_payload(payload: Mapping[str, Any]) -> str:
+    source = payload.get("source")
+    if source in {"gateway_cancel", "gateway_interrupt", "gateway_hangup", "gateway_disconnect"}:
+        return str(source)
+    return "gateway_cancel"
 
 
 def _string_list(value: Any) -> list[str]:
