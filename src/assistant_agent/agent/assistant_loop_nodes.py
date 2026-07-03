@@ -79,6 +79,7 @@ class AssistantLoopState(TypedDict):
     current_step_index: int
     trace_id: NotRequired[str]
     trace_store: NotRequired[Any]
+    event_sink: NotRequired[Any]
     assistant_decision: NotRequired[AssistantDecision | None]
     assistant_iterations: NotRequired[int]
     tool_observations: NotRequired[list[dict[str, Any]]]
@@ -262,7 +263,11 @@ def _decide_with_llm(
 
     use_native_tools = _use_native_tool_calling(context, chat_adapter)
     request = (
-        _build_native_tool_chat_request(context, state)
+        _with_response_stream_callback(
+            _build_native_tool_chat_request(context, state),
+            graph_state,
+            source="assistant_native_final_answer",
+        )
         if use_native_tools
         else _build_prompt_json_chat_request(context, state)
     )
@@ -273,7 +278,11 @@ def _decide_with_llm(
         retry_context = _rebuild_context_after_provider_overflow(graph_state, context)
         use_native_tools = _use_native_tool_calling(retry_context, chat_adapter)
         retry_request = (
-            _build_native_tool_chat_request(retry_context, state)
+            _with_response_stream_callback(
+                _build_native_tool_chat_request(retry_context, state),
+                graph_state,
+                source="assistant_native_final_answer",
+            )
             if use_native_tools
             else _build_prompt_json_chat_request(retry_context, state)
         )
@@ -421,6 +430,8 @@ def _assistant_tool_call_mode(graph_state: AssistantLoopState) -> str:
 
 def _use_native_tool_calling(context: AssistantDecisionContext, chat_adapter: ChatAdapter) -> bool:
     if context.tool_call_mode not in {"auto", "native_tools"} or context.is_mock:
+        return False
+    if context.tool_call_mode == "auto" and context.request.execution_strategy == "plan_and_solve":
         return False
     return _chat_adapter_supports_native_tools(chat_adapter)
 
@@ -950,13 +961,16 @@ def _set_direct_chat_response(
     request = graph_state["request"]
     memory_summaries = [item.summary for item in state.memory_context]
     memory_context_text = state.request.metadata.get("memory_context_text", "")
-    result = graph_state["chat_adapter"].chat(
+    chat_request = _with_response_stream_callback(
         build_direct_chat_request(
             request,
             memory_context=memory_summaries,
             system_instruction="You are a helpful text-first assistant.",
-        )
+        ),
+        graph_state,
+        source="direct_chat",
     )
+    result = graph_state["chat_adapter"].chat(chat_request)
     errors = [error.model_dump(mode="json") for error in result.errors]
     contract = build_text_capability_output(
         capability="direct_chat",
@@ -1083,6 +1097,44 @@ def _set_assistant_final_answer_response(
 
 def _is_direct_chat_state(state: AgentState) -> bool:
     return state.intent is not None and canonical_intent(state.intent.intent) == "direct_chat"
+
+
+def _with_response_stream_callback(
+    request: ChatRequest,
+    graph_state: AssistantLoopState,
+    *,
+    source: str,
+) -> ChatRequest:
+    callback = _response_stream_callback(graph_state, source=source)
+    if callback is None:
+        return request
+    return request.model_copy(update={"stream_callback": callback})
+
+
+def _response_stream_callback(
+    graph_state: AssistantLoopState,
+    *,
+    source: str,
+) -> Any | None:
+    event_sink = graph_state.get("event_sink")
+    if event_sink is None:
+        return None
+    state = graph_state["state"]
+
+    def emit_delta(text: str, payload: dict[str, Any]) -> None:
+        if not text:
+            return
+        event_sink.emit(
+            AgentEvent(
+                type="response_delta",
+                session_id=state.session_id,
+                run_id=state.run_id,
+                text=text,
+                payload={**dict(payload), "source": source},
+            )
+        )
+
+    return emit_delta
 
 
 def _is_mock_chat_adapter(chat_adapter: ChatAdapter) -> bool:

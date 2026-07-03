@@ -55,7 +55,7 @@ ToolRegistry -> tools -> provider adapters / memory / local services
 - Memory 行为应通过 memory service/provider 管理，不把临时状态散落到无关模块；设计记忆服务时按第 1 节使用对应项目 skill。
 - Memory tools 只是 Agent 可调用适配器，不是记忆服务所有者；检索、写入策略、TTL、去重、用户画像、审计和 store 选择必须留在 `MemoryManager`、`memory/` 或 `services/memory_*`。
 - 多 agent / A2A 行为应通过 `assistant_agent.agent_routing` 聚合入口、AgentRouter、agent communication service、directory、transport adapter 和工具治理边界管理；设计 agent collaboration 时按第 1 节使用对应项目 skill。
-- CLI、Web UI、App、HTTP、WebSocket 和 realtime call adapter 属于入口层；Gateway 不是某个产品入口本身，而是入口层之后的标准化消息、session/run 生命周期、cancel/interrupt、reconnect/hangup 和 stream frame 控制边界。Gateway 具体职责以 `docs/gateway-architecture.md` 为准。
+- CLI、Web UI、App、HTTP、WebSocket 和 realtime call adapter 属于入口层；Gateway 不是某个产品入口本身，而是入口层之后的标准化消息、session/run 生命周期、cancel/interrupt、reconnect/hangup 和 stream frame 控制边界。`assistant_agent.realtime` / `GatewayAgentAdapter` 是 Gateway 到当前主运行时的薄适配层，不承担主大脑职责。Gateway 具体职责以 `docs/gateway-architecture.md` 为准。
 - AgentRouter 只负责内部 agent 选择、capability routing、controller/worker route 和控制面记录；面向调用方的多 agent 导入优先走 `assistant_agent.agent_routing`，底层实现仍保留在 `schemas/`、`services/` 等分层。
 - 不要把 `runTime` 的旧 OpenClaw/Anthropic agent loop 引入本项目；当前 agent 内部执行器仍是 `AgentGraphRuntime` / assistant loop，`runtime` 一词优先留给这类内部执行器。
 - API、demo、eval、CLI 应尽量复用同一套 runtime 行为，避免各自实现一套不一致的 Agent 逻辑。
@@ -109,7 +109,7 @@ conda run -n hello_agent <command>
 | --- | --- | --- |
 | `src/assistant_agent/api/` | FastAPI app、routes、server/client integration | 按任务要求修改 |
 | `src/assistant_agent/gateway/` | Gateway protocol、bridge、session/run/cancel/interrupt、realtime frame lifecycle | 按任务要求修改，边界以 `docs/gateway-architecture.md` 为准 |
-| `src/assistant_agent/realtime/` | Gateway 到 assistant runtime 的 backend contract 和 event mapping | 按任务要求修改 |
+| `src/assistant_agent/realtime/` | Gateway 到 assistant runtime 的薄 adapter/backend contract 和 event mapping；不承担 agent routing | 按任务要求修改 |
 | `src/assistant_agent/agent/` | LangGraph runtime、assistant loop、决策、验证、执行 | 按任务要求修改 |
 | `src/assistant_agent/services/` | runtime services、context、trace、session、agent communication、provider 管理 | 按任务要求修改 |
 | `src/assistant_agent/providers/` | Provider adapter、runtime profile、mock/real 边界 | 谨慎修改，默认 mock 优先 |

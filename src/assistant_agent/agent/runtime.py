@@ -87,7 +87,12 @@ class AgentGraphRuntime:
         connection) without mutating ``self.event_sink``.
         """
 
-        run_event_sink = event_sink or self.event_sink
+        base_event_sink = event_sink or self.event_sink
+        run_event_sink = (
+            _ResponseDeltaTrackingEventSink(base_event_sink)
+            if base_event_sink is not None
+            else None
+        )
         # A per-run ToolExecutor binds the run's sink so tool events and agent
         # trace events emitted via graph_state["tool_executor"] reach it.
         tool_executor = ToolExecutor(
@@ -119,6 +124,7 @@ class AgentGraphRuntime:
             context_compactor=self.context_compactor,
             memory_manager=self.memory_manager,
             trace_store=self.trace_store,
+            event_sink=run_event_sink,
             cancel_token=cancel_token,
         )
         initial_state = {
@@ -220,12 +226,28 @@ class AgentGraphRuntime:
                 run_event_sink,
             )
         else:
+            response_text = state.response.message if state.response else ""
+            if response_text and run_event_sink is not None and not run_event_sink.response_delta_emitted:
+                self._emit(
+                    AgentEvent(
+                        type="response_delta",
+                        session_id=state.session_id,
+                        run_id=state.run_id,
+                        text=response_text,
+                        payload={
+                            "source": "runtime_final_response",
+                            "token_streaming": False,
+                            "chunking_strategy": "final_text_fallback",
+                        },
+                    ),
+                    run_event_sink,
+                )
             self._emit(
                 AgentEvent(
                     type="final_response",
                     session_id=state.session_id,
                     run_id=state.run_id,
-                    text=state.response.message if state.response else "",
+                    text=response_text,
                 ),
                 run_event_sink,
             )
@@ -301,3 +323,16 @@ def _terminal_history_status(status: str) -> Literal["completed", "failed", "can
     if status == "cancelled":
         return "cancelled"
     return "completed"
+
+
+class _ResponseDeltaTrackingEventSink:
+    """Forward events while tracking whether user-visible response chunks exist."""
+
+    def __init__(self, inner: EventSink) -> None:
+        self.inner = inner
+        self.response_delta_emitted = False
+
+    def emit(self, event: AgentEvent) -> None:
+        if event.type == "response_delta":
+            self.response_delta_emitted = True
+        self.inner.emit(event)

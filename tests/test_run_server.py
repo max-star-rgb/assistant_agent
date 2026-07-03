@@ -31,6 +31,7 @@ def test_run_server_parser_defaults() -> None:
     assert args.port == 8000
     assert args.public_url is None
     assert args.reload is False
+    assert args.access_log is False
     assert args.env_file == ".env"
     assert args.no_env_file is False
     assert args.trial_user_id == []
@@ -46,6 +47,14 @@ def test_run_server_parser_accepts_public_url() -> None:
 
     assert args.host == "0.0.0.0"
     assert args.public_url == "http://demo.local/demo/console"
+
+
+def test_run_server_parser_accepts_access_log() -> None:
+    module = _load_module("run_server_parser_access_log_test")
+
+    args = module.build_parser().parse_args(["--access-log"])
+
+    assert args.access_log is True
 
 
 def test_run_server_provider_override_enables_provider_smoke(monkeypatch) -> None:

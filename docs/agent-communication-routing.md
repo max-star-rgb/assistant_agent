@@ -55,11 +55,27 @@ Optional multi-instance routing should be layered as:
 ```text
 User / API / Web UI
   -> Gateway when call/session lifecycle is involved, otherwise existing API route
-  -> AgentRouter only when explicit multi-agent routing is requested
-  -> AgentDirectory
-  -> target AgentGraphRuntime
+  -> GatewayAgentAdapter / AgentGraphRealtimeBackend when a realtime Gateway turn enters assistant execution
+  -> AgentGraphRuntime / assistant loop
+  -> delegate_to_agent tool only when the main runtime chooses delegation
+  -> AgentCommunicationService
+  -> AgentTransport
+  -> worker AgentGraphRuntime
   -> existing assistant loop and tool boundary
 ```
+
+For realtime traffic, `call.incoming`, `call.hangup`, WebSocket frames, media-entry events, and cancel/interrupt lifecycle semantics stop at Gateway and the realtime adapter. Worker agents receive protocol-neutral `AgentTask` / `UserRequest` payloads through `AgentTransport`; they must not depend on Gateway frame names or telephony/WebSocket event shapes.
+
+`POST /agents/run` remains the explicit multi-agent router/debug/service entrypoint:
+
+```text
+POST /agents/run
+  -> AgentRouter
+  -> AgentDirectory
+  -> target AgentGraphRuntime
+```
+
+Do not route realtime Gateway turns directly from `GatewayAgentAdapter` into `AgentRouter`. Realtime multi-agent behavior should pass through the main runtime first, then delegate through the tool-governed boundary.
 
 Agent-to-agent delegation should remain a tool-governed action:
 

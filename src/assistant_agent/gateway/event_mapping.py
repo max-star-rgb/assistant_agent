@@ -32,6 +32,15 @@ def realtime_event_to_frame(
             },
         )
 
+    if event_type == "run.progress":
+        return frame(
+            type="event.progress",
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            payload=_progress_payload(payload, event.text, event.content_type),
+        )
+
     if event_type in {"tool.started", "tool.finished", "tool.failed"}:
         return frame(
             type="event.tool",
@@ -82,6 +91,20 @@ def _tool_payload(event_type: str, payload: dict[str, Any], text: str | None) ->
         mapped.setdefault("success", False)
     if text is not None:
         mapped["text"] = text
+    return mapped
+
+
+def _progress_payload(
+    payload: dict[str, Any],
+    text: str | None,
+    content_type: str | None,
+) -> dict[str, Any]:
+    mapped = dict(payload)
+    if text is not None:
+        mapped["text"] = text
+        mapped.setdefault("message", text)
+    mapped["display_only"] = True
+    mapped["content_type"] = content_type or "text"
     return mapped
 
 

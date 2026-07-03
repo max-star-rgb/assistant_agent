@@ -1,7 +1,10 @@
 import asyncio
 
 from assistant_agent.realtime import (
+    AgentGraphRealtimeBackend,
+    GatewayAgentAdapter,
     RealtimeAgentBackend,
+    RealtimeAgentAdapter,
     RealtimeAgentEvent,
     RealtimeAgentRequest,
     RealtimeAgentResult,
@@ -17,6 +20,11 @@ def test_realtime_capabilities_defaults_match_plan() -> None:
     assert capabilities.supports_best_effort_cancel is True
     assert capabilities.supports_hard_cancel is False
     assert capabilities.supports_multimodal_refs is True
+
+
+def test_gateway_adapter_aliases_keep_backend_compatibility() -> None:
+    assert GatewayAgentAdapter is AgentGraphRealtimeBackend
+    assert RealtimeAgentAdapter is AgentGraphRealtimeBackend
 
 
 def test_realtime_request_event_and_result_are_serializable() -> None:

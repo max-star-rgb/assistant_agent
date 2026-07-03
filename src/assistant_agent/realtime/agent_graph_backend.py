@@ -11,8 +11,10 @@ from assistant_agent.agent.cancellation import cancellation_metadata
 from assistant_agent.realtime.backend import RealtimeEventSink
 from assistant_agent.realtime.event_mapping import (
     map_agent_event,
+    map_agent_event_stream,
     map_agent_event_with_final_response_chunks,
 )
+from assistant_agent.realtime.progress import ProgressPolicy, ProgressTracker
 from assistant_agent.realtime.types import (
     RealtimeAgentEvent,
     RealtimeAgentRequest,
@@ -28,19 +30,33 @@ from assistant_agent.services.assistant_run_service import run_assistant_request
 RunAssistantRequest = Callable[..., Any]
 
 _RUN_EVENT_TYPES = {
+    "task_started",
+    "graph_node_started",
+    "graph_node_finished",
     "tool_started",
+    "tool_progress",
     "tool_finished",
     "tool_completed",
     "tool_failed",
     "agent_trace_decision",
     "agent_trace_observation",
+    "response_delta",
     "agent_error",
     "task_failed",
+    "task_cancelled",
 }
 
 
 class AgentGraphRealtimeBackend:
-    """RealtimeAgentBackend implementation backed by run_assistant_request."""
+    """Thin Gateway realtime adapter backed by the main assistant runtime.
+
+    This class is intentionally not the agent's "main brain". It translates
+    `RealtimeAgentRequest` into normalized runtime requests, forwards
+    runtime events, and maps terminal results back to realtime response types.
+    Planning, tool selection, memory policy, provider policy, and optional
+    agent delegation stay in `AgentGraphRuntime`/assistant loop and its
+    tool-governed delegation path.
+    """
 
     def __init__(
         self,
@@ -48,10 +64,12 @@ class AgentGraphRealtimeBackend:
         run_request: RunAssistantRequest | None = None,
         load_env: bool = True,
         enable_conversation_history: bool = True,
+        progress_policy: ProgressPolicy | None = None,
     ) -> None:
         self._run_request = run_request
         self._load_env = load_env
         self._enable_conversation_history = enable_conversation_history
+        self._progress_policy = progress_policy or ProgressPolicy()
 
     @property
     def capabilities(self) -> RealtimeBackendCapabilities:
@@ -81,18 +99,26 @@ class AgentGraphRealtimeBackend:
 
         user_request = realtime_request_to_user_request(request)
         loop = asyncio.get_running_loop()
-        forwarder = _RealtimeForwardingEventSink(loop=loop, event_sink=event_sink)
+        forwarder = _RealtimeForwardingEventSink(
+            loop=loop,
+            event_sink=event_sink,
+            progress_policy=self._progress_policy,
+        )
+        heartbeat_task = forwarder.start_heartbeat(cancel_token)
 
         try:
             run_request = self._run_request or run_assistant_request
-            artifacts = await asyncio.to_thread(
-                run_request,
-                user_request,
-                event_sink=forwarder,
-                load_env=self._load_env,
-                enable_conversation_history=self._enable_conversation_history,
-                cancel_token=cancel_token,
-            )
+            try:
+                artifacts = await asyncio.to_thread(
+                    run_request,
+                    user_request,
+                    event_sink=forwarder,
+                    load_env=self._load_env,
+                    enable_conversation_history=self._enable_conversation_history,
+                    cancel_token=cancel_token,
+                )
+            finally:
+                await _stop_heartbeat(heartbeat_task)
             await forwarder.drain()
 
             state = artifacts.state
@@ -136,6 +162,7 @@ class AgentGraphRealtimeBackend:
                     session_id=state.session_id,
                     run_id=state.run_id,
                     response_text=response_text,
+                    emit_chunks=not forwarder.response_delta_seen,
                 )
 
             return RealtimeAgentResult(
@@ -192,20 +219,55 @@ class _RealtimeForwardingEventSink:
         *,
         loop: asyncio.AbstractEventLoop,
         event_sink: RealtimeEventSink | None,
+        progress_policy: ProgressPolicy,
     ) -> None:
         self.events: list[AgentEvent] = []
         self._loop = loop
         self._event_sink = event_sink
+        self._progress: ProgressTracker = progress_policy.tracker()
         self._pending: list[Future[None]] = []
+        self._response_delta_seen = False
+
+    @property
+    def response_delta_seen(self) -> bool:
+        return self._response_delta_seen
 
     def emit(self, event: AgentEvent) -> None:
         self.events.append(event)
         if self._event_sink is None or event.type not in _RUN_EVENT_TYPES:
             return
-        mapped = map_agent_event(event)
-        if mapped is None:
+        if event.type == "response_delta":
+            self._response_delta_seen = True
+        mapped_events = map_agent_event_stream(event)
+        if not mapped_events:
             return
-        self._pending.append(asyncio.run_coroutine_threadsafe(self._event_sink(mapped), self._loop))
+        self._pending.append(
+            asyncio.run_coroutine_threadsafe(self._forward_events(mapped_events), self._loop)
+        )
+
+    def start_heartbeat(
+        self,
+        cancel_token: RealtimeCancelToken | None,
+    ) -> asyncio.Task[None] | None:
+        if self._event_sink is None:
+            return None
+        return asyncio.create_task(self._heartbeat_loop(cancel_token))
+
+    async def _forward_events(self, events: list[RealtimeAgentEvent]) -> None:
+        if self._event_sink is None:
+            return
+        for event in events:
+            if self._progress.should_emit(event):
+                await self._event_sink(event)
+
+    async def _heartbeat_loop(self, cancel_token: RealtimeCancelToken | None) -> None:
+        while not _is_cancelled(cancel_token):
+            await asyncio.sleep(self._progress.heartbeat_poll_interval_s())
+            if _is_cancelled(cancel_token):
+                return
+            heartbeat = self._progress.heartbeat()
+            if heartbeat is not None and self._event_sink is not None:
+                await self._event_sink(heartbeat)
 
     async def drain(self) -> None:
         if not self._pending:
@@ -215,12 +277,20 @@ class _RealtimeForwardingEventSink:
         await asyncio.gather(*(asyncio.wrap_future(future) for future in pending))
 
 
+async def _stop_heartbeat(task: asyncio.Task[None] | None) -> None:
+    if task is None or task.done():
+        return
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
 async def _emit_final_response_events(
     event_sink: RealtimeEventSink,
     *,
     session_id: str,
     run_id: str,
     response_text: str,
+    emit_chunks: bool = True,
 ) -> None:
     final_event = AgentEvent(
         type="final_response",
@@ -228,7 +298,12 @@ async def _emit_final_response_events(
         run_id=run_id,
         text=response_text,
     )
-    for realtime_event in map_agent_event_with_final_response_chunks(final_event):
+    if emit_chunks:
+        realtime_events = map_agent_event_with_final_response_chunks(final_event)
+    else:
+        mapped = map_agent_event(final_event)
+        realtime_events = [mapped] if mapped is not None else []
+    for realtime_event in realtime_events:
         await event_sink(realtime_event)
 
 

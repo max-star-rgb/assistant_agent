@@ -1,5 +1,6 @@
 """Direct chat adapter contracts and local implementations."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import time
 from typing import Any, Literal, Protocol
@@ -22,6 +23,7 @@ from assistant_agent.services.provider_errors import ProviderAdapterError, build
 
 
 ChatProviderName = Literal["mock", "openai", "qwen", "deepseek", "local"]
+ChatStreamCallback = Callable[[str, dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,7 @@ class ChatRequest(BaseModel):
     response_format: dict[str, Any] | None = None
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     max_tokens: int = Field(default=512, ge=1)
+    stream_callback: ChatStreamCallback | None = Field(default=None, exclude=True)
 
 
 class ChatProviderError(BaseModel):
@@ -110,8 +113,17 @@ class MockChatAdapter:
         context_note = ""
         if request.memory_context:
             context_note = f" 已参考 {len(request.memory_context)} 条记忆。"
+        response_text = f"已收到你的请求：{request.user_query}。这是一个离线 mock direct_chat 回复。{context_note}".strip()
+        _emit_stream_delta(
+            request.stream_callback,
+            response_text,
+            provider=self.provider,
+            model=self.model,
+            token_streaming=False,
+            chunking_strategy="mock_full_text",
+        )
         return ChatResult(
-            response_text=f"已收到你的请求：{request.user_query}。这是一个离线 mock direct_chat 回复。{context_note}".strip(),
+            response_text=response_text,
             provider=self.provider,
             model=self.model,
             usage={
@@ -195,6 +207,7 @@ class OpenAICompatibleChatAdapter:
                     provider=self.provider,
                     model=self.model,
                     latency_ms=int((time.perf_counter() - started_at) * 1000),
+                    stream_callback=request.stream_callback,
                 )
             data = self._client.chat.completions.create(**payload)
             return _parse_openai_chat_response(
@@ -323,6 +336,7 @@ def _parse_openai_chat_stream(
     provider: str,
     model: str,
     latency_ms: int,
+    stream_callback: ChatStreamCallback | None = None,
 ) -> ChatResult:
     content_parts: list[str] = []
     refusal_parts: list[str] = []
@@ -354,9 +368,24 @@ def _parse_openai_chat_stream(
             content = delta.get("content")
             if isinstance(content, str):
                 content_parts.append(content)
+                _emit_stream_delta(
+                    stream_callback,
+                    content,
+                    provider=provider,
+                    model=response_model,
+                    token_streaming=True,
+                    finish_reason=finish_reason,
+                )
             elif isinstance(content, list):
-                content_parts.append(
-                    "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+                chunk_text = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+                content_parts.append(chunk_text)
+                _emit_stream_delta(
+                    stream_callback,
+                    chunk_text,
+                    provider=provider,
+                    model=response_model,
+                    token_streaming=True,
+                    finish_reason=finish_reason,
                 )
             refusal = delta.get("refusal")
             if isinstance(refusal, str):
@@ -382,6 +411,29 @@ def _parse_openai_chat_stream(
         model=model,
         latency_ms=latency_ms,
     )
+
+
+def _emit_stream_delta(
+    stream_callback: ChatStreamCallback | None,
+    text: str,
+    *,
+    provider: str,
+    model: str | None,
+    token_streaming: bool,
+    finish_reason: str | None = None,
+    chunking_strategy: str = "provider_token_delta",
+) -> None:
+    if stream_callback is None or not text:
+        return
+    payload: dict[str, Any] = {
+        "provider": provider,
+        "model": model,
+        "token_streaming": token_streaming,
+        "chunking_strategy": chunking_strategy,
+    }
+    if finish_reason is not None:
+        payload["finish_reason"] = finish_reason
+    stream_callback(text, payload)
 
 
 def _chat_message_kind(*, tool_calls: list[NativeToolCall], refusal: str | None, content: Any) -> str:

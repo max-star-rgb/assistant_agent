@@ -28,16 +28,35 @@ def test_static_console_asset_is_served() -> None:
     assert "Product Results" in response.text
     assert "Generated Images" in response.text
     assert "Assistant ReAct Process" in response.text
-    assert "Entry" in response.text
+    assert "Web Chat" in response.text
     assert "App + Media Relay" in response.text
+    assert "experience-mode-select" in response.text
+    assert "assistant_agent_console_mode" in response.text
+    assert '<option value="web_chat">Web Chat</option>' in response.text
+    assert '<option value="app_media">App + Media Relay</option>' in response.text
+    assert "Assistant Call" in response.text
+    assert "Call transcript" in response.text
     assert "Start Call" in response.text
     assert "Hang Up" in response.text
     assert "Cancel Agent" in response.text
-    assert "Ping Gateway" in response.text
-    assert "Send Media Event" in response.text
-    assert "Interrupt With Text" in response.text
-    assert "app-media-entry-tab" in response.text
+    assert ">Say<" in response.text
+    assert ">Interrupt<" in response.text
+    assert "Gateway Timeline" in response.text
+    assert "web-chat-workspace" in response.text
+    assert "app-media-workspace" in response.text
+    assert "chat-panel" in response.text
     assert "app-media-panel" in response.text
+    assert '<div class="console-workspace web-chat-workspace" id="web-chat-workspace">' in response.text
+    assert '<div class="console-workspace app-media-workspace" id="app-media-workspace" hidden>' in response.text
+    assert '<section class="entry-panel active" id="chat-panel">' in response.text
+    assert '<section class="entry-panel" id="app-media-panel">' in response.text
+    assert '<details class="app-call-debug">' in response.text
+    assert "app-call-messages" in response.text
+    assert "app-call-state" in response.text
+    assert "app-call-timer" in response.text
+    assert "app-call-bubble.cancelled" in response.text
+    assert "markActiveAgentDraftCancelled" in response.text
+    assert "isCurrentRealtimeRunFrame" in response.text
     assert "realtime-connect" in response.text
     assert "realtime-cancel" in response.text
     assert "realtime-ping" in response.text
@@ -52,6 +71,11 @@ def test_static_console_asset_is_served() -> None:
     assert "realtime-mode-tab" not in response.text
     assert "realtime-panel" not in response.text
     assert "data-experience-mode" not in response.text
+    assert "Developer Debug" not in response.text
+    assert "app-media-entry-tab" not in response.text
+    assert "chat-entry-tab" not in response.text
+    assert "Send Media Event" not in response.text
+    assert "Interrupt With Text" not in response.text
     assert "/demo/access" in response.text
     assert "/demo/examples" in response.text
     assert "renderExamples" in response.text

@@ -142,6 +142,28 @@
         color: #98a2b3;
       }
 
+      .mode-settings {
+        margin-bottom: 12px;
+      }
+
+      .mode-settings label {
+        display: block;
+        margin-bottom: 6px;
+        color: #d0d5dd;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .mode-select {
+        width: 100%;
+        border: 1px solid #475467;
+        border-radius: 6px;
+        background: #1d2939;
+        color: #f2f4f7;
+        font: inherit;
+        padding: 7px 8px;
+      }
+
       .user-info {
         display: flex;
         align-items: center;
@@ -211,10 +233,22 @@
       }
 
       .workspace-grid {
+        display: block;
+      }
+
+      .console-workspace[hidden] {
+        display: none;
+      }
+
+      .web-chat-workspace {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
         gap: 14px;
         align-items: start;
+      }
+
+      .app-media-workspace {
+        display: block;
       }
 
       .primary-column {
@@ -462,6 +496,209 @@
       .realtime-event-log {
         min-height: 220px;
         max-height: 380px;
+      }
+
+      .app-call-layout {
+        display: grid;
+        grid-template-columns: minmax(320px, 460px) minmax(260px, 1fr);
+        gap: 14px;
+        align-items: start;
+      }
+
+      .app-call-phone {
+        border: 1px solid #d7dde8;
+        border-radius: 18px;
+        padding: 14px;
+        background: #f8fafc;
+        box-shadow: 0 10px 24px rgb(16 24 40 / 10%);
+      }
+
+      .app-call-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid #e1e6ef;
+        padding-bottom: 12px;
+      }
+
+      .app-call-contact {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .app-call-avatar {
+        display: grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border-radius: 50%;
+        background: #175cd3;
+        color: #ffffff;
+        font-weight: 800;
+      }
+
+      .app-call-header h2 {
+        margin: 0;
+        color: #20242c;
+        font-size: 17px;
+        line-height: 1.2;
+      }
+
+      .app-call-state {
+        margin-top: 3px;
+        color: #667085;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .app-call-timer {
+        min-width: 54px;
+        color: #067647;
+        font-variant-numeric: tabular-nums;
+        font-weight: 800;
+        text-align: right;
+      }
+
+      .app-call-messages {
+        display: flex;
+        min-height: 280px;
+        max-height: 380px;
+        flex-direction: column;
+        gap: 10px;
+        margin: 14px 0;
+        overflow-y: auto;
+      }
+
+      .app-call-empty {
+        margin: auto;
+        color: #667085;
+        font-size: 13px;
+        text-align: center;
+      }
+
+      .app-call-message {
+        display: flex;
+      }
+
+      .app-call-message.user {
+        justify-content: flex-end;
+      }
+
+      .app-call-message.agent {
+        justify-content: flex-start;
+      }
+
+      .app-call-bubble {
+        max-width: min(84%, 320px);
+        border: 1px solid #d8dee9;
+        border-radius: 8px;
+        padding: 9px 10px;
+        background: #ffffff;
+        color: #20242c;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+
+      .app-call-message.user .app-call-bubble {
+        border-color: #175cd3;
+        background: #175cd3;
+        color: #ffffff;
+      }
+
+      .app-call-message.agent .app-call-bubble.pending {
+        color: #667085;
+      }
+
+      .app-call-message.agent .app-call-bubble.cancelled {
+        border-color: #d0d5dd;
+        background: #f2f4f7;
+        color: #667085;
+      }
+
+      .app-call-compose {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 76px;
+        gap: 8px;
+      }
+
+      .app-call-compose textarea {
+        min-height: 72px;
+      }
+
+      .app-call-media-refs {
+        margin-top: 8px;
+      }
+
+      .app-call-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .app-call-status {
+        margin-top: 10px;
+      }
+
+      .app-call-status[hidden] {
+        display: none;
+      }
+
+      .app-call-debug {
+        border: 1px solid #d7dde8;
+        border-radius: 8px;
+        padding: 10px;
+        background: #fbfcfe;
+      }
+
+      .app-call-debug summary {
+        cursor: pointer;
+        color: #344054;
+        font-size: 13px;
+        font-weight: 750;
+      }
+
+      .app-call-debug .realtime-status-grid {
+        margin-top: 10px;
+      }
+
+      .app-call-debug .realtime-event-log {
+        margin-top: 10px;
+      }
+
+      .app-call-output[hidden] {
+        display: none;
+      }
+
+      .developer-debug {
+        margin-top: 14px;
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 14px;
+      }
+
+      .developer-debug > summary {
+        cursor: pointer;
+        color: #20242c;
+        font-size: 15px;
+        font-weight: 750;
+      }
+
+      .developer-debug-body {
+        margin-top: 14px;
+      }
+
+      .developer-debug section {
+        margin-bottom: 12px;
+      }
+
+      .developer-debug .memory-panel {
+        position: static;
+        max-height: none;
       }
 
       .media-simulator {
@@ -1087,7 +1324,7 @@
       }
 
       @media (max-width: 1120px) {
-        .workspace-grid {
+        .web-chat-workspace {
           grid-template-columns: 1fr;
         }
 
@@ -1124,22 +1361,27 @@
           grid-template-columns: 1fr;
         }
 
-	        .media-row {
-	          grid-template-columns: 1fr;
-	        }
+        .media-row {
+          grid-template-columns: 1fr;
+        }
 
         .realtime-status-grid,
         .realtime-output-grid,
+        .app-call-layout,
         .media-simulator-grid,
         .realtime-send-row {
           grid-template-columns: 1fr;
         }
 
-	        .strategy-row {
-	          align-items: stretch;
-	          flex-direction: column;
-	        }
-	      }
+        .app-call-actions {
+          grid-template-columns: 1fr;
+        }
+
+        .strategy-row {
+          align-items: stretch;
+          flex-direction: column;
+        }
+      }
     </style>
   </head>
   <body>
@@ -1150,6 +1392,13 @@
       </div>
       <div class="sessions-list" id="sessions-list"></div>
       <div class="sidebar-footer">
+        <div class="mode-settings" id="mode-settings" hidden>
+          <label for="experience-mode-select">模式</label>
+          <select class="mode-select" id="experience-mode-select">
+            <option value="web_chat">Web Chat</option>
+            <option value="app_media">App + Media Relay</option>
+          </select>
+        </div>
         <div class="user-info">
           <span class="user-icon">👤</span>
           <span id="user-display">未登录</span>
@@ -1174,191 +1423,196 @@
       </section>
 
       <div class="workspace-grid" data-requires-access hidden>
-        <div class="primary-column">
-          <section>
-            <h2>Examples</h2>
-            <div class="examples" id="examples"></div>
-          </section>
+        <div class="console-workspace web-chat-workspace" id="web-chat-workspace">
+          <div class="primary-column">
+            <section>
+              <h2>Examples</h2>
+              <div class="examples" id="examples"></div>
+            </section>
 
-          <section>
-            <h2>Entry</h2>
-            <div class="entry-tabs" role="tablist" aria-label="Entry Type">
-              <button class="entry-tab active" id="chat-entry-tab" data-entry-mode="chat" type="button">Chat</button>
-              <button class="entry-tab" id="app-media-entry-tab" data-entry-mode="app_media" type="button">App + Media</button>
-            </div>
-          </section>
+            <section class="entry-panel active" id="chat-panel">
+              <h2>Input</h2>
+              <div class="input-row">
+                <textarea id="message">你好，简单介绍一下你能做什么。</textarea>
+                <button id="send" type="button" disabled>Send</button>
+              </div>
+              <div class="media-row">
+                <input id="image-ids" type="text" placeholder="Image IDs（逗号或换行分隔，可选）" />
+                <input id="video-ids" type="text" placeholder="Video IDs（逗号或换行分隔，可选）" />
+              </div>
+              <fieldset class="strategy-row">
+                <legend>Plan Mode</legend>
+                <div class="strategy-options" role="radiogroup" aria-label="Plan Mode">
+                  <label>
+                    <input type="radio" name="execution-strategy" value="react" checked />
+                    <span>普通 ReAct</span>
+                  </label>
+                  <label>
+                    <input type="radio" name="execution-strategy" value="plan_and_solve" />
+                    <span>计划优先</span>
+                  </label>
+                </div>
+              </fieldset>
+              <div class="status" id="status">ready</div>
+            </section>
 
-          <section class="entry-panel active" id="chat-panel">
-            <h2>Input</h2>
-            <div class="input-row">
-              <textarea id="message">你好，简单介绍一下你能做什么。</textarea>
-              <button id="send" type="button" disabled>Send</button>
-            </div>
-            <div class="media-row">
-              <input id="image-ids" type="text" placeholder="Image IDs（逗号或换行分隔，可选）" />
-              <input id="video-ids" type="text" placeholder="Video IDs（逗号或换行分隔，可选）" />
-            </div>
-            <fieldset class="strategy-row">
-              <legend>Plan Mode</legend>
-              <div class="strategy-options" role="radiogroup" aria-label="Plan Mode">
-                <label>
-                  <input type="radio" name="execution-strategy" value="react" checked />
-                  <span>普通 ReAct</span>
-                </label>
-                <label>
-                  <input type="radio" name="execution-strategy" value="plan_and_solve" />
-                  <span>计划优先</span>
-                </label>
+            <section id="results-section" hidden>
+              <div class="results-tabs">
+                <button class="results-tab active" data-tab="products" type="button">
+                  <span>🛒</span> Product Results
+                </button>
+                <button class="results-tab" data-tab="images" type="button">
+                  <span>🖼️</span> Generated Images
+                </button>
               </div>
-            </fieldset>
-            <div class="status" id="status">ready</div>
-          </section>
+              <div class="results-content">
+                <div class="results-panel active" id="products-panel">
+                  <div class="product-gallery" id="product-gallery"></div>
+                </div>
+                <div class="results-panel" id="images-panel">
+                  <div class="artifact-gallery" id="artifact-gallery"></div>
+                </div>
+                <!-- Search round tabs - bottom centered -->
+                <div class="search-round-tabs" id="search-round-tabs" hidden></div>
+              </div>
+            </section>
 
-          <section class="entry-panel" id="app-media-panel" hidden>
-            <div class="section-header">
-              <h2>App + Media Relay</h2>
-              <div class="realtime-controls">
-                <button id="realtime-connect" type="button">Start Call</button>
-                <button class="secondary-button" id="realtime-ping" type="button" disabled>Ping Gateway</button>
-                <button class="secondary-button" id="realtime-end" type="button" disabled>Hang Up</button>
-                <button class="danger-button" id="realtime-cancel" type="button" disabled>Cancel Agent</button>
-              </div>
-            </div>
-            <div class="realtime-status-grid">
-              <div class="realtime-stat">
-                <div class="realtime-stat-label">Media WS</div>
-                <div class="realtime-stat-value" id="realtime-connection-state">disconnected</div>
-              </div>
-              <div class="realtime-stat">
-                <div class="realtime-stat-label">Identity / Session</div>
-                <div class="realtime-stat-value" id="realtime-session-id">none</div>
-              </div>
-              <div class="realtime-stat">
-                <div class="realtime-stat-label">Run</div>
-                <div class="realtime-stat-value" id="realtime-run-id">idle</div>
-              </div>
-            </div>
-            <div class="field">
-              <label for="realtime-message">Transcript Text</label>
-              <textarea id="realtime-message">你好，这是终端 App 经媒体服务转发来的文字。</textarea>
-            </div>
-            <div class="media-row">
-              <input id="realtime-image-ids" type="text" placeholder="Image IDs（逗号或换行分隔，可选）" />
-              <input id="realtime-video-ids" type="text" placeholder="Video IDs（逗号或换行分隔，可选）" />
-            </div>
-            <div class="realtime-send-row">
-              <div class="status" id="realtime-status">disconnected</div>
-              <button id="realtime-send" type="button" disabled>Send Media Event</button>
-            </div>
-            <div class="realtime-controls">
-              <button class="secondary-button" id="realtime-interrupt" type="button" disabled>Interrupt With Text</button>
-            </div>
-            <div class="realtime-output-grid">
-              <div>
-                <h3>Agent Output</h3>
-                <pre class="realtime-live-output" id="realtime-output"></pre>
-              </div>
-              <div>
-                <h3>Media / Gateway Timeline</h3>
-                <pre class="realtime-event-log" id="realtime-events"></pre>
-              </div>
-            </div>
-          </section>
+            <section>
+              <h2>Conversation History</h2>
+              <div class="conversation" id="final-response" data-state-key="conversationHistory"></div>
+            </section>
 
-          <!-- Results Tab Section -->
-          <section id="results-section" hidden>
-            <div class="results-tabs">
-              <button class="results-tab active" data-tab="products" type="button">
-                <span>🛒</span> Product Results
-              </button>
-              <button class="results-tab" data-tab="images" type="button">
-                <span>🖼️</span> Generated Images
-              </button>
-            </div>
-            <div class="results-content">
-              <div class="results-panel active" id="products-panel">
-                <div class="product-gallery" id="product-gallery"></div>
-              </div>
-              <div class="results-panel" id="images-panel">
-                <div class="artifact-gallery" id="artifact-gallery"></div>
-              </div>
-              <!-- Search round tabs - bottom centered -->
-              <div class="search-round-tabs" id="search-round-tabs" hidden></div>
-            </div>
-          </section>
+            <section>
+              <h2>Assistant ReAct Process</h2>
+              <pre id="react-process"></pre>
+            </section>
+          </div>
 
-          <section>
-            <h2>Conversation History</h2>
-            <div class="conversation" id="final-response" data-state-key="conversationHistory"></div>
-          </section>
-
-          <section>
-            <h2>Assistant ReAct Process</h2>
-            <pre id="react-process"></pre>
-          </section>
+          <aside class="memory-panel" id="memory-panel">
+            <div class="memory-panel-header">
+              <h2>Memory Snapshot</h2>
+              <button class="memory-refresh" id="memory-refresh" type="button">Refresh</button>
+            </div>
+            <div class="memory-query-row">
+              <div class="field">
+                <label for="memory-query">Query</label>
+                <input id="memory-query" type="text" placeholder="玉桂狗" />
+              </div>
+            </div>
+            <div class="status" id="memory-status">ready</div>
+            <div class="memory-stats" id="memory-stats"></div>
+            <div class="memory-block">
+              <div class="memory-block-title">长期记忆</div>
+              <div id="memory-layers"></div>
+            </div>
+            <div class="memory-block">
+              <div class="memory-block-title">短期对话</div>
+              <div id="memory-conversation"></div>
+            </div>
+            <details class="memory-details">
+              <summary>技术信息</summary>
+              <div id="memory-storage"></div>
+            </details>
+            <div class="control-plane-block" id="control-plane-panel">
+              <div class="control-plane-header">
+                <h2>Control Plane</h2>
+                <button class="control-plane-refresh" id="control-plane-readiness-refresh" type="button">Readiness</button>
+              </div>
+              <div class="status" id="control-plane-status">ready</div>
+              <div class="control-plane-summary" id="control-plane-summary"></div>
+              <div class="control-plane-id-grid">
+                <div class="field">
+                  <label for="control-plane-run-id">Run ID</label>
+                  <input id="control-plane-run-id" type="text" placeholder="run_id" />
+                </div>
+                <div class="field">
+                  <label for="control-plane-trace-id">Trace ID</label>
+                  <input id="control-plane-trace-id" type="text" placeholder="trace_id" />
+                </div>
+              </div>
+              <div class="control-plane-actions">
+                <button id="control-plane-load-run" type="button">Inspect</button>
+                <button id="control-plane-load-recent" type="button">Recent</button>
+              </div>
+              <div class="control-plane-subtitle">Selected Run Trace / Gateway Route / Delegation Tree / Redaction Status</div>
+              <pre class="control-plane-output" id="control-plane-run-output"></pre>
+              <div class="control-plane-subtitle">Recent Runs / Audit</div>
+              <div id="control-plane-recent"></div>
+            </div>
+          </aside>
         </div>
 
-        <aside class="memory-panel" id="memory-panel">
-          <div class="memory-panel-header">
-            <h2>Memory Snapshot</h2>
-            <button class="memory-refresh" id="memory-refresh" type="button">Refresh</button>
-          </div>
-          <div class="memory-query-row">
-            <div class="field">
-              <label for="memory-query">Query</label>
-              <input id="memory-query" type="text" placeholder="玉桂狗" />
-            </div>
-          </div>
-          <div class="status" id="memory-status">ready</div>
-          <div class="memory-stats" id="memory-stats"></div>
-          <div class="memory-block">
-            <div class="memory-block-title">长期记忆</div>
-            <div id="memory-layers"></div>
-          </div>
-          <div class="memory-block">
-            <div class="memory-block-title">短期对话</div>
-            <div id="memory-conversation"></div>
-          </div>
-          <details class="memory-details">
-            <summary>技术信息</summary>
-            <div id="memory-storage"></div>
-          </details>
-          <div class="control-plane-block" id="control-plane-panel">
-            <div class="control-plane-header">
-              <h2>Control Plane</h2>
-              <button class="control-plane-refresh" id="control-plane-readiness-refresh" type="button">Readiness</button>
-            </div>
-            <div class="status" id="control-plane-status">ready</div>
-            <div class="control-plane-summary" id="control-plane-summary"></div>
-            <div class="control-plane-id-grid">
-              <div class="field">
-                <label for="control-plane-run-id">Run ID</label>
-                <input id="control-plane-run-id" type="text" placeholder="run_id" />
+        <div class="console-workspace app-media-workspace" id="app-media-workspace" hidden>
+          <section class="entry-panel" id="app-media-panel">
+            <div class="app-call-layout">
+              <div class="app-call-phone">
+                <div class="app-call-header">
+                  <div class="app-call-contact">
+                    <div class="app-call-avatar">AI</div>
+                    <div>
+                      <h2>Assistant Call</h2>
+                      <div class="app-call-state" id="app-call-state">Disconnected</div>
+                    </div>
+                  </div>
+                  <div class="app-call-timer" id="app-call-timer">00:00</div>
+                </div>
+
+                <div class="app-call-messages" id="app-call-messages"></div>
+
+                <div class="app-call-compose">
+                  <textarea id="realtime-message">你好，这是终端 App 经媒体服务转发来的文字。</textarea>
+                  <button id="realtime-send" type="button" disabled>Say</button>
+                </div>
+
+                <div class="media-row app-call-media-refs">
+                  <input id="realtime-image-ids" type="text" placeholder="Image IDs（可选）" />
+                  <input id="realtime-video-ids" type="text" placeholder="Video IDs（可选）" />
+                </div>
+
+                <div class="app-call-actions">
+                  <button id="realtime-connect" type="button">Start Call</button>
+                  <button class="secondary-button" id="realtime-interrupt" type="button" disabled>Interrupt</button>
+                  <button class="secondary-button" id="realtime-end" type="button" disabled>Hang Up</button>
+                  <button class="danger-button" id="realtime-cancel" type="button" disabled>Cancel Agent</button>
+                </div>
+                <div class="status app-call-status" id="realtime-status" hidden>Disconnected</div>
               </div>
-              <div class="field">
-                <label for="control-plane-trace-id">Trace ID</label>
-                <input id="control-plane-trace-id" type="text" placeholder="trace_id" />
+
+              <details class="app-call-debug">
+                <summary>Gateway Timeline</summary>
+                <div class="realtime-status-grid">
+                  <div class="realtime-stat">
+                    <div class="realtime-stat-label">Media WS</div>
+                    <div class="realtime-stat-value" id="realtime-connection-state">disconnected</div>
+                  </div>
+                  <div class="realtime-stat">
+                    <div class="realtime-stat-label">Identity / Session</div>
+                    <div class="realtime-stat-value" id="realtime-session-id">none</div>
+                  </div>
+                  <div class="realtime-stat">
+                    <div class="realtime-stat-label">Run</div>
+                    <div class="realtime-stat-value" id="realtime-run-id">idle</div>
+                  </div>
+                </div>
+                <button class="secondary-button" id="realtime-ping" type="button" disabled>Ping</button>
+                <pre class="realtime-event-log" id="realtime-events"></pre>
+              </details>
+
+              <div class="app-call-output" hidden>
+                <pre class="realtime-live-output" id="realtime-output"></pre>
               </div>
             </div>
-            <div class="control-plane-actions">
-              <button id="control-plane-load-run" type="button">Inspect</button>
-              <button id="control-plane-load-recent" type="button">Recent</button>
-            </div>
-            <div class="control-plane-subtitle">Selected Run Trace / Gateway Route / Delegation Tree / Redaction Status</div>
-            <pre class="control-plane-output" id="control-plane-run-output"></pre>
-            <div class="control-plane-subtitle">Recent Runs / Audit</div>
-            <div id="control-plane-recent"></div>
-          </div>
-        </aside>
+          </section>
+        </div>
       </div>
     </main>
 
     <script>
       const messageInput = document.querySelector("#message");
-	      const imageIdsInput = document.querySelector("#image-ids");
-	      const videoIdsInput = document.querySelector("#video-ids");
-	      const executionStrategyInputs = document.querySelectorAll('input[name="execution-strategy"]');
-	      const trialUserIdInput = document.querySelector("#trial-user-id");
+      const imageIdsInput = document.querySelector("#image-ids");
+      const videoIdsInput = document.querySelector("#video-ids");
+      const executionStrategyInputs = document.querySelectorAll('input[name="execution-strategy"]');
+      const trialUserIdInput = document.querySelector("#trial-user-id");
       const saveUserButton = document.querySelector("#save-user");
       const userStatus = document.querySelector("#user-status");
       const sendButton = document.querySelector("#send");
@@ -1393,7 +1647,10 @@
       const controlPlaneTraceIdInput = document.querySelector("#control-plane-trace-id");
       const controlPlaneRunOutput = document.querySelector("#control-plane-run-output");
       const controlPlaneRecent = document.querySelector("#control-plane-recent");
-      const entryTabs = document.querySelectorAll(".entry-tab");
+      const modeSettings = document.querySelector("#mode-settings");
+      const experienceModeSelect = document.querySelector("#experience-mode-select");
+      const webChatWorkspace = document.querySelector("#web-chat-workspace");
+      const appMediaWorkspace = document.querySelector("#app-media-workspace");
       const chatPanel = document.querySelector("#chat-panel");
       const appMediaPanel = document.querySelector("#app-media-panel");
       const realtimeConnectButton = document.querySelector("#realtime-connect");
@@ -1411,6 +1668,9 @@
       const realtimeRunIdOutput = document.querySelector("#realtime-run-id");
       const realtimeOutput = document.querySelector("#realtime-output");
       const realtimeEvents = document.querySelector("#realtime-events");
+      const appCallState = document.querySelector("#app-call-state");
+      const appCallTimer = document.querySelector("#app-call-timer");
+      const appCallMessages = document.querySelector("#app-call-messages");
       let runtimeInfo = null;
       let verifiedTrialUserId = "";
       let sessions = {};
@@ -1421,13 +1681,33 @@
       let realtimeActiveRunId = "";
       let realtimeOutputText = "";
       let realtimeEventLines = [];
+      let appCallStartedAt = 0;
+      let appCallTimerId = null;
+      let appCallMessageItems = [];
+      let appCallQueuedMessages = [];
+      let appCallEnded = false;
+      let realtimeConnectionStateValue = "disconnected";
+      let currentExperienceMode = "web_chat";
+      const APP_CALL_STATES = [
+        "Disconnected",
+        "Connecting",
+        "Connected",
+        "Listening",
+        "Agent thinking",
+        "Speaking",
+        "Queued",
+        "Cancelling",
+        "Cancelled",
+        "Ended",
+        "Error",
+      ];
       const USER_STORAGE_KEY = "assistant_agent_trial_user_id";
       const SESSIONS_STORAGE_KEY = "assistant_agent_sessions";
+      const EXPERIENCE_MODE_STORAGE_KEY = "assistant_agent_console_mode";
 
       document.querySelector("#examples").addEventListener("click", (event) => {
         if (event.target.matches("button.example")) {
           messageInput.value = event.target.textContent;
-          realtimeMessageInput.value = event.target.textContent;
           messageInput.focus();
         }
       });
@@ -1490,10 +1770,8 @@
           void refreshControlPlaneRun();
         }
       });
-      entryTabs.forEach((tab) => {
-        tab.addEventListener("click", () => {
-          switchEntryMode(tab.dataset.entryMode || "chat");
-        });
+      experienceModeSelect.addEventListener("change", () => {
+        switchExperienceMode(experienceModeSelect.value, { persist: true });
       });
       realtimeConnectButton.addEventListener("click", () => {
         void connectRealtimeMedia();
@@ -1513,6 +1791,9 @@
       realtimeInterruptButton.addEventListener("click", () => {
         sendRealtimeMediaEvent({ interrupt: true });
       });
+      realtimeMessageInput.addEventListener("input", updateRealtimeControls);
+      realtimeImageIdsInput.addEventListener("input", updateRealtimeControls);
+      realtimeVideoIdsInput.addEventListener("input", updateRealtimeControls);
       realtimeMessageInput.addEventListener("keydown", (event) => {
         if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
           sendRealtimeMediaEvent();
@@ -1647,12 +1928,17 @@
           const socket = new WebSocket(url);
           let finalPayload = null;
           let finalError = null;
+          let streamedResponseText = "";
           socket.onopen = () => {
             socket.send(JSON.stringify(requestPayload));
             renderLiveProcess(eventLines, null);
           };
           socket.onmessage = (message) => {
             const event = JSON.parse(message.data);
+            if (event.type === "response_delta") {
+              streamedResponseText += String(event.text || "");
+              updateLiveAssistantResponse(streamedResponseText || "running...");
+            }
             const timelineLine = formatTimelineEvent(event);
             if (timelineLine) {
               eventLines.push(timelineLine);
@@ -1704,19 +1990,29 @@
         return String(error && error.message ? error.message : error).includes("WebSocket 连接失败");
       }
 
-      function switchEntryMode(mode) {
-        const targetEntry = mode === "app_media" ? "app_media" : "chat";
-        entryTabs.forEach((tab) => {
-          tab.classList.toggle("active", tab.dataset.entryMode === targetEntry);
-        });
-        chatPanel.hidden = targetEntry !== "chat";
-        appMediaPanel.hidden = targetEntry !== "app_media";
-        if (targetEntry === "app_media") {
-          syncRealtimeSessionDisplay();
-          if (!realtimeMessageInput.value.trim()) {
-            realtimeMessageInput.value = messageInput.value.trim();
-          }
+      function switchExperienceMode(mode, options = {}) {
+        const targetMode = mode === "app_media" ? "app_media" : "web_chat";
+        currentExperienceMode = targetMode;
+        webChatWorkspace.hidden = targetMode !== "web_chat";
+        appMediaWorkspace.hidden = targetMode !== "app_media";
+        chatPanel.classList.toggle("active", targetMode === "web_chat");
+        appMediaPanel.classList.toggle("active", targetMode === "app_media");
+        experienceModeSelect.value = targetMode;
+        if (options.persist) {
+          localStorage.setItem(EXPERIENCE_MODE_STORAGE_KEY, targetMode);
         }
+        if (targetMode === "app_media") {
+          syncRealtimeSessionDisplay();
+          renderAppCallMessages();
+          updateRealtimeControls();
+        } else {
+          messageInput.focus();
+        }
+      }
+
+      function storedExperienceMode() {
+        const stored = localStorage.getItem(EXPERIENCE_MODE_STORAGE_KEY);
+        return stored === "app_media" ? "app_media" : "web_chat";
       }
 
       function realtimeWebSocketUrl(path, params) {
@@ -1738,6 +2034,11 @@
       }
 
       function cancelRealtimeRun() {
+        if (!realtimeConnected || !realtimeRunActive) {
+          setRealtimeStatus("Connected");
+          setAppCallState("Connected");
+          return;
+        }
         const sent = sendMediaEvent({
           type: "run.cancel",
           session_id: currentSessionId,
@@ -1745,7 +2046,9 @@
           user_id: currentTrialUserId(),
         });
         if (sent) {
-          setRealtimeStatus("cancel sent");
+          markActiveAgentDraftCancelled("Cancelled");
+          setRealtimeStatus("Cancelling");
+          setAppCallState("Cancelling");
         }
       }
 
@@ -1756,12 +2059,14 @@
           return;
         }
         if (mediaSocket && mediaSocket.readyState === WebSocket.OPEN) {
-          setRealtimeStatus("media already connected.");
+          setRealtimeStatus("Connected");
+          setAppCallState("Connected");
           return;
         }
         resetRealtimeRunView();
+        appCallEnded = false;
         setRealtimeConnectionState("connecting");
-        setRealtimeStatus("connecting media...");
+        setRealtimeStatus("Connecting");
         const params = new URLSearchParams();
         params.set("user_id", userId);
         params.set("session_id", sessionId);
@@ -1770,7 +2075,8 @@
         mediaSocket = socket;
         socket.onopen = () => {
           setRealtimeConnectionState("connected");
-          setRealtimeStatus("call started");
+          setRealtimeStatus("Connected");
+          startAppCallTimer();
           sendMediaEvent({
             type: "session.start",
             session_id: sessionId,
@@ -1789,7 +2095,8 @@
           handleRealtimeSocketMessage(message.data, "gateway -> media");
         };
         socket.onerror = () => {
-          setRealtimeStatus("Media WebSocket 连接失败。", true);
+          setRealtimeStatus("Error", true);
+          setAppCallState("Error");
         };
         socket.onclose = () => {
           if (mediaSocket === socket) {
@@ -1797,7 +2104,8 @@
           }
           setRealtimeConnectionState("disconnected");
           setRealtimeRunActive(false, "");
-          setRealtimeStatus("disconnected");
+          setRealtimeStatus(appCallEnded ? "Ended" : "Disconnected");
+          stopAppCallTimer();
         };
       }
 
@@ -1809,12 +2117,17 @@
           return;
         }
         if (socket.readyState === WebSocket.OPEN && sendEnd) {
+          markActiveAgentDraftCancelled("Cancelled");
           sendMediaEvent({
             type: "session.end",
             session_id: currentSessionId,
             user_id: currentTrialUserId(),
           });
-          setRealtimeStatus("hangup sent");
+          appCallEnded = true;
+          setRealtimeRunActive(false, "");
+          setRealtimeStatus("Ended");
+          setAppCallState("Ended");
+          stopAppCallTimer();
           window.setTimeout(() => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.close(1000, "client_end");
@@ -1829,16 +2142,25 @@
         const text = realtimeMessageInput.value.trim();
         const imageIds = parseIds(realtimeImageIdsInput.value);
         const videoIds = parseIds(realtimeVideoIdsInput.value);
-        if (!text && !imageIds.length && !videoIds.length) {
-          setRealtimeStatus("请输入 transcript、image id 或 video id。", true);
+        if (options.interrupt && !realtimeRunActive) {
+          setRealtimeStatus("Connected");
+          setAppCallState("Connected");
           return;
         }
+        if (!text && !imageIds.length && !videoIds.length) {
+          setRealtimeStatus("Error", true);
+          setAppCallState("Error");
+          return;
+        }
+        const messageText = text || mediaPromptFromRefs({ imageIds, videoIds });
+        const queued = realtimeRunActive && !options.interrupt;
         const sent = sendMediaEvent({
           type: "transcript.final",
           session_id: currentSessionId,
           user_id: currentTrialUserId(),
           payload: {
             text,
+            interrupt: Boolean(options.interrupt),
             image_ids: imageIds,
             video_ids: videoIds,
             metadata: {
@@ -1849,9 +2171,25 @@
           },
         });
         if (sent) {
-          realtimeOutputText = "";
-          renderRealtimeOutput();
-          setRealtimeStatus(options.interrupt ? "interrupt media event sent" : "media event sent");
+          if (queued) {
+            appCallQueuedMessages.push(messageText);
+          } else {
+            if (options.interrupt) {
+              markActiveAgentDraftCancelled("Cancelled");
+            }
+            appendAppCallMessage("user", messageText);
+            realtimeOutputText = "";
+            renderRealtimeOutput();
+          }
+          realtimeMessageInput.value = "";
+          if (queued) {
+            setRealtimeStatus("Queued");
+            setAppCallState("Queued");
+          } else {
+            setRealtimeStatus(options.interrupt ? "Cancelling" : "Listening");
+            setAppCallState(options.interrupt ? "Cancelling" : "Listening");
+          }
+          updateRealtimeControls();
         }
       }
 
@@ -1862,13 +2200,14 @@
           user_id: currentTrialUserId(),
         });
         if (sent) {
-          setRealtimeStatus("ping sent");
+          setRealtimeStatus("Connected");
         }
       }
 
       function sendMediaEvent(event) {
         if (!mediaSocket || mediaSocket.readyState !== WebSocket.OPEN) {
-          setRealtimeStatus("Media 未连接。", true);
+          setRealtimeStatus("Error", true);
+          setAppCallState("Error");
           return false;
         }
         mediaSocket.send(JSON.stringify(event));
@@ -1891,55 +2230,249 @@
         appendRealtimeEvent(formatRealtimeFrameLine(frame, source));
         const frameType = frame.type || "";
         if (frameType === "call.ready") {
-          setRealtimeStatus("call ready");
+          setRealtimeStatus("Connected");
+          setAppCallState("Connected");
           return;
         }
         if (frameType === "call.hangup_ack") {
-          setRealtimeStatus("call ended");
+          appCallEnded = true;
+          setRealtimeRunActive(false, "");
+          setRealtimeStatus("Ended");
+          setAppCallState("Ended");
+          stopAppCallTimer();
           return;
         }
         if (frameType === "pong") {
-          setRealtimeStatus("pong");
+          setRealtimeStatus("Connected");
           return;
         }
         if (frameType === "run.started") {
           setRealtimeRunActive(true, frame.run_id || "");
-          setRealtimeStatus(`run started${frame.run_id ? ` | ${frame.run_id}` : ""}`);
+          realtimeOutputText = "";
+          renderRealtimeOutput();
+          if (appCallQueuedMessages.length) {
+            appendAppCallMessage("user", appCallQueuedMessages.shift());
+          }
+          setRealtimeStatus("Agent thinking");
+          setAppCallState("Agent thinking");
+          ensureAgentDraft();
+          return;
+        }
+        if (frameType === "event.progress") {
+          if (!isCurrentRealtimeRunFrame(frame)) {
+            return;
+          }
+          const payload = frame.payload && typeof frame.payload === "object" ? frame.payload : {};
+          const text = payload.text || payload.message || "Agent working";
+          setRealtimeStatus(String(text));
+          setAppCallState(String(text));
           return;
         }
         if (frameType === "stream.chunk") {
+          if (!isCurrentRealtimeRunFrame(frame)) {
+            return;
+          }
           const chunk = frame.payload && typeof frame.payload === "object" ? frame.payload.text : "";
           if (chunk) {
             realtimeOutputText += String(chunk);
             renderRealtimeOutput();
+            updateAgentDraft(realtimeOutputText);
+            setRealtimeStatus("Speaking");
+            setAppCallState("Speaking");
           }
           return;
         }
         if (frameType === "run.end") {
-          setRealtimeRunActive(false, "");
           if (frame.run_id) {
             setControlPlaneRun(frame.run_id, "");
             void refreshControlPlaneRecent({ silent: true });
           }
-          setRealtimeStatus(`run ended: ${frame.reason || "completed"}`, frame.reason === "error");
+          if (!isCurrentRealtimeRunFrame(frame)) {
+            return;
+          }
+          setRealtimeRunActive(false, "");
+          const endedState = frame.reason === "cancelled" ? "Cancelled" : "Connected";
+          setRealtimeStatus(frame.reason === "error" ? "Error" : endedState, frame.reason === "error");
+          finalizeAgentDraft(frame.reason || "completed");
+          setAppCallState(frame.reason === "error" ? "Error" : endedState);
           return;
         }
         if (frameType === "error") {
-          setRealtimeStatus(eventErrorMessage(frame.error || "Gateway error"), true);
+          setRealtimeStatus("Error", true);
+          setAppCallState("Error");
         }
       }
 
       function resetRealtimeRunView() {
         realtimeOutputText = "";
         realtimeEventLines = [];
+        appCallMessageItems = [];
+        appCallQueuedMessages = [];
+        appCallEnded = false;
         renderRealtimeOutput();
         renderRealtimeEvents();
+        renderAppCallMessages();
         setRealtimeRunActive(false, "");
         syncRealtimeSessionDisplay();
       }
 
       function renderRealtimeOutput() {
         realtimeOutput.textContent = realtimeOutputText || "";
+      }
+
+      function appendAppCallMessage(role, text, options = {}) {
+        const value = String(text || "").trim();
+        if (!value) {
+          return null;
+        }
+        const item = {
+          id: `call_msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          role,
+          text: value,
+          pending: Boolean(options.pending),
+          cancelled: Boolean(options.cancelled),
+        };
+        appCallMessageItems.push(item);
+        renderAppCallMessages();
+        return item.id;
+      }
+
+      function ensureAgentDraft() {
+        const last = appCallMessageItems[appCallMessageItems.length - 1];
+        if (last && last.role === "agent" && last.pending) {
+          return last.id;
+        }
+        return appendAppCallMessage("agent", "...", { pending: true });
+      }
+
+      function updateAgentDraft(text) {
+        const value = String(text || "").trim();
+        if (!value) {
+          return;
+        }
+        const last = appCallMessageItems[appCallMessageItems.length - 1];
+        if (last && last.role === "agent" && last.pending) {
+          last.text = value;
+        } else {
+          appCallMessageItems.push({
+            id: `call_msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            role: "agent",
+            text: value,
+            pending: true,
+            cancelled: false,
+          });
+        }
+        renderAppCallMessages();
+      }
+
+      function finalizeAgentDraft(reason) {
+        const last = appCallMessageItems[appCallMessageItems.length - 1];
+        if (!last || last.role !== "agent" || !last.pending) {
+          return;
+        }
+        if (last.text === "...") {
+          last.text = reason === "cancelled" ? "Cancelled" : "No response";
+        }
+        last.pending = false;
+        renderAppCallMessages();
+      }
+
+      function markActiveAgentDraftCancelled(fallbackText) {
+        for (let index = appCallMessageItems.length - 1; index >= 0; index -= 1) {
+          const item = appCallMessageItems[index];
+          if (item.role === "agent" && item.pending) {
+            if (item.text === "...") {
+              item.text = fallbackText || "Cancelled";
+            }
+            item.pending = false;
+            item.cancelled = true;
+            renderAppCallMessages();
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function renderAppCallMessages() {
+        if (!appCallMessages) {
+          return;
+        }
+        if (!appCallMessageItems.length) {
+          appCallMessages.innerHTML = '<div class="app-call-empty">Call transcript</div>';
+          return;
+        }
+        appCallMessages.innerHTML = appCallMessageItems
+          .map((item) => {
+            const role = item.role === "user" ? "user" : "agent";
+            const pending = item.pending ? " pending" : "";
+            const cancelled = item.cancelled ? " cancelled" : "";
+            return `<div class="app-call-message ${role}"><div class="app-call-bubble${pending}${cancelled}">${escapeHtml(item.text)}</div></div>`;
+          })
+          .join("");
+        appCallMessages.scrollTop = appCallMessages.scrollHeight;
+      }
+
+      function mediaPromptFromRefs({ imageIds, videoIds }) {
+        if (videoIds.length) {
+          return "请结合这段视频继续处理用户请求。";
+        }
+        if (imageIds.length) {
+          return "请结合这张图片继续处理用户请求。";
+        }
+        return "";
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function setAppCallState(state) {
+        const nextState = APP_CALL_STATES.includes(state) ? state : "Error";
+        if (appCallState) {
+          appCallState.textContent = nextState;
+          appCallState.classList.toggle("error", nextState === "Error");
+        }
+      }
+
+      function startAppCallTimer() {
+        if (!appCallStartedAt) {
+          appCallStartedAt = Date.now();
+        }
+        updateAppCallTimer();
+        if (appCallTimerId) {
+          window.clearInterval(appCallTimerId);
+        }
+        appCallTimerId = window.setInterval(updateAppCallTimer, 1000);
+      }
+
+      function stopAppCallTimer() {
+        if (appCallTimerId) {
+          window.clearInterval(appCallTimerId);
+          appCallTimerId = null;
+        }
+      }
+
+      function resetAppCallTimer() {
+        stopAppCallTimer();
+        appCallStartedAt = 0;
+        if (appCallTimer) {
+          appCallTimer.textContent = "00:00";
+        }
+      }
+
+      function updateAppCallTimer() {
+        if (!appCallTimer || !appCallStartedAt) {
+          return;
+        }
+        const elapsed = Math.max(0, Math.floor((Date.now() - appCallStartedAt) / 1000));
+        const minutes = String(Math.floor(elapsed / 60)).padStart(2, "0");
+        const seconds = String(elapsed % 60).padStart(2, "0");
+        appCallTimer.textContent = `${minutes}:${seconds}`;
       }
 
       function appendRealtimeEvent(line) {
@@ -1980,14 +2513,22 @@
       }
 
       function setRealtimeConnectionState(state) {
+        realtimeConnectionStateValue = state;
         realtimeConnected = state === "connected";
-        const pending = state === "connecting";
         realtimeConnectionState.textContent = state;
-        realtimeConnectButton.disabled = realtimeConnected || pending;
-        realtimeEndButton.disabled = !realtimeConnected && !pending;
-        realtimePingButton.disabled = !realtimeConnected;
-        realtimeSendButton.disabled = !realtimeConnected;
-        realtimeInterruptButton.disabled = !realtimeConnected;
+        if (state === "connecting") {
+          setAppCallState("Connecting");
+        } else if (state === "connected") {
+          setAppCallState("Connected");
+        } else {
+          setAppCallState(appCallEnded ? "Ended" : "Disconnected");
+          if (appCallEnded) {
+            stopAppCallTimer();
+          } else {
+            resetAppCallTimer();
+          }
+        }
+        updateRealtimeControls();
         setRealtimeRunActive(realtimeRunActive, realtimeActiveRunId);
       }
 
@@ -1995,7 +2536,31 @@
         realtimeRunActive = Boolean(active);
         realtimeActiveRunId = runId || "";
         realtimeRunIdOutput.textContent = realtimeActiveRunId || (realtimeRunActive ? "running" : "idle");
-        realtimeCancelButton.disabled = !realtimeRunActive || !realtimeConnected;
+        updateRealtimeControls();
+      }
+
+      function isCurrentRealtimeRunFrame(frame) {
+        const frameRunId = frame && frame.run_id ? String(frame.run_id) : "";
+        return !frameRunId || !realtimeActiveRunId || frameRunId === realtimeActiveRunId;
+      }
+
+      function hasRealtimeInput() {
+        return Boolean(
+          realtimeMessageInput.value.trim()
+            || realtimeImageIdsInput.value.trim()
+            || realtimeVideoIdsInput.value.trim(),
+        );
+      }
+
+      function updateRealtimeControls() {
+        const pending = realtimeConnectionStateValue === "connecting";
+        const hasInput = hasRealtimeInput();
+        realtimeConnectButton.disabled = realtimeConnected || pending;
+        realtimeEndButton.disabled = !realtimeConnected && !pending;
+        realtimePingButton.disabled = !realtimeConnected;
+        realtimeSendButton.disabled = !realtimeConnected || !hasInput;
+        realtimeInterruptButton.disabled = !realtimeConnected || !realtimeRunActive || !hasInput;
+        realtimeCancelButton.disabled = !realtimeConnected || !realtimeRunActive;
       }
 
       function syncRealtimeSessionDisplay() {
@@ -2257,6 +2822,10 @@
         if (event.type === "tool_started" && event.tool_name) {
           return `[tool:${event.tool_name}] running...`;
         }
+        if (event.type === "tool_progress" && event.tool_name) {
+          const progress = typeof event.progress === "number" ? ` (${Math.round(event.progress * 100)}%)` : "";
+          return `[tool:${event.tool_name}] still running${progress}...`;
+        }
         if (trace) {
           return formatTimelineTrace(trace);
         }
@@ -2438,6 +3007,14 @@
         bubble.textContent = text || "";
         row.appendChild(bubble);
         finalResponse.appendChild(row);
+      }
+
+      function updateLiveAssistantResponse(text) {
+        const bubbles = finalResponse.querySelectorAll(".turn.assistant .bubble");
+        const bubble = bubbles[bubbles.length - 1];
+        if (bubble) {
+          bubble.textContent = text || "";
+        }
       }
 
       function collectImageArtifacts(payload) {
@@ -3522,6 +4099,10 @@
           section.hidden = !enabled;
         }
         sendButton.disabled = !enabled;
+        modeSettings.hidden = !enabled;
+        if (enabled) {
+          switchExperienceMode(storedExperienceMode());
+        }
         // Show/hide sidebar and login section
         document.getElementById('sidebar').classList.toggle('authenticated', enabled);
         document.querySelector('.main-wrapper').classList.toggle('authenticated', enabled);
@@ -3543,6 +4124,8 @@
           renderMemorySnapshot(null);
           resetControlPlaneView();
           syncRealtimeSessionDisplay();
+          resetRealtimeRunView();
+          setAppCallState("Disconnected");
           setStatus("请先验证工号。");
         }
       }

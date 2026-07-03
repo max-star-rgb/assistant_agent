@@ -13,7 +13,7 @@ from assistant_agent.gateway.event_mapping import realtime_event_to_frame
 from assistant_agent.gateway.protocol import Frame, frame
 from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
 from assistant_agent.realtime import (
-    AgentGraphRealtimeBackend,
+    GatewayAgentAdapter,
     RealtimeAgentBackend,
     RealtimeAgentEvent,
     RealtimeAgentRequest,
@@ -28,6 +28,12 @@ class ActiveRun:
     cancel: "CancelToken"
     task: "asyncio.Task[None]"
     deadline_task: "asyncio.Task[None] | None" = None
+
+
+@dataclass
+class PendingUserMessage:
+    endpoint: Endpoint
+    frame: Frame
 
 
 class CancelToken:
@@ -73,7 +79,7 @@ class GatewaySessionService:
 
     This service owns session history, active run lifecycle, cooperative
     cancellation, and event mapping. Agent execution is delegated to a
-    RealtimeAgentBackend; by default this remains AgentGraphRealtimeBackend.
+    RealtimeAgentBackend; by default this remains GatewayAgentAdapter.
     """
 
     def __init__(
@@ -89,6 +95,7 @@ class GatewaySessionService:
         self._backend_factory = backend_factory
         self._config: dict[str, Any] = dict(config or {})
         self._active_by_session: dict[str, ActiveRun] = {}
+        self._pending_by_session: dict[str, list[PendingUserMessage]] = {}
         self._history_by_session: dict[str, list[str]] = {}
         self._lock = asyncio.Lock()
 
@@ -126,10 +133,36 @@ class GatewaySessionService:
             await ep.send(frame(type="error", error={"code": "missing_session_id"}))
             return
 
+        interrupt_requested = _message_requests_interrupt(payload, self._config)
+        async with self._lock:
+            has_active_run = session_id in self._active_by_session
+            if has_active_run and not interrupt_requested:
+                pending = self._pending_by_session.setdefault(session_id, [])
+                pending.append(PendingUserMessage(endpoint=ep, frame=dict(f)))
+                return
+
+        if interrupt_requested:
+            await self._interrupt_if_needed(session_id=session_id)
+
+        await self._start_user_message(
+            ep=ep,
+            session_id=session_id,
+            payload=payload,
+            user_text=user_text,
+            user_id=user_id,
+        )
+
+    async def _start_user_message(
+        self,
+        *,
+        ep: Endpoint,
+        session_id: str,
+        payload: dict[str, Any],
+        user_text: str,
+        user_id: str,
+    ) -> None:
         turn_id = str(payload.get("turn_id") or uuid.uuid4())
         run_id = str(payload.get("run_id") or uuid.uuid4())
-
-        await self._interrupt_if_needed(session_id=session_id)
 
         async with self._lock:
             hist = self._history_by_session.setdefault(session_id, [])
@@ -261,14 +294,22 @@ class GatewaySessionService:
                 )
         finally:
             deadline_task: asyncio.Task[None] | None = None
+            pending: PendingUserMessage | None = None
             async with self._lock:
                 cur = self._active_by_session.get(session_id)
                 if cur and cur.run_id == run_id:
                     deadline_task = cur.deadline_task
                     self._active_by_session.pop(session_id, None)
+                    queued = self._pending_by_session.get(session_id)
+                    if queued:
+                        pending = queued.pop(0)
+                        if not queued:
+                            self._pending_by_session.pop(session_id, None)
             if deadline_task is not None:
                 deadline_task.cancel()
                 await asyncio.gather(deadline_task, return_exceptions=True)
+            if pending is not None:
+                await self._handle_user_message(pending.endpoint, pending.frame)
 
     async def _run_backend(
         self,
@@ -362,6 +403,8 @@ class GatewaySessionService:
         did_cancel = False
 
         async with self._lock:
+            if session_id and cancel_source in {"gateway_disconnect", "gateway_hangup"}:
+                self._pending_by_session.pop(str(session_id), None)
             if session_id:
                 cur = self._active_by_session.get(session_id)
                 if cur and (run_id is None or cur.run_id == run_id):
@@ -390,7 +433,7 @@ class GatewaySessionService:
         if self._backend_factory is not None:
             self._backend = self._backend_factory()
         else:
-            self._backend = AgentGraphRealtimeBackend()
+            self._backend = GatewayAgentAdapter()
         return self._backend
 
     def _start_deadline_monitor(
@@ -805,6 +848,23 @@ def _cancel_source_from_payload(payload: Mapping[str, Any]) -> str:
     if source in {"gateway_cancel", "gateway_interrupt", "gateway_hangup", "gateway_disconnect"}:
         return str(source)
     return "gateway_cancel"
+
+
+def _message_requests_interrupt(payload: Mapping[str, Any], session_config: Mapping[str, Any]) -> bool:
+    if payload.get("interrupt") is True:
+        return True
+    control = _metadata_control(payload)
+    if control in {"interrupt", "barge_in", "cancel_previous"}:
+        return True
+    policy = _optional_string(session_config.get("interrupt_policy"))
+    return policy in {"interrupt", "barge_in", "cancel_previous"}
+
+
+def _metadata_control(payload: Mapping[str, Any]) -> str | None:
+    metadata = payload.get("metadata")
+    if isinstance(metadata, Mapping):
+        return _optional_string(metadata.get("control"))
+    return None
 
 
 def _string_list(value: Any) -> list[str]:

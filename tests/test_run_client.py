@@ -93,6 +93,21 @@ def test_run_client_product_summary_lists_multiple_items_without_240_char_cutoff
     assert long_title in summary
 
 
+def test_run_client_timeline_formats_tool_progress() -> None:
+    module = _load_demo_module()
+
+    text = module._format_timeline_event(
+        module.AgentEvent(
+            type="tool_progress",
+            session_id="session-1",
+            tool_name="image_generation",
+            progress=0.5,
+        )
+    )
+
+    assert text == "[tool:image_generation] still running (50%)..."
+
+
 def test_build_ws_url_maps_http_scheme_and_encodes_params() -> None:
     module = _load_demo_module()
 
@@ -262,6 +277,18 @@ def test_run_client_parser_accepts_execution_strategy() -> None:
     args = module.build_parser().parse_args(["--execution-strategy", "plan_and_solve", "你好"])
 
     assert args.execution_strategy == "plan_and_solve"
+
+
+def test_console_event_sink_prints_response_delta(capsys) -> None:
+    module = _load_demo_module()
+    sink = module.RecordingConsoleEventSink()
+
+    sink.emit(module.AgentEvent(type="response_delta", session_id="s1", run_id="run_1", text="你好"))
+    sink.emit(module.AgentEvent(type="response_delta", session_id="s1", run_id="run_1", text="，世界"))
+
+    assert capsys.readouterr().out == "[answer]\n你好，世界"
+    assert sink.printed_timeline is True
+    assert sink.printed_response_stream is True
 
 
 def test_interactive_strategy_command_switches_strategy(capsys) -> None:

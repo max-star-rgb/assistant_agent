@@ -1,6 +1,6 @@
 # Realtime Agent Interrupt Phase 2 Plan
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 This document refines Phase 2 of `docs/development/realtime_phone_backend_plan.md`.
 The original MVP is already implemented: `AgentGraphRealtimeBackend` accepts a
@@ -171,6 +171,17 @@ Phase 3 is responsible for:
 Provider delta streaming, first-token metrics, richer progress events, and
 optional out-of-process transport are future realtime enhancements. They are no
 longer Phase 3 acceptance blockers.
+
+## Medium-Term Follow-Up
+
+The next development step is tracked in
+`docs/development/realtime-agent-task-state-plan.md`.
+
+That plan keeps the current Gateway cancel/interrupt lifecycle intact, but adds
+assistant-runtime task state behind it: intent revisions, reusable artifacts,
+side-effect classification, confirmation/compensation behavior, and App + Media
+status updates for realtime task revision. Do not expand this Phase 2/3 plan
+with that larger scope.
 
 ## Test Plan
 

@@ -17,6 +17,7 @@ from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.services.chat_adapter import ChatAdapter
 from assistant_agent.services.context.compactor import ContextCompactor
+from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.trace_store import TraceStore, trace_graph_node
 
 
@@ -33,6 +34,7 @@ RUNTIME_STATE_KEYS = frozenset(
         "context_compactor",
         "memory_manager",
         "trace_store",
+        "event_sink",
         "current_node_name",
         "cancel_token",
     }
@@ -50,6 +52,7 @@ class GraphRuntimeContext:
     intent_detector: IntentDetector | None = None
     router: ToolRouter | None = None
     trace_store: TraceStore | None = None
+    event_sink: EventSink | None = None
     cancel_token: Any | None = None
 
 
@@ -103,6 +106,8 @@ def _with_runtime_context(graph_state: GraphStateT, runtime_context: GraphRuntim
     enriched_state["memory_manager"] = runtime_context.memory_manager
     if runtime_context.trace_store is not None:
         enriched_state["trace_store"] = runtime_context.trace_store
+    if runtime_context.event_sink is not None:
+        enriched_state["event_sink"] = runtime_context.event_sink
     if runtime_context.cancel_token is not None:
         enriched_state["cancel_token"] = runtime_context.cancel_token
     return cast(GraphStateT, enriched_state)

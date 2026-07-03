@@ -104,6 +104,49 @@
 
 ---
 
+## 🔁 ReAct 工具调用循环篇
+
+### Tool Calling Loop 设计
+
+**核心链路**：
+
+```text
+LLM decision
+  -> ActionValidator
+  -> ToolExecutor
+  -> ToolResult
+  -> ToolObservation
+  -> next assistant iteration or final answer
+```
+
+**参数校验清单**：
+- 工具是否存在，tool input 是否是 JSON object
+- schema 类型、required、枚举、范围、`additionalProperties`
+- 业务必需参数、前置状态、权限、风险等级
+- 敏感字段、越权身份字段、危险动作参数
+
+**失败处理清单**：
+- 参数错误：rejected observation，让模型修正或追问
+- timeout / rate limit：幂等且 policy 允许时 retry
+- auth / unconfigured / permission denied：不重试，stop 或降级
+- budget exceeded：执行前阻断，关键步骤 stop，可选步骤 partial
+- 高风险动作：pending action + human approval + audit
+
+**幂等性**：对付款、发邮件、删除数据等副作用工具使用 idempotency key、执行记录、请求去重和审批状态，避免重复执行。
+
+**停止条件**：不能只靠 LLM；runtime 必须有 max iterations、token/cost budget、超时、重复失败检测、terminal tool 和 cancel/interrupt。
+
+**Prompt injection 防护**：工具结果是不可信 observation，不是 instruction；高风险动作由代码层权限、审批和审计兜底。
+
+**质量评估**：tool selection accuracy、参数正确率、任务完成率、错误恢复率、无效调用率、高风险拦截率、latency、token cost、retry rate。
+
+**面试金句**：
+> LLM 可以决定下一步意图，但工具执行边界必须由代码、schema、权限和审计来控制。
+
+> 工具结果是 observation，不是 instruction；LLM 可以读它，但不能让它改写系统规则或越权调用工具。
+
+---
+
 ## 💡 万能套话
 
 ### 工具调用设计三大原则

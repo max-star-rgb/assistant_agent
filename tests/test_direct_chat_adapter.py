@@ -363,6 +363,7 @@ def test_openai_compatible_chat_response_parses_refusal(monkeypatch) -> None:
 
 
 def test_stream_chunks_aggregate_content(monkeypatch) -> None:
+    stream_events = []
     adapter, completions, _ = sdk_adapter(
         monkeypatch,
         stream=True,
@@ -378,7 +379,14 @@ def test_stream_chunks_aggregate_content(monkeypatch) -> None:
         ],
     )
 
-    result = adapter.chat(chat_request("请用一句话介绍项目"))
+    result = adapter.chat(
+        ChatRequest(
+            user_id="u1",
+            session_id="s1",
+            user_query="请用一句话介绍项目",
+            stream_callback=lambda text, payload: stream_events.append((text, payload)),
+        )
+    )
 
     assert result.success is True
     assert result.response_text == "真实 DeepSeek 回复"
@@ -387,6 +395,9 @@ def test_stream_chunks_aggregate_content(monkeypatch) -> None:
     assert result.usage == {"prompt_tokens": 4, "completion_tokens": 3}
     assert completions.calls[0]["stream"] is True
     assert "stream_options" not in completions.calls[0]
+    assert [event[0] for event in stream_events] == ["真实", " DeepSeek 回复"]
+    assert stream_events[0][1]["token_streaming"] is True
+    assert stream_events[0][1]["chunking_strategy"] == "provider_token_delta"
 
 
 def test_stream_chunks_aggregate_tool_call_arguments(monkeypatch) -> None:

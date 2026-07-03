@@ -53,3 +53,12 @@ def test_assistant_loop_does_not_reach_into_memory_retrieval_backend() -> None:
     assert "from assistant_agent.memory.retrieval" not in source
     assert "from assistant_agent.memory.store" not in source
     assert "from assistant_agent.memory.factory" not in source
+
+
+def test_gateway_agent_adapter_does_not_route_agents_directly() -> None:
+    source = _source("src/assistant_agent/realtime/agent_graph_backend.py")
+
+    assert "AgentRouter" not in source
+    assert "AgentRouteRequest" not in source
+    assert "agent_router" not in source
+    assert "route_request" not in source

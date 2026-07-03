@@ -600,15 +600,42 @@ class RecordingConsoleEventSink:
         self.print_live = print_live
         self.mode = mode
         self.printed_timeline = False
+        self.printed_response_stream = False
+        self._response_stream_open = False
+        self._answer_header_open = False
         self.events: list[AgentEvent] = []
 
     def emit(self, event: AgentEvent) -> None:
         self.events.append(event)
-        if self.print_live:
-            text = _format_live_event(event) if self.mode == "debug" else _format_timeline_event(event)
-            if text:
-                self.printed_timeline = True
-                print(text, flush=True)
+        if not self.print_live:
+            return
+        if self.mode != "debug" and event.type == "response_delta":
+            self._print_response_delta(event)
+            return
+        if self._response_stream_open:
+            print("", flush=True)
+            self._response_stream_open = False
+        if self.mode != "debug" and self.printed_response_stream and _is_final_answer_trace_event(event):
+            return
+        text = _format_live_event(event) if self.mode == "debug" else _format_timeline_event(event)
+        if text:
+            self.printed_timeline = True
+            if self.mode != "debug" and text == "[answer]":
+                self._answer_header_open = True
+            print(text, flush=True)
+
+    def _print_response_delta(self, event: AgentEvent) -> None:
+        chunk = event.text or ""
+        if not chunk:
+            return
+        if not self.printed_response_stream:
+            if not self._answer_header_open:
+                print("[answer]", flush=True)
+            self._answer_header_open = False
+            self.printed_response_stream = True
+        self.printed_timeline = True
+        self._response_stream_open = True
+        print(_safe_display_value(chunk), end="", flush=True)
 
 
 def _format_live_event(event: AgentEvent) -> str:
@@ -621,6 +648,7 @@ def _format_live_event(event: AgentEvent) -> str:
         f"run_id={event.run_id}" if event.run_id else None,
         f"node={event.node_name}" if event.node_name else None,
         f"tool={event.tool_name}" if event.tool_name else None,
+        f"progress={event.progress:.0%}" if event.progress is not None else None,
         f"output_ref={event.output_ref}" if event.output_ref else None,
     ]
     if event.error:
@@ -629,6 +657,11 @@ def _format_live_event(event: AgentEvent) -> str:
         else:
             parts.append(f"error={event.error}")
     return " | ".join(part for part in parts if part)
+
+
+def _is_final_answer_trace_event(event: AgentEvent) -> bool:
+    trace = event.payload.get("decision_trace") if isinstance(event.payload, dict) else None
+    return isinstance(trace, dict) and trace.get("event") == "final_answer"
 
 
 def _format_live_decision_trace(event_type: str, trace: dict[str, Any]) -> str:
@@ -664,6 +697,9 @@ def _format_timeline_event(event: AgentEvent) -> str:
         return f"[run] started {event.run_id}"
     if event.type == "tool_started" and event.tool_name:
         return f"[tool:{event.tool_name}] running..."
+    if event.type == "tool_progress" and event.tool_name:
+        progress = f" ({event.progress:.0%})" if event.progress is not None else ""
+        return f"[tool:{event.tool_name}] still running{progress}..."
     if isinstance(trace, dict):
         return _format_timeline_trace(trace)
     if event.type == "task_failed":

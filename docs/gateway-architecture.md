@@ -8,7 +8,8 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 
 - Gateway is not a product entrypoint. CLI, Web UI, app, HTTP, WebSocket, and realtime call adapters are entry layers.
 - Gateway owns normalized message, session, run, cancel, interrupt, reconnect, hangup, and stream-frame semantics between entry layers and the assistant realtime backend.
-- `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default backend remains `AgentGraphRealtimeBackend`.
+- `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default adapter is `GatewayAgentAdapter`, a semantic alias of the compatibility class name `AgentGraphRealtimeBackend`.
+- The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
 - Existing `/agent/run`, CLI, eval, and Web demo paths may continue to call the shared assistant run service directly when they do not need Gateway session/run lifecycle semantics.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for App + Media Relay events that are validated before being adapted into Gateway frames.
@@ -52,7 +53,7 @@ GatewayBridge / GatewaySessionManager / GatewaySessionService
 RealtimeAgentRequest / RealtimeAgentEvent / RealtimeAgentResult
         |
         v
-AgentGraphRealtimeBackend
+GatewayAgentAdapter / AgentGraphRealtimeBackend compatibility name
         |
         v
 AgentGraphRuntime / assistant loop
@@ -84,15 +85,22 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Validate Gateway-level modality support before dispatching to the assistant backend.
 - Bind or preserve `user_id`, `session_id`, `turn_id`, and `run_id`.
 - Maintain per-session user text history for Gateway turns.
-- Register active runs and emit `run.started`, `stream.chunk`, and `run.end`.
+- Register active runs and emit `run.started`, user-visible `event.progress`, `stream.chunk`, and `run.end`.
 - Convert realtime backend events into Gateway wire frames.
 - Convert backend failures into protocol-level `run.end` or `error` frames.
-- Cancel active runs on explicit `run.cancel`, disconnect, deadline expiry, or same-session interrupt.
+- Queue ordinary same-session user messages behind the active run; cancel active runs on explicit `run.cancel`, disconnect, deadline expiry, or explicit same-session interrupt.
 - Cancel active runs immediately on `call.hangup` / media `session.end`, then return `call.hangup_ack`.
 - Manage per-user session reuse, reconnect, hangup grace, idle eviction, and live session config.
 - Keep external connection lifecycle separate from the assistant runtime internals.
 
 Gateway should remain transport-agnostic where possible. WebSocket handling belongs in an adapter such as `gateway.ws` or an API entry route, while Gateway session behavior belongs in `gateway.session`.
+
+Gateway interrupt remains a lifecycle/control concept. It should cancel or gate
+the active run, preserve session continuity, and start the next turn. It should
+not own semantic task revision such as merging the old goal with new
+constraints, deciding whether intermediate artifacts are reusable, or resolving
+committed side effects. That medium-term assistant-runtime work is tracked in
+`docs/development/realtime-agent-task-state-plan.md`.
 
 ## Entry Layer Responsibilities
 
@@ -117,7 +125,7 @@ The Web demo may expose an App + Media Relay simulator for local testing, but it
 | media event | required shape | Gateway mapping |
 | --- | --- | --- |
 | `session.start` | `session_id` from event/payload/query; optional `call_id`; optional `payload.config` | `call.incoming`; creates or resumes Gateway session and freezes session config |
-| `transcript.final` | `text`, `audio_id`, `video_ids`, or `image_ids` | `message.user`; starts an agent turn and interrupts any active run in the same session |
+| `transcript.final` | `text`, `audio_id`, `video_ids`, or `image_ids`; optional `interrupt=true` or `metadata.control=interrupt` | `message.user`; ordinary turns queue behind the active run, explicit interrupt cancels the active run and starts the new turn |
 | `run.cancel` | `session_id` or `run_id` from event/payload/query | `run.cancel`; cooperative cancellation of the active run |
 | `config.update` | non-empty `config` object | `config.update`; updates live session config before future turns |
 | `session.end` | `session_id` from event/payload/query | `call.hangup`; cancels the active run and emits `call.hangup_ack` |
@@ -127,7 +135,7 @@ Invalid JSON, unsupported event types, unknown config fields, missing transcript
 
 Media Relay v1 does not stream raw audio or video through Gateway. It sends references such as `audio_id`, `video_ids`, and `image_ids`; the assistant runtime receives those references through `RealtimeAgentRequest`.
 
-## Realtime Backend Contract
+## Realtime Adapter Contract
 
 Gateway talks to assistant execution through `assistant_agent.realtime`:
 
@@ -137,7 +145,11 @@ Gateway talks to assistant execution through `assistant_agent.realtime`:
 - `RealtimeAgentBackend`: backend protocol implemented by `AgentGraphRealtimeBackend`.
 - `RealtimeCancelToken`: cooperative cancellation token passed from Gateway to the backend.
 
-This boundary lets Gateway preserve OpenClaw-compatible session/run semantics without making Gateway depend on `AgentGraphRuntime` internals or a legacy OpenClaw adapter.
+`GatewayAgentAdapter` / `RealtimeAgentAdapter` are exported semantic names for the same thin adapter currently implemented by `AgentGraphRealtimeBackend`. The compatibility class name remains available to avoid churn in existing imports and tests.
+
+Long-running assistant turns can emit `RealtimeAgentEvent(type="run.progress", display_only=True)` for user-visible status updates such as current work, completed step, next step, blocked state, or needed user decision. The realtime adapter applies progress throttling and idle heartbeat policy before Gateway maps those updates to `event.progress` frames; entry layers decide how to display them and should not treat them as final answer content.
+
+This boundary lets Gateway preserve OpenClaw-compatible session/run semantics without making Gateway depend on `AgentGraphRuntime` internals, `AgentRouter` internals, worker agent contracts, or a legacy OpenClaw adapter. If multi-agent realtime behavior is needed, the realtime turn must enter the main `AgentGraphRuntime` / assistant loop first; that main runtime can then delegate through the tool-governed agent communication boundary. Do not teach worker agents Gateway frames such as `call.incoming`, `call.hangup`, or WebSocket payloads.
 
 ## Current Code Map
 
@@ -150,12 +162,13 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/gateway/session.py` | Gateway-managed session service: `message.user`, `run.cancel`, session history, active runs, interrupt, deadline, event mapping, and session manager. |
 | `src/assistant_agent/gateway/event_mapping.py` | Realtime backend event to Gateway frame mapping. |
 | `src/assistant_agent/gateway/ws_server.py` | Optional standalone Gateway session WebSocket server entrypoint, not the main FastAPI app route. |
-| `src/assistant_agent/realtime/` | Gateway-to-assistant backend contract and `AgentGraphRealtimeBackend`. |
+| `src/assistant_agent/realtime/` | Gateway-to-assistant adapter contract, `GatewayAgentAdapter` semantic alias, and `AgentGraphRealtimeBackend` compatibility class. |
 | `src/assistant_agent/api/gateway_runtime.py` | Process-local FastAPI-owned `GatewaySessionManager` / `GatewayBridge` boundary and shutdown cleanup. |
 | `src/assistant_agent/api/gateway_websocket.py` | FastAPI entry adapters for `/ws/gateway` Gateway frames and `/ws/realtime/media` media-service events. |
 | `src/assistant_agent/api/` | FastAPI HTTP/WebSocket entry adapters and product API routes. |
 | `src/assistant_agent/services/assistant_run_service.py` | Shared non-Gateway assistant request/run service used by CLI, HTTP, WebSocket, eval, and demos. |
 | `scripts/run_gateway_client.py` | Local operator smoke client for the Gateway frame WebSocket route. |
+| `scripts/realtime_media_client.py` | Local Media Relay protocol smoke client for `/ws/realtime/media` scenarios. |
 
 ## OpenClaw Reference Boundary
 

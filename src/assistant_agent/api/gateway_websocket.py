@@ -482,11 +482,14 @@ def _media_transcript_final_frame(
 
     media_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     metadata = dict(media_metadata)
+    interrupt_requested = _media_interrupt_requested(event, payload, metadata)
     technical = _media_technical_config(event, payload)
     if technical:
         metadata["media"] = technical
     if metadata:
         media_payload["metadata"] = metadata
+    if interrupt_requested:
+        media_payload["interrupt"] = True
     return frame(
         type="message.user",
         session_id=session_id,
@@ -504,6 +507,17 @@ def _media_session_end_payload(event: dict[str, Any], payload: dict[str, Any]) -
     if call_id:
         result["call_id"] = call_id
     return result
+
+
+def _media_interrupt_requested(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    metadata: dict[str, Any],
+) -> bool:
+    if event.get("interrupt") is True or payload.get("interrupt") is True:
+        return True
+    control = _optional_string(event.get("control") or payload.get("control") or metadata.get("control"))
+    return control in {"interrupt", "barge_in", "cancel_previous"}
 
 
 def _message_payload_with_metadata(

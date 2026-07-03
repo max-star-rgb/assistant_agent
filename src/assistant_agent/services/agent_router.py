@@ -76,7 +76,13 @@ class AgentRouter:
         )
         self.control_plane_store = control_plane_store or InMemoryAgentControlPlaneStore()
 
-    def run(self, request: AgentRouteRequest | UserRequest) -> AgentRunResponse:
+    def run(
+        self,
+        request: AgentRouteRequest | UserRequest,
+        *,
+        event_sink: Any | None = None,
+        cancel_token: Any | None = None,
+    ) -> AgentRunResponse:
         """Run one request through the selected local agent."""
 
         started_at = time.monotonic()
@@ -124,7 +130,12 @@ class AgentRouter:
         runtime_request = route_request.to_user_request(
             metadata=_request_metadata(route_request, agent_id=agent_id, mode=mode)
         )
-        response = run_assistant_request(runtime_request, runtime=runtime).api_response()
+        response = run_assistant_request(
+            runtime_request,
+            runtime=runtime,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+        ).api_response()
         response = _augment_response(
             response,
             request=route_request,

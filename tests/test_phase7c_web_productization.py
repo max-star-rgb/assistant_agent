@@ -52,20 +52,37 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "assistant_agent_trial_user_id" in html
     assert "Examples" in html
     assert "Input" in html
-    assert "Entry" in html
+    assert "Web Chat" in html
+    assert "experience-mode-select" in html
+    assert "assistant_agent_console_mode" in html
+    assert '<option value="web_chat">Web Chat</option>' in html
+    assert '<option value="app_media">App + Media Relay</option>' in html
     assert ">Mode</h2>" not in html
     assert "App + Media Relay" in html
     assert "App + Media" in html
+    assert "Assistant Call" in html
+    assert "Call transcript" in html
     assert "Start Call" in html
     assert "Hang Up" in html
     assert "Cancel Agent" in html
-    assert "Ping Gateway" in html
-    assert "Send Media Event" in html
-    assert "Interrupt With Text" in html
-    assert "chat-entry-tab" in html
-    assert "app-media-entry-tab" in html
+    assert ">Say<" in html
+    assert ">Interrupt<" in html
+    assert "Gateway Timeline" in html
+    assert "web-chat-workspace" in html
+    assert "app-media-workspace" in html
     assert "chat-panel" in html
     assert "app-media-panel" in html
+    assert '<div class="console-workspace web-chat-workspace" id="web-chat-workspace">' in html
+    assert '<div class="console-workspace app-media-workspace" id="app-media-workspace" hidden>' in html
+    assert '<section class="entry-panel active" id="chat-panel">' in html
+    assert '<section class="entry-panel" id="app-media-panel">' in html
+    assert '<details class="app-call-debug">' in html
+    assert "app-call-messages" in html
+    assert "app-call-state" in html
+    assert "app-call-timer" in html
+    assert "app-call-bubble.cancelled" in html
+    assert "markActiveAgentDraftCancelled" in html
+    assert "isCurrentRealtimeRunFrame" in html
     assert "realtime-connect" in html
     assert "realtime-ping" in html
     assert "realtime-send" in html
@@ -76,6 +93,11 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "realtime-mode-tab" not in html
     assert "realtime-panel" not in html
     assert "data-experience-mode" not in html
+    assert "Developer Debug" not in html
+    assert "chat-entry-tab" not in html
+    assert "app-media-entry-tab" not in html
+    assert "Send Media Event" not in html
+    assert "Interrupt With Text" not in html
     assert "Plan Mode" in html
     assert "普通 ReAct" in html
     assert "计划优先" in html
@@ -168,8 +190,10 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "media -> gateway" in html
     assert "gateway -> media" in html
     assert "stream.chunk" in html
+    assert "event.progress" in html
     assert "run.started" in html
     assert "run.end" in html
+    assert "still running" in html
     assert "sendMediaEvent" in html
     assert "Run detail panel" not in html
     assert "Trace detail panel" not in html

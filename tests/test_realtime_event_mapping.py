@@ -3,6 +3,7 @@ import pytest
 from assistant_agent.realtime.chunking import chunk_response_text
 from assistant_agent.realtime.event_mapping import (
     map_agent_event,
+    map_agent_event_stream,
     map_agent_event_with_final_response_chunks,
 )
 from assistant_agent.schemas.events import AgentEvent
@@ -86,6 +87,64 @@ def test_maps_final_response_to_final_event() -> None:
     assert mapped.payload["agent_event_type"] == "final_response"
 
 
+def test_maps_response_delta_to_response_chunk() -> None:
+    event = AgentEvent(
+        type="response_delta",
+        session_id="session-1",
+        run_id="run-1",
+        text="partial",
+        payload={"token_streaming": True, "source": "direct_chat"},
+    )
+
+    mapped = map_agent_event(event)
+
+    assert mapped is not None
+    assert mapped.type == "response.chunk"
+    assert mapped.text == "partial"
+    assert mapped.display_only is False
+    assert mapped.payload["agent_event_type"] == "response_delta"
+    assert mapped.payload["token_streaming"] is True
+    assert mapped.payload["source"] == "direct_chat"
+
+
+def test_maps_task_started_to_progress_stream_event() -> None:
+    event = AgentEvent(
+        type="task_started",
+        session_id="session-1",
+        run_id="run-1",
+        payload={"user_id": "user-1"},
+    )
+
+    mapped = map_agent_event_stream(event)
+
+    assert [item.type for item in mapped] == ["run.progress"]
+    assert mapped[0].display_only is True
+    assert mapped[0].payload["stage"] == "task"
+    assert mapped[0].payload["status"] == "started"
+    assert mapped[0].payload["next_step"] == "run_assistant_workflow"
+    assert mapped[0].text == "Started processing the request."
+
+
+def test_tool_started_stream_includes_progress_and_tool_lifecycle_event() -> None:
+    event = AgentEvent(
+        type="tool_started",
+        session_id="session-1",
+        run_id="run-1",
+        tool_name="product_search",
+        payload={"call_id": "call-1", "step_id": "step-1"},
+    )
+
+    mapped = map_agent_event_stream(event)
+
+    assert [item.type for item in mapped] == ["run.progress", "tool.started"]
+    progress = mapped[0]
+    assert progress.text == "Calling product_search."
+    assert progress.payload["stage"] == "tool"
+    assert progress.payload["status"] == "working"
+    assert progress.payload["current_step"] == "step-1"
+    assert mapped[1].payload["tool_name"] == "product_search"
+
+
 def test_final_response_mapping_emits_text_chunks_before_final() -> None:
     event = AgentEvent(
         type="final_response",
@@ -138,7 +197,7 @@ def test_maps_agent_error_events(agent_type: str, error: str | dict, expected_te
     assert mapped.payload["error"] == error
 
 
-def test_unsupported_agent_event_returns_no_realtime_event() -> None:
+def test_tool_progress_maps_to_progress_stream_event() -> None:
     event = AgentEvent(
         type="tool_progress",
         session_id="session-1",
@@ -148,7 +207,12 @@ def test_unsupported_agent_event_returns_no_realtime_event() -> None:
     )
 
     assert map_agent_event(event) is None
-    assert map_agent_event_with_final_response_chunks(event) == []
+    mapped = map_agent_event_stream(event)
+    assert [item.type for item in mapped] == ["run.progress"]
+    assert mapped[0].payload["tool_name"] == "product_search"
+    assert mapped[0].payload["progress"] == 0.5
+    assert mapped[0].payload["stage"] == "tool"
+    assert mapped[0].payload["status"] == "working"
 
 
 def test_chunk_response_text_bounds_long_text_without_token_streaming_semantics() -> None:

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import unittest
+from threading import Event
+from types import SimpleNamespace
 
+from assistant_agent.agent.state import AgentState
 from assistant_agent.gateway import InMemoryDuplex, GatewaySessionService, dumps_frame, frame, loads_frame
-from assistant_agent.realtime import RealtimeAgentEvent, RealtimeAgentResult
+from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentEvent, RealtimeAgentResult
+from assistant_agent.schemas.events import AgentEvent
+from assistant_agent.schemas.requests import AgentResponse, UserRequest
 
 
 async def _close_session(client_ep, session_ep, session_task) -> None:
@@ -82,6 +88,162 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert backend.requests[0].text == "hello realtime"
         assert backend.requests[0].user_id == "smoke-user"
         assert backend.requests[0].metadata["runtime"]["history"] == ["hello realtime"]
+
+    async def test_message_user_streams_progress_via_realtime_backend(self) -> None:
+        class ProgressBackend:
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                assert event_sink is not None
+                await event_sink(
+                    RealtimeAgentEvent(
+                        type="run.progress",
+                        text="Calling product_search.",
+                        payload={
+                            "stage": "tool",
+                            "status": "working",
+                            "current_step": "product_search",
+                        },
+                        display_only=True,
+                    )
+                )
+                return RealtimeAgentResult(status="completed", run_id=request.run_id)
+
+        session = GatewaySessionService(backend=ProgressBackend())
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="progress-session",
+                    payload={"text": "show progress"},
+                )
+            )
+            frames = await _collect_until_run_end(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert [received["type"] for received in frames] == [
+            "run.started",
+            "event.progress",
+            "run.end",
+        ]
+        assert frames[1]["payload"]["text"] == "Calling product_search."
+        assert frames[1]["payload"]["stage"] == "tool"
+        assert frames[1]["payload"]["status"] == "working"
+        assert frames[1]["payload"]["display_only"] is True
+
+    async def test_message_user_streams_through_gateway_agent_adapter(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+            captured["request"] = request
+            captured["cancel_token"] = kwargs.get("cancel_token")
+            kwargs["event_sink"].emit(
+                AgentEvent(
+                    type="response_delta",
+                    session_id=request.session_id,
+                    run_id="main-runtime-run-1",
+                    text="main runtime chunk",
+                )
+            )
+            state = AgentState.from_request(request, run_id="main-runtime-run-1")
+            state.set_response(AgentResponse(message="main runtime final"))
+            return SimpleNamespace(state=state)
+
+        session = GatewaySessionService(
+            backend=GatewayAgentAdapter(run_request=fake_run_assistant_request)
+        )
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="adapter-session",
+                    user_id="adapter-user",
+                    payload={
+                        "text": "hello adapter",
+                        "turn_id": "turn-single",
+                        "run_id": "gateway-run-single",
+                    },
+                )
+            )
+            frames = await _collect_until_run_end(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert [received["type"] for received in frames] == [
+            "run.started",
+            "stream.chunk",
+            "run.end",
+        ]
+        assert frames[0]["turn_id"] == "turn-single"
+        assert frames[0]["run_id"] == "gateway-run-single"
+        assert frames[1]["payload"]["text"] == "main runtime chunk"
+        assert frames[-1]["reason"] == "completed"
+        request = captured["request"]
+        assert isinstance(request, UserRequest)
+        assert request.text == "hello adapter"
+        assert request.metadata["realtime"]["turn_id"] == "turn-single"
+        assert request.metadata["realtime"]["run_id"] == "gateway-run-single"
+        assert captured["cancel_token"] is not None
+
+    async def test_gateway_cancel_reaches_gateway_agent_adapter_runtime(self) -> None:
+        cancel_seen = Event()
+        captured: dict[str, object] = {}
+
+        def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+            token = kwargs["cancel_token"]
+            captured["cancel_token"] = token
+            deadline = time.monotonic() + 2.0
+            while not token.is_cancelled() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            if token.is_cancelled():
+                cancel_seen.set()
+            state = AgentState.from_request(request, run_id="main-runtime-cancel-run")
+            state.cancel(details={**token.cancel_metadata, "cancel_phase": "runtime_wait"})
+            return SimpleNamespace(state=state)
+
+        session = GatewaySessionService(
+            backend=GatewayAgentAdapter(run_request=fake_run_assistant_request)
+        )
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+        frames = []
+
+        async def _read_cancel_flow():
+            async for received in client_ep:
+                frames.append(received)
+                if received["type"] == "run.started":
+                    await client_ep.send(
+                        frame(
+                            type="run.cancel",
+                            session_id="adapter-cancel-session",
+                            run_id=received["run_id"],
+                        )
+                    )
+                if received["type"] == "run.end":
+                    return frames
+            raise AssertionError("endpoint closed before run.end")
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="adapter-cancel-session",
+                    payload={"text": "cancel adapter", "run_id": "gateway-run-cancel"},
+                )
+            )
+            frames = await asyncio.wait_for(_read_cancel_flow(), timeout=3.0)
+            await asyncio.wait_for(asyncio.to_thread(cancel_seen.wait, 2.0), timeout=3.0)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert frames[-1]["reason"] == "cancelled"
+        assert cancel_seen.is_set()
+        assert captured["cancel_token"].cancel_metadata["cancel_source"] == "gateway_cancel"
 
     async def test_cancel_preserves_cancelled_run_end(self) -> None:
         class CancellableBackend:
@@ -254,7 +416,7 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
                             frame(
                                 type="message.user",
                                 session_id="interrupt-session",
-                                payload={"text": "second"},
+                                payload={"text": "second", "interrupt": True},
                             )
                         )
                     elif received["type"] == "run.end" and received.get("run_id") == first_run:
@@ -278,6 +440,73 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert saw_second_completed is True
         await asyncio.wait_for(backend.first_cancel_seen.wait(), timeout=2.0)
         assert backend.first_cancel_metadata["cancel_source"] == "gateway_interrupt"
+
+    async def test_message_user_queues_behind_active_run_without_interrupt(self) -> None:
+        class QueueBackend:
+            def __init__(self) -> None:
+                self.release_first = asyncio.Event()
+                self.requests = []
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.requests.append(request)
+                assert event_sink is not None
+                if request.text == "first":
+                    await self.release_first.wait()
+                    return RealtimeAgentResult(status="completed", run_id=request.run_id)
+                await event_sink(RealtimeAgentEvent(type="response.chunk", text="second done"))
+                return RealtimeAgentResult(status="completed", run_id=request.run_id, expects_reply=True)
+
+        backend = QueueBackend()
+        session = GatewaySessionService(backend=backend)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+        frames = []
+        first_run = None
+        second_run = None
+
+        try:
+            await client_ep.send(
+                frame(type="message.user", session_id="queue-session", payload={"text": "first"})
+            )
+
+            async def _read_until_second_run_end() -> None:
+                nonlocal first_run, second_run
+                async for received in client_ep:
+                    frames.append(received)
+                    if received["type"] == "run.started" and first_run is None:
+                        first_run = received["run_id"]
+                        await client_ep.send(
+                            frame(
+                                type="message.user",
+                                session_id="queue-session",
+                                payload={"text": "second"},
+                            )
+                        )
+                        backend.release_first.set()
+                    elif received["type"] == "run.started":
+                        second_run = received["run_id"]
+                    elif received["type"] == "run.end" and second_run is not None:
+                        return
+
+            await asyncio.wait_for(_read_until_second_run_end(), timeout=3.0)
+        finally:
+            backend.release_first.set()
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert [received["type"] for received in frames] == [
+            "run.started",
+            "run.end",
+            "run.started",
+            "stream.chunk",
+            "run.end",
+        ]
+        assert frames[1]["run_id"] == first_run
+        assert frames[1]["reason"] == "completed"
+        assert frames[-1]["run_id"] == second_run
+        assert frames[-1]["reason"] == "completed"
+        assert first_run != second_run
+        assert [request.text for request in backend.requests] == ["first", "second"]
+        assert backend.requests[1].metadata["runtime"]["history"] == ["first", "second"]
 
     async def test_interrupt_suppresses_previous_run_events_after_new_message(self) -> None:
         class InterruptStaleEventBackend:
@@ -333,7 +562,7 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
                             frame(
                                 type="message.user",
                                 session_id="interrupt-stale-session",
-                                payload={"text": "second"},
+                                payload={"text": "second", "interrupt": True},
                             )
                         )
                     elif received["type"] == "run.started":

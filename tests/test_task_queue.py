@@ -29,9 +29,11 @@ def test_in_memory_task_queue_returns_runtime_events() -> None:
     assert "tool_started" in event_types
     assert "tool_finished" in event_types
     assert "agent_trace_observation" in event_types
-    assert event_types[-2:] == ["graph_node_finished", "final_response"]
+    assert event_types[-3:] == ["graph_node_finished", "response_delta", "final_response"]
     tool_started = next(event for event in events if event.type == "tool_started")
+    response_delta = next(event for event in events if event.type == "response_delta")
     assert tool_started.tool_name == "product_search"
+    assert response_delta.payload["source"] == "runtime_final_response"
 
 
 def test_task_queue_records_failed_task_status_and_events() -> None:

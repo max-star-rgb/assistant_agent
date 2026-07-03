@@ -12,6 +12,7 @@ from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.agent.tool_input_builder import build_tool_input
 from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.schemas.capabilities import canonical_intent
+from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.planning import TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
@@ -33,6 +34,7 @@ class AgentGraphState(TypedDict):
     current_step_index: int
     trace_id: NotRequired[str]
     trace_store: NotRequired[TraceStore]
+    event_sink: NotRequired[object]
     current_node_name: NotRequired[str]
 
 
@@ -183,13 +185,16 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
             return graph_state
         memory_summaries = [item.summary for item in state.memory_context]
         memory_context_text = state.request.metadata.get("memory_context_text", "")
-        result = graph_state["chat_adapter"].chat(
+        chat_request = _with_response_stream_callback(
             build_direct_chat_request(
                 graph_state["request"],
                 memory_context=memory_summaries,
                 system_instruction="You are a helpful text-first assistant.",
-            )
+            ),
+            graph_state,
+            source="direct_chat",
         )
+        result = graph_state["chat_adapter"].chat(chat_request)
         state.provider_budget.record_call(
             run_id=state.run_id,
             capability="direct_chat",
@@ -271,6 +276,33 @@ def _is_assistant_loop_state(graph_state: AgentGraphState) -> bool:
 def _uses_mock_chat_adapter(graph_state: AgentGraphState) -> bool:
     chat_adapter = graph_state.get("chat_adapter")
     return getattr(chat_adapter, "provider", "") == "mock"
+
+
+def _with_response_stream_callback(
+    request,
+    graph_state: AgentGraphState,
+    *,
+    source: str,
+):
+    event_sink = graph_state.get("event_sink")
+    if event_sink is None:
+        return request
+    state = graph_state["state"]
+
+    def emit_delta(text: str, payload: dict) -> None:
+        if not text or not hasattr(event_sink, "emit"):
+            return
+        event_sink.emit(
+            AgentEvent(
+                type="response_delta",
+                session_id=state.session_id,
+                run_id=state.run_id,
+                text=text,
+                payload={**dict(payload), "source": source},
+            )
+        )
+
+    return request.model_copy(update={"stream_callback": emit_delta})
 
 
 def _run_planned_tools(graph_state: AgentGraphState, stop_after_first: bool) -> AgentGraphState:

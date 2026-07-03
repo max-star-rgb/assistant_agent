@@ -44,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8000, help="Port to bind.")
     parser.add_argument("--public-url", default=None, help="Optional URL to print for sharing with beta users.")
     parser.add_argument("--reload", action="store_true", help="Enable uvicorn auto-reload for local development.")
+    parser.add_argument(
+        "--access-log",
+        action="store_true",
+        help="Enable uvicorn per-request access logs. Disabled by default for a quieter dev console.",
+    )
     parser.add_argument("--env-file", default=".env", help="Env file to load before starting.")
     parser.add_argument("--no-env-file", action="store_true", help="Do not load a dotenv file before starting.")
     parser.add_argument(
@@ -195,6 +200,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Starting Assistant backend server on {base}")
     print(f"  Web Console (browser client): {url}")
     print(f"  CLI client: python scripts/run_client.py --server {base} \"你好\"")
+    print(f"  access_log: {'enabled' if args.access_log else 'disabled'}")
     _print_runtime_summary(config, loaded_env_keys=sorted(loaded_env))
     if args.public_url:
         print(f"Share this URL with trial users: {args.public_url}")
@@ -207,6 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         host=args.host,
         port=args.port,
         reload=args.reload,
+        access_log=args.access_log,
     )
     return 0
 

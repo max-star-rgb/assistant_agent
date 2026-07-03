@@ -16,6 +16,7 @@ from assistant_agent.api.websocket import mock_agent_events
 from assistant_agent.schemas.planning import IntentResult
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.config import ProviderConfig
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
@@ -34,6 +35,20 @@ class ScriptedChatAdapter:
         index = min(self.calls, len(self.outputs) - 1)
         self.calls += 1
         return ChatResult(response_text=self.outputs[index], provider=self.provider, model="scripted")
+
+
+class StreamingFinalChatAdapter:
+    provider = "streaming-scripted"
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        if request.stream_callback is not None:
+            request.stream_callback("流式", {"provider": self.provider, "token_streaming": True})
+            request.stream_callback("回答", {"provider": self.provider, "token_streaming": True})
+        return ChatResult(response_text="流式回答", provider=self.provider, model="scripted-stream")
 
 
 class RecordingWebSocketRuntime:
@@ -222,9 +237,47 @@ def test_websocket_final_agent_response_includes_full_run_payload() -> None:
     assert any(step.get("action") == "image_generation" for step in response["decision_trace"])
 
 
+def test_websocket_streams_response_delta_before_agent_response() -> None:
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/ws/agent/stream-delta?text=你好") as websocket:
+        events = _receive_until(websocket, "agent_response")
+
+    event_types = [event["type"] for event in events]
+    assert "response_delta" in event_types
+    assert event_types.index("response_delta") < event_types.index("agent_response")
+    streamed = "".join(event.get("text") or "" for event in events if event["type"] == "response_delta")
+    final_text = events[-1]["payload"]["response"]["response_text"]
+    assert streamed
+    assert streamed in final_text
+
+
+def test_websocket_streams_native_final_answer_deltas_before_completion() -> None:
+    adapter = StreamingFinalChatAdapter()
+    try:
+        routes_agent._RUNTIME = AgentGraphRuntime(chat_adapter=adapter)
+        client = TestClient(create_app())
+
+        with client.websocket_connect("/ws/agent/native-stream?text=你好") as websocket:
+            events = _receive_until(websocket, "agent_response")
+    finally:
+        routes_agent._RUNTIME = None
+
+    deltas = [event for event in events if event["type"] == "response_delta"]
+    assert [event["text"] for event in deltas] == ["流式", "回答"]
+    assert [event["payload"]["source"] for event in deltas] == [
+        "assistant_native_final_answer",
+        "assistant_native_final_answer",
+    ]
+    assert events.index(deltas[0]) < len(events) - 1
+    assert events[-1]["payload"]["response"]["response_text"] == "流式回答"
+    assert adapter.requests[0].stream_callback is not None
+
+
 def test_websocket_accepts_explicit_plan_and_solve_strategy() -> None:
     try:
         routes_agent._RUNTIME = AgentGraphRuntime(
+            config=ProviderConfig(assistant_tool_call_mode="prompt_json"),
             chat_adapter=ScriptedChatAdapter(
                 [
                     (
@@ -266,6 +319,7 @@ def test_websocket_emits_structured_error_event_for_failed_tool() -> None:
     registry.register(FailingPriceCompareTool())
     try:
         routes_agent._RUNTIME = AgentGraphRuntime(
+            config=ProviderConfig(assistant_tool_call_mode="prompt_json"),
             registry=registry,
             chat_adapter=ScriptedChatAdapter(
                 [
