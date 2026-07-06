@@ -24,6 +24,7 @@ from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.services.chat_adapter import (
     ChatAdapter,
     ChatRequest,
@@ -31,6 +32,7 @@ from assistant_agent.services.chat_adapter import (
     create_chat_adapter,
 )
 from assistant_agent.services.provider_specs import resolve_chat_provider
+from assistant_agent.tools.registry import create_default_registry
 
 
 DEFAULT_TEXT = "用一句中文回答：杭州适合喝什么茶？"
@@ -124,7 +126,9 @@ class TimingEventSink:
         self.first_event_ms: float | None = None
         self.first_response_delta_ms: float | None = None
         self.first_token_streaming_response_delta_ms: float | None = None
+        self.first_progress_message_ms: float | None = None
         self.first_response_delta_preview = ""
+        self.progress_messages: list[dict[str, Any]] = []
         self.event_counts: dict[str, int] = {}
 
     def emit(self, event: AgentEvent) -> None:
@@ -141,13 +145,26 @@ class TimingEventSink:
                 and self.first_token_streaming_response_delta_ms is None
             ):
                 self.first_token_streaming_response_delta_ms = elapsed_ms
+        if event.type == "progress_message":
+            if self.first_progress_message_ms is None:
+                self.first_progress_message_ms = elapsed_ms
+            self.progress_messages.append(
+                {
+                    "elapsed_ms": _round_ms(elapsed_ms),
+                    "text": event.text,
+                    "tool_name": event.tool_name,
+                    "replaceable": event.payload.get("replaceable") is True,
+                }
+            )
 
     def as_payload(self) -> dict[str, Any]:
         return {
             "first_event_ms": _round_ms(self.first_event_ms),
             "first_response_delta_ms": _round_ms(self.first_response_delta_ms),
             "first_token_streaming_response_delta_ms": _round_ms(self.first_token_streaming_response_delta_ms),
+            "first_progress_message_ms": _round_ms(self.first_progress_message_ms),
             "first_response_delta_preview": self.first_response_delta_preview,
+            "progress_messages": list(self.progress_messages),
             "event_counts": dict(sorted(self.event_counts.items())),
         }
 
@@ -261,6 +278,9 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
             "runtime.first_response_delta_ms": (
                 "End-to-end runtime time from run_state() call to first response_delta event."
             ),
+            "runtime.first_progress_message_ms": (
+                "End-to-end runtime time from run_state() call to first replaceable progress_message event."
+            ),
             "runtime.chat_calls": "Provider calls made inside the runtime, each measured by TimingChatAdapter.",
             "runtime.chat_calls.message_kind": "Provider-native response type: final_answer, tool_call, or refusal.",
             "runtime.chat_calls.tool_names": "Native tool names returned by the provider for that chat call.",
@@ -287,10 +307,13 @@ def _missing_deepseek_config(source: Mapping[str, str]) -> str | None:
 
 def _measure_provider_sample(adapter: ChatAdapter, args: argparse.Namespace, run_index: int) -> dict[str, Any]:
     timed_adapter = TimingChatAdapter(adapter)
+    tools = _provider_sample_tools(args)
     request = ChatRequest(
         user_id=args.user_id,
         session_id=f"{args.session_id}_provider_{run_index}",
         user_query=args.text,
+        tools=tools,
+        tool_choice="auto" if tools else None,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
     )
@@ -355,6 +378,7 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "provider.total_ms": [],
         "runtime.first_response_delta_ms": [],
         "runtime.first_token_streaming_response_delta_ms": [],
+        "runtime.first_progress_message_ms": [],
         "runtime.total_ms": [],
         "runtime.chat_call_ttft_ms": [],
         "runtime.chat_call_total_ms": [],
@@ -372,6 +396,7 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 metrics["runtime.first_token_streaming_response_delta_ms"],
                 runtime.get("first_token_streaming_response_delta_ms"),
             )
+            _append_metric(metrics["runtime.first_progress_message_ms"], runtime.get("first_progress_message_ms"))
             _append_metric(metrics["runtime.total_ms"], runtime.get("total_ms"))
             for call in runtime.get("chat_calls", []):
                 if isinstance(call, dict):
@@ -417,6 +442,19 @@ def _runtime_assertions_requested(args: argparse.Namespace) -> bool:
     return (
         getattr(args, "expect_chat_calls", None) is not None
         or getattr(args, "expect_first_call_kind", None) is not None
+        or bool(getattr(args, "expect_tool", []) or [])
+    )
+
+
+def _provider_sample_tools(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if not _provider_tool_schema_requested(args):
+        return []
+    return tool_specs_to_openai_tools(create_default_registry().list_specs())
+
+
+def _provider_tool_schema_requested(args: argparse.Namespace) -> bool:
+    return (
+        getattr(args, "expect_first_call_kind", None) == "tool_call"
         or bool(getattr(args, "expect_tool", []) or [])
     )
 

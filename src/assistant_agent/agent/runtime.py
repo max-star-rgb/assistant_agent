@@ -41,6 +41,21 @@ from assistant_agent.services.video_context import InMemoryVideoContextStore, Vi
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
+PROGRESS_MESSAGES = {
+    "product_search": "我查一下。",
+    "price_compare": "我比一下价格。",
+    "vision_understanding": "我看一下。",
+    "video_understanding": "我分析一下。",
+    "image_generation": "我开始生成，可能需要一点时间。",
+}
+
+
+def progress_message_for_tool(tool_name: str) -> str:
+    """Return the deterministic user-visible wait message for a tool."""
+
+    return PROGRESS_MESSAGES.get(tool_name, "我处理一下。")
+
+
 class AgentGraphRuntime:
     """Run agent requests through the compiled LangGraph workflow."""
 
@@ -309,12 +324,22 @@ class AgentGraphRuntime:
         native_calls: list[dict[str, Any]] = []
         max_iterations = max(1, self.config.max_tool_iterations)
         for iteration in range(max_iterations):
+            stream_buffer = (
+                _NativeRuntimeResponseBuffer(state, event_sink)
+                if iteration == 0 and event_sink is not None
+                else None
+            )
+            stream_callback = (
+                stream_buffer.emit_delta
+                if stream_buffer is not None
+                else _native_runtime_stream_callback(state, event_sink)
+            )
             chat_request = self._native_runtime_chat_request(
                 request,
                 state=state,
                 observations=observations,
                 native_calls=native_calls,
-                event_sink=event_sink,
+                stream_callback=stream_callback,
                 iteration=iteration,
                 max_iterations=max_iterations,
             )
@@ -323,10 +348,13 @@ class AgentGraphRuntime:
             result = self.chat_adapter.chat(chat_request)
             self._record_native_runtime_chat_call(state, request, result)
             if result.success and result.tool_calls:
+                if stream_buffer is not None:
+                    stream_buffer.discard()
                 call = result.tool_calls[0]
                 call_payload = call.model_dump(mode="json")
                 native_calls.append(call_payload)
                 state.request.metadata.setdefault("native_tool_calls", []).append(call_payload)
+                _record_native_tool_call_preamble(state, tool_name=call.name, content=result.response_text)
                 decision = native_tool_call_to_assistant_decision(call)
                 _record_native_decision_metadata(
                     state,
@@ -354,6 +382,11 @@ class AgentGraphRuntime:
                     _record_native_observation_metadata(state, observation)
                     _set_native_validation_rejection_response(state, validation.model_dump(mode="json"))
                     return state
+                _emit_native_tool_progress_message(
+                    state,
+                    tool_name=decision.tool_name or call.name,
+                    event_sink=event_sink,
+                )
                 tool_result = tool_executor.run_tool(
                     state,
                     decision.step_id or f"native_runtime_{iteration + 1}",
@@ -375,6 +408,8 @@ class AgentGraphRuntime:
                     return state
                 continue
 
+            if stream_buffer is not None:
+                stream_buffer.flush()
             self._set_native_runtime_response(state, result, observations)
             return state
 
@@ -398,7 +433,7 @@ class AgentGraphRuntime:
         state: AgentState,
         observations: list[dict[str, Any]],
         native_calls: list[dict[str, Any]],
-        event_sink: EventSink | None,
+        stream_callback: Any | None,
         iteration: int,
         max_iterations: int,
     ) -> ChatRequest | None:
@@ -456,7 +491,7 @@ class AgentGraphRuntime:
             tool_choice="auto",
             temperature=0.2,
             max_tokens=1024,
-            stream_callback=_native_runtime_stream_callback(state, event_sink),
+            stream_callback=stream_callback,
         )
 
     def _record_native_runtime_chat_call(
@@ -626,6 +661,28 @@ class _ResponseDeltaTrackingEventSink:
         if event.type == "response_delta":
             self.response_delta_emitted = True
         self.inner.emit(event)
+
+
+class _NativeRuntimeResponseBuffer:
+    """Buffer first-call model text until the runtime knows it is not a tool call."""
+
+    def __init__(self, state: AgentState, event_sink: EventSink) -> None:
+        self.state = state
+        self.event_sink = event_sink
+        self.events: list[AgentEvent] = []
+
+    def emit_delta(self, text: str, payload: dict[str, Any]) -> None:
+        if not text:
+            return
+        self.events.append(_native_response_delta_event(self.state, text, payload))
+
+    def flush(self) -> None:
+        for event in self.events:
+            self.event_sink.emit(event)
+        self.events.clear()
+
+    def discard(self) -> None:
+        self.events.clear()
 
 
 def _is_mock_chat_adapter(chat_adapter: ChatAdapter) -> bool:
@@ -805,6 +862,42 @@ def _record_native_observation_metadata(state: AgentState, observation: dict[str
     )
 
 
+def _record_native_tool_call_preamble(state: AgentState, *, tool_name: str, content: str) -> None:
+    normalized = content.strip()
+    if not normalized:
+        return
+    preambles = state.request.metadata.setdefault("native_tool_call_preambles", [])
+    if not isinstance(preambles, list):
+        preambles = []
+        state.request.metadata["native_tool_call_preambles"] = preambles
+    preambles.append({"tool_name": tool_name, "content": normalized})
+
+
+def _emit_native_tool_progress_message(
+    state: AgentState,
+    *,
+    tool_name: str,
+    event_sink: EventSink | None,
+) -> None:
+    if event_sink is None:
+        return
+    text = progress_message_for_tool(tool_name)
+    event_sink.emit(
+        AgentEvent(
+            type="progress_message",
+            session_id=state.session_id,
+            run_id=state.run_id,
+            tool_name=tool_name,
+            text=text,
+            payload={
+                "source": "native_tool_wait",
+                "replaceable": True,
+                "tool_name": tool_name,
+            },
+        )
+    )
+
+
 def _native_finish_reason(result: Any, *, fallback: str) -> str:
     if result.finish_reason:
         return f"{fallback} finish_reason={result.finish_reason}."
@@ -820,17 +913,19 @@ def _native_runtime_stream_callback(state: AgentState, event_sink: EventSink | N
     def emit_delta(text: str, payload: dict[str, Any]) -> None:
         if not text:
             return
-        event_sink.emit(
-            AgentEvent(
-                type="response_delta",
-                session_id=state.session_id,
-                run_id=state.run_id,
-                text=text,
-                payload={**dict(payload), "source": "assistant_native_final_answer"},
-            )
-        )
+        event_sink.emit(_native_response_delta_event(state, text, payload))
 
     return emit_delta
+
+
+def _native_response_delta_event(state: AgentState, text: str, payload: dict[str, Any]) -> AgentEvent:
+    return AgentEvent(
+        type="response_delta",
+        session_id=state.session_id,
+        run_id=state.run_id,
+        text=text,
+        payload={**dict(payload), "source": "assistant_native_final_answer"},
+    )
 
 
 def _native_runtime_tool_call_payload(

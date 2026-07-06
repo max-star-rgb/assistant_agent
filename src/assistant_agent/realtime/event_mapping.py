@@ -31,6 +31,7 @@ PROGRESS_EVENT_TYPES = {
     "tool_finished",
     "tool_completed",
     "tool_failed",
+    "progress_message",
     "task_cancelled",
 }
 
@@ -192,6 +193,8 @@ def _progress_stage_and_status(event: AgentEvent) -> tuple[str, str]:
         return "tool", "completed"
     if event.type == "tool_failed":
         return "tool", "failed"
+    if event.type == "progress_message":
+        return "tool", "working"
     if event.type == "task_cancelled":
         return "task", "cancelled"
     return "runtime", "working"
@@ -250,6 +253,12 @@ def _progress_message(event: AgentEvent, *, status: str) -> str:
             "Failed while running",
             event.tool_name,
             fallback="A tool call failed.",
+        )
+    if event.type == "progress_message":
+        return event.text or _named_message(
+            "Working on",
+            event.tool_name,
+            fallback="Working on the request.",
         )
     if event.type == "task_cancelled":
         return "Run cancelled."

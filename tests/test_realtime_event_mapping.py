@@ -145,6 +145,28 @@ def test_tool_started_stream_includes_progress_and_tool_lifecycle_event() -> Non
     assert mapped[1].payload["tool_name"] == "product_search"
 
 
+def test_progress_message_streams_as_replaceable_run_progress_only() -> None:
+    event = AgentEvent(
+        type="progress_message",
+        session_id="session-1",
+        run_id="run-1",
+        tool_name="product_search",
+        text="我查一下。",
+        payload={"replaceable": True, "source": "native_tool_wait"},
+    )
+
+    mapped = map_agent_event_stream(event)
+
+    assert [item.type for item in mapped] == ["run.progress"]
+    assert mapped[0].text == "我查一下。"
+    assert mapped[0].display_only is True
+    assert mapped[0].payload["agent_event_type"] == "progress_message"
+    assert mapped[0].payload["stage"] == "tool"
+    assert mapped[0].payload["status"] == "working"
+    assert mapped[0].payload["tool_name"] == "product_search"
+    assert mapped[0].payload["replaceable"] is True
+
+
 def test_final_response_mapping_emits_text_chunks_before_final() -> None:
     event = AgentEvent(
         type="final_response",

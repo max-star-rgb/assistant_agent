@@ -8,6 +8,7 @@
 - 工具契约由 `ToolSpec` 表达，来源是 `ToolRegistry.list_specs()`；真实 LLM 路径把 ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
 - `ToolSpec.side_effect` 表达工具副作用策略；未知工具默认按 confirmation-sensitive 处理。realtime task-state 会消费该策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
 - 真实 LLM 只能返回自然语言 `content` 或 provider-native `tool_calls`。native tool call 会先归一化成内部 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
+- 当第一轮 native response 是 `tool_calls` 时，runtime 不把该轮模型 `content` 当作正式回答输出；它只记录为内部 preamble，并发出一条可替换的 `progress_message` 事件（例如 `product_search` -> “我查一下。”）。该事件不写入 LLM messages，也不参与第二轮回答生成。
 - 工具执行必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。API、WebSocket、MCP 或新增入口都不能直接 `registry.run(...)`。
 - `ToolExecutor` 是运行时治理边界：绑定 user/session 身份、检查 provider budget、记录 state/tool history/event/trace、执行 retry/recovery，再调用 registry。
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
@@ -81,7 +82,7 @@ UserRequest
 - 非 mock chat adapter 一律走 native loop；不再存在 `response_mode` 或 `assistant_tool_call_mode` 分支。
 - 请求向 provider 发送 `messages`、`tools` 和 `tool_choice="auto"`。
 - provider 返回 `content` 或 `refusal` 时，runtime 直接作为用户可见回答输出；普通 direct answer 应只有一次 chat call。
-- provider 返回 `tool_calls` 时，只执行第一个 tool call，先归一化为内部 `AssistantDecision(type="tool_call")`，再进入 `ActionValidator -> ToolExecutor -> ToolRegistry`。
+- provider 返回 `tool_calls` 时，只执行第一个 tool call，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再归一化为内部 `AssistantDecision(type="tool_call")` 并进入 `ActionValidator -> ToolExecutor -> ToolRegistry`。
 - 工具 observation 会作为后续 native messages 中的 `tool` role 内容回传；拿到工具结果后的第二次 LLM 调用是合理工具路径，不是隐藏控制面调用。
 - 如果 provider adapter 明确 `supports_native_tools=False`，runtime fails immediately，不静默 fallback 到旧 JSON 控制面。
 - `AssistantDecision` 仍是内部治理结构，用于复用 validator/executor/trace；真实 LLM 不再被要求输出自定义 `AssistantDecision` JSON。

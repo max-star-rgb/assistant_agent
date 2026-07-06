@@ -108,6 +108,60 @@ def test_deepseek_latency_provider_mode_outputs_ttft(monkeypatch, capsys) -> Non
     assert payload["summary"]["provider.ttft_ms"]["count"] == 1
 
 
+def test_deepseek_latency_provider_tool_call_only_sample_uses_tool_schema(monkeypatch) -> None:
+    module = _load_module()
+
+    class FakeChatAdapter:
+        provider = "deepseek"
+        model = "deepseek-chat"
+
+        def chat(self, request: ChatRequest) -> ChatResult:
+            assert request.tools
+            assert request.tool_choice == "auto"
+            return ChatResult(
+                response_text="",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call_1",
+                        name="product_search",
+                        arguments={"query": "通勤蓝牙耳机", "limit": 2},
+                        raw={
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "product_search", "arguments": "{}"},
+                        },
+                    )
+                ],
+                provider=self.provider,
+                model=self.model,
+                latency_ms=12,
+                finish_reason="tool_calls",
+                message_kind="tool_call",
+                output_ref="provider://chat/deepseek",
+            )
+
+    sample = module._measure_provider_sample(
+        FakeChatAdapter(),
+        Namespace(
+            user_id="latency_user",
+            session_id="latency_session",
+            text="请使用商品搜索工具帮我找一款通勤蓝牙耳机",
+            max_tokens=128,
+            temperature=0.2,
+            expect_first_call_kind="tool_call",
+            expect_tool=["product_search"],
+        ),
+        1,
+    )
+
+    assert sample["status"] == "success"
+    assert sample["message_kind"] == "tool_call"
+    assert sample["tool_call_count"] == 1
+    assert sample["tool_names"] == ["product_search"]
+    assert sample["response_chars"] == 0
+    assert sample["ttft_ms"] is None
+
+
 def test_deepseek_latency_runtime_mode_outputs_end_to_end_latency(monkeypatch, capsys) -> None:
     module = _load_module()
 
@@ -220,6 +274,7 @@ def test_deepseek_latency_runtime_sample_uses_single_native_chat_call(monkeypatc
     assert chat_call["finish_reason"] == "stop"
     assert chat_call["tool_call_count"] == 0
     assert chat_call["tool_names"] == []
+    assert sample["progress_messages"] == []
     assert sample["first_response_delta_preview"] == "杭州"
 
 
@@ -238,8 +293,17 @@ def test_deepseek_latency_runtime_sample_records_native_tool_call_sequence(monke
             assert request.tool_choice == "auto"
             self.calls += 1
             if self.calls == 1:
+                if request.stream_callback is not None:
+                    request.stream_callback(
+                        "好的",
+                        {
+                            "provider": self.provider,
+                            "model": self.model,
+                            "token_streaming": True,
+                        },
+                    )
                 return ChatResult(
-                    response_text="",
+                    response_text="好的",
                     tool_calls=[
                         NativeToolCall(
                             id="call_1",
@@ -304,8 +368,15 @@ def test_deepseek_latency_runtime_sample_records_native_tool_call_sequence(monke
     assert sample["chat_calls"][0]["finish_reason"] == "tool_calls"
     assert sample["chat_calls"][0]["tool_call_count"] == 1
     assert sample["chat_calls"][0]["tool_names"] == ["product_search"]
+    assert sample["chat_calls"][0]["first_delta_preview"] == "好的"
     assert sample["chat_calls"][1]["message_kind"] == "final_answer"
     assert sample["chat_calls"][1]["tool_call_count"] == 0
+    assert sample["event_counts"]["progress_message"] == 1
+    assert len(sample["progress_messages"]) == 1
+    assert sample["progress_messages"][0]["elapsed_ms"] is not None
+    assert sample["progress_messages"][0]["text"] == "我查一下。"
+    assert sample["progress_messages"][0]["tool_name"] == "product_search"
+    assert sample["progress_messages"][0]["replaceable"] is True
     assert sample["first_response_delta_preview"] == "已找到"
 
 

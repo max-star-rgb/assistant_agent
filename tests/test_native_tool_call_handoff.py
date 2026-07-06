@@ -1,12 +1,13 @@
 import json
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.agent.runtime import AgentGraphRuntime, progress_message_for_tool
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult, ProviderChatCapabilities
+from assistant_agent.services.event_sink import ListEventSink
 
 
 class NativeToolChatAdapter:
@@ -98,6 +99,15 @@ def refusal_result(message: str) -> ChatResult:
     )
 
 
+def test_progress_message_for_tool_uses_simple_static_mapping() -> None:
+    assert progress_message_for_tool("product_search") == "我查一下。"
+    assert progress_message_for_tool("price_compare") == "我比一下价格。"
+    assert progress_message_for_tool("vision_understanding") == "我看一下。"
+    assert progress_message_for_tool("video_understanding") == "我分析一下。"
+    assert progress_message_for_tool("image_generation") == "我开始生成，可能需要一点时间。"
+    assert progress_message_for_tool("unknown_tool") == "我处理一下。"
+
+
 def test_native_tool_call_runs_through_validator_executor_and_observation() -> None:
     adapter = NativeToolChatAdapter(
         [
@@ -130,6 +140,60 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
     assert state.response.message == "已根据 native tool call 搜索通勤耳机。"
     assert state.request.metadata["assistant_loop_steps"][0]["safety_notes"] == ["native_tool_call"]
     assert any(step.get("observation_tool") == "product_search" for step in state.request.metadata["assistant_loop_steps"])
+
+
+def test_native_tool_call_emits_replaceable_progress_and_suppresses_first_call_content() -> None:
+    class StreamingToolCallAdapter(NativeToolChatAdapter):
+        def chat(self, request: ChatRequest) -> ChatResult:
+            self.requests.append(request)
+            self.calls += 1
+            if self.calls == 1:
+                if request.stream_callback is not None:
+                    request.stream_callback("好的", {"token_streaming": True})
+                return ChatResult(
+                    response_text="好的",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="call_1",
+                            name="product_search",
+                            arguments={"query": "通勤耳机", "limit": 2},
+                            raw={
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "product_search", "arguments": "{}"},
+                            },
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                    message_kind="tool_call",
+                    provider="scripted-native",
+                    model="native-test",
+                )
+            if request.stream_callback is not None:
+                request.stream_callback("已找到", {"token_streaming": True})
+            return final_result("已找到 2 个通勤耳机候选。")
+
+    sink = ListEventSink()
+    runtime = AgentGraphRuntime(chat_adapter=StreamingToolCallAdapter([]))
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机"),
+        event_sink=sink,
+    )
+
+    progress_events = [event for event in sink.events if event.type == "progress_message"]
+    response_delta_texts = [event.text for event in sink.events if event.type == "response_delta"]
+    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert len(progress_events) == 1
+    assert progress_events[0].text == "我查一下。"
+    assert progress_events[0].tool_name == "product_search"
+    assert progress_events[0].payload["replaceable"] is True
+    assert response_delta_texts == ["已找到"]
+    assert state.request.metadata["native_tool_call_preambles"] == [
+        {"tool_name": "product_search", "content": "好的"}
+    ]
+    assert state.response is not None
+    assert state.response.message == "已找到 2 个通勤耳机候选。"
 
 
 def test_default_runtime_uses_native_tools_for_non_mock_adapter() -> None:
