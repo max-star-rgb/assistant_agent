@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from assistant_agent.api.agent_service_websocket import router as agent_service_websocket_router
 from assistant_agent.api.gateway_runtime import shutdown_gateway_runtime
 from assistant_agent.api.gateway_websocket import router as gateway_websocket_router
 from assistant_agent.api.routes_a2a import router as a2a_router
@@ -55,6 +56,7 @@ def create_app() -> FastAPI:
     app.mount("/artifacts/generated", StaticFiles(directory=GENERATED_ARTIFACT_DIR), name="generated_artifacts")
     app.include_router(agent_router)
     app.include_router(a2a_router)
+    app.include_router(agent_service_websocket_router)
     app.include_router(websocket_router)
     app.include_router(gateway_websocket_router)
     return app
