@@ -19,7 +19,6 @@ from assistant_agent.schemas.provider_specs import (
 
 
 AgentGraphMode = Literal["conditional", "assistant_loop"]
-AssistantToolCallMode = Literal["auto", "prompt_json", "native_tools"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
 MemoryBackend = Literal["memory", "jsonl", "sqlite"]
@@ -133,7 +132,6 @@ class ProviderConfig:
     max_video_seconds: float = 60.0
     intent_router: IntentRouterName = "rule"
     agent_graph_mode: AgentGraphMode = "assistant_loop"  # 默认使用新的 ReAct 架构
-    assistant_tool_call_mode: AssistantToolCallMode = "auto"
     langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
     max_tool_iterations: int = 5
     max_plan_steps: int = 8
@@ -279,10 +277,6 @@ class ProviderConfig:
             max_video_seconds=_float_env(source.get("MULTIMODAL_AGENT_MAX_VIDEO_SECONDS"), 60.0),
             intent_router=_intent_router(source.get("MULTIMODAL_AGENT_INTENT_ROUTER")),
             agent_graph_mode=_agent_graph_mode(source.get("AGENT_GRAPH_MODE")),
-            assistant_tool_call_mode=_assistant_tool_call_mode(
-                source.get("ASSISTANT_TOOL_CALL_MODE")
-                or source.get("MULTIMODAL_AGENT_ASSISTANT_TOOL_CALL_MODE")
-            ),
             langgraph_checkpointer_backend=_langgraph_checkpointer_backend(
                 source.get("LANGGRAPH_CHECKPOINTER_BACKEND")
                 or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
@@ -563,16 +557,6 @@ def _agent_graph_mode(value: str | None) -> AgentGraphMode:
     if value == "conditional":
         return "conditional"
     return "assistant_loop"  # 默认改为 assistant_loop
-
-
-def _assistant_tool_call_mode(value: str | None) -> AssistantToolCallMode:
-    if value == "native_tools":
-        return "native_tools"
-    if value == "prompt_json":
-        return "prompt_json"
-    if value == "auto":
-        return "auto"
-    return "auto"
 
 
 def _chat_stream(source: Mapping[str, str], chat_provider: ChatProviderName) -> bool:

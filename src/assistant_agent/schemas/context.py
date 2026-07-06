@@ -109,7 +109,7 @@ class AssistantContextPack(BaseModel):
 
 
 class RenderedAssistantContext(BaseModel):
-    """Rendered prompt fragments for prompt-json or native-tool modes."""
+    """Rendered context fragments for native tools and legacy prompt-json tests."""
 
     prompt_json: str | None = None
     native_user_message: str | None = None

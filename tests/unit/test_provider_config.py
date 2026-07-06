@@ -17,7 +17,6 @@ def test_provider_config_allows_empty_environment() -> None:
     assert config.render_provider == "mock"
     assert config.video_provider == "mock"
     assert config.intent_router == "rule"
-    assert config.assistant_tool_call_mode == "auto"
     assert config.conversation_history_backend == "memory"
     assert config.langgraph_checkpointer_backend == "memory"
     assert config.has_any_real_provider() is False
@@ -76,7 +75,6 @@ def test_provider_config_reads_environment_values() -> None:
             "RENDER_API_KEY": "test-render-key",
             "RENDER_TIMEOUT_SECONDS": "5.5",
             "MULTIMODAL_AGENT_VIDEO_PROVIDER": "http",
-            "ASSISTANT_TOOL_CALL_MODE": "native_tools",
             "VIDEO_UNDERSTANDING_BASE_URL": "http://localhost:7004",
             "VIDEO_UNDERSTANDING_API_KEY": "test-video-key",
             "VIDEO_UNDERSTANDING_MODEL": "video-test-model",
@@ -146,14 +144,7 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.conversation_history_path == ".local/test/conversation.jsonl"
     assert config.max_conversation_history_turns == 3
     assert config.langgraph_checkpointer_backend == "memory"
-    assert config.assistant_tool_call_mode == "native_tools"
     assert config.has_any_real_provider() is True
-
-
-def test_provider_config_can_force_prompt_json_tool_call_mode() -> None:
-    config = ProviderConfig.from_env({"ASSISTANT_TOOL_CALL_MODE": "prompt_json"})
-
-    assert config.assistant_tool_call_mode == "prompt_json"
 
 
 def test_provider_config_offline_eval_defaults_to_mock_local_providers() -> None:

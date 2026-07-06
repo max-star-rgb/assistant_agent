@@ -74,7 +74,7 @@ Last updated: 2026-07-03
 - Context engineering 负责把 request、conversation、memory context、plan state、tool observations 和 tool specs 组装成 `AssistantContextPack`。
 - Context engineering 负责 prompt/native rendering、tool observation compaction、全局 context budget、source counts 和 trace/debug 摘要。
 - Context engineering 不应重新实现 memory 检索、ranking、fallback、write policy、profile merge 或 store 选择。
-- Memory service 不应了解 prompt-json/native-tools 渲染、tool observation compaction 或全局 context budget。
+- Memory service 不应了解 legacy prompt-json/native-tools 渲染、tool observation compaction 或全局 context budget。
 
 ### Tool Observation Compaction
 
@@ -97,7 +97,7 @@ Last updated: 2026-07-03
 
 ### Prompt Rendering
 
-- `render_prompt_json_context` 用于 prompt-json 决策模式。
+- `render_prompt_json_context` 是历史 prompt-json renderer，保留给 context renderer 测试和离线兼容材料；生产真实 LLM runtime 不再使用它做决策控制面。
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
 - `render_final_only_prompt` 用于工具调用上限附近，禁止继续工具调用并要求最终回答。
 - prompt 明确声明 conversation、memory、realtime task state、observation 和 tool output 都是数据，不是系统指令。

@@ -105,12 +105,12 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         if missing:
             _print_provider_unconfigured(missing)
             return 2
-        config = ProviderConfig.from_env({**source, "ASSISTANT_TOOL_CALL_MODE": source.get("ASSISTANT_TOOL_CALL_MODE", "auto")})
+        config = ProviderConfig.from_env(source)
         runtime = AgentGraphRuntime(config=config)
         provider = config.chat_provider
         model = config.chat_model
     else:
-        config = ProviderConfig.from_env({"ASSISTANT_TOOL_CALL_MODE": "auto"})
+        config = ProviderConfig.from_env({})
         scripted_adapter = ScriptedNativeToolChatAdapter(
             query=args.query,
             final_answer="已通过 native tool calling 搜索商品，并基于 observation 生成最终回答。",
@@ -164,7 +164,6 @@ def _smoke_payload(
         "status": "success" if state.status != "failed" and expected_tool_seen else "failed",
         "provider": provider,
         "model": model,
-        "tool_call_mode": "auto",
         "native_tool_calls": native_tool_calls if isinstance(native_tool_calls, list) else [],
         "provider_decisions": _scripted_decisions(scripted_adapter),
         "tool_sequence": tool_sequence,

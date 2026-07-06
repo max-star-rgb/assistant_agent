@@ -39,7 +39,6 @@ def test_native_tool_calling_smoke_default_scripted_outputs_json() -> None:
     payload = json.loads(result.stdout)
     assert payload["status"] == "success"
     assert payload["provider"] == "scripted-native"
-    assert payload["tool_call_mode"] == "auto"
     assert payload["tool_sequence"] == ["product_search"]
     assert payload["provider_decisions"][0]["finish_reason"] == "tool_calls"
     assert payload["provider_decisions"][0]["message_kind"] == "tool_call"

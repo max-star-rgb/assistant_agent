@@ -107,7 +107,7 @@ def _fallback(tool_specs: list[ToolSpec], *, reason: str) -> ToolCatalogSelectio
 
 
 def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
-    """Return the compact prompt-json payload for one ToolSpec."""
+    """Return the compact legacy prompt-json payload for one ToolSpec."""
 
     payload = spec.model_dump(mode="json")
     input_schema = payload.get("input_schema")

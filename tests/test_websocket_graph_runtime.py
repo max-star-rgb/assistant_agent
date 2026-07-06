@@ -13,10 +13,10 @@ from assistant_agent.api.auth import (
 )
 from assistant_agent.api.app import create_app
 from assistant_agent.api.websocket import mock_agent_events
+from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.planning import IntentResult
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.config import ProviderConfig
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
@@ -25,7 +25,7 @@ from assistant_agent.tools.registry import ToolRegistry
 class ScriptedChatAdapter:
     provider = "scripted"
 
-    def __init__(self, outputs: list[str]) -> None:
+    def __init__(self, outputs: list[str | ChatResult]) -> None:
         self.outputs = outputs
         self.calls = 0
         self.requests: list[ChatRequest] = []
@@ -34,7 +34,10 @@ class ScriptedChatAdapter:
         self.requests.append(request)
         index = min(self.calls, len(self.outputs) - 1)
         self.calls += 1
-        return ChatResult(response_text=self.outputs[index], provider=self.provider, model="scripted")
+        output = self.outputs[index]
+        if isinstance(output, ChatResult):
+            return output
+        return ChatResult(response_text=output, provider=self.provider, model="scripted")
 
 
 class StreamingFinalChatAdapter:
@@ -277,24 +280,8 @@ def test_websocket_streams_native_final_answer_deltas_before_completion() -> Non
 def test_websocket_accepts_explicit_plan_and_solve_strategy() -> None:
     try:
         routes_agent._RUNTIME = AgentGraphRuntime(
-            config=ProviderConfig(assistant_tool_call_mode="prompt_json"),
             chat_adapter=ScriptedChatAdapter(
-                [
-                    (
-                        '{"type": "enter_plan_mode", "plan": {"goal": "search", "steps": ['
-                        '{"step_id": "step_1", "action": "search_product", "tool_name": "product_search", '
-                        '"input_refs": [], "depends_on": [], "required_inputs": ["query"], '
-                        '"optional": false, "reason": "search first"}]}, "reason": "plan search"}'
-                    ),
-                    (
-                        '{"type": "tool_call", "step_id": "step_1", "tool_name": "product_search", '
-                        '"tool_input": {"query": "白色运动鞋", "top_k": 2}, "reason": "execute search"}'
-                    ),
-                    (
-                        '{"type": "exit_plan_mode", "next_action": "final_answer", '
-                        '"message": "plan complete", "reason": "search observed"}'
-                    ),
-                ]
+                ["native plan websocket response"]
             )
         )
         client = TestClient(create_app())
@@ -308,10 +295,9 @@ def test_websocket_accepts_explicit_plan_and_solve_strategy() -> None:
 
     response = events[-1]["payload"]["response"]
     assert response["execution_strategy"] == "plan_and_solve"
-    assert response["data"]["final_answer_source"] == "assistant_loop"
-    assert [call["tool_name"] for call in response["tool_calls"]] == ["product_search"]
-    assert any(step.get("decision_type") == "enter_plan_mode" for step in response["react_steps"])
-    assert any(step.get("decision_type") == "exit_plan_mode" for step in response["react_steps"])
+    assert response["response_text"] == "native plan websocket response"
+    assert response["tool_calls"] == []
+    assert response["data"]["native_runtime"] is True
 
 
 def test_websocket_emits_structured_error_event_for_failed_tool() -> None:
@@ -319,13 +305,27 @@ def test_websocket_emits_structured_error_event_for_failed_tool() -> None:
     registry.register(FailingPriceCompareTool())
     try:
         routes_agent._RUNTIME = AgentGraphRuntime(
-            config=ProviderConfig(assistant_tool_call_mode="prompt_json"),
             registry=registry,
             chat_adapter=ScriptedChatAdapter(
                 [
-                    (
-                        '{"type": "tool_call", "tool_name": "price_compare", '
-                        '"tool_input": {"query": "耳机"}, "reason": "compare prices"}'
+                    ChatResult(
+                        response_text="",
+                        tool_calls=[
+                            NativeToolCall(
+                                id="call_1",
+                                name="price_compare",
+                                arguments={"query": "耳机"},
+                                raw={
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "price_compare", "arguments": "{}"},
+                                },
+                            )
+                        ],
+                        provider="scripted",
+                        model="scripted",
+                        finish_reason="tool_calls",
+                        message_kind="tool_call",
                     )
                 ]
             ),
@@ -338,12 +338,9 @@ def test_websocket_emits_structured_error_event_for_failed_tool() -> None:
         routes_agent._RUNTIME = None
 
     event_types = [event["type"] for event in events]
-    assert event_types[:2] == ["task_started", "graph_node_started"]
-    assert "agent_trace_decision" in event_types
+    assert event_types[0] == "task_started"
     assert "tool_started" in event_types
     assert "tool_failed" in event_types
-    assert "agent_trace_observation" in event_types
-    assert "graph_node_finished" in event_types
     assert event_types[-1] == "task_failed"
     tool_failed = next(event for event in events if event["type"] == "tool_failed")
     assert tool_failed["tool_name"] == "price_compare"

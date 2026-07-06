@@ -1,7 +1,6 @@
-"""Assistant decision schema for the public ReAct decision protocol."""
+"""Assistant decision schema for internal tool-call governance."""
 
 import json
-import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -64,89 +63,6 @@ class AssistantDecision(BaseModel):
             return "continue"
         return v
 
-    @classmethod
-    def from_llm_output(cls, text: str) -> "AssistantDecision":
-        """Parse LLM output into an AssistantDecision safely."""
-        if not text or not text.strip():
-            return cls(
-                type="final_answer",
-                message="已处理请求。",
-                reason="Empty or whitespace-only output.",
-            )
-
-        json_str = _extract_json(text)
-        if not json_str:
-            return cls(
-                type="final_answer",
-                message=text.strip(),
-                reason="No valid JSON found, treated as final_answer.",
-            )
-
-        try:
-            parsed = json.loads(json_str)
-            if not isinstance(parsed, dict):
-                return cls(
-                    type="final_answer",
-                    message=text.strip(),
-                    reason="JSON was not an object, treated as final_answer.",
-                )
-
-            decision_type = parsed.get("type", "final_answer")
-            if decision_type not in {"final_answer", "tool_call", "ask_followup", "enter_plan_mode", "exit_plan_mode"}:
-                decision_type = "final_answer"
-
-            message = parsed.get("message")
-            tool_name = parsed.get("tool_name")
-            tool_input = parsed.get("tool_input")
-            step_id = parsed.get("step_id")
-            plan = _parse_plan_payload(parsed.get("plan"))
-            next_action = parsed.get("next_action")
-            reason = parsed.get("reason")
-            confidence = parsed.get("confidence")
-            missing_slots = parsed.get("missing_slots")
-            safety_notes = parsed.get("safety_notes")
-
-            if decision_type == "tool_call":
-                if not tool_name:
-                    decision_type = "final_answer"
-                    if not message:
-                        message = text.strip()
-                if tool_input is None:
-                    tool_input = {}
-                elif not isinstance(tool_input, dict):
-                    return cls(
-                        type="final_answer",
-                        message="工具输入格式无效，未执行工具。",
-                        reason="tool_input was not a JSON object.",
-                        safety_notes=["invalid_tool_input"],
-                    )
-
-            if decision_type in {"final_answer", "ask_followup"}:
-                if not message:
-                    message = text.strip()
-            if decision_type == "exit_plan_mode" and not next_action:
-                next_action = "continue"
-
-            return cls(
-                type=decision_type,
-                message=message,
-                tool_name=tool_name,
-                tool_input=tool_input,
-                step_id=step_id if isinstance(step_id, str) and step_id.strip() else None,
-                plan=plan,
-                next_action=next_action if isinstance(next_action, str) else None,
-                reason=reason,
-                confidence=confidence if isinstance(confidence, int | float) else None,
-                missing_slots=missing_slots if isinstance(missing_slots, list) else [],
-                safety_notes=safety_notes if isinstance(safety_notes, list) else [],
-            )
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return cls(
-                type="final_answer",
-                message=text.strip(),
-                reason="JSON parsing failed, treated as final_answer.",
-            )
-
 
 class NativeToolCall(BaseModel):
     """Provider-native tool call normalized at the adapter boundary."""
@@ -195,42 +111,6 @@ def openai_tool_call_to_assistant_decision(payload: dict[str, Any]) -> Assistant
     """Convert an OpenAI-compatible tool call payload to AssistantDecision."""
 
     return openai_tool_call_to_native_tool_call(payload).to_assistant_decision()
-
-
-def _parse_plan_payload(value: Any) -> TaskPlan | None:
-    if value is None:
-        return None
-    if isinstance(value, TaskPlan):
-        return value
-    if not isinstance(value, dict):
-        return None
-    try:
-        return TaskPlan.model_validate(value)
-    except Exception:
-        return None
-
-
-def _extract_json(text: str) -> str | None:
-    """Extract JSON object from text, handling code fences."""
-    fenced_pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
-    match = re.search(fenced_pattern, text, re.DOTALL)
-    if match:
-        return match.group(1)
-
-    open_brace = text.find("{")
-    if open_brace == -1:
-        return None
-
-    brace_count = 0
-    for i, char in enumerate(text[open_brace:], start=open_brace):
-        if char == "{":
-            brace_count += 1
-        elif char == "}":
-            brace_count -= 1
-            if brace_count == 0:
-                return text[open_brace : i + 1]
-
-    return None
 
 
 def _parse_native_arguments(value: Any) -> dict[str, Any]:

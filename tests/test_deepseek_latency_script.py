@@ -2,8 +2,11 @@ import importlib.util
 import json
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
+from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
@@ -98,6 +101,10 @@ def test_deepseek_latency_provider_mode_outputs_ttft(monkeypatch, capsys) -> Non
     assert sample["ttft_ms"] is not None
     assert sample["stream_open_ms"] == 12
     assert sample["first_delta_preview"] == "首"
+    assert sample["message_kind"] == "final_answer"
+    assert sample["finish_reason"] is None
+    assert sample["tool_call_count"] == 0
+    assert sample["tool_names"] == []
     assert payload["summary"]["provider.ttft_ms"]["count"] == 1
 
 
@@ -157,3 +164,198 @@ def test_deepseek_latency_runtime_mode_outputs_end_to_end_latency(monkeypatch, c
     assert runtime["total_ms"] is not None
     assert runtime["first_response_delta_preview"] == "端到端"
     assert payload["summary"]["runtime.first_response_delta_ms"]["count"] == 1
+
+
+def test_deepseek_latency_runtime_sample_uses_single_native_chat_call(monkeypatch) -> None:
+    module = _load_module()
+
+    class FakeChatAdapter:
+        provider = "deepseek"
+        model = "deepseek-chat"
+
+        def chat(self, request: ChatRequest) -> ChatResult:
+            assert request.tools
+            assert request.tool_choice == "auto"
+            if request.stream_callback is not None:
+                request.stream_callback(
+                    "杭州",
+                    {
+                        "provider": self.provider,
+                        "model": self.model,
+                        "token_streaming": True,
+                    },
+                )
+            return ChatResult(
+                response_text="杭州适合喝龙井茶。",
+                provider=self.provider,
+                model=self.model,
+                latency_ms=5,
+                finish_reason="stop",
+                message_kind="final_answer",
+            )
+
+    monkeypatch.setattr(module, "create_chat_adapter", lambda config: FakeChatAdapter())
+    sample = module._measure_runtime_sample(
+        ProviderConfig(
+            runtime_profile=ProviderConfig.from_env({"MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke"}).runtime_profile,
+            chat_provider="deepseek",
+            chat_api_key="test-key",
+            chat_base_url="https://api.deepseek.com/v1",
+            chat_model="deepseek-chat",
+            chat_adapter_kind="openai_compatible",
+        ),
+        Namespace(
+            user_id="latency_user",
+            session_id="latency_session",
+            text="你好",
+        ),
+        1,
+    )
+
+    assert sample["status"] == "success"
+    assert len(sample["chat_calls"]) == 1
+    chat_call = sample["chat_calls"][0]
+    assert chat_call["first_delta_preview"] == "杭州"
+    assert chat_call["message_kind"] == "final_answer"
+    assert chat_call["finish_reason"] == "stop"
+    assert chat_call["tool_call_count"] == 0
+    assert chat_call["tool_names"] == []
+    assert sample["first_response_delta_preview"] == "杭州"
+
+
+def test_deepseek_latency_runtime_sample_records_native_tool_call_sequence(monkeypatch) -> None:
+    module = _load_module()
+
+    class FakeChatAdapter:
+        provider = "deepseek"
+        model = "deepseek-chat"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def chat(self, request: ChatRequest) -> ChatResult:
+            assert request.tools
+            assert request.tool_choice == "auto"
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResult(
+                    response_text="",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="call_1",
+                            name="product_search",
+                            arguments={"query": "通勤蓝牙耳机", "limit": 2},
+                            raw={
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "product_search", "arguments": "{}"},
+                            },
+                        )
+                    ],
+                    provider=self.provider,
+                    model=self.model,
+                    latency_ms=7,
+                    finish_reason="tool_calls",
+                    message_kind="tool_call",
+                )
+            if request.stream_callback is not None:
+                request.stream_callback(
+                    "已找到",
+                    {
+                        "provider": self.provider,
+                        "model": self.model,
+                        "token_streaming": True,
+                    },
+                )
+            return ChatResult(
+                response_text="已找到 2 个通勤蓝牙耳机候选。",
+                provider=self.provider,
+                model=self.model,
+                latency_ms=9,
+                finish_reason="stop",
+                message_kind="final_answer",
+            )
+
+    monkeypatch.setattr(module, "create_chat_adapter", lambda config: FakeChatAdapter())
+    sample = module._measure_runtime_sample(
+        ProviderConfig(
+            runtime_profile=ProviderConfig.from_env({"MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke"}).runtime_profile,
+            chat_provider="deepseek",
+            chat_api_key="test-key",
+            chat_base_url="https://api.deepseek.com/v1",
+            chat_model="deepseek-chat",
+            chat_adapter_kind="openai_compatible",
+        ),
+        Namespace(
+            user_id="latency_user",
+            session_id="latency_session",
+            text="帮我找通勤蓝牙耳机",
+            expect_chat_calls=2,
+            expect_first_call_kind="tool_call",
+            expect_tool=["product_search"],
+        ),
+        1,
+    )
+
+    assert sample["status"] == "success"
+    assert sample["assertion_failures"] == []
+    assert len(sample["chat_calls"]) == 2
+    assert sample["chat_calls"][0]["message_kind"] == "tool_call"
+    assert sample["chat_calls"][0]["finish_reason"] == "tool_calls"
+    assert sample["chat_calls"][0]["tool_call_count"] == 1
+    assert sample["chat_calls"][0]["tool_names"] == ["product_search"]
+    assert sample["chat_calls"][1]["message_kind"] == "final_answer"
+    assert sample["chat_calls"][1]["tool_call_count"] == 0
+    assert sample["first_response_delta_preview"] == "已找到"
+
+
+def test_deepseek_latency_runtime_assertion_failure_marks_sample_failed(monkeypatch, capsys) -> None:
+    module = _load_module()
+
+    class FakeChatAdapter:
+        provider = "deepseek"
+        model = "deepseek-chat"
+
+        def chat(self, request: ChatRequest) -> ChatResult:
+            if request.stream_callback is not None:
+                request.stream_callback("杭州", {"token_streaming": True})
+            return ChatResult(
+                response_text="杭州适合喝龙井茶。",
+                provider=self.provider,
+                model=self.model,
+                latency_ms=5,
+                finish_reason="stop",
+                message_kind="final_answer",
+            )
+
+    monkeypatch.setattr(module, "create_chat_adapter", lambda config: FakeChatAdapter())
+
+    result = module.main(
+        [
+            "--runs",
+            "1",
+            "--mode",
+            "runtime",
+            "--text",
+            "你好",
+            "--expect-chat-calls",
+            "2",
+            "--expect-first-call-kind",
+            "tool_call",
+        ],
+        env={
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_CHAT_API_KEY": "test-key",
+            "DEEPSEEK_CHAT_STREAM": "true",
+        },
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    failures = payload["samples"][0]["runtime"]["assertion_failures"]
+    assert result == 1
+    assert payload["status"] == "failed"
+    assert {failure["code"] for failure in failures} == {
+        "chat_call_count_mismatch",
+        "first_call_kind_mismatch",
+    }

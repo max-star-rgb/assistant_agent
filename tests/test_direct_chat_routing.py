@@ -118,5 +118,7 @@ def test_tool_description_failure_is_recorded_for_real_chat() -> None:
         "code": "tool_description_unavailable",
         "message": "registry unavailable",
     }
-    assert adapter.requests[0].user_query == "你好"
-    assert adapter.requests[0].tools == []
+    assert adapter.requests == []
+    assert state.status == "failed"
+    assert state.response is not None
+    assert state.response.data["errors"][0]["code"] == "tool_description_unavailable"

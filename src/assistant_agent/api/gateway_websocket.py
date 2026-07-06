@@ -58,7 +58,6 @@ MEDIA_CONFIG_STRING_KEYS = frozenset(
         "language",
         "locale",
         "mode",
-        "response_mode",
         "entry",
         "interrupt_policy",
         "turn_detection",

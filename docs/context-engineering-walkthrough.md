@@ -66,7 +66,7 @@ UserRequest
 | 压缩触发策略 | `src/assistant_agent/services/context/policy.py` | 根据预算、工具观察结果、供应商上下文溢出、显式 `/compact` 判断是否压缩。 |
 | 上下文摘要器 | `src/assistant_agent/services/context/compactor.py` | 生成会话范围的 `context_summary`；默认使用确定性实现，真实 LLM 仅在显式供应商运行 profile 下启用。 |
 | 工具观察裁剪器 | `src/assistant_agent/services/context/compaction.py` | 工具结果进入 prompt 前裁剪 raw payload、base64、长命令输出和大列表。 |
-| 渲染器 | `src/assistant_agent/services/context/renderer.py` | 把上下文包渲染成 prompt-json、原生工具调用的 user message 或 final-only prompt。 |
+| 渲染器 | `src/assistant_agent/services/context/renderer.py` | 把上下文包渲染成原生工具调用的 user message、final-only prompt，或历史 prompt-json 测试文本。 |
 | 助手循环接入点 | `src/assistant_agent/agent/assistant_loop_nodes.py` | 调用上下文构建器，把渲染后的上下文交给助手，并写追踪上下文摘要。 |
 
 ## AssistantContextPack
@@ -242,7 +242,7 @@ max_memory_context_chars = 500
 
 当前三种渲染：
 
-- `render_prompt_json_context(...)`：prompt-json 决策模式，包含工具 spec 和决策 JSON contract。
+- `render_prompt_json_context(...)`：历史 prompt-json 渲染器，包含工具 spec 和决策 JSON contract；当前生产真实 LLM runtime 不再用它做控制面决策。
 - `render_native_tool_context(...)`：供应商原生工具调用模式，只渲染 user-message context，不重复工具 schema。
 - `render_final_only_prompt(...)`: 工具调用次数接近上限时，禁止继续调用工具，只要求最终回答。
 

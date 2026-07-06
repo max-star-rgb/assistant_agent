@@ -4,32 +4,49 @@
 
 ## 新对话快速交接
 
-- 默认运行时是 `AgentGraphRuntime` + LangGraph assistant loop；`agent_graph_mode=assistant_loop` 是当前主路径，conditional/legacy graph 只保留兼容。
-- 工具契约由 `ToolSpec` 表达，来源是 `ToolRegistry.list_specs()`；prompt-json 模式把筛选后的 ToolSpec 渲染进提示词，provider-native 模式把完整 ToolSpec 转成 OpenAI-compatible tools schema。
+- 默认真实 LLM 运行时是 `AgentGraphRuntime` 内的 provider-native loop；非 mock chat adapter 不再进入 prompt-json 控制面调用。
+- 工具契约由 `ToolSpec` 表达，来源是 `ToolRegistry.list_specs()`；真实 LLM 路径把 ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
 - `ToolSpec.side_effect` 表达工具副作用策略；未知工具默认按 confirmation-sensitive 处理。realtime task-state 会消费该策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
-- LLM 或 mock 只能提出 `AssistantDecision`。provider-native tool call 会先归一化成 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
+- 真实 LLM 只能返回自然语言 `content` 或 provider-native `tool_calls`。native tool call 会先归一化成内部 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
 - 工具执行必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。API、WebSocket、MCP 或新增入口都不能直接 `registry.run(...)`。
 - `ToolExecutor` 是运行时治理边界：绑定 user/session 身份、检查 provider budget、记录 state/tool history/event/trace、执行 retry/recovery，再调用 registry。
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
 - 工具 observation 是下一轮 LLM 的数据，不是系统指令；写入 prompt 前会被摘要、脱敏、压缩。不要把 provider raw response、密钥、base64 大 payload 暴露给 assistant context。
-- 当前 provider-native 模式每个 assistant iteration 只执行第一个 native tool call；多步任务通过 ReAct 多轮或 plan mode 完成。
+- 当前 native loop 每个 iteration 只执行第一个 native tool call；多步任务通过多轮 native tool call 完成。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
 
 ## 当前主调用链
 
 ```text
 UserRequest
   -> AgentGraphRuntime.run_state
+  -> provider-native runtime loop, if chat adapter is non-mock
+  -> load_memory
+  -> ToolRegistry.list_specs()
+  -> build_assistant_context_pack()
+  -> ChatRequest(messages=[...], tools=[...], tool_choice="auto")
+  -> ChatAdapter.chat()
+       ├─ content/refusal
+       │    -> stream response_delta when available
+       │    -> final_response
+       └─ tool_calls[0]
+            -> native tool call normalized to AssistantDecision(type="tool_call")
+            -> ActionValidator.validate()
+            -> ToolExecutor.run_tool()
+            -> append assistant tool_call + tool observation messages
+            -> ChatAdapter.chat() again for final content or next tool call
+
+Mock/local/offline compatibility path:
+
+UserRequest
+  -> AgentGraphRuntime.run_state
   -> build_assistant_loop_graph
   -> load_memory
   -> assistant_node
-       -> ToolRegistry.list_specs()
-       -> build_assistant_context_pack()
-       -> prompt-json ChatRequest OR provider-native ChatRequest(tools=[...])
-       -> ChatAdapter.chat()
+       -> deterministic rule plan
        -> AssistantDecision
   -> route_after_assistant
   -> execute_requested_tool_node
-       -> plan step check, if plan mode is active
+       -> optional plan step check, if local plan state is active
        -> ActionValidator.validate()
        -> ToolExecutor.run_tool()
             -> bind runtime identity
@@ -46,8 +63,8 @@ UserRequest
 
 相关源码：
 
-- `src/assistant_agent/agent/runtime.py`: 组装 registry、memory manager、chat adapter、tool executor、trace store 和 graph。
-- `src/assistant_agent/agent/assistant_loop_nodes.py`: ReAct 决策、native tool handoff、validator 调用、observation 回传和 loop guard。
+- `src/assistant_agent/agent/runtime.py`: 组装 registry、memory manager、chat adapter、tool executor、trace store，并承载真实非 mock provider 的 native content/tool_calls 主循环。
+- `src/assistant_agent/agent/assistant_loop_nodes.py`: mock/offline assistant loop、native tool handoff 兼容节点、validator 调用、observation 回传和 loop guard。
 - `src/assistant_agent/agent/action_validator.py`: 工具执行前的本地校验边界。
 - `src/assistant_agent/agent/tool_executor.py`: 工具执行、预算、retry/recovery、event/history/trace 的统一边界。
 - `src/assistant_agent/tools/registry.py`: 工具注册、ToolSpec 生成和默认工具集合。
@@ -57,27 +74,17 @@ UserRequest
 - `src/assistant_agent/schemas/tool_spec_adapters.py`: ToolSpec 到 OpenAI/MCP 工具 schema 的转换。
 - `src/assistant_agent/schemas/tool_observation.py`: assistant-facing observation 摘要和脱敏。
 
-## 两种 assistant tool calling 模式
+## Provider-Native Only
 
-`ProviderConfig.assistant_tool_call_mode` 支持：
+生产 runtime 只保留 provider-native tool calling：
 
-- `auto`: 默认值。非 mock chat adapter 使用 provider-native tools；mock adapter 仍走离线 rule plan。
-- `native_tools`: 强制真实/脚本 chat adapter 走 provider-native tools。
-- `prompt_json`: 不向 provider 传 native tools，只要求模型输出 `AssistantDecision` JSON。
-
-prompt-json 模式：
-
-- `assistant_node` 通过 `render_assistant_prompt()` 输出完整决策契约。
-- `build_assistant_context_pack()` 会用 `select_prompt_tool_specs()` 选择较小的 prompt-facing ToolSpec 子集，降低上下文成本。
-- LLM 输出由 `AssistantDecision.from_llm_output()` 解析；JSON 形态损坏时只做一次 repair，不直接执行原始损坏输出。
-
-provider-native 模式：
-
-- `assistant_node` 通过 `tool_specs_to_openai_tools(context.tool_specs)` 把完整 ToolSpec 列表转换成 provider tools。
-- native user message 只包含请求、对话、记忆、plan mode 状态，不重复渲染 ToolSpec。
-- `ChatResult.tool_calls[0]` 通过 `NativeToolCall.to_assistant_decision()` 转成内部 `tool_call` 决策。
-- observation 会作为后续 native messages 中的 `tool` role 内容回传。
-- provider 返回 refusal 或普通文本时，直接转成 terminal final answer，不进入工具执行。
+- 非 mock chat adapter 一律走 native loop；不再存在 `response_mode` 或 `assistant_tool_call_mode` 分支。
+- 请求向 provider 发送 `messages`、`tools` 和 `tool_choice="auto"`。
+- provider 返回 `content` 或 `refusal` 时，runtime 直接作为用户可见回答输出；普通 direct answer 应只有一次 chat call。
+- provider 返回 `tool_calls` 时，只执行第一个 tool call，先归一化为内部 `AssistantDecision(type="tool_call")`，再进入 `ActionValidator -> ToolExecutor -> ToolRegistry`。
+- 工具 observation 会作为后续 native messages 中的 `tool` role 内容回传；拿到工具结果后的第二次 LLM 调用是合理工具路径，不是隐藏控制面调用。
+- 如果 provider adapter 明确 `supports_native_tools=False`，runtime fails immediately，不静默 fallback 到旧 JSON 控制面。
+- `AssistantDecision` 仍是内部治理结构，用于复用 validator/executor/trace；真实 LLM 不再被要求输出自定义 `AssistantDecision` JSON。
 
 ## ToolSpec 契约
 
@@ -100,7 +107,7 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 
 - memory dedicated tools 会隐藏 `user_id`、`session_id` 这类运行时身份字段；模型不应决定记忆归属。
 - `tool_spec_to_json_schema()` 会输出 object schema，并设置 `additionalProperties=False`。
-- prompt-json 模式可能只展示一部分 ToolSpec；provider-native tools 发送完整 ToolSpec。
+- provider-native tools 发送完整 ToolSpec；旧 prompt-facing ToolSpec 子集只服务历史 renderer 测试和离线兼容材料，不是生产决策路径。
 - `side_effect` 包含 `level`、`requires_confirmation`、`description`、可选 `confirmation_kind` 和 `compensation_hint`；provider-native/MCP 描述也会包含该信息。
 - 未分类工具使用保守默认：`level=pending_confirmation` 且 `requires_confirmation=true`。
 - MCP 工具 schema 通过 `tool_spec_to_mcp_tool()` 支持，但当前 `OfflineMCPServer.list_tools()` 暴露的是 MCP wrapper 工具；registry ToolSpec 通过 `tool_list` 返回。
@@ -212,7 +219,7 @@ contract
 - 商品搜索/比价会保留 title、price、currency、URL、url_status 等后续回答和 price_compare 必需字段。
 - context builder 会压缩大 observation、截断命令输出、移除 raw provider payload、base64、secret-like 内容。
 
-## Loop guard 和计划模式
+## Loop Guard 和计划状态
 
 assistant loop 有本地保护，不依赖模型自律：
 
@@ -222,11 +229,12 @@ assistant loop 有本地保护，不依赖模型自律：
 - `image_generation` 和 `render_3d` 是 terminal tools；成功后再次请求同一工具会被阻止并转为 final answer。
 - 明确比价请求中，`product_search` 成功后会强制或修复下一步 `price_compare`，防止只搜索不比价。
 
-plan mode 是同一 ReAct loop 内的状态，不是独立 planner/controller：
+计划状态是本地治理结构，不是生产 runtime 的独立 planner/controller 调用：
 
 - `enter_plan_mode` 的 `TaskPlan` 先经 `PlanValidator` 校验 step 数量、唯一 step_id、依赖、未知工具和环。
 - active plan mode 下，tool call 必须匹配计划步骤和依赖。
 - 工具失败后 plan mode 可进入 `replanning`。
+- 真实非 mock runtime 不再要求 LLM 输出 `enter_plan_mode` / `exit_plan_mode` JSON；`execution_strategy=plan_and_solve` 会被接受为请求元数据，但仍走 native content/tool_calls 主循环。
 
 ## Memory tool 特殊规则
 
@@ -273,7 +281,9 @@ MCP server 不直接依赖 provider SDK，不直接访问 OpenAI/DashScope/httpx
 - registry spec 暴露和 schema 转换。
 - ActionValidator 接受合法输入、拒绝缺参/未知工具/危险输入。
 - ToolExecutor 成功、失败、预算阻断、retry/recovery 和 cooperative cancellation。
-- assistant_loop prompt-json 路径和 provider-native 路径。
+- native direct-answer 路径必须只有一次 chat call，且首个用户可见 delta 来自 provider content。
+- native tool 路径第一轮必须是 provider `tool_calls`，工具执行后第二轮生成自然语言回答。
+- provider 不支持 native tools 时必须 fail immediately，不能回退到 JSON 控制面。
 - observation 和 trace/event 中不出现 raw provider payload、API key、Authorization、Bearer token。
 - 若工具可默认注册，离线 pytest 和 demo flow 不能依赖真实 provider。
 

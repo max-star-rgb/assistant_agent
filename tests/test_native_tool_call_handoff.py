@@ -62,18 +62,18 @@ def final_result(message: str) -> ChatResult:
     )
 
 
-def prompt_json_tool_result(name: str, arguments: dict[str, object]) -> ChatResult:
+def legacy_json_tool_result(name: str, arguments: dict[str, object]) -> ChatResult:
     return ChatResult(
         response_text=(
             '{"type": "tool_call", '
             f'"tool_name": "{name}", '
             f'"tool_input": {json.dumps(arguments, ensure_ascii=False)}, '
-            '"reason": "prompt-json fallback selected this tool"}'
+            '"reason": "legacy JSON controller selected this tool"}'
         ),
         finish_reason="stop",
         message_kind="final_answer",
         provider="scripted-no-native",
-        model="prompt-json-test",
+        model="legacy-json-test",
     )
 
 
@@ -106,7 +106,7 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
         ]
     )
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
     )
 
@@ -132,7 +132,7 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
     assert any(step.get("observation_tool") == "product_search" for step in state.request.metadata["assistant_loop_steps"])
 
 
-def test_auto_tool_call_mode_uses_native_tools_for_non_mock_adapter() -> None:
+def test_default_runtime_uses_native_tools_for_non_mock_adapter() -> None:
     adapter = NativeToolChatAdapter(
         [
             native_result("product_search", {"query": "通勤耳机", "limit": 2}),
@@ -151,31 +151,53 @@ def test_auto_tool_call_mode_uses_native_tools_for_non_mock_adapter() -> None:
     assert "finish_reason=stop" in state.request.metadata["assistant_loop_steps"][-1]["reason"]
 
 
-def test_auto_mode_falls_back_to_prompt_json_when_adapter_does_not_support_native_tools() -> None:
+def test_native_runtime_fails_immediately_when_adapter_does_not_support_native_tools() -> None:
     adapter = CapabilityAwareChatAdapter(
-        [
-            prompt_json_tool_result("product_search", {"query": "通勤耳机", "limit": 2}),
-            final_result("已通过 prompt-json 兼容路径完成回答。"),
-        ],
+        [legacy_json_tool_result("product_search", {"query": "通勤耳机", "limit": 2})],
         supports_native_tools=False,
     )
-    runtime = AgentGraphRuntime(chat_adapter=adapter)
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(chat_provider="deepseek"),
+        chat_adapter=adapter,
+    )
 
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机"))
 
-    assert adapter.requests[0].tools == []
-    assert adapter.requests[0].messages == []
-    assert "只输出严格 JSON" in adapter.requests[0].user_query
-    assert "可用工具 ToolSpec 列表" in adapter.requests[0].user_query
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert adapter.calls == 0
+    assert state.status == "failed"
     assert state.response is not None
-    assert state.response.message == "已通过 prompt-json 兼容路径完成回答。"
+    assert state.response.data["errors"][0]["code"] == "native_tool_calling_unsupported"
+
+
+def test_runtime_uses_native_tools_for_non_mock_deepseek_adapter() -> None:
+    adapter = NativeToolChatAdapter([plain_final_result("仍然走 native 直接回答。")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            chat_provider="deepseek",
+        ),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="你好",
+        )
+    )
+
+    assert adapter.calls == 1
+    assert adapter.requests[0].tools
+    assert adapter.requests[0].tool_choice == "auto"
+    assert "只输出严格 JSON" not in adapter.requests[0].user_query
+    assert state.response is not None
+    assert state.response.message == "仍然走 native 直接回答。"
 
 
 def test_native_tool_prompt_does_not_ask_for_assistant_decision_json_text() -> None:
     adapter = NativeToolChatAdapter([plain_final_result("直接回答。")])
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
     )
 
@@ -195,6 +217,7 @@ def test_native_plain_text_final_answer_uses_finish_reason_without_json_contract
 
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="你好"))
 
+    assert adapter.calls == 1
     assert adapter.requests[0].tools
     assert state.tool_calls == []
     assert state.response is not None
@@ -206,7 +229,7 @@ def test_native_json_shaped_text_final_answer_is_not_parsed_as_assistant_decisio
     raw = '{"type": "tool_call", "tool_name": "product_search", "tool_input": {"query": "耳机"}}'
     adapter = NativeToolChatAdapter([plain_final_result(raw)])
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
     )
 
@@ -222,7 +245,7 @@ def test_native_copywriting_answer_does_not_force_memory_lookup_or_save() -> Non
     store = InMemoryStore()
     adapter = NativeToolChatAdapter([plain_final_result("这是一段小红书薯片文案。")])
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -264,7 +287,7 @@ def test_native_memory_save_only_when_llm_selects_tool() -> None:
         ]
     )
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -287,7 +310,7 @@ def test_native_explicit_save_keyword_does_not_override_llm_final_answer() -> No
     store = InMemoryStore()
     adapter = NativeToolChatAdapter([plain_final_result("好的，我会记住。")])
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -319,7 +342,7 @@ def test_native_assistant_candidate_memory_save_records_candidate_without_persis
         ]
     )
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -339,7 +362,7 @@ def test_native_missing_memory_save_source_intent_is_rejected_before_execution()
     store = InMemoryStore()
     adapter = NativeToolChatAdapter([native_result("memory_save", {"query": "记住我喜欢短句回答"})])
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -358,7 +381,7 @@ def test_native_legacy_memory_save_missing_source_intent_is_rejected_before_exec
         [native_result("memory", {"action": "save", "user_id": "u1", "query": "记住我喜欢短句回答"})]
     )
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -391,7 +414,7 @@ def test_native_memory_save_user_confirmed_is_rejected_before_execution() -> Non
         ]
     )
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -410,7 +433,7 @@ def test_native_memory_save_missing_source_detail_is_rejected_before_execution()
         [native_result("memory_save", {"query": "记住我喜欢短句回答", "source_intent": "user_explicit"})]
     )
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -427,7 +450,7 @@ def test_native_mock_vector_metadata_does_not_participate_in_memory_selection() 
     store = InMemoryStore()
     adapter = NativeToolChatAdapter([plain_final_result("可以，我直接回答。")])
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -470,7 +493,7 @@ def test_native_memory_save_binds_user_id_from_runtime_not_model_args() -> None:
         ]
     )
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -490,7 +513,7 @@ def test_native_empty_memory_save_is_rejected_before_execution() -> None:
     store = InMemoryStore()
     adapter = NativeToolChatAdapter([native_result("memory_save", {"content": {"style": "日系"}})])
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
         memory_store=store,
     )
@@ -518,7 +541,7 @@ def test_native_provider_refusal_becomes_terminal_answer() -> None:
 def test_native_unknown_tool_is_rejected_by_validator() -> None:
     adapter = NativeToolChatAdapter([native_result("unknown_tool", {})])
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
     )
 
@@ -532,7 +555,7 @@ def test_native_unknown_tool_is_rejected_by_validator() -> None:
 def test_native_invalid_tool_args_are_rejected_by_validator() -> None:
     adapter = NativeToolChatAdapter([native_result("image_generation", {})])
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="native_tools"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
     )
 
@@ -543,18 +566,61 @@ def test_native_invalid_tool_args_are_rejected_by_validator() -> None:
     assert state.response.data["validator_result"]["code"] == "invalid_tool_input"
 
 
-def test_prompt_json_mode_does_not_treat_native_tool_calls_as_main_path() -> None:
-    adapter = NativeToolChatAdapter([native_result("product_search", {"query": "通勤耳机"})])
+def test_legacy_json_controller_is_not_used_for_non_mock_native_runtime() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机"}),
+            plain_final_result("已用 native 工具路径完成。"),
+        ]
+    )
     runtime = AgentGraphRuntime(
-        config=ProviderConfig(assistant_tool_call_mode="prompt_json"),
+        config=ProviderConfig(),
         chat_adapter=adapter,
     )
 
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机"))
 
-    assert adapter.requests[0].tools == []
+    assert adapter.requests[0].tools
+    assert adapter.requests[0].tool_choice == "auto"
+    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert state.response is not None
+    assert state.response.message == "已用 native 工具路径完成。"
+
+
+def test_native_runtime_direct_answer_uses_single_chat_call() -> None:
+    adapter = NativeToolChatAdapter([plain_final_result("native 模式直接回答。")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="你好"))
+
+    assert adapter.calls == 1
+    assert adapter.requests[0].tools
+    assert adapter.requests[0].tool_choice == "auto"
     assert state.tool_calls == []
     assert state.response is not None
+    assert state.response.message == "native 模式直接回答。"
+
+
+def test_runtime_uses_native_runtime_for_non_mock_adapter() -> None:
+    adapter = NativeToolChatAdapter([plain_final_result("native runtime 直接回答。")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="你好"))
+
+    assert adapter.calls == 1
+    assert adapter.requests[0].tools
+    assert adapter.requests[0].tool_choice == "auto"
+    assert state.tool_calls == []
+    assert state.response is not None
+    assert state.response.message == "native runtime 直接回答。"
+    assert state.request.metadata["native_runtime"] is True
+    assert state.request.metadata["assistant_loop_steps"][0]["decision_type"] == "final_answer"
 
 
 def test_native_tool_call_does_not_change_mock_rule_plan_path() -> None:

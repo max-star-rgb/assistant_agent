@@ -1,12 +1,13 @@
-"""Controlled assistant ReAct loop nodes.
+"""Controlled assistant loop nodes.
 
-In real chat-adapter mode, the LLM proposes the next ReAct action: answer,
-ask a follow-up question, or call a tool with arguments. In mock mode, the
-rule plan provides deterministic decisions for stable offline tests.
+In real chat-adapter mode, the LLM uses provider-native responses: natural
+language content for direct answers, or native tool_calls for tool requests. In
+mock mode, the rule plan provides deterministic decisions for stable offline
+tests.
 
 Local code owns the minimum required guardrails around those decisions:
-tool listing, output parsing, validation, execution, loop limits, trace
-recording, and state mutation.
+tool listing, native tool-call normalization, validation, execution, loop
+limits, trace recording, and state mutation.
 """
 
 import json
@@ -44,7 +45,6 @@ from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult
 from assistant_agent.services.context.builder import build_assistant_context_pack
 from assistant_agent.services.context.renderer import (
-    render_assistant_prompt,
     render_final_only_prompt,
     render_native_user_message,
 )
@@ -84,7 +84,6 @@ class AssistantLoopState(TypedDict):
     assistant_iterations: NotRequired[int]
     tool_observations: NotRequired[list[dict[str, Any]]]
     current_node_name: NotRequired[str]
-    assistant_tool_call_mode: NotRequired[str]
     max_tool_iterations: NotRequired[int]
     max_plan_steps: NotRequired[int]
     max_plan_revisions: NotRequired[int]
@@ -103,7 +102,6 @@ class AssistantDecisionContext:
     iterations: int
     max_iterations: int
     is_mock: bool
-    tool_call_mode: str
 
 
 def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
@@ -144,7 +142,6 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
         iterations=iterations,
         max_iterations=max_iterations,
         is_mock=is_mock,
-        tool_call_mode=_assistant_tool_call_mode(graph_state),
     )
     decision, context = _decide_next_action(
         graph_state,
@@ -180,7 +177,6 @@ def _build_decision_context(
     iterations: int,
     max_iterations: int,
     is_mock: bool,
-    tool_call_mode: str,
 ) -> AssistantDecisionContext:
     try:
         tool_specs = _list_tool_specs(graph_state["tool_executor"].registry)
@@ -206,7 +202,6 @@ def _build_decision_context(
         iterations=iterations,
         max_iterations=max_iterations,
         is_mock=is_mock,
-        tool_call_mode=tool_call_mode,
     )
 
 
@@ -262,29 +257,30 @@ def _decide_with_llm(
     """Ask the real chat adapter for the next ReAct action."""
 
     use_native_tools = _use_native_tool_calling(context, chat_adapter)
-    request = (
-        _with_response_stream_callback(
-            _build_native_tool_chat_request(context, state),
-            graph_state,
-            source="assistant_native_final_answer",
+    if not use_native_tools:
+        return (
+            AssistantDecision(
+                type="final_answer",
+                message="当前模型不支持原生工具调用，无法执行 agent runtime。",
+                reason="Provider-native tool calling is required; legacy JSON controller is disabled.",
+                safety_notes=["native_tool_calling_unsupported"],
+            ),
+            context,
         )
-        if use_native_tools
-        else _build_prompt_json_chat_request(context, state)
+    request = _with_response_stream_callback(
+        _build_native_tool_chat_request(context, state),
+        graph_state,
+        source="assistant_native_final_answer",
     )
     result = chat_adapter.chat(request)
     _record_chat_usage_metadata(state, result)
     if _is_provider_context_overflow_result(result) and _can_retry_provider_context_overflow(state):
         _record_provider_context_overflow(state, result)
         retry_context = _rebuild_context_after_provider_overflow(graph_state, context)
-        use_native_tools = _use_native_tool_calling(retry_context, chat_adapter)
-        retry_request = (
-            _with_response_stream_callback(
-                _build_native_tool_chat_request(retry_context, state),
-                graph_state,
-                source="assistant_native_final_answer",
-            )
-            if use_native_tools
-            else _build_prompt_json_chat_request(retry_context, state)
+        retry_request = _with_response_stream_callback(
+            _build_native_tool_chat_request(retry_context, state),
+            graph_state,
+            source="assistant_native_final_answer",
         )
         result = chat_adapter.chat(retry_request)
         _record_chat_usage_metadata(state, result)
@@ -292,21 +288,13 @@ def _decide_with_llm(
         if _is_provider_context_overflow_result(result):
             _record_provider_context_overflow(state, result, retry_failed=True)
             return _provider_context_overflow_final_answer(result), context
-    raw_output = result.response_text if result.success else ""
-    if use_native_tools and result.success and result.tool_calls:
+    if result.success and result.tool_calls:
         _record_native_tool_call(state, result.tool_calls[0])
         decision = native_tool_call_to_assistant_decision(result.tool_calls[0])
-    elif use_native_tools and result.success:
+    elif result.success:
         decision = _native_final_decision(result)
     else:
-        decision = AssistantDecision.from_llm_output(raw_output)
-    if _should_repair_llm_decision(raw_output, decision):
-        decision = _repair_llm_decision(
-            chat_adapter=chat_adapter,
-            state=state,
-            raw_output=raw_output,
-            fallback=decision,
-        )
+        decision = _native_final_decision(result)
     if decision.type == "tool_call" and context.iterations + 1 >= context.max_iterations:
         decision = _request_final_answer_after_tool_limit(
             chat_adapter=chat_adapter,
@@ -402,7 +390,6 @@ def _rebuild_context_after_provider_overflow(
         iterations=context.iterations,
         max_iterations=context.max_iterations,
         is_mock=context.is_mock,
-        tool_call_mode=context.tool_call_mode,
     )
 
 
@@ -421,17 +408,8 @@ def _provider_context_overflow_final_answer(result: ChatResult) -> AssistantDeci
     )
 
 
-def _assistant_tool_call_mode(graph_state: AssistantLoopState) -> str:
-    mode = graph_state.get("assistant_tool_call_mode") or graph_state["request"].metadata.get("assistant_tool_call_mode")
-    if mode in {"native_tools", "prompt_json"}:
-        return str(mode)
-    return "auto"
-
-
 def _use_native_tool_calling(context: AssistantDecisionContext, chat_adapter: ChatAdapter) -> bool:
-    if context.tool_call_mode not in {"auto", "native_tools"} or context.is_mock:
-        return False
-    if context.tool_call_mode == "auto" and context.request.execution_strategy == "plan_and_solve":
+    if context.is_mock:
         return False
     return _chat_adapter_supports_native_tools(chat_adapter)
 
@@ -474,17 +452,6 @@ def _native_finish_reason(result: ChatResult, *, fallback: str) -> str:
     if result.message_kind:
         return f"{fallback} message_kind={result.message_kind}."
     return fallback
-
-
-def _build_prompt_json_chat_request(context: AssistantDecisionContext, state: AgentState) -> ChatRequest:
-    prompt = render_assistant_prompt(context.context_pack)
-    return ChatRequest(
-        user_id=state.user_id,
-        session_id=state.session_id,
-        user_query=prompt,
-        temperature=0.2,
-        max_tokens=1024,
-    )
 
 
 def _build_native_tool_chat_request(context: AssistantDecisionContext, state: AgentState) -> ChatRequest:
@@ -852,57 +819,26 @@ def _request_final_answer_after_tool_limit(
             user_id=state.user_id,
             session_id=state.session_id,
             user_query=prompt,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Answer the user directly from the available context and tool observations. "
+                        "Do not request additional tools in this final-only turn."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
             temperature=0.2,
             max_tokens=1024,
         )
     )
     _record_chat_usage_metadata(state, result)
-    decision = AssistantDecision.from_llm_output(result.response_text if result.success else "")
-    if decision.type == "final_answer" and decision.message:
-        return decision
+    if result.success:
+        decision = _native_final_decision(result)
+        if decision.type == "final_answer" and decision.message:
+            return decision
     return _max_iteration_final_answer(max_iterations)
-
-
-def _should_repair_llm_decision(raw_output: str, decision: AssistantDecision) -> bool:
-    """Repair only JSON-shaped malformed outputs; plain text remains a final answer."""
-
-    if not raw_output or not raw_output.strip() or "{" not in raw_output:
-        return False
-    return _is_parse_failure_reason(decision.reason)
-
-
-def _repair_llm_decision(
-    *,
-    chat_adapter: ChatAdapter,
-    state: AgentState,
-    raw_output: str,
-    fallback: AssistantDecision,
-) -> AssistantDecision:
-    """Ask once for syntactic repair, never executing the original malformed output."""
-
-    prompt = _build_decision_repair_prompt(raw_output)
-    result = chat_adapter.chat(
-        ChatRequest(
-            user_id=state.user_id,
-            session_id=state.session_id,
-            user_query=prompt,
-            temperature=0.0,
-            max_tokens=512,
-        )
-    )
-    _record_chat_usage_metadata(state, result)
-    repaired = AssistantDecision.from_llm_output(result.response_text if result.success else "")
-    if _is_parse_failure_reason(repaired.reason):
-        return fallback
-    return repaired
-
-
-def _is_parse_failure_reason(reason: str | None) -> bool:
-    return reason in {
-        "JSON parsing failed, treated as final_answer.",
-        "JSON was not an object, treated as final_answer.",
-        "No valid JSON found, treated as final_answer.",
-    }
 
 
 def _mock_assistant_decision_from_plan(
@@ -1035,9 +971,6 @@ def _assistant_final_answer_is_technical_failure(decision: AssistantDecision) ->
     """Detect provider self-repair/parsing messages that should not face users."""
 
     message = decision.message or ""
-    if decision.reason and _is_parse_failure_reason(decision.reason):
-        technical_markers = ("无法解析", "解析失败", "格式不完整", "不是合法", "JSON")
-        return any(marker in message for marker in technical_markers)
     technical_messages = (
         "原始输出格式不完整",
         "无法正常解析",
@@ -1669,40 +1602,6 @@ def route_after_assistant(graph_state: AssistantLoopState) -> str:
         return "execute_tool"
 
     return "finish"
-
-
-def _build_decision_repair_prompt(raw_output: str) -> str:
-    """Build the one-shot repair prompt for malformed AssistantDecision JSON."""
-
-    return f"""下面是一个助手决策输出，但它不是合法的 AssistantDecision JSON。
-
-请只返回一个合法 JSON 对象，不要输出 markdown、Thought:、思维链、分析过程或解释文本。
-reason 只能是一句简短、高层、可审计的决策理由，不要写完整推理链。
-允许的 type 只有：
-- final_answer
-- ask_followup
-- tool_call
-- enter_plan_mode
-- exit_plan_mode
-
-合法字段：
-- type
-- message
-- tool_name
-- tool_input
-- step_id
-- plan
-- next_action
-- reason
-- confidence
-- missing_slots
-- safety_notes
-
-如果无法确定原意，返回 final_answer，并在 message 中简短说明无法解析。
-
-原始输出：
-{raw_output}
-"""
 
 
 def _get_tool_context(state: AgentState) -> Any:

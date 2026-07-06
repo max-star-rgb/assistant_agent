@@ -254,22 +254,7 @@ def test_agent_run_accepts_explicit_plan_and_solve_strategy() -> None:
     try:
         routes_agent._RUNTIME = AgentGraphRuntime(
             chat_adapter=ScriptedChatAdapter(
-                [
-                    (
-                        '{"type": "enter_plan_mode", "plan": {"goal": "search", "steps": ['
-                        '{"step_id": "step_1", "action": "search_product", "tool_name": "product_search", '
-                        '"input_refs": [], "depends_on": [], "required_inputs": ["query"], '
-                        '"optional": false, "reason": "search first"}]}, "reason": "plan search"}'
-                    ),
-                    (
-                        '{"type": "tool_call", "step_id": "step_1", "tool_name": "product_search", '
-                        '"tool_input": {"query": "白色运动鞋", "top_k": 2}, "reason": "execute search"}'
-                    ),
-                    (
-                        '{"type": "exit_plan_mode", "next_action": "final_answer", '
-                        '"message": "plan complete", "reason": "search observed"}'
-                    ),
-                ]
+                ["native plan strategy response"]
             )
         )
         client = TestClient(create_app())
@@ -289,8 +274,9 @@ def test_agent_run_accepts_explicit_plan_and_solve_strategy() -> None:
     payload = response.json()
     assert response.status_code == 200
     assert payload["execution_strategy"] == "plan_and_solve"
-    assert payload["data"]["final_answer_source"] == "assistant_loop"
-    assert [call["tool_name"] for call in payload["tool_calls"]] == ["product_search"]
+    assert payload["response_text"] == "native plan strategy response"
+    assert payload["tool_calls"] == []
+    assert payload["data"]["native_runtime"] is True
 
 
 def test_phase7c_websocket_run_is_queryable_via_shared_http_runtime() -> None:

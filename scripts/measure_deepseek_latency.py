@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import json
 import os
@@ -68,6 +70,10 @@ class TimingChatAdapter:
             "status": "failed",
             "provider": self.provider,
             "model": self.model,
+            "message_kind": None,
+            "finish_reason": None,
+            "tool_call_count": 0,
+            "tool_names": [],
             "ttft_ms": None,
             "stream_open_ms": None,
             "total_ms": None,
@@ -92,6 +98,10 @@ class TimingChatAdapter:
                 "status": "success" if result.success else "failed",
                 "provider": result.provider,
                 "model": result.model,
+                "message_kind": _result_message_kind(result),
+                "finish_reason": result.finish_reason,
+                "tool_call_count": len(result.tool_calls),
+                "tool_names": [call.name for call in result.tool_calls],
                 "ttft_ms": _round_ms(ttft_ms),
                 "stream_open_ms": result.latency_ms,
                 "total_ms": _round_ms(total_ms),
@@ -167,6 +177,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Pretty-print JSON output. Compact JSON is easier for machine parsing.",
     )
+    parser.add_argument(
+        "--expect-chat-calls",
+        type=int,
+        default=None,
+        help="Assert each runtime sample made exactly this many chat calls.",
+    )
+    parser.add_argument(
+        "--expect-first-call-kind",
+        choices=("final_answer", "tool_call", "refusal"),
+        default=None,
+        help="Assert the first runtime chat call has this provider-native message kind.",
+    )
+    parser.add_argument(
+        "--expect-tool",
+        action="append",
+        default=[],
+        help="Assert a runtime sample includes this native tool name. Can be repeated.",
+    )
     return parser
 
 
@@ -179,6 +207,14 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     if args.max_tokens < 1:
         print("invalid_args")
         print("--max-tokens must be >= 1")
+        return 2
+    if args.expect_chat_calls is not None and args.expect_chat_calls < 0:
+        print("invalid_args")
+        print("--expect-chat-calls must be >= 0")
+        return 2
+    if args.mode == "provider" and _runtime_assertions_requested(args):
+        print("invalid_args")
+        print("runtime assertions require --mode runtime or --mode both")
         return 2
 
     source = dict(env if env is not None else os.environ)
@@ -226,6 +262,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 "End-to-end runtime time from run_state() call to first response_delta event."
             ),
             "runtime.chat_calls": "Provider calls made inside the runtime, each measured by TimingChatAdapter.",
+            "runtime.chat_calls.message_kind": "Provider-native response type: final_answer, tool_call, or refusal.",
+            "runtime.chat_calls.tool_names": "Native tool names returned by the provider for that chat call.",
         },
         "samples": samples,
         "summary": _summary(samples),
@@ -286,13 +324,14 @@ def _measure_runtime_sample(config: ProviderConfig, args: argparse.Namespace, ru
             "run_id": None,
             "trace_id": None,
             "errors": [{"code": exc.__class__.__name__, "message": str(exc)}],
+            "assertion_failures": [],
         }
 
     total_ms = _elapsed_ms(started_at)
     errors = getattr(state, "errors", [])
     response = getattr(state, "response", None)
     response_text = response.message if response is not None else ""
-    return {
+    payload = {
         "status": "success" if getattr(state, "status", "failed") != "failed" else "failed",
         "total_ms": _round_ms(total_ms),
         **event_sink.as_payload(),
@@ -302,6 +341,11 @@ def _measure_runtime_sample(config: ProviderConfig, args: argparse.Namespace, ru
         "trace_id": getattr(state, "trace_id", None),
         "errors": [_error_payload(error) for error in errors],
     }
+    assertion_failures = _runtime_assertion_failures(payload, args)
+    payload["assertion_failures"] = assertion_failures
+    if assertion_failures and payload["status"] == "success":
+        payload["status"] = "failed"
+    return payload
 
 
 def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -369,12 +413,83 @@ def _status_from_samples(samples: list[dict[str, Any]]) -> str:
     return "success"
 
 
+def _runtime_assertions_requested(args: argparse.Namespace) -> bool:
+    return (
+        getattr(args, "expect_chat_calls", None) is not None
+        or getattr(args, "expect_first_call_kind", None) is not None
+        or bool(getattr(args, "expect_tool", []) or [])
+    )
+
+
+def _runtime_assertion_failures(runtime: dict[str, Any], args: argparse.Namespace) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    chat_calls = runtime.get("chat_calls", [])
+    if not isinstance(chat_calls, list):
+        chat_calls = []
+
+    expected_chat_calls = getattr(args, "expect_chat_calls", None)
+    if expected_chat_calls is not None and len(chat_calls) != expected_chat_calls:
+        failures.append(
+            {
+                "code": "chat_call_count_mismatch",
+                "expected": expected_chat_calls,
+                "actual": len(chat_calls),
+            }
+        )
+
+    expected_first_kind = getattr(args, "expect_first_call_kind", None)
+    if expected_first_kind is not None:
+        actual_first_kind = (
+            chat_calls[0].get("message_kind") if chat_calls and isinstance(chat_calls[0], dict) else None
+        )
+        if actual_first_kind != expected_first_kind:
+            failures.append(
+                {
+                    "code": "first_call_kind_mismatch",
+                    "expected": expected_first_kind,
+                    "actual": actual_first_kind,
+                }
+            )
+
+    expected_tools = [tool for tool in (getattr(args, "expect_tool", []) or []) if tool]
+    if expected_tools:
+        observed_tools = {
+            tool
+            for call in chat_calls
+            if isinstance(call, dict)
+            for tool in call.get("tool_names", [])
+            if isinstance(tool, str)
+        }
+        for expected_tool in expected_tools:
+            if expected_tool not in observed_tools:
+                failures.append(
+                    {
+                        "code": "expected_tool_missing",
+                        "expected": expected_tool,
+                        "actual": sorted(observed_tools),
+                    }
+                )
+    return failures
+
+
 def _error_payload(error: Any) -> dict[str, Any]:
     if hasattr(error, "model_dump"):
         return error.model_dump(mode="json")
     if isinstance(error, dict):
         return error
     return {"code": error.__class__.__name__, "message": str(error)}
+
+
+def _result_message_kind(result: ChatResult) -> str | None:
+    if result.message_kind:
+        return result.message_kind
+    if result.tool_calls:
+        return "tool_call"
+    if result.refusal:
+        return "refusal"
+    if result.response_text:
+        return "final_answer"
+    return None
 
 
 def _elapsed_ms(started_at: float) -> float:

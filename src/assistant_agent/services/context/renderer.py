@@ -11,7 +11,7 @@ from assistant_agent.services.context.tool_catalog import prompt_tool_spec_paylo
 
 
 def render_prompt_json_context(pack: AssistantContextPack) -> RenderedAssistantContext:
-    """Render the full prompt-json assistant context."""
+    """Render the legacy prompt-json assistant context used by tests."""
 
     sections = [
         "你是一个多模态智能助手，帮助用户处理各种任务。",
@@ -31,7 +31,7 @@ def render_prompt_json_context(pack: AssistantContextPack) -> RenderedAssistantC
 
 
 def render_assistant_prompt(pack: AssistantContextPack) -> str:
-    """Render the prompt-json string used by non-native assistant calls."""
+    """Render the legacy prompt-json string used by tests/offline compatibility."""
 
     return render_prompt_json_context(pack).prompt_json or ""
 
