@@ -12,3 +12,16 @@ dev = ["httpx2>=0.0.1", "pytest>=8.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "fast: unit and contract checks suitable for small scoped changes",
+    "unit: isolated tests for local data models, helpers, and small services",
+    "contract: adapter and tool contract checks",
+    "api: HTTP, WebSocket, CLI, or external entry-layer checks",
+    "runtime: assistant loop, graph runtime, gateway, realtime, or routing behavior",
+    "eval: offline evaluation case checks",
+    "smoke: smoke scripts and operator-facing smoke checks",
+    "slow: broader regression checks that are not part of the small-change fast path",
+    "integration: opt-in integration checks that may require explicit environment setup",
+    "e2e: end-to-end demo or multi-layer workflow checks",
+    "regression: historical or phase-level behavior guards",
+]

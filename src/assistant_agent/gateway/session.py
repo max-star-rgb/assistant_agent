@@ -150,6 +150,7 @@ class GatewaySessionService:
             payload=payload,
             user_text=user_text,
             user_id=user_id,
+            runtime_interrupt=interrupt_requested and has_active_run,
         )
 
     async def _start_user_message(
@@ -160,6 +161,7 @@ class GatewaySessionService:
         payload: dict[str, Any],
         user_text: str,
         user_id: str,
+        runtime_interrupt: bool = False,
     ) -> None:
         turn_id = str(payload.get("turn_id") or uuid.uuid4())
         run_id = str(payload.get("run_id") or uuid.uuid4())
@@ -184,6 +186,7 @@ class GatewaySessionService:
                 user_text=user_text,
                 history=history_snapshot,
                 payload=payload,
+                runtime_interrupt=runtime_interrupt,
                 cancel=cancel,
             )
 
@@ -215,6 +218,7 @@ class GatewaySessionService:
         user_text: str,
         history: list[str],
         payload: dict[str, Any],
+        runtime_interrupt: bool,
         cancel: CancelToken,
     ) -> None:
         expects_reply = True
@@ -231,6 +235,7 @@ class GatewaySessionService:
                 user_text=user_text,
                 history=history,
                 payload=payload,
+                runtime_interrupt=runtime_interrupt,
             )
             result = await self._run_backend(request, ep=ep, turn_id=turn_id, cancel=cancel)
             expects_reply = bool(result.expects_reply)
@@ -471,10 +476,16 @@ class GatewaySessionService:
         user_text: str,
         history: list[str],
         payload: dict[str, Any],
+        runtime_interrupt: bool = False,
     ) -> RealtimeAgentRequest:
         metadata = dict(payload.get("metadata") or {})
+        if runtime_interrupt:
+            metadata.setdefault("control", "interrupt")
         gateway_metadata = metadata.get("gateway")
         gateway_payload = dict(gateway_metadata) if isinstance(gateway_metadata, dict) else {}
+        if metadata.get("control") == "interrupt":
+            gateway_payload.setdefault("control", "interrupt")
+            gateway_payload.setdefault("interrupt", True)
         gateway_payload["history"] = list(history)
         gateway_payload["session_config"] = dict(self._config)
         metadata["gateway"] = gateway_payload

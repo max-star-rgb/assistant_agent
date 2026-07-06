@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, List, Dict
 from pydantic import BaseModel
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.tools import ToolResult, ToolSpec
+from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy, ToolSpec
 from assistant_agent.tools.base import BaseTool, ToolContext
 from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
@@ -72,6 +72,7 @@ class ToolRegistry:
                     when_to_use=usage.get("when_to_use", []),
                     when_not_to_use=usage.get("when_not_to_use", []),
                     runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
+                    side_effect=tool_side_effect_policy(tool.name),
                 )
             )
         return specs
@@ -115,36 +116,93 @@ def _required_inputs(schema_type) -> list[str]:
         return []
 
 
-_ACTION_USAGE: dict[str, dict[str, list[str]]] = {
+def tool_side_effect_policy(tool_name: str) -> ToolSideEffectPolicy:
+    """Return static side-effect policy for a tool name.
+
+    Unknown tools intentionally receive the conservative default policy.
+    """
+
+    payload = _ACTION_USAGE.get(tool_name, {}).get("side_effect")
+    if isinstance(payload, ToolSideEffectPolicy):
+        return payload
+    if isinstance(payload, dict):
+        return ToolSideEffectPolicy.model_validate(payload)
+    return ToolSideEffectPolicy()
+
+
+_ACTION_USAGE: dict[str, dict[str, Any]] = {
     "vision_understanding": {
         "when_to_use": ["Describe, analyze, or identify image content.", "User provided image_ids and asks what is in the image."],
         "when_not_to_use": ["User asks to generate a new image.", "User asks to render or build a 3D scene."],
         "runtime_constraints": ["Requires image_ids.", "Do not use for video-only requests."],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads media/provider data and does not mutate external state.",
+        },
     },
     "video_understanding": {
         "when_to_use": ["Summarize or analyze video content.", "User provided video_ids and asks what happens in the video."],
         "when_not_to_use": ["User only asks for image generation.", "User asks for 3D rendering without video context."],
         "runtime_constraints": ["Requires video_ref or video_ids."],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads media/provider data and does not mutate external state.",
+        },
     },
     "image_generation": {
         "when_to_use": ["Generate an image, poster, product hero image, or visual creative from text."],
         "when_not_to_use": ["User asks to describe an existing image or video."],
         "runtime_constraints": ["Prompt must describe the image to generate."],
+        "side_effect": {
+            "level": "compensatable",
+            "requires_confirmation": False,
+            "description": "Creates a generated artifact; an interrupt cannot erase the existing artifact or provider cost.",
+            "compensation_hint": "Generate a corrected replacement or explain that the previous artifact already exists.",
+        },
     },
     "render_3d": {
         "when_to_use": ["User explicitly asks for 3D, rendering, modeling, scene preview, or displaying an object in a space."],
         "when_not_to_use": ["User only asks to describe the scene in an image or video.", "Do not trigger from the word 场景 alone."],
         "runtime_constraints": ["Requires explicit render intent."],
+        "side_effect": {
+            "level": "compensatable",
+            "requires_confirmation": False,
+            "description": "Creates a render/model artifact; an interrupt should revise or replace it rather than claim it was undone.",
+            "compensation_hint": "Render a corrected replacement or explain which preview already exists.",
+        },
     },
     "product_search": {
         "when_to_use": ["Search for products, similar items, or product candidates."],
         "when_not_to_use": ["User only asks for general chat or image description."],
         "runtime_constraints": ["Requires query or visual summary."],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads product/provider data and does not mutate external state.",
+        },
     },
     "price_compare": {
         "when_to_use": ["Compare prices, offers, or cheapest options."],
         "when_not_to_use": ["No product candidates or product query are available."],
         "runtime_constraints": ["Use product_search first if no candidates are available."],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads offer/provider data and does not mutate external state.",
+        },
+    },
+    "memory": {
+        "when_to_use": ["Legacy memory retrieve/save compatibility tool."],
+        "when_not_to_use": ["Prefer memory_retrieval or memory_save in the assistant loop."],
+        "runtime_constraints": ["Legacy compatibility only; use dedicated memory tools when possible."],
+        "side_effect": {
+            "level": "pending_confirmation",
+            "requires_confirmation": True,
+            "description": "May write durable user memory depending on action; treat as confirmation-sensitive.",
+            "confirmation_kind": "memory_write",
+        },
     },
     "memory_retrieval": {
         "when_to_use": [
@@ -157,6 +215,11 @@ _ACTION_USAGE: dict[str, dict[str, list[str]]] = {
             "Do not infer memory need from broad words like preference/style/tone unless the user refers to their own saved preference or prior conversation.",
         ],
         "runtime_constraints": ["Requires user_id and query.", "Return final_answer directly when the current request can be answered without prior context."],
+        "side_effect": {
+            "level": "local_read",
+            "requires_confirmation": False,
+            "description": "Reads user-scoped memory context and does not mutate memory.",
+        },
     },
     "memory_save": {
         "when_to_use": [
@@ -174,6 +237,13 @@ _ACTION_USAGE: dict[str, dict[str, list[str]]] = {
             "source_intent must be user_explicit or assistant_candidate for LLM calls.",
             "Memory writes must remain concise, auditable, and about long-term user/project value.",
         ],
+        "side_effect": {
+            "level": "pending_confirmation",
+            "requires_confirmation": True,
+            "description": "Writes durable user memory when policy allows; sensitive writes create a pending confirmation instead.",
+            "confirmation_kind": "memory_write",
+            "compensation_hint": "Confirm, reject, delete, or update the saved memory through the memory confirmation/audit path.",
+        },
     },
     "delegate_to_agent": {
         "when_to_use": [
@@ -191,6 +261,12 @@ _ACTION_USAGE: dict[str, dict[str, list[str]]] = {
             "Requires target_agent_id and text, image_ids, video_ids, or audio_id.",
             "Must execute through ActionValidator and ToolExecutor.",
         ],
+        "side_effect": {
+            "level": "compensatable",
+            "requires_confirmation": False,
+            "description": "Starts work in another local agent; interruption should cancel, supersede, or follow up rather than claim the child task never started.",
+            "compensation_hint": "Cancel or supersede the delegated task when the transport supports it, otherwise send a follow-up correction.",
+        },
     },
 }
 

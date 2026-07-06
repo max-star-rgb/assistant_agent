@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 from assistant_agent.schemas.context import ToolCatalogSummary
 from assistant_agent.schemas.requests import UserRequest
@@ -104,6 +104,57 @@ def _fallback(tool_specs: list[ToolSpec], *, reason: str) -> ToolCatalogSelectio
             fallback_used=True,
         ),
     )
+
+
+def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
+    """Return the compact prompt-json payload for one ToolSpec."""
+
+    payload = spec.model_dump(mode="json")
+    input_schema = payload.get("input_schema")
+    if isinstance(input_schema, dict):
+        payload["input_schema"] = _compact_prompt_input_schema(input_schema)
+    side_effect = payload.get("side_effect")
+    if isinstance(side_effect, dict):
+        level = side_effect.get("level")
+        requires_confirmation = side_effect.get("requires_confirmation")
+        if level in {"none", "local_read", "external_read"} and not requires_confirmation:
+            payload.pop("side_effect", None)
+            return payload
+        compact_side_effect = {"level": level}
+        if requires_confirmation:
+            compact_side_effect["requires_confirmation"] = True
+        confirmation_kind = side_effect.get("confirmation_kind")
+        if confirmation_kind:
+            compact_side_effect["confirmation_kind"] = confirmation_kind
+        payload["side_effect"] = compact_side_effect
+    return payload
+
+
+def _compact_prompt_input_schema(input_schema: dict[str, Any]) -> dict[str, Any]:
+    fields = input_schema.get("fields")
+    if not isinstance(fields, dict):
+        return input_schema
+    compact_fields: dict[str, Any] = {}
+    for field_name, field_info in fields.items():
+        if not isinstance(field_name, str) or not isinstance(field_info, dict):
+            continue
+        compact_field = {
+            key: value
+            for key, value in field_info.items()
+            if key in {"type", "required"} and value is not None
+        }
+        description = field_info.get("description")
+        if isinstance(description, str) and description.strip():
+            compact_field["description"] = _clip_prompt_description(description)
+        compact_fields[field_name] = compact_field
+    return {**input_schema, "fields": compact_fields}
+
+
+def _clip_prompt_description(description: str, *, max_chars: int = 80) -> str:
+    text = description.strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 12].rstrip() + "...[trimmed]"
 
 
 def _normalized_text(text: str | None) -> str:

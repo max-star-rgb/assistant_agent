@@ -161,7 +161,17 @@ conda run -n hello_agent <command>
 
 ## 9. 测试与验收
 
-优先使用离线验证：
+小开发优先使用快测层和相关专项测试：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -m fast -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/unit tests/contracts -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/<relevant_test_file>.py -q
+```
+
+`tests/README.md` 记录当前 pytest marker 分层。默认思路是：小范围改动跑 `fast` + 相关测试；触及 runtime/tool/API/memory/gateway/provider 边界时追加对应专项测试；大改、合并前或发布前再跑完整离线回归。
+
+完整离线验证：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py

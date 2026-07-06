@@ -92,6 +92,8 @@ def test_create_runtime_skip_dotenv_preserves_explicit_shell_provider(monkeypatc
     monkeypatch.setenv("DEEPSEEK_CHAT_API_KEY", "placeholder")
     monkeypatch.setenv("DEEPSEEK_CHAT_BASE_URL", "https://deepseek.local/v1")
     monkeypatch.setenv("DEEPSEEK_CHAT_MODEL", "deepseek-chat")
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
 
     runtime = create_runtime(load_env=True)
 

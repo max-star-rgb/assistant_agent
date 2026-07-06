@@ -68,6 +68,8 @@ def test_tool_spec_to_openai_tool_uses_function_calling_shape() -> None:
     assert tool["function"]["parameters"]["required"] == ["query"]
     assert "User asks to find products." in tool["function"]["description"]
     assert "Use only through ToolExecutor." in tool["function"]["description"]
+    assert "Side effects:" in tool["function"]["description"]
+    assert "requires_confirmation=true" in tool["function"]["description"]
 
 
 def test_tool_spec_to_mcp_tool_uses_mcp_input_schema_shape() -> None:
@@ -77,6 +79,7 @@ def test_tool_spec_to_mcp_tool_uses_mcp_input_schema_shape() -> None:
     assert "inputSchema" in tool
     assert tool["inputSchema"]["properties"]["query"]["type"] == "string"
     assert tool["inputSchema"]["additionalProperties"] is False
+    assert "Side effects:" in tool["description"]
 
 
 def test_tool_spec_batch_converters_preserve_order() -> None:

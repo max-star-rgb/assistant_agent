@@ -55,7 +55,18 @@ def test_static_console_asset_is_served() -> None:
     assert "app-call-state" in response.text
     assert "app-call-timer" in response.text
     assert "app-call-bubble.cancelled" in response.text
+    assert "app-call-bubble.stale" in response.text
     assert "markActiveAgentDraftCancelled" in response.text
+    assert "markActiveAgentDraftStale" in response.text
+    assert "appCallProgressFromPayload" in response.text
+    assert "Using previous findings" in response.text
+    assert "Waiting for confirmation" in response.text
+    assert "Action committed" in response.text
+    assert "Revising task" in response.text
+    assert "reusable_artifact_count" in response.text
+    assert "pending_confirmation_count" in response.text
+    assert "committed_side_effect_count" in response.text
+    assert "compensatable_side_effect_count" in response.text
     assert "isCurrentRealtimeRunFrame" in response.text
     assert "realtime-connect" in response.text
     assert "realtime-cancel" in response.text

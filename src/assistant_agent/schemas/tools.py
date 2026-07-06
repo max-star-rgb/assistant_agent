@@ -7,6 +7,25 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.capability_output import CapabilityOutputContract
 
+ToolSideEffectLevel = Literal[
+    "none",
+    "local_read",
+    "external_read",
+    "pending_confirmation",
+    "committed",
+    "compensatable",
+]
+
+
+class ToolSideEffectPolicy(BaseModel):
+    """Static side-effect metadata for one tool contract."""
+
+    level: ToolSideEffectLevel = "pending_confirmation"
+    requires_confirmation: bool = True
+    description: str = "Unclassified tool; treat as requiring confirmation before irreversible work."
+    confirmation_kind: str | None = None
+    compensation_hint: str | None = None
+
 
 class ToolSelection(BaseModel):
     """A tool chosen by the agent for a planned step."""
@@ -39,6 +58,7 @@ class ToolSpec(BaseModel):
     when_to_use: list[str] = Field(default_factory=list)
     when_not_to_use: list[str] = Field(default_factory=list)
     runtime_constraints: list[str] = Field(default_factory=list)
+    side_effect: ToolSideEffectPolicy = Field(default_factory=ToolSideEffectPolicy)
 
 
 class ToolCallRecord(BaseModel):

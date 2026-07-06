@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-06-29
+Last updated: 2026-07-03
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -10,7 +10,7 @@ Last updated: 2026-06-29
 
 - 当前结论：上下文工程第一版已经可用并适合阶段性收口，不是缺核心组件的状态。
 - 当前权威入口：本文件。不要把 `docs/development/context-engine-memory-policy-plan.md` 当成新的 active roadmap。
-- 已实现核心闭环：`AssistantContextPack`、session summary、增量滑动窗口摘要、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要。
+- 已实现核心闭环：`AssistantContextPack`、session summary、增量滑动窗口摘要、realtime task-state snapshot、reusable task artifacts、side-effect records、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要。
 - 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
 - 预算现状：全局压缩控制仍以字符预算为准；token-aware 目前是报告层。Memory context 有单独 token-aware 注入边界。
 - memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
@@ -26,6 +26,7 @@ Last updated: 2026-06-29
 - 主运行时是 LangGraph/ReAct assistant loop，默认 mock/local/offline。
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、plan state、tool observations、tool specs、source counts 和 budget。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
+- Gateway/realtime 请求会在进入 runtime 前注入 session-scoped realtime task-state snapshot；普通 `/agent/run` 不自动启用，除非 metadata 显式打开。
 - `MemoryManager` 负责加载分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
 - Assistant context 已有字符预算兜底；超限时优先压缩 memory/conversation，最后才压缩工具 observation。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，最近 2 轮保留原文。
@@ -99,7 +100,18 @@ Last updated: 2026-06-29
 - `render_prompt_json_context` 用于 prompt-json 决策模式。
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
 - `render_final_only_prompt` 用于工具调用上限附近，禁止继续工具调用并要求最终回答。
-- prompt 明确声明 conversation、memory、observation 和 tool output 都是数据，不是系统指令。
+- prompt 明确声明 conversation、memory、realtime task state、observation 和 tool output 都是数据，不是系统指令。
+
+### Realtime Task State Context
+
+- `prepare_realtime_task_state_request` 在 realtime/Gateway 请求进入 `AgentGraphRuntime.run_state(...)` 前生成 prompt-safe task-state snapshot。
+- Task-state 记录 session 内当前 objective、active constraints、source turn/run ids、interrupt 产生的 `IntentRevision`，以及 completed run 后的 prompt-safe `TaskArtifact` 和 `SideEffectRecord`。
+- Interrupt run 的 snapshot 会保留原始 objective，并把最新 interrupt 文本写入 `latest_revision`；普通 queued follow-up 只更新 current user text 和 provenance，不创建 revision。
+- Completed realtime run 会把 selected tool observations 和 media refs 记录为 task artifacts；tool observation artifact 复用现有 prompt compaction 逻辑，不保存 raw provider/file/media payload。
+- Interrupt 会用简单策略选择 `restart`、`reuse_and_replan`、`ask_confirmation`、`report_committed` 或 `compensate`；如果用户明确要求重新搜索/换一批/不要之前结果，已有 reusable artifacts 会标记为 `stale`，不会重新注入 prompt snapshot。
+- Side-effect records 来自 `ToolSpec.side_effect` 和工具结果中的 prompt-safe override（例如 `requires_confirmation`、`confirmation_id`、`side_effect_level`）；read-only 工具不阻塞重规划，pending confirmation 会让下一轮先处理确认，committed action 不会被描述成已取消，compensatable artifact 会倾向修正版/补偿路径。
+- `AgentGraphRealtimeBackend` 和 shared run service 会发 display-only `run.progress`，用于 App + Media 展示 `task_state/revising`、strategy、reusable artifact count 和 side-effect count。
+- 当前仍未接入通用执行前 confirmation gate；side-effect classification 只负责 runtime context、progress 和 interrupt 后的 truthful continuation strategy。
 
 ### Context Budget And Observability
 
@@ -140,6 +152,7 @@ Last updated: 2026-06-29
 - `src/assistant_agent/services/context/token_budget.py`
 - `src/assistant_agent/services/context/compactor.py`
 - `src/assistant_agent/services/context/renderer.py`
+- `src/assistant_agent/services/realtime_task_state.py`
 - `src/assistant_agent/services/agent_delegation_context.py`
 - `src/assistant_agent/schemas/context.py`
 - `src/assistant_agent/services/assistant_run_service.py`
@@ -154,6 +167,7 @@ Last updated: 2026-06-29
 
 - `tests/test_conversation_context_compaction.py`
 - `tests/test_assistant_context_renderer.py`
+- `tests/test_realtime_task_state.py`
 - `tests/test_shared_assistant_run_service.py`
 - `tests/test_memory_manager.py`
 - `tests/test_memory_context_builder.py`

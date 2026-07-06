@@ -7,7 +7,7 @@ from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult, ProviderChatCapabilities
 from assistant_agent.services.trace_store import InMemoryTraceStore
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
@@ -15,6 +15,7 @@ from assistant_agent.tools.registry import ToolRegistry
 
 class ScriptedChatAdapter:
     provider = "scripted"
+    capabilities = ProviderChatCapabilities(supports_native_tools=False)
 
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = outputs
@@ -183,7 +184,7 @@ def test_legacy_plan_and_solve_request_uses_assistant_loop_plan_mode() -> None:
     assert state.response.message == "legacy done"
     assert "plan_controller" not in trace_store.node_path(state.run_id)
     assert "apply_plan_mode_transition" in trace_store.node_path(state.run_id)
-    assert any("调用方计划模式提示" in message["content"] for message in adapter.requests[0].messages)
+    assert "调用方计划模式提示" in adapter.requests[0].user_query
 
 
 def test_plan_validator_rejects_cycles_and_step_limits() -> None:

@@ -27,7 +27,8 @@ from assistant_agent.services.context.policy import (
     context_policy_from_request,
 )
 from assistant_agent.services.context.token_budget import token_budget_reporter_from_request
-from assistant_agent.services.context.tool_catalog import select_prompt_tool_specs
+from assistant_agent.services.context.tool_catalog import prompt_tool_spec_payload, select_prompt_tool_specs
+from assistant_agent.services.realtime_task_state import REALTIME_TASK_STATE_METADATA_KEY
 
 
 def build_assistant_context_pack(
@@ -57,6 +58,7 @@ def build_assistant_context_pack(
         else _metadata_text(active_request, "memory_context_text") or "\n".join(summary for summary in summaries if summary)
     )
     memory_blocks = _metadata_dict_list(active_request, "memory_context_blocks")
+    realtime_task_state = _metadata_dict(active_request, REALTIME_TASK_STATE_METADATA_KEY)
     active_observations = observations or []
     context_observations = compact_observations_for_context(active_observations)
     active_tool_specs = tool_specs or []
@@ -67,6 +69,7 @@ def build_assistant_context_pack(
         request=active_request,
         memory_summaries=summaries,
         memory_blocks=memory_blocks,
+        realtime_task_state=realtime_task_state,
         observations=active_observations,
         tool_specs=active_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
@@ -75,6 +78,7 @@ def build_assistant_context_pack(
         request=active_request,
         conversation_text=conversation_text,
         memory_text=text,
+        realtime_task_state=realtime_task_state,
         plan_state=plan_state,
         observations=context_observations,
         tool_specs=prompt_tool_specs,
@@ -106,6 +110,7 @@ def build_assistant_context_pack(
         request=active_request,
         conversation_text=conversation_text,
         memory_text=text,
+        realtime_task_state=realtime_task_state,
         observations=context_observations,
         plan_state=plan_state,
         tool_specs=prompt_tool_specs,
@@ -129,6 +134,7 @@ def build_assistant_context_pack(
         memory_summaries=summaries,
         memory_text=budgeted.memory_text,
         memory_blocks=memory_blocks,
+        realtime_task_state=realtime_task_state,
         plan_state=plan_state,
         observations=budgeted.observations,
         tool_specs=active_tool_specs,
@@ -141,6 +147,7 @@ def build_assistant_context_pack(
             request=active_request,
             conversation_text=budgeted.conversation_text,
             memory_text=budgeted.memory_text,
+            realtime_task_state=realtime_task_state,
             plan_state=plan_state,
             observations=budgeted.observations,
             tool_specs=prompt_tool_specs,
@@ -208,11 +215,17 @@ def _metadata_dict_list(request: UserRequest, key: str) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def _metadata_dict(request: UserRequest, key: str) -> dict[str, Any] | None:
+    value = request.metadata.get(key)
+    return dict(value) if isinstance(value, dict) else None
+
+
 def _source_counts(
     *,
     request: UserRequest,
     memory_summaries: list[str],
     memory_blocks: list[dict[str, Any]],
+    realtime_task_state: dict[str, Any] | None,
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
     prompt_tool_specs: list[ToolSpec],
@@ -225,6 +238,7 @@ def _source_counts(
         "conversation_compacted_turns": _metadata_int(request, "conversation_context_compacted_turns"),
         "memory_items": len(memory_summaries),
         "memory_blocks": len(memory_blocks),
+        "realtime_task_state": 1 if realtime_task_state is not None else 0,
         "artifact_refs": len(artifact_refs) if isinstance(artifact_refs, list) else 0,
         "observations": len(observations),
         "tool_specs": len(tool_specs),
@@ -237,6 +251,7 @@ def _budget_report(
     request: UserRequest,
     conversation_text: str,
     memory_text: str,
+    realtime_task_state: dict[str, Any] | None,
     plan_state: AssistantPlanContext,
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
@@ -251,13 +266,15 @@ def _budget_report(
     request_chars = len(request.text or "")
     conversation_chars = len(conversation_text)
     memory_chars = len(memory_text)
+    realtime_task_state_chars = _json_chars(realtime_task_state) if realtime_task_state else 0
     plan_chars = _json_chars(plan_state.model_dump(mode="json")) if _has_plan_context(plan_state) else 0
     observations_chars = _json_chars(observations)
-    tool_spec_chars = _json_chars([spec.model_dump(mode="json") for spec in tool_specs])
+    tool_spec_chars = _json_chars([prompt_tool_spec_payload(spec) for spec in tool_specs])
     total_chars = (
         request_chars
         + conversation_chars
         + memory_chars
+        + realtime_task_state_chars
         + plan_chars
         + observations_chars
         + tool_spec_chars
@@ -271,6 +288,7 @@ def _budget_report(
                 "request": request.text or "",
                 "conversation": conversation_text,
                 "memory": memory_text,
+                "realtime_task_state": realtime_task_state or {},
                 "plan": plan_state.model_dump(mode="json") if _has_plan_context(plan_state) else {},
                 "observations": observations,
                 "tool_spec": [spec.model_dump(mode="json") for spec in tool_specs],
@@ -283,6 +301,7 @@ def _budget_report(
         request_chars=request_chars,
         conversation_chars=conversation_chars,
         memory_chars=memory_chars,
+        realtime_task_state_chars=realtime_task_state_chars,
         plan_chars=plan_chars,
         observations_chars=observations_chars,
         tool_spec_chars=tool_spec_chars,
@@ -362,6 +381,7 @@ def _enforce_context_budget(
     request: UserRequest,
     conversation_text: str,
     memory_text: str,
+    realtime_task_state: dict[str, Any] | None,
     observations: list[dict[str, Any]],
     plan_state: AssistantPlanContext,
     tool_specs: list[ToolSpec],
@@ -371,6 +391,7 @@ def _enforce_context_budget(
         request=request,
         conversation_text=conversation_text,
         memory_text=memory_text,
+        realtime_task_state=realtime_task_state,
         plan_state=plan_state,
         observations=observations,
         tool_specs=tool_specs,
@@ -385,7 +406,12 @@ def _enforce_context_budget(
         )
 
     trimmed_sections: list[str] = []
-    fixed_chars = budget.request_chars + budget.plan_chars + budget.tool_spec_chars
+    fixed_chars = (
+        budget.request_chars
+        + budget.realtime_task_state_chars
+        + budget.plan_chars
+        + budget.tool_spec_chars
+    )
     available = max(0, max_chars - fixed_chars)
 
     budgeted_memory_text = memory_text
@@ -419,6 +445,7 @@ def _enforce_context_budget(
         request=request,
         conversation_text=budgeted_conversation_text,
         memory_text=budgeted_memory_text,
+        realtime_task_state=realtime_task_state,
         plan_state=plan_state,
         observations=budgeted_observations,
         tool_specs=tool_specs,

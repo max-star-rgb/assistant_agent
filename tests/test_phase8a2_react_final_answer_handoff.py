@@ -1,11 +1,12 @@
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.schemas.api import agent_run_response_from_state
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult, ProviderChatCapabilities
 
 
 class ScriptedChatAdapter:
     provider = "scripted"
+    capabilities = ProviderChatCapabilities(supports_native_tools=False)
 
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = outputs

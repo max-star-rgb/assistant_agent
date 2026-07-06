@@ -215,6 +215,33 @@ def test_tool_progress_maps_to_progress_stream_event() -> None:
     assert mapped[0].payload["status"] == "working"
 
 
+def test_tool_progress_preserves_explicit_task_state_stage_and_strategy() -> None:
+    event = AgentEvent(
+        type="tool_progress",
+        session_id="session-1",
+        run_id="run-1",
+        tool_name="task_state",
+        text="Using previous findings to revise the task.",
+        payload={
+            "stage": "task_state",
+            "status": "revising",
+            "current_step": "intent_revision",
+            "strategy": "reuse_and_replan",
+            "reusable_artifact_count": 1,
+        },
+    )
+
+    mapped = map_agent_event_stream(event)
+
+    assert [item.type for item in mapped] == ["run.progress"]
+    assert mapped[0].text == "Using previous findings to revise the task."
+    assert mapped[0].payload["stage"] == "task_state"
+    assert mapped[0].payload["status"] == "revising"
+    assert mapped[0].payload["current_step"] == "intent_revision"
+    assert mapped[0].payload["strategy"] == "reuse_and_replan"
+    assert mapped[0].payload["reusable_artifact_count"] == 1
+
+
 def test_chunk_response_text_bounds_long_text_without_token_streaming_semantics() -> None:
     chunks = chunk_response_text("One two three four five", max_chars=9)
 

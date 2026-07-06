@@ -6,6 +6,7 @@
 
 - 默认运行时是 `AgentGraphRuntime` + LangGraph assistant loop；`agent_graph_mode=assistant_loop` 是当前主路径，conditional/legacy graph 只保留兼容。
 - 工具契约由 `ToolSpec` 表达，来源是 `ToolRegistry.list_specs()`；prompt-json 模式把筛选后的 ToolSpec 渲染进提示词，provider-native 模式把完整 ToolSpec 转成 OpenAI-compatible tools schema。
+- `ToolSpec.side_effect` 表达工具副作用策略；未知工具默认按 confirmation-sensitive 处理。realtime task-state 会消费该策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
 - LLM 或 mock 只能提出 `AssistantDecision`。provider-native tool call 会先归一化成 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
 - 工具执行必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。API、WebSocket、MCP 或新增入口都不能直接 `registry.run(...)`。
 - `ToolExecutor` 是运行时治理边界：绑定 user/session 身份、检查 provider budget、记录 state/tool history/event/trace、执行 retry/recovery，再调用 registry。
@@ -90,6 +91,7 @@ required_inputs
 when_to_use
 when_not_to_use
 runtime_constraints
+side_effect
 ```
 
 ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema` 生成，并补充 `_ACTION_USAGE` 中的使用条件和运行约束。默认约束包含 `Use only through ToolExecutor.`。
@@ -99,7 +101,21 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 - memory dedicated tools 会隐藏 `user_id`、`session_id` 这类运行时身份字段；模型不应决定记忆归属。
 - `tool_spec_to_json_schema()` 会输出 object schema，并设置 `additionalProperties=False`。
 - prompt-json 模式可能只展示一部分 ToolSpec；provider-native tools 发送完整 ToolSpec。
+- `side_effect` 包含 `level`、`requires_confirmation`、`description`、可选 `confirmation_kind` 和 `compensation_hint`；provider-native/MCP 描述也会包含该信息。
+- 未分类工具使用保守默认：`level=pending_confirmation` 且 `requires_confirmation=true`。
 - MCP 工具 schema 通过 `tool_spec_to_mcp_tool()` 支持，但当前 `OfflineMCPServer.list_tools()` 暴露的是 MCP wrapper 工具；registry ToolSpec 通过 `tool_list` 返回。
+
+## Tool Side-Effect Policy
+
+工具副作用策略是工具治理元数据，不属于 Gateway 协议。
+
+- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`product_search`、`price_compare`、image/video understanding。
+- 创建可替换 artifact 的工具标为 `compensatable`，例如 `image_generation` 和 `render_3d`；中断后应生成修正版或说明已有 artifact，而不是宣称旧结果被撤销。
+- confirmation-sensitive 工具标为 `pending_confirmation`，例如 `memory_save` 和 legacy `memory`；如果工具结果返回 `requires_confirmation=true` 或 `confirmation_id`，realtime task-state 会记录 pending confirmation。
+- 如果 confirmation-sensitive 或未知工具已经成功返回，realtime task-state 会把它视为 `committed`，中断后的下一轮必须报告已发生状态或提供安全后续动作。
+- 工具结果可用 `data.side_effect`、`data.side_effect_level`、`data.requires_confirmation`、`data.confirmation_id` 和 `data.compensation_hint` 覆盖静态策略。
+
+当前限制：这是一版分类、记录、context/progress 注入能力；通用“执行前阻塞并等待用户确认”的 service 还未接入 `ActionValidator` / `ToolExecutor`。
 
 ## 当前默认工具
 
@@ -116,6 +132,14 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 - `memory_save`
 
 `delegate_to_agent` 是 opt-in 工具，仅在 `enable_agent_delegation=True` 且传入 `AgentCommunicationService` 时注册。它的通信路由和 A2A 边界以 `docs/agent-communication-routing.md` 为准。
+
+默认副作用分类：
+
+- `vision_understanding`、`video_understanding`、`product_search`、`price_compare`: `external_read`。
+- `memory_retrieval`: `local_read`。
+- `image_generation`、`render_3d`: `compensatable`。
+- `memory`、`memory_save`: `pending_confirmation`，成功提交后从 realtime interrupt 视角记为 `committed`。
+- `delegate_to_agent`: `compensatable`，因为子任务可能已经开始，需要取消、覆盖或补发修正。
 
 ## ActionValidator 边界
 

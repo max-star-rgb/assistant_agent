@@ -618,6 +618,10 @@
         color: #667085;
       }
 
+      .app-call-message.agent .app-call-bubble.stale {
+        border-style: dashed;
+      }
+
       .app-call-compose {
         display: grid;
         grid-template-columns: minmax(0, 1fr) 76px;
@@ -1697,6 +1701,11 @@
         "Speaking",
         "Queued",
         "Cancelling",
+        "Revising task",
+        "Using previous findings",
+        "Waiting for confirmation",
+        "Action committed",
+        "Preparing follow-up",
         "Cancelled",
         "Ended",
         "Error",
@@ -2175,7 +2184,7 @@
             appCallQueuedMessages.push(messageText);
           } else {
             if (options.interrupt) {
-              markActiveAgentDraftCancelled("Cancelled");
+              markActiveAgentDraftStale("Interrupted by new instruction");
             }
             appendAppCallMessage("user", messageText);
             realtimeOutputText = "";
@@ -2263,9 +2272,12 @@
             return;
           }
           const payload = frame.payload && typeof frame.payload === "object" ? frame.payload : {};
-          const text = payload.text || payload.message || "Agent working";
-          setRealtimeStatus(String(text));
-          setAppCallState(String(text));
+          const progress = appCallProgressFromPayload(payload);
+          setRealtimeStatus(progress.label);
+          setAppCallState(progress.state);
+          if (progress.draftText) {
+            updateAgentDraft(progress.draftText);
+          }
           return;
         }
         if (frameType === "stream.chunk") {
@@ -2331,6 +2343,7 @@
           text: value,
           pending: Boolean(options.pending),
           cancelled: Boolean(options.cancelled),
+          stale: Boolean(options.stale),
         };
         appCallMessageItems.push(item);
         renderAppCallMessages();
@@ -2360,6 +2373,7 @@
             text: value,
             pending: true,
             cancelled: false,
+            stale: false,
           });
         }
         renderAppCallMessages();
@@ -2378,6 +2392,14 @@
       }
 
       function markActiveAgentDraftCancelled(fallbackText) {
+        return markActiveAgentDraftTerminal(fallbackText, { cancelled: true });
+      }
+
+      function markActiveAgentDraftStale(fallbackText) {
+        return markActiveAgentDraftTerminal(fallbackText, { cancelled: true, stale: true });
+      }
+
+      function markActiveAgentDraftTerminal(fallbackText, flags = {}) {
         for (let index = appCallMessageItems.length - 1; index >= 0; index -= 1) {
           const item = appCallMessageItems[index];
           if (item.role === "agent" && item.pending) {
@@ -2385,7 +2407,8 @@
               item.text = fallbackText || "Cancelled";
             }
             item.pending = false;
-            item.cancelled = true;
+            item.cancelled = Boolean(flags.cancelled);
+            item.stale = Boolean(flags.stale);
             renderAppCallMessages();
             return true;
           }
@@ -2406,7 +2429,8 @@
             const role = item.role === "user" ? "user" : "agent";
             const pending = item.pending ? " pending" : "";
             const cancelled = item.cancelled ? " cancelled" : "";
-            return `<div class="app-call-message ${role}"><div class="app-call-bubble${pending}${cancelled}">${escapeHtml(item.text)}</div></div>`;
+            const stale = item.stale ? " stale" : "";
+            return `<div class="app-call-message ${role}"><div class="app-call-bubble${pending}${cancelled}${stale}">${escapeHtml(item.text)}</div></div>`;
           })
           .join("");
         appCallMessages.scrollTop = appCallMessages.scrollHeight;
@@ -2420,6 +2444,63 @@
           return "请结合这张图片继续处理用户请求。";
         }
         return "";
+      }
+
+      function appCallProgressFromPayload(payload) {
+        if (payload.stage !== "task_state") {
+          const text = String(payload.text || payload.message || "Agent working");
+          return {
+            state: APP_CALL_STATES.includes(text) ? text : "Agent thinking",
+            label: text,
+            draftText: "",
+          };
+        }
+        const strategy = String(payload.strategy || "restart");
+        const reusableCount = numericPayloadValue(payload.reusable_artifact_count);
+        const pendingCount = numericPayloadValue(payload.pending_confirmation_count);
+        const committedCount = numericPayloadValue(payload.committed_side_effect_count);
+        const compensatableCount = numericPayloadValue(payload.compensatable_side_effect_count);
+        if (strategy === "reuse_and_replan") {
+          const suffix = reusableCount > 0 ? ` (${reusableCount} previous finding${reusableCount === 1 ? "" : "s"})` : "";
+          return {
+            state: "Using previous findings",
+            label: `Using previous findings${suffix}`,
+            draftText: "Using previous findings to revise the task.",
+          };
+        }
+        if (strategy === "ask_confirmation") {
+          const suffix = pendingCount > 0 ? ` (${pendingCount} pending)` : "";
+          return {
+            state: "Waiting for confirmation",
+            label: `Waiting for confirmation${suffix}`,
+            draftText: "Waiting for confirmation before continuing.",
+          };
+        }
+        if (strategy === "report_committed") {
+          const suffix = committedCount > 0 ? ` (${committedCount} committed)` : "";
+          return {
+            state: "Action committed",
+            label: `Action committed${suffix}`,
+            draftText: "Action already committed; preparing a safe follow-up.",
+          };
+        }
+        if (strategy === "compensate") {
+          const suffix = compensatableCount > 0 ? ` (${compensatableCount} result${compensatableCount === 1 ? "" : "s"})` : "";
+          return {
+            state: "Preparing follow-up",
+            label: `Preparing follow-up${suffix}`,
+            draftText: "Preparing a safe follow-up for an already created result.",
+          };
+        }
+        return {
+          state: "Revising task",
+          label: "Revising task",
+          draftText: "Revising task with the latest user correction.",
+        };
+      }
+
+      function numericPayloadValue(value) {
+        return typeof value === "number" && Number.isFinite(value) ? value : 0;
       }
 
       function escapeHtml(value) {

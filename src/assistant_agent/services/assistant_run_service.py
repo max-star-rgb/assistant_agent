@@ -14,6 +14,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.api import AgentRunResponse, agent_run_response_from_state
 from assistant_agent.schemas.context import ContextBudgetReport, ContextSummary
+from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.context.compactor import (
     DeterministicContextCompactor,
@@ -26,6 +27,13 @@ from assistant_agent.services.context.conversation import (
 )
 from assistant_agent.services.context.policy import context_policy_from_request
 from assistant_agent.services.event_sink import EventSink, ListEventSink
+from assistant_agent.services.realtime_task_state import (
+    RealtimeTaskStateStore,
+    get_default_realtime_task_state_store,
+    prepare_realtime_task_state_request,
+    realtime_task_state_progress_payload,
+    record_realtime_task_state_run_artifacts,
+)
 from assistant_agent.services.trace_store import trace_debug_summary
 from assistant_agent.services.video_context import load_demo_video_frames
 
@@ -444,6 +452,7 @@ def run_assistant_request(
     load_env: bool = True,
     conversation_store: ConversationStore | None = None,
     enable_conversation_history: bool = True,
+    realtime_task_state_store: RealtimeTaskStateStore | None = None,
     cancel_token: Any | None = None,
 ) -> AssistantRunArtifacts:
     """Run one request and return shared artifacts."""
@@ -452,13 +461,20 @@ def run_assistant_request(
     resolved_runtime = runtime or create_runtime(config=config, event_sink=sink, load_env=load_env)
     runtime_config = getattr(resolved_runtime, "config", config)
     resolved_store = conversation_store or get_default_conversation_store(runtime_config)
+    resolved_task_store = realtime_task_state_store or get_default_realtime_task_state_store()
     _preload_demo_video_context(request, resolved_runtime)
     resolved_request = _prepare_conversation_request(
         request,
         conversation_store=resolved_store,
         enable_conversation_history=enable_conversation_history,
     )
+    resolved_request = prepare_realtime_task_state_request(
+        resolved_request,
+        store=resolved_task_store,
+    )
+    _emit_realtime_task_state_progress(resolved_request, sink)
     state = _run_state_with_sink(resolved_runtime, resolved_request, sink, cancel_token=cancel_token)
+    record_realtime_task_state_run_artifacts(state, store=resolved_task_store)
     _record_conversation_turn(
         state,
         conversation_store=resolved_store,
@@ -467,6 +483,45 @@ def run_assistant_request(
     raw_events = getattr(sink, "events", [])
     events = list(raw_events) if isinstance(raw_events, list) else []
     return AssistantRunArtifacts(runtime=resolved_runtime, state=state, events=events)
+
+
+def _emit_realtime_task_state_progress(request: UserRequest, sink: EventSink) -> None:
+    payload = realtime_task_state_progress_payload(request)
+    if payload is None:
+        return
+    sink.emit(
+        AgentEvent(
+            type="tool_progress",
+            session_id=request.session_id,
+            run_id=_metadata_realtime_run_id(request),
+            tool_name="task_state",
+            text=_task_state_progress_message(payload),
+            payload=payload,
+        )
+    )
+
+
+def _metadata_realtime_run_id(request: UserRequest) -> str | None:
+    realtime = request.metadata.get("realtime")
+    if not isinstance(realtime, dict):
+        return None
+    run_id = realtime.get("run_id")
+    return run_id if isinstance(run_id, str) and run_id else None
+
+
+def _task_state_progress_message(payload: dict[str, Any]) -> str:
+    strategy = str(payload.get("strategy") or "restart")
+    if strategy == "reuse_and_replan":
+        return "Using previous findings to revise the task."
+    if strategy == "resume_from_checkpoint":
+        return "Resuming from the latest task checkpoint."
+    if strategy == "ask_confirmation":
+        return "Waiting on confirmation before continuing."
+    if strategy == "compensate":
+        return "Preparing a safe follow-up for an already created result."
+    if strategy == "report_committed":
+        return "Action already committed; preparing a safe follow-up."
+    return "Revising task with the latest user correction."
 
 
 def _run_state_with_sink(
@@ -514,6 +569,7 @@ def run_assistant_query(
     metadata: dict[str, Any] | None = None,
     conversation_store: ConversationStore | None = None,
     enable_conversation_history: bool = True,
+    realtime_task_state_store: RealtimeTaskStateStore | None = None,
     cancel_token: Any | None = None,
 ) -> AssistantRunArtifacts:
     """Run a text query through the shared assistant backend."""
@@ -533,6 +589,7 @@ def run_assistant_query(
         load_env=load_env,
         conversation_store=conversation_store,
         enable_conversation_history=enable_conversation_history,
+        realtime_task_state_store=realtime_task_state_store,
         cancel_token=cancel_token,
     )
 

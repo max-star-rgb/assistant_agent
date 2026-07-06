@@ -1,6 +1,6 @@
 # Realtime Agent Task State Plan
 
-Last updated: 2026-07-03
+Last updated: 2026-07-06
 
 This is the medium-term development plan after the implemented realtime
 cancel/interrupt phases. The current Gateway behavior already supports
@@ -58,15 +58,15 @@ Already implemented:
 - App + Media has separate `Say`, `Interrupt`, `Cancel Agent`, and `Hang Up`
   controls.
 
-Missing for medium-term realtime quality:
+Remaining gaps for medium-term realtime quality:
 
-- There is no structured task-state object that spans interrupted runs.
-- Reusable intermediate results are not separated from final answer text.
-- Tool side effects are not classified as safe, pending confirmation, or
-  committed from the interrupt/resume perspective.
-- Interrupt does not yet produce a first-class "intent revision" record.
-- The App + Media UI does not yet show a dedicated acknowledgement/revision
-  state separate from generic cancelling/thinking states.
+- Tool side effects now have an initial classification and task-state record,
+  but a general pre-execution confirmation gate is not yet wired into
+  `ActionValidator` / `ToolExecutor`.
+- The App + Media UI now shows first-pass dedicated task-state progress
+  statuses, but it does not yet provide interactive confirmation controls.
+- Checkpoint/resume is modelled but not yet selected by persisted checkpoint
+  records.
 
 ## Design Direction
 
@@ -158,9 +158,12 @@ Storage:
 Goal: new interrupted runs can see a structured snapshot instead of only raw
 text history.
 
+Status: initial implementation landed on 2026-07-03.
+
 Expected work:
 
-- Add internal task-state models and an in-memory store.
+- Add internal task-state models and an in-memory store. Done in
+  `src/assistant_agent/services/realtime_task_state.py`.
 - Load task state in `run_assistant_request(...)` or immediately before
   `AgentGraphRuntime.run_state(...)`.
 - When realtime metadata indicates interrupt, create an `IntentRevision`.
@@ -176,13 +179,27 @@ Acceptance:
 - Unit tests cover first turn, queued follow-up, interrupt revision, and
   no-task-state fallback.
 
+Current coverage:
+
+- `tests/test_realtime_task_state.py` covers first turn, queued follow-up,
+  interrupt revision, no-task-state fallback, and run-service injection.
+- `tests/test_assistant_context_renderer.py` covers prompt/native/final-only
+  task-state rendering.
+- `tests/test_realtime_agent_backend.py` covers display-only revision progress.
+- `tests/test_gateway_session.py` covers Gateway runtime metadata marking for
+  interrupt versus ordinary queued messages.
+
 ### Phase B: Reusable Artifacts And Replan Strategy
 
 Goal: interrupt does not blindly discard useful non-side-effect work.
 
+Status: initial implementation landed on 2026-07-03.
+
 Expected work:
 
 - Record selected tool observations and media references as `TaskArtifact`.
+  Done in `src/assistant_agent/services/realtime_task_state.py`; artifacts use
+  prompt-safe observation compaction, not raw provider payloads.
 - Mark artifacts stale or reusable when interrupt changes constraints.
 - Add a simple strategy selector:
   - pure generation: `restart`
@@ -199,29 +216,69 @@ Acceptance:
 - Strategy decisions are visible in trace/progress without exposing chain of
   thought.
 
+Current coverage:
+
+- `tests/test_realtime_task_state.py` covers reusable product-search artifacts,
+  stale artifact invalidation, prompt exclusion for stale artifacts, and
+  strategy progress payloads.
+- `tests/test_realtime_event_mapping.py` covers `task_state/revising` progress
+  payload preservation through realtime event mapping.
+
+Current limitation:
+
+- Checkpoint resume remains modelled but not selected until durable checkpoint
+  records are introduced. Side-effect strategies are selected by the Phase C
+  first-pass `SideEffectRecord` implementation.
+
 ### Phase C: Side-Effect Classification And Human Confirmation
 
 Goal: interrupt behavior is safe around actions that cannot be simply cancelled.
+
+Status: initial classification/recording implementation landed on 2026-07-03.
 
 Expected work:
 
 - Add side-effect metadata to tool specs or tool policy records.
 - Default unknown tools to conservative behavior.
-- Before irreversible external actions, require confirmation or record a
-  pending confirmation state.
+- Record pending confirmation state from tool results that expose
+  `requires_confirmation` or `confirmation_id`.
 - If interrupt arrives after a committed action, new run must report committed
   state and offer a safe follow-up or compensation path.
+- Future remaining work: before irreversible external actions, require
+  confirmation through a shared service rather than only recording tool result
+  state after execution.
 
 Acceptance:
 
-- Tests cover read-only tool, pending confirmation, committed action, and
-  compensatable action.
+- Tests cover read-only tool, pending confirmation, committed action,
+  compensatable action, and conservative unknown-tool behavior.
 - Interrupt never claims a committed side effect was cancelled.
 - Existing validator/executor boundaries remain the only path to tools.
+
+Current coverage:
+
+- `ToolSpec.side_effect` now carries static side-effect policy into prompt-json,
+  provider-native, MCP, and registry descriptions.
+- Unknown tools default to `pending_confirmation`; if such a tool already
+  succeeded, realtime task-state records it as `committed`.
+- Realtime task-state records prompt-safe `SideEffectRecord`s for completed
+  runs and selects `ask_confirmation`, `report_committed`, or `compensate`
+  before ordinary artifact reuse/restart strategies.
+- Progress payloads expose side-effect counts without changing Gateway frame
+  names.
+
+Current limitation:
+
+- No general human-confirmation service is yet wired in front of arbitrary
+  irreversible tools. `memory_save` still uses its existing memory-specific
+  confirmation flow; other tools only contribute side-effect records after
+  they return.
 
 ### Phase D: App + Media Realtime UX
 
 Goal: the UI communicates realtime intent revision clearly.
+
+Status: first-pass task-state status mapping landed on 2026-07-06.
 
 Expected work:
 
@@ -231,6 +288,24 @@ Expected work:
   showing the new user message.
 - Keep raw Gateway frames inside the Gateway Timeline only.
 - Preserve Web Chat layout and mode selector behavior.
+
+Current coverage:
+
+- App + Media consumes `event.progress` payloads with `stage=task_state`.
+- `reuse_and_replan` maps to `Using previous findings`; `ask_confirmation`
+  maps to `Waiting for confirmation`; `report_committed` maps to
+  `Action committed`; `compensate` maps to `Preparing follow-up`; fallback
+  revision maps to `Revising task`.
+- Interrupt marks the active pending agent draft as stale/cancelled before
+  appending the new user turn.
+- Gateway raw frames remain in the collapsed Gateway Timeline.
+- Static console tests assert Web Chat and App + Media remain separate modes
+  and that the new task-state status strings are present.
+
+Current limitation:
+
+- `Waiting for confirmation` is display-only. There is still no generic
+  confirmation accept/reject control for arbitrary non-memory tools.
 
 Acceptance:
 
@@ -281,9 +356,7 @@ Default choices for implementation unless a later plan changes them:
 
 Questions to resolve before Phase C implementation:
 
-- Which existing tools should be explicitly classified as side-effect-free,
-  confirmation-required, or committed-action tools?
-- Whether confirmation state should reuse existing memory confirmation
-  structures or live in a separate task-state store.
+- Whether non-memory irreversible tools should use a new generic confirmation
+  service or reuse a narrower tool-specific confirmation contract.
 - Whether durable task-state persistence is required before a real pilot, or
   whether in-memory state is enough for local App + Media validation.

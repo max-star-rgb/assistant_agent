@@ -30,6 +30,95 @@ PROVIDER_ENV_KEYS = {
 }
 
 
+def pytest_collection_modifyitems(config, items):
+    """Apply coarse test-layer markers without moving the existing test tree."""
+
+    for item in items:
+        _apply_test_layer_markers(item)
+
+
+def _apply_test_layer_markers(item) -> None:
+    path = item.path
+    normalized_path = path.as_posix()
+    filename = path.name
+
+    if _path_is_under_tests_dir(normalized_path, "unit"):
+        item.add_marker(pytest.mark.unit)
+        item.add_marker(pytest.mark.fast)
+        return
+
+    if _path_is_under_tests_dir(normalized_path, "contracts"):
+        item.add_marker(pytest.mark.contract)
+        item.add_marker(pytest.mark.fast)
+        return
+
+    if _path_is_under_tests_dir(normalized_path, "integration"):
+        item.add_marker(pytest.mark.integration)
+        return
+
+    if _path_is_under_tests_dir(normalized_path, "e2e"):
+        item.add_marker(pytest.mark.e2e)
+        item.add_marker(pytest.mark.slow)
+        return
+
+    if filename.startswith("test_phase"):
+        item.add_marker(pytest.mark.regression)
+        item.add_marker(pytest.mark.slow)
+
+    if "eval" in filename:
+        item.add_marker(pytest.mark.eval)
+        item.add_marker(pytest.mark.slow)
+
+    if "smoke" in filename:
+        item.add_marker(pytest.mark.smoke)
+        item.add_marker(pytest.mark.slow)
+
+    if "demo" in filename or "e2e" in filename:
+        item.add_marker(pytest.mark.e2e)
+        item.add_marker(pytest.mark.slow)
+
+    if _is_api_or_entry_layer_file(filename):
+        item.add_marker(pytest.mark.api)
+
+    if _is_runtime_file(filename):
+        item.add_marker(pytest.mark.runtime)
+
+
+def _is_api_or_entry_layer_file(filename: str) -> bool:
+    entry_layer_fragments = (
+        "api",
+        "websocket",
+        "run_client",
+        "run_server",
+        "assistant_cli",
+        "trace_query",
+        "run_summary_query",
+    )
+    return any(fragment in filename for fragment in entry_layer_fragments)
+
+
+def _path_is_under_tests_dir(normalized_path: str, child_dir: str) -> bool:
+    return f"/tests/{child_dir}/" in normalized_path or normalized_path.startswith(f"tests/{child_dir}/")
+
+
+def _is_runtime_file(filename: str) -> bool:
+    runtime_fragments = (
+        "agent_runtime",
+        "assistant_loop",
+        "assistant_run",
+        "graph",
+        "gateway",
+        "langgraph",
+        "native_tool_call",
+        "plan_mode",
+        "realtime",
+        "routing",
+        "tool_executor",
+        "websocket",
+    )
+    return any(fragment in filename for fragment in runtime_fragments)
+
+
 @pytest.fixture(autouse=True)
 def default_tests_run_offline(monkeypatch):
     """Keep default tests independent from a developer's real `.env` or shell env."""

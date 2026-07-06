@@ -57,7 +57,17 @@ def test_registry_list_specs_is_the_canonical_tool_description() -> None:
     assert video.input_schema["fields"]
     assert "video_ids" in " ".join(video.runtime_constraints)
     assert video.when_to_use
+    assert video.side_effect.level == "external_read"
+    assert video.side_effect.requires_confirmation is False
     assert "api_key" not in str(video.model_dump(mode="json")).lower()
+
+    image = next(spec for spec in specs if spec.name == "image_generation")
+    assert image.side_effect.level == "compensatable"
+    assert image.side_effect.compensation_hint
+
+    memory_save = next(spec for spec in specs if spec.name == "memory_save")
+    assert memory_save.side_effect.level == "pending_confirmation"
+    assert memory_save.side_effect.requires_confirmation is True
 
 
 def test_registry_run_returns_tool_result() -> None:

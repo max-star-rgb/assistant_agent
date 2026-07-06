@@ -97,4 +97,14 @@ def _native_description(spec: ToolSpec) -> str:
         parts.append("Do not use when: " + "; ".join(spec.when_not_to_use))
     if spec.runtime_constraints:
         parts.append("Runtime constraints: " + "; ".join(spec.runtime_constraints))
+    if spec.side_effect:
+        side_effect_parts = [
+            f"level={spec.side_effect.level}",
+            f"requires_confirmation={str(spec.side_effect.requires_confirmation).lower()}",
+        ]
+        if spec.side_effect.description:
+            side_effect_parts.append(spec.side_effect.description)
+        if spec.side_effect.compensation_hint:
+            side_effect_parts.append("compensation: " + spec.side_effect.compensation_hint)
+        parts.append("Side effects: " + "; ".join(side_effect_parts))
     return "\n".join(parts)

@@ -381,8 +381,10 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.first_cancel_metadata = None
                 self.first_cancel_seen = asyncio.Event()
+                self.requests = []
 
             async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.requests.append(request)
                 if request.text == "first":
                     while not cancel_token.is_cancelled():
                         await asyncio.sleep(0.01)
@@ -440,6 +442,9 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert saw_second_completed is True
         await asyncio.wait_for(backend.first_cancel_seen.wait(), timeout=2.0)
         assert backend.first_cancel_metadata["cancel_source"] == "gateway_interrupt"
+        assert [request.text for request in backend.requests] == ["first", "second"]
+        assert backend.requests[1].metadata["control"] == "interrupt"
+        assert backend.requests[1].metadata["gateway"]["interrupt"] is True
 
     async def test_message_user_queues_behind_active_run_without_interrupt(self) -> None:
         class QueueBackend:
@@ -507,6 +512,8 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert first_run != second_run
         assert [request.text for request in backend.requests] == ["first", "second"]
         assert backend.requests[1].metadata["runtime"]["history"] == ["first", "second"]
+        assert "control" not in backend.requests[1].metadata
+        assert "interrupt" not in backend.requests[1].metadata["gateway"]
 
     async def test_interrupt_suppresses_previous_run_events_after_new_message(self) -> None:
         class InterruptStaleEventBackend:

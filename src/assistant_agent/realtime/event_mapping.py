@@ -158,8 +158,8 @@ def _display_only(event: AgentEvent) -> bool:
 def _progress_payload(event: AgentEvent) -> dict[str, Any]:
     payload = _event_payload(event)
     stage, status = _progress_stage_and_status(event)
-    payload["stage"] = stage
-    payload["status"] = status
+    payload.setdefault("stage", stage)
+    payload.setdefault("status", status)
     payload["display_only"] = True
     payload.setdefault("blocked", False)
     payload.setdefault("needs_user_decision", False)

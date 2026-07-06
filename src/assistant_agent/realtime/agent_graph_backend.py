@@ -25,6 +25,7 @@ from assistant_agent.realtime.types import (
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.assistant_run_service import run_assistant_request
+from assistant_agent.services.realtime_task_state import realtime_metadata_requests_interrupt
 
 
 RunAssistantRequest = Callable[..., Any]
@@ -107,6 +108,7 @@ class AgentGraphRealtimeBackend:
         heartbeat_task = forwarder.start_heartbeat(cancel_token)
 
         try:
+            await _emit_task_revision_progress_if_needed(event_sink, user_request)
             run_request = self._run_request or run_assistant_request
             try:
                 artifacts = await asyncio.to_thread(
@@ -208,6 +210,30 @@ def realtime_request_to_user_request(request: RealtimeAgentRequest) -> UserReque
         video_ids=list(request.video_ids),
         audio_id=request.audio_id,
         metadata=metadata,
+    )
+
+
+async def _emit_task_revision_progress_if_needed(
+    event_sink: RealtimeEventSink | None,
+    request: UserRequest,
+) -> None:
+    if event_sink is None or not realtime_metadata_requests_interrupt(request.metadata):
+        return
+    realtime = request.metadata.get("realtime")
+    await event_sink(
+        RealtimeAgentEvent(
+            type="run.progress",
+            text="Revising task with the latest user correction.",
+            payload={
+                "stage": "task_state",
+                "status": "revising",
+                "current_step": "intent_revision",
+                "display_only": True,
+                "run_id": realtime.get("run_id") if isinstance(realtime, dict) else None,
+                "turn_id": realtime.get("turn_id") if isinstance(realtime, dict) else None,
+            },
+            display_only=True,
+        )
     )
 
 

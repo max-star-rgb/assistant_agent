@@ -24,6 +24,7 @@ class ContextBudgetReport(BaseModel):
     request_chars: int = Field(default=0, ge=0)
     conversation_chars: int = Field(default=0, ge=0)
     memory_chars: int = Field(default=0, ge=0)
+    realtime_task_state_chars: int = Field(default=0, ge=0)
     plan_chars: int = Field(default=0, ge=0)
     observations_chars: int = Field(default=0, ge=0)
     tool_spec_chars: int = Field(default=0, ge=0)
@@ -95,6 +96,7 @@ class AssistantContextPack(BaseModel):
     memory_summaries: list[str] = Field(default_factory=list)
     memory_text: str = ""
     memory_blocks: list[dict[str, Any]] = Field(default_factory=list)
+    realtime_task_state: dict[str, Any] | None = None
     plan_state: AssistantPlanContext = Field(default_factory=AssistantPlanContext)
     observations: list[dict[str, Any]] = Field(default_factory=list)
     tool_specs: list[ToolSpec] = Field(default_factory=list)

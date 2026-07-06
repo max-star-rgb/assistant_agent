@@ -30,7 +30,7 @@ from assistant_agent.schemas.capabilities import canonical_intent
 from assistant_agent.schemas.intent_router import IntentRouterRequest
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult, ProviderChatCapabilities
 from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_errors import build_provider_error
 from assistant_agent.services.provider_policy import RetryPolicy
@@ -51,6 +51,7 @@ class ScriptedPlanModeChatAdapter:
     """
 
     provider = "scripted"
+    capabilities = ProviderChatCapabilities(supports_native_tools=False)
 
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = outputs

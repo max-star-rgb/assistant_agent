@@ -81,7 +81,15 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "app-call-state" in html
     assert "app-call-timer" in html
     assert "app-call-bubble.cancelled" in html
+    assert "app-call-bubble.stale" in html
     assert "markActiveAgentDraftCancelled" in html
+    assert "markActiveAgentDraftStale" in html
+    assert "appCallProgressFromPayload" in html
+    assert "Using previous findings" in html
+    assert "Waiting for confirmation" in html
+    assert "Action committed" in html
+    assert "Revising task" in html
+    assert "Preparing follow-up" in html
     assert "isCurrentRealtimeRunFrame" in html
     assert "realtime-connect" in html
     assert "realtime-ping" in html

@@ -146,6 +146,48 @@ def test_agent_graph_realtime_backend_forwards_runtime_progress_events() -> None
     assert events[1].payload["progress"] == 0.5
 
 
+def test_agent_graph_realtime_backend_emits_task_revision_progress_on_interrupt() -> None:
+    captured: dict[str, UserRequest] = {}
+
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        captured["request"] = request
+        return _completed_artifacts(request)
+
+    backend = AgentGraphRealtimeBackend(run_request=fake_run_assistant_request)
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(
+                user_id="user-1",
+                session_id="session-1",
+                run_id="runtime-run-2",
+                turn_id="turn-2",
+                text="等等，优先考虑降噪",
+                metadata={
+                    "source": "realtime_media_websocket",
+                    "control": "interrupt",
+                    "gateway": {"history": ["先比较耳机", "等等，优先考虑降噪"]},
+                },
+            ),
+            event_sink=collect,
+        )
+    )
+
+    assert result.status == "completed"
+    assert events[0].type == "run.progress"
+    assert events[0].display_only is True
+    assert events[0].payload["stage"] == "task_state"
+    assert events[0].payload["status"] == "revising"
+    assert events[0].payload["current_step"] == "intent_revision"
+    assert events[0].payload["run_id"] == "runtime-run-2"
+    assert events[0].payload["turn_id"] == "turn-2"
+    assert captured["request"].metadata["control"] == "interrupt"
+
+
 def test_agent_graph_realtime_backend_emits_idle_heartbeat_progress() -> None:
     def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
         kwargs["event_sink"].emit(
