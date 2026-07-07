@@ -123,7 +123,14 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 - 如果 confirmation-sensitive 或未知工具已经成功返回，realtime task-state 会把它视为 `committed`，中断后的下一轮必须报告已发生状态或提供安全后续动作。
 - 工具结果可用 `data.side_effect`、`data.side_effect_level`、`data.requires_confirmation`、`data.confirmation_id` 和 `data.compensation_hint` 覆盖静态策略。
 
-当前限制：这是一版分类、记录、context/progress 注入能力；通用“执行前阻塞并等待用户确认”的 service 还未接入 `ActionValidator` / `ToolExecutor`。
+Runtime gate 映射：
+
+- `auto`: `local_read`、`external_read` 或无副作用工具，直接执行，不需要幂等 ledger。
+- `soft_gate`: `compensatable` 工具，执行前解析或生成幂等 key；同一 user/session/tool/key 已提交时返回 safe duplicate-suppressed result，不再次调用 registry。
+- `hard_gate`: `pending_confirmation`、`committed` 或未分类工具。realtime/Gateway 上下文中的未分类工具会返回 pending-confirmation result，不执行实际工具；`memory` / `memory_save` 继续交给 memory service 自己的确认边界处理。
+- `block`: 预留给后续策略禁止类工具，本阶段没有默认工具映射到 block。
+
+当前限制：risk gate 和 idempotency ledger 是 process-local runtime guard；完整用户确认 UX、持久化 ledger、跨进程恢复和 irreversible external action provider 仍未接入。
 
 ## 当前默认工具
 
@@ -209,9 +216,10 @@ Provider 边界：
 - 对 memory 工具用 `AgentState.user_id/session_id` 覆盖模型参数。
 - 检查 run-scoped cancel token；取消时跳过工具执行或停止 retry，并把 run 交回 runtime 标记为 `cancelled`。
 - 创建 `ToolCallRecord` 并更新 `AgentState.status`。
-- 发出带 `pre_tool_call` 摘要的 `tool_started` 事件；预算阻断也进入同一生命周期，但不会调用 registry。
+- 发出带 `pre_tool_call` 摘要的 `tool_started` 事件；risk gate、幂等重复、预算阻断都进入同一生命周期，但不一定会调用 registry。
+- 在 provider budget 和 registry 之前应用 runtime risk gate：read-only 自动放行，compensatable 使用 idempotency ledger，realtime 未分类 hard-gate 工具返回 pending confirmation。
 - 在真正执行前调用 `ProviderCallBudget.check_before_call()`。
-- 发出带 `post_tool_call` 摘要的 `tool_finished` / `tool_failed` 事件，覆盖成功、失败、取消和预算阻断。
+- 发出带 `post_tool_call` 摘要的 `tool_finished` / `tool_failed` 事件，覆盖成功、失败、取消、pending confirmation、duplicate suppression 和预算阻断。
 - 写入 `ToolHistoryStore` 的 started/succeeded/failed 记录。
 - 通过 `ProviderExecutionPolicy.retry` 对 retryable provider 错误重试。
 - 把 registry/tool 异常转为失败 `ToolResult`，不让异常穿透给 Agent。
@@ -220,7 +228,7 @@ Provider 边界：
 - 用 `RecoveryPolicy` 决定失败后 stop、partial continue 或 optional step skip。
 - 写入 trace event，失败时包含 sanitized error 和 input/output summary。
 
-`post_tool_call` 只暴露 prompt-safe lifecycle 信息，例如 status、side-effect summary、confirmation summary、output_ref、latency、retry count 和压缩后的 observation summary。它不会携带 raw provider payload、secret-like error text 或大媒体内容。
+`post_tool_call` 只暴露 prompt-safe lifecycle 信息，例如 status、risk gate、side-effect summary、confirmation summary、idempotency summary、output_ref、latency、retry count 和压缩后的 observation summary。它不会携带 raw provider payload、secret-like error text 或大媒体内容。
 
 只有 `ToolExecutor._run_once()` 可以直接调用 `registry.run(...)`。新增入口、API、MCP、graph node 或 service 不应直接调用 registry。
 

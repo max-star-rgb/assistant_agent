@@ -25,6 +25,8 @@ def build_pre_tool_call_summary(
     state: AgentState,
     step_id: str | None = None,
     cancel_token: Any | None = None,
+    risk_gate: dict[str, Any] | None = None,
+    idempotency: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build prompt-safe metadata before a tool is executed."""
 
@@ -45,7 +47,8 @@ def build_pre_tool_call_summary(
                 "required": bool(side_effect.get("requires_confirmation")),
                 "kind": side_effect.get("confirmation_kind"),
             },
-            "idempotency": _idempotency_summary(tool_input),
+            "risk_gate": risk_gate,
+            "idempotency": _merged_idempotency_summary(tool_input, idempotency),
             "input_summary": _input_summary(tool_input),
             "realtime_task_state": _realtime_task_state_summary(request),
             "cancel": _cancel_summary(cancel_token),
@@ -64,6 +67,8 @@ def build_post_tool_call_summary(
     latency_ms: int | None = None,
     retry_count: int | None = None,
     cancel_metadata: dict[str, Any] | None = None,
+    risk_gate: dict[str, Any] | None = None,
+    idempotency: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build prompt-safe metadata after a tool succeeds, fails, or is cancelled."""
 
@@ -83,11 +88,13 @@ def build_post_tool_call_summary(
                 "run_id": state.run_id,
             },
             "side_effect": side_effect,
+            "risk_gate": risk_gate,
             "confirmation": {
                 "required": bool(side_effect.get("requires_confirmation")),
                 "id": _data_string(result, "confirmation_id"),
                 "kind": side_effect.get("confirmation_kind"),
             },
+            "idempotency": _post_idempotency_summary(result, idempotency),
             "output_ref": result.output_ref,
             "latency_ms": result.latency_ms if result.latency_ms is not None else latency_ms,
             "retry_count": retry_count,
@@ -101,6 +108,9 @@ def _post_status(result: ToolResult, *, cancel_metadata: dict[str, Any] | None) 
     if cancel_metadata or (result.data or {}).get("cancelled") is True:
         return "cancelled"
     data = result.data or {}
+    idempotency = data.get("idempotency")
+    if isinstance(idempotency, dict) and idempotency.get("duplicate_suppressed") is True:
+        return "duplicate_suppressed"
     if data.get("requires_confirmation") is True or data.get("confirmation_id"):
         return "pending_confirmation"
     return "succeeded" if result.success else "failed"
@@ -128,6 +138,34 @@ def _side_effect_summary(tool_name: str, *, result: ToolResult | None = None) ->
 def _idempotency_summary(tool_input: dict[str, Any]) -> dict[str, Any]:
     key = _metadata_string(tool_input.get("idempotency_key"))
     return {"key": key, "present": key is not None}
+
+
+def _merged_idempotency_summary(
+    tool_input: dict[str, Any],
+    override: dict[str, Any] | None,
+) -> dict[str, Any]:
+    summary = _idempotency_summary(tool_input)
+    if override:
+        summary.update(override)
+        summary["present"] = summary.get("key") is not None
+    return summary
+
+
+def _post_idempotency_summary(result: ToolResult, override: dict[str, Any] | None) -> dict[str, Any] | None:
+    summary: dict[str, Any] = {}
+    if override:
+        summary.update(override)
+    data = result.data if isinstance(result.data, dict) else {}
+    payload = data.get("idempotency")
+    if isinstance(payload, dict):
+        for key in ("key", "present", "required", "generated", "duplicate_suppressed", "status"):
+            if key in payload:
+                summary[key] = payload[key]
+    if not summary:
+        return None
+    if "present" not in summary:
+        summary["present"] = summary.get("key") is not None
+    return summary
 
 
 def _input_summary(tool_input: dict[str, Any]) -> dict[str, Any]:

@@ -1863,9 +1863,6 @@
     "expected_decision_types": [
       "final_answer"
     ],
-    "expected_trace_nodes": [
-      "assistant"
-    ],
     "expected_chat_calls": 1,
     "scripted_chat_outputs": [
       {
@@ -1891,65 +1888,18 @@
     "expected_response_contains": [
       "海报"
     ],
-    "expected_plan_status": "completed",
-    "expected_final_answer_source": "assistant_loop",
-    "expected_plan_revision_count": 0,
     "expected_decision_types": [
-      "enter_plan_mode",
       "tool_call",
-      "exit_plan_mode"
+      "final_answer"
     ],
     "expected_observation_tools": [
       "product_search",
       "image_generation"
     ],
-    "expected_trace_nodes": [
-      "assistant",
-      "apply_plan_mode_transition",
-      "execute_tool"
-    ],
-    "expected_chat_calls": 4,
+    "expected_chat_calls": 3,
     "scripted_chat_outputs": [
       {
-        "type": "enter_plan_mode",
-        "plan": {
-          "goal": "搜索白色运动鞋并生成海报",
-          "steps": [
-            {
-              "step_id": "step_1",
-              "action": "search_product",
-              "tool_name": "product_search",
-              "input_refs": [],
-              "depends_on": [],
-              "required_inputs": [
-                "query"
-              ],
-              "optional": false,
-              "reason": "先拿到商品候选"
-            },
-            {
-              "step_id": "step_2",
-              "action": "generate_image",
-              "tool_name": "image_generation",
-              "input_refs": [
-                "step_1"
-              ],
-              "depends_on": [
-                "step_1"
-              ],
-              "required_inputs": [
-                "prompt"
-              ],
-              "optional": false,
-              "reason": "基于搜索目标生成海报"
-            }
-          ]
-        },
-        "reason": "需要多步工具计划"
-      },
-      {
         "type": "tool_call",
-        "step_id": "step_1",
         "tool_name": "product_search",
         "tool_input": {
           "query": "白色低帮运动鞋",
@@ -1959,7 +1909,6 @@
       },
       {
         "type": "tool_call",
-        "step_id": "step_2",
         "tool_name": "image_generation",
         "tool_input": {
           "prompt": "为白色低帮运动鞋生成一张简洁商品海报",
@@ -1968,8 +1917,7 @@
         "reason": "搜索完成后生成海报"
       },
       {
-        "type": "exit_plan_mode",
-        "next_action": "final_answer",
+        "type": "final_answer",
         "message": "已完成白色运动鞋搜索，并生成海报。",
         "reason": "两个步骤都已完成"
       }
@@ -1986,16 +1934,13 @@
     "expected_capability": "multi_step_orchestration",
     "expected_tools": [],
     "expected_response_contains": [
-      "计划无效"
+      "Unknown tool"
     ],
-    "expected_plan_status": "failed",
     "expected_decision_types": [
-      "enter_plan_mode",
-      "plan_rejected"
+      "tool_call"
     ],
-    "expected_trace_nodes": [
-      "assistant",
-      "apply_plan_mode_transition"
+    "expected_observation_tools": [
+      "missing_tool"
     ],
     "expected_error_codes": [
       "unknown_tool"
@@ -2003,22 +1948,9 @@
     "expected_chat_calls": 1,
     "scripted_chat_outputs": [
       {
-        "type": "enter_plan_mode",
-        "plan": {
-          "goal": "调用不存在的工具",
-          "steps": [
-            {
-              "step_id": "step_1",
-              "action": "missing_capability",
-              "tool_name": "missing_tool",
-              "input_refs": [],
-              "depends_on": [],
-              "required_inputs": [],
-              "optional": false,
-              "reason": "测试未知工具拒绝"
-            }
-          ]
-        },
+        "type": "tool_call",
+        "tool_name": "missing_tool",
+        "tool_input": {},
         "reason": "测试未知工具拒绝"
       }
     ]
@@ -2037,84 +1969,48 @@
       "image_generation"
     ],
     "expected_response_contains": [
-      "重规划"
+      "native plan-and-solve"
     ],
-    "expected_plan_status": "completed",
-    "expected_final_answer_source": "assistant_loop",
-    "expected_plan_revision_count": 1,
     "expected_decision_types": [
-      "enter_plan_mode",
       "tool_call",
-      "exit_plan_mode"
+      "final_answer"
     ],
     "expected_observation_tools": [
       "price_compare",
       "image_generation"
     ],
-    "expected_trace_nodes": [
-      "assistant",
-      "apply_plan_mode_transition",
-      "execute_tool"
-    ],
-    "expected_error_codes": [
-      "tool_input_invalid"
-    ],
-    "expected_chat_calls": 5,
+    "expected_chat_calls": 3,
     "scripted_chat_outputs": [
       {
-        "type": "enter_plan_mode",
-        "plan": {
-          "goal": "先尝试比价",
-          "steps": [
-            {
-              "step_id": "step_1",
-              "action": "compare_price",
-              "tool_name": "price_compare",
-              "input_refs": [],
-              "depends_on": [],
-              "required_inputs": [
-                "query"
-              ],
-              "optional": false,
-              "reason": "先按用户要求尝试比价"
-            }
-          ]
-        },
-        "reason": "先按用户要求尝试比价"
-      },
-      {
         "type": "tool_call",
-        "step_id": "step_1",
         "tool_name": "price_compare",
         "tool_input": {
-          "query": "白色低帮运动鞋"
+          "query": "白色低帮运动鞋",
+          "items": [
+            {
+              "product_id": "p1",
+              "title": "白色低帮运动鞋 A",
+              "price": 299.0,
+              "currency": "CNY",
+              "platform": "mock-shop-a",
+              "url": "mock://shop-a/p1",
+              "similarity_score": 0.92
+            },
+            {
+              "product_id": "p2",
+              "title": "简约白色板鞋 B",
+              "price": 259.0,
+              "currency": "CNY",
+              "platform": "mock-shop-b",
+              "url": "mock://shop-b/p2",
+              "similarity_score": 0.86
+            }
+          ]
         },
         "reason": "尝试比价"
       },
       {
-        "type": "enter_plan_mode",
-        "plan": {
-          "goal": "比价失败后生成海报",
-          "steps": [
-            {
-              "step_id": "step_1",
-              "action": "generate_image",
-              "tool_name": "image_generation",
-              "input_refs": [],
-              "depends_on": [],
-              "required_inputs": [
-                "prompt"
-              ],
-              "optional": false,
-              "reason": "按照用户给出的 fallback 生成海报"
-            }
-          ]
-        },
-        "reason": "price_compare observation 显示缺少商品候选，需要重规划"
-      },
-      {
         "type": "tool_call",
-        "step_id": "step_1",
         "tool_name": "image_generation",
         "tool_input": {
           "prompt": "生成一张白色低帮运动鞋商品海报",
@@ -2123,9 +2019,8 @@
         "reason": "执行重规划后的海报生成步骤"
       },
       {
-        "type": "exit_plan_mode",
-        "next_action": "final_answer",
-        "message": "比价缺少候选商品，已重规划并生成白色运动鞋海报。",
+        "type": "final_answer",
+        "message": "native plan-and-solve multi-step done: 已比价并生成白色运动鞋海报。",
         "reason": "fallback 步骤完成"
       }
     ]

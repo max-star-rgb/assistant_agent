@@ -14,6 +14,27 @@ Source documents for the external service:
 - `docs/memory_server_software_implementation_design.md`: external service
   implementation design and operational notes.
 
+Current implementation status:
+
+- Phase 0/1 local foundations are implemented: offline Memory Server response
+  mapping, prompt-safe remote query errors, and a small injectable
+  `RemoteMemoryClient`.
+- Phase 2 local foundation is implemented: `HybridMemoryStore` keeps
+  lifecycle/write behavior local and uses the remote service only for
+  `search(...)`.
+- Runtime config/factory wiring for `MULTIMODAL_AGENT_MEMORY_BACKEND=hybrid_remote`
+  exists.
+- `scripts/smoke_memory_server.py` exists for opt-in `/v1/health` and
+  `/v1/memories/query` checks. It keeps `direct_answer=false` and does not test
+  media ingestion.
+- Phase 4 client foundation is partially implemented:
+  `RemoteMemoryClient.upload_media(...)` and
+  `RemoteMemoryClient.task_status(...)` can call `/v1/media/upload` and
+  `/v1/tasks_status` through fakeable transport with structured, trace-safe
+  results.
+- No media-ingestion tool/service has been added yet; the upload/status client
+  is not exposed to the agent.
+
 ## Purpose
 
 `assistant_agent` already has a local-first memory service. The external Memory
@@ -381,3 +402,16 @@ For the first implementation phase:
 ```
 
 For remote smoke testing, add an explicit opt-in command after the client exists.
+
+Current opt-in smoke command:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_server.py \
+  --base-url http://127.0.0.1:5200 \
+  --user-id u1 \
+  --query "上次早餐吃了什么" \
+  --top-k 3
+```
+
+This command calls only `/v1/health` and `/v1/memories/query`, with
+`direct_answer=false` and returned media chunks disabled.

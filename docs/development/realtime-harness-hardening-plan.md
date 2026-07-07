@@ -466,14 +466,14 @@ Before claiming a phase complete:
 | Phase 1: Deterministic Realtime Fallback Messages | Complete | Realtime adapter emits display-only replaceable SLA fallback before delayed first visible output. |
 | Phase 2: Realtime Call State Reducer Extensions | Complete | Prompt-safe call-state fields and reducer are wired into shared runtime events; tool completion, cancel, hangup, and TTS/display lifecycle events now update task state. |
 | Phase 3: Explicit PreToolCall And PostToolCall Boundaries | Complete | Prompt-safe boundary summaries are attached at validator/executor boundaries without bypassing registry execution. |
-| Phase 4: Risk Gate And Idempotency Ledger | Not started | Build on existing `ToolSpec.side_effect`. |
-| Phase 5: Lightweight Plan And Checkpoint | Not started | Only for long or recoverable realtime tasks. |
+| Phase 4: Risk Gate And Idempotency Ledger | Complete | Process-local risk gate maps `ToolSpec.side_effect`; soft-gate tools use idempotency ledger and realtime unknown hard-gate tools return pending confirmation. |
+| Phase 5: Lightweight Plan And Checkpoint | Complete | Multi-step realtime runs can save prompt-safe checkpoint artifacts; interrupt resumes only when a reusable checkpoint remains valid. |
 
 ## Next Recommended Step
 
-Start Phase 4 with a narrow risk-gate and idempotency slice:
+All planned hardening phases in this document now have a first implementation slice. Next recommended work:
 
-- Use existing `ToolSpec.side_effect` and the new PreToolCall/PostToolCall summaries as inputs.
-- Add tests first for confirmation-sensitive side effects and duplicate idempotency keys.
-- Keep read-only tools free of confirmation/idempotency overhead.
+- Run a wider offline regression before treating the realtime harness hardening branch as release-ready.
+- Decide whether process-local risk/idempotency/checkpoint stores need persistent storage for pilot use.
+- Design the user-facing confirmation UX for hard-gate tools before adding irreversible external actions.
 - Preserve Gateway wire frame names, assistant loop ownership, and memory-service boundaries unchanged.

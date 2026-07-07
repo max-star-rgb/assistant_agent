@@ -25,6 +25,14 @@ from assistant_agent.services.tool_call_boundary import (
     build_pre_tool_call_summary,
 )
 from assistant_agent.services.tool_history import ToolHistoryStore
+from assistant_agent.services.tool_risk_gate import (
+    ToolIdempotencyLedger,
+    confirmation_required_result,
+    duplicate_suppressed_result,
+    evaluate_tool_risk,
+    get_default_tool_idempotency_ledger,
+    record_successful_idempotent_result,
+)
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
@@ -42,6 +50,7 @@ class ToolExecutor:
         execution_policy: ProviderExecutionPolicy | None = None,
         context_metadata: dict[str, Any] | None = None,
         cancel_token: Any | None = None,
+        idempotency_ledger: ToolIdempotencyLedger | None = None,
     ) -> None:
         self.registry = registry or create_default_registry()
         self.tool_history = tool_history
@@ -50,6 +59,7 @@ class ToolExecutor:
         self.execution_policy = execution_policy or ProviderExecutionPolicy.from_env()
         self.context_metadata = dict(context_metadata or {})
         self.cancel_token = cancel_token
+        self.idempotency_ledger = idempotency_ledger or get_default_tool_idempotency_ledger()
 
     def run_tool(
         self,
@@ -71,6 +81,13 @@ class ToolExecutor:
             state=state,
         )
         tool_input = _bind_runtime_identity(tool_name, tool_input, state)
+        risk_decision = evaluate_tool_risk(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            request=state.request,
+            state=state,
+            step_id=step_id,
+        )
         pre_tool_call = build_pre_tool_call_summary(
             tool_name=tool_name,
             tool_input=tool_input,
@@ -79,6 +96,8 @@ class ToolExecutor:
             state=state,
             step_id=step_id,
             cancel_token=self.cancel_token,
+            risk_gate=risk_decision.risk_summary(),
+            idempotency=risk_decision.idempotency_summary(),
         )
         call = state.add_tool_call(tool_name, tool_input)
         capability = _capability_name(tool_name, step)
@@ -106,6 +125,111 @@ class ToolExecutor:
                 user_id=state.user_id,
                 session_id=state.session_id,
             )
+        idempotency_record = None
+        if risk_decision.idempotency_required and risk_decision.idempotency_key is not None:
+            idempotency_record = self.idempotency_ledger.get(
+                user_id=state.user_id,
+                session_id=state.session_id,
+                tool_name=tool_name,
+                idempotency_key=risk_decision.idempotency_key,
+            )
+        if idempotency_record is not None:
+            latency_ms = int((perf_counter() - started_at) * 1000)
+            result = duplicate_suppressed_result(
+                tool_name=tool_name,
+                record=idempotency_record,
+                decision=risk_decision,
+                latency_ms=latency_ms,
+            )
+            state.complete_tool_call(call.call_id, result)
+            post_tool_call = build_post_tool_call_summary(
+                tool_name=tool_name,
+                result=result,
+                state=state,
+                step_id=step_id,
+                call_id=call.call_id,
+                latency_ms=latency_ms,
+                retry_count=0,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(duplicate_suppressed=True),
+            )
+            self._emit(
+                AgentEvent(
+                    type="tool_finished",
+                    session_id=state.session_id,
+                    run_id=state.run_id,
+                    tool_name=tool_name,
+                    output_ref=result.output_ref,
+                    payload={
+                        "call_id": call.call_id,
+                        "step_id": step_id,
+                        "latency_ms": latency_ms,
+                        "retry_count": 0,
+                        "post_tool_call": post_tool_call,
+                    },
+                )
+            )
+            if self.tool_history is not None:
+                self.tool_history.record_end(
+                    state.run_id,
+                    call.call_id,
+                    tool_name,
+                    "succeeded",
+                    latency_ms,
+                    output_ref=result.output_ref,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
+                )
+            return result
+
+        if not risk_decision.allow_execute:
+            latency_ms = int((perf_counter() - started_at) * 1000)
+            result = confirmation_required_result(
+                tool_name=tool_name,
+                decision=risk_decision,
+                latency_ms=latency_ms,
+            )
+            state.complete_tool_call(call.call_id, result)
+            post_tool_call = build_post_tool_call_summary(
+                tool_name=tool_name,
+                result=result,
+                state=state,
+                step_id=step_id,
+                call_id=call.call_id,
+                latency_ms=latency_ms,
+                retry_count=0,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(),
+            )
+            self._emit(
+                AgentEvent(
+                    type="tool_finished",
+                    session_id=state.session_id,
+                    run_id=state.run_id,
+                    tool_name=tool_name,
+                    output_ref=result.output_ref,
+                    payload={
+                        "call_id": call.call_id,
+                        "step_id": step_id,
+                        "latency_ms": latency_ms,
+                        "retry_count": 0,
+                        "post_tool_call": post_tool_call,
+                    },
+                )
+            )
+            if self.tool_history is not None:
+                self.tool_history.record_end(
+                    state.run_id,
+                    call.call_id,
+                    tool_name,
+                    "succeeded",
+                    latency_ms,
+                    output_ref=result.output_ref,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
+                )
+            return result
+
         budget_error = budget.check_before_call(
             capability=capability,
             provider=_provider_name(tool_input),
@@ -138,6 +262,8 @@ class ToolExecutor:
                 call_id=call.call_id,
                 latency_ms=latency_ms,
                 retry_count=0,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(),
             )
             state.fail_tool_call(
                 call.call_id,
@@ -246,6 +372,8 @@ class ToolExecutor:
                 latency_ms=latency_ms,
                 retry_count=0,
                 cancel_metadata=error_details,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(),
             )
             state.fail_tool_call(
                 call.call_id,
@@ -331,6 +459,12 @@ class ToolExecutor:
         )
 
         if result.success:
+            idempotency_record = record_successful_idempotent_result(
+                ledger=self.idempotency_ledger,
+                decision=risk_decision,
+                state=state,
+                result=result,
+            )
             state.complete_tool_call(call.call_id, result)
             post_tool_call = build_post_tool_call_summary(
                 tool_name=tool_name,
@@ -340,6 +474,11 @@ class ToolExecutor:
                 call_id=call.call_id,
                 latency_ms=result.latency_ms or latency_ms,
                 retry_count=retry_count,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency={
+                    **risk_decision.idempotency_summary(),
+                    "status": idempotency_record.status if idempotency_record is not None else None,
+                },
             )
             self._emit(
                 AgentEvent(
@@ -380,6 +519,8 @@ class ToolExecutor:
                 call_id=call.call_id,
                 latency_ms=result.latency_ms or latency_ms,
                 retry_count=retry_count,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(),
             )
             state.fail_tool_call(
                 call.call_id,

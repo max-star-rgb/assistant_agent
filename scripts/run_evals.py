@@ -1,5 +1,7 @@
 """Run offline Agent eval cases."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import json
@@ -26,6 +28,7 @@ from assistant_agent.memory.retrieval_eval import (
     summarize_memory_retrieval_eval_dicts,
 )
 from assistant_agent.schemas.api import agent_run_response_from_state
+from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.capabilities import canonical_intent
 from assistant_agent.schemas.intent_router import IntentRouterRequest
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
@@ -46,14 +49,14 @@ ROUTER_MODES = {"rule", "mock_llm", "hybrid"}
 class ScriptedPlanModeChatAdapter:
     """Deterministic chat adapter for plan-mode evals.
 
-    The eval case owns assistant decision outputs. This adapter only replays
-    them through the same runtime contract used by real chat providers.
+    The eval case owns native provider outputs. This adapter replays them
+    through the same content/tool_calls contract used by real chat providers.
     """
 
-    provider = "scripted"
-    capabilities = ProviderChatCapabilities(supports_native_tools=False)
+    provider = "scripted-native"
+    capabilities = ProviderChatCapabilities(supports_native_tools=True)
 
-    def __init__(self, outputs: list[str]) -> None:
+    def __init__(self, outputs: list[ChatResult]) -> None:
         self.outputs = outputs
         self.calls = 0
         self.requests: list[ChatRequest] = []
@@ -61,11 +64,17 @@ class ScriptedPlanModeChatAdapter:
     def chat(self, request: ChatRequest) -> ChatResult:
         self.requests.append(request)
         if not self.outputs:
-            output = '{"type": "final_answer", "message": "scripted output missing", "reason": "eval setup"}'
+            output = ChatResult(
+                response_text="scripted output missing",
+                provider=self.provider,
+                model="plan-mode-eval",
+                finish_reason="stop",
+                message_kind="final_answer",
+            )
         else:
             output = self.outputs[min(self.calls, len(self.outputs) - 1)]
         self.calls += 1
-        return ChatResult(response_text=output, provider=self.provider, model="plan-mode-eval")
+        return output
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[dict[str, Any]]:
@@ -232,12 +241,13 @@ def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, 
 
 
 def evaluate_plan_mode_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
-    """Evaluate ReAct plan-mode behavior offline."""
+    """Evaluate plan-mode hints against the current native tool runtime."""
 
     expected_tools = case.get("expected_tools", [])
     must_not_call = case.get("must_not_call", [])
     expected_response_contains = case.get("expected_response_contains", [])
     expected_plan_mode_hint = case.get("execution_strategy", "react")
+    expected_native_runtime = case.get("expected_native_runtime", True)
     expected_plan_status = case.get("expected_plan_status")
     expected_final_answer_source = case.get("expected_final_answer_source")
     expected_plan_revision_count = case.get("expected_plan_revision_count")
@@ -281,6 +291,10 @@ def evaluate_plan_mode_case(case: dict[str, Any], router_mode: str = "rule") -> 
     )
 
     plan_mode_hint_match = state.execution_strategy == expected_plan_mode_hint == api_response.execution_strategy
+    native_runtime_match = (
+        expected_native_runtime is None
+        or bool(state.request.metadata.get("native_runtime")) is bool(expected_native_runtime)
+    )
     plan_status_match = expected_plan_status is None or state.plan_status == expected_plan_status
     final_answer_source_match = (
         expected_final_answer_source is None
@@ -311,6 +325,7 @@ def evaluate_plan_mode_case(case: dict[str, Any], router_mode: str = "rule") -> 
 
     passed = (
         plan_mode_hint_match
+        and native_runtime_match
         and plan_status_match
         and final_answer_source_match
         and plan_revision_match
@@ -357,6 +372,7 @@ def evaluate_plan_mode_case(case: dict[str, Any], router_mode: str = "rule") -> 
         "media_requirement_errors": [],
         "plan_mode_checks": {
             "plan_mode_hint_match": plan_mode_hint_match,
+            "native_runtime_match": native_runtime_match,
             "plan_status_match": plan_status_match,
             "final_answer_source_match": final_answer_source_match,
             "plan_revision_match": plan_revision_match,
@@ -566,14 +582,59 @@ def _provider_safety_result(scenario: str | None) -> dict[str, Any]:
     return {"code": "unknown_error", "message": "unknown provider safety scenario", "retryable": False}
 
 
-def _plan_mode_chat_outputs(case: dict[str, Any]) -> list[str]:
+def _plan_mode_chat_outputs(case: dict[str, Any]) -> list[ChatResult]:
     outputs = case.get("scripted_chat_outputs", [])
-    rendered: list[str] = []
-    for output in outputs:
-        if isinstance(output, (dict, list)):
-            rendered.append(json.dumps(output, ensure_ascii=False))
-        else:
-            rendered.append(str(output))
+    rendered: list[ChatResult] = []
+    for index, output in enumerate(outputs, start=1):
+        if isinstance(output, dict):
+            output_type = output.get("type")
+            if output_type == "tool_call":
+                tool_name = str(output.get("tool_name") or "")
+                rendered.append(
+                    ChatResult(
+                        response_text=str(output.get("preamble") or ""),
+                        tool_calls=[
+                            NativeToolCall(
+                                id=f"eval_call_{index}",
+                                name=tool_name,
+                                arguments=output.get("tool_input") if isinstance(output.get("tool_input"), dict) else {},
+                                raw={
+                                    "id": f"eval_call_{index}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_name,
+                                        "arguments": json.dumps(output.get("tool_input") or {}, ensure_ascii=False),
+                                    },
+                                },
+                            )
+                        ],
+                        provider="scripted-native",
+                        model="plan-mode-eval",
+                        finish_reason="tool_calls",
+                        message_kind="tool_call",
+                    )
+                )
+                continue
+            if output_type in {"final_answer", "exit_plan_mode"}:
+                rendered.append(
+                    ChatResult(
+                        response_text=str(output.get("message") or "已处理请求。"),
+                        provider="scripted-native",
+                        model="plan-mode-eval",
+                        finish_reason="stop",
+                        message_kind="final_answer",
+                    )
+                )
+                continue
+        rendered.append(
+            ChatResult(
+                response_text=str(output),
+                provider="scripted-native",
+                model="plan-mode-eval",
+                finish_reason="stop",
+                message_kind="final_answer",
+            )
+        )
     return rendered
 
 

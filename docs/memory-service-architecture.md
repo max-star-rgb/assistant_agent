@@ -99,6 +99,7 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/assistant_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`, including soft-delete-compatible delete, hard-delete, and memory-confirmation methods. |
 | `src/assistant_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract, with redacted confirmation state stored in a sidecar JSONL file. |
 | `src/assistant_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, soft-delete-compatible delete behavior, durable audit-event rows, and durable confirmation rows. |
+| `src/assistant_agent/memory/remote.py` | Opt-in external Memory Server adapter. Converts remote query responses into safe `MemoryItem` / `MemorySearchResult` objects, provides query/health plus media upload/task-status client methods, and exposes `HybridMemoryStore` where only `search(...)` uses the remote service while writes, delete, confirmation, profile, audit, and lifecycle operations remain local. |
 | `src/assistant_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
 | `src/assistant_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
 | `src/assistant_agent/memory/write_policy.py` | Safe memory item construction, TTL defaults, raw payload restrictions, explicit memory typing. |
@@ -194,14 +195,44 @@ Configured by `ProviderConfig`:
 - `memory_backend="memory"`: default process-local `InMemoryStore`.
 - `memory_backend="jsonl"`: local `JsonlMemoryStore`.
 - `memory_backend="sqlite"`: local `SQLiteMemoryStore`.
+- `memory_backend="hybrid_remote"`: opt-in `HybridMemoryStore` with local JSONL lifecycle storage plus external Memory Server query augmentation. This backend is selected from environment only when `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true` or a runtime profile that allows real/network providers is active.
 - `memory_path`: default `.local/memory/long_term_memories.jsonl`; when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite` is set without an explicit path, the default is `.local/memory/long_term_memories.sqlite3`.
 
 Environment variables:
 
 - `MULTIMODAL_AGENT_MEMORY_BACKEND`
 - `MULTIMODAL_AGENT_MEMORY_PATH`
+- `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED`
+- `MEMORY_SERVER_BASE_URL`
+- `MEMORY_SERVER_TIMEOUT_SECONDS`
+- `MEMORY_SERVER_QUERY_STRATEGY`
+- `MEMORY_SERVER_DIRECT_ANSWER`
+- `MEMORY_SERVER_INCLUDE_MEDIA_CHUNKS`
 
-Relative JSONL and SQLite paths resolve from the repository root. JSONL and SQLite are still local-first storage, not real external providers. Future PostgreSQL, vector DB, or external memory service adapters must sit behind `MemoryStore` and `MemoryManager`.
+Relative JSONL and SQLite paths resolve from the repository root. JSONL and SQLite are still local-first storage, not real external providers. Additional PostgreSQL, vector DB, or external memory service adapters must sit behind `MemoryStore` and `MemoryManager`.
+
+`hybrid_remote` is retrieval augmentation, not a full memory-service
+replacement. `HybridMemoryStore.search(...)` merges local search results with
+safe remote query results from the external Memory Server. Local results remain
+first, remote failures are returned as recoverable `MemorySearchResult.errors`,
+and the agent run must still proceed with local results when the remote service
+is unavailable. `HybridMemoryStore.save(...)`, get/list/delete/hard-delete,
+confirmation, profile, audit, export, retention, and user-data lifecycle paths
+delegate to the local store until the external service exposes equivalent
+governed APIs.
+
+Remote Memory Server query defaults are conservative: `direct_answer=false` and
+media chunks disabled unless explicitly configured. Remote text results are
+validated into internal `MemoryItem` objects before context injection. Remote
+image/keyframe chunks may become safe artifact refs; base64 payloads, data URIs,
+raw provider payloads, and unsafe metadata must not enter memory content or
+trace summaries. `RemoteMemoryClient.upload_media(...)` and
+`RemoteMemoryClient.task_status(...)` are low-level adapter methods only.
+`/v1/media/upload` is not an implementation of `memory_save`; media ingestion
+must be exposed through a separate governed tool or service path before an
+agent can call it. Upload metadata is rejected when it contains raw/base64 or
+secret-like keys, and task status results carry a scope warning because the
+external service's current task lookup is not user-enforced.
 
 Standard `MemoryStore` backends implement the confirmation workflow methods: `save_confirmation(...)`, `get_confirmation(...)`, `list_confirmations(...)`, and `delete_confirmation(...)`. InMemory keeps confirmation state in process memory. JSONL stores redacted pending/resolved confirmations in a sidecar file next to the memory JSONL file, for example `long_term_memories.confirmations.jsonl`. SQLite stores them in schema v3 `memory_confirmations`.
 

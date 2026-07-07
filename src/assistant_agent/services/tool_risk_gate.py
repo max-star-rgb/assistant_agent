@@ -313,7 +313,7 @@ def record_successful_idempotent_result(
 
 
 def should_record_idempotent_result(decision: ToolRiskDecision, result: ToolResult) -> bool:
-    if decision.level == "auto" or decision.idempotency_key is None:
+    if decision.level != "soft_gate" or decision.idempotency_key is None:
         return False
     if not result.success:
         return False

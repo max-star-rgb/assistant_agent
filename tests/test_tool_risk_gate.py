@@ -5,6 +5,10 @@ from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy
 from assistant_agent.services.event_sink import ListEventSink
+from assistant_agent.services.realtime_task_state import (
+    RealtimeTaskState,
+    reduce_realtime_task_state_event,
+)
 from assistant_agent.services.tool_risk_gate import (
     InMemoryToolIdempotencyLedger,
     risk_gate_level_for_policy,
@@ -158,6 +162,46 @@ def test_realtime_unknown_tool_defaults_to_confirmation_gate_without_execution()
     post = finished.payload["post_tool_call"]
     assert post["status"] == "pending_confirmation"
     assert post["risk_gate"]["level"] == "hard_gate"
+
+
+def test_realtime_pending_tool_keeps_risk_gate_and_idempotency_summary() -> None:
+    state = RealtimeTaskState(task_id="rtask:u1:s1", user_id="u1", session_id="s1")
+
+    updated = reduce_realtime_task_state_event(
+        state,
+        event_type="tool.started",
+        payload={
+            "tool_name": "image_generation",
+            "step_id": "step-1",
+            "pre_tool_call": {
+                "risk_gate": {
+                    "schema_version": "tool_risk_gate_v1",
+                    "level": "soft_gate",
+                    "side_effect_level": "compensatable",
+                    "requires_confirmation": False,
+                },
+                "idempotency": {
+                    "key": "auto:abc",
+                    "required": True,
+                    "generated": True,
+                    "present": True,
+                },
+            },
+        },
+    )
+
+    assert updated.pending_tool["risk_gate"] == {
+        "schema_version": "tool_risk_gate_v1",
+        "level": "soft_gate",
+        "side_effect_level": "compensatable",
+        "requires_confirmation": False,
+    }
+    assert updated.pending_tool["idempotency"] == {
+        "key": "auto:abc",
+        "required": True,
+        "generated": True,
+        "present": True,
+    }
 
 
 def test_non_realtime_unknown_tool_keeps_legacy_executor_behavior() -> None:

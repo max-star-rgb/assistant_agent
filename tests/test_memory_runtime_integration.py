@@ -5,6 +5,7 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.memory import factory as memory_factory
 from assistant_agent.memory.factory import create_memory_store
 from assistant_agent.memory.jsonl_store import JsonlMemoryStore
+from assistant_agent.memory.remote import HybridMemoryStore, MemoryServerRequest, RemoteMemoryClient
 from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.memory.write_policy import MemoryWritePolicy
@@ -25,6 +26,59 @@ def test_default_memory_backend_is_in_memory() -> None:
     store = create_memory_store(ProviderConfig.from_env({}))
 
     assert isinstance(store, InMemoryStore)
+
+
+def test_hybrid_remote_memory_backend_requires_explicit_remote_opt_in() -> None:
+    config = ProviderConfig.from_env({"MULTIMODAL_AGENT_MEMORY_BACKEND": "hybrid_remote"})
+
+    assert config.memory_backend == "memory"
+
+
+def test_hybrid_remote_memory_backend_can_be_enabled_by_remote_flag() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_MEMORY_BACKEND": "hybrid_remote",
+            "MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED": "true",
+            "MEMORY_SERVER_BASE_URL": "http://memory.local",
+            "MEMORY_SERVER_TIMEOUT_SECONDS": "1.5",
+            "MEMORY_SERVER_QUERY_STRATEGY": "hybrid",
+            "MEMORY_SERVER_DIRECT_ANSWER": "true",
+            "MEMORY_SERVER_INCLUDE_MEDIA_CHUNKS": "true",
+        }
+    )
+
+    assert config.memory_backend == "hybrid_remote"
+    assert config.memory_server_base_url == "http://memory.local"
+    assert config.memory_server_timeout_seconds == 1.5
+    assert config.memory_server_query_strategy == "hybrid"
+    assert config.memory_server_direct_answer is True
+    assert config.memory_server_include_media_chunks is True
+
+
+def test_create_hybrid_remote_memory_store_wraps_local_jsonl_store(tmp_path) -> None:
+    path = tmp_path / "hybrid_local.jsonl"
+    store = create_memory_store(
+        ProviderConfig(
+            memory_backend="hybrid_remote",
+            memory_path=str(path),
+            memory_server_base_url="http://memory.local",
+        )
+    )
+
+    assert isinstance(store, HybridMemoryStore)
+    saved = store.save(
+        MemoryItem(
+            memory_id="m1",
+            user_id="u1",
+            session_id="s1",
+            memory_type="task",
+            summary="hybrid local write",
+            created_at=NOW,
+        )
+    )
+
+    assert path.exists()
+    assert JsonlMemoryStore(path).get("u1", saved.memory_id) is not None
 
 
 def test_jsonl_memory_backend_writes_memory_file_when_auto_promotion_allowed(tmp_path) -> None:
@@ -154,3 +208,42 @@ def test_agent_response_uses_injected_memory_context(tmp_path) -> None:
     assert state.response is not None
     assert "参考记忆" in state.response.message
     assert state.response.data["memory_context_summaries"]
+
+
+def test_runtime_injects_hybrid_remote_memory_context_without_network() -> None:
+    requests: list[MemoryServerRequest] = []
+
+    def transport(request: MemoryServerRequest) -> dict:
+        requests.append(request)
+        return {
+            "results": [
+                {
+                    "type": "text",
+                    "content": "Remote memory says the user had coffee and toast.",
+                    "score": 0.92,
+                    "memory_type": "episodic",
+                    "source": {
+                        "memory_id": "breakfast-remote",
+                        "timestamp_start": "2026-04-11T08:00:00+00:00",
+                    },
+                }
+            ]
+        }
+
+    store = HybridMemoryStore(
+        local_store=InMemoryStore(),
+        remote_client=RemoteMemoryClient(base_url="http://memory.local", transport=transport),
+    )
+    state = AgentGraphRuntime(memory_store=store).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="上次早餐吃了什么")
+    )
+
+    assert state.memory_context
+    assert [item.memory_id for item in state.memory_context] == ["memory_server:breakfast-remote"]
+    assert state.request.metadata["memory_context_injected_ids"] == ["memory_server:breakfast-remote"]
+    assert "coffee and toast" in state.request.metadata["memory_context_text"]
+    assert state.response is not None
+    assert "Remote memory says the user had coffee and toast." in state.response.data["memory_context_summaries"]
+    assert requests[0].path == "/v1/memories/query"
+    assert requests[0].body["user_id"] == "u1"
+    assert "session_id" not in requests[0].body

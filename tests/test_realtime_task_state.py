@@ -454,6 +454,110 @@ def test_run_assistant_request_emits_strategy_progress_for_reused_artifacts() ->
     assert progress.payload["reusable_artifact_count"] == 1
 
 
+def test_realtime_task_state_records_checkpoint_for_multi_step_read_only_run() -> None:
+    task_store = InMemoryRealtimeTaskStateStore()
+
+    run_assistant_request(
+        _realtime_request("帮我搜索并比价三款蓝牙耳机", run_id="run-1", turn_id="turn-1"),
+        runtime=_ProductSearchAndPriceCompareRuntime(),
+        conversation_store=InMemoryConversationStore(),
+        realtime_task_state_store=task_store,
+        load_env=False,
+    )
+    state = task_store.get("u1", "s1")
+
+    assert state is not None
+    checkpoints = [artifact for artifact in state.artifacts if artifact.kind == "checkpoint"]
+    assert len(checkpoints) == 1
+    checkpoint = checkpoints[0]
+    assert checkpoint.reuse_policy == "reusable"
+    assert checkpoint.summary == "Completed 2 reusable tool steps."
+    assert checkpoint.context == {
+        "schema_version": "realtime_checkpoint_v1",
+        "completed_step_count": 2,
+        "completed_tools": ["product_search", "price_compare"],
+        "artifact_refs": [
+            {
+                "tool_name": "product_search",
+                "output_ref": "mock://products/headphones",
+                "summary": "通勤降噪耳机 A",
+            },
+            {
+                "tool_name": "price_compare",
+                "output_ref": "mock://prices/headphones",
+                "summary": "Cheapest offer is 359 CNY.",
+            },
+        ],
+    }
+    assert "raw_provider_payload" not in str(checkpoint.model_dump(mode="json"))
+
+
+def test_realtime_task_state_resumes_from_checkpoint_on_interrupt() -> None:
+    task_store = InMemoryRealtimeTaskStateStore()
+    conversation_store = InMemoryConversationStore()
+
+    run_assistant_request(
+        _realtime_request("帮我搜索并比价三款蓝牙耳机", run_id="run-1", turn_id="turn-1"),
+        runtime=_ProductSearchAndPriceCompareRuntime(),
+        conversation_store=conversation_store,
+        realtime_task_state_store=task_store,
+        load_env=False,
+    )
+    sink = ListEventSink()
+    artifacts = run_assistant_request(
+        _realtime_request(
+            "等等，把预算改成 400 元以内",
+            run_id="run-2",
+            turn_id="turn-2",
+            control="interrupt",
+        ),
+        runtime=_RecordingRuntime(),
+        event_sink=sink,
+        conversation_store=conversation_store,
+        realtime_task_state_store=task_store,
+        load_env=False,
+    )
+
+    snapshot = artifacts.state.request.metadata[REALTIME_TASK_STATE_METADATA_KEY]
+    checkpoint = next(artifact for artifact in snapshot["reusable_artifacts"] if artifact["kind"] == "checkpoint")
+    progress = [event for event in artifacts.events if event.type == "tool_progress"][0]
+    assert snapshot["latest_revision"]["strategy"] == "resume_from_checkpoint"
+    assert snapshot["continuation_strategy"] == "resume_from_checkpoint"
+    assert checkpoint["context"]["schema_version"] == "realtime_checkpoint_v1"
+    assert checkpoint["context"]["completed_tools"] == ["product_search", "price_compare"]
+    assert progress.text == "Resuming from the latest task checkpoint."
+    assert progress.payload["strategy"] == "resume_from_checkpoint"
+    assert progress.payload["checkpoint_count"] == 1
+
+
+def test_realtime_task_state_marks_checkpoint_stale_when_user_restarts_work() -> None:
+    task_store = InMemoryRealtimeTaskStateStore()
+
+    run_assistant_request(
+        _realtime_request("帮我搜索并比价三款蓝牙耳机", run_id="run-1", turn_id="turn-1"),
+        runtime=_ProductSearchAndPriceCompareRuntime(),
+        conversation_store=InMemoryConversationStore(),
+        realtime_task_state_store=task_store,
+        load_env=False,
+    )
+    prepared = prepare_realtime_task_state_request(
+        _realtime_request(
+            "重新搜索，全部换一批，不要之前结果",
+            run_id="run-2",
+            turn_id="turn-2",
+            control="interrupt",
+        ),
+        store=task_store,
+    )
+
+    snapshot = prepared.metadata[REALTIME_TASK_STATE_METADATA_KEY]
+    state = task_store.get("u1", "s1")
+    assert snapshot["latest_revision"]["strategy"] == "restart"
+    assert not any(artifact["kind"] == "checkpoint" for artifact in snapshot["reusable_artifacts"])
+    assert state is not None
+    assert any(artifact.kind == "checkpoint" and artifact.reuse_policy == "stale" for artifact in state.artifacts)
+
+
 def test_run_assistant_request_updates_call_state_from_runtime_events() -> None:
     task_store = InMemoryRealtimeTaskStateStore()
     sink = ListEventSink()
@@ -727,6 +831,52 @@ class _ProductSearchRuntime:
             )
         )
         state.set_response(AgentResponse(message="找到三款耳机。"))
+        return state
+
+
+class _ProductSearchAndPriceCompareRuntime:
+    def run_state(self, request: UserRequest, **kwargs) -> AgentState:
+        state = AgentState.from_request(request)
+        state.tool_results.extend(
+            [
+                ToolResult(
+                    tool_name="product_search",
+                    success=True,
+                    output_ref="mock://products/headphones",
+                    data={
+                        "provider": "mock",
+                        "query_used": "蓝牙耳机 500 元以内",
+                        "items": [
+                            {
+                                "product_id": "p1",
+                                "title": "通勤降噪耳机 A",
+                                "price": 399,
+                                "currency": "CNY",
+                                "raw_provider_payload": {"token": "sk-test"},
+                            }
+                        ],
+                    },
+                ),
+                ToolResult(
+                    tool_name="price_compare",
+                    success=True,
+                    output_ref="mock://prices/headphones",
+                    data={
+                        "summary": "Cheapest offer is 359 CNY.",
+                        "items": [
+                            {
+                                "product_id": "p1",
+                                "title": "通勤降噪耳机 A",
+                                "price": 359,
+                                "currency": "CNY",
+                                "raw_provider_payload": {"token": "sk-test"},
+                            }
+                        ],
+                    },
+                ),
+            ]
+        )
+        state.set_response(AgentResponse(message="已完成搜索和比价。"))
         return state
 
 

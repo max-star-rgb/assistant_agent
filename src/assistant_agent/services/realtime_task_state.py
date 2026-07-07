@@ -78,6 +78,7 @@ _MAX_ARTIFACTS = 12
 _MAX_SNAPSHOT_ARTIFACTS = 6
 _MAX_SIDE_EFFECTS = 12
 _MAX_SNAPSHOT_SIDE_EFFECTS = 6
+_MAX_CHECKPOINT_ARTIFACT_REFS = 6
 _REUSABLE_TOOL_NAMES = {
     "product_search",
     "price_compare",
@@ -301,10 +302,15 @@ def record_realtime_task_state_run_artifacts(
     if task_state is None:
         return
 
-    new_artifacts = [
-        *_media_artifacts_from_request(request, task_state=task_state, run_id=getattr(state, "run_id", None)),
-        *_tool_artifacts_from_state(state, task_state=task_state),
-    ]
+    run_id = _metadata_string(getattr(state, "run_id", None))
+    media_artifacts = _media_artifacts_from_request(request, task_state=task_state, run_id=run_id)
+    tool_artifacts = _tool_artifacts_from_state(state, task_state=task_state)
+    checkpoint_artifacts = _checkpoint_artifacts_from_tool_artifacts(
+        tool_artifacts,
+        task_state=task_state,
+        run_id=run_id,
+    )
+    new_artifacts = [*media_artifacts, *tool_artifacts, *checkpoint_artifacts]
     new_side_effects = _side_effect_records_from_state(state, task_state=task_state)
     if not new_artifacts and not new_side_effects:
         return
@@ -329,12 +335,18 @@ def realtime_task_state_progress_payload(request: UserRequest) -> dict[str, Any]
     )
     reusable_artifacts = snapshot.get("reusable_artifacts")
     reusable_count = len(reusable_artifacts) if isinstance(reusable_artifacts, list) else 0
+    checkpoint_count = (
+        sum(1 for artifact in reusable_artifacts if isinstance(artifact, dict) and artifact.get("kind") == "checkpoint")
+        if isinstance(reusable_artifacts, list)
+        else 0
+    )
     return {
         "stage": "task_state",
         "status": "revising",
         "current_step": "intent_revision",
         "strategy": strategy or "restart",
         "reusable_artifact_count": reusable_count,
+        "checkpoint_count": checkpoint_count,
         "stale_artifact_count": snapshot.get("stale_artifact_count", 0),
         "pending_confirmation_count": snapshot.get("pending_confirmation_count", 0),
         "committed_side_effect_count": snapshot.get("committed_side_effect_count", 0),
@@ -639,6 +651,73 @@ def _tool_artifacts_from_state(state: Any, *, task_state: RealtimeTaskState) -> 
     return artifacts
 
 
+def _checkpoint_artifacts_from_tool_artifacts(
+    tool_artifacts: list[TaskArtifact],
+    *,
+    task_state: RealtimeTaskState,
+    run_id: str | None,
+) -> list[TaskArtifact]:
+    reusable_steps = [
+        artifact
+        for artifact in tool_artifacts
+        if artifact.kind == "observation"
+        and artifact.reuse_policy == "reusable"
+        and artifact.tool_name in _REUSABLE_TOOL_NAMES
+    ]
+    if len(reusable_steps) < 2:
+        return []
+
+    refs = [
+        {
+            "tool_name": artifact.tool_name,
+            "output_ref": artifact.output_ref,
+            "summary": _checkpoint_artifact_summary(artifact),
+        }
+        for artifact in reusable_steps[:_MAX_CHECKPOINT_ARTIFACT_REFS]
+    ]
+    completed_tools = [
+        str(artifact.tool_name)
+        for artifact in reusable_steps[:_MAX_CHECKPOINT_ARTIFACT_REFS]
+        if artifact.tool_name
+    ]
+    context = {
+        "schema_version": "realtime_checkpoint_v1",
+        "completed_step_count": len(reusable_steps),
+        "completed_tools": completed_tools,
+        "artifact_refs": refs,
+    }
+    return [
+        TaskArtifact(
+            artifact_id=_artifact_id(
+                task_state.task_id,
+                "checkpoint",
+                run_id or "run",
+                str(len(reusable_steps)),
+            ),
+            task_id=task_state.task_id,
+            run_id=run_id,
+            kind="checkpoint",
+            reuse_policy="reusable",
+            summary=f"Completed {len(reusable_steps)} reusable tool steps.",
+            context=context,
+        )
+    ]
+
+
+def _checkpoint_artifact_summary(artifact: TaskArtifact) -> str:
+    structured_output = artifact.context.get("structured_output")
+    if artifact.tool_name == "product_search" and isinstance(structured_output, dict):
+        items = structured_output.get("items")
+        if isinstance(items, list) and items:
+            first = items[0]
+            if isinstance(first, dict):
+                title = _metadata_string(first.get("title"))
+                if title:
+                    return _clip_text(title, max_chars=180)
+    summary = _metadata_string(artifact.context.get("summary")) or artifact.summary
+    return _clip_text(summary, max_chars=180)
+
+
 def _side_effect_records_from_state(state: Any, *, task_state: RealtimeTaskState) -> list[SideEffectRecord]:
     records: list[SideEffectRecord] = []
     request = getattr(state, "request", None)
@@ -923,6 +1002,30 @@ def _pending_tool_from_event(
         confirmation = pre_tool_call.get("confirmation")
         if isinstance(confirmation, dict) and isinstance(confirmation.get("required"), bool):
             result["requires_confirmation"] = confirmation["required"]
+        risk_gate = pre_tool_call.get("risk_gate")
+        if isinstance(risk_gate, dict):
+            result["risk_gate"] = {
+                key: value
+                for key, value in risk_gate.items()
+                if key
+                in {
+                    "schema_version",
+                    "level",
+                    "side_effect_level",
+                    "enabled",
+                    "allow_execute",
+                    "requires_confirmation",
+                    "confirmation_kind",
+                    "reason",
+                }
+            }
+        idempotency = pre_tool_call.get("idempotency")
+        if isinstance(idempotency, dict):
+            result["idempotency"] = {
+                key: value
+                for key, value in idempotency.items()
+                if key in {"key", "present", "required", "generated", "duplicate_suppressed", "status"}
+            }
     return result
 
 

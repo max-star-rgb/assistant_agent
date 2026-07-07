@@ -94,7 +94,7 @@ def test_run_evals_cli_supports_suite_filter_offline() -> None:
     assert summary["failed"] == 0
 
 
-def test_plan_mode_eval_suite_runs_scripted_plan_mode_offline() -> None:
+def test_plan_mode_eval_suite_runs_scripted_native_plan_mode_offline() -> None:
     cases = filter_cases_by_suite(load_cases(Path("tests/evals/eval_cases.json")), "plan_mode")
 
     summary = run_evals(cases)
@@ -105,7 +105,7 @@ def test_plan_mode_eval_suite_runs_scripted_plan_mode_offline() -> None:
     assert summary["suites"]["plan_mode"]["passed"] == summary["total"]
 
 
-def test_plan_mode_eval_detail_exposes_review_checks() -> None:
+def test_plan_mode_eval_detail_exposes_native_runtime_checks() -> None:
     cases = filter_cases_by_suite(load_cases(Path("tests/evals/eval_cases.json")), "plan_mode")
     case = next(item for item in cases if item["id"] == "plan_mode_revise_after_tool_failure_001")
 
@@ -113,7 +113,9 @@ def test_plan_mode_eval_detail_exposes_review_checks() -> None:
 
     assert detail["passed"] is True
     assert detail["execution_strategy"] == "plan_and_solve"
-    assert detail["plan_revision_count"] == 1
+    assert detail["plan_revision_count"] == 0
     assert detail["plan_mode_checks"]["api_contract_match"] is True
+    assert detail["plan_mode_checks"]["native_runtime_match"] is True
     assert detail["plan_mode_checks"]["plan_revision_match"] is True
-    assert detail["error_codes"] == ["tool_input_invalid"]
+    assert detail["actual_tools"] == ["price_compare", "image_generation"]
+    assert detail["error_codes"] == []

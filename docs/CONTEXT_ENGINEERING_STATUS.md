@@ -105,15 +105,16 @@ Last updated: 2026-07-03
 ### Realtime Task State Context
 
 - `prepare_realtime_task_state_request` 在 realtime/Gateway 请求进入 `AgentGraphRuntime.run_state(...)` 前生成 prompt-safe task-state snapshot。
-- Task-state 记录 session 内当前 objective、active constraints、source turn/run ids、interrupt 产生的 `IntentRevision`，以及 completed run 后的 prompt-safe `TaskArtifact` 和 `SideEffectRecord`。
+- Task-state 记录 session 内当前 objective、active constraints、source turn/run ids、interrupt 产生的 `IntentRevision`，以及 completed run 后的 prompt-safe `TaskArtifact`、lightweight checkpoint artifact 和 `SideEffectRecord`。
 - Task-state 现在也记录 prompt-safe realtime call state：`pending_tool`、`tts_state`、`last_spoken_progress`、`speech_turn_id`、`barge_in_source` 和 bounded `last_realtime_event_ids`，用于表达工具等待、展示/TTS 状态和打断来源；工具完成/失败、取消和挂断会清理 pending tool，TTS/display started/finished/superseded 会更新展示状态；不保存 raw audio、raw transcript stream 或 provider payload。
-- `pending_tool` 会消费 `tool_started` 事件中的 prompt-safe `pre_tool_call` 摘要，保留工具副作用等级和是否需要确认，便于 interrupt 后选择重规划、等待确认或补偿路径。
+- `pending_tool` 会消费 `tool_started` 事件中的 prompt-safe `pre_tool_call` 摘要，保留工具副作用等级、risk gate、idempotency key 摘要和是否需要确认，便于 interrupt 后选择重规划、等待确认、去重或补偿路径。
 - Interrupt run 的 snapshot 会保留原始 objective，并把最新 interrupt 文本写入 `latest_revision`；普通 queued follow-up 只更新 current user text 和 provenance，不创建 revision。
 - Completed realtime run 会把 selected tool observations 和 media refs 记录为 task artifacts；tool observation artifact 复用现有 prompt compaction 逻辑，不保存 raw provider/file/media payload。
+- 多步 realtime run 在同一轮完成至少两个 reusable tool observations 时，会记录 bounded `checkpoint` artifact；interrupt 只有在 checkpoint 仍可复用时才选择 `resume_from_checkpoint`，用户明确重来/换一批会把 checkpoint 标为 stale。
 - Interrupt 会用简单策略选择 `restart`、`reuse_and_replan`、`ask_confirmation`、`report_committed` 或 `compensate`；如果用户明确要求重新搜索/换一批/不要之前结果，已有 reusable artifacts 会标记为 `stale`，不会重新注入 prompt snapshot。
 - Side-effect records 来自 `ToolSpec.side_effect` 和工具结果中的 prompt-safe override（例如 `requires_confirmation`、`confirmation_id`、`side_effect_level`）；read-only 工具不阻塞重规划，pending confirmation 会让下一轮先处理确认，committed action 不会被描述成已取消，compensatable artifact 会倾向修正版/补偿路径。
 - `AgentGraphRealtimeBackend` 和 shared run service 会发 display-only `run.progress`，用于 App + Media 展示 `task_state/revising`、strategy、reusable artifact count 和 side-effect count。
-- 当前仍未接入通用执行前 confirmation gate 或 idempotency ledger；side-effect classification 和 PreToolCall/PostToolCall 摘要只负责 runtime context、progress 和 interrupt 后的 truthful continuation strategy。
+- 当前已接入 process-local risk gate/idempotency ledger：read-only 工具无额外开销，compensatable 工具可去重，realtime 未分类 hard-gate 工具会返回 pending confirmation。完整用户确认 UX、持久化 ledger 和跨进程恢复仍未接入。
 
 ### Context Budget And Observability
 
