@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import Future
+from time import perf_counter
 from typing import Any
 
 from assistant_agent.agent.cancellation import cancellation_metadata
@@ -26,6 +27,7 @@ from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.assistant_run_service import run_assistant_request
 from assistant_agent.services.realtime_task_state import realtime_metadata_requests_interrupt
+from assistant_agent.services.trace_store import append_observability_event
 
 
 RunAssistantRequest = Callable[..., Any]
@@ -100,6 +102,7 @@ class AgentGraphRealtimeBackend:
             )
 
         user_request = realtime_request_to_user_request(request)
+        backend_started_at = perf_counter()
         loop = asyncio.get_running_loop()
         forwarder = _RealtimeForwardingEventSink(
             loop=loop,
@@ -115,6 +118,7 @@ class AgentGraphRealtimeBackend:
                 await forwarder.forward_realtime_event(revision_progress)
             run_request = self._run_request or run_assistant_request
             try:
+                runtime_call_started_at = perf_counter()
                 artifacts = await asyncio.to_thread(
                     run_request,
                     user_request,
@@ -123,6 +127,7 @@ class AgentGraphRealtimeBackend:
                     enable_conversation_history=self._enable_conversation_history,
                     cancel_token=cancel_token,
                 )
+                runtime_call_latency_ms = int((perf_counter() - runtime_call_started_at) * 1000)
             finally:
                 await _stop_task(first_progress_task)
                 await _stop_task(heartbeat_task)
@@ -131,6 +136,15 @@ class AgentGraphRealtimeBackend:
             state = artifacts.state
             result_run_id = request.run_id or state.run_id
             result_metadata = {"assistant_run_id": state.run_id}
+            _append_realtime_backend_finished_event(
+                artifacts=artifacts,
+                request=request,
+                state=state,
+                result_run_id=result_run_id,
+                backend_latency_ms=int((perf_counter() - backend_started_at) * 1000),
+                runtime_call_latency_ms=runtime_call_latency_ms,
+                progress_summary=forwarder.progress_summary(),
+            )
 
             if state.status == "cancelled":
                 state_cancel_metadata = _cancel_metadata_from_state(state)
@@ -199,6 +213,39 @@ class AgentGraphRealtimeBackend:
         finally:
             await _stop_task(first_progress_task)
             await _stop_task(heartbeat_task)
+
+
+def _append_realtime_backend_finished_event(
+    *,
+    artifacts: Any,
+    request: RealtimeAgentRequest,
+    state: Any,
+    result_run_id: str | None,
+    backend_latency_ms: int,
+    runtime_call_latency_ms: int,
+    progress_summary: dict[str, Any],
+) -> None:
+    runtime = getattr(artifacts, "runtime", None)
+    trace_store = getattr(runtime, "trace_store", None)
+    append_observability_event(
+        trace_store,
+        trace_id=state.trace_id,
+        run_id=state.run_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+        canonical_event="realtime.backend.finished",
+        node_name="realtime_backend",
+        status="succeeded" if state.status not in {"failed", "cancelled"} else state.status,
+        latency_ms=backend_latency_ms,
+        attributes={
+            "gateway_run_id": request.run_id,
+            "assistant_run_id": state.run_id,
+            "result_run_id": result_run_id,
+            "runtime_call_latency_ms": runtime_call_latency_ms,
+            "user_visible_event_count": progress_summary.get("user_visible_event_count"),
+            "sla_fallback_emitted": progress_summary.get("sla_fallback_emitted"),
+        },
+    )
 
 
 def realtime_request_to_user_request(request: RealtimeAgentRequest) -> UserRequest:

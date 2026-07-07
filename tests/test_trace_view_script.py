@@ -4,6 +4,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -26,6 +27,8 @@ def test_trace_view_default_output_shows_run_timeline(tmp_path: Path) -> None:
     assert "tool.observation" in result.stdout
     assert "provider_timeout" in result.stdout
     assert "output_ref=artifact_tool_1" in result.stdout
+    assert "at=42ms" in result.stdout
+    assert "gap=38ms" in result.stdout
 
 
 def test_trace_view_errors_output_groups_errors_before_timeline(tmp_path: Path) -> None:
@@ -138,6 +141,7 @@ def _serve_json(routes: dict[str, dict[str, object]]) -> Iterator[str]:
 
 def _write_sample_trace(path: Path) -> None:
     store = JsonlTraceStore(path)
+    started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     base = {
         "trace_id": "trace_1",
         "run_id": "run_1",
@@ -153,6 +157,7 @@ def _write_sample_trace(path: Path) -> None:
             status="started",
             span_id="span_run_1",
             attributes={"source": "test"},
+            created_at=started_at,
         )
     )
     store.append(
@@ -168,6 +173,7 @@ def _write_sample_trace(path: Path) -> None:
             span_id="span_llm_1",
             parent_span_id="span_run_1",
             attributes={"iteration": 1},
+            created_at=started_at + timedelta(milliseconds=42),
         )
     )
     store.append(
@@ -181,6 +187,7 @@ def _write_sample_trace(path: Path) -> None:
             span_id="span_decision_1",
             parent_span_id="span_llm_1",
             attributes={"decision_type": "tool_call", "tool_call_id": "call_1"},
+            created_at=started_at + timedelta(milliseconds=47),
         )
     )
     store.append(
@@ -197,6 +204,7 @@ def _write_sample_trace(path: Path) -> None:
             output_summary={"output_ref": "artifact_tool_1"},
             attributes={"recovery_action": "retry_or_report"},
             error={"code": "provider_timeout", "message": "Provider timed out"},
+            created_at=started_at + timedelta(milliseconds=85),
         )
     )
     store.append(
@@ -209,5 +217,6 @@ def _write_sample_trace(path: Path) -> None:
             span_id="span_run_end_1",
             parent_span_id="span_run_1",
             error={"code": "provider_timeout", "message": "Provider timed out"},
+            created_at=started_at + timedelta(milliseconds=90),
         )
     )

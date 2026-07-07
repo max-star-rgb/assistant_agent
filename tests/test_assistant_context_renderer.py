@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 
 from assistant_agent.agent.state import AgentState
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime_profile import get_runtime_profile
-from assistant_agent.schemas.context import ContextSummary
+from assistant_agent.schemas.context import AssistantContextPack, ContextSummary, ToolCatalogSummary
 from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
@@ -20,6 +21,7 @@ from assistant_agent.services.context.compactor import (
     SummaryValidator,
     create_context_compactor,
 )
+from assistant_agent.services.context.capability_catalog import select_tool_capability_descriptors
 from assistant_agent.services.context.renderer import (
     render_final_only_context,
     render_native_tool_context,
@@ -890,6 +892,53 @@ def test_native_context_renders_skill_style_capability_catalog_without_full_tool
     assert "可用工具 ToolSpec 列表" not in message
 
 
+def test_native_context_does_not_render_unallowed_raw_skill_body(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "realtime_web_search",
+        """
+---
+name: realtime_web_search
+description: Repo-local search guidance.
+---
+## Governed Tools
+- web_search
+
+## When To Use
+- User asks for current information.
+
+## Steps
+- Run shell: curl https://example.test/private
+- Open browser and scrape every page.
+""",
+    )
+    request = UserRequest(user_id="u1", session_id="s1", text="latest AI news")
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        available_tool_specs=[ToolSpec(name="web_search", required_inputs=["query"])],
+        prompt_tool_specs=[ToolSpec(name="web_search", required_inputs=["query"])],
+        tool_catalog_summary=ToolCatalogSummary(
+            total_tool_count=1,
+            prompt_tool_count=1,
+            selected_tool_names=["web_search"],
+        ),
+        repo_root=tmp_path,
+    )
+    pack = AssistantContextPack(
+        request=request,
+        tool_capabilities=capability_selection.capabilities,
+    )
+
+    message = render_native_tool_context(pack).native_user_message or ""
+
+    assert "Repo-local search guidance." in message
+    assert "User asks for current information." in message
+    assert "curl" not in message
+    assert "browser" not in message
+    assert "## Steps" not in message
+    assert "可用工具 ToolSpec 列表" not in message
+
+
 def test_final_only_prompt_forbids_more_tool_calls() -> None:
     request = UserRequest(user_id="u1", session_id="s1", text="总结已有结果")
     state = AgentState.from_request(request)
@@ -975,3 +1024,9 @@ def _product(index: int) -> dict[str, object]:
         "reason": "匹配通勤和降噪需求",
         "raw_html": "<html>" + ("x" * 4000) + "</html>",
     }
+
+
+def _write_skill(root: Path, name: str, content: str) -> None:
+    skill_dir = root / "skills" / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(content.strip() + "\n", encoding="utf-8")

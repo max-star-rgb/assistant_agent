@@ -6,6 +6,7 @@ from threading import Event
 from fastapi.testclient import TestClient
 
 from assistant_agent.api import gateway_runtime
+from assistant_agent.api import routes_agent
 from assistant_agent.api.app import create_app
 from assistant_agent.api.auth import AUTH_HEADER_ENABLED_ENV, AUTH_USER_ID_HEADER
 from assistant_agent.gateway import GatewayBridge, GatewaySessionManager
@@ -178,6 +179,32 @@ def test_realtime_media_websocket_maps_text_and_video_to_gateway_message() -> No
     assert backend.requests[0].video_ids == ["video-1"]
     assert backend.requests[0].metadata["source"] == "realtime_media_websocket"
     assert backend.requests[0].metadata["gateway"]["session_config"] == {"locale": "zh-CN"}
+
+
+def test_realtime_media_default_backend_trace_is_queryable_via_http_runtime() -> None:
+    routes_agent._RUNTIME = None
+    gateway_runtime.reset_gateway_runtime_for_tests()
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/ws/realtime/media?user_id=media-user&session_id=trace-session") as websocket:
+        websocket.send_json({"type": "session.start", "payload": {"config": {"locale": "zh-CN"}}})
+        ready = websocket.receive_json()
+
+        websocket.send_json({"type": "transcript.final", "payload": {"text": "你好"}})
+        frames = _receive_until(websocket, "run.end")
+
+    assert ready["type"] == "call.ready"
+    run_end = frames[-1]
+    assert run_end["reason"] == "completed"
+    trace_id = run_end["payload"]["trace_id"]
+
+    trace_detail = client.get(f"/traces/{trace_id}")
+
+    assert trace_detail.status_code == 200
+    trace_payload = trace_detail.json()
+    assert trace_payload["trace_id"] == trace_id
+    canonical = [event["canonical_event"] for event in trace_payload["events"]]
+    assert "realtime.backend.finished" in canonical
 
 
 def test_realtime_media_websocket_sanitizes_audio_edge_metadata() -> None:

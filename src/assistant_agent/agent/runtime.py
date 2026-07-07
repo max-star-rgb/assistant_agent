@@ -187,6 +187,7 @@ class AgentGraphRuntime:
             state.cancel(exc.message, source=exc.source, details=exc.details)
         else:
             if self._should_use_native_runtime():
+                native_started_at = perf_counter()
                 try:
                     state = self._run_native_runtime(
                         request,
@@ -207,6 +208,19 @@ class AgentGraphRuntime:
                     if isinstance(exc.state, AgentState):
                         state = exc.state
                     state.cancel(exc.message, source=exc.source, details=exc.details)
+                finally:
+                    self._append_observability_event(
+                        state,
+                        canonical_event="native_runtime.finished",
+                        node_name="native_runtime",
+                        status=_phase_status(state.status),
+                        latency_ms=int((perf_counter() - native_started_at) * 1000),
+                        attributes={
+                            "tool_count": len(state.tool_calls),
+                            "error_count": len(state.errors),
+                            "response_present": state.response is not None,
+                        },
+                    )
             else:
                 self._emit(
                     AgentEvent(
@@ -239,25 +253,40 @@ class AgentGraphRuntime:
                         run_event_sink,
                     )
         if self.run_history is not None:
+            postprocess_started_at = perf_counter()
+            terminal_status = _terminal_history_status(state.status)
             self.run_history.record_end(
                 state.run_id,
                 state.user_id,
                 state.session_id,
-                _terminal_history_status(state.status),
+                terminal_status,
                 state.intent.intent if state.intent else None,
                 [tool.tool_name for tool in state.selected_tools],
                 int((perf_counter() - run_started_at) * 1000),
                 error=state.errors[-1].message if state.errors else None,
             )
+        else:
+            postprocess_started_at = perf_counter()
+            terminal_status = _terminal_history_status(state.status)
         self.session_store.touch_run(
             user_id=state.user_id,
             session_id=state.session_id,
             run_id=state.run_id,
             trace_id=state.trace_id,
             message_preview=request.text or "",
-            status=_terminal_history_status(state.status),
+            status=terminal_status,
         )
-        terminal_status = _terminal_history_status(state.status)
+        self._append_observability_event(
+            state,
+            canonical_event="runtime.postprocess.finished",
+            status="succeeded",
+            latency_ms=int((perf_counter() - postprocess_started_at) * 1000),
+            attributes={
+                "terminal_status": terminal_status,
+                "run_history_present": self.run_history is not None,
+                "session_store_updated": True,
+            },
+        )
         terminal_event = {
             "completed": "run.completed",
             "failed": "run.failed",
@@ -395,7 +424,9 @@ class AgentGraphRuntime:
             )
             if chat_request is None:
                 return state
+            chat_started_at = perf_counter()
             result = self.chat_adapter.chat(chat_request)
+            chat_wall_latency_ms = int((perf_counter() - chat_started_at) * 1000)
             self._record_native_runtime_chat_call(state, request, result)
             self._append_observability_event(
                 state,
@@ -410,6 +441,8 @@ class AgentGraphRuntime:
                     "message_kind": result.message_kind,
                     "finish_reason": result.finish_reason,
                     "tool_call_count": len(result.tool_calls),
+                    "provider_latency_ms": result.latency_ms,
+                    "wall_latency_ms": chat_wall_latency_ms,
                     "usage": result.usage,
                 },
                 error=_chat_result_error(result),
@@ -806,6 +839,12 @@ def _terminal_history_status(status: str) -> Literal["completed", "failed", "can
     if status == "cancelled":
         return "cancelled"
     return "completed"
+
+
+def _phase_status(status: str) -> str:
+    if status in {"failed", "cancelled"}:
+        return status
+    return "succeeded"
 
 
 def _latest_state_error(state: AgentState) -> dict[str, Any] | None:

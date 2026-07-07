@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.context.capability_catalog import (
     select_tool_capability_descriptors,
 )
@@ -199,3 +202,118 @@ def test_capability_catalog_omits_descriptor_when_governed_tool_missing() -> Non
     )
 
     assert capability_selection.capabilities == []
+
+
+def test_capability_catalog_prefers_repo_skill_over_builtin(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "realtime_web_search",
+        """
+---
+name: realtime_web_search
+description: Repo-local search guidance.
+---
+## Governed Tools
+- web_search
+
+## Required Inputs
+- web_search: query
+
+## When To Use
+- Repo guidance for latest information.
+""",
+    )
+    specs = create_default_registry().list_specs()
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    tool_selection = select_prompt_tool_specs(request, specs)
+
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        available_tool_specs=specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+        repo_root=tmp_path,
+    )
+
+    assert [item.name for item in capability_selection.capabilities] == ["realtime_web_search"]
+    descriptor = capability_selection.capabilities[0]
+    assert descriptor.description == "Repo-local search guidance."
+    assert descriptor.when_to_use == ["Repo guidance for latest information."]
+    assert any("ToolExecutor" in item for item in descriptor.runtime_constraints)
+    assert "capability_catalog_selected:realtime_web_search" in capability_selection.selection_reasons
+
+
+def test_capability_catalog_omits_repo_skill_when_governed_tool_unavailable(
+    tmp_path: Path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "custom_missing",
+        """
+---
+name: custom_missing
+description: This skill points at a tool that is not registered.
+---
+## Governed Tools
+- missing_tool
+""",
+    )
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    specs = [ToolSpec(name="web_search", required_inputs=["query"])]
+
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        available_tool_specs=specs,
+        prompt_tool_specs=specs,
+        tool_catalog_summary=select_prompt_tool_specs(request, specs).summary,
+        repo_root=tmp_path,
+    )
+
+    assert "custom_missing" not in [item.name for item in capability_selection.capabilities]
+    assert any(
+        reason == "capability_catalog_skipped:custom_missing:governed_tool_unavailable"
+        for reason in capability_selection.selection_reasons
+    )
+
+
+def test_capability_catalog_omits_repo_skill_when_governed_tool_not_prompt_selected(
+    tmp_path: Path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "product_research",
+        """
+---
+name: product_research
+description: Product research guidance.
+---
+## Governed Tools
+- product_search
+""",
+    )
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    available_specs = [
+        ToolSpec(name="web_search", required_inputs=["query"]),
+        ToolSpec(name="product_search", required_inputs=["query"]),
+    ]
+    prompt_specs = [available_specs[0]]
+
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        available_tool_specs=available_specs,
+        prompt_tool_specs=prompt_specs,
+        tool_catalog_summary=select_prompt_tool_specs(request, available_specs).summary,
+        repo_root=tmp_path,
+    )
+
+    assert "product_research" not in [item.name for item in capability_selection.capabilities]
+    assert any(
+        reason == "capability_catalog_skipped:product_research:governed_tool_not_prompt_selected"
+        for reason in capability_selection.selection_reasons
+    )
+
+
+def _write_skill(root: Path, name: str, content: str) -> None:
+    skill_dir = root / "skills" / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(content.strip() + "\n", encoding="utf-8")

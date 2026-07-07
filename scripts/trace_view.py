@@ -38,6 +38,18 @@ DETAIL_ATTRIBUTE_KEYS = (
     "budget_ratio",
     "context_usage_ratio",
     "cancel_source",
+    "terminal_status",
+    "runtime_call_latency_ms",
+    "provider_latency_ms",
+    "wall_latency_ms",
+    "gateway_run_id",
+    "assistant_run_id",
+    "result_run_id",
+    "tool_count",
+    "error_count",
+    "response_present",
+    "user_visible_event_count",
+    "sla_fallback_emitted",
 )
 DETAIL_OUTPUT_KEYS = (
     "output_ref",
@@ -147,6 +159,7 @@ def _server_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(events, list):
         events = []
         summary["events"] = events
+    _add_timing_fields(events)
     error_count = summary.get("error_count")
     if not isinstance(error_count, int):
         error_count = len(_error_events(events))
@@ -160,10 +173,37 @@ def _server_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _summary_payload(events: list[TraceEvent]) -> dict[str, Any]:
     summary = trace_debug_summary(events)
+    _add_timing_fields(summary["events"])
     summary["status"] = _infer_status(summary["events"], summary["error_count"])
     summary["event_count"] = len(events)
     summary["duration_ms"] = _duration_ms(events)
     return summary
+
+
+def _add_timing_fields(events: list[dict[str, Any]]) -> None:
+    if not events:
+        return
+    started_at = _event_created_at(events[0])
+    previous_at = started_at
+    for event in events:
+        current_at = _event_created_at(event)
+        if started_at is not None and current_at is not None:
+            event["elapsed_ms"] = max(0, round((current_at - started_at).total_seconds() * 1000))
+        if previous_at is not None and current_at is not None and current_at is not previous_at:
+            event["gap_ms"] = max(0, round((current_at - previous_at).total_seconds() * 1000))
+        previous_at = current_at or previous_at
+
+
+def _event_created_at(event: dict[str, Any]) -> datetime | None:
+    value = event.get("created_at")
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
 
 
 def _infer_status(events: list[dict[str, Any]], error_count: int) -> str:
@@ -246,6 +286,12 @@ def _event_details(event: dict[str, Any]) -> list[str]:
     latency_ms = event.get("latency_ms")
     if isinstance(latency_ms, int):
         details.append(f"{latency_ms}ms")
+    elapsed_ms = event.get("elapsed_ms")
+    if isinstance(elapsed_ms, int):
+        details.append(f"at={elapsed_ms}ms")
+    gap_ms = event.get("gap_ms")
+    if isinstance(gap_ms, int) and gap_ms > 0:
+        details.append(f"gap={gap_ms}ms")
     _append_named(details, "status", event.get("status"))
     _append_named(details, "tool", event.get("tool_name"))
     _append_named(details, "provider", event.get("provider"))

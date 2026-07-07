@@ -6,9 +6,10 @@ import asyncio
 import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 from assistant_agent.gateway import GatewayBridge, GatewaySessionManager
-from assistant_agent.realtime import RealtimeAgentBackend
+from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
 
 _GATEWAY_SESSION_MANAGER: GatewaySessionManager | None = None
 _GATEWAY_BRIDGE: GatewayBridge | None = None
@@ -49,16 +50,28 @@ def create_gateway_session_manager(
     """Create a GatewaySessionManager from safe local defaults and env overrides."""
 
     source = os.environ if env is None else env
+    resolved_backend_factory = backend_factory or _default_gateway_backend_factory
     return GatewaySessionManager(
         max_sessions=_int_env(source, GATEWAY_MAX_SESSIONS_ENV, default=20),
         idle_timeout_s=_float_env(source, GATEWAY_IDLE_TIMEOUT_S_ENV, default=300.0),
         hangup_grace_s=_optional_float_env(source, GATEWAY_HANGUP_GRACE_S_ENV),
         reaper_interval_s=_float_env(source, GATEWAY_REAPER_INTERVAL_S_ENV, default=30.0),
-        backend_factory=backend_factory,
+        backend_factory=resolved_backend_factory,
         start_reaper=_bool_env(source, GATEWAY_START_REAPER_ENV, default=True)
         if start_reaper is None
         else start_reaper,
     )
+
+
+def _default_gateway_backend_factory() -> RealtimeAgentBackend:
+    return GatewayAgentAdapter(run_request=_run_assistant_request_with_http_runtime)
+
+
+def _run_assistant_request_with_http_runtime(request: Any, **kwargs: Any) -> Any:
+    from assistant_agent.api.routes_agent import get_agent_runtime
+    from assistant_agent.services.assistant_run_service import run_assistant_request
+
+    return run_assistant_request(request, runtime=get_agent_runtime(), **kwargs)
 
 
 def set_gateway_runtime_for_tests(

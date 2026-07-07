@@ -378,6 +378,12 @@ def test_native_runtime_trace_satisfies_success_timeline_invariants() -> None:
     _assert_single_tool_lifecycle(canonical)
     assert canonical.count("llm.chat.finished") == 2
     assert canonical.count("react.decision") >= 2
+    assert "native_runtime.finished" in canonical
+    assert "runtime.postprocess.finished" in canonical
+    llm_events = [event for event in events if event["canonical_event"] == "llm.chat.finished"]
+    assert llm_events[0]["attributes"]["provider_latency_ms"] == 11
+    assert isinstance(llm_events[0]["attributes"]["wall_latency_ms"], int)
+    assert llm_events[0]["attributes"]["wall_latency_ms"] >= 0
     _assert_before(
         canonical,
         "run.started",
@@ -391,6 +397,8 @@ def test_native_runtime_trace_satisfies_success_timeline_invariants() -> None:
         "tool.started",
         "tool.finished",
         "tool.observation",
+        "native_runtime.finished",
+        "runtime.postprocess.finished",
     )
     assert _index(canonical, "tool.observation") < _index(canonical, "response.final", last=True)
     assert _index(canonical, "response.final", last=True) < _index(canonical, "memory.save.started")
@@ -400,6 +408,12 @@ def test_native_runtime_trace_satisfies_success_timeline_invariants() -> None:
     assert final_event["attributes"]["message_chars"] == len("找到了一些白色运动鞋。")
     assert memory_save_event["status"] == "skipped"
     assert memory_save_event["attributes"]["skip_reason"] == "native_runtime_memory_writes_are_llm_tool_calls"
+    native_finished = next(event for event in events if event["canonical_event"] == "native_runtime.finished")
+    postprocess_finished = next(event for event in events if event["canonical_event"] == "runtime.postprocess.finished")
+    assert isinstance(native_finished["latency_ms"], int)
+    assert native_finished["latency_ms"] >= 0
+    assert isinstance(postprocess_finished["latency_ms"], int)
+    assert postprocess_finished["latency_ms"] >= 0
     _assert_trace_text_absent(
         events,
         "找到了一些白色运动鞋。",

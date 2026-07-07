@@ -17,5 +17,8 @@ htmlcov/
 .idea/
 /prompts/
 /skills/
+!/skills/
+!/skills/*/
+!/skills/*/SKILL.md
 /demo_data/
 /docs/interview/
