@@ -1,6 +1,6 @@
 # Memory Server 软件实现设计说明书
 
-> 仅供内部使用。本文基于当前 `master` 分支实现编写，HTTP contract 以 `memory_server_api_spec.md` 为准。
+> 仅供内部使用。本文是外部 Memory Server 的实现参考，不是 assistant_agent 的核心架构权威。assistant_agent 侧长期记忆边界以 `docs/memory-service-architecture.md` 为准；HTTP contract 以 `docs/memory_server_api_spec.md` 为准。
 
 ## 文档信息
 

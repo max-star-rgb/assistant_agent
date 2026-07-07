@@ -12,6 +12,11 @@
 - Context engineering status: `docs/CONTEXT_ENGINEERING_STATUS.md`
 - Multi-agent routing: `docs/agent-communication-routing.md`
 
+External Memory Server contract/reference material:
+
+- `docs/memory_server_api_spec.md`
+- `docs/memory_server_software_implementation_design.md`
+
 Walkthroughs for project-owner explanations:
 
 - `docs/context-engineering-walkthrough.md`

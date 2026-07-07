@@ -2,7 +2,7 @@
 
 Base URL: `http://<host>:<port>`
 
-本文档描述当前代码中的真实 HTTP contract。所有请求和响应均为 JSON；时间戳使用 ISO 8601 字符串。架构和数据层设计见 `docs/CURRENT_DESIGN.md`；部分行为仍有 known issues，见 `docs/KNOWN_ISSUES.md`。
+本文档描述 assistant_agent 对外部 Memory Server 的当前 HTTP contract 期望。所有请求和响应均为 JSON；时间戳使用 ISO 8601 字符串。assistant_agent 侧集成边界见 `docs/memory-service-architecture.md`，外部 Memory Server 实现参考见 `docs/memory_server_software_implementation_design.md`。
 
 ## 1. Health
 
