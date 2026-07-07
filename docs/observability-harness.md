@@ -156,6 +156,8 @@ Target local CLI:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --json
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py --trace-path .data/graph_trace.jsonl
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py --json
 ```
 
 Human-readable output should show:
@@ -175,7 +177,8 @@ run run_xxx trace trace_xxx status=failed duration=1832ms
 
 Developer output should group errors first when requested, then show the full
 timeline. The default view should be short enough to paste into an issue or a
-handoff note.
+handoff note. Metrics output should answer aggregate health questions without
+opening individual traces first.
 
 ## Metrics
 
@@ -193,6 +196,17 @@ possible:
 
 Do not add high-cardinality labels such as raw prompts, raw queries, full URLs,
 full memory text, full provider errors, or media payloads.
+
+The local metrics command currently exposes this first layer:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py
+```
+
+It reads the redacted JSONL trace store, supports optional `--user-id` and
+`--session-id` filters, and prints either a paste-friendly text summary or a
+machine-readable `--json` summary. API/debug endpoint exposure should be added
+only after the local metrics shape is stable.
 
 ## Redaction Rules
 
@@ -257,8 +271,9 @@ Regression tests should enforce these invariants:
 ### Phase 3: Metrics Summary
 
 - Add a local metrics summary derived from trace/events.
-- Expose run/tool/LLM/context/Gateway/memory counters through a debug endpoint or
-  script.
+- Expose run/tool/LLM/context/Gateway/memory counters through
+  `scripts/trace_metrics.py`.
+- Defer debug endpoint exposure until the local metrics contract is stable.
 - Keep labels low-cardinality and safe.
 
 ### Phase 4: Optional Export
