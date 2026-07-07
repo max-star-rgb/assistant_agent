@@ -21,9 +21,11 @@ def test_user_facing_docs_exist() -> None:
 def test_readme_links_to_consolidated_docs_without_requiring_phase_docs() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "(AGENTS.md)" in readme
-    assert "README 暂时只保留占位入口" in readme
-    assert "项目稳定后再重写面向人的 README" in readme
+    assert "[AGENTS.md](AGENTS.md)" in readme
+    assert "human navigation page" in readme
+    assert "docs/development/" in readme
+    assert "README 暂时只保留占位入口" not in readme
+    assert "项目稳定后再重写面向人的 README" not in readme
 
 
 def test_user_docs_keep_offline_safety_boundary() -> None:

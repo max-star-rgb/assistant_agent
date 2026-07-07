@@ -4,7 +4,7 @@
 
 ## Start Here
 
-- Coding-agent rules and repository boundaries: `AGENTS.md`
+- Coding-agent rules and repository boundaries: [AGENTS.md](AGENTS.md)
 - Gateway and realtime lifecycle: `docs/gateway-architecture.md`
 - Tool calling governance: `docs/tool-calling-architecture.md`
 - Observability and trace harness: `docs/observability-harness.md`
@@ -29,7 +29,7 @@ Interview training material lives under `docs/interview/` and is separate from n
 
 The Python package is `assistant_agent` under `src/assistant_agent/`. The local conda environment remains `hello_agent`.
 
-Default local runs use mock/local/offline providers. Real external providers are opt-in only through explicit runtime profiles such as `provider_smoke` or `pilot`, with keys supplied by local environment/config outside the repository.
+Default local runs use mock/local/offline providers，不会因为本地存在 key 自动启用真实调用。Real external providers are opt-in only through explicit runtime profiles such as `provider_smoke` or `pilot`, with keys supplied by local environment/config outside the repository. API key 只用于显式 opt-in 的真实 Provider smoke/pilot。
 
 Basic checks:
 
