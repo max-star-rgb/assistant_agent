@@ -148,6 +148,7 @@ conda run -n hello_agent <command>
 - `README.md` 是临时占位入口，项目稳定后再重写，不承担实时架构和文档路由职责。
 - `docs/gateway-architecture.md` 是 Gateway、entry layer、realtime backend contract、OpenClaw 参考边界和 Gateway 更新规则的当前权威入口。
 - `docs/tool-calling-architecture.md` 是 tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、provider-native tool calls 和 MCP `tool_run` 的当前权威入口。
+- `docs/observability-harness.md` 是状态日志、监控、trace、ReAct 关键节点监测、开发者 trace 查询体验和 redaction 红线的当前权威入口。
 - `docs/memory-service-architecture.md` 是记忆服务架构、边界、路由和更新规则的当前权威入口。
 - `docs/memory-module-walkthrough.md` 是面向项目负责人的记忆模块中文解释文档；它不是 agent 必读或补读入口，维护时只需保持与 `docs/memory-service-architecture.md` 不冲突。
 - `docs/development/memory-kernel-hardening-plan.md` 是 Memory Kernel 工程化落地的历史开发计划和参考材料，默认不作为当前设计权威入口。
