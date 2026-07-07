@@ -17,6 +17,7 @@ from assistant_agent.schemas.planning import TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatAdapter
+from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
 from assistant_agent.services.trace_store import TraceStore
 
 
@@ -39,7 +40,14 @@ class AgentGraphState(TypedDict):
 
 
 def load_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
-    _memory_manager(graph_state).load_into_state(graph_state["state"], graph_state["request"])
+    load_memory_with_trace(
+        manager=_memory_manager(graph_state),
+        trace_store=graph_state.get("trace_store"),
+        trace_id=graph_state.get("trace_id"),
+        node_name=graph_state.get("current_node_name", "load_memory"),
+        state=graph_state["state"],
+        request=graph_state["request"],
+    )
     return graph_state
 
 
@@ -256,12 +264,27 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
 
 def save_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
     if _is_assistant_loop_state(graph_state) and not _uses_mock_chat_adapter(graph_state):
+        skip_reason = "assistant_loop_memory_writes_are_llm_tool_calls"
         graph_state["state"].request.metadata["auto_task_summary_memory"] = {
             "skipped": True,
-            "reason": "assistant_loop_memory_writes_are_llm_tool_calls",
+            "reason": skip_reason,
         }
+        save_memory_with_trace(
+            manager=_memory_manager(graph_state),
+            trace_store=graph_state.get("trace_store"),
+            trace_id=graph_state.get("trace_id"),
+            node_name=graph_state.get("current_node_name", "save_memory"),
+            state=graph_state["state"],
+            skipped_reason=skip_reason,
+        )
         return graph_state
-    _memory_manager(graph_state).save_from_run(graph_state["state"])
+    save_memory_with_trace(
+        manager=_memory_manager(graph_state),
+        trace_store=graph_state.get("trace_store"),
+        trace_id=graph_state.get("trace_id"),
+        node_name=graph_state.get("current_node_name", "save_memory"),
+        state=graph_state["state"],
+    )
     return graph_state
 
 

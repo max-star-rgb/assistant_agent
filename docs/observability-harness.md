@@ -103,6 +103,12 @@ the result into assistant-facing data.
 `AssistantContextPack` construction is wrapped by the context observability
 helper, which emits `context.build.started` and `context.build.finished` with
 redacted budget, source-count, compaction, and tool-catalog summaries.
+Memory lifecycle calls are wrapped at the runtime and graph memory boundaries:
+`memory.load.started` / `memory.load.finished` summarize retrieval/injection
+counts, token budget fields, retrieval version, and injected memory IDs;
+`memory.save.started` / `memory.save.finished` summarize promotion/save
+decisions, skipped reasons, and written IDs. These events must not include
+memory summaries, rendered memory context, candidate content, or raw user text.
 
 ## Span Model
 

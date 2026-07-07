@@ -33,6 +33,7 @@ from assistant_agent.services.checkpointer import create_checkpointer
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
 from assistant_agent.services.context.compactor import ContextCompactor, create_context_compactor
 from assistant_agent.services.context.renderer import render_native_user_message
+from assistant_agent.services.memory_observability import load_memory_with_trace
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
 from assistant_agent.services.tool_history import ToolHistoryStore
@@ -346,7 +347,14 @@ class AgentGraphRuntime:
             "skipped": True,
             "reason": "native_runtime_memory_writes_are_llm_tool_calls",
         }
-        self.memory_manager.load_into_state(state, request)
+        load_memory_with_trace(
+            manager=self.memory_manager,
+            trace_store=self.trace_store,
+            trace_id=state.trace_id,
+            node_name="native_runtime",
+            state=state,
+            request=request,
+        )
 
         observations: list[dict[str, Any]] = []
         native_calls: list[dict[str, Any]] = []
