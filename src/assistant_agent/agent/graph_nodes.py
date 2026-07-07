@@ -198,7 +198,6 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
             build_direct_chat_request(
                 graph_state["request"],
                 memory_context=memory_summaries,
-                system_instruction="You are a helpful text-first assistant.",
             ),
             graph_state,
             source="direct_chat",

@@ -93,6 +93,7 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Queue ordinary same-session user messages behind the active run; cancel active runs on explicit `run.cancel`, disconnect, deadline expiry, or explicit same-session interrupt.
 - Cancel active runs immediately on `call.hangup` / media `session.end`, then return `call.hangup_ack`.
 - Manage per-user session reuse, reconnect, hangup grace, idle eviction, and live session config.
+- Treat user-message `metadata` as untrusted for system-prompt/profile selection. `system_prompt_profile`, profile-driving `channel`, and profile-driving `source` are stripped from message payload metadata; realtime phone profile selection must come from trusted Gateway/session config, not ordinary user text or arbitrary payload metadata.
 - Keep external connection lifecycle separate from the assistant runtime internals.
 
 Gateway should remain transport-agnostic where possible. WebSocket handling belongs in an adapter such as `gateway.ws` or an API entry route, while Gateway session behavior belongs in `gateway.session`.
@@ -139,7 +140,11 @@ The Web demo may expose a Realtime Call Debugger for local Media Relay testing, 
 
 Invalid JSON, unsupported event types, unknown config fields, missing transcript content, identity mismatch, or session mismatch produce an `error` frame and do not enter the assistant backend.
 
-Media Relay v1 does not stream raw audio or video through Gateway. It sends references such as `audio_id`, `video_ids`, and `image_ids`; the assistant runtime receives those references through `RealtimeAgentRequest`.
+System prompt profile selection is a session configuration concern. Realtime call entries may set trusted session config such as `system_prompt_profile=realtime_phone` and `channel=realtime_phone`; message payload metadata cannot promote a normal turn into `realtime_phone` or `final_only`.
+
+Media Relay v1 does not stream raw audio or video through Gateway. It sends references such as `audio_id`, `video_ids`, and `image_ids`; the assistant runtime receives those references through `RealtimeAgentRequest`. STT/TTS edge metadata is kept prompt-safe: `transcript.final` may attach sanitized `media_edge` metadata for transcript/STT/TTS status, but raw audio, base64 payloads, provider raw responses, API keys, and SDK blobs are removed before the backend request is built.
+
+TTS is also an entry-adapter concern. `assistant_agent.realtime.audio_edge.gateway_frame_to_tts_event()` can map speakable Gateway frames (`stream.chunk` and display-only `event.progress`) into prompt-safe TTS edge events. It does not invoke a TTS provider, stream audio, or change assistant runtime behavior.
 
 ## Realtime Adapter Contract
 
@@ -169,6 +174,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/gateway/event_mapping.py` | Realtime backend event to Gateway frame mapping. |
 | `src/assistant_agent/gateway/ws_server.py` | Optional standalone Gateway session WebSocket server entrypoint, not the main FastAPI app route. |
 | `src/assistant_agent/realtime/` | Gateway-to-assistant adapter contract, `GatewayAgentAdapter` semantic alias, and `AgentGraphRealtimeBackend` compatibility class. |
+| `src/assistant_agent/realtime/audio_edge.py` | Prompt-safe helper for entry adapters that convert speakable Gateway text frames into TTS edge events without invoking a provider. |
 | `src/assistant_agent/api/gateway_runtime.py` | Process-local FastAPI-owned `GatewaySessionManager` / `GatewayBridge` boundary and shutdown cleanup. |
 | `src/assistant_agent/api/gateway_websocket.py` | FastAPI entry adapters for `/ws/gateway` Gateway frames and `/ws/realtime/media` media-service events. |
 | `src/assistant_agent/api/agent_service_websocket.py` | FastAPI compatibility adapter for the vendor `/agent-service/v1` media protocol; parses `message` / `sessionId` / stringified `body` and returns mock envelopes without entering Gateway runtime. |

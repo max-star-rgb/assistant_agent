@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from assistant_agent.memory import remote as remote_module
 from assistant_agent.memory.remote import (
     HybridMemoryStore,
     MemoryServerMediaFile,
@@ -274,6 +275,49 @@ def test_remote_memory_client_health_uses_scoped_get_request() -> None:
             timeout_seconds=2.0,
         )
     ]
+
+
+def test_remote_memory_client_loopback_base_url_bypasses_global_proxy_urlopen(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return b'{"status": "ok", "code": 200}'
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+    def fake_urlopen(*args, **kwargs):
+        raise AssertionError("loopback Memory Server requests must bypass global proxy urlopen")
+
+    def fake_proxy_handler(proxies):
+        captured["proxy_handler"] = dict(proxies)
+        return ("proxy_handler", dict(proxies))
+
+    def fake_build_opener(handler):
+        captured["opener_handler"] = handler
+        return FakeOpener()
+
+    monkeypatch.setattr(remote_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(remote_module.urllib.request, "ProxyHandler", fake_proxy_handler)
+    monkeypatch.setattr(remote_module.urllib.request, "build_opener", fake_build_opener)
+
+    client = RemoteMemoryClient(base_url="http://127.0.0.1:5200", timeout_seconds=0.5)
+
+    assert client.health(user_id="u1")["status"] == "ok"
+    assert captured["proxy_handler"] == {}
+    assert captured["opener_handler"] == ("proxy_handler", {})
+    assert captured["url"] == "http://127.0.0.1:5200/v1/health?user_id=u1"
+    assert captured["timeout"] == 0.5
 
 
 def test_remote_memory_client_upload_media_posts_file_refs_and_returns_task_result() -> None:

@@ -1,4 +1,7 @@
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.context.capability_catalog import (
+    select_tool_capability_descriptors,
+)
 from assistant_agent.services.context.tool_catalog import select_prompt_tool_specs
 from assistant_agent.tools.registry import create_default_registry
 
@@ -162,3 +165,37 @@ def test_tool_catalog_exposes_memory_for_llm_first_choice_without_memory_keyword
         "llm_first_memory_tools: memory tools exposed for semantic LLM choice"
         in selection.summary.selection_reasons
     )
+
+
+def test_capability_catalog_selects_realtime_web_search_descriptor() -> None:
+    specs = create_default_registry().list_specs()
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    tool_selection = select_prompt_tool_specs(request, specs)
+
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        available_tool_specs=specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+    )
+
+    assert [item.name for item in capability_selection.capabilities] == ["realtime_web_search"]
+    descriptor = capability_selection.capabilities[0]
+    assert descriptor.governed_tools == ["web_search"]
+    assert descriptor.required_inputs_by_tool == {"web_search": ["query"]}
+    assert any("ToolExecutor" in item for item in descriptor.runtime_constraints)
+
+
+def test_capability_catalog_omits_descriptor_when_governed_tool_missing() -> None:
+    specs = [spec for spec in create_default_registry().list_specs() if spec.name != "web_search"]
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    tool_selection = select_prompt_tool_specs(request, specs)
+
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        available_tool_specs=specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+    )
+
+    assert capability_selection.capabilities == []

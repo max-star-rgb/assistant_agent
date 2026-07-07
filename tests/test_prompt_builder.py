@@ -3,6 +3,7 @@ from assistant_agent.agent.prompt_builder import (
     build_image_generation_request,
     build_image_prompt_text,
 )
+from assistant_agent.agent.system_prompt_policy import SystemPromptProfile, render_system_instruction
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 
@@ -19,6 +20,14 @@ def test_direct_chat_prompt_injects_memory_context() -> None:
     assert chat_request.user_query == "帮我写一段商品介绍"
     assert chat_request.memory_context == ["用户喜欢日系极简风格"]
     assert chat_request.system_instruction == "test system"
+
+
+def test_direct_chat_prompt_defaults_to_system_prompt_policy() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="帮我写一段商品介绍")
+
+    chat_request = build_direct_chat_request(request)
+
+    assert chat_request.system_instruction == render_system_instruction(SystemPromptProfile.FINAL_ONLY)
 
 
 def test_image_generation_prompt_injects_contexts() -> None:

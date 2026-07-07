@@ -132,6 +132,9 @@ def _side_effect_summary(tool_name: str, *, result: ToolResult | None = None) ->
             payload["requires_confirmation"] = data["requires_confirmation"]
         if isinstance(data.get("compensation_hint"), str):
             payload["compensation_hint"] = _clip(data["compensation_hint"])
+        if result.success and payload.get("level") == "pending_confirmation" and not _result_requires_confirmation(data):
+            payload["level"] = "committed"
+            payload["requires_confirmation"] = False
     return payload
 
 
@@ -265,6 +268,10 @@ def _safe_error_message(error: str | None) -> str | None:
     if any(marker in lowered for marker in ("secret", "token", "password", "api_key", "apikey", "authorization", "bearer")):
         return "Tool failed with a redacted sensitive error."
     return _clip(safe)
+
+
+def _result_requires_confirmation(data: dict[str, Any]) -> bool:
+    return data.get("requires_confirmation") is True or bool(_metadata_string(data.get("confirmation_id")))
 
 
 def _metadata_string(value: Any) -> str | None:

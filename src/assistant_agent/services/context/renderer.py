@@ -3,7 +3,11 @@
 import json
 from typing import Any
 
-from assistant_agent.schemas.context import AssistantContextPack, RenderedAssistantContext
+from assistant_agent.schemas.context import (
+    AssistantContextPack,
+    RenderedAssistantContext,
+    ToolCapabilityDescriptor,
+)
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.context.compactor import format_context_summary
@@ -23,6 +27,7 @@ def render_prompt_json_context(pack: AssistantContextPack) -> RenderedAssistantC
         render_memory_context(pack.memory_summaries, pack.memory_text),
         render_plan_mode_context(pack),
         render_observations(pack.observations),
+        render_tool_capabilities(pack.tool_capabilities),
         render_tool_specs(_prompt_tool_specs(pack)),
         render_decision_contract(),
     ]
@@ -46,6 +51,7 @@ def render_native_tool_context(pack: AssistantContextPack) -> RenderedAssistantC
         render_realtime_task_state_context(pack),
         render_memory_context(pack.memory_summaries, pack.memory_text),
         render_plan_mode_context(pack),
+        render_tool_capabilities(pack.tool_capabilities),
     ]
     active_sections = [section for section in sections if section]
     return RenderedAssistantContext(native_user_message="\n\n".join(active_sections), sections=active_sections)
@@ -133,6 +139,16 @@ def render_tool_specs(tool_specs: list[ToolSpec]) -> str:
     payload = [prompt_tool_spec_payload(spec) for spec in tool_specs]
     return (
         "可用工具 ToolSpec 列表（唯一工具契约）：\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def render_tool_capabilities(capabilities: list[ToolCapabilityDescriptor]) -> str:
+    if not capabilities:
+        return ""
+    payload = [descriptor.model_dump(mode="json") for descriptor in capabilities]
+    return (
+        "能力目录（skill-style，仅描述能力；执行必须通过 ToolExecutor）：\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 

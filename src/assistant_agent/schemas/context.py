@@ -28,6 +28,7 @@ class ContextBudgetReport(BaseModel):
     plan_chars: int = Field(default=0, ge=0)
     observations_chars: int = Field(default=0, ge=0)
     tool_spec_chars: int = Field(default=0, ge=0)
+    tool_capability_chars: int = Field(default=0, ge=0)
     total_chars: int = Field(default=0, ge=0)
     max_chars: int = Field(default=0, ge=0)
     over_budget: bool = False
@@ -86,6 +87,27 @@ class ToolCatalogSummary(BaseModel):
     fallback_used: bool = False
 
 
+class ToolCapabilityDescriptor(BaseModel):
+    """Prompt-safe skill-style capability descriptor backed by governed tools."""
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    governed_tools: list[str] = Field(default_factory=list)
+    required_inputs_by_tool: dict[str, list[str]] = Field(default_factory=dict)
+    when_to_use: list[str] = Field(default_factory=list)
+    when_not_to_use: list[str] = Field(default_factory=list)
+    safe_examples: list[str] = Field(default_factory=list)
+    runtime_constraints: list[str] = Field(default_factory=list)
+
+
+class ToolCapabilityCatalogSelection(BaseModel):
+    """Selected capability descriptors for one assistant context pack."""
+
+    capabilities: list[ToolCapabilityDescriptor] = Field(default_factory=list)
+    selection_reasons: list[str] = Field(default_factory=list)
+    fallback_used: bool = False
+
+
 class AssistantContextPack(BaseModel):
     """All materials needed to render one assistant loop context."""
 
@@ -102,6 +124,7 @@ class AssistantContextPack(BaseModel):
     tool_specs: list[ToolSpec] = Field(default_factory=list)
     prompt_tool_specs: list[ToolSpec] = Field(default_factory=list)
     tool_catalog_summary: ToolCatalogSummary = Field(default_factory=ToolCatalogSummary)
+    tool_capabilities: list[ToolCapabilityDescriptor] = Field(default_factory=list)
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=1, ge=1)
     source_counts: dict[str, int] = Field(default_factory=dict)

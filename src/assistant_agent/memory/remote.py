@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import socket
 import urllib.error
 import urllib.parse
@@ -713,6 +714,12 @@ def _merge_memory_items(
 
 
 def _urllib_transport(base_url: str) -> MemoryServerTransport:
+    opener = (
+        urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        if _should_bypass_proxy_for_base_url(base_url)
+        else None
+    )
+
     def transport(request: MemoryServerRequest) -> Mapping[str, Any]:
         url = f"{base_url}{request.path}"
         payload = json.dumps(request.body).encode("utf-8") if request.body is not None else None
@@ -723,7 +730,12 @@ def _urllib_transport(base_url: str) -> MemoryServerTransport:
             headers={"Content-Type": "application/json", "Accept": "application/json"},
         )
         try:
-            with urllib.request.urlopen(http_request, timeout=request.timeout_seconds) as response:
+            response_context = (
+                opener.open(http_request, timeout=request.timeout_seconds)
+                if opener is not None
+                else urllib.request.urlopen(http_request, timeout=request.timeout_seconds)
+            )
+            with response_context as response:
                 data = response.read().decode("utf-8")
         except socket.timeout as exc:
             raise TimeoutError("memory server request timed out") from exc
@@ -738,3 +750,15 @@ def _urllib_transport(base_url: str) -> MemoryServerTransport:
         return decoded
 
     return transport
+
+
+def _should_bypass_proxy_for_base_url(base_url: str) -> bool:
+    host = urllib.parse.urlparse(base_url).hostname
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False

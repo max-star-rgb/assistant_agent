@@ -24,16 +24,29 @@ Current implementation status:
   `search(...)`.
 - Runtime config/factory wiring for `MULTIMODAL_AGENT_MEMORY_BACKEND=hybrid_remote`
   exists.
-- `scripts/smoke_memory_server.py` exists for opt-in `/v1/health` and
-  `/v1/memories/query` checks. It keeps `direct_answer=false` and does not test
-  media ingestion.
+- `scripts/smoke_memory_server.py` exists for opt-in `/v1/health`,
+  `/v1/memories/query`, and explicitly requested media upload/status checks. It
+  keeps query `direct_answer=false`; media ingestion is skipped unless media
+  smoke arguments are provided. Media task polling is also explicit via
+  `--wait`; the default media smoke still checks task status once. Health
+  failures are reported as structured, sanitized JSON with a stable `diagnosis`
+  code and stop the smoke before query or media upload.
 - Phase 4 client foundation is partially implemented:
   `RemoteMemoryClient.upload_media(...)` and
   `RemoteMemoryClient.task_status(...)` can call `/v1/media/upload` and
   `/v1/tasks_status` through fakeable transport with structured, trace-safe
   results.
-- No media-ingestion tool/service has been added yet; the upload/status client
-  is not exposed to the agent.
+- Phase 4 governed local service/tool foundation is implemented:
+  `MemoryMediaIngestionService` binds trusted runtime identity, generates
+  upload `file_id` values, and `memory_media_ingest` /
+  `memory_ingest_status` expose the capability through ToolRegistry,
+  ActionValidator, ToolExecutor, and structured ToolResult contracts.
+- Phase 4 native-runtime coverage is implemented: scripted provider-native
+  tool-call tests verify `memory_media_ingest` and `memory_ingest_status`
+  bind runtime `user_id` / `session_id` instead of model-supplied identity and
+  return tool observations to the follow-up LLM response.
+- The media-ingestion tools default to `provider_unconfigured` unless
+  `hybrid_remote` and `MEMORY_SERVER_BASE_URL` are explicitly configured.
 
 ## Purpose
 
@@ -345,11 +358,15 @@ Work:
 - Ensure `file_id` generation is globally unique.
 - Add tests for accepted task response, task status mapping, and user-scope
   warnings.
+- Add native fake-LLM tests for `ActionValidator -> ToolExecutor -> ToolRegistry`
+  identity binding and observation handoff.
 
 Acceptance:
 
 - Media upload does not bypass tool governance.
 - Upload/status results are structured and trace-safe.
+- Native tool-call execution records runtime-bound identity for media ingestion
+  and status checks.
 - `memory_save` remains explicit text memory save through local policy.
 
 ### Phase 5: Authority Doc Update
@@ -401,9 +418,23 @@ For the first implementation phase:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_runtime_integration.py -q
 ```
 
-For remote smoke testing, add an explicit opt-in command after the client exists.
-
 Current opt-in smoke command:
+
+Health-only preflight:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_server.py \
+  --base-url http://127.0.0.1:5200 \
+  --user-id u1 \
+  --session-id s1 \
+  --health-only \
+  --timeout-seconds 1
+```
+
+This command calls only `/v1/health`. It does not require `--query` and does
+not attempt media upload.
+
+Query smoke:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_server.py \
@@ -415,3 +446,49 @@ Current opt-in smoke command:
 
 This command calls only `/v1/health` and `/v1/memories/query`, with
 `direct_answer=false` and returned media chunks disabled.
+
+Current opt-in media smoke command:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_server.py \
+  --base-url http://127.0.0.1:5200 \
+  --user-id u1 \
+  --session-id s1 \
+  --query "上次早餐吃了什么" \
+  --top-k 3 \
+  --media-file-url file:///tmp/breakfast.mp4 \
+  --media-filename breakfast.mp4 \
+  --media-type video \
+  --media-start-time 2026-04-11T12:00:00Z
+```
+
+This additionally calls `/v1/media/upload` and `/v1/tasks_status`. The script
+generates a unique smoke `file_id` unless `--media-file-id` is provided.
+
+To wait for an asynchronous media task to reach `completed` or `failed`, add:
+
+```bash
+  --wait \
+  --wait-timeout-seconds 60 \
+  --poll-interval-seconds 2
+```
+
+Without `--wait`, the script performs one status check and exits.
+
+Latest local probe:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_server.py \
+  --base-url http://127.0.0.1:5200 \
+  --user-id codex-smoke \
+  --session-id codex-smoke \
+  --health-only \
+  --timeout-seconds 1
+```
+
+On 2026-07-07 this returned structured `status=failed` with
+`memory_server_health_failed` and
+`diagnosis.code=memory_server_not_listening`. `ss -ltnp` showed no listener on
+port 5200, and direct curl reported `Connection refused`; after loopback proxy
+bypass in `RemoteMemoryClient`, the smoke output reports the same
+connection-refused root cause. No query or media upload was attempted.

@@ -410,6 +410,7 @@ class ToolExecutor:
                     cancel_token=self.cancel_token,
                 ),
                 step_id=step_id,
+                preserve_success_after_cancel=_preserve_success_after_cancel(risk_decision),
             )
         except AgentRunCancelled as exc:
             latency_ms = int((perf_counter() - started_at) * 1000)
@@ -686,6 +687,7 @@ class ToolExecutor:
         context: ToolContext,
         *,
         step_id: str,
+        preserve_success_after_cancel: bool = False,
     ) -> tuple[ToolResult, int]:
         failed_attempts = 0
         retry_count = 0
@@ -697,12 +699,13 @@ class ToolExecutor:
                 details={"tool_name": tool_name, "step_id": step_id, "retry_count": retry_count},
             )
             result = self._run_once(tool_name, tool_input, context)
-            raise_if_cancelled(
-                self.cancel_token,
-                phase="after_tool_attempt",
-                source="tool_executor",
-                details={"tool_name": tool_name, "step_id": step_id, "retry_count": retry_count},
-            )
+            if not (preserve_success_after_cancel and result.success):
+                raise_if_cancelled(
+                    self.cancel_token,
+                    phase="after_tool_attempt",
+                    source="tool_executor",
+                    details={"tool_name": tool_name, "step_id": step_id, "retry_count": retry_count},
+                )
             if result.success:
                 return result, retry_count
 
@@ -852,6 +855,12 @@ def _tool_trace_error(
     return {key: value for key, value in error.items() if value is not None}
 
 
+def _preserve_success_after_cancel(risk_decision: Any) -> bool:
+    if risk_decision.level == "soft_gate":
+        return True
+    return bool(risk_decision.level == "hard_gate" and risk_decision.enabled and risk_decision.allow_execute)
+
+
 def _capability_name(tool_name: str, step: TaskStep | None) -> str:
     if step is not None:
         action_map = {
@@ -894,7 +903,13 @@ def _cancelled_tool_result(tool_name: str, *, latency_ms: int) -> ToolResult:
 def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
     """Bind memory ownership to the authenticated runtime state, not model arguments."""
 
-    if tool_name not in {"memory", "memory_retrieval", "memory_save"}:
+    if tool_name not in {
+        "memory",
+        "memory_retrieval",
+        "memory_save",
+        "memory_media_ingest",
+        "memory_ingest_status",
+    }:
         return tool_input
     return {
         **tool_input,

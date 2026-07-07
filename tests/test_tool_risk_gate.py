@@ -43,6 +43,21 @@ class RecordingTool(MockTool):
         )
 
 
+class MutableCancelToken:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def is_cancelled(self) -> bool:
+        return self.cancelled
+
+    @property
+    def cancel_metadata(self) -> dict[str, object]:
+        return {
+            "cancel_source": "interrupt",
+            "cancel_reason": "barge_in_after_side_effect",
+        }
+
+
 def _realtime_state(*, run_id: str = "run-1") -> AgentState:
     return AgentState.from_request(
         UserRequest(
@@ -138,6 +153,81 @@ def test_compensatable_tool_generates_default_idempotency_key_for_same_run_step(
     started = [event for event in sink.events if event.type == "tool_started"]
     assert started[0].payload["pre_tool_call"]["idempotency"]["generated"] is True
     assert started[0].payload["pre_tool_call"]["idempotency"]["key"].startswith("auto:")
+
+
+def test_compensatable_tool_success_after_interrupt_is_committed_not_cancelled() -> None:
+    token = MutableCancelToken()
+
+    class InterruptAfterCommitTool(RecordingTool):
+        def _run(self, input: RiskGateInput, context: ToolContext) -> ToolResult:
+            result = super()._run(input, context)
+            token.cancelled = True
+            return result
+
+    tool = InterruptAfterCommitTool("image_generation")
+    registry = ToolRegistry()
+    registry.register(tool)
+    ledger = InMemoryToolIdempotencyLedger()
+    sink = ListEventSink()
+
+    result = ToolExecutor(
+        registry=registry,
+        event_sink=sink,
+        idempotency_ledger=ledger,
+        cancel_token=token,
+    ).run_tool(
+        _realtime_state(run_id="run-1"),
+        "step-1",
+        tool.name,
+        {"prompt": "蓝牙耳机海报", "idempotency_key": "image-task-1"},
+    )
+
+    assert result.success is True
+    assert tool.calls == 1
+    assert ledger.record_count == 1
+    assert not [event for event in sink.events if event.type == "tool_failed"]
+    finished = next(event for event in sink.events if event.type == "tool_finished")
+    post = finished.payload["post_tool_call"]
+    assert post["status"] == "succeeded"
+    assert post["idempotency"]["status"] == "committed"
+    assert "cancel" not in post
+
+
+def test_tool_owned_hard_gate_success_after_interrupt_is_committed_not_cancelled() -> None:
+    token = MutableCancelToken()
+
+    class InterruptAfterCommitTool(RecordingTool):
+        def _run(self, input: RiskGateInput, context: ToolContext) -> ToolResult:
+            result = super()._run(input, context)
+            token.cancelled = True
+            return result
+
+    tool = InterruptAfterCommitTool("memory_save")
+    registry = ToolRegistry()
+    registry.register(tool)
+    sink = ListEventSink()
+
+    result = ToolExecutor(
+        registry=registry,
+        event_sink=sink,
+        idempotency_ledger=InMemoryToolIdempotencyLedger(),
+        cancel_token=token,
+    ).run_tool(
+        _realtime_state(run_id="run-1"),
+        "step-1",
+        tool.name,
+        {"text": "保存通勤降噪偏好"},
+    )
+
+    assert result.success is True
+    assert tool.calls == 1
+    assert not [event for event in sink.events if event.type == "tool_failed"]
+    finished = next(event for event in sink.events if event.type == "tool_finished")
+    post = finished.payload["post_tool_call"]
+    assert post["status"] == "succeeded"
+    assert post["risk_gate"]["level"] == "hard_gate"
+    assert post["side_effect"]["level"] == "committed"
+    assert "cancel" not in post
 
 
 def test_realtime_unknown_tool_defaults_to_confirmation_gate_without_execution() -> None:

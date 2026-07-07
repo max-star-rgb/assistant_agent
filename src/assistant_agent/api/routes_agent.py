@@ -876,7 +876,7 @@ def _metadata_string(metadata: dict[str, Any], key: str) -> str | None:
 
 
 def _with_identity_metadata(request: UserRequest, resolution: ResolvedRequestIdentity):
-    metadata = dict(request.metadata)
+    metadata = _public_request_metadata(request.metadata)
     metadata.setdefault("request_identity", resolution.metadata())
     return request.model_copy(
         update={
@@ -885,6 +885,13 @@ def _with_identity_metadata(request: UserRequest, resolution: ResolvedRequestIde
             "metadata": metadata,
         }
     )
+
+
+def _public_request_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    safe_metadata = dict(metadata)
+    for key in ("system_prompt_profile", "channel", "source"):
+        safe_metadata.pop(key, None)
+    return safe_metadata
 
 
 def _require_trial_access_for_identity(resolution: ResolvedRequestIdentity) -> RequestIdentity:

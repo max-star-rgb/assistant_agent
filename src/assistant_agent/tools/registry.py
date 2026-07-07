@@ -9,12 +9,14 @@ from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy, Tool
 from assistant_agent.tools.base import BaseTool, ToolContext
 from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
+from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
 from assistant_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool, MemoryTool
 from assistant_agent.tools.price_compare_tool import PriceCompareTool
 from assistant_agent.tools.product_search_tool import ProductSearchTool
 from assistant_agent.tools.render_tool import Render3DTool
 from assistant_agent.services.web_search_adapter import create_web_search_adapter
 from assistant_agent.services.image_generation_adapter import create_image_generation_adapter
+from assistant_agent.services.memory_media_ingestion import create_memory_media_ingestion_service
 from assistant_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
 from assistant_agent.services.provider_selection import create_vision_adapter
 from assistant_agent.services.render_adapter import create_render_adapter
@@ -104,7 +106,12 @@ def _schema_to_dict(schema_type, *, tool_name: str | None = None):
 
 
 def _hide_runtime_identity_field(tool_name: str | None, field_name: str) -> bool:
-    return tool_name in {"memory_retrieval", "memory_save"} and field_name in {"user_id", "session_id"}
+    return tool_name in {
+        "memory_retrieval",
+        "memory_save",
+        "memory_media_ingest",
+        "memory_ingest_status",
+    } and field_name in {"user_id", "session_id"}
 
 
 def _required_inputs(schema_type) -> list[str]:
@@ -266,6 +273,47 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "compensation_hint": "Confirm, reject, delete, or update the saved memory through the memory confirmation/audit path.",
         },
     },
+    "memory_media_ingest": {
+        "when_to_use": [
+            "User explicitly asks to upload, ingest, or import media into long-term memory for later retrieval.",
+            "The request contains safe file references and asks for Memory Server media ingestion.",
+        ],
+        "when_not_to_use": [
+            "Do not use for ordinary video/image understanding; use video_understanding or vision_understanding instead.",
+            "Do not use for explicit text memory saves; use memory_save instead.",
+            "Do not use unless the user asks for durable media ingestion into memory.",
+        ],
+        "runtime_constraints": [
+            "Requires runtime user identity and at least one file reference.",
+            "Requires explicit Memory Server remote configuration.",
+            "Must execute through ToolExecutor; this is not memory_save.",
+        ],
+        "side_effect": {
+            "level": "committed",
+            "requires_confirmation": True,
+            "description": "Submits media to an external Memory Server ingestion task that may create durable remote memories.",
+            "confirmation_kind": "memory_media_ingest",
+            "compensation_hint": "Report the submitted task id and use memory_ingest_status to monitor completion.",
+        },
+    },
+    "memory_ingest_status": {
+        "when_to_use": [
+            "Check the processing state of a previously submitted Memory Server media ingestion task.",
+        ],
+        "when_not_to_use": [
+            "Do not use to submit media; use memory_media_ingest.",
+            "Do not use for general memory retrieval; use memory_retrieval.",
+        ],
+        "runtime_constraints": [
+            "Requires runtime user identity and task_id.",
+            "Current external Memory Server task lookup accepts user_id but is not user-enforced.",
+        ],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads external Memory Server task status and does not submit new media.",
+        },
+    },
     "delegate_to_agent": {
         "when_to_use": [
             "A task must be delegated to another enabled local agent instance.",
@@ -300,6 +348,7 @@ def create_default_registry(
     agent_communication_service: AgentCommunicationService | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
+    memory_media_service = create_memory_media_ingestion_service(config)
     for tool in (
         VisionUnderstandingTool(adapter=create_vision_adapter(config)),
         VideoUnderstandingTool(adapter=create_video_understanding_adapter(config), context_store=video_context_store),
@@ -311,6 +360,8 @@ def create_default_registry(
         MemoryTool(),
         MemoryRetrievalTool(),
         MemorySaveTool(),
+        MemoryMediaIngestTool(memory_media_service),
+        MemoryIngestStatusTool(memory_media_service),
     ):
         registry.register(tool)
     if enable_agent_delegation:

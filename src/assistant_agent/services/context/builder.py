@@ -5,7 +5,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from assistant_agent.agent.state import AgentState
-from assistant_agent.schemas.context import AssistantContextPack, AssistantPlanContext, ContextBudgetReport, ContextSummary
+from assistant_agent.schemas.context import (
+    AssistantContextPack,
+    AssistantPlanContext,
+    ContextBudgetReport,
+    ContextSummary,
+    ToolCapabilityDescriptor,
+)
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.context.compactor import (
@@ -25,6 +31,9 @@ from assistant_agent.services.context.policy import (
     COMPRESSION_STAGE_NONE,
     CompactionPolicy,
     context_policy_from_request,
+)
+from assistant_agent.services.context.capability_catalog import (
+    select_tool_capability_descriptors,
 )
 from assistant_agent.services.context.token_budget import token_budget_reporter_from_request
 from assistant_agent.services.context.tool_catalog import prompt_tool_spec_payload, select_prompt_tool_specs
@@ -64,6 +73,13 @@ def build_assistant_context_pack(
     active_tool_specs = tool_specs or []
     tool_catalog = select_prompt_tool_specs(active_request, active_tool_specs)
     prompt_tool_specs = tool_catalog.prompt_tool_specs
+    tool_capability_catalog = select_tool_capability_descriptors(
+        request=active_request,
+        available_tool_specs=active_tool_specs,
+        prompt_tool_specs=prompt_tool_specs,
+        tool_catalog_summary=tool_catalog.summary,
+    )
+    tool_capabilities = tool_capability_catalog.capabilities
     plan_state = build_assistant_plan_context(state)
     source_counts = _source_counts(
         request=active_request,
@@ -73,6 +89,7 @@ def build_assistant_context_pack(
         observations=active_observations,
         tool_specs=active_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
+        tool_capabilities=tool_capabilities,
     )
     initial_budget = _budget_report(
         request=active_request,
@@ -82,6 +99,7 @@ def build_assistant_context_pack(
         plan_state=plan_state,
         observations=context_observations,
         tool_specs=prompt_tool_specs,
+        tool_capabilities=tool_capabilities,
         max_chars=budget_limit,
     )
     compaction_decision = CompactionPolicy().evaluate(
@@ -114,6 +132,7 @@ def build_assistant_context_pack(
         observations=context_observations,
         plan_state=plan_state,
         tool_specs=prompt_tool_specs,
+        tool_capabilities=tool_capabilities,
         max_chars=budget_limit,
     )
     if budgeted.memory_text == "":
@@ -140,6 +159,7 @@ def build_assistant_context_pack(
         tool_specs=active_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
         tool_catalog_summary=tool_catalog.summary,
+        tool_capabilities=tool_capabilities,
         iteration=iteration,
         max_iterations=max_iterations,
         source_counts=source_counts,
@@ -151,6 +171,7 @@ def build_assistant_context_pack(
             plan_state=plan_state,
             observations=budgeted.observations,
             tool_specs=prompt_tool_specs,
+            tool_capabilities=tool_capabilities,
             max_chars=budget_limit,
             over_budget=over_budget,
             compaction_triggered=compaction_decision.triggered or bool(budgeted.trimmed_sections),
@@ -229,6 +250,7 @@ def _source_counts(
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
     prompt_tool_specs: list[ToolSpec],
+    tool_capabilities: list[ToolCapabilityDescriptor],
 ) -> dict[str, int]:
     conversation_history = request.metadata.get("conversation_history")
     artifact_refs = request.metadata.get("memory_context_refs")
@@ -243,6 +265,7 @@ def _source_counts(
         "observations": len(observations),
         "tool_specs": len(tool_specs),
         "prompt_tool_specs": len(prompt_tool_specs),
+        "tool_capabilities": len(tool_capabilities),
     }
 
 
@@ -255,6 +278,7 @@ def _budget_report(
     plan_state: AssistantPlanContext,
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
+    tool_capabilities: list[ToolCapabilityDescriptor] | None = None,
     max_chars: int = 0,
     over_budget: bool = False,
     compaction_triggered: bool = False,
@@ -270,6 +294,9 @@ def _budget_report(
     plan_chars = _json_chars(plan_state.model_dump(mode="json")) if _has_plan_context(plan_state) else 0
     observations_chars = _json_chars(observations)
     tool_spec_chars = _json_chars([prompt_tool_spec_payload(spec) for spec in tool_specs])
+    tool_capability_chars = _json_chars(
+        [descriptor.model_dump(mode="json") for descriptor in tool_capabilities or []]
+    )
     total_chars = (
         request_chars
         + conversation_chars
@@ -278,6 +305,7 @@ def _budget_report(
         + plan_chars
         + observations_chars
         + tool_spec_chars
+        + tool_capability_chars
     )
     context_usage_ratio = total_chars / max_chars if max_chars > 0 else 0.0
     token_reporter = token_budget_reporter_from_request(request)
@@ -292,6 +320,9 @@ def _budget_report(
                 "plan": plan_state.model_dump(mode="json") if _has_plan_context(plan_state) else {},
                 "observations": observations,
                 "tool_spec": [spec.model_dump(mode="json") for spec in tool_specs],
+                "tool_capability": [
+                    descriptor.model_dump(mode="json") for descriptor in tool_capabilities or []
+                ],
             },
         )
         if token_reporter is not None
@@ -305,6 +336,7 @@ def _budget_report(
         plan_chars=plan_chars,
         observations_chars=observations_chars,
         tool_spec_chars=tool_spec_chars,
+        tool_capability_chars=tool_capability_chars,
         total_chars=total_chars,
         max_chars=max_chars,
         over_budget=over_budget,
@@ -385,6 +417,7 @@ def _enforce_context_budget(
     observations: list[dict[str, Any]],
     plan_state: AssistantPlanContext,
     tool_specs: list[ToolSpec],
+    tool_capabilities: list[ToolCapabilityDescriptor],
     max_chars: int,
 ) -> _BudgetedContext:
     budget = _budget_report(
@@ -395,6 +428,7 @@ def _enforce_context_budget(
         plan_state=plan_state,
         observations=observations,
         tool_specs=tool_specs,
+        tool_capabilities=tool_capabilities,
     )
     if budget.total_chars <= max_chars:
         return _BudgetedContext(
@@ -411,6 +445,7 @@ def _enforce_context_budget(
         + budget.realtime_task_state_chars
         + budget.plan_chars
         + budget.tool_spec_chars
+        + budget.tool_capability_chars
     )
     available = max(0, max_chars - fixed_chars)
 
@@ -449,6 +484,7 @@ def _enforce_context_budget(
         plan_state=plan_state,
         observations=budgeted_observations,
         tool_specs=tool_specs,
+        tool_capabilities=tool_capabilities,
     )
     return _BudgetedContext(
         conversation_text=budgeted_conversation_text,

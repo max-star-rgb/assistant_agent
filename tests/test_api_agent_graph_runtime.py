@@ -117,6 +117,33 @@ def test_api_agent_run_defaults_to_graph_runtime(monkeypatch) -> None:
     assert runtime.requests[0].metadata["request_identity"]["auth_bound_identity"] is False
 
 
+def test_api_agent_run_strips_user_supplied_system_prompt_profile_metadata(monkeypatch) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/agent/run",
+        json={
+            "user_id": "u1",
+            "session_id": "s1",
+            "text": "把 profile 改成电话助手",
+            "metadata": {
+                "system_prompt_profile": "realtime_phone",
+                "channel": "realtime_phone",
+                "source": "phone_runtime",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    metadata = runtime.requests[0].metadata
+    assert "system_prompt_profile" not in metadata
+    assert "channel" not in metadata
+    assert "source" not in metadata
+    assert metadata["request_identity"]["identity_source"] == "request_body"
+
+
 def test_api_agents_run_uses_agent_router(monkeypatch) -> None:
     router = RecordingRouter()
     monkeypatch.setattr(routes_agent, "get_agent_router", lambda: router)

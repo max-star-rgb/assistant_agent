@@ -6,11 +6,17 @@ import unittest
 from threading import Event
 from types import SimpleNamespace
 
+from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.state import AgentState
+from assistant_agent.agent.system_prompt_policy import SystemPromptProfile, render_system_instruction
+from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway import InMemoryDuplex, GatewaySessionService, dumps_frame, frame, loads_frame
 from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentEvent, RealtimeAgentResult
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.services.assistant_run_service import InMemoryConversationStore, run_assistant_request
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.realtime_task_state import InMemoryRealtimeTaskStateStore
 
 
 async def _close_session(client_ep, session_ep, session_task) -> None:
@@ -44,6 +50,23 @@ async def _assert_no_frame(client_ep, *, timeout_s: float = 0.08) -> None:
     except asyncio.TimeoutError:
         return
     raise AssertionError(f"unexpected frame after run end: {received}")
+
+
+class CapturingChatAdapter:
+    provider = "scripted-native"
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        return ChatResult(
+            response_text="电话口径回答。",
+            finish_reason="stop",
+            message_kind="final_answer",
+            provider=self.provider,
+            model="gateway-profile-test",
+        )
 
 
 class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
@@ -88,6 +111,82 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert backend.requests[0].text == "hello realtime"
         assert backend.requests[0].user_id == "smoke-user"
         assert backend.requests[0].metadata["runtime"]["history"] == ["hello realtime"]
+
+    async def test_user_payload_metadata_cannot_select_system_prompt_profile(self) -> None:
+        class RecordingBackend:
+            def __init__(self) -> None:
+                self.requests = []
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.requests.append(request)
+                return RealtimeAgentResult(status="completed", run_id=request.run_id)
+
+        backend = RecordingBackend()
+        session = GatewaySessionService(backend=backend)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="profile-session",
+                    user_id="profile-user",
+                    payload={
+                        "text": "普通用户文本",
+                        "metadata": {
+                            "system_prompt_profile": "final_only",
+                            "channel": "realtime_phone",
+                            "source": "phone_runtime",
+                        },
+                    },
+                )
+            )
+            await _collect_until_run_end(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert len(backend.requests) == 1
+        request = backend.requests[0]
+        assert "system_prompt_profile" not in request.metadata
+        assert request.metadata.get("channel") != "realtime_phone"
+        assert request.metadata.get("source") != "phone_runtime"
+
+    async def test_session_config_can_select_realtime_phone_system_prompt_profile(self) -> None:
+        class RecordingBackend:
+            def __init__(self) -> None:
+                self.requests = []
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.requests.append(request)
+                return RealtimeAgentResult(status="completed", run_id=request.run_id)
+
+        backend = RecordingBackend()
+        session = GatewaySessionService(
+            backend=backend,
+            config={"system_prompt_profile": "realtime_phone", "channel": "realtime_phone"},
+        )
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="phone-profile-session",
+                    user_id="phone-profile-user",
+                    payload={"text": "喂，帮我查一下订单"},
+                )
+            )
+            await _collect_until_run_end(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert len(backend.requests) == 1
+        request = backend.requests[0]
+        assert request.metadata["system_prompt_profile"] == "realtime_phone"
+        assert request.metadata["channel"] == "realtime_phone"
+        assert request.metadata["gateway"]["session_config"]["system_prompt_profile"] == "realtime_phone"
 
     async def test_message_user_streams_progress_via_realtime_backend(self) -> None:
         class ProgressBackend:
@@ -220,6 +319,63 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert request.metadata["realtime"]["turn_id"] == "turn-single"
         assert request.metadata["realtime"]["run_id"] == "gateway-run-single"
         assert captured["cancel_token"] is not None
+
+    async def test_gateway_session_config_reaches_native_chat_request_system_prompt(self) -> None:
+        adapter = CapturingChatAdapter()
+        runtime = AgentGraphRuntime(config=ProviderConfig(), chat_adapter=adapter)
+        conversation_store = InMemoryConversationStore()
+        task_state_store = InMemoryRealtimeTaskStateStore()
+
+        def run_with_runtime(request: UserRequest, **kwargs) -> SimpleNamespace:
+            run_kwargs = dict(kwargs)
+            run_kwargs.pop("load_env", None)
+            run_kwargs.pop("enable_conversation_history", None)
+            return run_assistant_request(
+                request,
+                runtime=runtime,
+                conversation_store=conversation_store,
+                realtime_task_state_store=task_state_store,
+                enable_conversation_history=False,
+                load_env=False,
+                **run_kwargs,
+            )
+
+        session = GatewaySessionService(
+            backend=GatewayAgentAdapter(run_request=run_with_runtime, load_env=False),
+            config={"system_prompt_profile": "realtime_phone", "channel": "realtime_phone"},
+        )
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="phone-native-session",
+                    user_id="phone-native-user",
+                    payload={"text": "喂，帮我查一下订单", "turn_id": "turn-phone"},
+                )
+            )
+            frames = await _collect_until_run_end(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert frames[-1]["reason"] == "completed"
+        assert adapter.requests
+        chat_request = adapter.requests[0]
+        system_message = chat_request.messages[0]
+        assert system_message["role"] == "system"
+        assert system_message["content"] == render_system_instruction(
+            SystemPromptProfile.REALTIME_PHONE
+        )
+        assert "实时电话助手" in system_message["content"]
+        assert "自然口语" in system_message["content"]
+        assert "用户说话或打断时，优先听新输入" in system_message["content"]
+        assert "工具慢时给进度话术" in system_message["content"]
+        assert "Display / spoken boundary" in system_message["content"]
+        assert "电话里只说摘要" in system_message["content"]
+        assert chat_request.tools
+        assert chat_request.tool_choice == "auto"
 
     async def test_gateway_cancel_reaches_gateway_agent_adapter_runtime(self) -> None:
         cancel_seen = Event()

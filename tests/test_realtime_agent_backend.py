@@ -2,14 +2,18 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent_routing import WORKER_AGENT_ID
+from assistant_agent.config import ProviderConfig
+from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.realtime import (
     AgentGraphRealtimeBackend,
     ProgressPolicy,
     RealtimeAgentEvent,
     RealtimeAgentRequest,
 )
+from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.agent_communication import (
     DEFAULT_AGENT_ID,
     AgentInstance,
@@ -19,6 +23,7 @@ from assistant_agent.schemas.agent_communication import (
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.agent_communication import AgentCommunicationService
 from assistant_agent.services.agent_directory import AgentDirectory, default_agent_instance
 from assistant_agent.services.agent_transports import LocalAgentTransport
@@ -192,6 +197,104 @@ def test_agent_graph_realtime_backend_forwards_replaceable_progress_message() ->
     assert progress.payload["agent_event_type"] == "progress_message"
     assert progress.payload["replaceable"] is True
     assert progress.payload["tool_name"] == "image_generation"
+
+
+def test_agent_graph_realtime_backend_streams_read_only_native_tool_path() -> None:
+    class ScriptedNativeToolAdapter:
+        provider = "scripted-native"
+
+        def __init__(self) -> None:
+            self.requests: list[ChatRequest] = []
+
+        def chat(self, request: ChatRequest) -> ChatResult:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return ChatResult(
+                    response_text="",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="call_1",
+                            name="web_search",
+                            arguments={"query": "OpenAI latest news", "limit": 2},
+                            raw={
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "web_search", "arguments": "{}"},
+                            },
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                    message_kind="tool_call",
+                    provider="scripted-native",
+                    model="native-test",
+                )
+            return ChatResult(
+                response_text="Realtime answer from web_search observation.",
+                finish_reason="stop",
+                message_kind="final_answer",
+                provider="scripted-native",
+                model="native-test",
+            )
+
+    adapter = ScriptedNativeToolAdapter()
+    captured: dict[str, AgentState] = {}
+
+    def run_with_scripted_runtime(request: UserRequest, **kwargs) -> SimpleNamespace:
+        runtime = AgentGraphRuntime(
+            config=ProviderConfig(),
+            memory_store=InMemoryStore(),
+            chat_adapter=adapter,
+        )
+        state = runtime.run_state(
+            request,
+            event_sink=kwargs.get("event_sink"),
+            cancel_token=kwargs.get("cancel_token"),
+        )
+        captured["state"] = state
+        return SimpleNamespace(state=state)
+
+    backend = AgentGraphRealtimeBackend(
+        run_request=run_with_scripted_runtime,
+        progress_policy=ProgressPolicy(first_progress_timeout_s=0),
+    )
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(
+                user_id="user-1",
+                session_id="session-1",
+                text="联网搜索 OpenAI 最近发布了什么",
+            ),
+            event_sink=collect,
+        )
+    )
+
+    native_tool_names = [tool["function"]["name"] for tool in adapter.requests[0].tools]
+    assert "web_search" in native_tool_names
+    assert result.status == "completed"
+    assert result.response_text == "Realtime answer from web_search observation."
+    assert [call.tool_name for call in captured["state"].tool_calls] == ["web_search"]
+    assert any(
+        event.type == "run.progress"
+        and event.payload.get("agent_event_type") == "progress_message"
+        and event.payload.get("tool_name") == "web_search"
+        for event in events
+    )
+    assert any(
+        event.type == "tool.started" and event.payload.get("tool_name") == "web_search"
+        for event in events
+    )
+    assert any(
+        event.type == "tool.finished" and event.payload.get("tool_name") == "web_search"
+        for event in events
+    )
+    assert any(event.type == "response.chunk" for event in events)
+    assert events[-1].type == "response.final"
+    assert all(event.payload.get("source") != "realtime_sla_fallback" for event in events)
 
 
 def test_agent_graph_realtime_backend_emits_task_revision_progress_on_interrupt() -> None:

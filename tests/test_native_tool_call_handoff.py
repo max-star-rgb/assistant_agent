@@ -4,10 +4,18 @@ from assistant_agent.agent.runtime import AgentGraphRuntime, progress_message_fo
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.assistant_decision import NativeToolCall
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult, ProviderChatCapabilities
+from assistant_agent.services.memory_media_ingestion import (
+    MemoryMediaIngestionFile,
+    MemoryMediaIngestionResult,
+    MemoryMediaTaskStatusResult,
+)
 from assistant_agent.services.event_sink import ListEventSink
+from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class NativeToolChatAdapter:
@@ -597,6 +605,138 @@ def test_native_memory_save_binds_user_id_from_runtime_not_model_args() -> None:
     saved = store.search(MemoryQuery(user_id="00test", query="黄瓜味薯片")).items
     assert saved
     assert {item.session_id for item in saved} == {"web_session"}
+
+
+def test_native_memory_media_ingest_binds_runtime_identity_and_returns_observation() -> None:
+    class RecordingService:
+        def __init__(self) -> None:
+            self.identity: RequestIdentity | None = None
+            self.files: list[MemoryMediaIngestionFile] = []
+
+        def ingest(
+            self,
+            *,
+            identity: RequestIdentity,
+            files: list[MemoryMediaIngestionFile],
+        ) -> MemoryMediaIngestionResult:
+            self.identity = identity
+            self.files = files
+            return MemoryMediaIngestionResult(
+                status="processing",
+                task_id="task-1",
+                accepted_count=len(files),
+                file_ids=["file-1"],
+                output_ref="memory_server://tasks/task-1",
+            )
+
+    service = RecordingService()
+    registry = ToolRegistry()
+    registry.register(MemoryMediaIngestTool(service))
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "memory_media_ingest",
+                {
+                    "user_id": "model-user",
+                    "session_id": "model-session",
+                    "files": [
+                        {
+                            "file_url": "file:///tmp/breakfast.mp4",
+                            "filename": "breakfast.mp4",
+                            "media_type": "video",
+                            "start_time": "2026-04-11T12:00:00Z",
+                        }
+                    ],
+                },
+            ),
+            final_result("已提交到记忆服务。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(),
+        registry=registry,
+        chat_adapter=adapter,
+        memory_store=InMemoryStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="runtime-user",
+            session_id="runtime-session",
+            text="把这个视频上传到记忆服务，之后可以检索",
+            video_ids=["video-1"],
+        )
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["memory_media_ingest"]
+    assert state.tool_calls[0].input["user_id"] == "runtime-user"
+    assert state.tool_calls[0].input["session_id"] == "runtime-session"
+    assert service.identity == RequestIdentity.for_user(user_id="runtime-user", session_id="runtime-session")
+    assert service.files[0].filename == "breakfast.mp4"
+    tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
+    assert tool_messages
+    assert "memory_media_ingest" in tool_messages[0]["content"]
+    assert state.response is not None
+    assert state.response.message == "已提交到记忆服务。"
+
+
+def test_native_memory_ingest_status_binds_runtime_identity_and_returns_observation() -> None:
+    class RecordingService:
+        def __init__(self) -> None:
+            self.identity: RequestIdentity | None = None
+
+        def task_status(self, *, identity: RequestIdentity, task_id: str) -> MemoryMediaTaskStatusResult:
+            self.identity = identity
+            return MemoryMediaTaskStatusResult(
+                task_id=task_id,
+                status="completed",
+                total_files=1,
+                processed_files=1,
+                failed_files=0,
+                scope_warning="memory_server_task_lookup_user_scope_not_enforced",
+                output_ref=f"memory_server://tasks/{task_id}",
+            )
+
+    service = RecordingService()
+    registry = ToolRegistry()
+    registry.register(MemoryIngestStatusTool(service))
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "memory_ingest_status",
+                {
+                    "user_id": "model-user",
+                    "session_id": "model-session",
+                    "task_id": "task-1",
+                },
+            ),
+            final_result("摄入任务已完成。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(),
+        registry=registry,
+        chat_adapter=adapter,
+        memory_store=InMemoryStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="runtime-user",
+            session_id="runtime-session",
+            text="查询记忆摄入任务 task-1 的状态",
+        )
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["memory_ingest_status"]
+    assert state.tool_calls[0].input["user_id"] == "runtime-user"
+    assert state.tool_calls[0].input["session_id"] == "runtime-session"
+    assert service.identity == RequestIdentity.for_user(user_id="runtime-user", session_id="runtime-session")
+    tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
+    assert tool_messages
+    assert "memory_ingest_status" in tool_messages[0]["content"]
+    assert state.response is not None
+    assert state.response.message == "摄入任务已完成。"
 
 
 def test_native_empty_memory_save_is_rejected_before_execution() -> None:

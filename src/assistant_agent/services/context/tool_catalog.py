@@ -67,6 +67,14 @@ def select_prompt_tool_specs(
         _add(selected_names, "render_3d")
         reasons.append("render_3d_keyword: explicit 3D/render/modeling request")
 
+    if _has_memory_media_ingest_intent(text):
+        _add(selected_names, "memory_media_ingest")
+        _add(selected_names, "memory_ingest_status")
+        reasons.append("memory_media_ingest_keyword: upload/import media into memory request")
+    elif _has_memory_ingest_status_intent(text):
+        _add(selected_names, "memory_ingest_status")
+        reasons.append("memory_ingest_status_keyword: memory ingestion task status request")
+
     memory_intent = _has_memory_intent(text)
     if memory_intent:
         for name in ("memory_retrieval", "memory_save", "memory"):
@@ -308,6 +316,54 @@ def _has_render_intent(text: str) -> bool:
         return True
     return "场景" in text and _contains_any(
         text, ("创建", "生成", "渲染", "建模", "预览", "展示", "放进", "放入", "放到")
+    )
+
+
+def _has_memory_media_ingest_intent(text: str) -> bool:
+    has_memory_target = _contains_any(
+        text,
+        (
+            "记忆",
+            "长期记忆",
+            "记忆服务",
+            "memory",
+            "memory server",
+        ),
+    )
+    has_ingest_action = _contains_any(
+        text,
+        (
+            "上传",
+            "导入",
+            "摄入",
+            "入库",
+            "保存到",
+            "写入",
+            "upload",
+            "ingest",
+            "import",
+        ),
+    )
+    has_media = _contains_any(
+        text,
+        (
+            "视频",
+            "图片",
+            "音频",
+            "媒体",
+            "video",
+            "image",
+            "audio",
+            "media",
+        ),
+    )
+    return has_memory_target and has_ingest_action and has_media
+
+
+def _has_memory_ingest_status_intent(text: str) -> bool:
+    return _contains_any(text, ("摄入状态", "上传状态", "ingest status", "task status")) and _contains_any(
+        text,
+        ("记忆", "memory", "memory server"),
     )
 
 

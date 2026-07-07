@@ -68,6 +68,15 @@ class ActionValidator:
                 "render_3d requires explicit 3D, render, modeling, or scene-preview intent.",
                 metadata=metadata,
             )
+        if tool_name == "memory_media_ingest" and not _has_memory_media_ingest_intent(
+            request.text or "",
+            decision.tool_input,
+        ):
+            return _reject(
+                "memory_media_ingest_intent_required",
+                "memory_media_ingest requires explicit media ingestion into memory intent.",
+                metadata=metadata,
+            )
 
         try:
             registry.get(tool_name).input_schema.model_validate(decision.tool_input)
@@ -124,6 +133,8 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
         source_error = _validate_memory_save_source(tool_input)
         if source_error is not None:
             return source_error
+    if tool_name == "memory_ingest_status" and not _non_empty_string(tool_input.get("task_id")):
+        return _reject("invalid_tool_input", "memory_ingest_status requires task_id.")
     if tool_name == "delegate_to_agent":
         if not tool_input.get("target_agent_id"):
             return _reject("invalid_tool_input", "delegate_to_agent requires target_agent_id.")
@@ -192,6 +203,23 @@ def _has_explicit_render_intent(text: str, tool_input: dict[str, Any]) -> bool:
     ):
         return True
     return False
+
+
+def _has_memory_media_ingest_intent(text: str, tool_input: dict[str, Any]) -> bool:
+    combined = " ".join(str(value) for value in [text, *tool_input.values()] if value)
+    lowered = combined.lower()
+    has_memory_target = any(
+        keyword in combined
+        for keyword in ("记忆", "长期记忆", "记忆服务", "Memory Server", "memory server")
+    ) or "memory" in lowered
+    has_ingest_action = any(
+        keyword in combined
+        for keyword in ("上传", "导入", "摄入", "入库", "保存到", "写入")
+    ) or any(keyword in lowered for keyword in ("upload", "ingest", "import"))
+    has_media = any(keyword in combined for keyword in ("视频", "图片", "音频", "媒体")) or any(
+        keyword in lowered for keyword in ("video", "image", "audio", "media")
+    )
+    return has_memory_target and has_ingest_action and has_media
 
 
 def _reject(code: str, message: str, *, metadata: dict[str, Any] | None = None) -> ActionValidationResult:

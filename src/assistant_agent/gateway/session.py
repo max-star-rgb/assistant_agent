@@ -478,7 +478,7 @@ class GatewaySessionService:
         payload: dict[str, Any],
         runtime_interrupt: bool = False,
     ) -> RealtimeAgentRequest:
-        metadata = dict(payload.get("metadata") or {})
+        metadata = _user_message_metadata(payload)
         if runtime_interrupt:
             metadata.setdefault("control", "interrupt")
         gateway_metadata = metadata.get("gateway")
@@ -488,6 +488,7 @@ class GatewaySessionService:
             gateway_payload.setdefault("interrupt", True)
         gateway_payload["history"] = list(history)
         gateway_payload["session_config"] = dict(self._config)
+        _apply_trusted_system_prompt_config(metadata, self._config)
         metadata["gateway"] = gateway_payload
         metadata["runtime"] = gateway_payload
 
@@ -844,6 +845,34 @@ def _run_timeout_ms(payload: Mapping[str, Any], session_config: Mapping[str, Any
     if isinstance(gateway_metadata, Mapping) and "run_timeout_ms" in gateway_metadata:
         return _positive_int(gateway_metadata.get("run_timeout_ms"))
     return _positive_int(session_config.get("run_timeout_ms"))
+
+
+def _user_message_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = dict(payload.get("metadata") or {})
+    trusted_source = _trusted_entry_source(metadata)
+    for key in ("system_prompt_profile", "channel", "source"):
+        metadata.pop(key, None)
+    if trusted_source is not None:
+        metadata["source"] = trusted_source
+    return metadata
+
+
+def _trusted_entry_source(metadata: Mapping[str, Any]) -> str | None:
+    source = _optional_string(metadata.get("source"))
+    if source not in {"gateway_websocket", "realtime_media_websocket"}:
+        return None
+    if metadata.get("transport") != "websocket":
+        return None
+    return source if isinstance(metadata.get("request_identity"), Mapping) else None
+
+
+def _apply_trusted_system_prompt_config(metadata: dict[str, Any], session_config: Mapping[str, Any]) -> None:
+    profile = _optional_string(session_config.get("system_prompt_profile"))
+    if profile in {"text_default", "realtime_phone"}:
+        metadata["system_prompt_profile"] = profile
+    channel = _optional_string(session_config.get("channel"))
+    if channel in {"text", "phone", "realtime_phone"}:
+        metadata["channel"] = channel
 
 
 def _positive_int(value: Any) -> int | None:

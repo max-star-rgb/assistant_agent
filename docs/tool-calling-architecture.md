@@ -153,8 +153,10 @@ Runtime gate 映射：
 
 - `vision_understanding`、`video_understanding`、`web_search`、`product_search`、`price_compare`: `external_read`。
 - `memory_retrieval`: `local_read`。
+- `memory_ingest_status`: `external_read`。
 - `image_generation`、`render_3d`: `compensatable`。
 - `memory`、`memory_save`: `pending_confirmation`，成功提交后从 realtime interrupt 视角记为 `committed`。
+- `memory_media_ingest`: `committed` / confirmation-sensitive because it submits media to an external Memory Server task that may create durable remote memories. It is only selected for explicit media-ingestion-into-memory requests and returns `provider_unconfigured` unless remote memory is explicitly configured.
 - `delegate_to_agent`: `compensatable`，因为子任务可能已经开始，需要取消、覆盖或补发修正。
 
 ## Web Search 工具
@@ -293,6 +295,13 @@ Memory 工具选择采用 LLM-first：
 - `ToolExecutor` 和 `MemoryTool` 都会用运行时 `ToolContext` 绑定身份，模型传入的 user/session 不作为记忆归属。
 
 记忆服务内部检索、写入策略、确认、TTL、审计和 store 选择以 `docs/memory-service-architecture.md` 为准。
+
+Memory Server media ingestion uses separate tools:
+
+- `memory_media_ingest` submits safe media file references to the configured external Memory Server ingestion API. It is not `memory_save`, does not accept raw media/base64 payloads, and must bind user/session identity from `ToolContext`.
+- `memory_ingest_status` reads an ingestion task status and surfaces the external service's current weak user-scope warning.
+- `ActionValidator` only accepts `memory_media_ingest` when the user request explicitly asks to upload/import media into memory; ordinary image/video analysis should use `vision_understanding` or `video_understanding`.
+- Default local/mock runs register these tools but keep them unconfigured unless `hybrid_remote` plus a Memory Server URL is explicitly enabled.
 
 ## MCP 和外部入口
 

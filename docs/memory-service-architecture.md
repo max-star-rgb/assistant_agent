@@ -106,6 +106,8 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/assistant_agent/memory/profile.py` | Compact `user_profile` memory derived from explicit preference/product/task memories. |
 | `src/assistant_agent/schemas/identity.py` | `RequestIdentity` contract for request/auth-derived user, tenant, project, session, and allowed memory scopes. |
 | `src/assistant_agent/tools/memory_tool.py` | Agent-callable `memory`, `memory_retrieval`, and `memory_save` tools. Uses `MemoryManager` from tool context when present. |
+| `src/assistant_agent/services/memory_media_ingestion.py` | Governed service boundary for Memory Server media ingestion. Binds trusted `RequestIdentity`, generates globally unique upload `file_id` values, calls `RemoteMemoryClient.upload_media(...)` / `task_status(...)`, and returns structured prompt-safe results. |
+| `src/assistant_agent/tools/memory_media_tool.py` | Agent-callable `memory_media_ingest` and `memory_ingest_status` tool adapters. They bind runtime identity from `ToolContext`, call `MemoryMediaIngestionService`, and wrap structured `ToolResult` / capability contracts. They do not implement `memory_save`. |
 | `src/assistant_agent/services/memory_audit.py` | User-scoped list/get/export/retention-sweep/delete/audit/event/metrics/confirmation service over `MemoryManager`. |
 | `src/assistant_agent/services/memory_snapshot.py` | Read-only snapshot combining memory context, session records, conversation history, audit, and storage boundary info. |
 | `src/assistant_agent/schemas/memory.py` | Public memory contracts and payload safety validation. |
@@ -229,10 +231,14 @@ raw provider payloads, and unsafe metadata must not enter memory content or
 trace summaries. `RemoteMemoryClient.upload_media(...)` and
 `RemoteMemoryClient.task_status(...)` are low-level adapter methods only.
 `/v1/media/upload` is not an implementation of `memory_save`; media ingestion
-must be exposed through a separate governed tool or service path before an
-agent can call it. Upload metadata is rejected when it contains raw/base64 or
-secret-like keys, and task status results carry a scope warning because the
-external service's current task lookup is not user-enforced.
+is exposed through the separate `MemoryMediaIngestionService` plus
+`memory_media_ingest` / `memory_ingest_status` tools. Upload metadata is
+rejected when it contains raw/base64 or secret-like keys, generated `file_id`
+values are created inside `assistant_agent`, and task status results carry a
+scope warning because the external service's current task lookup is not
+user-enforced. Default mock/local/offline configuration registers the tools but
+returns `provider_unconfigured` until `hybrid_remote` and a Memory Server base
+URL are explicitly configured.
 
 Standard `MemoryStore` backends implement the confirmation workflow methods: `save_confirmation(...)`, `get_confirmation(...)`, `list_confirmations(...)`, and `delete_confirmation(...)`. InMemory keeps confirmation state in process memory. JSONL stores redacted pending/resolved confirmations in a sidecar file next to the memory JSONL file, for example `long_term_memories.confirmations.jsonl`. SQLite stores them in schema v3 `memory_confirmations`.
 

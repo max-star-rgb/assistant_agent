@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from assistant_agent.agent.system_prompt_policy import SystemPromptProfile, render_system_instruction
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatRequest
@@ -10,7 +11,7 @@ from assistant_agent.services.prompt_builder import (
     MAX_CONTEXT_CHARS,
     MAX_PROMPT_CHARS,
     build_image_prompt_text,
-    build_text_capability_output,
+    build_text_capability_output,  # noqa: F401 - re-exported for existing agent nodes.
     clip_list,
     clip_text,
 )
@@ -33,7 +34,7 @@ def build_direct_chat_request(
         session_id=request.session_id,
         user_query=clip_text(request.text or "", max_prompt_chars),
         memory_context=clip_list(contexts, MAX_CONTEXT_CHARS),
-        system_instruction=system_instruction or "You are a helpful text-first assistant.",
+        system_instruction=system_instruction or render_system_instruction(SystemPromptProfile.FINAL_ONLY),
     )
 
 

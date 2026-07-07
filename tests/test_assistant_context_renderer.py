@@ -869,6 +869,27 @@ def test_prompt_json_default_registry_exposes_memory_tools_for_llm_first_choice(
     assert "llm_first_memory_tools: memory tools exposed for semantic LLM choice" in pack.tool_catalog_summary.selection_reasons
 
 
+def test_native_context_renders_skill_style_capability_catalog_without_full_tool_specs() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    state = AgentState.from_request(request)
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=create_default_registry().list_specs(),
+        iteration=0,
+        max_iterations=5,
+    )
+
+    message = render_native_tool_context(pack).native_user_message or ""
+
+    assert [item.name for item in pack.tool_capabilities] == ["realtime_web_search"]
+    assert "能力目录（skill-style，仅描述能力；执行必须通过 ToolExecutor）" in message
+    assert '"name": "realtime_web_search"' in message
+    assert '"governed_tools": [' in message
+    assert '"web_search"' in message
+    assert "可用工具 ToolSpec 列表" not in message
+
+
 def test_final_only_prompt_forbids_more_tool_calls() -> None:
     request = UserRequest(user_id="u1", session_id="s1", text="总结已有结果")
     state = AgentState.from_request(request)
