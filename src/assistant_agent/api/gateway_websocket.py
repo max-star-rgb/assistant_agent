@@ -30,6 +30,7 @@ from assistant_agent.services.api_identity import (
     enforce_identity_policy,
     resolve_request_identity,
 )
+from assistant_agent.services.provider_errors import sanitize_error_detail
 
 router = APIRouter()
 
@@ -71,6 +72,8 @@ MEDIA_CONFIG_INT_KEYS = frozenset(
     {"run_timeout_ms", "idle_timeout_ms", "response_timeout_ms", "timeout_ms"}
 )
 MEDIA_CONFIG_DICT_KEYS = frozenset({"media", "relay", "stt", "tts"})
+MEDIA_EDGE_STT_KEYS = ("provider", "language", "confidence", "model", "transcript_id", "latency_ms")
+MEDIA_EDGE_TTS_KEYS = ("provider", "voice", "format", "sample_rate_hz", "latency_ms")
 
 
 class MediaEventProtocolError(WsProtocolError):
@@ -480,11 +483,14 @@ def _media_transcript_final_frame(
         media_payload["audio_id"] = audio_id
 
     media_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    metadata = dict(media_metadata)
+    metadata = _prompt_safe_media_metadata(media_metadata)
     interrupt_requested = _media_interrupt_requested(event, payload, metadata)
     technical = _media_technical_config(event, payload)
     if technical:
         metadata["media"] = technical
+    media_edge = _media_edge_metadata(event, payload, audio_id=audio_id)
+    if media_edge:
+        metadata["media_edge"] = media_edge
     if metadata:
         media_payload["metadata"] = metadata
     if interrupt_requested:
@@ -609,7 +615,9 @@ def _normalize_media_config(raw_config: dict[str, Any]) -> dict[str, Any]:
                     f"media config field {key} must be an object",
                     detail={"field": key},
                 )
-            config[key] = dict(raw_value)
+            safe_config = _safe_media_config_dict(key, raw_value)
+            if safe_config:
+                config[key] = safe_config
         else:
             raise MediaEventProtocolError(
                 "invalid_media_event",
@@ -655,7 +663,9 @@ def _media_technical_config(event: dict[str, Any], payload: dict[str, Any]) -> d
     for source in (event, payload):
         raw_media = source.get("media")
         if isinstance(raw_media, dict):
-            media.update(raw_media)
+            sanitized = sanitize_error_detail(raw_media)
+            if isinstance(sanitized, dict):
+                media.update(sanitized)
     for key in (
         "codec",
         "sample_rate_hz",
@@ -668,6 +678,99 @@ def _media_technical_config(event: dict[str, Any], payload: dict[str, Any]) -> d
         if value is not None:
             media[key] = value
     return media
+
+
+def _prompt_safe_media_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    sanitized = sanitize_error_detail(metadata)
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _safe_media_config_dict(key: str, raw_value: dict[str, Any]) -> dict[str, Any]:
+    if key == "stt":
+        return _safe_media_edge_component(raw_value, allowed_keys=MEDIA_EDGE_STT_KEYS)
+    if key == "tts":
+        return _safe_media_edge_component(raw_value, allowed_keys=MEDIA_EDGE_TTS_KEYS)
+    sanitized = sanitize_error_detail(raw_value)
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _media_edge_metadata(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    audio_id: str | None,
+) -> dict[str, Any]:
+    stt = _merged_safe_media_component(event, payload, key="stt", allowed_keys=MEDIA_EDGE_STT_KEYS)
+    tts = _merged_safe_media_component(event, payload, key="tts", allowed_keys=MEDIA_EDGE_TTS_KEYS)
+    transcript_id = _transcript_id_from_media_event(event, payload, stt=stt)
+
+    edge: dict[str, Any] = {}
+    if audio_id:
+        edge["audio_id"] = audio_id
+    if audio_id or transcript_id or stt:
+        transcript: dict[str, Any] = {"final": True, "source": "stt"}
+        if transcript_id:
+            transcript["id"] = transcript_id
+        edge["transcript"] = transcript
+    if stt:
+        edge["stt"] = stt
+    if tts:
+        edge["tts"] = tts
+    return edge
+
+
+def _merged_safe_media_component(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    key: str,
+    allowed_keys: tuple[str, ...],
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for source in (event, payload):
+        value = source.get(key)
+        if isinstance(value, dict):
+            merged.update(_safe_media_edge_component(value, allowed_keys=allowed_keys))
+    return merged
+
+
+def _safe_media_edge_component(
+    value: dict[str, Any],
+    *,
+    allowed_keys: tuple[str, ...],
+) -> dict[str, Any]:
+    sanitized = sanitize_error_detail(value)
+    if not isinstance(sanitized, dict):
+        return {}
+    safe: dict[str, Any] = {}
+    for key in allowed_keys:
+        child = sanitized.get(key)
+        if _is_prompt_safe_media_scalar(child):
+            safe[key] = child
+    return safe
+
+
+def _transcript_id_from_media_event(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    stt: dict[str, Any],
+) -> str | None:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    return _optional_string(
+        event.get("transcript_id")
+        or payload.get("transcript_id")
+        or metadata.get("transcript_id")
+        or stt.get("transcript_id")
+    )
+
+
+def _is_prompt_safe_media_scalar(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return isinstance(value, bool | int | float)
 
 
 def _ids_from_event(

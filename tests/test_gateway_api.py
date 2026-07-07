@@ -180,6 +180,85 @@ def test_realtime_media_websocket_maps_text_and_video_to_gateway_message() -> No
     assert backend.requests[0].metadata["gateway"]["session_config"] == {"locale": "zh-CN"}
 
 
+def test_realtime_media_websocket_sanitizes_audio_edge_metadata() -> None:
+    backend = RecordingRealtimeBackend()
+    _install_gateway_backend(backend)
+    try:
+        client = TestClient(create_app())
+
+        with client.websocket_connect("/ws/realtime/media?user_id=media-user&session_id=media-session") as websocket:
+            websocket.send_json(
+                {
+                    "type": "session.start",
+                    "payload": {
+                        "config": {
+                            "locale": "zh-CN",
+                            "stt": {
+                                "provider": "mock_stt",
+                                "language": "zh-CN",
+                                "api_key": "sk-secret",
+                            },
+                            "tts": {
+                                "voice": "calm",
+                                "raw_audio": "data:audio/wav;base64," + ("C" * 120),
+                            },
+                        }
+                    },
+                }
+            )
+            ready = websocket.receive_json()
+
+            websocket.send_json(
+                {
+                    "type": "transcript.final",
+                    "payload": {
+                        "text": "帮我查一下今天的 AI 新闻",
+                        "audio_id": "audio-1",
+                        "metadata": {
+                            "transcript_id": "transcript-1",
+                            "raw_audio": "data:audio/wav;base64," + ("A" * 120),
+                            "raw_provider_response": {"token": "sk-secret"},
+                        },
+                        "stt": {
+                            "provider": "mock_stt",
+                            "language": "zh-CN",
+                            "confidence": 0.91,
+                            "raw_result": {"token": "sk-secret"},
+                        },
+                        "tts": {
+                            "voice": "calm",
+                            "raw_audio": "data:audio/wav;base64," + ("B" * 120),
+                        },
+                    },
+                }
+            )
+            frames = _receive_until(websocket, "run.end")
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+    assert ready["type"] == "call.ready"
+    assert frames[-1]["reason"] == "completed"
+    request = backend.requests[0]
+    assert request.audio_id == "audio-1"
+    assert request.metadata["gateway"]["session_config"]["stt"] == {
+        "provider": "mock_stt",
+        "language": "zh-CN",
+    }
+    assert request.metadata["gateway"]["session_config"]["tts"] == {"voice": "calm"}
+    assert request.metadata["media_edge"] == {
+        "audio_id": "audio-1",
+        "transcript": {"id": "transcript-1", "final": True, "source": "stt"},
+        "stt": {"provider": "mock_stt", "language": "zh-CN", "confidence": 0.91},
+        "tts": {"voice": "calm"},
+    }
+    dumped = str(request.metadata)
+    assert "raw_audio" not in dumped
+    assert "raw_provider_response" not in dumped
+    assert "raw_result" not in dumped
+    assert "sk-secret" not in dumped
+    assert "base64" not in dumped
+
+
 def test_realtime_media_websocket_validates_media_event_schema() -> None:
     backend = RecordingRealtimeBackend()
     _install_gateway_backend(backend)

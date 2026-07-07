@@ -10,6 +10,9 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -49,9 +52,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="View a redacted assistant run or trace timeline.")
     parser.add_argument("identifier", help="Run id or trace id to inspect.")
     parser.add_argument(
+        "--server",
+        help=(
+            "Assistant server base URL, for example http://127.0.0.1:8000. "
+            "When set, query the running server instead of the local JSONL trace file."
+        ),
+    )
+    parser.add_argument(
         "--trace-path",
         default=DEFAULT_TRACE_PATH,
-        help=f"JSONL trace store path. Defaults to {DEFAULT_TRACE_PATH}.",
+        help=f"Local JSONL trace store path. Ignored when --server is set. Defaults to {DEFAULT_TRACE_PATH}.",
     )
     parser.add_argument("--errors", action="store_true", help="Show error events before the full timeline.")
     parser.add_argument("--json", dest="json_output", action="store_true", help="Print a JSON summary.")
@@ -60,6 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.server:
+        payload = _fetch_server_trace(args.server, args.identifier)
+        if payload is None:
+            print(f"trace/run not found on server: {args.identifier}", file=sys.stderr)
+            return 1
+        payload = _server_summary_payload(payload)
+        if args.json_output:
+            print(json.dumps(_json_ready(payload), ensure_ascii=False, indent=2))
+            return 0
+        print(_format_human(payload, show_errors=args.errors))
+        return 0
+
     store = JsonlTraceStore(args.trace_path)
     events = _find_events(store, args.identifier)
     if not events:
@@ -80,6 +102,60 @@ def _find_events(store: JsonlTraceStore, identifier: str) -> list[TraceEvent]:
     if by_run:
         return by_run
     return store.list_by_trace(identifier)
+
+
+def _fetch_server_trace(server: str, identifier: str) -> dict[str, Any] | None:
+    trace_payload = _get_server_json(server, f"/traces/{quote(identifier, safe='')}")
+    if trace_payload is not None:
+        return trace_payload
+
+    run_payload = _get_server_json(server, f"/runs/{quote(identifier, safe='')}")
+    if run_payload is None:
+        return None
+    trace_id = run_payload.get("trace_id")
+    if isinstance(trace_id, str) and trace_id:
+        trace_payload = _get_server_json(server, f"/traces/{quote(trace_id, safe='')}")
+        if trace_payload is not None:
+            return trace_payload
+    return run_payload
+
+
+def _get_server_json(server: str, path: str) -> dict[str, Any] | None:
+    url = f"{server.rstrip('/')}{path}"
+    request = Request(url, headers={"Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8")
+    except HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise SystemExit(f"server request failed: HTTP {exc.code} {url}") from exc
+    except URLError as exc:
+        raise SystemExit(f"server request failed: {exc.reason}") from exc
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"server returned invalid JSON: {url}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"server returned non-object JSON: {url}")
+    return payload
+
+
+def _server_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    summary = dict(payload)
+    events = summary.get("events")
+    if not isinstance(events, list):
+        events = []
+        summary["events"] = events
+    error_count = summary.get("error_count")
+    if not isinstance(error_count, int):
+        error_count = len(_error_events(events))
+        summary["error_count"] = error_count
+    if not isinstance(summary.get("event_count"), int):
+        summary["event_count"] = len(events)
+    if not isinstance(summary.get("status"), str):
+        summary["status"] = _infer_status(events, error_count)
+    return summary
 
 
 def _summary_payload(events: list[TraceEvent]) -> dict[str, Any]:
