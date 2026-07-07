@@ -97,6 +97,9 @@ public names, but they should map to this vocabulary.
 The existing mock/offline LangGraph node path remains useful, but node names are
 not the canonical event vocabulary. Native provider runtime must produce the
 same high-level timeline even when it does not enter LangGraph node wrappers.
+`ToolExecutor` is the canonical owner for `tool.started`, `tool.finished`, and
+`tool.failed`; runtime layers may still emit `tool.observation` after converting
+the result into assistant-facing data.
 
 ## Span Model
 
@@ -206,7 +209,9 @@ The local metrics command currently exposes this first layer:
 It reads the redacted JSONL trace store, supports optional `--user-id` and
 `--session-id` filters, and prints either a paste-friendly text summary or a
 machine-readable `--json` summary. API/debug endpoint exposure should be added
-only after the local metrics shape is stable.
+only after the local metrics shape is stable. Tool metrics prefer terminal
+`tool.finished` / `tool.failed` lifecycle events and only count
+`tool.observation` for older traces that lack terminal tool events.
 
 ## Redaction Rules
 

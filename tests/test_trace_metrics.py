@@ -48,6 +48,52 @@ def test_build_trace_metrics_summarizes_runs_tools_llm_context_gateway_and_memor
     assert metrics["memory"]["rejected_count"] == 1
 
 
+def test_trace_metrics_prefers_terminal_tool_events_over_observation_duplicates() -> None:
+    base = {
+        "trace_id": "trace_1",
+        "run_id": "run_1",
+        "user_id": "u1",
+        "session_id": "s1",
+        "tool_name": "product_search",
+        "attributes": {"tool_call_id": "call_1", "retry_count": 1},
+    }
+    events = [
+        TraceEvent(
+            **base,
+            node_name="tool_executor",
+            event_type="observability",
+            canonical_event="tool.started",
+            status="started",
+        ),
+        TraceEvent(
+            **base,
+            node_name="tool_executor",
+            event_type="observability",
+            canonical_event="tool.failed",
+            status="failed",
+            latency_ms=90,
+            error={"code": "provider_timeout", "message": "Provider timed out"},
+        ),
+        TraceEvent(
+            **base,
+            node_name="native_runtime",
+            event_type="tool_observation",
+            canonical_event="tool.observation",
+            status="failed",
+            latency_ms=90,
+            error={"code": "provider_timeout", "message": "Provider timed out"},
+        ),
+    ]
+
+    metrics = build_trace_metrics(events)
+
+    assert metrics["tools"]["total_calls"] == 1
+    assert metrics["tools"]["by_tool"]["product_search"]["call_count"] == 1
+    assert metrics["tools"]["by_tool"]["product_search"]["failure_count"] == 1
+    assert metrics["tools"]["by_tool"]["product_search"]["retry_count"] == 1
+    assert metrics["tools"]["by_tool"]["product_search"]["latency_ms"]["avg"] == 90.0
+
+
 def test_trace_metrics_loads_and_filters_jsonl_events(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)

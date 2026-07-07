@@ -16,13 +16,8 @@ TERMINAL_RUN_EVENTS = {
     "run.failed": "failed",
     "run.cancelled": "cancelled",
 }
-TOOL_CALL_EVENTS = {"tool.finished", "tool.failed", "tool.observation"}
-TOOL_NON_CALL_EVENTS = {
-    "react.decision",
-    "action.validation.started",
-    "action.validation.finished",
-    "tool.started",
-}
+TERMINAL_TOOL_EVENTS = {"tool.finished", "tool.failed"}
+OBSERVATION_TOOL_EVENTS = {"tool.observation"}
 
 
 def load_trace_events(path: Path | str) -> list[TraceEvent]:
@@ -117,8 +112,8 @@ def _error_metrics(events: list[TraceEvent]) -> dict[str, Any]:
 
 def _tool_metrics(events: list[TraceEvent]) -> dict[str, Any]:
     tool_data: dict[str, dict[str, Any]] = defaultdict(_empty_tool_data)
-    for event in events:
-        if not event.tool_name or not _is_tool_call_event(event):
+    for event in _tool_metric_events(events):
+        if not event.tool_name:
             continue
         data = tool_data[event.tool_name]
         data["call_count"] += 1
@@ -151,6 +146,41 @@ def _tool_metrics(events: list[TraceEvent]) -> dict[str, Any]:
     }
 
 
+def _tool_metric_events(events: list[TraceEvent]) -> list[TraceEvent]:
+    """Return one countable tool event per tool call.
+
+    Terminal lifecycle events are preferred. Observation-only events remain
+    countable for old traces that predate canonical tool terminal events.
+    """
+
+    terminal_events: list[TraceEvent] = []
+    observation_events: list[TraceEvent] = []
+    terminal_call_keys: set[tuple[str, str]] = set()
+    terminal_run_tools: set[tuple[str, str]] = set()
+
+    for event in events:
+        if not event.tool_name:
+            continue
+        if _is_terminal_tool_event(event):
+            terminal_events.append(event)
+            call_id = _tool_call_id(event)
+            if call_id:
+                terminal_call_keys.add((event.run_id, call_id))
+            terminal_run_tools.add((event.run_id, event.tool_name))
+        elif _is_observation_tool_event(event):
+            observation_events.append(event)
+
+    selected = list(terminal_events)
+    for event in observation_events:
+        call_id = _tool_call_id(event)
+        if call_id and (event.run_id, call_id) in terminal_call_keys:
+            continue
+        if (event.run_id, event.tool_name or "") in terminal_run_tools:
+            continue
+        selected.append(event)
+    return selected
+
+
 def _empty_tool_data() -> dict[str, Any]:
     return {
         "call_count": 0,
@@ -162,13 +192,22 @@ def _empty_tool_data() -> dict[str, Any]:
     }
 
 
-def _is_tool_call_event(event: TraceEvent) -> bool:
-    canonical = event.canonical_event
-    if canonical in TOOL_NON_CALL_EVENTS:
-        return False
-    if canonical in TOOL_CALL_EVENTS:
-        return True
-    return event.event_type in {"tool_failed", "tool_observation"}
+def _is_terminal_tool_event(event: TraceEvent) -> bool:
+    return event.canonical_event in TERMINAL_TOOL_EVENTS or event.event_type == "tool_failed"
+
+
+def _is_observation_tool_event(event: TraceEvent) -> bool:
+    return event.canonical_event in OBSERVATION_TOOL_EVENTS or event.event_type == "tool_observation"
+
+
+def _tool_call_id(event: TraceEvent) -> str | None:
+    for mapping in (event.attributes, event.output_summary, event.input_summary, event.error or {}):
+        if isinstance(mapping, dict):
+            for key in ("tool_call_id", "call_id"):
+                value = mapping.get(key)
+                if isinstance(value, str) and value:
+                    return value
+    return None
 
 
 def _llm_metrics(events: list[TraceEvent]) -> dict[str, Any]:

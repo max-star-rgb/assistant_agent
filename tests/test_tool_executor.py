@@ -6,6 +6,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.trace_store import InMemoryTraceStore, trace_debug_summary
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -48,6 +49,75 @@ def test_tool_executor_updates_state_for_successful_tool_call() -> None:
     assert state.tool_calls[0].tool_name == "echo"
     assert state.tool_calls[0].status == "succeeded"
     assert state.tool_results[0].data == {"text": "hello"}
+
+
+def test_tool_executor_emits_canonical_tool_lifecycle_trace_for_success() -> None:
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    trace_store = InMemoryTraceStore()
+    state = AgentState.from_request(UserRequest(user_id="u1", session_id="s1", text="hello"))
+
+    result = ToolExecutor(registry=registry).run_tool(
+        state,
+        "step_1",
+        "echo",
+        {"text": "hello"},
+        trace_store=trace_store,
+        trace_id=state.trace_id,
+        node_name="execute_tool",
+    )
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    started = next(event for event in events if event["canonical_event"] == "tool.started")
+    finished = next(event for event in events if event["canonical_event"] == "tool.finished")
+
+    assert result.success is True
+    assert started["tool_name"] == "echo"
+    assert started["status"] == "started"
+    assert started["attributes"]["tool_call_id"] == state.tool_calls[0].call_id
+    assert started["attributes"]["step_id"] == "step_1"
+    assert started["attributes"]["risk_gate"] == "hard_gate"
+    assert finished["tool_name"] == "echo"
+    assert finished["status"] == "succeeded"
+    assert finished["attributes"]["tool_call_id"] == state.tool_calls[0].call_id
+    assert finished["attributes"]["retry_count"] == 0
+    assert "hello" not in str(events)
+
+
+def test_tool_executor_emits_canonical_tool_lifecycle_trace_for_failure() -> None:
+    class FailingTool(EchoTool):
+        name = "failing_echo"
+
+        def _run(self, input: EchoInput, context: ToolContext) -> ToolResult:
+            return ToolResult(tool_name=self.name, success=False, error="provider_timeout: timed out")
+
+    registry = ToolRegistry()
+    registry.register(FailingTool())
+    trace_store = InMemoryTraceStore()
+    state = AgentState.from_request(UserRequest(user_id="u1", session_id="s1", text="hello"))
+
+    result = ToolExecutor(registry=registry).run_tool(
+        state,
+        "step_1",
+        "failing_echo",
+        {"text": "hello"},
+        trace_store=trace_store,
+        trace_id=state.trace_id,
+        node_name="execute_tool",
+    )
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    canonical = [event["canonical_event"] for event in events]
+    failed = next(event for event in events if event["canonical_event"] == "tool.failed")
+
+    assert result.success is False
+    assert canonical == ["tool.started", "tool.failed"]
+    assert failed["tool_name"] == "failing_echo"
+    assert failed["status"] == "failed"
+    assert failed["error_code"] == "provider_timeout"
+    assert failed["attributes"]["tool_call_id"] == state.tool_calls[0].call_id
+    assert failed["attributes"]["retry_count"] == 1
+    assert "timed out" in failed["error_message"]
 
 
 def test_tool_executor_pre_cancel_skips_tool_execution() -> None:

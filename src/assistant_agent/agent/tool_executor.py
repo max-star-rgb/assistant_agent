@@ -103,6 +103,23 @@ class ToolExecutor:
         capability = _capability_name(tool_name, step)
         budget = state.provider_budget
         started_at = perf_counter()
+        tool_span_id = f"span_{call.call_id}"
+        _append_tool_trace_event(
+            trace_store,
+            trace_id=trace_id,
+            state=state,
+            node_name=node_name or "tool_executor",
+            canonical_event="tool.started",
+            status="started",
+            capability=capability,
+            tool_name=tool_name,
+            call_id=call.call_id,
+            step_id=step_id,
+            span_id=tool_span_id,
+            risk_gate=risk_decision.risk_summary(),
+            idempotency=risk_decision.idempotency_summary(),
+            input_summary=_input_summary(tool_input),
+        )
         self._emit(
             AgentEvent(
                 type="tool_started",
@@ -180,6 +197,27 @@ class ToolExecutor:
                     user_id=state.user_id,
                     session_id=state.session_id,
                 )
+            _append_tool_trace_event(
+                trace_store,
+                trace_id=trace_id,
+                state=state,
+                node_name=node_name or "tool_executor",
+                canonical_event="tool.finished",
+                status=str(post_tool_call.get("status") or "succeeded"),
+                capability=capability,
+                tool_name=tool_name,
+                call_id=call.call_id,
+                step_id=step_id,
+                span_id=tool_span_id,
+                latency_ms=latency_ms,
+                retry_count=0,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(duplicate_suppressed=True),
+                input_summary=_input_summary(tool_input),
+                output_summary=_output_summary(result),
+                provider=_provider_name(result.data or {}),
+                model=_model_name(result.data or {}),
+            )
             return result
 
         if not risk_decision.allow_execute:
@@ -228,6 +266,27 @@ class ToolExecutor:
                     user_id=state.user_id,
                     session_id=state.session_id,
                 )
+            _append_tool_trace_event(
+                trace_store,
+                trace_id=trace_id,
+                state=state,
+                node_name=node_name or "tool_executor",
+                canonical_event="tool.finished",
+                status=str(post_tool_call.get("status") or "pending_confirmation"),
+                capability=capability,
+                tool_name=tool_name,
+                call_id=call.call_id,
+                step_id=step_id,
+                span_id=tool_span_id,
+                latency_ms=latency_ms,
+                retry_count=0,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(),
+                input_summary=_input_summary(tool_input),
+                output_summary=_output_summary(result),
+                provider=_provider_name(result.data or {}),
+                model=_model_name(result.data or {}),
+            )
             return result
 
         budget_error = budget.check_before_call(
@@ -314,31 +373,29 @@ class ToolExecutor:
                     user_id=state.user_id,
                     session_id=state.session_id,
                 )
-            if trace_store is not None and trace_id is not None:
-                trace_store.append(
-                    TraceEvent(
-                        trace_id=trace_id,
-                        run_id=state.run_id,
-                        user_id=state.user_id,
-                        session_id=state.session_id,
-                        node_name=node_name or "tool_executor",
-                        event_type="tool_failed",
-                        capability=capability,
-                        tool_name=tool_name,
-                        status="failed",
-                        latency_ms=latency_ms,
-                        error_code=budget_error.code,
-                        input_summary=_input_summary(tool_input),
-                        output_summary={"provider_budget": budget.summary()},
-                        error={
-                            "code": budget_error.code,
-                            "message": sanitize_trace_value(budget_error.message),
-                            "recovery_action": recovery_action,
-                            "step_id": step_id,
-                            "provider_budget": budget.summary(),
-                        },
-                    )
-                )
+            _append_tool_trace_event(
+                trace_store,
+                trace_id=trace_id,
+                state=state,
+                node_name=node_name or "tool_executor",
+                event_type="tool_failed",
+                canonical_event="tool.failed",
+                status="failed",
+                capability=capability,
+                tool_name=tool_name,
+                call_id=call.call_id,
+                step_id=step_id,
+                span_id=tool_span_id,
+                latency_ms=latency_ms,
+                retry_count=0,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(),
+                input_summary=_input_summary(tool_input),
+                output_summary={"provider_budget": budget.summary()},
+                error_code=budget_error.code,
+                error_message=budget_error.message,
+                recovery_action=recovery_action,
+            )
             return result
 
         try:
@@ -415,29 +472,29 @@ class ToolExecutor:
                     user_id=state.user_id,
                     session_id=state.session_id,
                 )
-            if trace_store is not None and trace_id is not None:
-                trace_store.append(
-                    TraceEvent(
-                        trace_id=trace_id,
-                        run_id=state.run_id,
-                        user_id=state.user_id,
-                        session_id=state.session_id,
-                        node_name=node_name or "tool_executor",
-                        event_type="tool_failed",
-                        capability=capability,
-                        tool_name=tool_name,
-                        status="failed",
-                        latency_ms=latency_ms,
-                        error_code=CANCELLATION_ERROR_CODE,
-                        input_summary=_input_summary(tool_input),
-                        output_summary={"cancelled": True},
-                        error={
-                            "code": CANCELLATION_ERROR_CODE,
-                            "message": DEFAULT_CANCELLATION_MESSAGE,
-                            "step_id": step_id,
-                        },
-                    )
-                )
+            _append_tool_trace_event(
+                trace_store,
+                trace_id=trace_id,
+                state=state,
+                node_name=node_name or "tool_executor",
+                event_type="tool_failed",
+                canonical_event="tool.failed",
+                status="failed",
+                capability=capability,
+                tool_name=tool_name,
+                call_id=call.call_id,
+                step_id=step_id,
+                span_id=tool_span_id,
+                latency_ms=latency_ms,
+                retry_count=0,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(),
+                input_summary=_input_summary(tool_input),
+                output_summary={"cancelled": True},
+                error_code=CANCELLATION_ERROR_CODE,
+                error_message=DEFAULT_CANCELLATION_MESSAGE,
+                recovery_action="cancelled",
+            )
             raise AgentRunCancelled(
                 DEFAULT_CANCELLATION_MESSAGE,
                 phase=exc.phase or "tool",
@@ -508,6 +565,30 @@ class ToolExecutor:
                     user_id=state.user_id,
                     session_id=state.session_id,
                 )
+            _append_tool_trace_event(
+                trace_store,
+                trace_id=trace_id,
+                state=state,
+                node_name=node_name or "tool_executor",
+                canonical_event="tool.finished",
+                status=str(post_tool_call.get("status") or "succeeded"),
+                capability=capability,
+                tool_name=tool_name,
+                call_id=call.call_id,
+                step_id=step_id,
+                span_id=tool_span_id,
+                latency_ms=result.latency_ms or latency_ms,
+                retry_count=retry_count,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency={
+                    **risk_decision.idempotency_summary(),
+                    "status": idempotency_record.status if idempotency_record is not None else None,
+                },
+                input_summary=_input_summary(tool_input),
+                output_summary=_output_summary(result),
+                provider=_provider_name(result.data or {}),
+                model=_model_name(result.data or {}),
+            )
         else:
             decision = self.recovery_policy.decide(result, step)
             result.error = decision.message
@@ -571,33 +652,31 @@ class ToolExecutor:
                     user_id=state.user_id,
                     session_id=state.session_id,
                 )
-            if trace_store is not None and trace_id is not None:
-                trace_store.append(
-                    TraceEvent(
-                        trace_id=trace_id,
-                        run_id=state.run_id,
-                        user_id=state.user_id,
-                        session_id=state.session_id,
-                        node_name=node_name or "tool_executor",
-                        event_type="tool_failed",
-                        capability=capability,
-                        tool_name=tool_name,
-                        provider=_provider_name(result.data or {}),
-                        model=_model_name(result.data or {}),
-                        status="failed",
-                        latency_ms=result.latency_ms or latency_ms,
-                        error_code=decision.error_code,
-                        input_summary=_input_summary(tool_input),
-                        output_summary=_output_summary(result),
-                        error={
-                            "code": decision.error_code,
-                            "message": sanitize_trace_value(decision.message),
-                            "recovery_action": decision.action,
-                            "step_id": step_id,
-                            "retry_count": retry_count,
-                        },
-                    )
-                )
+            _append_tool_trace_event(
+                trace_store,
+                trace_id=trace_id,
+                state=state,
+                node_name=node_name or "tool_executor",
+                event_type="tool_failed",
+                canonical_event="tool.failed",
+                status="failed",
+                capability=capability,
+                tool_name=tool_name,
+                call_id=call.call_id,
+                step_id=step_id,
+                span_id=tool_span_id,
+                latency_ms=result.latency_ms or latency_ms,
+                retry_count=retry_count,
+                risk_gate=risk_decision.risk_summary(),
+                idempotency=risk_decision.idempotency_summary(),
+                input_summary=_input_summary(tool_input),
+                output_summary=_output_summary(result),
+                provider=_provider_name(result.data or {}),
+                model=_model_name(result.data or {}),
+                error_code=decision.error_code,
+                error_message=decision.message,
+                recovery_action=decision.action,
+            )
         return result
 
     def _run_with_retry(
@@ -659,6 +738,118 @@ class ToolExecutor:
     def _emit(self, event: AgentEvent) -> None:
         if self.event_sink is not None:
             self.event_sink.emit(event)
+
+
+def _append_tool_trace_event(
+    trace_store: TraceStore | None,
+    *,
+    trace_id: str | None,
+    state: AgentState,
+    node_name: str,
+    canonical_event: str,
+    status: str,
+    capability: str,
+    tool_name: str,
+    call_id: str,
+    step_id: str,
+    span_id: str,
+    event_type: str = "observability",
+    latency_ms: int | None = None,
+    retry_count: int | None = None,
+    risk_gate: dict[str, Any] | None = None,
+    idempotency: dict[str, Any] | None = None,
+    input_summary: dict[str, Any] | None = None,
+    output_summary: dict[str, Any] | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    recovery_action: str | None = None,
+) -> None:
+    if trace_store is None or trace_id is None:
+        return
+    error = _tool_trace_error(
+        error_code=error_code,
+        error_message=error_message,
+        recovery_action=recovery_action,
+        step_id=step_id,
+        retry_count=retry_count,
+    )
+    trace_store.append(
+        TraceEvent(
+            trace_id=trace_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            node_name=node_name,
+            event_type=event_type,
+            canonical_event=canonical_event,
+            span_id=span_id,
+            capability=capability,
+            tool_name=tool_name,
+            provider=provider,
+            model=model,
+            status=status,
+            latency_ms=latency_ms,
+            error_code=error_code,
+            input_summary=input_summary or {},
+            output_summary=output_summary or {},
+            attributes=_tool_trace_attributes(
+                call_id=call_id,
+                step_id=step_id,
+                retry_count=retry_count,
+                risk_gate=risk_gate,
+                idempotency=idempotency,
+            ),
+            error=error,
+        )
+    )
+
+
+def _tool_trace_attributes(
+    *,
+    call_id: str,
+    step_id: str,
+    retry_count: int | None,
+    risk_gate: dict[str, Any] | None,
+    idempotency: dict[str, Any] | None,
+) -> dict[str, Any]:
+    attributes: dict[str, Any] = {
+        "tool_call_id": call_id,
+        "step_id": step_id,
+    }
+    if retry_count is not None:
+        attributes["retry_count"] = retry_count
+    if risk_gate:
+        attributes["risk_gate"] = risk_gate.get("level")
+        attributes["side_effect_level"] = risk_gate.get("side_effect_level")
+        attributes["requires_confirmation"] = risk_gate.get("requires_confirmation")
+    if idempotency:
+        attributes["idempotency_present"] = idempotency.get("present")
+        attributes["idempotency_required"] = idempotency.get("required")
+        attributes["idempotency_duplicate_suppressed"] = idempotency.get("duplicate_suppressed")
+        attributes["idempotency_status"] = idempotency.get("status")
+    return {key: value for key, value in attributes.items() if value is not None}
+
+
+def _tool_trace_error(
+    *,
+    error_code: str | None,
+    error_message: str | None,
+    recovery_action: str | None,
+    step_id: str,
+    retry_count: int | None,
+) -> dict[str, Any] | None:
+    if error_code is None and error_message is None and recovery_action is None:
+        return None
+    error = {
+        "code": error_code,
+        "message": sanitize_trace_value(error_message) if error_message else None,
+        "recovery_action": recovery_action,
+        "step_id": step_id,
+        "retry_count": retry_count,
+    }
+    return {key: value for key, value in error.items() if value is not None}
 
 
 def _capability_name(tool_name: str, step: TaskStep | None) -> str:
