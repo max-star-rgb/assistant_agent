@@ -14,7 +14,7 @@ Use this skill as the execution wrapper for memory-service work in the `assistan
    - If those files are absent, ask for the `assistant_agent` repository path before editing.
 2. Read `AGENTS.md`.
 3. Read `docs/memory-service-architecture.md` completely enough for the task.
-4. If the task explicitly concerns Memory Kernel engineering history or staged rollout, read `docs/development/memory-kernel-hardening-plan.md` as reference only.
+4. If the task explicitly concerns SQLite backup, restore, integrity check, or index rebuild operations, read `docs/development/memory-sqlite-operator-runbook.md` as operational guidance.
 5. Search relevant source and tests before changing behavior.
 6. Treat other `docs/development/**` files as historical only unless the user explicitly asks for historical decisions.
 

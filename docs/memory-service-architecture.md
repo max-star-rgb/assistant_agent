@@ -6,7 +6,7 @@ This document is the current canonical entry for memory service architecture. Up
 
 Older Phase 8 memory documents remain background references. They are not the current design source when this file and code disagree.
 
-Future engineering hardening should follow `docs/development/memory-kernel-hardening-plan.md` after reading this architecture document.
+Future memory architecture changes should be reflected in this document first; operational SQLite procedures remain in `docs/development/memory-sqlite-operator-runbook.md`.
 
 ## Scope
 

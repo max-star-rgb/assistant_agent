@@ -2,10 +2,9 @@
 
 This runbook covers local SQLite operations for the memory kernel. It applies when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite` or `ProviderConfig(memory_backend="sqlite")` is used.
 
-Read this together with:
+Reference docs:
 
 - `docs/memory-service-architecture.md`
-- `docs/development/memory-kernel-hardening-plan.md`
 
 ## Scope
 

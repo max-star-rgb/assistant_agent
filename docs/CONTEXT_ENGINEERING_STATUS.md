@@ -9,20 +9,23 @@ Last updated: 2026-07-07
 如果新对话涉及上下文工程，先读本节即可快速接上当前状态。
 
 - 当前结论：上下文工程第一版已经可用并适合阶段性收口，不是缺核心组件的状态。
-- 当前权威入口：本文件。不要把 `docs/development/context-engine-memory-policy-plan.md` 当成新的 active roadmap。
+- 当前权威入口：本文件。
+- The completed context-engineering phase plan has been removed from the active docs set; this file is the current context-engineering status and handoff entry.
 - 已实现核心闭环：`AssistantContextPack`、session summary、增量滑动窗口摘要、realtime task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
 - 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
 - 预算现状：全局压缩控制仍以字符预算为准；token-aware 目前是报告层。Memory context 有单独 token-aware 注入边界。
 - memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
-- 按需补读：给人解释机制时读 `docs/context-engineering-walkthrough.md`；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`；追溯阶段决策时读 `docs/development/context-engine-memory-policy-plan.md`。
+- 按需补读：给人解释机制时读 `docs/context-engineering-walkthrough.md`；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`。
+- The completed context-engineering phase plan has been removed from the active docs set; this file is the current context-engineering status and handoff entry.
 
 ## Current Stage
 
 上下文工程已进入可用实现和硬化阶段，不是单纯规划。
 
-- 多阶段 Context Engine + Memory Policy 计划已经完成；后续应把 `docs/CONTEXT_ENGINEERING_STATUS.md` 作为当前入口，把 `docs/development/context-engine-memory-policy-plan.md` 作为执行记录和参考。
+- 多阶段 Context Engine + Memory Policy 计划已经完成；后续应把 `docs/CONTEXT_ENGINEERING_STATUS.md` 作为当前入口。
+- The completed context-engineering phase plan has been removed from the active docs set; this file is the current context-engineering status and handoff entry.
 - 主运行时是 LangGraph/ReAct assistant loop，默认 mock/local/offline。
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、plan state、tool observations、tool specs、source counts 和 budget。
 - `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
@@ -195,6 +198,6 @@ Current small regression coverage includes budget trimming order, product observ
 ## Next Steps
 
 - Keep adding small regression tests when a concrete context failure appears.
-- Use `docs/development/context-engine-memory-policy-plan.md` as a completed implementation log, not an active roadmap.
+- The completed context-engineering phase plan has been removed from the active docs set; this file is the current context-engineering status and handoff entry.
 - Consider token-aware control decisions only if reporting-only token fields show real provider failures that character budgeting cannot prevent.
 - Consider semantic summary or embedding retrieval only after local relevance tests show keyword retrieval is insufficient.

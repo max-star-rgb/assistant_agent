@@ -14,7 +14,8 @@ OBSERVABILITY_SOURCES = (
     Path("docs/CONTEXT_ENGINEERING_STATUS.md"),
     Path("docs/context-engineering-walkthrough.md"),
     Path("docs/agent-communication-routing.md"),
-    Path("docs/development/agent-production-auth-observability-plan.md"),
+    Path("docs/observability-harness.md"),
+    Path("src/assistant_agent/api/app.py"),
     Path("src/assistant_agent/api/routes_agent.py"),
     Path("src/assistant_agent/services/trace_query.py"),
 )

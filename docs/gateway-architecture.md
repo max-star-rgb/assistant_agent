@@ -103,12 +103,9 @@ Gateway interrupt remains a lifecycle/control concept. It should cancel or gate
 the active run, preserve session continuity, and start the next turn. It should
 not own semantic task revision such as merging the old goal with new
 constraints, deciding whether intermediate artifacts are reusable, or resolving
-committed side effects. That medium-term assistant-runtime work is tracked in
-`docs/development/realtime-agent-task-state-plan.md`. The broader realtime
-harness hardening roadmap, including deterministic fallback progress, realtime
-call state extensions, tool idempotency, and lightweight checkpointing, is
-tracked in `docs/development/realtime-harness-hardening-plan.md` as a
-development plan, not as Gateway architecture authority.
+committed side effects.
+
+Realtime task state, deterministic fallback behavior, tool-wait boundaries, and interrupt/cancel handling are part of the current Gateway lifecycle contract when implemented. Keep current behavior in this document and in tests, not in archived phase plans.
 
 ## Entry Layer Responsibilities
 
@@ -199,10 +196,7 @@ Do not import `openclaw_gateway_runtime`, reuse the old OpenClaw/Anthropic agent
 
 ## Update Rules
 
-- Update this document when `assistant_agent.gateway`, `assistant_agent.realtime`, Gateway WebSocket transport, realtime call integration, or Gateway-related API routing changes.
-- Current Gateway entry-layer implementation planning lives in `docs/development/gateway-entry-layer-development-plan.md`; that file is an execution plan, not the architecture authority.
-- Realtime harness hardening planning lives in `docs/development/realtime-harness-hardening-plan.md`; that file coordinates ongoing work across Gateway, realtime adapter, context, and tool governance, but does not replace this architecture document.
+- Keep current Gateway protocol, lifecycle, adapter, and entry-layer decisions in this file.
 - Keep `AGENTS.md` as the concise routing entry and this file as the Gateway-specific authority.
 - Keep `.codex/skills/assistant-runtime-reference/SKILL.md` routing to this file before any legacy `runTime` reference.
-- Do not put active Gateway architecture decisions only in `docs/development/**`; those files are historical plans and runbooks.
-- Add or update tests in `tests/test_gateway.py`, `tests/test_gateway_session.py`, and realtime backend tests when behavior changes.
+- Do not put active Gateway architecture decisions only in `docs/development/**`; retained development files are runbooks or explicitly named execution material.
