@@ -10,6 +10,9 @@ from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent, trace_debug_summary
 
 
+TERMINAL_CANONICAL_EVENTS = {"run.completed", "run.failed", "run.cancelled"}
+
+
 class ScriptedNativeChatAdapter:
     provider = "scripted-native"
 
@@ -38,6 +41,39 @@ def _memory_store_with_secret_summary() -> InMemoryStore:
         )
     )
     return store
+
+
+def _canonical(events: list[dict]) -> list[str]:
+    return [event["canonical_event"] for event in events if event["canonical_event"]]
+
+
+def _index(canonical: list[str], event_name: str, *, last: bool = False) -> int:
+    if not last:
+        return canonical.index(event_name)
+    return len(canonical) - 1 - canonical[::-1].index(event_name)
+
+
+def _assert_before(canonical: list[str], *event_names: str) -> None:
+    positions = [_index(canonical, name) for name in event_names]
+    assert positions == sorted(positions), {name: _index(canonical, name) for name in event_names}
+
+
+def _assert_single_terminal(canonical: list[str], expected: str = "run.completed") -> None:
+    terminals = [event for event in canonical if event in TERMINAL_CANONICAL_EVENTS]
+    assert terminals == [expected]
+
+
+def _assert_single_tool_lifecycle(canonical: list[str]) -> None:
+    assert canonical.count("tool.started") == 1
+    assert canonical.count("tool.finished") == 1
+    assert "tool.failed" not in canonical
+    _assert_before(canonical, "tool.started", "tool.finished", "tool.observation")
+
+
+def _assert_trace_text_absent(events: list[dict], *needles: str) -> None:
+    dumped = json.dumps(events, ensure_ascii=False, default=str)
+    for needle in needles:
+        assert needle not in dumped
 
 
 def test_trace_event_summary_exposes_redacted_canonical_fields() -> None:
@@ -150,6 +186,45 @@ def test_mock_runtime_emits_memory_lifecycle_trace_without_memory_content() -> N
     assert "raw_provider_payload" not in dumped
 
 
+def test_mock_runtime_trace_satisfies_success_timeline_invariants() -> None:
+    trace_store = InMemoryTraceStore()
+    state = AgentGraphRuntime(
+        memory_store=_memory_store_with_secret_summary(),
+        trace_store=trace_store,
+    ).run_state(UserRequest(user_id="u1", session_id="s1", text="继续推荐日系极简风格商品"))
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    canonical = _canonical(events)
+    final_event = next(event for event in events if event["canonical_event"] == "response.final")
+
+    _assert_single_terminal(canonical)
+    _assert_single_tool_lifecycle(canonical)
+    _assert_before(
+        canonical,
+        "run.started",
+        "memory.load.started",
+        "memory.load.finished",
+        "context.build.started",
+        "context.build.finished",
+        "react.decision",
+    )
+    _assert_before(
+        canonical,
+        "action.validation.finished",
+        "tool.started",
+        "tool.finished",
+        "tool.observation",
+        "response.final",
+        "memory.save.started",
+        "memory.save.finished",
+        "run.completed",
+    )
+    assert final_event["status"] == "succeeded"
+    assert final_event["attributes"]["message_present"] is True
+    assert final_event["attributes"]["message_chars"] > 0
+    _assert_trace_text_absent(events, "绝密紫色极简风格", "参考记忆", "raw_provider_payload", "thought")
+
+
 def test_native_runtime_emits_canonical_llm_decision_validation_observation_and_terminal_events() -> None:
     trace_store = InMemoryTraceStore()
     adapter = ScriptedNativeChatAdapter(
@@ -259,3 +334,76 @@ def test_native_runtime_emits_memory_load_trace_without_memory_content() -> None
     dumped = json.dumps(load_event, ensure_ascii=False, default=str)
     assert "绝密紫色极简风格" not in dumped
     assert "memory_context_text" not in dumped
+
+
+def test_native_runtime_trace_satisfies_success_timeline_invariants() -> None:
+    trace_store = InMemoryTraceStore()
+    adapter = ScriptedNativeChatAdapter(
+        [
+            ChatResult(
+                response_text="",
+                provider="scripted",
+                model="native-test",
+                latency_ms=11,
+                tool_calls=[
+                    NativeToolCall(
+                        id="call_native_1",
+                        name="product_search",
+                        arguments={"query": "白色运动鞋"},
+                    )
+                ],
+                message_kind="tool_calls",
+            ),
+            ChatResult(
+                response_text="找到了一些白色运动鞋。",
+                provider="scripted",
+                model="native-test",
+                latency_ms=13,
+                message_kind="content",
+            ),
+        ]
+    )
+    state = AgentGraphRuntime(
+        memory_store=_memory_store_with_secret_summary(),
+        trace_store=trace_store,
+        chat_adapter=adapter,
+    ).run_state(UserRequest(user_id="u1", session_id="s1", text="继续推荐白色运动鞋"))
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    canonical = _canonical(events)
+    final_event = next(event for event in events if event["canonical_event"] == "response.final")
+    memory_save_event = next(event for event in events if event["canonical_event"] == "memory.save.finished")
+
+    _assert_single_terminal(canonical)
+    _assert_single_tool_lifecycle(canonical)
+    assert canonical.count("llm.chat.finished") == 2
+    assert canonical.count("react.decision") >= 2
+    _assert_before(
+        canonical,
+        "run.started",
+        "memory.load.started",
+        "memory.load.finished",
+        "context.build.started",
+        "context.build.finished",
+        "llm.chat.finished",
+        "react.decision",
+        "action.validation.finished",
+        "tool.started",
+        "tool.finished",
+        "tool.observation",
+    )
+    assert _index(canonical, "tool.observation") < _index(canonical, "response.final", last=True)
+    assert _index(canonical, "response.final", last=True) < _index(canonical, "memory.save.started")
+    assert _index(canonical, "memory.save.finished") < _index(canonical, "run.completed")
+    assert final_event["status"] == "succeeded"
+    assert final_event["attributes"]["message_present"] is True
+    assert final_event["attributes"]["message_chars"] == len("找到了一些白色运动鞋。")
+    assert memory_save_event["status"] == "skipped"
+    assert memory_save_event["attributes"]["skip_reason"] == "native_runtime_memory_writes_are_llm_tool_calls"
+    _assert_trace_text_absent(
+        events,
+        "找到了一些白色运动鞋。",
+        "绝密紫色极简风格",
+        "raw_provider_payload",
+        "thought",
+    )

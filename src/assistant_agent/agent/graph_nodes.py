@@ -18,6 +18,7 @@ from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatAdapter
 from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
+from assistant_agent.services.response_observability import append_response_final_event
 from assistant_agent.services.trace_store import TraceStore
 
 
@@ -259,6 +260,13 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
         state.response = response
     else:
         state.set_response(response)
+    append_response_final_event(
+        trace_store=graph_state.get("trace_store"),
+        trace_id=graph_state.get("trace_id"),
+        node_name=graph_state.get("current_node_name", "compose_response"),
+        state=state,
+        source="compose_response",
+    )
     return graph_state
 
 

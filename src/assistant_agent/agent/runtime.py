@@ -33,7 +33,8 @@ from assistant_agent.services.checkpointer import create_checkpointer
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
 from assistant_agent.services.context.compactor import ContextCompactor, create_context_compactor
 from assistant_agent.services.context.renderer import render_native_user_message
-from assistant_agent.services.memory_observability import load_memory_with_trace
+from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
+from assistant_agent.services.response_observability import append_response_final_event
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
 from assistant_agent.services.tool_history import ToolHistoryStore
@@ -189,6 +190,14 @@ class AgentGraphRuntime:
                         event_sink=run_event_sink,
                     )
                     raise_if_cancelled(cancel_token, phase="post_native_runtime", state=state)
+                    save_memory_with_trace(
+                        manager=self.memory_manager,
+                        trace_store=self.trace_store,
+                        trace_id=state.trace_id,
+                        node_name="native_runtime",
+                        state=state,
+                        skipped_reason="native_runtime_memory_writes_are_llm_tool_calls",
+                    )
                 except AgentRunCancelled as exc:
                     if isinstance(exc.state, AgentState):
                         state = exc.state
@@ -639,6 +648,13 @@ class AgentGraphRuntime:
                 },
             )
             state.status = "failed"
+            append_response_final_event(
+                trace_store=self.trace_store,
+                trace_id=state.trace_id,
+                node_name="native_runtime",
+                state=state,
+                source="native_runtime",
+            )
             return
         else:
             message = result.refusal or result.response_text or "已处理请求。"
@@ -687,6 +703,13 @@ class AgentGraphRuntime:
                 },
                 output_refs=[result.output_ref] if result.output_ref else [],
             )
+        )
+        append_response_final_event(
+            trace_store=self.trace_store,
+            trace_id=state.trace_id,
+            node_name="native_runtime",
+            state=state,
+            source="native_runtime",
         )
 
     def _select_graph(

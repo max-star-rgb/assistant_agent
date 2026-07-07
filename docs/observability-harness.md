@@ -109,6 +109,9 @@ counts, token budget fields, retrieval version, and injected memory IDs;
 `memory.save.started` / `memory.save.finished` summarize promotion/save
 decisions, skipped reasons, and written IDs. These events must not include
 memory summaries, rendered memory context, candidate content, or raw user text.
+Final response tracing emits `response.final` with only prompt-safe response
+shape data such as message presence, character count, output-ref count, response
+data keys, status, and error count. It must not include the response text.
 
 ## Span Model
 
@@ -256,11 +259,19 @@ Regression tests should enforce these invariants:
 - Every `tool.observation` references a prior tool call or a validation rejection.
 - Native provider runtime and mock/offline ReAct runtime both emit
   `react.decision` and terminal run events.
+- Successful native provider runtime and mock/offline ReAct runtime both emit
+  `response.final` before the terminal run event.
+- Native provider runtime emits skipped `memory.save.started` /
+  `memory.save.finished` events when automatic task-summary memory is delegated
+  to explicit LLM `memory_save` tool calls.
 - A validation rejection never enters `ToolExecutor`.
 - A failed tool carries error code, source, recovery action, and redacted message.
 - Cancel, interrupt, timeout, and hangup traces include their source.
 - `/runs/{run_id}` and `/traces/{trace_id}` expose only redacted summaries.
 - No public trace, API response, or realtime trace event exposes hidden reasoning.
+- Current harness development should stop after these invariant tests pass.
+  Future work should be driven by a concrete debugging gap rather than adding
+  more event types, dashboards, exporters, or debug endpoints preemptively.
 
 ## Phase Plan
 
