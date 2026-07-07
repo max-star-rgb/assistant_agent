@@ -73,6 +73,35 @@ def test_mock_react_runtime_emits_canonical_run_decision_tool_observation_and_te
     assert all("thought" not in json.dumps(event, ensure_ascii=False, default=str).lower() for event in events)
 
 
+def test_mock_runtime_emits_context_build_trace_with_budget_summary() -> None:
+    trace_store = InMemoryTraceStore()
+    state = AgentGraphRuntime(trace_store=trace_store).run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="帮我找相似款",
+            metadata={"context_budget_estimate_tokens": True, "context_budget_max_tokens": 1000},
+        )
+    )
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    context_events = [event for event in events if event["canonical_event"] == "context.build.finished"]
+
+    assert context_events
+    event = context_events[0]
+    assert event["status"] == "succeeded"
+    assert event["attributes"]["iteration"] == 1
+    assert event["attributes"]["max_iterations"] >= 1
+    context = event["output_summary"]["context"]
+    assert context["context_schema_version"] == "context_observability_v1"
+    assert context["budget"]["total_chars"] > 0
+    assert "context_usage_ratio" in context["budget"]
+    assert "compaction" in context
+    dumped = json.dumps(event, ensure_ascii=False, default=str).lower()
+    assert "raw_provider_payload" not in dumped
+    assert "thought" not in dumped
+
+
 def test_native_runtime_emits_canonical_llm_decision_validation_observation_and_terminal_events() -> None:
     trace_store = InMemoryTraceStore()
     adapter = ScriptedNativeChatAdapter(
@@ -114,3 +143,37 @@ def test_native_runtime_emits_canonical_llm_decision_validation_observation_and_
     assert "tool.observation" in canonical
     assert "run.completed" in canonical
     assert canonical.index("react.decision") < canonical.index("tool.observation")
+
+
+def test_native_runtime_emits_context_build_trace_with_budget_summary() -> None:
+    trace_store = InMemoryTraceStore()
+    adapter = ScriptedNativeChatAdapter(
+        [
+            ChatResult(
+                response_text="可以直接回答。",
+                provider="scripted",
+                model="native-test",
+                latency_ms=7,
+                message_kind="content",
+            )
+        ]
+    )
+    state = AgentGraphRuntime(trace_store=trace_store, chat_adapter=adapter).run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="简单介绍一下今天的任务",
+            metadata={"context_budget_estimate_tokens": True, "context_budget_max_tokens": 1000},
+        )
+    )
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    canonical = [event["canonical_event"] for event in events if event["canonical_event"]]
+    context_event = next(event for event in events if event["canonical_event"] == "context.build.finished")
+
+    assert "context.build.started" in canonical
+    assert "context.build.finished" in canonical
+    assert canonical.index("context.build.started") < canonical.index("context.build.finished")
+    assert context_event["status"] == "succeeded"
+    assert context_event["attributes"]["iteration"] == 1
+    assert context_event["output_summary"]["context"]["budget"]["total_chars"] > 0

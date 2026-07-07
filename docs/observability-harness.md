@@ -100,6 +100,9 @@ same high-level timeline even when it does not enter LangGraph node wrappers.
 `ToolExecutor` is the canonical owner for `tool.started`, `tool.finished`, and
 `tool.failed`; runtime layers may still emit `tool.observation` after converting
 the result into assistant-facing data.
+`AssistantContextPack` construction is wrapped by the context observability
+helper, which emits `context.build.started` and `context.build.finished` with
+redacted budget, source-count, compaction, and tool-catalog summaries.
 
 ## Span Model
 

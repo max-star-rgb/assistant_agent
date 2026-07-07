@@ -44,6 +44,7 @@ from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tool
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult
 from assistant_agent.services.context.builder import build_assistant_context_pack
+from assistant_agent.services.context.observability import build_traced_assistant_context_pack
 from assistant_agent.services.context.renderer import (
     render_final_only_prompt,
     render_native_user_message,
@@ -183,7 +184,10 @@ def _build_decision_context(
     except Exception as exc:
         tool_specs = []
         _record_tool_description_error(graph_state, exc)
-    context_pack = build_assistant_context_pack(
+    context_pack = build_traced_assistant_context_pack(
+        trace_store=graph_state.get("trace_store"),
+        trace_id=graph_state.get("trace_id"),
+        node_name=graph_state.get("current_node_name", "assistant"),
         state=graph_state["state"],
         request=request,
         observations=tool_observations,
@@ -370,7 +374,10 @@ def _rebuild_context_after_provider_overflow(
     graph_state: AssistantLoopState,
     context: AssistantDecisionContext,
 ) -> AssistantDecisionContext:
-    pack = build_assistant_context_pack(
+    pack = build_traced_assistant_context_pack(
+        trace_store=graph_state.get("trace_store"),
+        trace_id=graph_state.get("trace_id"),
+        node_name=graph_state.get("current_node_name", "assistant"),
         state=graph_state["state"],
         request=context.request,
         observations=context.tool_observations,

@@ -30,7 +30,7 @@ from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, create_chat_adapter
 from assistant_agent.services.checkpointer import create_checkpointer
-from assistant_agent.services.context.builder import build_assistant_context_pack
+from assistant_agent.services.context.observability import build_traced_assistant_context_pack
 from assistant_agent.services.context.compactor import ContextCompactor, create_context_compactor
 from assistant_agent.services.context.renderer import render_native_user_message
 from assistant_agent.services.run_history import RunHistoryStore
@@ -525,7 +525,10 @@ class AgentGraphRuntime:
         tool_specs = _native_runtime_tool_specs(self.registry, state)
         if tool_specs is None:
             return None
-        context_pack = build_assistant_context_pack(
+        context_pack = build_traced_assistant_context_pack(
+            trace_store=self.trace_store,
+            trace_id=state.trace_id,
+            node_name="native_runtime",
             state=state,
             request=request,
             observations=observations,
