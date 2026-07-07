@@ -107,6 +107,21 @@ def test_maps_response_delta_to_response_chunk() -> None:
     assert mapped.payload["source"] == "direct_chat"
 
 
+@pytest.mark.parametrize(
+    "agent_type",
+    ["tts_started", "tts_finished", "tts_superseded", "display_superseded", "call_hangup"],
+)
+def test_tts_and_media_lifecycle_events_do_not_stream_as_realtime_frames(agent_type: str) -> None:
+    event = AgentEvent(
+        type=agent_type,
+        session_id="session-1",
+        run_id="run-1",
+        payload={"event_id": "evt-lifecycle"},
+    )
+
+    assert map_agent_event_stream(event) == []
+
+
 def test_maps_task_started_to_progress_stream_event() -> None:
     event = AgentEvent(
         type="task_started",

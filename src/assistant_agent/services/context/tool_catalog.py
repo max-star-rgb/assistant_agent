@@ -18,7 +18,9 @@ class ToolCatalogSelection:
     summary: ToolCatalogSummary
 
 
-def select_prompt_tool_specs(request: UserRequest, tool_specs: list[ToolSpec]) -> ToolCatalogSelection:
+def select_prompt_tool_specs(
+    request: UserRequest, tool_specs: list[ToolSpec]
+) -> ToolCatalogSelection:
     """Select a small prompt-facing ToolSpec set, falling back to all tools when unsure."""
 
     total = len(tool_specs)
@@ -36,6 +38,9 @@ def select_prompt_tool_specs(request: UserRequest, tool_specs: list[ToolSpec]) -
         _add(selected_names, "product_search")
         _add(selected_names, "price_compare")
         reasons.append("price_compare_keyword: compare/lowest-price/discount request")
+    elif _has_web_search_intent(text):
+        _add(selected_names, "web_search")
+        reasons.append("web_search_keyword: current/latest/news/web request")
     elif _has_product_search_intent(text):
         _add(selected_names, "product_search")
         reasons.append("product_search_keyword: product/search/buy/recommend request")
@@ -67,15 +72,21 @@ def select_prompt_tool_specs(request: UserRequest, tool_specs: list[ToolSpec]) -
         for name in ("memory_retrieval", "memory_save", "memory"):
             _add(selected_names, name)
         reasons.append("memory_keyword: remember/preference/history request")
-    elif selected_names:
+    elif selected_names or _has_substantive_text_task(text):
         for name in ("memory_retrieval", "memory_save"):
             _add(selected_names, name)
-        reasons.append("llm_first_memory_tools: memory tools exposed for semantic LLM choice")
+        reasons.append(
+            "llm_first_memory_tools: memory tools exposed for semantic LLM choice"
+        )
 
     available_by_name = {spec.name: spec for spec in tool_specs}
-    prompt_specs = [available_by_name[name] for name in selected_names if name in available_by_name]
+    prompt_specs = [
+        available_by_name[name] for name in selected_names if name in available_by_name
+    ]
     if not prompt_specs:
-        return _fallback(tool_specs, reason="fallback_full_tool_list: no reliable tool match")
+        return _fallback(
+            tool_specs, reason="fallback_full_tool_list: no reliable tool match"
+        )
 
     prompt_names = [spec.name for spec in prompt_specs]
     return ToolCatalogSelection(
@@ -117,7 +128,10 @@ def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
     if isinstance(side_effect, dict):
         level = side_effect.get("level")
         requires_confirmation = side_effect.get("requires_confirmation")
-        if level in {"none", "local_read", "external_read"} and not requires_confirmation:
+        if (
+            level in {"none", "local_read", "external_read"}
+            and not requires_confirmation
+        ):
             payload.pop("side_effect", None)
             return payload
         compact_side_effect = {"level": level}
@@ -187,30 +201,33 @@ def _has_product_search_intent(text: str) -> bool:
     if _contains_any(
         text,
         (
-            "商品",
-            "产品",
-            "购买",
             "买",
+            "购买",
             "下单",
-            "电商",
             "淘宝",
             "京东",
             "相似款",
             "同款",
             "商品链接",
-            "搜索",
-            "搜一下",
-            "推荐",
-            "product",
             "shopping",
             "buy",
             "purchase",
-            "recommend",
-            "search",
         ),
     ):
         return True
+    if _contains_any(
+        text, ("搜索", "搜一下", "search", "find", "look for", "推荐", "recommend")
+    ) and _contains_any(text, _PRODUCT_HINTS):
+        return True
     return "找" in text and _contains_any(text, _PRODUCT_HINTS)
+
+
+def _has_web_search_intent(text: str) -> bool:
+    if not text:
+        return False
+    if _contains_any(text, _WEB_SEARCH_HINTS) and not _has_product_search_intent(text):
+        return True
+    return _contains_any(text, _EXPLICIT_WEB_SEARCH_HINTS)
 
 
 def _has_image_understanding_intent(text: str) -> bool:
@@ -281,11 +298,17 @@ def _has_image_generation_intent(text: str) -> bool:
 
 
 def _has_render_intent(text: str) -> bool:
-    if _contains_any(text, ("3d", "三维", "渲染", "建模", "场景预览", "展示空间", "render")):
+    if _contains_any(
+        text, ("3d", "三维", "渲染", "建模", "场景预览", "展示空间", "render")
+    ):
         return True
-    if "模型" in text and _contains_any(text, ("3d", "三维", "建模", "渲染", "商品", "展示")):
+    if "模型" in text and _contains_any(
+        text, ("3d", "三维", "建模", "渲染", "商品", "展示")
+    ):
         return True
-    return "场景" in text and _contains_any(text, ("创建", "生成", "渲染", "建模", "预览", "展示", "放进", "放入", "放到"))
+    return "场景" in text and _contains_any(
+        text, ("创建", "生成", "渲染", "建模", "预览", "展示", "放进", "放入", "放到")
+    )
 
 
 def _has_memory_intent(text: str) -> bool:
@@ -319,6 +342,27 @@ def _has_memory_intent(text: str) -> bool:
     )
 
 
+def _has_substantive_text_task(text: str) -> bool:
+    return _contains_any(
+        text,
+        (
+            "帮我",
+            "写",
+            "生成",
+            "文案",
+            "总结",
+            "整理",
+            "建议",
+            "计划",
+            "起草",
+            "write",
+            "draft",
+            "summarize",
+            "create",
+        ),
+    )
+
+
 def _contains_any(text: str, needles: Iterable[str]) -> bool:
     return any(needle.lower() in text for needle in needles)
 
@@ -342,5 +386,39 @@ _PRODUCT_HINTS = (
     "同款",
     "商品",
     "产品",
+    "电商",
     "价格",
+)
+
+_WEB_SEARCH_HINTS = (
+    "最新",
+    "最近",
+    "实时",
+    "新闻",
+    "今天",
+    "现在",
+    "当前",
+    "联网",
+    "网上",
+    "网页",
+    "查一下",
+    "查查",
+    "latest",
+    "recent",
+    "current",
+    "today",
+    "now",
+    "news",
+    "online",
+    "web",
+    "look up",
+)
+
+_EXPLICIT_WEB_SEARCH_HINTS = (
+    "联网搜索",
+    "网上搜索",
+    "网页搜索",
+    "web search",
+    "search the web",
+    "internet search",
 )

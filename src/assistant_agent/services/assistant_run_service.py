@@ -31,7 +31,9 @@ from assistant_agent.services.realtime_task_state import (
     RealtimeTaskStateStore,
     get_default_realtime_task_state_store,
     prepare_realtime_task_state_request,
+    reduce_realtime_task_state_event,
     realtime_task_state_progress_payload,
+    realtime_task_state_enabled,
     record_realtime_task_state_run_artifacts,
 )
 from assistant_agent.services.trace_store import trace_debug_summary
@@ -472,8 +474,18 @@ def run_assistant_request(
         resolved_request,
         store=resolved_task_store,
     )
-    _emit_realtime_task_state_progress(resolved_request, sink)
-    state = _run_state_with_sink(resolved_runtime, resolved_request, sink, cancel_token=cancel_token)
+    runtime_sink = _RealtimeTaskStateTrackingEventSink(
+        inner=sink,
+        request=resolved_request,
+        store=resolved_task_store,
+    )
+    _emit_realtime_task_state_progress(resolved_request, runtime_sink)
+    state = _run_state_with_sink(
+        resolved_runtime,
+        resolved_request,
+        runtime_sink,
+        cancel_token=cancel_token,
+    )
     record_realtime_task_state_run_artifacts(state, store=resolved_task_store)
     _record_conversation_turn(
         state,
@@ -483,6 +495,108 @@ def run_assistant_request(
     raw_events = getattr(sink, "events", [])
     events = list(raw_events) if isinstance(raw_events, list) else []
     return AssistantRunArtifacts(runtime=resolved_runtime, state=state, events=events)
+
+
+class _RealtimeTaskStateTrackingEventSink:
+    """Forward events while reducing prompt-safe realtime call state."""
+
+    def __init__(
+        self,
+        *,
+        inner: EventSink,
+        request: UserRequest,
+        store: RealtimeTaskStateStore,
+    ) -> None:
+        self._inner = inner
+        self._request = request
+        self._store = store
+        self.events = getattr(inner, "events", None)
+
+    def emit(self, event: AgentEvent) -> None:
+        self._inner.emit(event)
+        event_type = _task_state_reducer_event_type(event.type)
+        if event_type is None or not realtime_task_state_enabled(self._request):
+            return
+        task_state = self._store.get(self._request.user_id, self._request.session_id)
+        if task_state is None:
+            return
+        task_state = reduce_realtime_task_state_event(
+            task_state,
+            event_type=event_type,
+            text=event.text,
+            payload=_task_state_event_payload(event),
+        )
+        self._store.save(task_state)
+
+
+def _task_state_reducer_event_type(agent_event_type: str) -> str | None:
+    return {
+        "tool_started": "tool.started",
+        "tool_finished": "tool.finished",
+        "tool_completed": "tool.finished",
+        "tool_failed": "tool.failed",
+        "progress_message": "run.progress",
+        "tool_progress": "run.progress",
+        "task_started": "run.progress",
+        "response_delta": "response.chunk",
+        "final_response": "response.final",
+        "task_cancelled": "run.cancel",
+        "tts_started": "tts.started",
+        "tts_finished": "tts.finished",
+        "tts_superseded": "tts.superseded",
+        "display_superseded": "display.superseded",
+        "call_hangup": "call.hangup",
+    }.get(agent_event_type)
+
+
+def _task_state_event_payload(event: AgentEvent) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "run_id": event.run_id,
+        "tool_name": event.tool_name,
+        "node_name": event.node_name,
+        "progress": event.progress,
+        "status": _task_state_event_status(event.type),
+    }
+    source_payload = event.payload
+    if isinstance(source_payload, dict):
+        payload.update(source_payload)
+    if isinstance(event.error, dict):
+        for key, value in _task_state_cancel_metadata_from_error(event.error).items():
+            payload.setdefault(key, value)
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _task_state_event_status(agent_event_type: str) -> str | None:
+    if agent_event_type in {"tool_started", "progress_message", "tool_progress", "task_started"}:
+        return "working"
+    if agent_event_type in {"tool_finished", "tool_completed", "final_response"}:
+        return "completed"
+    if agent_event_type in {"tool_failed"}:
+        return "failed"
+    if agent_event_type == "task_cancelled":
+        return "cancelled"
+    if agent_event_type in {"tts_started"}:
+        return "speaking"
+    if agent_event_type in {"tts_finished"}:
+        return "idle"
+    if agent_event_type in {"tts_superseded", "display_superseded"}:
+        return "superseded"
+    if agent_event_type == "call_hangup":
+        return "cancelled"
+    return None
+
+
+def _task_state_cancel_metadata_from_error(error: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    detail = error.get("detail")
+    if isinstance(detail, dict):
+        for key in ("cancel_source", "cancel_reason", "deadline_ms"):
+            if key in detail:
+                metadata[key] = detail[key]
+    for key in ("cancel_source", "cancel_reason", "deadline_ms"):
+        if key in error:
+            metadata[key] = error[key]
+    return metadata
 
 
 def _emit_realtime_task_state_progress(request: UserRequest, sink: EventSink) -> None:

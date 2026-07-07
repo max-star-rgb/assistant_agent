@@ -42,6 +42,14 @@ ContinuationStrategy = Literal[
     "compensate",
     "report_committed",
 ]
+RealtimeTtsState = Literal["idle", "speaking", "interrupted", "superseded"]
+RealtimeBargeInSource = Literal[
+    "transcript",
+    "explicit_cancel",
+    "hangup",
+    "media_relay_control",
+    "unknown",
+]
 TaskArtifactKind = Literal[
     "observation",
     "tool_result",
@@ -171,6 +179,12 @@ class RealtimeTaskState(BaseModel):
     revisions: list[IntentRevision] = Field(default_factory=list)
     artifacts: list[TaskArtifact] = Field(default_factory=list)
     side_effects: list[SideEffectRecord] = Field(default_factory=list)
+    pending_tool: dict[str, Any] | None = None
+    tts_state: RealtimeTtsState = "idle"
+    last_spoken_progress: dict[str, Any] | None = None
+    speech_turn_id: str | None = None
+    barge_in_source: RealtimeBargeInSource | None = None
+    last_realtime_event_ids: list[str] = Field(default_factory=list)
 
 
 class RealtimeTaskStateSnapshot(BaseModel):
@@ -197,6 +211,12 @@ class RealtimeTaskStateSnapshot(BaseModel):
     pending_confirmation_count: int = Field(default=0, ge=0)
     committed_side_effect_count: int = Field(default=0, ge=0)
     compensatable_side_effect_count: int = Field(default=0, ge=0)
+    pending_tool: dict[str, Any] | None = None
+    tts_state: RealtimeTtsState = "idle"
+    last_spoken_progress: dict[str, Any] | None = None
+    speech_turn_id: str | None = None
+    barge_in_source: RealtimeBargeInSource | None = None
+    last_realtime_event_ids: list[str] = Field(default_factory=list)
 
 
 class RealtimeTaskStateStore(Protocol):
@@ -364,6 +384,66 @@ def realtime_metadata_requests_interrupt(metadata: dict[str, Any]) -> bool:
     return False
 
 
+def reduce_realtime_task_state_event(
+    state: RealtimeTaskState,
+    *,
+    event_type: str,
+    text: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> RealtimeTaskState:
+    """Apply one prompt-safe realtime event update to task state."""
+
+    event_payload = dict(payload or {})
+    updated = state.model_copy(deep=True)
+    event_id = _metadata_string(
+        event_payload.get("event_id") or event_payload.get("id") or event_payload.get("frame_id")
+    )
+    if event_id:
+        updated.last_realtime_event_ids = _append_unique_limited(
+            updated.last_realtime_event_ids,
+            event_id,
+        )
+    speech_turn_id = _metadata_string(event_payload.get("speech_turn_id"))
+
+    if event_type == "tool.started":
+        updated.pending_tool = _pending_tool_from_event(event_payload, default_status="working")
+    elif event_type == "run.progress":
+        progress = _spoken_progress_from_event(text=text, payload=event_payload)
+        if progress is not None:
+            updated.last_spoken_progress = progress
+            updated.tts_state = "speaking"
+        if event_payload.get("stage") == "tool" and _metadata_string(event_payload.get("tool_name")):
+            updated.pending_tool = _pending_tool_from_event(event_payload, default_status="working")
+    elif event_type in {"tool.finished", "tool.failed"}:
+        tool_name = _metadata_string(event_payload.get("tool_name") or event_payload.get("name"))
+        if _pending_tool_matches(updated.pending_tool, tool_name):
+            updated.pending_tool = None
+    elif event_type in {"response.chunk", "response.final"} and _metadata_string(text):
+        updated.tts_state = "speaking"
+    elif event_type == "tts.started":
+        updated.tts_state = "speaking"
+        if speech_turn_id:
+            updated.speech_turn_id = speech_turn_id
+    elif event_type == "tts.finished":
+        updated.tts_state = "idle"
+        if speech_turn_id:
+            updated.speech_turn_id = speech_turn_id
+    elif event_type in {"tts.superseded", "display.superseded"}:
+        updated.tts_state = "superseded"
+        if speech_turn_id:
+            updated.speech_turn_id = speech_turn_id
+    elif event_type in {"run.cancel", "call.hangup"}:
+        updated.pending_tool = None
+        updated.tts_state = "interrupted"
+        cancel_source = _metadata_string(event_payload.get("cancel_source"))
+        updated.barge_in_source = (
+            "hangup" if event_type == "call.hangup" or cancel_source == "gateway_hangup" else "explicit_cancel"
+        )
+
+    updated.updated_at = _utc_now()
+    return updated
+
+
 def snapshot_from_task_state(state: RealtimeTaskState) -> RealtimeTaskStateSnapshot:
     """Build a concise prompt-safe task-state snapshot."""
 
@@ -395,6 +475,12 @@ def snapshot_from_task_state(state: RealtimeTaskState) -> RealtimeTaskStateSnaps
         compensatable_side_effect_count=sum(
             1 for side_effect in state.side_effects if side_effect.effect_level == "compensatable"
         ),
+        pending_tool=state.pending_tool,
+        tts_state=state.tts_state,
+        last_spoken_progress=state.last_spoken_progress,
+        speech_turn_id=state.speech_turn_id,
+        barge_in_source=state.barge_in_source,
+        last_realtime_event_ids=list(state.last_realtime_event_ids),
     )
 
 
@@ -417,6 +503,19 @@ def format_realtime_task_state_snapshot(snapshot: RealtimeTaskStateSnapshot) -> 
         strategy = str(snapshot.latest_revision.get("strategy") or "")
         lines.append(f"latest_revision: {revision_text}")
         lines.append(f"revision_strategy: {strategy}")
+    if snapshot.pending_tool:
+        tool_name = str(snapshot.pending_tool.get("tool_name") or "tool")
+        status = str(snapshot.pending_tool.get("status") or "working")
+        lines.append(f"pending_tool: {tool_name} [{status}]")
+    if snapshot.tts_state != "idle":
+        lines.append(f"tts_state: {snapshot.tts_state}")
+    if snapshot.last_spoken_progress:
+        spoken_text = str(snapshot.last_spoken_progress.get("text") or "")
+        lines.append(f"last_spoken_progress: {spoken_text}")
+    if snapshot.speech_turn_id:
+        lines.append(f"speech_turn_id: {snapshot.speech_turn_id}")
+    if snapshot.barge_in_source:
+        lines.append(f"barge_in_source: {snapshot.barge_in_source}")
     if snapshot.reusable_artifacts:
         lines.append("reusable_artifacts:")
         for artifact in snapshot.reusable_artifacts:
@@ -445,6 +544,7 @@ def _updated_state_for_request(
     turn_id = _metadata_string(realtime.get("turn_id")) if isinstance(realtime, dict) else None
     run_id = _metadata_string(realtime.get("run_id")) if isinstance(realtime, dict) else None
     interrupt = realtime_metadata_requests_interrupt(metadata)
+    speech_turn_id = _speech_turn_id_from_request(request, realtime=realtime, turn_id=turn_id)
     now = _utc_now()
 
     if state is None:
@@ -458,6 +558,7 @@ def _updated_state_for_request(
             latest_user_text=text,
             latest_turn_id=turn_id,
             latest_run_id=run_id,
+            speech_turn_id=speech_turn_id,
             status="revising" if interrupt else "active",
         )
     else:
@@ -465,6 +566,7 @@ def _updated_state_for_request(
         state.latest_user_text = text
         state.latest_turn_id = turn_id
         state.latest_run_id = run_id
+        state.speech_turn_id = speech_turn_id or state.speech_turn_id
         if not state.objective:
             state.objective = text
         state.status = "revising" if interrupt else "active"
@@ -479,6 +581,8 @@ def _updated_state_for_request(
             state.artifacts = [_stale_artifact(artifact) for artifact in state.artifacts]
         strategy = _select_continuation_strategy(state)
         state.continuation_strategy = strategy
+        state.tts_state = "interrupted"
+        state.barge_in_source = _barge_in_source_from_request(request)
         state.constraints = _append_unique_limited(state.constraints, text)
         state.revisions.append(
             IntentRevision(
@@ -787,6 +891,108 @@ def _stale_artifact(artifact: TaskArtifact) -> TaskArtifact:
     if artifact.reuse_policy != "reusable":
         return artifact
     return artifact.model_copy(update={"reuse_policy": "stale"}, deep=True)
+
+
+def _pending_tool_from_event(
+    payload: dict[str, Any],
+    *,
+    default_status: str,
+) -> dict[str, Any] | None:
+    tool_name = _metadata_string(payload.get("tool_name") or payload.get("name"))
+    current_step = _metadata_string(payload.get("current_step") or payload.get("step_id")) or tool_name
+    if tool_name is None and current_step is None:
+        return None
+    result: dict[str, Any] = {
+        "tool_name": tool_name or current_step,
+        "status": _metadata_string(payload.get("status")) or default_status,
+    }
+    if current_step:
+        result["current_step"] = current_step
+    run_id = _metadata_string(payload.get("run_id"))
+    if run_id:
+        result["run_id"] = run_id
+    pre_tool_call = payload.get("pre_tool_call")
+    if isinstance(pre_tool_call, dict):
+        side_effect = pre_tool_call.get("side_effect")
+        if isinstance(side_effect, dict):
+            result["side_effect"] = {
+                key: value
+                for key, value in side_effect.items()
+                if key in {"level", "requires_confirmation", "confirmation_kind", "compensation_hint"}
+            }
+        confirmation = pre_tool_call.get("confirmation")
+        if isinstance(confirmation, dict) and isinstance(confirmation.get("required"), bool):
+            result["requires_confirmation"] = confirmation["required"]
+    return result
+
+
+def _spoken_progress_from_event(
+    *,
+    text: str | None,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    message = _metadata_string(text) or _metadata_string(payload.get("message"))
+    if message is None:
+        return None
+
+    progress: dict[str, Any] = {"text": _clip_text(message, max_chars=240)}
+    for key in ("source", "current_step"):
+        value = _metadata_string(payload.get(key))
+        if value is not None:
+            progress[key] = value
+    for key in ("replaceable", "display_only"):
+        if isinstance(payload.get(key), bool):
+            progress[key] = payload[key]
+    return progress
+
+
+def _pending_tool_matches(pending_tool: dict[str, Any] | None, tool_name: str | None) -> bool:
+    if pending_tool is None:
+        return False
+    if tool_name is None:
+        return True
+    return pending_tool.get("tool_name") == tool_name or pending_tool.get("current_step") == tool_name
+
+
+def _speech_turn_id_from_request(
+    request: UserRequest,
+    *,
+    realtime: Any,
+    turn_id: str | None,
+) -> str | None:
+    metadata = request.metadata
+    for value in (
+        metadata.get("speech_turn_id"),
+        realtime.get("speech_turn_id") if isinstance(realtime, dict) else None,
+    ):
+        parsed = _metadata_string(value)
+        if parsed:
+            return parsed
+    return request.audio_id or turn_id
+
+
+def _barge_in_source_from_request(request: UserRequest) -> RealtimeBargeInSource:
+    metadata = request.metadata
+    explicit = _metadata_string(metadata.get("barge_in_source"))
+    if explicit in {"transcript", "explicit_cancel", "hangup", "media_relay_control", "unknown"}:
+        return explicit  # type: ignore[return-value]
+
+    cancel_source = _metadata_string(metadata.get("cancel_source"))
+    if cancel_source == "gateway_hangup":
+        return "hangup"
+    if cancel_source in {"gateway_cancel", "gateway_interrupt"}:
+        return "explicit_cancel"
+
+    source = _metadata_string(metadata.get("source"))
+    if source == "realtime_media_websocket":
+        if request.audio_id or request.text:
+            return "transcript"
+        return "media_relay_control"
+
+    control = _metadata_string(metadata.get("control"))
+    if control in {"interrupt", "barge_in", "cancel_previous"}:
+        return "explicit_cancel"
+    return "unknown"
 
 
 def _artifact_id(task_id: str, *parts: str) -> str:

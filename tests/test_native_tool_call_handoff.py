@@ -104,6 +104,7 @@ def test_progress_message_for_tool_uses_simple_static_mapping() -> None:
     assert progress_message_for_tool("price_compare") == "我比一下价格。"
     assert progress_message_for_tool("vision_understanding") == "我看一下。"
     assert progress_message_for_tool("video_understanding") == "我分析一下。"
+    assert progress_message_for_tool("web_search") == "我联网查一下。"
     assert progress_message_for_tool("image_generation") == "我开始生成，可能需要一点时间。"
     assert progress_message_for_tool("unknown_tool") == "我处理一下。"
 
@@ -140,6 +141,31 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
     assert state.response.message == "已根据 native tool call 搜索通勤耳机。"
     assert state.request.metadata["assistant_loop_steps"][0]["safety_notes"] == ["native_tool_call"]
     assert any(step.get("observation_tool") == "product_search" for step in state.request.metadata["assistant_loop_steps"])
+
+
+def test_native_web_search_tool_call_runs_through_validator_executor_and_observation() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("web_search", {"query": "OpenAI latest news", "limit": 2}),
+            final_result("已根据 web_search observation 回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="联网搜索 OpenAI 最近发布了什么"))
+
+    native_tool_names = [tool["function"]["name"] for tool in adapter.requests[0].tools]
+    assert "web_search" in native_tool_names
+    tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
+    assert tool_messages
+    assert "web_search" in tool_messages[0]["content"]
+    assert "mock://web-search/" in tool_messages[0]["content"]
+    assert [call.tool_name for call in state.tool_calls] == ["web_search"]
+    assert state.response is not None
+    assert state.response.message == "已根据 web_search observation 回答。"
 
 
 def test_native_tool_call_emits_replaceable_progress_and_suppresses_first_call_content() -> None:

@@ -64,6 +64,8 @@ class CapabilityValidator:
             return [] if request.image_ids else ["image"]
         if capability == "video_understanding":
             return [] if request.video_ids else ["video"]
+        if capability == "web_search":
+            return [] if self._has_query(request) else ["query"]
         if capability == "product_search":
             return [] if self._has_search_input(request) else ["search_query"]
         if capability == "price_compare":

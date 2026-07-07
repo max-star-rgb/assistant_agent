@@ -117,7 +117,7 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 
 工具副作用策略是工具治理元数据，不属于 Gateway 协议。
 
-- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`product_search`、`price_compare`、image/video understanding。
+- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`product_search`、`price_compare`、image/video understanding。
 - 创建可替换 artifact 的工具标为 `compensatable`，例如 `image_generation` 和 `render_3d`；中断后应生成修正版或说明已有 artifact，而不是宣称旧结果被撤销。
 - confirmation-sensitive 工具标为 `pending_confirmation`，例如 `memory_save` 和 legacy `memory`；如果工具结果返回 `requires_confirmation=true` 或 `confirmation_id`，realtime task-state 会记录 pending confirmation。
 - 如果 confirmation-sensitive 或未知工具已经成功返回，realtime task-state 会把它视为 `committed`，中断后的下一轮必须报告已发生状态或提供安全后续动作。
@@ -131,6 +131,7 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 
 - `vision_understanding`
 - `video_understanding`
+- `web_search`
 - `product_search`
 - `price_compare`
 - `image_generation`
@@ -143,11 +144,39 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 
 默认副作用分类：
 
-- `vision_understanding`、`video_understanding`、`product_search`、`price_compare`: `external_read`。
+- `vision_understanding`、`video_understanding`、`web_search`、`product_search`、`price_compare`: `external_read`。
 - `memory_retrieval`: `local_read`。
 - `image_generation`、`render_3d`: `compensatable`。
 - `memory`、`memory_save`: `pending_confirmation`，成功提交后从 realtime interrupt 视角记为 `committed`。
 - `delegate_to_agent`: `compensatable`，因为子任务可能已经开始，需要取消、覆盖或补发修正。
+
+## Web Search 工具
+
+`web_search` 是只读实时信息检索工具，用于“最新消息 / 实时信息 / 今天新闻 / 联网搜索 / current/latest/news/web search”等时间敏感请求。它只返回搜索结果列表和摘要输入，不做网页全文抓取、浏览器渲染、爬虫或多页面阅读。
+
+输入字段：
+
+- `query`: 必填搜索 query。
+- `recency_days`: 可选时间窗口。
+- `site_filter`: 可选站点过滤。
+- `limit`: 结果数量，schema 限制为 1-10。
+
+输出字段：
+
+- `query_used`
+- `results[]`，每项包含 `title`、`url`、`snippet`、可选 `source` 和 `published_at`
+- `summary`
+- `provider`
+- `latency_ms`
+- `output_ref`
+
+Provider 边界：
+
+- 默认 `MULTIMODAL_AGENT_SEARCH_PROVIDER=mock`，`MockWebSearchAdapter` 返回稳定假数据。
+- 真实 HTTP 搜索必须同时满足 `provider_smoke` 或 `pilot` runtime profile、显式 `MULTIMODAL_AGENT_SEARCH_PROVIDER=http`、`WEB_SEARCH_BASE_URL` 和 `WEB_SEARCH_API_KEY`。
+- local/offline profile 即使检测到 `WEB_SEARCH_API_KEY` 也不会选择 http provider。
+- `HttpWebSearchAdapter` 缺配置时返回结构化 `provider_unconfigured`，不 fallback 到 mock。
+- v1 通用 HTTP 后端使用 JSON POST：`query`、`recency_days`、`site_filter`、`limit`；响应应包含 `results` 或 `items`。
 
 ## ActionValidator 边界
 
@@ -158,6 +187,7 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 - `tool_name` 必须存在于当前 registry。
 - `vision_understanding` 必须有 `image_ids`，`video_understanding` 必须有 `video_ref` 或 `video_ids`。
 - `image_generation` 必须有 prompt 或 product information。
+- `web_search` 必须有非空 query；`limit` 等范围由工具 Pydantic schema 校验。
 - `product_search` 必须有 query 或 visual summary。
 - `price_compare` 必须有 query 或 items。
 - `memory_retrieval` 必须有 query。
@@ -168,6 +198,8 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 - `delegate_to_agent` 必须有 `target_agent_id` 和 text/image/video/audio payload。
 - 最后用目标工具的 Pydantic `input_schema` 做结构校验。
 
+对已知工具，`ActionValidator` 会附带 prompt-safe `metadata.pre_tool_call` 摘要，包含工具名、运行时身份、副作用策略、确认需求、幂等 key 是否存在、输入规模摘要和 realtime task-state 摘要；它不包含原始 query/prompt、provider payload 或媒体内容。
+
 被拒绝的 action 不会进入 `ToolExecutor`，不会产生 `ToolCallRecord`；assistant loop 会生成 `ToolObservation(status="rejected")`，记录 `action_rejected` trace，并由 loop guard 判断是否终止。
 
 ## ToolExecutor 边界
@@ -177,8 +209,9 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 - 对 memory 工具用 `AgentState.user_id/session_id` 覆盖模型参数。
 - 检查 run-scoped cancel token；取消时跳过工具执行或停止 retry，并把 run 交回 runtime 标记为 `cancelled`。
 - 创建 `ToolCallRecord` 并更新 `AgentState.status`。
+- 发出带 `pre_tool_call` 摘要的 `tool_started` 事件；预算阻断也进入同一生命周期，但不会调用 registry。
 - 在真正执行前调用 `ProviderCallBudget.check_before_call()`。
-- 发出 `tool_started`、`tool_finished`、`tool_failed` 事件。
+- 发出带 `post_tool_call` 摘要的 `tool_finished` / `tool_failed` 事件，覆盖成功、失败、取消和预算阻断。
 - 写入 `ToolHistoryStore` 的 started/succeeded/failed 记录。
 - 通过 `ProviderExecutionPolicy.retry` 对 retryable provider 错误重试。
 - 把 registry/tool 异常转为失败 `ToolResult`，不让异常穿透给 Agent。
@@ -186,6 +219,8 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 - 记录 provider budget call record。
 - 用 `RecoveryPolicy` 决定失败后 stop、partial continue 或 optional step skip。
 - 写入 trace event，失败时包含 sanitized error 和 input/output summary。
+
+`post_tool_call` 只暴露 prompt-safe lifecycle 信息，例如 status、side-effect summary、confirmation summary、output_ref、latency、retry count 和压缩后的 observation summary。它不会携带 raw provider payload、secret-like error text 或大媒体内容。
 
 只有 `ToolExecutor._run_once()` 可以直接调用 `registry.run(...)`。新增入口、API、MCP、graph node 或 service 不应直接调用 registry。
 
@@ -217,6 +252,7 @@ contract
 
 - 成功 observation 包含 summary、output_ref、structured_output、next_step_hint。
 - 失败或 rejected observation 包含 sanitized error_code/error_message 和 recovery hint。
+- `web_search` 会保留 `title`、`url`、`snippet`、`published_at`、`source`，成功 observation 摘要首条结果和总数。
 - 商品搜索/比价会保留 title、price、currency、URL、url_status 等后续回答和 price_compare 必需字段。
 - context builder 会压缩大 observation、截断命令输出、移除 raw provider payload、base64、secret-like 内容。
 

@@ -12,6 +12,9 @@ def test_provider_config_allows_empty_environment() -> None:
     assert config.chat_provider == "mock"
     assert config.chat_stream is False
     assert config.image_generation_provider == "mock"
+    assert config.search_provider == "mock"
+    assert config.web_search_base_url is None
+    assert config.web_search_api_key is None
     assert config.product_search_provider == "mock"
     assert config.price_compare_provider == "mock"
     assert config.render_provider == "mock"
@@ -62,6 +65,10 @@ def test_provider_config_reads_environment_values() -> None:
             "QWEN_IMAGE_DEFAULT_SIZE": "256*256",
             "LOCAL_IMAGE_BASE_URL": "http://localhost:8189",
             "LOCAL_IMAGE_MODEL": "local-image-test",
+            "MULTIMODAL_AGENT_SEARCH_PROVIDER": "http",
+            "WEB_SEARCH_BASE_URL": "http://localhost:7005",
+            "WEB_SEARCH_API_KEY": "test-web-search-key",
+            "WEB_SEARCH_TIMEOUT_SECONDS": "4.25",
             "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http",
             "PRODUCT_SEARCH_BASE_URL": "http://localhost:7001",
             "PRODUCT_SEARCH_API_KEY": "test-product-key",
@@ -120,6 +127,10 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.qwen_image_default_size == "1024*1024"
     assert config.local_image_base_url == "http://localhost:8189"
     assert config.local_image_model == "local-image-test"
+    assert config.search_provider == "http"
+    assert config.web_search_base_url == "http://localhost:7005"
+    assert config.web_search_api_key == "test-web-search-key"
+    assert config.web_search_timeout_seconds == 4.25
     assert config.product_search_provider == "http"
     assert config.product_search_base_url == "http://localhost:7001"
     assert config.product_search_api_key == "test-product-key"
@@ -154,6 +165,7 @@ def test_provider_config_offline_eval_defaults_to_mock_local_providers() -> None
     assert config.vision_provider == "mock"
     assert config.chat_provider == "mock"
     assert config.image_generation_provider == "mock"
+    assert config.search_provider == "mock"
     assert config.product_search_provider == "mock"
     assert config.price_compare_provider == "mock"
     assert config.render_provider == "mock"
@@ -173,6 +185,7 @@ def test_provider_smoke_does_not_enable_real_provider_from_key_only() -> None:
     assert config.vision_provider == "mock"
     assert config.chat_provider == "mock"
     assert config.image_generation_provider == "mock"
+    assert config.search_provider == "mock"
 
 
 def test_provider_smoke_allows_explicit_provider_selection() -> None:

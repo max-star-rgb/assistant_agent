@@ -257,7 +257,7 @@ class GatewaySessionService:
                         run_id=run_id,
                         reason="error",
                         error=_result_error(result),
-                        payload={"expects_reply": True},
+                        payload=_run_end_payload(result=result, expects_reply=True),
                     )
                 )
             else:
@@ -268,7 +268,7 @@ class GatewaySessionService:
                         turn_id=turn_id,
                         run_id=run_id,
                         reason=end_reason,
-                        payload={"expects_reply": expects_reply},
+                        payload=_run_end_payload(result=result, expects_reply=expects_reply),
                     )
                 )
         except Exception as exc:  # noqa: BLE001 - protocol boundary.
@@ -519,6 +519,17 @@ def _cancelled_realtime_result(
             "best_effort": True,
         },
     )
+
+
+def _run_end_payload(
+    *,
+    result: RealtimeAgentResult,
+    expects_reply: bool,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"expects_reply": expects_reply}
+    if result.trace_id:
+        payload["trace_id"] = result.trace_id
+    return payload
 
 
 def _discard_queued_frames(queue: asyncio.Queue[Frame]) -> None:

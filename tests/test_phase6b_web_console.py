@@ -29,12 +29,12 @@ def test_static_console_asset_is_served() -> None:
     assert "Generated Images" in response.text
     assert "Assistant ReAct Process" in response.text
     assert "Web Chat" in response.text
-    assert "App + Media Relay" in response.text
+    assert "Realtime Call Debugger" in response.text
     assert "experience-mode-select" in response.text
     assert "assistant_agent_console_mode" in response.text
     assert '<option value="web_chat">Web Chat</option>' in response.text
-    assert '<option value="app_media">App + Media Relay</option>' in response.text
-    assert "Assistant Call" in response.text
+    assert '<option value="app_media">Realtime Call Debugger</option>' in response.text
+    assert "Realtime Call" in response.text
     assert "Call transcript" in response.text
     assert "Start Call" in response.text
     assert "Hang Up" in response.text
@@ -42,6 +42,10 @@ def test_static_console_asset_is_served() -> None:
     assert ">Say<" in response.text
     assert ">Interrupt<" in response.text
     assert "Gateway Timeline" in response.text
+    assert "Agent Trace" in response.text
+    assert "realtime-trace-output" in response.text
+    assert "loadRealtimeTraceSummary" in response.text
+    assert "App + Media Relay" not in response.text
     assert "web-chat-workspace" in response.text
     assert "app-media-workspace" in response.text
     assert "chat-panel" in response.text

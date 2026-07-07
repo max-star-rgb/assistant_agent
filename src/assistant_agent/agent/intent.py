@@ -41,6 +41,31 @@ class IntentDetector:
     )
     video_understanding_keywords = ("视频", "发生了什么", "里面有什么", "总结这个视频", "总结这段视频")
     search_keywords = ("找", "找相似", "相似款", "同款", "找一下", "帮我找", "搜索")
+    web_search_keywords = (
+        "最新",
+        "最近",
+        "实时",
+        "新闻",
+        "今天",
+        "现在",
+        "当前",
+        "联网",
+        "网上",
+        "网页",
+        "查一下",
+        "查查",
+        "latest",
+        "recent",
+        "current",
+        "today",
+        "now",
+        "news",
+        "online",
+        "web",
+        "look up",
+    )
+    explicit_web_search_keywords = ("联网搜索", "网上搜索", "网页搜索", "web search", "search the web", "internet search")
+    product_hint_keywords = ("耳机", "鞋", "包", "衣服", "手机", "电脑", "椅", "桌", "灯", "相似款", "同款", "商品", "产品", "电商", "价格")
     compare_keywords = ("比价", "比较价格", "哪个便宜", "便宜", "价格", "平台")
     generation_keywords = ("生成", "海报", "换背景", "风格图", "出图", "封面")
     render_keywords = ("客厅", "放到", "放进", "放入", "3d", "3D", "三维", "渲染", "建模", "模型", "看看效果")
@@ -73,7 +98,6 @@ class IntentDetector:
 
     def detect(self, request: UserRequest) -> IntentResult:
         text = (request.text or "").strip()
-        normalized = text.lower()
 
         if not text and (request.image_ids or request.video_ids):
             return IntentResult(
@@ -155,7 +179,14 @@ class IntentDetector:
                 rationale="用户询问价格、便宜程度或平台比较。",
             )
 
-        if self._contains(text, self.search_keywords):
+        if self._has_web_search_intent(text):
+            return IntentResult(
+                intent="web_search",
+                confidence=0.85,
+                rationale="用户要求检索最新、实时或联网信息。",
+            )
+
+        if self._has_product_search_intent(text):
             return IntentResult(
                 intent="product_search",
                 confidence=0.85,
@@ -223,7 +254,11 @@ class IntentDetector:
             matches.append(
                 RuleMatch("media_understanding_keywords", "image_understanding", 0.9, "用户询问图片内容。")
             )
-        if self._contains(text, self.search_keywords):
+        if self._has_web_search_intent(text):
+            matches.append(
+                RuleMatch("web_search_keywords", "web_search", 0.9, "用户要求检索最新、实时或联网信息。")
+            )
+        if self._has_product_search_intent(text):
             matches.append(
                 RuleMatch("product_search_keywords", "product_search", 0.9, "用户要求查找同款或相似商品。")
             )
@@ -294,7 +329,7 @@ class IntentDetector:
         elif request.image_ids and self._contains(text, self.media_reference_keywords):
             ordered.append("image_understanding")
 
-        for capability in ("product_search", "price_compare", "image_generation", "render_3d", "memory_save"):
+        for capability in ("web_search", "product_search", "price_compare", "image_generation", "render_3d", "memory_save"):
             if any(match.intent == capability for match in matches):
                 ordered.append(capability)
 
@@ -321,6 +356,7 @@ class IntentDetector:
             "image_generation": "image_generation",
             "image_understanding": "vision_understanding",
             "video_understanding": "video_understanding",
+            "web_search": "web_search",
             "product_search": "product_search",
             "price_compare": "price_compare",
             "render_3d": "render_3d",
@@ -363,7 +399,7 @@ class IntentDetector:
         groups = [
             self.video_understanding_keywords + self.image_understanding_keywords,
             self.memory_keywords + self.save_memory_keywords,
-            self.search_keywords,
+            self.search_keywords + self.web_search_keywords,
             self.compare_keywords,
             self.generation_keywords,
             self.render_keywords,
@@ -379,7 +415,7 @@ class IntentDetector:
         if not has_media:
             return False
 
-        if self._contains(text, self.search_keywords) or self._contains(text, self.compare_keywords):
+        if self._has_product_search_intent(text) or self._has_web_search_intent(text) or self._contains(text, self.compare_keywords):
             return True
         if has_media and self._contains(text, self.generation_keywords) and self._contains(
             text, self.media_reference_keywords
@@ -403,7 +439,34 @@ class IntentDetector:
 
     @staticmethod
     def _contains(text: str, keywords: tuple[str, ...]) -> bool:
-        return any(keyword in text for keyword in keywords)
+        lowered = text.lower()
+        return any(keyword.lower() in lowered for keyword in keywords)
+
+    def _has_product_search_intent(self, text: str) -> bool:
+        if self._contains(
+            text,
+            (
+                "购买",
+                "买",
+                "下单",
+                "淘宝",
+                "京东",
+                "相似款",
+                "同款",
+                "商品链接",
+                "shopping",
+                "buy",
+                "purchase",
+            ),
+        ):
+            return True
+        product_action_keywords = self.search_keywords + ("搜一下", "推荐", "recommend", "search", "find", "look for")
+        return self._contains(text, product_action_keywords) and self._contains(text, self.product_hint_keywords)
+
+    def _has_web_search_intent(self, text: str) -> bool:
+        if self._contains(text, self.explicit_web_search_keywords):
+            return True
+        return self._contains(text, self.web_search_keywords) and not self._contains(text, self.product_hint_keywords)
 
     def _has_render_intent(self, text: str) -> bool:
         if not text:

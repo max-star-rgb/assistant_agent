@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.tool_call_boundary import build_pre_tool_call_summary
 from assistant_agent.tools.registry import ToolRegistry
 
 
@@ -18,6 +19,7 @@ class ActionValidationResult(BaseModel):
     accepted: bool
     code: str = Field(min_length=1)
     message: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ActionValidator:
@@ -41,28 +43,43 @@ class ActionValidator:
         tool_name = decision.tool_name
         if tool_name not in registry.list():
             return _reject("unknown_tool", f"Unknown tool: {tool_name}.")
+        metadata = {
+            "pre_tool_call": build_pre_tool_call_summary(
+                tool_name=tool_name,
+                tool_input=decision.tool_input,
+                registry=registry,
+                request=request,
+                state=state,
+                step_id=decision.step_id,
+            )
+        }
 
         media_error = _validate_required_media(tool_name, decision.tool_input, request)
         if media_error is not None:
-            return media_error
+            return _with_metadata(media_error, metadata)
 
         semantic_error = _validate_required_semantic_inputs(tool_name, decision.tool_input)
         if semantic_error is not None:
-            return semantic_error
+            return _with_metadata(semantic_error, metadata)
 
         if tool_name == "render_3d" and not _has_explicit_render_intent(request.text or "", decision.tool_input):
             return _reject(
                 "render_intent_required",
                 "render_3d requires explicit 3D, render, modeling, or scene-preview intent.",
+                metadata=metadata,
             )
 
         try:
             registry.get(tool_name).input_schema.model_validate(decision.tool_input)
         except ValidationError as exc:
             first = exc.errors()[0] if exc.errors() else {"msg": "invalid input"}
-            return _reject("invalid_tool_input", f"{tool_name} input invalid: {first.get('msg', 'invalid input')}")
+            return _reject(
+                "invalid_tool_input",
+                f"{tool_name} input invalid: {first.get('msg', 'invalid input')}",
+                metadata=metadata,
+            )
 
-        return ActionValidationResult(accepted=True, code="accepted", message="Action accepted.")
+        return ActionValidationResult(accepted=True, code="accepted", message="Action accepted.", metadata=metadata)
 
 
 def _validate_required_media(
@@ -93,6 +110,8 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
         return _reject("invalid_tool_input", "product_search requires query or visual_summary.")
     if tool_name == "price_compare" and not (tool_input.get("query") or tool_input.get("items")):
         return _reject("invalid_tool_input", "price_compare requires query or items.")
+    if tool_name == "web_search" and not _non_empty_string(tool_input.get("query")):
+        return _reject("invalid_tool_input", "web_search requires query.")
     if tool_name == "memory_retrieval" and not tool_input.get("query"):
         return _reject("invalid_tool_input", "memory_retrieval requires query.")
     if tool_name == "memory":
@@ -120,6 +139,10 @@ def _has_memory_save_text(tool_input: dict[str, Any]) -> bool:
     if not isinstance(content, dict):
         return False
     return bool(content.get("text") or content.get("summary"))
+
+
+def _non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _validate_legacy_memory_tool_input(tool_input: dict[str, Any]) -> ActionValidationResult | None:
@@ -171,5 +194,9 @@ def _has_explicit_render_intent(text: str, tool_input: dict[str, Any]) -> bool:
     return False
 
 
-def _reject(code: str, message: str) -> ActionValidationResult:
-    return ActionValidationResult(accepted=False, code=code, message=message)
+def _reject(code: str, message: str, *, metadata: dict[str, Any] | None = None) -> ActionValidationResult:
+    return ActionValidationResult(accepted=False, code=code, message=message, metadata=metadata or {})
+
+
+def _with_metadata(result: ActionValidationResult, metadata: dict[str, Any]) -> ActionValidationResult:
+    return result.model_copy(update={"metadata": {**result.metadata, **metadata}}, deep=True)

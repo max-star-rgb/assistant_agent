@@ -61,6 +61,14 @@ def _completed_artifacts(
     return SimpleNamespace(state=state)
 
 
+def _no_visible_realtime_progress() -> dict[str, object]:
+    return {
+        "first_visible_event_ms": None,
+        "sla_fallback_emitted": False,
+        "user_visible_event_count": 0,
+    }
+
+
 def test_agent_graph_realtime_backend_maps_request_metadata_and_fields() -> None:
     captured: dict[str, object] = {}
 
@@ -146,6 +154,46 @@ def test_agent_graph_realtime_backend_forwards_runtime_progress_events() -> None
     assert events[1].payload["progress"] == 0.5
 
 
+def test_agent_graph_realtime_backend_forwards_replaceable_progress_message() -> None:
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        event_sink = kwargs["event_sink"]
+        event_sink.emit(
+            AgentEvent(
+                type="progress_message",
+                session_id=request.session_id,
+                run_id="assistant-run-1",
+                tool_name="image_generation",
+                text="我开始生成，可能需要一点时间。",
+                payload={
+                    "source": "native_tool_wait",
+                    "replaceable": True,
+                    "tool_name": "image_generation",
+                },
+            )
+        )
+        return _completed_artifacts(request)
+
+    backend = AgentGraphRealtimeBackend(run_request=fake_run_assistant_request)
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(user_id="user-1", session_id="session-1", text="生成一个蛋糕"),
+            event_sink=collect,
+        )
+    )
+
+    assert result.status == "completed"
+    progress = next(event for event in events if event.type == "run.progress")
+    assert progress.text == "我开始生成，可能需要一点时间。"
+    assert progress.payload["agent_event_type"] == "progress_message"
+    assert progress.payload["replaceable"] is True
+    assert progress.payload["tool_name"] == "image_generation"
+
+
 def test_agent_graph_realtime_backend_emits_task_revision_progress_on_interrupt() -> None:
     captured: dict[str, UserRequest] = {}
 
@@ -227,6 +275,210 @@ def test_agent_graph_realtime_backend_emits_idle_heartbeat_progress() -> None:
     assert heartbeats
     assert heartbeats[0].text == "Still processing the request."
     assert heartbeats[0].payload["elapsed_since_update_s"] >= 0.05
+
+
+def test_agent_graph_realtime_backend_emits_first_progress_fallback_before_slow_final() -> None:
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        time.sleep(0.03)
+        return _completed_artifacts(request, run_id="assistant-run-1", message="Done.")
+
+    backend = AgentGraphRealtimeBackend(
+        run_request=fake_run_assistant_request,
+        progress_policy=ProgressPolicy(
+            first_progress_timeout_s=0.01,
+            heartbeat_interval_s=0,
+        ),
+    )
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(user_id="user-1", session_id="session-1", text="hello"),
+            event_sink=collect,
+        )
+    )
+
+    assert result.status == "completed"
+    assert [event.type for event in events] == [
+        "run.progress",
+        "response.chunk",
+        "response.final",
+    ]
+    fallback = events[0]
+    assert fallback.text == "I am on it."
+    assert fallback.display_only is True
+    assert fallback.payload["source"] == "realtime_sla_fallback"
+    assert fallback.payload["replaceable"] is True
+    assert fallback.payload["display_only"] is True
+    assert fallback.payload["stage"] == "runtime"
+    assert fallback.payload["status"] == "working"
+    assert fallback.payload["current_step"] == "awaiting_first_output"
+    assert fallback.payload["fallback_policy_version"] == "v1"
+    assert result.metadata["realtime_progress"]["sla_fallback_emitted"] is True
+    assert result.metadata["realtime_progress"]["user_visible_event_count"] == 3
+    assert result.metadata["realtime_progress"]["first_visible_event_ms"] >= 0
+
+
+def test_agent_graph_realtime_backend_skips_first_progress_fallback_after_fast_progress() -> None:
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        kwargs["event_sink"].emit(
+            AgentEvent(
+                type="task_started",
+                session_id=request.session_id,
+                run_id="assistant-run-1",
+                payload={"user_id": request.user_id},
+            )
+        )
+        time.sleep(0.03)
+        return _completed_artifacts(request, run_id="assistant-run-1", message="Done.")
+
+    backend = AgentGraphRealtimeBackend(
+        run_request=fake_run_assistant_request,
+        progress_policy=ProgressPolicy(
+            first_progress_timeout_s=0.02,
+            heartbeat_interval_s=0,
+        ),
+    )
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(user_id="user-1", session_id="session-1", text="hello"),
+            event_sink=collect,
+        )
+    )
+
+    assert result.status == "completed"
+    assert all(event.payload.get("source") != "realtime_sla_fallback" for event in events)
+    assert events[0].type == "run.progress"
+    assert events[0].payload["status"] == "started"
+    assert result.metadata["realtime_progress"]["sla_fallback_emitted"] is False
+
+
+def test_agent_graph_realtime_backend_skips_first_progress_fallback_after_interrupt_revision() -> None:
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        time.sleep(0.03)
+        return _completed_artifacts(request, run_id="assistant-run-1", message="Done.")
+
+    backend = AgentGraphRealtimeBackend(
+        run_request=fake_run_assistant_request,
+        progress_policy=ProgressPolicy(
+            first_progress_timeout_s=0.01,
+            heartbeat_interval_s=0,
+        ),
+    )
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(
+                user_id="user-1",
+                session_id="session-1",
+                run_id="runtime-run-2",
+                turn_id="turn-2",
+                text="等等，优先考虑降噪",
+                metadata={
+                    "source": "realtime_media_websocket",
+                    "control": "interrupt",
+                    "gateway": {"history": ["先比较耳机", "等等，优先考虑降噪"]},
+                },
+            ),
+            event_sink=collect,
+        )
+    )
+
+    assert result.status == "completed"
+    assert events[0].type == "run.progress"
+    assert events[0].payload["stage"] == "task_state"
+    assert all(event.payload.get("source") != "realtime_sla_fallback" for event in events)
+    assert result.metadata["realtime_progress"]["sla_fallback_emitted"] is False
+
+
+def test_agent_graph_realtime_backend_suppresses_first_progress_fallback_after_cancel() -> None:
+    token = MutableCancelToken()
+
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        time.sleep(0.04)
+        return _completed_artifacts(request, run_id="assistant-run-1", trace_id="trace-1")
+
+    async def run_with_cancel() -> tuple[object, list[RealtimeAgentEvent]]:
+        events: list[RealtimeAgentEvent] = []
+
+        async def collect(event: RealtimeAgentEvent) -> None:
+            events.append(event)
+
+        async def cancel_soon() -> None:
+            await asyncio.sleep(0.005)
+            token.cancelled = True
+
+        backend = AgentGraphRealtimeBackend(
+            run_request=fake_run_assistant_request,
+            progress_policy=ProgressPolicy(
+                first_progress_timeout_s=0.01,
+                heartbeat_interval_s=0,
+            ),
+        )
+        cancel_task = asyncio.create_task(cancel_soon())
+        result = await backend.run_turn(
+            RealtimeAgentRequest(user_id="user-1", session_id="session-1", text="hello"),
+            event_sink=collect,
+            cancel_token=token,
+        )
+        await cancel_task
+        return result, events
+
+    result, events = asyncio.run(run_with_cancel())
+
+    assert result.status == "cancelled"
+    assert [event.type for event in events] == []
+    assert result.metadata["realtime_progress"]["sla_fallback_emitted"] is False
+    assert result.metadata["realtime_progress"]["user_visible_event_count"] == 0
+
+
+def test_agent_graph_realtime_backend_completed_result_includes_realtime_progress_metadata() -> None:
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        kwargs["event_sink"].emit(
+            AgentEvent(
+                type="response_delta",
+                session_id=request.session_id,
+                run_id="assistant-run-1",
+                text="Alpha",
+            )
+        )
+        return _completed_artifacts(request, run_id="assistant-run-1", message="Alpha")
+
+    backend = AgentGraphRealtimeBackend(
+        run_request=fake_run_assistant_request,
+        progress_policy=ProgressPolicy(first_progress_timeout_s=1.0),
+    )
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(user_id="user-1", session_id="session-1", text="hello"),
+            event_sink=collect,
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.metadata["realtime_progress"] == {
+        "first_visible_event_ms": result.metadata["realtime_progress"]["first_visible_event_ms"],
+        "sla_fallback_emitted": False,
+        "user_visible_event_count": 2,
+    }
+    assert result.metadata["realtime_progress"]["first_visible_event_ms"] >= 0
 
 
 def test_agent_graph_realtime_backend_keeps_delegation_inside_main_runtime() -> None:
@@ -413,6 +665,7 @@ def test_agent_graph_realtime_backend_post_run_cancel_skips_final_events() -> No
     assert result.trace_id == "trace-1"
     assert result.metadata == {
         "assistant_run_id": "assistant-run-1",
+        "realtime_progress": _no_visible_realtime_progress(),
         "cancel_phase": "post_run",
         "best_effort": True,
     }
@@ -443,6 +696,7 @@ def test_agent_graph_realtime_backend_post_run_cancel_includes_token_metadata() 
     assert result.status == "cancelled"
     assert result.metadata == {
         "assistant_run_id": "assistant-run-1",
+        "realtime_progress": _no_visible_realtime_progress(),
         "cancel_source": "deadline",
         "cancel_reason": "run_deadline_expired",
         "deadline_ms": 50,
@@ -489,6 +743,7 @@ def test_agent_graph_realtime_backend_maps_internal_agent_cancel_without_final_e
     assert result.trace_id == "trace-1"
     assert result.metadata == {
         "assistant_run_id": "assistant-run-1",
+        "realtime_progress": _no_visible_realtime_progress(),
         "cancel_phase": "after_node",
         "best_effort": True,
     }
@@ -524,6 +779,7 @@ def test_agent_graph_realtime_backend_maps_internal_agent_cancel_metadata() -> N
     assert result.status == "cancelled"
     assert result.metadata == {
         "assistant_run_id": "assistant-run-1",
+        "realtime_progress": _no_visible_realtime_progress(),
         "cancel_source": "deadline",
         "cancel_reason": "run_deadline_expired",
         "deadline_ms": 75,
@@ -777,10 +1033,11 @@ def test_agent_graph_realtime_backend_exception_returns_error_and_emits_error_ev
 
     assert result.status == "error"
     assert result.run_id == "runtime-run-1"
-    assert result.metadata == {
-        "error_type": "RuntimeError",
-        "error_message": "backend exploded",
-    }
+    assert result.metadata["error_type"] == "RuntimeError"
+    assert result.metadata["error_message"] == "backend exploded"
+    assert result.metadata["realtime_progress"]["sla_fallback_emitted"] is False
+    assert result.metadata["realtime_progress"]["user_visible_event_count"] == 1
+    assert result.metadata["realtime_progress"]["first_visible_event_ms"] >= 0
     assert [event.type for event in events] == ["error"]
     assert events[0].text == "backend exploded"
     assert events[0].payload["error_type"] == "RuntimeError"

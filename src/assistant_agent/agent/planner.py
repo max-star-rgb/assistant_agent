@@ -10,6 +10,31 @@ class RuleBasedTaskPlanner:
     memory_keywords = ("上次", "刚才", "之前", "以前", "我喜欢")
     memory_save_keywords = ("记住", "帮我记", "保存偏好")
     search_keywords = ("找", "搜索", "同款", "相似")
+    web_search_keywords = (
+        "最新",
+        "最近",
+        "实时",
+        "新闻",
+        "今天",
+        "现在",
+        "当前",
+        "联网",
+        "网上",
+        "网页",
+        "查一下",
+        "查查",
+        "latest",
+        "recent",
+        "current",
+        "today",
+        "now",
+        "news",
+        "online",
+        "web",
+        "look up",
+    )
+    explicit_web_search_keywords = ("联网搜索", "网上搜索", "网页搜索", "web search", "search the web", "internet search")
+    product_hint_keywords = ("耳机", "鞋", "包", "衣服", "手机", "电脑", "椅", "桌", "灯", "相似款", "同款", "商品", "产品", "电商", "价格")
     compare_keywords = ("比价", "价格", "便宜", "比较")
     image_keywords = ("生成", "海报", "风格图", "换背景", "出图")
     render_keywords = ("渲染", "3d", "3D", "三维", "建模", "模型", "放到", "放进", "放入", "客厅", "展厅", "展示")
@@ -45,7 +70,16 @@ class RuleBasedTaskPlanner:
                 reason="用户提供了媒体输入，先理解媒体内容。",
             )
 
-        if self._contains(text, self.search_keywords):
+        if self._has_web_search_intent(text):
+            self._append_step(
+                steps,
+                action="search_web",
+                tool_name="web_search",
+                required_inputs=["query"],
+                reason="用户要求检索最新、实时或联网信息。",
+            )
+
+        if self._has_product_search_intent(text):
             self._append_step(
                 steps,
                 action="search_product",
@@ -160,7 +194,34 @@ class RuleBasedTaskPlanner:
         return f"step_{index + 1}"
 
     def _contains(self, text: str, keywords: tuple[str, ...]) -> bool:
-        return any(keyword in text for keyword in keywords)
+        lowered = text.lower()
+        return any(keyword.lower() in lowered for keyword in keywords)
+
+    def _has_product_search_intent(self, text: str) -> bool:
+        if self._contains(
+            text,
+            (
+                "购买",
+                "买",
+                "下单",
+                "淘宝",
+                "京东",
+                "相似款",
+                "同款",
+                "商品链接",
+                "shopping",
+                "buy",
+                "purchase",
+            ),
+        ):
+            return True
+        product_action_keywords = self.search_keywords + ("搜一下", "推荐", "recommend", "search", "find", "look for")
+        return self._contains(text, product_action_keywords) and self._contains(text, self.product_hint_keywords)
+
+    def _has_web_search_intent(self, text: str) -> bool:
+        if self._contains(text, self.explicit_web_search_keywords):
+            return True
+        return self._contains(text, self.web_search_keywords) and not self._contains(text, self.product_hint_keywords)
 
     def _has_render_intent(self, text: str) -> bool:
         if not text:

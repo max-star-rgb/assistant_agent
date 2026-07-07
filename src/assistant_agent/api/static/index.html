@@ -673,6 +673,10 @@
         margin-top: 10px;
       }
 
+      .app-call-trace-status {
+        margin-top: 10px;
+      }
+
       .app-call-output[hidden] {
         display: none;
       }
@@ -1400,7 +1404,7 @@
           <label for="experience-mode-select">模式</label>
           <select class="mode-select" id="experience-mode-select">
             <option value="web_chat">Web Chat</option>
-            <option value="app_media">App + Media Relay</option>
+            <option value="app_media">Realtime Call Debugger</option>
           </select>
         </div>
         <div class="user-info">
@@ -1554,7 +1558,7 @@
                   <div class="app-call-contact">
                     <div class="app-call-avatar">AI</div>
                     <div>
-                      <h2>Assistant Call</h2>
+                      <h2>Realtime Call</h2>
                       <div class="app-call-state" id="app-call-state">Disconnected</div>
                     </div>
                   </div>
@@ -1600,6 +1604,28 @@
                 </div>
                 <button class="secondary-button" id="realtime-ping" type="button" disabled>Ping</button>
                 <pre class="realtime-event-log" id="realtime-events"></pre>
+              </details>
+
+              <details class="app-call-debug" open>
+                <summary>Agent Trace</summary>
+                <div class="realtime-status-grid">
+                  <div class="realtime-stat">
+                    <div class="realtime-stat-label">Run ID</div>
+                    <div class="realtime-stat-value" id="realtime-trace-run-id">none</div>
+                  </div>
+                  <div class="realtime-stat">
+                    <div class="realtime-stat-label">Trace ID</div>
+                    <div class="realtime-stat-value" id="realtime-trace-id">none</div>
+                  </div>
+                  <div class="realtime-stat">
+                    <div class="realtime-stat-label">Trace Status</div>
+                    <div class="realtime-stat-value" id="realtime-trace-status">waiting for run</div>
+                  </div>
+                </div>
+                <button class="secondary-button app-call-trace-status" id="realtime-trace-refresh" type="button" disabled>
+                  Load Trace
+                </button>
+                <pre class="realtime-event-log" id="realtime-trace-output"></pre>
               </details>
 
               <div class="app-call-output" hidden>
@@ -1672,6 +1698,11 @@
       const realtimeRunIdOutput = document.querySelector("#realtime-run-id");
       const realtimeOutput = document.querySelector("#realtime-output");
       const realtimeEvents = document.querySelector("#realtime-events");
+      const realtimeTraceRunIdOutput = document.querySelector("#realtime-trace-run-id");
+      const realtimeTraceIdOutput = document.querySelector("#realtime-trace-id");
+      const realtimeTraceStatus = document.querySelector("#realtime-trace-status");
+      const realtimeTraceRefreshButton = document.querySelector("#realtime-trace-refresh");
+      const realtimeTraceOutput = document.querySelector("#realtime-trace-output");
       const appCallState = document.querySelector("#app-call-state");
       const appCallTimer = document.querySelector("#app-call-timer");
       const appCallMessages = document.querySelector("#app-call-messages");
@@ -1683,6 +1714,8 @@
       let realtimeConnected = false;
       let realtimeRunActive = false;
       let realtimeActiveRunId = "";
+      let realtimeTraceRunId = "";
+      let realtimeTraceId = "";
       let realtimeOutputText = "";
       let realtimeEventLines = [];
       let appCallStartedAt = 0;
@@ -1787,6 +1820,9 @@
       });
       realtimePingButton.addEventListener("click", () => {
         sendRealtimePing();
+      });
+      realtimeTraceRefreshButton.addEventListener("click", () => {
+        void loadRealtimeTraceSummary();
       });
       realtimeEndButton.addEventListener("click", () => {
         disconnectRealtimeMedia({ sendEnd: true });
@@ -2093,7 +2129,7 @@
             payload: {
               session_id: sessionId,
               config: {
-                entry: "terminal_app_media_relay",
+                entry: "realtime_call_debugger",
                 identity_bound: true,
                 locale: "zh-CN",
               },
@@ -2173,7 +2209,7 @@
             image_ids: imageIds,
             video_ids: videoIds,
             metadata: {
-              source: "terminal_app_media_relay",
+              source: "realtime_call_debugger",
               transport: "websocket",
               control: options.interrupt ? "interrupt" : "message",
             },
@@ -2257,6 +2293,7 @@
         }
         if (frameType === "run.started") {
           setRealtimeRunActive(true, frame.run_id || "");
+          setRealtimeTrace(frame.run_id || "", "");
           realtimeOutputText = "";
           renderRealtimeOutput();
           if (appCallQueuedMessages.length) {
@@ -2295,8 +2332,11 @@
           return;
         }
         if (frameType === "run.end") {
+          const traceId = traceIdFromFrame(frame);
           if (frame.run_id) {
-            setControlPlaneRun(frame.run_id, "");
+            setControlPlaneRun(frame.run_id, traceId);
+            setRealtimeTrace(frame.run_id, traceId);
+            void loadRealtimeTraceSummary({ silent: true });
             void refreshControlPlaneRecent({ silent: true });
           }
           if (!isCurrentRealtimeRunFrame(frame)) {
@@ -2325,6 +2365,7 @@
         renderRealtimeEvents();
         renderAppCallMessages();
         setRealtimeRunActive(false, "");
+        resetRealtimeTraceView();
         syncRealtimeSessionDisplay();
       }
 
@@ -2449,6 +2490,13 @@
       function appCallProgressFromPayload(payload) {
         if (payload.stage !== "task_state") {
           const text = String(payload.text || payload.message || "Agent working");
+          if (payload.source === "native_tool_wait") {
+            return {
+              state: "Agent thinking",
+              label: text,
+              draftText: text,
+            };
+          }
           return {
             state: APP_CALL_STATES.includes(text) ? text : "Agent thinking",
             label: text,
@@ -2570,6 +2618,105 @@
         realtimeEvents.scrollTop = realtimeEvents.scrollHeight;
       }
 
+      function resetRealtimeTraceView() {
+        realtimeTraceRunId = "";
+        realtimeTraceId = "";
+        if (realtimeTraceRunIdOutput) {
+          realtimeTraceRunIdOutput.textContent = "none";
+        }
+        if (realtimeTraceIdOutput) {
+          realtimeTraceIdOutput.textContent = "none";
+        }
+        if (realtimeTraceStatus) {
+          realtimeTraceStatus.textContent = "waiting for run";
+        }
+        if (realtimeTraceOutput) {
+          realtimeTraceOutput.textContent = "";
+        }
+        updateRealtimeTraceControls(false);
+      }
+
+      function setRealtimeTrace(runId, traceId) {
+        realtimeTraceRunId = String(runId || realtimeTraceRunId || "");
+        realtimeTraceId = String(traceId || realtimeTraceId || "");
+        if (realtimeTraceRunIdOutput) {
+          realtimeTraceRunIdOutput.textContent = realtimeTraceRunId || "none";
+        }
+        if (realtimeTraceIdOutput) {
+          realtimeTraceIdOutput.textContent = realtimeTraceId || (realtimeTraceRunId ? "pending" : "none");
+        }
+        if (realtimeTraceStatus) {
+          realtimeTraceStatus.textContent = realtimeTraceId ? "trace available" : realtimeTraceRunId ? "run active" : "waiting for run";
+        }
+        updateRealtimeTraceControls(false);
+      }
+
+      function traceIdFromFrame(frame) {
+        const payload = frame && frame.payload && typeof frame.payload === "object" ? frame.payload : {};
+        return String(frame.trace_id || payload.trace_id || "");
+      }
+
+      async function loadRealtimeTraceSummary(options = {}) {
+        const runId = realtimeTraceRunId || realtimeActiveRunId || "";
+        const traceId = realtimeTraceId || "";
+        if (!runId && !traceId) {
+          if (!options.silent && realtimeTraceStatus) {
+            realtimeTraceStatus.textContent = "waiting for run";
+          }
+          return false;
+        }
+        updateRealtimeTraceControls(true);
+        if (!options.silent && realtimeTraceStatus) {
+          realtimeTraceStatus.textContent = "loading trace...";
+        }
+        try {
+          const sections = [];
+          if (traceId) {
+            appendControlPlaneSection(
+              sections,
+              "Trace Summary",
+              await fetchOptionalJson(`/traces/${encodeURIComponent(traceId)}`),
+            );
+          }
+          if (runId) {
+            appendControlPlaneSection(
+              sections,
+              "Run Summary",
+              await fetchOptionalJson(`/runs/${encodeURIComponent(runId)}`),
+            );
+            appendControlPlaneSection(
+              sections,
+              "Tool Calls",
+              await fetchOptionalJson(`/runs/${encodeURIComponent(runId)}/tool-calls`),
+            );
+          }
+          if (realtimeTraceOutput) {
+            realtimeTraceOutput.textContent = sections.join("\n\n");
+            realtimeTraceOutput.scrollTop = 0;
+          }
+          if (realtimeTraceStatus) {
+            realtimeTraceStatus.textContent = traceId ? "trace loaded" : "run loaded";
+          }
+          return true;
+        } catch (error) {
+          if (realtimeTraceStatus) {
+            realtimeTraceStatus.textContent = errorMessage(error);
+          }
+          if (realtimeTraceOutput) {
+            realtimeTraceOutput.textContent = String(errorMessage(error));
+          }
+          return false;
+        } finally {
+          updateRealtimeTraceControls(false);
+        }
+      }
+
+      function updateRealtimeTraceControls(isBusy) {
+        if (realtimeTraceRefreshButton) {
+          realtimeTraceRefreshButton.disabled = Boolean(isBusy) || !(realtimeTraceRunId || realtimeTraceId || realtimeActiveRunId);
+        }
+      }
+
       function formatClientFrameLine(frame, source) {
         return formatRealtimeFrameLine({ ...frame, type: `media.${frame.type || "event"}` }, source);
       }
@@ -2587,6 +2734,10 @@
           parts.push(`reason=${frame.reason}`);
         }
         const payload = frame.payload && typeof frame.payload === "object" ? frame.payload : {};
+        const traceId = frame.trace_id || payload.trace_id;
+        if (traceId) {
+          parts.push(`trace=${traceId}`);
+        }
         const text = payload.text || payload.message || "";
         const error = frame.error ? eventErrorMessage(frame.error) : "";
         const suffix = text || error;

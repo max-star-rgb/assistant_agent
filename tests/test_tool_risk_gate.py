@@ -1,0 +1,178 @@
+from pydantic import BaseModel
+
+from assistant_agent.agent.state import AgentState
+from assistant_agent.agent.tool_executor import ToolExecutor
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy
+from assistant_agent.services.event_sink import ListEventSink
+from assistant_agent.services.tool_risk_gate import (
+    InMemoryToolIdempotencyLedger,
+    risk_gate_level_for_policy,
+)
+from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.registry import ToolRegistry
+
+
+class RiskGateInput(BaseModel):
+    prompt: str | None = None
+    query: str | None = None
+    text: str | None = None
+    idempotency_key: str | None = None
+
+
+class RecordingTool(MockTool):
+    description = "Records how often it executes."
+    input_schema = RiskGateInput
+    output_schema = RiskGateInput
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.calls = 0
+
+    def _run(self, input: RiskGateInput, context: ToolContext) -> ToolResult:
+        self.calls += 1
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data={"summary": f"{self.name} execution {self.calls}"},
+            output_ref=f"mock://{self.name}/{self.calls}",
+        )
+
+
+def _realtime_state(*, run_id: str = "run-1") -> AgentState:
+    return AgentState.from_request(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="实时任务",
+            metadata={"source": "realtime_agent_backend"},
+        ),
+        run_id=run_id,
+    )
+
+
+def test_risk_gate_maps_side_effect_policy_to_runtime_gate_level() -> None:
+    assert risk_gate_level_for_policy(
+        ToolSideEffectPolicy(level="external_read", requires_confirmation=False)
+    ) == "auto"
+    assert risk_gate_level_for_policy(
+        ToolSideEffectPolicy(level="local_read", requires_confirmation=False)
+    ) == "auto"
+    assert risk_gate_level_for_policy(
+        ToolSideEffectPolicy(level="compensatable", requires_confirmation=False)
+    ) == "soft_gate"
+    assert risk_gate_level_for_policy(ToolSideEffectPolicy()) == "hard_gate"
+
+
+def test_read_only_tools_run_without_idempotency_overhead() -> None:
+    tool = RecordingTool("product_search")
+    registry = ToolRegistry()
+    registry.register(tool)
+    ledger = InMemoryToolIdempotencyLedger()
+    sink = ListEventSink()
+    executor = ToolExecutor(registry=registry, event_sink=sink, idempotency_ledger=ledger)
+
+    first = executor.run_tool(_realtime_state(run_id="run-1"), "step-1", tool.name, {"query": "耳机"})
+    second = executor.run_tool(_realtime_state(run_id="run-2"), "step-1", tool.name, {"query": "耳机"})
+
+    assert first.success is True
+    assert second.success is True
+    assert tool.calls == 2
+    assert ledger.record_count == 0
+    started = [event for event in sink.events if event.type == "tool_started"]
+    assert started[0].payload["pre_tool_call"]["risk_gate"]["level"] == "auto"
+    assert started[0].payload["pre_tool_call"]["idempotency"]["required"] is False
+
+
+def test_compensatable_tool_duplicate_idempotency_key_suppresses_second_execution() -> None:
+    tool = RecordingTool("image_generation")
+    registry = ToolRegistry()
+    registry.register(tool)
+    ledger = InMemoryToolIdempotencyLedger()
+
+    first = ToolExecutor(registry=registry, idempotency_ledger=ledger).run_tool(
+        _realtime_state(run_id="run-1"),
+        "step-1",
+        tool.name,
+        {"prompt": "蓝牙耳机海报", "idempotency_key": "image-task-1"},
+    )
+    sink = ListEventSink()
+    second = ToolExecutor(registry=registry, event_sink=sink, idempotency_ledger=ledger).run_tool(
+        _realtime_state(run_id="run-2"),
+        "step-1",
+        tool.name,
+        {"prompt": "蓝牙耳机海报", "idempotency_key": "image-task-1"},
+    )
+
+    assert first.success is True
+    assert second.success is True
+    assert tool.calls == 1
+    assert second.output_ref == first.output_ref
+    assert second.data["idempotency"]["duplicate_suppressed"] is True
+    finished = next(event for event in sink.events if event.type == "tool_finished")
+    post = finished.payload["post_tool_call"]
+    assert post["status"] == "duplicate_suppressed"
+    assert post["idempotency"]["duplicate_suppressed"] is True
+
+
+def test_compensatable_tool_generates_default_idempotency_key_for_same_run_step() -> None:
+    tool = RecordingTool("image_generation")
+    registry = ToolRegistry()
+    registry.register(tool)
+    ledger = InMemoryToolIdempotencyLedger()
+    sink = ListEventSink()
+    executor = ToolExecutor(registry=registry, event_sink=sink, idempotency_ledger=ledger)
+    state = _realtime_state(run_id="run-1")
+
+    first = executor.run_tool(state, "step-1", tool.name, {"prompt": "蓝牙耳机海报"})
+    second = executor.run_tool(state, "step-1", tool.name, {"prompt": "蓝牙耳机海报"})
+
+    assert first.success is True
+    assert second.success is True
+    assert tool.calls == 1
+    assert second.data["idempotency"]["duplicate_suppressed"] is True
+    started = [event for event in sink.events if event.type == "tool_started"]
+    assert started[0].payload["pre_tool_call"]["idempotency"]["generated"] is True
+    assert started[0].payload["pre_tool_call"]["idempotency"]["key"].startswith("auto:")
+
+
+def test_realtime_unknown_tool_defaults_to_confirmation_gate_without_execution() -> None:
+    tool = RecordingTool("custom_notification")
+    registry = ToolRegistry()
+    registry.register(tool)
+    ledger = InMemoryToolIdempotencyLedger()
+    sink = ListEventSink()
+
+    result = ToolExecutor(registry=registry, event_sink=sink, idempotency_ledger=ledger).run_tool(
+        _realtime_state(run_id="run-1"),
+        "step-1",
+        tool.name,
+        {"text": "发给团队"},
+    )
+
+    assert result.success is True
+    assert result.data["requires_confirmation"] is True
+    assert result.data["risk_gate"]["level"] == "hard_gate"
+    assert tool.calls == 0
+    finished = next(event for event in sink.events if event.type == "tool_finished")
+    post = finished.payload["post_tool_call"]
+    assert post["status"] == "pending_confirmation"
+    assert post["risk_gate"]["level"] == "hard_gate"
+
+
+def test_non_realtime_unknown_tool_keeps_legacy_executor_behavior() -> None:
+    tool = RecordingTool("custom_notification")
+    registry = ToolRegistry()
+    registry.register(tool)
+    ledger = InMemoryToolIdempotencyLedger()
+    state = AgentState.from_request(UserRequest(user_id="u1", session_id="s1", text="本地任务"))
+
+    result = ToolExecutor(registry=registry, idempotency_ledger=ledger).run_tool(
+        state,
+        "step-1",
+        tool.name,
+        {"text": "发给团队"},
+    )
+
+    assert result.success is True
+    assert tool.calls == 1

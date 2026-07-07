@@ -133,6 +133,37 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert frames[1]["payload"]["status"] == "working"
         assert frames[1]["payload"]["display_only"] is True
 
+    async def test_run_end_includes_backend_trace_id(self) -> None:
+        class TraceBackend:
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                return RealtimeAgentResult(
+                    status="completed",
+                    run_id=request.run_id,
+                    trace_id="trace-realtime-1",
+                    expects_reply=False,
+                )
+
+        session = GatewaySessionService(backend=TraceBackend())
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="trace-session",
+                    payload={"text": "show trace"},
+                )
+            )
+            frames = await _collect_until_run_end(client_ep)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert frames[-1]["type"] == "run.end"
+        assert frames[-1]["reason"] == "completed"
+        assert frames[-1]["payload"]["trace_id"] == "trace-realtime-1"
+        assert frames[-1]["payload"]["expects_reply"] is False
+
     async def test_message_user_streams_through_gateway_agent_adapter(self) -> None:
         captured: dict[str, object] = {}
 

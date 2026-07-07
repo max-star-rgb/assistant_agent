@@ -483,6 +483,8 @@ def _build_native_tool_messages(context: AssistantDecisionContext, state: AgentS
                 "future_use, and evidence. Use source_intent=user_explicit only when the user explicitly asks to "
                 "remember/save/use this in the future or next time. Use source_intent=assistant_candidate when you infer "
                 "a stable non-sensitive preference or project fact may be useful later. Never use user_confirmed. "
+                "For current, latest, realtime, today, news, or online lookup requests, use web_search; memory is not "
+                "a source for current web facts. "
                 "For multi-step work, request one provider tool call at a time when external data is needed, "
                 "or answer directly when available context is sufficient. Do not invent a separate "
                 "planner/controller protocol in provider-native tool mode. "

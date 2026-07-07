@@ -20,6 +20,10 @@ from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.provider_policy import ProviderExecutionPolicy
+from assistant_agent.services.tool_call_boundary import (
+    build_post_tool_call_summary,
+    build_pre_tool_call_summary,
+)
 from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
 from assistant_agent.tools.base import ToolContext
@@ -67,9 +71,41 @@ class ToolExecutor:
             state=state,
         )
         tool_input = _bind_runtime_identity(tool_name, tool_input, state)
+        pre_tool_call = build_pre_tool_call_summary(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            registry=self.registry,
+            request=state.request,
+            state=state,
+            step_id=step_id,
+            cancel_token=self.cancel_token,
+        )
         call = state.add_tool_call(tool_name, tool_input)
         capability = _capability_name(tool_name, step)
         budget = state.provider_budget
+        started_at = perf_counter()
+        self._emit(
+            AgentEvent(
+                type="tool_started",
+                session_id=state.session_id,
+                run_id=state.run_id,
+                tool_name=tool_name,
+                payload={
+                    "call_id": call.call_id,
+                    "step_id": step_id,
+                    "pre_tool_call": pre_tool_call,
+                },
+            )
+        )
+        if self.tool_history is not None:
+            self.tool_history.record_start(
+                state.run_id,
+                call.call_id,
+                tool_name,
+                tool_input,
+                user_id=state.user_id,
+                session_id=state.session_id,
+            )
         budget_error = budget.check_before_call(
             capability=capability,
             provider=_provider_name(tool_input),
@@ -77,6 +113,7 @@ class ToolExecutor:
             input_size_bytes=_input_size_bytes(tool_input),
         )
         if budget_error is not None:
+            latency_ms = int((perf_counter() - started_at) * 1000)
             optional_step = bool(step.optional) if step is not None else False
             recovery_action = "continue_with_partial_result" if optional_step else "stop_with_error"
             contract = build_capability_output_contract(
@@ -90,7 +127,17 @@ class ToolExecutor:
                 success=False,
                 error=f"{budget_error.code}: {budget_error.message}",
                 data={"provider_budget": budget.summary()},
+                latency_ms=latency_ms,
                 contract=contract,
+            )
+            post_tool_call = build_post_tool_call_summary(
+                tool_name=tool_name,
+                result=result,
+                state=state,
+                step_id=step_id,
+                call_id=call.call_id,
+                latency_ms=latency_ms,
+                retry_count=0,
             )
             state.fail_tool_call(
                 call.call_id,
@@ -106,6 +153,41 @@ class ToolExecutor:
                 },
                 stop_run=not optional_step,
             )
+            self._emit(
+                AgentEvent(
+                    type="tool_failed",
+                    session_id=state.session_id,
+                    run_id=state.run_id,
+                    tool_name=tool_name,
+                    error=api_error(
+                        budget_error.code,
+                        budget_error.message,
+                        detail={"step_id": step_id, "recovery_action": recovery_action},
+                        recoverable=False,
+                    ).model_dump(mode="json"),
+                    payload={
+                        "call_id": call.call_id,
+                        "step_id": step_id,
+                        "latency_ms": latency_ms,
+                        "retry_count": 0,
+                        "code": budget_error.code,
+                        "recovery_action": recovery_action,
+                        "contract": contract_summary(result.contract),
+                        "post_tool_call": post_tool_call,
+                    },
+                )
+            )
+            if self.tool_history is not None:
+                self.tool_history.record_end(
+                    state.run_id,
+                    call.call_id,
+                    tool_name,
+                    "failed",
+                    latency_ms,
+                    error=budget_error.message,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
+                )
             if trace_store is not None and trace_id is not None:
                 trace_store.append(
                     TraceEvent(
@@ -118,6 +200,7 @@ class ToolExecutor:
                         capability=capability,
                         tool_name=tool_name,
                         status="failed",
+                        latency_ms=latency_ms,
                         error_code=budget_error.code,
                         input_summary=_input_summary(tool_input),
                         output_summary={"provider_budget": budget.summary()},
@@ -132,25 +215,6 @@ class ToolExecutor:
                 )
             return result
 
-        self._emit(
-            AgentEvent(
-                type="tool_started",
-                session_id=state.session_id,
-                run_id=state.run_id,
-                tool_name=tool_name,
-                payload={"call_id": call.call_id, "step_id": step_id},
-            )
-        )
-        if self.tool_history is not None:
-            self.tool_history.record_start(
-                state.run_id,
-                call.call_id,
-                tool_name,
-                tool_input,
-                user_id=state.user_id,
-                session_id=state.session_id,
-            )
-        started_at = perf_counter()
         try:
             result, retry_count = self._run_with_retry(
                 tool_name,
@@ -173,6 +237,16 @@ class ToolExecutor:
                 "tool_name": tool_name,
                 "retryable": False,
             }
+            post_tool_call = build_post_tool_call_summary(
+                tool_name=tool_name,
+                result=result,
+                state=state,
+                step_id=step_id,
+                call_id=call.call_id,
+                latency_ms=latency_ms,
+                retry_count=0,
+                cancel_metadata=error_details,
+            )
             state.fail_tool_call(
                 call.call_id,
                 DEFAULT_CANCELLATION_MESSAGE,
@@ -198,6 +272,7 @@ class ToolExecutor:
                         "latency_ms": latency_ms,
                         "retry_count": 0,
                         "code": CANCELLATION_ERROR_CODE,
+                        "post_tool_call": post_tool_call,
                     },
                 )
             )
@@ -257,6 +332,15 @@ class ToolExecutor:
 
         if result.success:
             state.complete_tool_call(call.call_id, result)
+            post_tool_call = build_post_tool_call_summary(
+                tool_name=tool_name,
+                result=result,
+                state=state,
+                step_id=step_id,
+                call_id=call.call_id,
+                latency_ms=result.latency_ms or latency_ms,
+                retry_count=retry_count,
+            )
             self._emit(
                 AgentEvent(
                     type="tool_finished",
@@ -270,6 +354,7 @@ class ToolExecutor:
                         "latency_ms": result.latency_ms or latency_ms,
                         "retry_count": retry_count,
                         "contract": contract_summary(result.contract),
+                        "post_tool_call": post_tool_call,
                     },
                 )
             )
@@ -287,6 +372,15 @@ class ToolExecutor:
         else:
             decision = self.recovery_policy.decide(result, step)
             result.error = decision.message
+            post_tool_call = build_post_tool_call_summary(
+                tool_name=tool_name,
+                result=result,
+                state=state,
+                step_id=step_id,
+                call_id=call.call_id,
+                latency_ms=result.latency_ms or latency_ms,
+                retry_count=retry_count,
+            )
             state.fail_tool_call(
                 call.call_id,
                 decision.message,
@@ -321,6 +415,7 @@ class ToolExecutor:
                         "code": decision.error_code,
                         "recovery_action": decision.action,
                         "contract": contract_summary(result.contract),
+                        "post_tool_call": post_tool_call,
                     },
                 )
             )
@@ -430,6 +525,7 @@ def _capability_name(tool_name: str, step: TaskStep | None) -> str:
         action_map = {
             "understand_image": "image_understanding",
             "understand_video": "video_understanding",
+            "search_web": "web_search",
             "search_product": "product_search",
             "compare_price": "price_compare",
             "generate_image": "image_generation",
@@ -442,6 +538,7 @@ def _capability_name(tool_name: str, step: TaskStep | None) -> str:
     tool_map = {
         "vision_understanding": "image_understanding",
         "video_understanding": "video_understanding",
+        "web_search": "web_search",
         "product_search": "product_search",
         "price_compare": "price_compare",
         "image_generation": "image_generation",

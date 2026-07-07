@@ -13,6 +13,7 @@
 - 涉及记忆服务设计、`MemoryManager`、Memory Kernel、memory store/retrieval/write policy/user profile、memory tool、memory API、SQLite/store migration、RequestIdentity、token-aware memory context、retention/export/audit、memory eval 或长期记忆边界时，如可用优先使用项目内 `.codex/skills/assistant-agent-memory-service` skill。
 - 涉及多 agent 实例、`assistant_agent.agent_routing` 聚合入口、agent directory、AgentRouter、agent-to-agent 通信、`/agents/run`、A2A/JSON-RPC adapter、跨实例 session/task 路由、`delegate_to_agent`、pilot readiness、agent router evidence 或 OpenClaw 概念映射时，如可用优先使用项目内 `.codex/skills/assistant-agent-collaboration` skill。
 - 涉及 `assistant_agent.gateway`、realtime phone/gateway、wire protocol frame、`message.user`/`run.started`/`stream.chunk`/`run.end`/`run.cancel` 语义、session history、cancel/interrupt/multiturn 行为、WebSocket gateway bridge，或需要对照 `/home/lenovo1/pycharm_project/runTime` 的参考实现时，如可用必须使用项目内 `.codex/skills/assistant-runtime-reference` skill；该 skill 只用于查看旧 runtime 参考实现，不把 `runTime` 重新作为当前项目入口。
+- 涉及持续推进实时通话 Harness hardening、确定性兜底话术、realtime call state/reducer、实时工具等待状态、实时副作用恢复、幂等工具执行或轻量 checkpoint/恢复计划时，先按 Gateway/tool calling/context 相关 skill 和权威 docs 建立边界，再读取 `docs/development/realtime-harness-hardening-plan.md` 作为当前开发计划；该文档不是架构权威，也不覆盖用户另有安排的记忆系统。
 - 涉及面试训练、模拟面试、题目分级、回答点评、标准答案、面试金句或 `docs/interview/` 文档更新时，如可用优先使用项目内 `.codex/skills/assistant-agent-interview-trainer` skill。
 - 涉及架构分层、模块归属、治理边界或重构判断时，以本文件的“当前架构边界”和“编码约定”为准；只有触及上下文、tool calling、记忆、agent collaboration 或 OpenClaw 参考映射专项时才使用对应项目 skill/权威材料。
 - 涉及文档盘点、入口路由、归档、删除、清理或新增文档时，优先保持 AGENTS 和少量专项 docs 同步；README 只保留占位，不要重新引入通用索引文档。

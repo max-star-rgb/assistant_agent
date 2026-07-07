@@ -9,6 +9,7 @@ TEXT_ONLY_CASES = [
     ("帮我写一段商品介绍", "direct_chat", []),
     ("生成一张赛博朋克风格海报", "image_generation", ["image_generation"]),
     ("帮我找 500 元以内的白色运动鞋", "product_search", ["product_search"]),
+    ("查一下今天 AI 行业最新消息", "web_search", ["web_search"]),
     ("比较一下 iPhone 15 和 iPhone 16 的价格", "price_compare", ["price_compare"]),
     ("上次那个黑色包还在吗", "memory_retrieval", ["memory_retrieval"]),
     ("把浅灰色沙发放到北欧风客厅看看", "render_3d", ["render_3d"]),

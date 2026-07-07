@@ -39,6 +39,7 @@ _RUN_EVENT_TYPES = {
     "tool_finished",
     "tool_completed",
     "tool_failed",
+    "progress_message",
     "agent_trace_decision",
     "agent_trace_observation",
     "response_delta",
@@ -105,10 +106,13 @@ class AgentGraphRealtimeBackend:
             event_sink=event_sink,
             progress_policy=self._progress_policy,
         )
+        first_progress_task = forwarder.start_first_progress_fallback(cancel_token)
         heartbeat_task = forwarder.start_heartbeat(cancel_token)
 
         try:
-            await _emit_task_revision_progress_if_needed(event_sink, user_request)
+            revision_progress = _task_revision_progress_event(user_request)
+            if revision_progress is not None:
+                await forwarder.forward_realtime_event(revision_progress)
             run_request = self._run_request or run_assistant_request
             try:
                 artifacts = await asyncio.to_thread(
@@ -120,7 +124,8 @@ class AgentGraphRealtimeBackend:
                     cancel_token=cancel_token,
                 )
             finally:
-                await _stop_heartbeat(heartbeat_task)
+                await _stop_task(first_progress_task)
+                await _stop_task(heartbeat_task)
             await forwarder.drain()
 
             state = artifacts.state
@@ -135,6 +140,7 @@ class AgentGraphRealtimeBackend:
                     trace_id=state.trace_id,
                     metadata={
                         **result_metadata,
+                        "realtime_progress": forwarder.progress_summary(),
                         **state_cancel_metadata,
                         "cancel_phase": _cancel_phase_from_state(state) or "agent_run",
                         "best_effort": True,
@@ -148,6 +154,7 @@ class AgentGraphRealtimeBackend:
                     trace_id=state.trace_id,
                     metadata={
                         **result_metadata,
+                        "realtime_progress": forwarder.progress_summary(),
                         **cancellation_metadata(cancel_token),
                         "cancel_phase": "post_run",
                         "best_effort": True,
@@ -160,13 +167,14 @@ class AgentGraphRealtimeBackend:
 
             if status == "completed" and event_sink is not None:
                 await _emit_final_response_events(
-                    event_sink,
+                    forwarder,
                     session_id=state.session_id,
                     run_id=state.run_id,
                     response_text=response_text,
                     emit_chunks=not forwarder.response_delta_seen,
                 )
 
+            result_metadata["realtime_progress"] = forwarder.progress_summary()
             return RealtimeAgentResult(
                 status=status,
                 response_text=response_text,
@@ -177,15 +185,20 @@ class AgentGraphRealtimeBackend:
                 metadata=result_metadata,
             )
         except Exception as exc:  # pragma: no cover - exact source varies by runtime.
-            await _emit_backend_error(event_sink, request=request, error=exc)
+            await forwarder.drain()
+            await _emit_backend_error(forwarder, request=request, error=exc)
             return RealtimeAgentResult(
                 status="error",
                 run_id=request.run_id,
                 metadata={
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
+                    "realtime_progress": forwarder.progress_summary(),
                 },
             )
+        finally:
+            await _stop_task(first_progress_task)
+            await _stop_task(heartbeat_task)
 
 
 def realtime_request_to_user_request(request: RealtimeAgentRequest) -> UserRequest:
@@ -213,27 +226,22 @@ def realtime_request_to_user_request(request: RealtimeAgentRequest) -> UserReque
     )
 
 
-async def _emit_task_revision_progress_if_needed(
-    event_sink: RealtimeEventSink | None,
-    request: UserRequest,
-) -> None:
-    if event_sink is None or not realtime_metadata_requests_interrupt(request.metadata):
-        return
+def _task_revision_progress_event(request: UserRequest) -> RealtimeAgentEvent | None:
+    if not realtime_metadata_requests_interrupt(request.metadata):
+        return None
     realtime = request.metadata.get("realtime")
-    await event_sink(
-        RealtimeAgentEvent(
-            type="run.progress",
-            text="Revising task with the latest user correction.",
-            payload={
-                "stage": "task_state",
-                "status": "revising",
-                "current_step": "intent_revision",
-                "display_only": True,
-                "run_id": realtime.get("run_id") if isinstance(realtime, dict) else None,
-                "turn_id": realtime.get("turn_id") if isinstance(realtime, dict) else None,
-            },
-            display_only=True,
-        )
+    return RealtimeAgentEvent(
+        type="run.progress",
+        text="Revising task with the latest user correction.",
+        payload={
+            "stage": "task_state",
+            "status": "revising",
+            "current_step": "intent_revision",
+            "display_only": True,
+            "run_id": realtime.get("run_id") if isinstance(realtime, dict) else None,
+            "turn_id": realtime.get("turn_id") if isinstance(realtime, dict) else None,
+        },
+        display_only=True,
     )
 
 
@@ -258,6 +266,9 @@ class _RealtimeForwardingEventSink:
     def response_delta_seen(self) -> bool:
         return self._response_delta_seen
 
+    def progress_summary(self) -> dict[str, object]:
+        return self._progress.summary()
+
     def emit(self, event: AgentEvent) -> None:
         self.events.append(event)
         if self._event_sink is None or event.type not in _RUN_EVENT_TYPES:
@@ -279,12 +290,34 @@ class _RealtimeForwardingEventSink:
             return None
         return asyncio.create_task(self._heartbeat_loop(cancel_token))
 
+    def start_first_progress_fallback(
+        self,
+        cancel_token: RealtimeCancelToken | None,
+    ) -> asyncio.Task[None] | None:
+        if self._event_sink is None or self._progress.policy.first_progress_timeout_s <= 0:
+            return None
+        return asyncio.create_task(self._first_progress_fallback_loop(cancel_token))
+
     async def _forward_events(self, events: list[RealtimeAgentEvent]) -> None:
+        for event in events:
+            await self.forward_realtime_event(event)
+
+    async def forward_realtime_event(self, event: RealtimeAgentEvent) -> None:
         if self._event_sink is None:
             return
-        for event in events:
-            if self._progress.should_emit(event):
-                await self._event_sink(event)
+        if self._progress.should_emit(event):
+            await self._event_sink(event)
+
+    async def _first_progress_fallback_loop(
+        self,
+        cancel_token: RealtimeCancelToken | None,
+    ) -> None:
+        await asyncio.sleep(self._progress.policy.first_progress_timeout_s)
+        if _is_cancelled(cancel_token):
+            return
+        fallback = self._progress.first_progress_fallback()
+        if fallback is not None:
+            await self.forward_realtime_event(fallback)
 
     async def _heartbeat_loop(self, cancel_token: RealtimeCancelToken | None) -> None:
         while not _is_cancelled(cancel_token):
@@ -303,7 +336,7 @@ class _RealtimeForwardingEventSink:
         await asyncio.gather(*(asyncio.wrap_future(future) for future in pending))
 
 
-async def _stop_heartbeat(task: asyncio.Task[None] | None) -> None:
+async def _stop_task(task: asyncio.Task[None] | None) -> None:
     if task is None or task.done():
         return
     task.cancel()
@@ -311,7 +344,7 @@ async def _stop_heartbeat(task: asyncio.Task[None] | None) -> None:
 
 
 async def _emit_final_response_events(
-    event_sink: RealtimeEventSink,
+    forwarder: _RealtimeForwardingEventSink,
     *,
     session_id: str,
     run_id: str,
@@ -330,20 +363,18 @@ async def _emit_final_response_events(
         mapped = map_agent_event(final_event)
         realtime_events = [mapped] if mapped is not None else []
     for realtime_event in realtime_events:
-        await event_sink(realtime_event)
+        await forwarder.forward_realtime_event(realtime_event)
 
 
 async def _emit_backend_error(
-    event_sink: RealtimeEventSink | None,
+    forwarder: _RealtimeForwardingEventSink,
     *,
     request: RealtimeAgentRequest,
     error: Exception,
 ) -> None:
-    if event_sink is None:
-        return
     error_type = type(error).__name__
     error_message = str(error)
-    await event_sink(
+    await forwarder.forward_realtime_event(
         RealtimeAgentEvent(
             type="error",
             text=error_message,

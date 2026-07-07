@@ -39,6 +39,8 @@ def build_tool_input(
         return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
     if action == "compare_price":
         return {"query": request.text or "白色低帮运动鞋", "items": latest_items(outputs_by_step)}
+    if action == "search_web":
+        return build_web_search_input(request)
     if action == "generate_image":
         return build_image_generation_request(request, outputs_by_step).model_dump()
     if action == "render_3d":
@@ -57,6 +59,21 @@ def build_tool_input(
             "evidence": request.text or "compatibility save_memory action",
         }
     return {}
+
+
+def build_web_search_input(request: UserRequest) -> dict[str, Any]:
+    """Build web search input from a user request."""
+
+    text = (request.text or "").strip()
+    payload: dict[str, Any] = {"query": text}
+    lowered = text.lower()
+    if any(marker in text for marker in ("今天", "现在", "当前")) or any(
+        marker in lowered for marker in ("today", "now", "current")
+    ):
+        payload["recency_days"] = 1
+    elif any(marker in text for marker in ("最新", "最近")) or any(marker in lowered for marker in ("latest", "recent")):
+        payload["recency_days"] = 7
+    return payload
 
 
 def _metadata_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:

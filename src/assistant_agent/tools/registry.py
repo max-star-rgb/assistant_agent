@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, List, Dict
 
-from pydantic import BaseModel
-
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy, ToolSpec
 from assistant_agent.tools.base import BaseTool, ToolContext
@@ -15,6 +13,7 @@ from assistant_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveToo
 from assistant_agent.tools.price_compare_tool import PriceCompareTool
 from assistant_agent.tools.product_search_tool import ProductSearchTool
 from assistant_agent.tools.render_tool import Render3DTool
+from assistant_agent.services.web_search_adapter import create_web_search_adapter
 from assistant_agent.services.image_generation_adapter import create_image_generation_adapter
 from assistant_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
 from assistant_agent.services.provider_selection import create_vision_adapter
@@ -23,6 +22,7 @@ from assistant_agent.services.video_adapter import create_video_understanding_ad
 from assistant_agent.services.video_context import VideoContextStore
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 from assistant_agent.tools.vision_tool import VisionUnderstandingTool
+from assistant_agent.tools.web_search_tool import WebSearchTool
 
 if TYPE_CHECKING:
     from assistant_agent.services.agent_communication import AgentCommunicationService
@@ -193,6 +193,27 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "description": "Reads offer/provider data and does not mutate external state.",
         },
     },
+    "web_search": {
+        "when_to_use": [
+            "Answer current, latest, recent, today, realtime, news, or web lookup requests.",
+            "User explicitly asks to search the web, look up online information, or check current information.",
+        ],
+        "when_not_to_use": [
+            "User asks for shopping/product candidates; use product_search instead.",
+            "User asks to use saved preferences or prior chats; memory tools may be relevant but do not replace web_search for current facts.",
+            "Do not use for ordinary chat or timeless explanations that can be answered from available context.",
+        ],
+        "runtime_constraints": [
+            "Requires query.",
+            "Read-only search result retrieval; v1 does not fetch full pages or run a browser.",
+            "Real HTTP search requires provider_smoke or pilot runtime profile plus explicit MULTIMODAL_AGENT_SEARCH_PROVIDER=http.",
+        ],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads web search provider data and does not mutate external state.",
+        },
+    },
     "memory": {
         "when_to_use": ["Legacy memory retrieve/save compatibility tool."],
         "when_not_to_use": ["Prefer memory_retrieval or memory_save in the assistant loop."],
@@ -284,6 +305,7 @@ def create_default_registry(
         VideoUnderstandingTool(adapter=create_video_understanding_adapter(config), context_store=video_context_store),
         ProductSearchTool(adapter=create_product_search_adapter(config)),
         PriceCompareTool(adapter=create_price_compare_adapter(config)),
+        WebSearchTool(adapter=create_web_search_adapter(config)),
         ImageGenerationTool(adapter=create_image_generation_adapter(config)),
         Render3DTool(adapter=create_render_adapter(config)),
         MemoryTool(),

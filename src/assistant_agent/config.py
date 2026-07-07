@@ -36,6 +36,7 @@ PriceCompareProviderName = Literal["mock", "local", "http", "haodanku"]
 RenderProviderName = Literal["mock", "http"]
 VideoProviderName = Literal["mock", "http", "ark"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
+SearchProviderName = Literal["mock", "http"]
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,10 @@ class ProviderConfig:
     ark_image_output_format: str = "png"
     local_image_base_url: str | None = None
     local_image_model: str = "local-image"
+    search_provider: SearchProviderName = "mock"
+    web_search_base_url: str | None = None
+    web_search_api_key: str | None = None
+    web_search_timeout_seconds: float = 10.0
     product_search_provider: ProductSearchProviderName = "mock"
     product_search_local_path: str | None = None
     product_search_base_url: str | None = None
@@ -237,6 +242,13 @@ class ProviderConfig:
             ark_image_output_format="png",
             local_image_base_url=source.get("LOCAL_IMAGE_BASE_URL"),
             local_image_model=source.get("LOCAL_IMAGE_MODEL", "local-image"),
+            search_provider=_search_provider(
+                source.get("MULTIMODAL_AGENT_SEARCH_PROVIDER"),
+                allow_real=allow_real_providers,
+            ),
+            web_search_base_url=source.get("WEB_SEARCH_BASE_URL"),
+            web_search_api_key=source.get("WEB_SEARCH_API_KEY"),
+            web_search_timeout_seconds=_float_env(source.get("WEB_SEARCH_TIMEOUT_SECONDS"), 10.0),
             product_search_provider=_product_search_provider(
                 source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER"),
                 allow_real=allow_real_providers,
@@ -302,6 +314,8 @@ class ProviderConfig:
                 self.comfyui_base_url,
                 self.blender_render_url,
                 self.search_api_base_url,
+                self.web_search_base_url,
+                self.web_search_api_key,
                 self.product_search_api_key,
                 self.price_compare_api_key,
                 self.haodanku_api_key,
@@ -480,6 +494,12 @@ def _chat_provider(value: str | None, *, allow_real: bool = True) -> ChatProvide
 
 def _image_generation_provider(value: str | None, *, allow_real: bool = True) -> ImageGenerationProviderName:
     return select_image_generation_provider(value, allow_real=allow_real)
+
+
+def _search_provider(value: str | None, *, allow_real: bool = True) -> SearchProviderName:
+    if allow_real and value == "http":
+        return "http"
+    return "mock"
 
 
 def _product_search_provider(value: str | None, *, allow_real: bool = True) -> ProductSearchProviderName:

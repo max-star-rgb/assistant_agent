@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from threading import Event
 
 from fastapi.testclient import TestClient
 
@@ -22,6 +23,7 @@ class RecordingRealtimeBackend:
         return RealtimeAgentResult(
             status="completed",
             run_id=request.run_id,
+            trace_id="trace-gateway-api-1",
             response_text="gateway api response",
             expects_reply=True,
         )
@@ -30,11 +32,15 @@ class RecordingRealtimeBackend:
 class CancellableRealtimeBackend:
     def __init__(self) -> None:
         self.requests = []
+        self.cancel_metadata = None
+        self.cancel_seen = Event()
 
     async def run_turn(self, request, *, event_sink=None, cancel_token=None):
         self.requests.append(request)
         while not cancel_token.is_cancelled():
             await asyncio.sleep(0.01)
+        self.cancel_metadata = cancel_token.cancel_metadata
+        self.cancel_seen.set()
         return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
 
 
@@ -71,6 +77,7 @@ def test_gateway_websocket_accepts_gateway_frames() -> None:
     assert [item["type"] for item in frames] == ["run.started", "stream.chunk", "run.end"]
     assert frames[1]["payload"]["text"] == "gateway api response"
     assert frames[-1]["reason"] == "completed"
+    assert frames[-1]["payload"]["trace_id"] == "trace-gateway-api-1"
     assert backend.requests[0].text == "hello gateway"
     assert backend.requests[0].metadata["gateway"]["history"] == ["hello gateway"]
     assert backend.requests[0].metadata["gateway"]["session_config"] == {"tone": "concise"}
@@ -164,6 +171,7 @@ def test_realtime_media_websocket_maps_text_and_video_to_gateway_message() -> No
     assert ready["type"] == "call.ready"
     assert ready["session_id"] == "media-session"
     assert [item["type"] for item in frames] == ["run.started", "stream.chunk", "run.end"]
+    assert frames[-1]["payload"]["trace_id"] == "trace-gateway-api-1"
     assert backend.requests[0].user_id == "media-user"
     assert backend.requests[0].session_id == "media-session"
     assert backend.requests[0].text == "请总结这段视频"
@@ -282,6 +290,7 @@ def test_realtime_media_websocket_session_end_cancels_active_run_and_acks() -> N
             started = websocket.receive_json()
             websocket.send_json({"type": "session.end", "payload": {"reason": "user_hangup"}})
             frames = _receive_until_all(websocket, {"call.hangup_ack", "run.end"})
+            cancel_seen = backend.cancel_seen.wait(timeout=2.0)
     finally:
         gateway_runtime.reset_gateway_runtime_for_tests()
 
@@ -293,6 +302,11 @@ def test_realtime_media_websocket_session_end_cancels_active_run_and_acks() -> N
     assert ack["payload"]["cancelled_active_run"] is True
     assert run_end["reason"] == "cancelled"
     assert len(backend.requests) == 1
+    assert cancel_seen is True
+    assert backend.cancel_metadata == {
+        "cancel_source": "gateway_hangup",
+        "cancel_reason": "call_hangup",
+    }
 
 
 def _install_gateway_backend(backend) -> None:

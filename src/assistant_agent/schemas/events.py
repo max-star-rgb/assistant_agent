@@ -28,6 +28,11 @@ EventType = Literal[
     "final_response",
     "task_failed",
     "task_cancelled",
+    "tts_started",
+    "tts_finished",
+    "tts_superseded",
+    "display_superseded",
+    "call_hangup",
 ]
 
 

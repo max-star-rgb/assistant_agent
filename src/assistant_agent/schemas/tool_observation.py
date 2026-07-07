@@ -81,6 +81,9 @@ def _summary_from_result(result: ToolResult, data: Any, error_message: str | Non
     if not result.success:
         return error_message or "Tool execution failed."
     if isinstance(data, dict):
+        web_summary = _web_search_summary(result.tool_name, data)
+        if web_summary:
+            return web_summary
         product_summary = _shopping_summary(result.tool_name, data)
         if product_summary:
             return product_summary
@@ -104,6 +107,27 @@ def _shopping_summary(tool_name: str, data: dict[str, Any]) -> str:
         if isinstance(best_offer, dict) and best_offer:
             return _format_product_item_summary(best_offer, prefix="Best offer")
     return ""
+
+
+def _web_search_summary(tool_name: str, data: dict[str, Any]) -> str:
+    if tool_name != "web_search":
+        return ""
+    results = data.get("results")
+    if not isinstance(results, list) or not results:
+        return ""
+    first = results[0]
+    if not isinstance(first, dict):
+        return ""
+    title = first.get("title") or "result"
+    url = first.get("url")
+    source = first.get("source")
+    published_at = first.get("published_at")
+    total = data.get("total")
+    total_part = f" of {total}" if total is not None else ""
+    source_part = f", source {source}" if source else ""
+    date_part = f", published_at {published_at}" if published_at else ""
+    url_part = f", url {url}" if url else ", no result url"
+    return sanitize_error_message(f"Top web result{total_part}: {title}{source_part}{date_part}{url_part}.")
 
 
 def _format_product_item_summary(item: dict[str, Any], *, total: Any = None, prefix: str = "Top product") -> str:
@@ -163,6 +187,8 @@ def _next_step_hint(
         return "Use the product candidates or price result in the final answer or next shopping action."
     if tool_name == "price_compare":
         return "Use the compared offers and best_offer in the final answer; include URL status when present."
+    if tool_name == "web_search":
+        return "Use the web search results in the final answer; include source URLs and published dates when present."
     if tool_name == "image_generation":
         return "Return the generated image reference to the user."
     if tool_name == "render_3d":

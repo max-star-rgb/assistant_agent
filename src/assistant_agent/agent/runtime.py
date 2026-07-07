@@ -46,6 +46,7 @@ PROGRESS_MESSAGES = {
     "price_compare": "我比一下价格。",
     "vision_understanding": "我看一下。",
     "video_understanding": "我分析一下。",
+    "web_search": "我联网查一下。",
     "image_generation": "我开始生成，可能需要一点时间。",
 }
 
@@ -464,6 +465,8 @@ class AgentGraphRuntime:
                     "future_use, and evidence. Use source_intent=user_explicit only when the user explicitly asks to "
                     "remember/save/use this in the future or next time. Use source_intent=assistant_candidate when you infer "
                     "a stable non-sensitive preference or project fact may be useful later. Never use user_confirmed. "
+                    "For current, latest, realtime, today, news, or online lookup requests, use web_search; memory is not "
+                    "a source for current web facts. "
                     "For multi-step work, request one provider tool call at a time when external data is needed, "
                     "or answer directly when available context is sufficient. Do not output a separate controller protocol."
                 ),

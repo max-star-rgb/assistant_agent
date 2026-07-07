@@ -73,3 +73,60 @@ def test_progress_policy_emits_heartbeat_after_idle_interval() -> None:
     assert heartbeat.payload["current_step"] == "image_generation"
     assert heartbeat.payload["elapsed_since_update_s"] == 10.0
     assert heartbeat.text == "Still working on image_generation."
+
+
+def test_first_progress_timeout_can_disable_sla_fallback() -> None:
+    clock = Clock()
+
+    disabled = ProgressPolicy(first_progress_timeout_s=0).tracker(now_fn=clock)
+    negative = ProgressPolicy(first_progress_timeout_s=-1).tracker(now_fn=clock)
+
+    assert disabled.first_progress_fallback() is None
+    assert negative.first_progress_fallback() is None
+
+
+def test_progress_tracker_records_user_visible_events() -> None:
+    clock = Clock()
+    tracker = ProgressPolicy().tracker(now_fn=clock)
+
+    assert tracker.has_user_visible_event is False
+
+    clock.advance(0.25)
+    assert tracker.should_emit(
+        RealtimeAgentEvent(
+            type="response.chunk",
+            text="partial",
+            payload={"source": "stream"},
+        )
+    )
+
+    assert tracker.has_user_visible_event is True
+    assert tracker.summary() == {
+        "first_visible_event_ms": 250.0,
+        "sla_fallback_emitted": False,
+        "user_visible_event_count": 1,
+    }
+
+
+def test_first_progress_fallback_payload_is_display_only_and_replaceable() -> None:
+    tracker = ProgressPolicy(
+        first_progress_timeout_s=0.8,
+        first_progress_message="I am on it.",
+    ).tracker()
+
+    fallback = tracker.first_progress_fallback()
+
+    assert fallback is not None
+    assert fallback.type == "run.progress"
+    assert fallback.text == "I am on it."
+    assert fallback.display_only is True
+    assert fallback.payload == {
+        "source": "realtime_sla_fallback",
+        "replaceable": True,
+        "display_only": True,
+        "stage": "runtime",
+        "status": "working",
+        "current_step": "awaiting_first_output",
+        "fallback_policy_version": "v1",
+        "message": "I am on it.",
+    }

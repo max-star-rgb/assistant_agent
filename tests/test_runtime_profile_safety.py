@@ -19,6 +19,7 @@ def test_offline_eval_blocks_real_provider_selectors_from_environment() -> None:
             "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "openai",
             "MULTIMODAL_AGENT_IMAGE_PROVIDER": "comfyui",
+            "MULTIMODAL_AGENT_SEARCH_PROVIDER": "http",
             "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http",
             "MULTIMODAL_AGENT_PRICE_PROVIDER": "http",
             "MULTIMODAL_AGENT_RENDER_PROVIDER": "http",
@@ -26,6 +27,8 @@ def test_offline_eval_blocks_real_provider_selectors_from_environment() -> None:
             "QWEN_VISION_API_KEY": "sk-runtime-profile-test",
             "OPENAI_API_KEY": "sk-runtime-profile-test",
             "COMFYUI_BASE_URL": "http://provider.local",
+            "WEB_SEARCH_BASE_URL": "http://provider.local/search",
+            "WEB_SEARCH_API_KEY": "sk-runtime-profile-test",
             "PRODUCT_SEARCH_BASE_URL": "http://provider.local",
             "PRODUCT_SEARCH_API_KEY": "sk-runtime-profile-test",
             "PRICE_COMPARE_BASE_URL": "http://provider.local",
@@ -41,6 +44,7 @@ def test_offline_eval_blocks_real_provider_selectors_from_environment() -> None:
     assert config.vision_provider == "mock"
     assert config.chat_provider == "mock"
     assert config.image_generation_provider == "mock"
+    assert config.search_provider == "mock"
     assert config.product_search_provider == "mock"
     assert config.price_compare_provider == "mock"
     assert config.render_provider == "mock"

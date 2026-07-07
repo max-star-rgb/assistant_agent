@@ -155,6 +155,7 @@ def render_decision_contract() -> str:
 - memory_save 由你纯语义判断，不使用本地关键词/向量规则替你裁决。调用时必须提供 source_intent、source_reason、future_use、evidence。
 - source_intent=user_explicit 只能用于用户明确表达“请记住/保存/以后按这个/下次记得”等保存意图；assistant_candidate 用于你自己推断未来可能有用的稳定、非敏感偏好/项目事实；不要使用 user_confirmed。
 - memory_save 不应用于一次性输出、普通文案、临时搜索结果或敏感信息。
+- 最新/实时/今天/新闻/联网查询应使用 web_search；memory_retrieval 不是实时信息来源。
 - 复杂多步骤任务可以先进入 plan mode；plan mode 只是当前 ReAct loop 的状态，不是独立 planner/controller。
 - 进入或修订计划时返回 enter_plan_mode；退出计划时返回 exit_plan_mode。不要输出 execute_step/replan 等旧协议。
 - 如果需要生成多张图片，请在一次 image_generation 调用中通过 tool_input 的 "n" 参数指定数量（1-4），不要多次调用。

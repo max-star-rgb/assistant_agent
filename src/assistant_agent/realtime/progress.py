@@ -19,6 +19,8 @@ class ProgressPolicy:
     min_interval_s: float = 1.0
     heartbeat_interval_s: float = 30.0
     significant_progress_delta: float = 0.1
+    first_progress_timeout_s: float = 0.8
+    first_progress_message: str = "I am on it."
 
     def tracker(self, *, now_fn: NowFn = monotonic) -> ProgressTracker:
         return ProgressTracker(policy=self, now_fn=now_fn)
@@ -36,9 +38,22 @@ class ProgressTracker:
 
     policy: ProgressPolicy = field(default_factory=ProgressPolicy)
     now_fn: NowFn = monotonic
+    _started_at: float = field(init=False)
     _last_emitted_at: float | None = None
     _last_progress_event: RealtimeAgentEvent | None = None
+    _first_visible_event_at: float | None = None
+    _user_visible_event_count: int = 0
+    _sla_fallback_emitted: bool = False
     _records: dict[tuple[str, str, str, str], _ProgressRecord] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self._started_at = self.now_fn()
+
+    @property
+    def has_user_visible_event(self) -> bool:
+        """Return whether the user has already seen a progress or response event."""
+
+        return self._user_visible_event_count > 0
 
     def should_emit(self, event: RealtimeAgentEvent) -> bool:
         """Return whether the event should be forwarded to the user."""
@@ -67,6 +82,29 @@ class ProgressTracker:
 
         self._record_emit(event, now=now)
         return True
+
+    def first_progress_fallback(self) -> RealtimeAgentEvent | None:
+        """Return the initial SLA fallback event when no visible output exists."""
+
+        if self.policy.first_progress_timeout_s <= 0 or self.has_user_visible_event:
+            return None
+
+        message = self.policy.first_progress_message
+        return RealtimeAgentEvent(
+            type="run.progress",
+            text=message,
+            payload={
+                "source": "realtime_sla_fallback",
+                "replaceable": True,
+                "display_only": True,
+                "stage": "runtime",
+                "status": "working",
+                "current_step": "awaiting_first_output",
+                "fallback_policy_version": "v1",
+                "message": message,
+            },
+            display_only=True,
+        )
 
     def heartbeat(self) -> RealtimeAgentEvent | None:
         """Return a heartbeat progress event when the user has seen no recent output."""
@@ -98,6 +136,21 @@ class ProgressTracker:
         self._record_emit(event, now=now)
         return event
 
+    def summary(self) -> dict[str, object]:
+        """Return prompt-safe progress timing metadata for the completed run."""
+
+        first_visible_event_ms = None
+        if self._first_visible_event_at is not None:
+            first_visible_event_ms = round(
+                (self._first_visible_event_at - self._started_at) * 1000,
+                3,
+            )
+        return {
+            "first_visible_event_ms": first_visible_event_ms,
+            "sla_fallback_emitted": self._sla_fallback_emitted,
+            "user_visible_event_count": self._user_visible_event_count,
+        }
+
     def heartbeat_poll_interval_s(self) -> float:
         """Return a bounded polling interval for the heartbeat loop."""
 
@@ -109,6 +162,12 @@ class ProgressTracker:
     def _record_emit(self, event: RealtimeAgentEvent, *, now: float | None = None) -> None:
         now = self.now_fn() if now is None else now
         self._last_emitted_at = now
+        if _is_user_visible_event(event):
+            if self._first_visible_event_at is None:
+                self._first_visible_event_at = now
+            self._user_visible_event_count += 1
+            if event.payload.get("source") == "realtime_sla_fallback":
+                self._sla_fallback_emitted = True
         if event.type != "run.progress":
             return
         self._last_progress_event = event
@@ -151,6 +210,18 @@ def _progress_delta_reached(
 def _payload_text(payload: dict[str, object], key: str) -> str:
     value = payload.get(key)
     return value if isinstance(value, str) else ""
+
+
+def _is_user_visible_event(event: RealtimeAgentEvent) -> bool:
+    return event.type in {
+        "run.progress",
+        "tool.started",
+        "tool.finished",
+        "tool.failed",
+        "response.chunk",
+        "response.final",
+        "error",
+    }
 
 
 def _heartbeat_message(payload: dict[str, object], fallback: str | None) -> str:

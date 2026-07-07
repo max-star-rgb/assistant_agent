@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-03
+Last updated: 2026-07-06
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes.
 
@@ -12,7 +12,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
 - Existing `/agent/run`, CLI, eval, and Web demo paths may continue to call the shared assistant run service directly when they do not need Gateway session/run lifecycle semantics.
-- The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for App + Media Relay events that are validated before being adapted into Gateway frames.
+- The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
 - The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / `sessionId` / stringified `body` protocol. That route currently returns mock `assistantControlStartAck` and `chatResponse` envelopes and does not enter the Gateway session service or assistant runtime.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
 
@@ -87,6 +87,7 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Bind or preserve `user_id`, `session_id`, `turn_id`, and `run_id`.
 - Maintain per-session user text history for Gateway turns.
 - Register active runs and emit `run.started`, user-visible `event.progress`, `stream.chunk`, and `run.end`.
+- Include the assistant backend `trace_id` in `run.end.payload.trace_id` when available so developer/debug entry layers can load trace summaries without exposing raw provider payloads.
 - Convert realtime backend events into Gateway wire frames.
 - Convert backend failures into protocol-level `run.end` or `error` frames.
 - Queue ordinary same-session user messages behind the active run; cancel active runs on explicit `run.cancel`, disconnect, deadline expiry, or explicit same-session interrupt.
@@ -101,7 +102,11 @@ the active run, preserve session continuity, and start the next turn. It should
 not own semantic task revision such as merging the old goal with new
 constraints, deciding whether intermediate artifacts are reusable, or resolving
 committed side effects. That medium-term assistant-runtime work is tracked in
-`docs/development/realtime-agent-task-state-plan.md`.
+`docs/development/realtime-agent-task-state-plan.md`. The broader realtime
+harness hardening roadmap, including deterministic fallback progress, realtime
+call state extensions, tool idempotency, and lightweight checkpointing, is
+tracked in `docs/development/realtime-harness-hardening-plan.md` as a
+development plan, not as Gateway architecture authority.
 
 ## Entry Layer Responsibilities
 
@@ -121,7 +126,7 @@ Entry adapters should not own assistant loop decisions, tool execution, memory p
 
 `/ws/realtime/media` is the primary realtime call entry for Media Relay integrations. It accepts media-entry events, validates identity and session binding against the WebSocket query/auth context, and maps valid events to Gateway frames:
 
-The Web demo may expose an App + Media Relay simulator for local testing, but it must not add a separate Web realtime/runtime mode or make the browser a second primary Gateway client path.
+The Web demo may expose a Realtime Call Debugger for local Media Relay testing, but it must not add a separate Web realtime/runtime mode or make the browser a second primary Gateway client path.
 
 | media event | required shape | Gateway mapping |
 | --- | --- | --- |
@@ -187,6 +192,7 @@ Do not import `openclaw_gateway_runtime`, reuse the old OpenClaw/Anthropic agent
 
 - Update this document when `assistant_agent.gateway`, `assistant_agent.realtime`, Gateway WebSocket transport, realtime call integration, or Gateway-related API routing changes.
 - Current Gateway entry-layer implementation planning lives in `docs/development/gateway-entry-layer-development-plan.md`; that file is an execution plan, not the architecture authority.
+- Realtime harness hardening planning lives in `docs/development/realtime-harness-hardening-plan.md`; that file coordinates ongoing work across Gateway, realtime adapter, context, and tool governance, but does not replace this architecture document.
 - Keep `AGENTS.md` as the concise routing entry and this file as the Gateway-specific authority.
 - Keep `.codex/skills/assistant-runtime-reference/SKILL.md` routing to this file before any legacy `runTime` reference.
 - Do not put active Gateway architecture decisions only in `docs/development/**`; those files are historical plans and runbooks.

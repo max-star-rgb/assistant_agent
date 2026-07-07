@@ -63,6 +63,8 @@ def _summary_for_contract(contract: dict[str, Any]) -> str:
         return _vision_summary(capability, data)
     if capability == "product_search":
         return _product_search_summary(data)
+    if capability == "web_search":
+        return _web_search_summary(data)
     if capability == "price_compare":
         return _price_compare_summary(data)
     if capability == "image_generation":
@@ -113,6 +115,21 @@ def _product_search_summary(data: dict[str, Any]) -> str:
     price_text = f"，价格 {price} {first.get('currency') or 'CNY'}" if price is not None else ""
     url_text = _product_link_text(first)
     return f"已基于 {source} 数据找到 {total} 个商品候选，优先候选是 {title}{price_text}{url_text}。"
+
+
+def _web_search_summary(data: dict[str, Any]) -> str:
+    results = data.get("results") or []
+    total = data.get("total") or len(results)
+    if not results:
+        return "已完成联网搜索，但没有找到可用结果。"
+    first = results[0]
+    title = first.get("title") or "搜索结果"
+    url = first.get("url")
+    source = first.get("source") or data.get("provider") or "web"
+    published_at = first.get("published_at")
+    date_text = f"，发布时间 {published_at}" if published_at else ""
+    url_text = f"，链接：{url}" if url else "，未提供来源链接"
+    return f"已基于 {source} 搜索到 {total} 条结果，首条是 {title}{date_text}{url_text}。"
 
 
 def _price_compare_summary(data: dict[str, Any]) -> str:

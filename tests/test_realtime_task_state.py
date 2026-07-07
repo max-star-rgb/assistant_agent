@@ -1,4 +1,5 @@
 from assistant_agent.agent.state import AgentState
+from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.assistant_run_service import (
@@ -11,7 +12,11 @@ from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.realtime_task_state import (
     REALTIME_TASK_STATE_METADATA_KEY,
     InMemoryRealtimeTaskStateStore,
+    RealtimeTaskState,
+    format_realtime_task_state_snapshot,
     prepare_realtime_task_state_request,
+    reduce_realtime_task_state_event,
+    snapshot_from_task_state,
 )
 
 
@@ -93,6 +98,217 @@ def test_realtime_task_state_interrupt_creates_intent_revision() -> None:
     assert snapshot["latest_revision"]["strategy"] == "restart"
     assert snapshot["latest_revision"]["revision_type"] == "add_constraint"
     assert snapshot["revision_count"] == 1
+
+
+def test_realtime_task_state_records_speech_turn_and_barge_in_source_on_interrupt() -> None:
+    store = InMemoryRealtimeTaskStateStore()
+    prepare_realtime_task_state_request(
+        _realtime_request("帮我比较三款 500 元以内的蓝牙耳机", run_id="run-1", turn_id="turn-1"),
+        store=store,
+    )
+
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="等等，换成通勤降噪优先",
+        audio_id="audio-turn-2",
+        metadata={
+            "source": "realtime_media_websocket",
+            "control": "interrupt",
+            "realtime": {
+                "run_id": "run-2",
+                "turn_id": "turn-2",
+                "speech_turn_id": "speech-turn-2",
+            },
+        },
+    )
+
+    prepared = prepare_realtime_task_state_request(request, store=store)
+
+    snapshot = prepared.metadata[REALTIME_TASK_STATE_METADATA_KEY]
+    assert snapshot["status"] == "revising"
+    assert snapshot["speech_turn_id"] == "speech-turn-2"
+    assert snapshot["barge_in_source"] == "transcript"
+    assert snapshot["tts_state"] == "interrupted"
+
+
+def test_realtime_task_state_reducer_tracks_pending_tool_and_display_progress() -> None:
+    state = RealtimeTaskState(task_id="rtask:u1:s1", user_id="u1", session_id="s1", objective="找耳机")
+
+    state = reduce_realtime_task_state_event(
+        state,
+        event_type="tool.started",
+        payload={
+            "event_id": "evt-tool-start",
+            "run_id": "run-1",
+            "tool_name": "product_search",
+            "current_step": "product_search",
+        },
+    )
+    state = reduce_realtime_task_state_event(
+        state,
+        event_type="run.progress",
+        text="I am on it.",
+        payload={
+            "event_id": "evt-progress-1",
+            "source": "realtime_sla_fallback",
+            "replaceable": True,
+            "display_only": True,
+            "stage": "runtime",
+            "status": "working",
+            "current_step": "awaiting_first_output",
+        },
+    )
+
+    snapshot = snapshot_from_task_state(state)
+    text = format_realtime_task_state_snapshot(snapshot)
+
+    assert snapshot.pending_tool == {
+        "tool_name": "product_search",
+        "status": "working",
+        "current_step": "product_search",
+        "run_id": "run-1",
+    }
+    assert snapshot.tts_state == "speaking"
+    assert snapshot.last_spoken_progress == {
+        "text": "I am on it.",
+        "source": "realtime_sla_fallback",
+        "replaceable": True,
+        "display_only": True,
+        "current_step": "awaiting_first_output",
+    }
+    assert snapshot.last_realtime_event_ids == ["evt-tool-start", "evt-progress-1"]
+    assert "pending_tool: product_search [working]" in text
+    assert "last_spoken_progress: I am on it." in text
+
+
+def test_realtime_task_state_reducer_bounds_recent_event_ids() -> None:
+    state = RealtimeTaskState(task_id="rtask:u1:s1", user_id="u1", session_id="s1")
+
+    for index in range(30):
+        state = reduce_realtime_task_state_event(
+            state,
+            event_type="run.progress",
+            payload={"event_id": f"evt-{index}", "status": "working"},
+        )
+
+    snapshot = snapshot_from_task_state(state)
+    assert len(snapshot.last_realtime_event_ids) == 24
+    assert snapshot.last_realtime_event_ids[0] == "evt-6"
+    assert snapshot.last_realtime_event_ids[-1] == "evt-29"
+
+
+def test_realtime_task_state_reducer_clears_pending_tool_on_finish_or_failure() -> None:
+    state = RealtimeTaskState(
+        task_id="rtask:u1:s1",
+        user_id="u1",
+        session_id="s1",
+        pending_tool={
+            "tool_name": "product_search",
+            "status": "working",
+            "current_step": "product_search",
+            "run_id": "run-1",
+        },
+    )
+
+    finished = reduce_realtime_task_state_event(
+        state,
+        event_type="tool.finished",
+        payload={"event_id": "evt-tool-finished", "tool_name": "product_search"},
+    )
+    failed = reduce_realtime_task_state_event(
+        state,
+        event_type="tool.failed",
+        payload={"event_id": "evt-tool-failed", "tool_name": "product_search"},
+    )
+
+    assert finished.pending_tool is None
+    assert finished.last_realtime_event_ids == ["evt-tool-finished"]
+    assert failed.pending_tool is None
+    assert failed.last_realtime_event_ids == ["evt-tool-failed"]
+
+
+def test_realtime_task_state_reducer_marks_cancel_and_hangup_sources() -> None:
+    state = RealtimeTaskState(
+        task_id="rtask:u1:s1",
+        user_id="u1",
+        session_id="s1",
+        pending_tool={"tool_name": "product_search", "status": "working"},
+        tts_state="speaking",
+    )
+
+    cancelled = reduce_realtime_task_state_event(
+        state,
+        event_type="run.cancel",
+        payload={"event_id": "evt-cancel", "cancel_source": "gateway_cancel"},
+    )
+    hangup_cancelled = reduce_realtime_task_state_event(
+        state,
+        event_type="run.cancel",
+        payload={"event_id": "evt-cancel-hangup", "cancel_source": "gateway_hangup"},
+    )
+    hung_up = reduce_realtime_task_state_event(
+        state,
+        event_type="call.hangup",
+        payload={"event_id": "evt-hangup", "cancel_source": "gateway_hangup"},
+    )
+
+    assert cancelled.tts_state == "interrupted"
+    assert cancelled.barge_in_source == "explicit_cancel"
+    assert cancelled.pending_tool is None
+    assert cancelled.last_realtime_event_ids == ["evt-cancel"]
+    assert hangup_cancelled.tts_state == "interrupted"
+    assert hangup_cancelled.barge_in_source == "hangup"
+    assert hangup_cancelled.pending_tool is None
+    assert hangup_cancelled.last_realtime_event_ids == ["evt-cancel-hangup"]
+    assert hung_up.tts_state == "interrupted"
+    assert hung_up.barge_in_source == "hangup"
+    assert hung_up.pending_tool is None
+    assert hung_up.last_realtime_event_ids == ["evt-hangup"]
+
+
+def test_realtime_task_state_reducer_tracks_tts_idle_and_superseded_transitions() -> None:
+    state = RealtimeTaskState(
+        task_id="rtask:u1:s1",
+        user_id="u1",
+        session_id="s1",
+        tts_state="speaking",
+        last_spoken_progress={"text": "I am on it.", "replaceable": True},
+        speech_turn_id="speech-1",
+    )
+
+    idle = reduce_realtime_task_state_event(
+        state,
+        event_type="tts.finished",
+        payload={"event_id": "evt-tts-finished", "speech_turn_id": "speech-1"},
+    )
+    speaking = reduce_realtime_task_state_event(
+        state,
+        event_type="tts.started",
+        payload={"event_id": "evt-tts-started", "speech_turn_id": "speech-1"},
+    )
+    superseded = reduce_realtime_task_state_event(
+        state,
+        event_type="tts.superseded",
+        payload={"event_id": "evt-tts-superseded", "speech_turn_id": "speech-2"},
+    )
+    display_superseded = reduce_realtime_task_state_event(
+        state,
+        event_type="display.superseded",
+        payload={"event_id": "evt-display-superseded"},
+    )
+
+    assert speaking.tts_state == "speaking"
+    assert speaking.speech_turn_id == "speech-1"
+    assert speaking.last_realtime_event_ids == ["evt-tts-started"]
+    assert idle.tts_state == "idle"
+    assert idle.speech_turn_id == "speech-1"
+    assert idle.last_realtime_event_ids == ["evt-tts-finished"]
+    assert superseded.tts_state == "superseded"
+    assert superseded.speech_turn_id == "speech-2"
+    assert superseded.last_realtime_event_ids == ["evt-tts-superseded"]
+    assert display_superseded.tts_state == "superseded"
+    assert display_superseded.last_realtime_event_ids == ["evt-display-superseded"]
 
 
 def test_run_assistant_request_injects_task_state_before_runtime() -> None:
@@ -236,6 +452,116 @@ def test_run_assistant_request_emits_strategy_progress_for_reused_artifacts() ->
     assert progress.payload["stage"] == "task_state"
     assert progress.payload["strategy"] == "reuse_and_replan"
     assert progress.payload["reusable_artifact_count"] == 1
+
+
+def test_run_assistant_request_updates_call_state_from_runtime_events() -> None:
+    task_store = InMemoryRealtimeTaskStateStore()
+    sink = ListEventSink()
+
+    run_assistant_request(
+        _realtime_request("帮我找通勤耳机", run_id="run-1", turn_id="turn-1"),
+        runtime=_RealtimeEventRuntime(),
+        event_sink=sink,
+        conversation_store=InMemoryConversationStore(),
+        realtime_task_state_store=task_store,
+        load_env=False,
+    )
+
+    state = task_store.get("u1", "s1")
+    assert state is not None
+    assert [event.type for event in sink.events] == ["tool_started", "progress_message"]
+    assert state.pending_tool == {
+        "tool_name": "product_search",
+        "status": "working",
+        "current_step": "product_search",
+        "run_id": "run-1",
+    }
+    assert state.tts_state == "speaking"
+    assert state.last_spoken_progress == {
+        "text": "I will check that.",
+        "source": "native_tool_wait",
+        "replaceable": True,
+        "display_only": True,
+        "current_step": "product_search",
+    }
+    assert state.last_realtime_event_ids == ["evt-tool-start", "evt-progress"]
+
+
+def test_run_assistant_request_clears_pending_tool_from_runtime_completion_events() -> None:
+    task_store = InMemoryRealtimeTaskStateStore()
+    sink = ListEventSink()
+
+    run_assistant_request(
+        _realtime_request("帮我找通勤耳机", run_id="run-1", turn_id="turn-1"),
+        runtime=_RealtimeToolCompletionRuntime(),
+        event_sink=sink,
+        conversation_store=InMemoryConversationStore(),
+        realtime_task_state_store=task_store,
+        load_env=False,
+    )
+
+    state = task_store.get("u1", "s1")
+    assert state is not None
+    assert [event.type for event in sink.events] == ["tool_started", "tool_finished"]
+    assert state.pending_tool is None
+    assert state.last_realtime_event_ids == ["evt-tool-start", "evt-tool-finished"]
+
+
+def test_run_assistant_request_updates_tts_and_hangup_lifecycle_from_runtime_events() -> None:
+    task_store = InMemoryRealtimeTaskStateStore()
+    sink = ListEventSink()
+
+    run_assistant_request(
+        _realtime_request("帮我找通勤耳机", run_id="run-1", turn_id="turn-1"),
+        runtime=_RealtimeTtsLifecycleRuntime(),
+        event_sink=sink,
+        conversation_store=InMemoryConversationStore(),
+        realtime_task_state_store=task_store,
+        load_env=False,
+    )
+
+    state = task_store.get("u1", "s1")
+    assert state is not None
+    assert [event.type for event in sink.events] == [
+        "progress_message",
+        "tts_started",
+        "tts_finished",
+        "tts_superseded",
+        "call_hangup",
+    ]
+    assert state.tts_state == "interrupted"
+    assert state.barge_in_source == "hangup"
+    assert state.pending_tool is None
+    assert state.speech_turn_id == "speech-2"
+    assert state.last_realtime_event_ids == [
+        "evt-progress",
+        "evt-tts-started",
+        "evt-tts-finished",
+        "evt-tts-superseded",
+        "evt-hangup",
+    ]
+
+
+def test_run_assistant_request_reads_hangup_source_from_task_cancelled_error_detail() -> None:
+    task_store = InMemoryRealtimeTaskStateStore()
+    sink = ListEventSink()
+
+    run_assistant_request(
+        _realtime_request("帮我找通勤耳机", run_id="run-1", turn_id="turn-1"),
+        runtime=_RealtimeCancelledFromHangupRuntime(),
+        event_sink=sink,
+        conversation_store=InMemoryConversationStore(),
+        realtime_task_state_store=task_store,
+        load_env=False,
+    )
+
+    state = task_store.get("u1", "s1")
+    assert state is not None
+    assert [event.type for event in sink.events] == ["tool_started", "task_cancelled"]
+    assert state.pending_tool is None
+    assert state.tts_state == "interrupted"
+    assert state.barge_in_source == "hangup"
+    assert state.last_realtime_event_ids == ["evt-tool-start", "evt-task-cancelled"]
 
 
 def test_realtime_task_state_asks_confirmation_after_pending_side_effect() -> None:
@@ -465,6 +791,155 @@ class _UnknownSuccessfulToolRuntime:
             )
         )
         state.set_response(AgentResponse(message="已发送通知。"))
+        return state
+
+
+class _RealtimeEventRuntime:
+    def run_state(self, request: UserRequest, event_sink: ListEventSink, **kwargs) -> AgentState:
+        event_sink.emit(
+            AgentEvent(
+                type="tool_started",
+                session_id=request.session_id,
+                run_id="run-1",
+                tool_name="product_search",
+                payload={"event_id": "evt-tool-start", "current_step": "product_search"},
+            )
+        )
+        event_sink.emit(
+            AgentEvent(
+                type="progress_message",
+                session_id=request.session_id,
+                run_id="run-1",
+                tool_name="product_search",
+                text="I will check that.",
+                payload={
+                    "event_id": "evt-progress",
+                    "source": "native_tool_wait",
+                    "replaceable": True,
+                    "display_only": True,
+                    "current_step": "product_search",
+                },
+            )
+        )
+        state = AgentState.from_request(request)
+        state.set_response(AgentResponse(message="找到结果。"))
+        return state
+
+
+class _RealtimeToolCompletionRuntime:
+    def run_state(self, request: UserRequest, event_sink: ListEventSink, **kwargs) -> AgentState:
+        event_sink.emit(
+            AgentEvent(
+                type="tool_started",
+                session_id=request.session_id,
+                run_id="run-1",
+                tool_name="product_search",
+                payload={"event_id": "evt-tool-start", "current_step": "product_search"},
+            )
+        )
+        event_sink.emit(
+            AgentEvent(
+                type="tool_finished",
+                session_id=request.session_id,
+                run_id="run-1",
+                tool_name="product_search",
+                output_ref="mock://products/headphones",
+                payload={"event_id": "evt-tool-finished"},
+            )
+        )
+        state = AgentState.from_request(request)
+        state.set_response(AgentResponse(message="找到结果。"))
+        return state
+
+
+class _RealtimeTtsLifecycleRuntime:
+    def run_state(self, request: UserRequest, event_sink: ListEventSink, **kwargs) -> AgentState:
+        event_sink.emit(
+            AgentEvent(
+                type="progress_message",
+                session_id=request.session_id,
+                run_id="run-1",
+                text="I am on it.",
+                payload={
+                    "event_id": "evt-progress",
+                    "source": "native_tool_wait",
+                    "replaceable": True,
+                    "display_only": True,
+                    "speech_turn_id": "speech-1",
+                },
+            )
+        )
+        event_sink.emit(
+            AgentEvent(
+                type="tts_started",
+                session_id=request.session_id,
+                run_id="run-1",
+                payload={"event_id": "evt-tts-started", "speech_turn_id": "speech-1"},
+            )
+        )
+        event_sink.emit(
+            AgentEvent(
+                type="tts_finished",
+                session_id=request.session_id,
+                run_id="run-1",
+                payload={"event_id": "evt-tts-finished", "speech_turn_id": "speech-1"},
+            )
+        )
+        event_sink.emit(
+            AgentEvent(
+                type="tts_superseded",
+                session_id=request.session_id,
+                run_id="run-1",
+                payload={"event_id": "evt-tts-superseded", "speech_turn_id": "speech-2"},
+            )
+        )
+        event_sink.emit(
+            AgentEvent(
+                type="call_hangup",
+                session_id=request.session_id,
+                run_id="run-1",
+                payload={"event_id": "evt-hangup", "cancel_source": "gateway_hangup"},
+            )
+        )
+        state = AgentState.from_request(request)
+        state.set_response(AgentResponse(message="已停止。"))
+        return state
+
+
+class _RealtimeCancelledFromHangupRuntime:
+    def run_state(self, request: UserRequest, event_sink: ListEventSink, **kwargs) -> AgentState:
+        event_sink.emit(
+            AgentEvent(
+                type="tool_started",
+                session_id=request.session_id,
+                run_id="run-1",
+                tool_name="product_search",
+                payload={"event_id": "evt-tool-start", "current_step": "product_search"},
+            )
+        )
+        event_sink.emit(
+            AgentEvent(
+                type="task_cancelled",
+                session_id=request.session_id,
+                run_id="run-1",
+                error={
+                    "code": "AGENT_RUN_CANCELLED",
+                    "message": "Agent run cancelled.",
+                    "detail": {
+                        "cancel_source": "gateway_hangup",
+                        "cancel_reason": "call_hangup",
+                    },
+                },
+                payload={"event_id": "evt-task-cancelled"},
+            )
+        )
+        state = AgentState.from_request(request)
+        state.cancel(
+            details={
+                "cancel_source": "gateway_hangup",
+                "cancel_reason": "call_hangup",
+            }
+        )
         return state
 
 

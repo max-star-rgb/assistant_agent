@@ -56,11 +56,11 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "experience-mode-select" in html
     assert "assistant_agent_console_mode" in html
     assert '<option value="web_chat">Web Chat</option>' in html
-    assert '<option value="app_media">App + Media Relay</option>' in html
+    assert '<option value="app_media">Realtime Call Debugger</option>' in html
     assert ">Mode</h2>" not in html
-    assert "App + Media Relay" in html
-    assert "App + Media" in html
-    assert "Assistant Call" in html
+    assert "Realtime Call Debugger" in html
+    assert "App + Media Relay" not in html
+    assert "Realtime Call" in html
     assert "Call transcript" in html
     assert "Start Call" in html
     assert "Hang Up" in html
@@ -68,6 +68,10 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert ">Say<" in html
     assert ">Interrupt<" in html
     assert "Gateway Timeline" in html
+    assert "Agent Trace" in html
+    assert "realtime-trace-output" in html
+    assert "loadRealtimeTraceSummary" in html
+    assert "setRealtimeTrace" in html
     assert "web-chat-workspace" in html
     assert "app-media-workspace" in html
     assert "chat-panel" in html
@@ -199,6 +203,8 @@ def test_phase7c_console_contains_productized_web_controls() -> None:
     assert "gateway -> media" in html
     assert "stream.chunk" in html
     assert "event.progress" in html
+    assert 'payload.source === "native_tool_wait"' in html
+    assert "draftText: text" in html
     assert "run.started" in html
     assert "run.end" in html
     assert "still running" in html
