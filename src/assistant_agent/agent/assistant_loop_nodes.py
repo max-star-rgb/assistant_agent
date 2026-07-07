@@ -1261,6 +1261,16 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
         state=state,
     )
     state.request.metadata["last_action_validator"] = validation.model_dump(mode="json")
+    _append_trace(
+        graph_state,
+        event_type="observability",
+        canonical_event="action.validation.finished",
+        status="accepted" if validation.accepted else "rejected",
+        tool_name=tool_name,
+        output_summary={"validator_result": validation.model_dump(mode="json")},
+        attributes=validation.model_dump(mode="json"),
+        error={"code": validation.code, "message": validation.message} if not validation.accepted else None,
+    )
     if not validation.accepted:
         error = AgentError(
             message=validation.message,
@@ -1673,9 +1683,18 @@ def _record_react_decision(
     _append_trace(
         graph_state,
         event_type="assistant_decision",
+        canonical_event="react.decision",
         status=decision.type,
         tool_name=decision.tool_name,
         output_summary=output_summary,
+        attributes={
+            "iteration": iteration + 1,
+            "decision_type": decision.type,
+            "tool_name": decision.tool_name,
+            "step_id": decision.step_id,
+            "plan_status": state.plan_status,
+            "safety_notes": decision.safety_notes,
+        },
     )
 
 
@@ -1808,9 +1827,15 @@ def _record_react_observation(
     _append_trace(
         graph_state,
         event_type="tool_observation",
+        canonical_event="tool.observation",
         status=payload.get("status"),
         tool_name=payload.get("tool_name"),
         output_summary={
+            "summary": payload.get("summary"),
+            "output_ref": payload.get("output_ref"),
+            "next_step_hint": payload.get("next_step_hint"),
+        },
+        attributes={
             "summary": payload.get("summary"),
             "output_ref": payload.get("output_ref"),
             "next_step_hint": payload.get("next_step_hint"),
@@ -1913,6 +1938,7 @@ def _record_loop_guard(graph_state: AssistantLoopState, guard: LoopGuardDecision
     _append_trace(
         graph_state,
         event_type="loop_guard_triggered",
+        canonical_event="loop_guard.triggered",
         status="triggered",
         error={"code": guard.code, "message": guard.message},
     )
@@ -1940,9 +1966,11 @@ def _append_trace(
     graph_state: AssistantLoopState,
     *,
     event_type: str,
+    canonical_event: str | None = None,
     status: str | None = None,
     tool_name: str | None = None,
     output_summary: dict[str, Any] | None = None,
+    attributes: dict[str, Any] | None = None,
     error: dict[str, Any] | None = None,
 ) -> None:
     trace_store = graph_state.get("trace_store")
@@ -1958,9 +1986,11 @@ def _append_trace(
             session_id=state.session_id,
             node_name=graph_state.get("current_node_name", "assistant_loop"),
             event_type=cast(Any, event_type),
+            canonical_event=canonical_event,
             tool_name=tool_name,
             status=status,
             output_summary=output_summary or {},
+            attributes=attributes or {},
             error={
                 "code": error.get("code"),
                 "message": sanitize_trace_value(str(error.get("message", ""))),

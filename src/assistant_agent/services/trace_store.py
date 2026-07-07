@@ -13,6 +13,7 @@ from assistant_agent.services.provider_errors import sanitize_error_detail, sani
 
 
 TraceEventType = Literal[
+    "observability",
     "node_started",
     "node_finished",
     "tool_failed",
@@ -44,6 +45,10 @@ class TraceEvent(BaseModel):
     error_code: str | None = None
     input_summary: dict[str, Any] = Field(default_factory=dict)
     output_summary: dict[str, Any] = Field(default_factory=dict)
+    canonical_event: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
     error: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -174,6 +179,60 @@ def new_trace_id() -> str:
     return f"trace_{uuid4().hex}"
 
 
+def new_span_id() -> str:
+    """Create a local span identifier for redacted trace timelines."""
+
+    return f"span_{uuid4().hex}"
+
+
+def append_observability_event(
+    trace_store: TraceStore | None,
+    *,
+    trace_id: str,
+    run_id: str,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    canonical_event: str,
+    node_name: str = "runtime",
+    event_type: TraceEventType = "observability",
+    status: str | None = None,
+    tool_name: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    latency_ms: int | None = None,
+    span_id: str | None = None,
+    parent_span_id: str | None = None,
+    attributes: dict[str, Any] | None = None,
+    output_summary: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> None:
+    """Append one prompt-safe canonical observability event."""
+
+    if trace_store is None:
+        return
+    trace_store.append(
+        TraceEvent(
+            trace_id=trace_id,
+            run_id=run_id,
+            user_id=user_id,
+            session_id=session_id,
+            node_name=node_name,
+            event_type=event_type,
+            canonical_event=canonical_event,
+            span_id=span_id or new_span_id(),
+            parent_span_id=parent_span_id,
+            status=status,
+            tool_name=tool_name,
+            provider=provider,
+            model=model,
+            latency_ms=latency_ms,
+            attributes=attributes or {},
+            output_summary=output_summary or {},
+            error=error,
+        )
+    )
+
+
 def trace_graph_node(node_name: str, node_func: Callable[[GraphStateT], GraphStateT]) -> Callable[[GraphStateT], GraphStateT]:
     """Wrap a LangGraph node and record started/finished trace events."""
 
@@ -301,11 +360,23 @@ def redact_trace_event(event: TraceEvent) -> TraceEvent:
         "after_state_summary",
         "input_summary",
         "output_summary",
+        "attributes",
         "error",
     ):
         value = payload.get(key)
         payload[key] = sanitize_error_detail(value) if value is not None else value
-    for key in ("provider", "model", "status", "error_code", "tool_name", "capability", "node_name"):
+    for key in (
+        "provider",
+        "model",
+        "status",
+        "error_code",
+        "tool_name",
+        "capability",
+        "node_name",
+        "canonical_event",
+        "span_id",
+        "parent_span_id",
+    ):
         value = payload.get(key)
         if isinstance(value, str):
             payload[key] = sanitize_trace_value(value)
@@ -361,6 +432,9 @@ def trace_event_summary(event: TraceEvent) -> dict[str, Any]:
         "session_id": event.session_id,
         "node_name": event.node_name,
         "event_type": event.event_type,
+        "canonical_event": event.canonical_event,
+        "span_id": event.span_id,
+        "parent_span_id": event.parent_span_id,
         "capability": event.capability,
         "tool_name": event.tool_name,
         "provider": event.provider,
@@ -371,6 +445,7 @@ def trace_event_summary(event: TraceEvent) -> dict[str, Any]:
         "error_message": sanitize_trace_value(error_message) if isinstance(error_message, str) else None,
         "input_summary": event.input_summary,
         "output_summary": event.output_summary,
+        "attributes": event.attributes,
         "created_at": event.created_at,
     }
 

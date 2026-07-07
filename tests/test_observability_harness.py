@@ -1,0 +1,116 @@
+import json
+
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.schemas.assistant_decision import NativeToolCall
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent, trace_debug_summary
+
+
+class ScriptedNativeChatAdapter:
+    provider = "scripted-native"
+
+    def __init__(self, outputs: list[ChatResult]) -> None:
+        self.outputs = outputs
+        self.calls = 0
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        index = min(self.calls, len(self.outputs) - 1)
+        self.calls += 1
+        return self.outputs[index]
+
+
+def test_trace_event_summary_exposes_redacted_canonical_fields() -> None:
+    store = InMemoryTraceStore()
+    store.append(
+        TraceEvent(
+            trace_id="trace_1",
+            run_id="run_1",
+            user_id="u1",
+            session_id="s1",
+            node_name="native_runtime",
+            event_type="assistant_decision",
+            canonical_event="react.decision",
+            span_id="span_decision_1",
+            parent_span_id="span_run_1",
+            attributes={
+                "decision_type": "tool_call",
+                "api_key": "secret",
+                "raw_provider_payload": {"token": "hidden"},
+            },
+        )
+    )
+
+    summary = trace_debug_summary(store.list_by_trace("trace_1"))
+    event = summary["events"][0]
+
+    assert event["canonical_event"] == "react.decision"
+    assert event["span_id"] == "span_decision_1"
+    assert event["parent_span_id"] == "span_run_1"
+    assert event["attributes"]["decision_type"] == "tool_call"
+    dumped = json.dumps(event, ensure_ascii=False, default=str).lower()
+    assert "secret" not in dumped
+    assert "raw_provider_payload" not in dumped
+
+
+def test_mock_react_runtime_emits_canonical_run_decision_tool_observation_and_terminal_events() -> None:
+    trace_store = InMemoryTraceStore()
+    state = AgentGraphRuntime(trace_store=trace_store).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我找相似款")
+    )
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    canonical = [event["canonical_event"] for event in events if event["canonical_event"]]
+
+    assert "run.started" in canonical
+    assert "react.decision" in canonical
+    assert "action.validation.finished" in canonical
+    assert "tool.observation" in canonical
+    assert "run.completed" in canonical
+    assert canonical.count("run.completed") == 1
+    assert all("thought" not in json.dumps(event, ensure_ascii=False, default=str).lower() for event in events)
+
+
+def test_native_runtime_emits_canonical_llm_decision_validation_observation_and_terminal_events() -> None:
+    trace_store = InMemoryTraceStore()
+    adapter = ScriptedNativeChatAdapter(
+        [
+            ChatResult(
+                response_text="",
+                provider="scripted",
+                model="native-test",
+                latency_ms=11,
+                tool_calls=[
+                    NativeToolCall(
+                        id="call_native_1",
+                        name="product_search",
+                        arguments={"query": "白色运动鞋"},
+                    )
+                ],
+                message_kind="tool_calls",
+            ),
+            ChatResult(
+                response_text="找到了一些白色运动鞋。",
+                provider="scripted",
+                model="native-test",
+                latency_ms=13,
+                message_kind="content",
+            ),
+        ]
+    )
+    state = AgentGraphRuntime(trace_store=trace_store, chat_adapter=adapter).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我找白色运动鞋")
+    )
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    canonical = [event["canonical_event"] for event in events if event["canonical_event"]]
+
+    assert "run.started" in canonical
+    assert canonical.count("llm.chat.finished") == 2
+    assert "react.decision" in canonical
+    assert "action.validation.finished" in canonical
+    assert "tool.observation" in canonical
+    assert "run.completed" in canonical
+    assert canonical.index("react.decision") < canonical.index("tool.observation")

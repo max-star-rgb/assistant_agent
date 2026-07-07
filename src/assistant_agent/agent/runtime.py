@@ -36,7 +36,7 @@ from assistant_agent.services.context.renderer import render_native_user_message
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
 from assistant_agent.services.tool_history import ToolHistoryStore
-from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore
+from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
@@ -143,6 +143,15 @@ class AgentGraphRuntime:
         )
         if self.run_history is not None:
             self.run_history.record_start(state.run_id, state.user_id, state.session_id)
+        self._append_observability_event(
+            state,
+            canonical_event="run.started",
+            status="started",
+            attributes={
+                "execution_strategy": state.execution_strategy,
+                "native_runtime": self._should_use_native_runtime(),
+            },
+        )
 
         runtime_context = GraphRuntimeContext(
             intent_detector=self.intent_detector,
@@ -232,6 +241,24 @@ class AgentGraphRuntime:
             trace_id=state.trace_id,
             message_preview=request.text or "",
             status=_terminal_history_status(state.status),
+        )
+        terminal_status = _terminal_history_status(state.status)
+        terminal_event = {
+            "completed": "run.completed",
+            "failed": "run.failed",
+            "cancelled": "run.cancelled",
+        }[terminal_status]
+        self._append_observability_event(
+            state,
+            canonical_event=terminal_event,
+            status=terminal_status,
+            latency_ms=int((perf_counter() - run_started_at) * 1000),
+            attributes={
+                "tool_count": len(state.tool_calls),
+                "error_count": len(state.errors),
+                "response_present": state.response is not None,
+            },
+            error=_latest_state_error(state),
         )
         if state.status == "failed":
             self._emit(
@@ -348,6 +375,23 @@ class AgentGraphRuntime:
                 return state
             result = self.chat_adapter.chat(chat_request)
             self._record_native_runtime_chat_call(state, request, result)
+            self._append_observability_event(
+                state,
+                canonical_event="llm.chat.finished",
+                node_name="native_runtime",
+                status="succeeded" if result.success else "failed",
+                provider=result.provider,
+                model=result.model,
+                latency_ms=result.latency_ms,
+                attributes={
+                    "iteration": iteration + 1,
+                    "message_kind": result.message_kind,
+                    "finish_reason": result.finish_reason,
+                    "tool_call_count": len(result.tool_calls),
+                    "usage": result.usage,
+                },
+                error=_chat_result_error(result),
+            )
             if result.success and result.tool_calls:
                 if stream_buffer is not None:
                     stream_buffer.discard()
@@ -365,6 +409,19 @@ class AgentGraphRuntime:
                     max_iterations=max_iterations,
                     safety_notes=["native_tool_call"],
                 )
+                self._append_observability_event(
+                    state,
+                    canonical_event="react.decision",
+                    node_name="native_runtime",
+                    status=decision.type,
+                    tool_name=decision.tool_name,
+                    attributes={
+                        "iteration": iteration + 1,
+                        "decision_type": decision.type,
+                        "reason": decision.reason,
+                        "safety_notes": decision.safety_notes,
+                    },
+                )
                 validation = ActionValidator().validate(
                     decision=decision,
                     registry=self.registry,
@@ -372,6 +429,15 @@ class AgentGraphRuntime:
                     state=state,
                 )
                 state.request.metadata["last_action_validator"] = validation.model_dump(mode="json")
+                self._append_observability_event(
+                    state,
+                    canonical_event="action.validation.finished",
+                    node_name="native_runtime",
+                    status="accepted" if validation.accepted else "rejected",
+                    tool_name=decision.tool_name,
+                    attributes=validation.model_dump(mode="json"),
+                    error={"code": validation.code, "message": validation.message} if not validation.accepted else None,
+                )
                 if not validation.accepted:
                     observation = rejected_observation(
                         tool_name=decision.tool_name or "unknown",
@@ -405,6 +471,24 @@ class AgentGraphRuntime:
                 observations.append(observation)
                 state.request.metadata["native_runtime_observations"] = observations
                 _record_native_observation_metadata(state, observation)
+                self._append_observability_event(
+                    state,
+                    canonical_event="tool.observation",
+                    node_name="native_runtime",
+                    status=observation.get("status") if isinstance(observation, dict) else None,
+                    tool_name=observation.get("tool_name") if isinstance(observation, dict) else None,
+                    attributes={
+                        "summary": observation.get("summary") if isinstance(observation, dict) else None,
+                        "output_ref": observation.get("output_ref") if isinstance(observation, dict) else None,
+                        "next_step_hint": observation.get("next_step_hint") if isinstance(observation, dict) else None,
+                    },
+                    error={
+                        "code": observation.get("error_code"),
+                        "message": observation.get("error_message"),
+                    }
+                    if isinstance(observation, dict) and observation.get("error_code")
+                    else None,
+                )
                 if state.status == "failed":
                     return state
                 continue
@@ -561,6 +645,19 @@ class AgentGraphRuntime:
             max_iterations=max(1, self.config.max_tool_iterations),
             safety_notes=decision.safety_notes,
         )
+        self._append_observability_event(
+            state,
+            canonical_event="react.decision",
+            node_name="native_runtime",
+            status=decision.type,
+            attributes={
+                "iteration": len(observations) + 1,
+                "decision_type": decision.type,
+                "reason": decision.reason,
+                "message_present": bool(decision.message),
+                "safety_notes": decision.safety_notes,
+            },
+        )
         state.set_response(
             AgentResponse(
                 message=message,
@@ -644,6 +741,37 @@ class AgentGraphRuntime:
         if sink is not None:
             sink.emit(event)
 
+    def _append_observability_event(
+        self,
+        state: AgentState,
+        *,
+        canonical_event: str,
+        node_name: str = "runtime",
+        status: str | None = None,
+        tool_name: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        latency_ms: int | None = None,
+        attributes: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        append_observability_event(
+            self.trace_store,
+            trace_id=state.trace_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            canonical_event=canonical_event,
+            node_name=node_name,
+            status=status,
+            tool_name=tool_name,
+            provider=provider,
+            model=model,
+            latency_ms=latency_ms,
+            attributes=attributes,
+            error=error,
+        )
+
 
 def _terminal_history_status(status: str) -> Literal["completed", "failed", "cancelled"]:
     if status == "failed":
@@ -651,6 +779,30 @@ def _terminal_history_status(status: str) -> Literal["completed", "failed", "can
     if status == "cancelled":
         return "cancelled"
     return "completed"
+
+
+def _latest_state_error(state: AgentState) -> dict[str, Any] | None:
+    if not state.errors:
+        return None
+    error = state.errors[-1]
+    return {
+        "code": error.details.get("code", "unknown_error"),
+        "message": error.message,
+        "source": error.source,
+        "recovery_action": error.details.get("recovery_action"),
+    }
+
+
+def _chat_result_error(result: Any) -> dict[str, Any] | None:
+    errors = getattr(result, "errors", None)
+    if not errors:
+        return None
+    first = errors[0]
+    return {
+        "code": getattr(first, "code", "provider_unknown_error"),
+        "message": getattr(first, "message", "provider error"),
+        "recoverable": getattr(first, "recoverable", False),
+    }
 
 
 class _ResponseDeltaTrackingEventSink:
