@@ -1,28 +1,46 @@
 # assistant_agent
 
-本项目仍在快速演进中，README 暂时只保留占位入口。
+`assistant_agent` is a local-first multimodal autonomous tool-calling Agent. It uses a LangGraph/ReAct assistant loop, governed tool execution, provider adapters, memory services, API/demo/eval surfaces, and optional realtime Gateway entry layers.
 
-当前开发规则、运行边界、文档路由和 agent 工作入口以 [AGENTS.md](AGENTS.md) 为准。项目稳定后再重写面向人的 README。
+## Start Here
 
-当前项目展示名、发行名和 Python 包名均为 `assistant_agent`，包目录为 `src/assistant_agent/`；本地 conda 环境仍为 `hello_agent`。
+- Coding-agent rules and repository boundaries: `AGENTS.md`
+- Gateway and realtime lifecycle: `docs/gateway-architecture.md`
+- Tool calling governance: `docs/tool-calling-architecture.md`
+- Observability and trace harness: `docs/observability-harness.md`
+- Memory service architecture: `docs/memory-service-architecture.md`
+- Context engineering status: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Multi-agent routing: `docs/agent-communication-routing.md`
 
-本地运行默认使用 mock/local/offline Provider；不会因为本地存在 key 自动启用真实调用。API key 只用于显式 opt-in 的真实 Provider smoke/pilot。
+Walkthroughs for project-owner explanations:
 
-本地调试接口包括 `/health`、`GET /runs/{run_id}`、`GET /traces/{trace_id}` 和 `GET /runs/{run_id}/tool-calls`，用于检查 `run_id`、`trace_id`、`tool_calls`、provider error 与 budget 等运行信息。
+- `docs/context-engineering-walkthrough.md`
+- `docs/memory-module-walkthrough.md`
+- `docs/agent-collaboration-walkthrough.md`
 
-常用本地验证命令：
+Interview training material lives under `docs/interview/` and is separate from normal development routing.
+
+## Local Environment
+
+The Python package is `assistant_agent` under `src/assistant_agent/`. The local conda environment remains `hello_agent`.
+
+Default local runs use mock/local/offline providers. Real external providers are opt-in only through explicit runtime profiles such as `provider_smoke` or `pilot`, with keys supplied by local environment/config outside the repository.
+
+Basic checks:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -m fast -q
 ```
 
-专项说明文档保留在 `docs/`：
+Full offline validation:
 
-- `docs/CONTEXT_ENGINEERING_STATUS.md`
-- `docs/context-engineering-walkthrough.md`
-- `docs/memory-service-architecture.md`
-- `docs/memory-module-walkthrough.md`
-- `docs/tool-calling-architecture.md`
-- `docs/agent-communication-routing.md`
-- `docs/agent-collaboration-walkthrough.md`
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_demo_flows.py
+```
+
+## Documentation Policy
+
+`AGENTS.md` is the coding-agent entrypoint. README is only a human navigation page. Current architecture decisions belong in the focused authority docs listed above. `docs/development/` is not a default starting point; it should contain only retained operational runbooks or explicitly named execution material.

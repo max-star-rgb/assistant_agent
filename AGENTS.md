@@ -1,32 +1,30 @@
 # AGENTS.md
 
-本文件是给 Codex / coding agent 的仓库级指导。它是当前唯一工作入口，应保持稳定、可自动加载，并只记录当前项目的通用规则。README 暂时只是占位入口；专项架构细节只保留在少量 `docs/` 文档中。
+本文件是 Codex / coding agent 的仓库级入口。开始仓库内任何非纯问答、非单条无副作用命令任务前，以本文件为准。README 面向人类快速导航；专项架构细节保留在少量 `docs/` 权威文档中。
 
-## 1. 当前权威入口
+## 1. 项目定位
 
-开始仓库内任何非纯问答/非单条无副作用命令任务前，以本文件为准。只有与仓库无关的普通问答，或用户只要求执行单个简单命令时可跳过补充阅读。
+本仓库项目名、展示名、发行名和 Python 包名均为 `assistant_agent`，包目录为 `src/assistant_agent/`。本地 conda 环境仍为 `hello_agent`，除非用户明确要求，不要重命名环境路径。
+
+项目实现一个本地优先的多模态自主工具调用 Agent。Agent 负责理解用户输入、选择工具、执行受控调用、融合结果并给出最终回答；具体能力由工具、provider adapter、memory service、demo/eval/API 层协作提供。
+
+当前核心运行时以 LangGraph/ReAct assistant loop 为主，同时保留 mock/local/offline 路径用于稳定测试和演示。真实外部 Provider 必须通过 `provider_smoke` 或 `pilot` profile 和本机未跟踪配置显式启用。
+
+## 2. 当前权威入口
 
 按任务范围优先使用项目内 `.codex/skills/**`。skill 是执行工作流包装，负责按需路由到对应权威 docs、源码和测试；AGENTS 不重复列出每个 skill 内部的补充阅读清单。
 
-- 涉及上下文工程、assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 时，如可用优先使用项目内 `.codex/skills/assistant-agent-context-engineering` skill。
-- 涉及 tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、provider-native tool calls、MCP `tool_run`、工具 observation、工具执行预算/retry/recovery 或新增/修改工具调用链时，如可用优先使用项目内 `.codex/skills/assistant-agent-tool-calling` skill。
-- 涉及记忆服务设计、`MemoryManager`、Memory Kernel、memory store/retrieval/write policy/user profile、memory tool、memory API、SQLite/store migration、RequestIdentity、token-aware memory context、retention/export/audit、memory eval 或长期记忆边界时，如可用优先使用项目内 `.codex/skills/assistant-agent-memory-service` skill。
-- 涉及多 agent 实例、`assistant_agent.agent_routing` 聚合入口、agent directory、AgentRouter、agent-to-agent 通信、`/agents/run`、A2A/JSON-RPC adapter、跨实例 session/task 路由、`delegate_to_agent`、pilot readiness、agent router evidence 或 OpenClaw 概念映射时，如可用优先使用项目内 `.codex/skills/assistant-agent-collaboration` skill。
-- 涉及 `assistant_agent.gateway`、realtime phone/gateway、wire protocol frame、`message.user`/`run.started`/`stream.chunk`/`run.end`/`run.cancel` 语义、session history、cancel/interrupt/multiturn 行为、WebSocket gateway bridge，或需要对照 `/home/lenovo1/pycharm_project/runTime` 的参考实现时，如可用必须使用项目内 `.codex/skills/assistant-runtime-reference` skill；该 skill 只用于查看旧 runtime 参考实现，不把 `runTime` 重新作为当前项目入口。
-- 涉及持续推进实时通话 Harness hardening、确定性兜底话术、realtime call state/reducer、实时工具等待状态、实时副作用恢复、幂等工具执行或轻量 checkpoint/恢复计划时，先按 Gateway/tool calling/context 相关 skill 和权威 docs 建立边界，再读取 `docs/development/realtime-harness-hardening-plan.md` 作为当前开发计划；该文档不是架构权威，也不覆盖用户另有安排的记忆系统。
-- 涉及面试训练、模拟面试、题目分级、回答点评、标准答案、面试金句或 `docs/interview/` 文档更新时，如可用优先使用项目内 `.codex/skills/assistant-agent-interview-trainer` skill。
-- 涉及架构分层、模块归属、治理边界或重构判断时，以本文件的“当前架构边界”和“编码约定”为准；只有触及上下文、tool calling、记忆、agent collaboration 或 OpenClaw 参考映射专项时才使用对应项目 skill/权威材料。
-- 涉及文档盘点、入口路由、归档、删除、清理或新增文档时，优先保持 AGENTS 和少量专项 docs 同步；README 只保留占位，不要重新引入通用索引文档。
+| scope | entry |
+| --- | --- |
+| Gateway、realtime frame、session/run/cancel/interrupt、WebSocket bridge、旧 `runTime` 参考边界 | `.codex/skills/assistant-runtime-reference`，权威文档是 `docs/gateway-architecture.md` |
+| tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、MCP `tool_run`、工具 observation/retry/budget | `.codex/skills/assistant-agent-tool-calling`，权威文档是 `docs/tool-calling-architecture.md` |
+| 记忆服务、MemoryManager、Memory Kernel、memory store/retrieval/write policy、memory API、user profile、audit、retention | `.codex/skills/assistant-agent-memory-service`，权威文档是 `docs/memory-service-architecture.md` |
+| context engineering、prompt/context rendering、conversation history、memory context、tool observation compaction、context budget | `.codex/skills/assistant-agent-context-engineering`，权威文档是 `docs/CONTEXT_ENGINEERING_STATUS.md` |
+| 多 agent、`assistant_agent.agent_routing`、AgentRouter、AgentDirectory、A2A/JSON-RPC、`delegate_to_agent`、pilot readiness | `.codex/skills/assistant-agent-collaboration`，权威文档是 `docs/agent-communication-routing.md` |
+| 状态日志、trace、运行监控、ReAct 关键节点观测、redaction | `docs/observability-harness.md` |
+| 面试训练、题库、回答点评、标准答案、面试文档更新 | `.codex/skills/assistant-agent-interview-trainer`，权威文档是 `docs/interview/README.md` |
 
-`docs/development/**` 是历史开发计划、阶段记录和 runbook，默认不作为新任务的必读入口或当前设计权威；只有用户明确点名、需要追溯历史决策，或执行文档清理/归档任务时才阅读。历史 task、prompt 和旧 runner skill 构建材料已按用户确认删除；少量剩余 phase/archive 背景文档也只在用户明确点名、需要追溯历史决策或执行对应历史任务时阅读。不要把旧 roadmap 当成当前真实架构。
-
-## 2. 项目定位
-
-本仓库项目名为 `assistant_agent`，实现一个本地优先的多模态自主工具调用 Agent。Agent 负责理解用户输入、选择工具、执行受控调用、融合结果并给出最终回答；具体能力由工具、provider adapter、memory service、demo/eval/API 层协作提供。
-
-当前项目展示名/发行名和 Python 包名均为 `assistant_agent`，包目录为 `src/assistant_agent/`；本地 conda 环境仍为 `hello_agent`，除非用户明确要求，不要擅自重命名环境路径。
-
-当前核心运行时以 LangGraph/ReAct assistant loop 为主，同时保留 mock/local/offline 路径用于稳定测试和演示。用户已确认后续本机项目运行主要使用真实 LLM；真实外部 Provider 仍必须通过 `provider_smoke` 或 `pilot` profile 和本机未跟踪配置显式启用。
+`docs/development/**` 只保留仍有现实用途的操作 runbook 或用户明确点名的执行材料，不作为默认设计权威。不要把旧 roadmap 或阶段计划当作当前架构。
 
 ## 3. 当前架构边界
 
@@ -51,15 +49,17 @@ ToolRegistry -> tools -> provider adapters / memory / local services
 重要边界：
 
 - Agent/graph 负责决策编排，不直接绕过工具治理边界调用外部能力。
-- 工具调用必须经过 validator、executor、tool registry、policy/audit 相关边界；设计或修改工具调用链时按第 1 节使用对应项目 skill。
+- 工具调用必须经过 validator、executor、tool registry、policy/audit 相关边界。
 - Provider adapter 负责真实或 mock 能力接入；默认 profile 必须是 mock/local/offline。
-- Memory 行为应通过 memory service/provider 管理，不把临时状态散落到无关模块；设计记忆服务时按第 1 节使用对应项目 skill。
+- Memory 行为应通过 memory service/provider 管理，不把临时状态散落到无关模块。
 - Memory tools 只是 Agent 可调用适配器，不是记忆服务所有者；检索、写入策略、TTL、去重、用户画像、审计和 store 选择必须留在 `MemoryManager`、`memory/` 或 `services/memory_*`。
-- 多 agent / A2A 行为应通过 `assistant_agent.agent_routing` 聚合入口、AgentRouter、agent communication service、directory、transport adapter 和工具治理边界管理；设计 agent collaboration 时按第 1 节使用对应项目 skill。
-- CLI、Web UI、App、HTTP、WebSocket 和 realtime call adapter 属于入口层；Gateway 不是某个产品入口本身，而是入口层之后的标准化消息、session/run 生命周期、cancel/interrupt、reconnect/hangup 和 stream frame 控制边界。`assistant_agent.realtime` / `GatewayAgentAdapter` 是 Gateway 到当前主运行时的薄适配层，不承担主大脑职责。Gateway 具体职责以 `docs/gateway-architecture.md` 为准。
-- AgentRouter 只负责内部 agent 选择、capability routing、controller/worker route 和控制面记录；面向调用方的多 agent 导入优先走 `assistant_agent.agent_routing`，底层实现仍保留在 `schemas/`、`services/` 等分层。
-- 不要把 `runTime` 的旧 OpenClaw/Anthropic agent loop 引入本项目；当前 agent 内部执行器仍是 `AgentGraphRuntime` / assistant loop，`runtime` 一词优先留给这类内部执行器。
-- API、demo、eval、CLI 应尽量复用同一套 runtime 行为，避免各自实现一套不一致的 Agent 逻辑。
+- 多 agent / A2A 行为应通过 `assistant_agent.agent_routing` 聚合入口、AgentRouter、agent communication service、directory、transport adapter 和工具治理边界管理。
+- CLI、Web UI、App、HTTP、WebSocket 和 realtime call adapter 属于入口层；Gateway 是入口层之后的标准化消息、session/run 生命周期、cancel/interrupt、reconnect/hangup 和 stream frame 控制边界。
+- `assistant_agent.realtime` / `GatewayAgentAdapter` 是 Gateway 到当前主运行时的薄适配层，不承担主大脑职责。
+- 当前核心 runtime、Gateway session/run/cancel/interrupt/history 等生命周期权威实现继续以 Python `assistant_agent` 为主。新增 Web UI、BFF、vendor WebSocket adapter、Media Relay adapter、边缘入口或电话/实时媒体 SDK 适配层可以使用 TypeScript、Go、Rust 等非 Python 语言，但这些层必须保持薄入口适配器职责。
+- AgentRouter 只负责内部 agent 选择、capability routing、controller/worker route 和控制面记录；面向调用方的多 agent 导入优先走 `assistant_agent.agent_routing`。
+- 不要把 `runTime` 的旧 OpenClaw/Anthropic agent loop 引入本项目；当前 agent 内部执行器仍是 `AgentGraphRuntime` / assistant loop。
+- API、demo、eval、CLI 应尽量复用同一套 runtime 行为，避免各自实现不一致的 Agent 逻辑。
 
 ## 4. 运行与安全规则
 
@@ -110,7 +110,7 @@ conda run -n hello_agent <command>
 | --- | --- | --- |
 | `src/assistant_agent/api/` | FastAPI app、routes、server/client integration | 按任务要求修改 |
 | `src/assistant_agent/gateway/` | Gateway protocol、bridge、session/run/cancel/interrupt、realtime frame lifecycle | 按任务要求修改，边界以 `docs/gateway-architecture.md` 为准 |
-| `src/assistant_agent/realtime/` | Gateway 到 assistant runtime 的薄 adapter/backend contract 和 event mapping；不承担 agent routing | 按任务要求修改 |
+| `src/assistant_agent/realtime/` | Gateway 到 assistant runtime 的薄 adapter/backend contract 和 event mapping | 按任务要求修改 |
 | `src/assistant_agent/agent/` | LangGraph runtime、assistant loop、决策、验证、执行 | 按任务要求修改 |
 | `src/assistant_agent/services/` | runtime services、context、trace、session、agent communication、provider 管理 | 按任务要求修改 |
 | `src/assistant_agent/providers/` | Provider adapter、runtime profile、mock/real 边界 | 谨慎修改，默认 mock 优先 |
@@ -119,9 +119,7 @@ conda run -n hello_agent <command>
 | `src/assistant_agent/eval/` | 离线评测逻辑 | 按任务要求修改 |
 | `tests/` | pytest 测试 | 修改行为时同步维护，除非用户限制只读 |
 | `scripts/` | 本地验证、服务、demo、eval、smoke 脚本 | 可按任务修改 |
-| `docs/` | 当前权威文档、参考文档、历史归档 | 文档任务优先修改 |
-| `docs/development/` | 历史开发计划、阶段记录和 runbook，暂不清理 | 仅追溯/清理任务按需阅读，不作为当前开发指导 |
-| `docs/interview/` | 面试训练题库、解释材料、模拟面试规则 | 面试任务按 README 维护，默认不清理 |
+| `docs/` | 当前权威文档、走读文档、API/runbook、面试资料 | 文档任务优先修改 |
 | `.codex/skills/` | 项目内 Codex skills，包装专项工作流并路由到权威 docs | 只放项目专用 workflow，不复制长篇架构细节 |
 
 如果用户对本轮任务设定更严格的 scope，例如“不要修改 `src/**`”或“不要修改 `tests/**`”，以用户当前约束为准。
@@ -134,7 +132,7 @@ conda run -n hello_agent <command>
 - 外部模型/API 先维护 adapter interface 和 mock implementation，不要直接绑定具体供应商。
 - 多 agent 通信先维护内部 message/task/artifact contract 和 transport adapter；A2A JSON-RPC 只作为协议适配层，不作为核心 runtime 内部模型。
 - Memory tool 代码应保持薄层，只做 `ToolContext` 身份绑定、输入适配、调用 `MemoryManager`、包装 `ToolResult`；不要在 `tools/memory_tool.py` 新增检索排序、写入策略、画像合并、TTL、审计或直接 store 访问。
-- Memory 工具选择采用 LLM-first：assistant loop 由 LLM 语义判断是否调用 `memory_save` / `memory_retrieval`，并在 `memory_save` 中声明 `source_intent`；当前不使用关键词或向量覆盖来源判断，任何写入仍必须经过 `MemoryWritePolicy`。
+- Memory 工具选择采用 LLM-first：assistant loop 由 LLM 语义判断是否调用 `memory_save` / `memory_retrieval`，并在 `memory_save` 中声明 `source_intent`；任何写入仍必须经过 `MemoryWritePolicy`。
 - Phase 8 之后的 assistant loop 方向是真实 LLM 自主决策、追问、工具调用和最终回答；不要让真实 LLM 路径依赖旧 intent/router/plan 来选择工具。
 - mock/offline 路径只作为稳定测试与本地演示兼容层，不要把 mock 行为伪装成真实 LLM 能力。
 - 新增核心 ReAct/assistant loop 测试应优先覆盖非 mock LLM 决策路径，例如 scripted/fake real chat adapter；真实外部网络调用只放在显式 opt-in 的 smoke/integration 测试中。
@@ -145,21 +143,13 @@ conda run -n hello_agent <command>
 ## 8. 文档维护规则
 
 - `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定，不塞入长篇历史设计。
-- `README.md` 是临时占位入口，项目稳定后再重写，不承担实时架构和文档路由职责。
-- `docs/gateway-architecture.md` 是 Gateway、entry layer、realtime backend contract、OpenClaw 参考边界和 Gateway 更新规则的当前权威入口。
-- `docs/tool-calling-architecture.md` 是 tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、provider-native tool calls 和 MCP `tool_run` 的当前权威入口。
-- `docs/observability-harness.md` 是状态日志、监控、trace、ReAct 关键节点监测、开发者 trace 查询体验和 redaction 红线的当前权威入口。
-- `docs/memory-service-architecture.md` 是记忆服务架构、边界、路由和更新规则的当前权威入口。
-- `docs/memory-module-walkthrough.md` 是面向项目负责人的记忆模块中文解释文档；它不是 agent 必读或补读入口，维护时只需保持与 `docs/memory-service-architecture.md` 不冲突。
-- `docs/development/memory-kernel-hardening-plan.md` 是 Memory Kernel 工程化落地的历史开发计划和参考材料，默认不作为当前设计权威入口。
-- `docs/CONTEXT_ENGINEERING_STATUS.md` 是上下文工程当前进展、限制、下一步和新对话快速交接入口。
-- `docs/context-engineering-walkthrough.md` 是面向项目负责人的上下文工程中文解释文档；它不是 agent 必读或补读入口，维护时只需保持与 `docs/CONTEXT_ENGINEERING_STATUS.md` 不冲突。
-- `docs/development/context-engine-memory-policy-plan.md` 是已完成的上下文工程阶段实施记录，按需追溯历史，不是当前 active roadmap。
-- `docs/agent-communication-routing.md` 是多 agent 实例、agent 通信路由、A2A adapter 边界和更新规则的当前权威入口。
-- `docs/interview/README.md` 是面试训练模式、题库目录结构和更新规则的当前权威入口；各模块面试题按 `docs/interview/{module}_interview/` 独立维护。
-- `.codex/skills/assistant-agent-tool-calling`、`.codex/skills/assistant-agent-context-engineering`、`.codex/skills/assistant-agent-memory-service`、`.codex/skills/assistant-agent-collaboration`、`.codex/skills/assistant-runtime-reference` 和 `.codex/skills/assistant-agent-interview-trainer` 是本项目的项目内 skills；它们只包装工作流和入口路由，不取代对应权威 docs，也不要当作通用全局 skill 维护。
-- 历史 task/prompt/skill 构建材料和根目录通用文档已按用户确认删除；`docs/development/` 暂不清理。
-- 新增文档必须有明确长期用途；优先更新 AGENTS 或现有专项文档，README 暂不承载实时维护内容。
+- `README.md` 是人类轻导航入口，不承担专项架构权威职责。
+- 当前架构权威文档是 `docs/gateway-architecture.md`、`docs/tool-calling-architecture.md`、`docs/observability-harness.md`、`docs/memory-service-architecture.md`、`docs/CONTEXT_ENGINEERING_STATUS.md` 和 `docs/agent-communication-routing.md`。
+- 走读文档只用于解释已沉淀机制，不替代权威文档。
+- `docs/development/**` 只保留仍有现实用途的操作 runbook 或用户明确点名的执行材料。
+- `docs/interview/**` 是面试训练资料，普通开发任务不把它当作架构来源。
+- `.codex/skills/**` 只包装项目专用工作流和入口路由，不取代对应权威 docs。
+- 新增文档必须有明确长期用途；优先更新 AGENTS、README 或现有专项文档。
 
 ## 9. 测试与验收
 
@@ -170,8 +160,6 @@ conda run -n hello_agent <command>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/unit tests/contracts -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/<relevant_test_file>.py -q
 ```
-
-`tests/README.md` 记录当前 pytest marker 分层。默认思路是：小范围改动跑 `fast` + 相关测试；触及 runtime/tool/API/memory/gateway/provider 边界时追加对应专项测试；大改、合并前或发布前再跑完整离线回归。
 
 完整离线验证：
 
