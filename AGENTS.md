@@ -132,7 +132,7 @@ conda run -n hello_agent <command>
 - 外部模型/API 先维护 adapter interface 和 mock implementation，不要直接绑定具体供应商。
 - 多 agent 通信先维护内部 message/task/artifact contract 和 transport adapter；A2A JSON-RPC 只作为协议适配层，不作为核心 runtime 内部模型。
 - Memory tool 代码应保持薄层，只做 `ToolContext` 身份绑定、输入适配、调用 `MemoryManager`、包装 `ToolResult`；不要在 `tools/memory_tool.py` 新增检索排序、写入策略、画像合并、TTL、审计或直接 store 访问。
-- Memory 工具选择采用 LLM-first：assistant loop 由 LLM 语义判断是否调用 `memory_save` / `memory_retrieval`，并在 `memory_save` 中声明 `source_intent`；任何写入仍必须经过 `MemoryWritePolicy`。
+- Memory 工具选择采用 LLM-first：assistant loop 由 LLM 语义判断是否调用 `memory_save` / `memory_retrieval`，`memory_save` 声明 `source_intent`，当前不以 keyword/vector 规则覆盖 `source_intent` 来决定选择，任何写入仍必须经过 `MemoryWritePolicy`。
 - Phase 8 之后的 assistant loop 方向是真实 LLM 自主决策、追问、工具调用和最终回答；不要让真实 LLM 路径依赖旧 intent/router/plan 来选择工具。
 - mock/offline 路径只作为稳定测试与本地演示兼容层，不要把 mock 行为伪装成真实 LLM 能力。
 - 新增核心 ReAct/assistant loop 测试应优先覆盖非 mock LLM 决策路径，例如 scripted/fake real chat adapter；真实外部网络调用只放在显式 opt-in 的 smoke/integration 测试中。
