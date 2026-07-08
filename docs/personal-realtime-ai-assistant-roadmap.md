@@ -223,12 +223,13 @@ flowchart TD
 - 实现或展开设计完整 durable runtime。
 - 超过两周继续打磨抽象而不进入 realtime loop。
 
-### Phase 1：实时语音闭环
+### Phase 1：文本实时编排闭环
 
 为什么现在做：
 
 - Personal Realtime Assistant 的产品壁垒首先是实时交互，不是更多工具。
 - 没有稳定通话闭环，后续 memory 和 skill 都无法在真实使用场景中验证。
+- 当前仓库不做 ASR/TTS；媒体服务完成语音输入输出，本仓库先把文本 turn-taking、interrupt、hangup 和 runtime trace 跑稳。
 
 依赖：
 
@@ -239,17 +240,17 @@ flowchart TD
 
 需要新增：
 
-- Realtime orchestration adapter。
-- mock/local ASR/TTS adapter。
-- VAD/barge-in controller。
-- audio ref lifecycle。
-- latency metrics。
-- call simulator。
+- Realtime text orchestration adapter contract。
+- Media Relay text event contract：`session.start -> transcript.final -> run.end -> session.end`。
+- interrupt / cancel / hangup lifecycle tests。
+- text call simulator。
+- frame/trace/latency metrics。
 
 不应该做：
 
 - 一开始接入大量电话/IM 平台。
 - 自研 ASR、TTS、声学模型或复杂音频基础设施。
+- 在 `assistant_agent` 内实现 ASR/TTS/VAD；这些属于媒体服务。
 - 做复杂语音克隆。
 - 让媒体层直接持有大脑逻辑。
 
@@ -508,6 +509,7 @@ Phase 0 以两周为上限；Phase 1 打通第一个 realtime loop 后，Phase 2
 - Tool governance has a rejection test proving invalid native tool calls do not enter `ToolExecutor`.
 - Representative mock/offline and native traces pass `TraceInvariantObserver`.
 - Memory, context, and delegation boundaries have regression tests that prevent obvious ownership drift.
+- Gateway lifecycle invariants are covered: active run hangup cancels, completed run hangup does not cancel, trusted entry source overrides client metadata source, text-only realtime turns do not create media refs, and explicit interrupt starts a replacement turn.
 
 #### Phase 0 Architecture Gate Commands
 
@@ -526,9 +528,17 @@ git diff --check -- AGENTS.md docs src tests scripts
 
 ### Phase 1 Gate
 
-- 本地可跑完整实时通话模拟。
+- 本地可跑完整 text-only realtime 通话模拟：媒体服务输入 finalized text，本仓库输出 text Gateway frames。
 - interrupt、cancel、hangup 的 trace 和 Gateway frame 一致。
+- ASR/TTS/VAD 不作为 `assistant_agent` 的 Phase 1 验收范围。
 - 媒体层不持有大脑逻辑。
+- Gate commands:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_realtime_call_simulator.py --scenario basic
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_realtime_call_simulator.py --scenario interrupt
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway_api.py tests/test_realtime_call_simulator.py tests/test_realtime_event_mapping.py -q
+```
 
 ### Phase 2 Gate
 

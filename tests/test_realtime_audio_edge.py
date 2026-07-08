@@ -73,3 +73,33 @@ def test_audio_edge_ignores_non_text_and_control_frames() -> None:
         is None
     )
     assert gateway_frame_to_tts_event({"type": "run.end", "payload": {"text": "done"}}) is None
+
+
+def test_audio_edge_tts_event_contains_only_prompt_safe_text_metadata() -> None:
+    event = gateway_frame_to_tts_event(
+        {
+            "type": "stream.chunk",
+            "session_id": "session-1",
+            "payload": {
+                "text": "请朗读这段文本。",
+                "content_type": "text",
+                "audio": "data:audio/wav;base64,AAAA",
+                "raw_audio": b"audio-bytes",
+                "provider_response": {"token": "sk-secret"},
+            },
+        }
+    )
+
+    assert event is not None
+    dumped = str(event)
+    assert event["payload"] == {
+        "text": "请朗读这段文本。",
+        "source_frame": "stream.chunk",
+        "content_type": "text",
+        "display_only": False,
+        "replaceable": False,
+    }
+    assert "audio" not in dumped
+    assert "base64" not in dumped
+    assert "provider_response" not in dumped
+    assert "sk-secret" not in dumped

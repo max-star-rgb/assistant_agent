@@ -198,6 +198,8 @@ Invalid JSON, unsupported event types, unknown config fields, missing transcript
 
 System prompt profile selection is a session configuration concern. Realtime call entries may set trusted session config such as `system_prompt_profile=realtime_phone` and `channel=realtime_phone`; message payload metadata cannot promote a normal turn into `realtime_phone` or `final_only`.
 
+Phase 1 realtime work in this repository is text orchestration only. The Media Relay or upstream media service owns ASR, TTS, VAD, telephony SDK state, audio transport, and playback. `assistant_agent` accepts finalized text events, maps them into Gateway lifecycle frames, runs the existing assistant runtime, and emits text Gateway frames that an entry adapter may pass to TTS. The local gate for this contract is `scripts/run_realtime_call_simulator.py`, which runs `basic`, `interrupt`, and `hangup` scenarios in process without a server, real provider, audio bytes, or media refs.
+
 Media Relay v1 does not stream raw audio or video through Gateway. It sends references such as `audio_id`, `video_ids`, and `image_ids`; the assistant runtime receives those references through `RealtimeAgentRequest`. STT/TTS edge metadata is kept prompt-safe: `transcript.final` may attach sanitized `media_edge` metadata for transcript/STT/TTS status, but raw audio, base64 payloads, provider raw responses, API keys, and SDK blobs are removed before the backend request is built.
 
 TTS is also an entry-adapter concern. `assistant_agent.realtime.audio_edge.gateway_frame_to_tts_event()` can map speakable Gateway frames (`stream.chunk` and display-only `event.progress`) into prompt-safe TTS edge events. It does not invoke a TTS provider, stream audio, or change assistant runtime behavior.
@@ -241,6 +243,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `scripts/run_demo_flows.py` | Offline demo/scenario entry adapter that runs scenarios through a local `GatewayTurnFacade` and formats the existing demo summary payload. |
 | `scripts/run_gateway_client.py` | Local operator smoke client for the Gateway frame WebSocket route. |
 | `scripts/realtime_media_client.py` | Local Media Relay protocol smoke client for `/ws/realtime/media` scenarios. |
+| `scripts/run_realtime_call_simulator.py` | In-process text-only realtime call simulator for Phase 1 Gateway lifecycle gates. |
 
 ### Entry Convergence Inventory
 
@@ -260,6 +263,7 @@ Phase 0 treats these entry classifications as architecture contracts:
 | MCP `tool_run` | `ActionValidator -> ToolExecutor -> ToolRegistry` | Tool adapter path, not assistant entry. |
 
 Phase 0 entry convergence tests live in `tests/test_phase0_entrypoint_contracts.py`.
+Gateway lifecycle invariants for active-run hangup, inactive-run hangup, trusted entry source, and text-only realtime media events live in `tests/test_gateway.py`, `tests/test_gateway_api.py`, and `tests/test_realtime_call_simulator.py`.
 
 ## OpenClaw Reference Boundary
 

@@ -533,7 +533,10 @@ def _message_payload_with_metadata(
 ) -> dict[str, Any]:
     normalized = dict(payload) if isinstance(payload, dict) else {}
     metadata = dict(normalized.get("metadata") or {})
-    metadata.setdefault("source", source)
+    inbound_source = _optional_string(metadata.get("source"))
+    if inbound_source and inbound_source != source:
+        metadata.setdefault("source_detail", inbound_source)
+    metadata["source"] = source
     metadata["transport"] = "websocket"
     metadata["request_identity"] = identity.metadata()
     normalized["metadata"] = metadata

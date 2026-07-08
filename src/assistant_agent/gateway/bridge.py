@@ -229,9 +229,7 @@ class GatewayBridge:
                 and self._session_manager.has_active_session(str(uid))
             ):
                 endpoint = await ensure_runtime_endpoint(_optional_string(uid), None)
-            cancel_requested = endpoint is not None and (
-                session_id is not None or run_id is not None
-            )
+            cancel_requested = endpoint is not None and run_id is not None
             if cancel_requested:
                 await endpoint.send(
                     frame(

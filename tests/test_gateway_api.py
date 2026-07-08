@@ -183,6 +183,47 @@ def test_realtime_media_websocket_maps_text_and_video_to_gateway_message() -> No
     assert backend.requests[0].metadata["gateway"]["session_config"] == {"locale": "zh-CN"}
 
 
+def test_realtime_media_websocket_completed_run_hangup_does_not_cancel_inactive_run() -> None:
+    backend = RecordingRealtimeBackend()
+    _install_gateway_backend(backend)
+    try:
+        client = TestClient(create_app())
+
+        with client.websocket_connect("/ws/realtime/media?user_id=media-user&session_id=text-call") as websocket:
+            websocket.send_json({"type": "session.start", "payload": {"config": {"locale": "zh-CN"}}})
+            ready = websocket.receive_json()
+
+            websocket.send_json(
+                {
+                    "type": "transcript.final",
+                    "payload": {
+                        "text": "你好，帮我记录一下这次通话",
+                        "metadata": {"source": "media_service_text"},
+                    },
+                }
+            )
+            run_frames = _receive_until(websocket, "run.end")
+
+            websocket.send_json({"type": "session.end", "payload": {"reason": "text_call_finished"}})
+            hangup_ack = websocket.receive_json()
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+    assert ready["type"] == "call.ready"
+    assert ready["session_id"] == "text-call"
+    assert [item["type"] for item in run_frames] == ["run.started", "stream.chunk", "run.end"]
+    assert run_frames[1]["payload"]["text"] == "gateway api response"
+    assert run_frames[-1]["reason"] == "completed"
+    assert hangup_ack["type"] == "call.hangup_ack"
+    assert hangup_ack["payload"]["cancelled_active_run"] is False
+    assert backend.requests[0].text == "你好，帮我记录一下这次通话"
+    assert backend.requests[0].audio_id is None
+    assert backend.requests[0].image_ids == []
+    assert backend.requests[0].video_ids == []
+    assert backend.requests[0].metadata["source"] == "realtime_media_websocket"
+    assert backend.requests[0].metadata["source_detail"] == "media_service_text"
+
+
 def test_realtime_media_default_backend_trace_is_queryable_via_http_runtime() -> None:
     routes_agent._RUNTIME = None
     gateway_runtime.reset_gateway_runtime_for_tests()
