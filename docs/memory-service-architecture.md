@@ -367,6 +367,7 @@ Current local eval boundary:
 - `scripts/run_evals.py --suite memory` includes the retrieval eval cases from `tests/evals/eval_cases.json`.
 - Metrics include Recall@k, MRR, false-positive rate, correct-empty rate, cross-user leakage rate, sensitive/expired injection rate, and token budget compliance.
 - Initial coverage includes black-bag recall, color preference recall, task/product resume, budget preference, unrelated empty recall, cross-user isolation, expired exclusion, sensitive non-injection, token budget compliance, and superseded-preference exclusion from active profile/context.
+- Phase 2 Memory Intelligence v1 gate tests live in `tests/test_phase2_memory_intelligence_gate.py`; they verify candidate audit-only behavior, explicit profile memory, deterministic supersede, active recall, confirmation-before-write, and local memory eval metrics without vector or external memory dependencies.
 
 ## Writes
 

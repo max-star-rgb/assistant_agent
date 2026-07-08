@@ -542,10 +542,19 @@ git diff --check -- AGENTS.md docs src tests scripts
 
 ### Phase 2 Gate
 
-- memory read/write 有可解释审计。
-- sensitive memory 拒写有测试。
-- profile 冲突可以被稳定处理。
-- candidate memory 到 promotion 的路径可被 trace/eval 解释。
+- `assistant_candidate` memory is audit-only by default and does not persist without user confirmation or policy approval.
+- Explicit user memory can update durable profile memory.
+- Conflicting profile preferences supersede older active preferences deterministically.
+- Active recall excludes superseded profile sources.
+- Sensitive explicit memory requires pending confirmation before durable write.
+- Local memory eval remains green without embedding/vector dependencies.
+- Gate commands:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase2_memory_intelligence_gate.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_manager.py tests/test_memory_retrieval_eval.py tests/test_memory_audit_api.py tests/test_native_tool_call_handoff.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory
+```
 
 ### Phase 3 Gate
 
