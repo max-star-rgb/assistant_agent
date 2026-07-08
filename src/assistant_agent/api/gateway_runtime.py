@@ -10,9 +10,11 @@ from typing import Any
 
 from assistant_agent.gateway import GatewayBridge, GatewaySessionManager
 from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
+from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade
 
 _GATEWAY_SESSION_MANAGER: GatewaySessionManager | None = None
 _GATEWAY_BRIDGE: GatewayBridge | None = None
+_GATEWAY_TURN_FACADE: GatewayTurnFacade | None = None
 
 GATEWAY_MAX_SESSIONS_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_SESSIONS"
 GATEWAY_IDLE_TIMEOUT_S_ENV = "MULTIMODAL_AGENT_GATEWAY_IDLE_TIMEOUT_S"
@@ -39,6 +41,24 @@ def get_gateway_bridge() -> GatewayBridge:
     if _GATEWAY_BRIDGE is None:
         _GATEWAY_BRIDGE = GatewayBridge(session_manager=get_gateway_session_manager())
     return _GATEWAY_BRIDGE
+
+
+def get_gateway_turn_facade() -> GatewayTurnFacade:
+    """Return the process-local Gateway sync-turn facade."""
+
+    global _GATEWAY_TURN_FACADE
+    if _GATEWAY_TURN_FACADE is None:
+        _GATEWAY_TURN_FACADE = create_gateway_turn_facade()
+    return _GATEWAY_TURN_FACADE
+
+
+def create_gateway_turn_facade(
+    *,
+    manager: GatewaySessionManager | None = None,
+) -> GatewayTurnFacade:
+    """Create a GatewayTurnFacade bound to the process-local session manager."""
+
+    return GatewayTurnFacade(manager=manager or get_gateway_session_manager())
 
 
 def create_gateway_session_manager(
@@ -80,18 +100,20 @@ def set_gateway_runtime_for_tests(
 ) -> None:
     """Install explicit Gateway runtime services for tests."""
 
-    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE
     _GATEWAY_SESSION_MANAGER = manager
     _GATEWAY_BRIDGE = bridge
+    _GATEWAY_TURN_FACADE = None
 
 
 async def shutdown_gateway_runtime() -> None:
     """Close application-owned Gateway sessions and reset process globals."""
 
-    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE
     manager = _GATEWAY_SESSION_MANAGER
     _GATEWAY_SESSION_MANAGER = None
     _GATEWAY_BRIDGE = None
+    _GATEWAY_TURN_FACADE = None
     if manager is not None:
         await manager.close()
 
@@ -99,10 +121,11 @@ async def shutdown_gateway_runtime() -> None:
 def reset_gateway_runtime_for_tests() -> None:
     """Best-effort synchronous reset for tests without an active event loop."""
 
-    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE
     manager = _GATEWAY_SESSION_MANAGER
     _GATEWAY_SESSION_MANAGER = None
     _GATEWAY_BRIDGE = None
+    _GATEWAY_TURN_FACADE = None
     if manager is None:
         return
     try:

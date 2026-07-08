@@ -11,6 +11,7 @@ from assistant_agent.api.app import create_app
 from assistant_agent.api.auth import AUTH_HEADER_ENABLED_ENV, AUTH_USER_ID_HEADER
 from assistant_agent.gateway import GatewayBridge, GatewaySessionManager
 from assistant_agent.realtime import RealtimeAgentEvent, RealtimeAgentResult
+from assistant_agent.services.gateway_turn_facade import GatewayTurnRequest
 
 
 class RecordingRealtimeBackend:
@@ -413,6 +414,32 @@ def test_realtime_media_websocket_session_end_cancels_active_run_and_acks() -> N
         "cancel_source": "gateway_hangup",
         "cancel_reason": "call_hangup",
     }
+
+
+def test_gateway_turn_facade_uses_process_local_manager() -> None:
+    backend = RecordingRealtimeBackend()
+    _install_gateway_backend(backend)
+    try:
+        result = asyncio.run(
+            gateway_runtime.get_gateway_turn_facade().run_turn(
+                GatewayTurnRequest(
+                    user_id="facade-user",
+                    session_id="facade-session",
+                    text="hello facade",
+                    config={"tone": "brief"},
+                    timeout_s=1,
+                )
+            )
+        )
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+    assert result.reason == "completed"
+    assert result.response_text == "gateway api response"
+    assert result.trace_id == "trace-gateway-api-1"
+    assert backend.requests[0].user_id == "facade-user"
+    assert backend.requests[0].session_id == "facade-session"
+    assert backend.requests[0].metadata["gateway"]["session_config"] == {"tone": "brief"}
 
 
 def _install_gateway_backend(backend) -> None:
