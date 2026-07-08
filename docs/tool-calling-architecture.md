@@ -211,6 +211,8 @@ Provider 边界：
 
 被拒绝的 action 不会进入 `ToolExecutor`，不会产生 `ToolCallRecord`；assistant loop 会生成 `ToolObservation(status="rejected")`，记录 `action_rejected` trace，并由 loop guard 判断是否终止。
 
+Phase 0 tool governance rejection tests live in `tests/test_phase0_tool_governance_contracts.py`.
+
 ## ToolExecutor 边界
 
 `ToolExecutor.run_tool()` 是唯一工具执行入口。它负责：

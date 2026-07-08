@@ -504,6 +504,25 @@ Phase 0 以两周为上限；Phase 1 打通第一个 realtime loop 后，Phase 2
 - 所有新入口都有明确 Gateway 收敛路径。
 - 文档中不存在新的 tool bypass runtime 设计。
 - trace invariants 可被测试或脚本验证。
+- Product text/realtime entries have static contract tests proving Gateway-first routing.
+- Tool governance has a rejection test proving invalid native tool calls do not enter `ToolExecutor`.
+- Representative mock/offline and native traces pass `TraceInvariantObserver`.
+- Memory, context, and delegation boundaries have regression tests that prevent obvious ownership drift.
+
+#### Phase 0 Architecture Gate Commands
+
+Run before starting Phase 1:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase0_entrypoint_contracts.py tests/test_architecture_boundaries.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway.py tests/test_gateway_session.py tests/test_gateway_api.py tests/test_gateway_turn_facade.py tests/test_assistant_cli.py tests/test_realtime_agent_backend.py tests/test_realtime_event_mapping.py tests/test_realtime_backend_types.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase0_tool_governance_contracts.py tests/test_tool_call_boundaries.py tests/test_tool_executor.py tests/test_tool_risk_gate.py tests/test_mcp_server_skeleton.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase0_trace_invariant_gate.py tests/test_hook_invariants.py tests/test_observability_harness.py tests/test_trace_query_api.py tests/test_trace_redaction.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase0_service_boundary_contracts.py tests/test_memory_tool_boundary.py tests/test_memory_manager.py tests/test_memory_read_policy.py tests/test_assistant_context_renderer.py tests/test_agent_communication_routing.py tests/test_agent_router.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -m fast -q
+git diff --check -- AGENTS.md docs src tests scripts
+```
 
 ### Phase 1 Gate
 

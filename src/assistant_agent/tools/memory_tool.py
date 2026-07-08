@@ -13,7 +13,6 @@ from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.schemas.capability_output import build_capability_output_contract
-from assistant_agent.memory.write_policy import build_explicit_memory_item
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
@@ -135,31 +134,7 @@ class MemoryTool(MockTool):
                 "source_intent=user_confirmed is reserved for confirmation service",
             )
 
-        item = build_explicit_memory_item(
-            memory_id="m_saved_1",
-            user_id=input.user_id,
-            session_id=input.session_id or str(input.content.get("session_id") or "default"),
-            text=text,
-            content=input.content,
-            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        )
-        item = item.model_copy(update={"summary": "已保存用户偏好。"})
-        data = item.model_dump()
-        contract = build_capability_output_contract(
-            capability="memory_save",
-            status="succeeded",
-            output_ref="mock://memory/m_saved_1",
-            data={"memory_id": item.memory_id, "summary": item.summary, "memory_type": item.memory_type},
-            metadata={"provider": "mock", "source": "memory"},
-        )
-        return ToolResult(
-            tool_name=self.name,
-            success=True,
-            data={**data, "contract": contract.model_dump(mode="json")},
-            output_ref="mock://memory/m_saved_1",
-            latency_ms=1,
-            contract=contract,
-        )
+        return _mock_memory_saved_result(self.name, input, text)
 
 
 class MemoryRetrievalTool(MemoryTool):
@@ -448,6 +423,48 @@ def _memory_save_rejected_result(tool_name: str, reason: str) -> ToolResult:
         latency_ms=1,
         contract=contract,
         data={"status": "rejected", "written": False, "contract": contract.model_dump(mode="json")},
+    )
+
+
+def _mock_memory_saved_result(tool_name: str, input: MemoryInput, text: str) -> ToolResult:
+    memory_id = "m_saved_1"
+    session_id = input.session_id or str(input.content.get("session_id") or "default")
+    data = {
+        "memory_id": memory_id,
+        "user_id": input.user_id,
+        "session_id": session_id,
+        "memory_type": "preference",
+        "content": dict(input.content),
+        "summary": "已保存用户偏好。",
+        "status": "saved",
+        "written": True,
+        "source_intent": input.source_intent or "user_explicit",
+        "source_reason": input.source_reason,
+        "future_use": input.future_use,
+        "evidence": input.evidence,
+        "text_chars": len(text),
+    }
+    contract = build_capability_output_contract(
+        capability="memory_save",
+        status="succeeded",
+        output_ref=f"mock://memory/{memory_id}",
+        data={
+            "status": "saved",
+            "written": True,
+            "memory_id": memory_id,
+            "summary": data["summary"],
+            "memory_type": data["memory_type"],
+            "source_intent": data["source_intent"],
+        },
+        metadata={"provider": "mock", "source": "memory_tool_fallback", "written": True},
+    )
+    return ToolResult(
+        tool_name=tool_name,
+        success=True,
+        data={**data, "contract": contract.model_dump(mode="json")},
+        output_ref=f"mock://memory/{memory_id}",
+        latency_ms=1,
+        contract=contract,
     )
 
 

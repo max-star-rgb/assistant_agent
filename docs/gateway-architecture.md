@@ -259,6 +259,8 @@ Phase 0 treats these entry classifications as architecture contracts:
 | Inbound A2A `/a2a/rpc` | protocol adapter over `AgentRouter` | Explicit adapter, not Gateway lifecycle. |
 | MCP `tool_run` | `ActionValidator -> ToolExecutor -> ToolRegistry` | Tool adapter path, not assistant entry. |
 
+Phase 0 entry convergence tests live in `tests/test_phase0_entrypoint_contracts.py`.
+
 ## OpenClaw Reference Boundary
 
 Use `/home/lenovo1/pycharm_project/runTime` only as a reference for compatibility behavior:
