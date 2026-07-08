@@ -985,6 +985,8 @@ def test_native_context_renders_skill_style_capability_catalog_without_full_tool
     assert '"name": "realtime_web_search"' in message
     assert '"governed_tools": [' in message
     assert '"web_search"' in message
+    assert '"permissions": [' in message
+    assert '"tool:web_search"' in message
     assert "可用工具 ToolSpec 列表" not in message
 
 
@@ -999,6 +1001,9 @@ description: Repo-local search guidance.
 ---
 ## Governed Tools
 - web_search
+
+## Permissions
+- tool:web_search
 
 ## When To Use
 - User asks for current information.

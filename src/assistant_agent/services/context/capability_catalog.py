@@ -25,6 +25,7 @@ _DEFAULT_CAPABILITIES: tuple[ToolCapabilityDescriptor, ...] = (
         name="realtime_web_search",
         description="Look up current or web-backed information during a realtime call.",
         governed_tools=["web_search"],
+        permissions=["tool:web_search"],
         required_inputs_by_tool={"web_search": ["query"]},
         when_to_use=[
             "User asks for latest, current, today, news, or web-backed information.",
@@ -137,6 +138,7 @@ def _skill_descriptor_to_tool_capability(
         name=descriptor.name,
         description=descriptor.description,
         governed_tools=descriptor.governed_tools,
+        permissions=descriptor.permissions,
         required_inputs_by_tool=descriptor.required_inputs_by_tool,
         when_to_use=descriptor.when_to_use,
         when_not_to_use=descriptor.when_not_to_use,

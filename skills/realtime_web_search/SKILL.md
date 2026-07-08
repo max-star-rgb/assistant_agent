@@ -7,6 +7,9 @@ disable-model-invocation: false
 ## Governed Tools
 - web_search
 
+## Permissions
+- tool:web_search
+
 ## Required Inputs
 - web_search: query
 

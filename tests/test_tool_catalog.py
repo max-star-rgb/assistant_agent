@@ -216,6 +216,9 @@ description: Repo-local search guidance.
 ## Governed Tools
 - web_search
 
+## Permissions
+- tool:web_search
+
 ## Required Inputs
 - web_search: query
 
@@ -238,6 +241,7 @@ description: Repo-local search guidance.
     assert [item.name for item in capability_selection.capabilities] == ["realtime_web_search"]
     descriptor = capability_selection.capabilities[0]
     assert descriptor.description == "Repo-local search guidance."
+    assert descriptor.permissions == ["tool:web_search"]
     assert descriptor.when_to_use == ["Repo guidance for latest information."]
     assert any("ToolExecutor" in item for item in descriptor.runtime_constraints)
     assert "capability_catalog_selected:realtime_web_search" in capability_selection.selection_reasons
@@ -256,6 +260,9 @@ description: This skill points at a tool that is not registered.
 ---
 ## Governed Tools
 - missing_tool
+
+## Permissions
+- tool:missing_tool
 """,
     )
     request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
@@ -289,6 +296,9 @@ description: Product research guidance.
 ---
 ## Governed Tools
 - product_search
+
+## Permissions
+- tool:product_search
 """,
     )
     request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")

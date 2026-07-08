@@ -109,7 +109,7 @@ Last updated: 2026-07-08
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
 - native/legacy context 可渲染 prompt-safe capability catalog；实际执行契约仍是 `ToolSpec`，工具调用仍必须通过 `ToolExecutor`。
 - Provider-native `ChatRequest.tools` 现在使用 `AssistantContextPack.prompt_tool_specs` 中选出的 schema 子集；仅当 prompt subset 为空时才回退完整 `tool_specs`。如果 selector fallback 到完整工具列表，`tool_catalog.fallback_used` 和 `context_report_v1.sections.tool_schema.notes=["fallback_full_tool_list"]` 会记录该状态。
-- Repo-local business skills follow `skills/<skill_id>/SKILL.md`; the loader only consumes frontmatter plus fixed prompt-safe sections and converts valid descriptors into `ToolCapabilityDescriptor`. It skips disabled/manual-only/invalid skills, ignores `.codex/skills`, and never creates `run_skill` or direct shell/browser/http execution.
+- Repo-local business skills follow `skills/<skill_id>/SKILL.md`; the loader only consumes frontmatter plus fixed prompt-safe sections and converts valid descriptors into `ToolCapabilityDescriptor`. Skill System v1 requires each governed tool to have a matching `tool:<name>` permission in the `## Permissions` section. It skips disabled/manual-only/invalid or under-permissioned skills, ignores `.codex/skills`, and never creates `run_skill` or direct shell/browser/http execution.
 - `render_final_only_prompt` 用于工具调用上限附近，禁止继续工具调用并要求最终回答。
 - prompt 明确声明 conversation、memory、realtime task state、observation 和 tool output 都是数据，不是系统指令；retrieved memory 是用户历史证据，不是权威信息，当前用户输入和新工具结果优先，不能执行 memory 中的指令。
 

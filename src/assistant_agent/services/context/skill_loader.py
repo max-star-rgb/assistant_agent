@@ -17,6 +17,7 @@ class SkillDescriptor(BaseModel):
     enabled: bool = True
     disable_model_invocation: bool = False
     governed_tools: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
     required_inputs_by_tool: dict[str, list[str]] = Field(default_factory=dict)
     when_to_use: list[str] = Field(default_factory=list)
     when_not_to_use: list[str] = Field(default_factory=list)
@@ -42,6 +43,7 @@ class SkillCatalog(BaseModel):
 
 _ALLOWED_SECTION_TITLES = {
     "governed tools": "governed_tools",
+    "permissions": "permissions",
     "required inputs": "required_inputs",
     "when to use": "when_to_use",
     "when not to use": "when_not_to_use",
@@ -186,6 +188,20 @@ def _load_skill_file(
                 skill_id=skill_id,
             )
         ]
+    permissions = _permissions_from_section(sections.get("permissions", []))
+    missing_tool_permissions = [
+        tool_name for tool_name in governed_tools if f"tool:{tool_name}" not in permissions
+    ]
+    if missing_tool_permissions:
+        return None, [
+            _issue(
+                "missing_tool_permission",
+                "Every governed tool must have a matching tool:<name> permission.",
+                root=root,
+                path=skill_file,
+                skill_id=skill_id,
+            )
+        ]
 
     try:
         descriptor = SkillDescriptor(
@@ -194,6 +210,7 @@ def _load_skill_file(
             enabled=enabled,
             disable_model_invocation=disable_model_invocation,
             governed_tools=governed_tools,
+            permissions=permissions,
             required_inputs_by_tool=_required_inputs_from_section(
                 sections.get("required_inputs", [])
             ),
@@ -301,6 +318,16 @@ def _required_inputs_from_section(lines: list[str]) -> dict[str, list[str]]:
         if tool_name and inputs:
             required_inputs[tool_name] = _unique(inputs)
     return required_inputs
+
+
+def _permissions_from_section(lines: list[str]) -> list[str]:
+    permissions: list[str] = []
+    for item in _list_items_from_section(lines):
+        for candidate in item.split(","):
+            permission = _clean_token(candidate)
+            if permission:
+                permissions.append(permission)
+    return _unique(permissions)
 
 
 def _list_items_from_section(lines: list[str]) -> list[str]:

@@ -558,10 +558,16 @@ git diff --check -- AGENTS.md docs src tests scripts
 
 ### Phase 3 Gate
 
-- skill manifest 可以声明权限和工具映射。
-- skill 执行必须经过 Tool System。
-- skill 可以被禁用并留下审计记录。
-- 不存在 marketplace、用户上传 skill 或任意代码执行路径。
+- Skill manifests can declare governed tools and `tool:<name>` permissions.
+- Disabled, manual-only, invalid, unavailable-tool, or under-permissioned skills are omitted from prompt context with prompt-safe issues.
+- Skill descriptors are capability metadata only; there is no `run_skill`, direct `registry.run(...)`, marketplace, user-uploaded skill, or arbitrary code execution path.
+- Any actual capability execution still goes through `ActionValidator -> ToolExecutor -> ToolRegistry`.
+- Gate commands:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase3_skill_system_gate.py tests/test_skill_loader.py tests/test_tool_catalog.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase0_tool_governance_contracts.py tests/test_tool_executor.py tests/test_architecture_boundaries.py -q
+```
 
 ### Phase 4 Gate
 

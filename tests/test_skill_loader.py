@@ -18,6 +18,9 @@ disable-model-invocation: false
 ## Governed Tools
 - web_search
 
+## Permissions
+- tool:web_search
+
 ## Required Inputs
 - web_search: query, recency_days
 
@@ -42,6 +45,7 @@ disable-model-invocation: false
     descriptor = catalog.descriptors[0]
     assert descriptor.description == "Look up current web information with governed search."
     assert descriptor.governed_tools == ["web_search"]
+    assert descriptor.permissions == ["tool:web_search"]
     assert descriptor.required_inputs_by_tool == {"web_search": ["query", "recency_days"]}
     assert descriptor.when_to_use == ["User asks for current news."]
     assert descriptor.when_not_to_use == ["User asks for stored personal preferences."]
@@ -170,6 +174,26 @@ description: A skill without governed tools cannot grant any execution ability.
     assert [issue.code for issue in catalog.issues] == ["missing_governed_tools"]
 
 
+def test_load_repo_skill_descriptors_skips_missing_tool_permission(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "missing_tool_permission",
+        """
+---
+name: missing_tool_permission
+description: Tool permissions are required for every governed tool.
+---
+## Governed Tools
+- web_search
+""",
+    )
+
+    catalog = load_repo_skill_descriptors(tmp_path)
+
+    assert catalog.descriptors == []
+    assert [issue.code for issue in catalog.issues] == ["missing_tool_permission"]
+
+
 def test_load_repo_skill_descriptors_omits_unallowed_raw_body_steps(tmp_path: Path) -> None:
     _write_skill(
         tmp_path,
@@ -181,6 +205,9 @@ description: Search safely through the governed web_search tool.
 ---
 ## Governed Tools
 - web_search
+
+## Permissions
+- tool:web_search
 
 ## When To Use
 - User asks for current news.

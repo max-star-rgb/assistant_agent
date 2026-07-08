@@ -122,6 +122,7 @@ class ToolCapabilityDescriptor(BaseModel):
     name: str = Field(min_length=1)
     description: str = ""
     governed_tools: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
     required_inputs_by_tool: dict[str, list[str]] = Field(default_factory=dict)
     when_to_use: list[str] = Field(default_factory=list)
     when_not_to_use: list[str] = Field(default_factory=list)

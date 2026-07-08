@@ -149,6 +149,8 @@ Runtime gate 映射：
 
 `delegate_to_agent` 是 opt-in 工具，仅在 `enable_agent_delegation=True` 且传入 `AgentCommunicationService` 时注册。它的通信路由和 A2A 边界以 `docs/agent-communication-routing.md` 为准。
 
+Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are capability metadata, not execution plugins. A skill can declare governed tools and `tool:<name>` permissions, and the context capability catalog may expose that prompt-safe descriptor only when the governed tools are available and prompt-selected. Skills do not register `run_skill`, do not call `ToolRegistry.run(...)`, and do not bypass `ActionValidator -> ToolExecutor -> ToolRegistry`.
+
 默认副作用分类：
 
 - `vision_understanding`、`video_understanding`、`web_search`、`product_search`、`price_compare`: `external_read`。
