@@ -139,6 +139,26 @@ def test_action_validator_accepts_memory_retrieval_for_saved_preference_intent()
     assert validation.metadata["memory_read_policy"]["reason"] == "explicit_memory_reference"
 
 
+def test_action_validator_accepts_memory_retrieval_for_cn_liked_style_question() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="我喜欢的风格是什么？")
+    state = AgentState.from_request(request)
+
+    validation = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name="memory_retrieval",
+            tool_input={"query": "我喜欢的风格是什么？"},
+        ),
+        registry=create_default_registry(),
+        request=request,
+        state=state,
+    )
+
+    assert validation.accepted is True
+    assert validation.metadata["memory_read_policy"]["allowed"] is True
+    assert validation.metadata["memory_read_policy"]["trigger"] == "喜欢的风格"
+
+
 def test_action_validator_rejects_legacy_memory_retrieve_without_read_intent() -> None:
     request = UserRequest(user_id="u1", session_id="s1", text="给我一个早餐建议")
     state = AgentState.from_request(request)

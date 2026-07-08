@@ -46,6 +46,7 @@ _CN_MEMORY_MARKERS = (
     "按我的偏好",
     "我的偏好",
     "个人偏好",
+    "喜欢的风格",
 )
 _EN_MEMORY_MARKERS = (
     "previous",
