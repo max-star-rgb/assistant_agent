@@ -14,10 +14,10 @@ class KeyframeSelectorConfig:
     threshold: float = 0.35
     min_interval_seconds: float = 0.5
     max_interval_seconds: float = 8.0
-    pixel_weight: float = 1.0
-    structural_weight: float = 1.0
-    semantic_weight: float = 1.0
-    object_weight: float = 1.0
+    pixel_weight: float = 0.25
+    structural_weight: float = 0.25
+    semantic_weight: float = 0.50
+    object_weight: float = 0.0
 
 
 class SemanticKeyframeSelector:

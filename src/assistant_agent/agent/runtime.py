@@ -503,6 +503,7 @@ class AgentGraphRuntime:
                     observations.append(observation)
                     state.request.metadata["native_runtime_observations"] = observations
                     _record_native_observation_metadata(state, observation)
+                    _append_native_tool_observation_event(self, state, observation)
                     _set_native_validation_rejection_response(state, validation.model_dump(mode="json"))
                     return state
                 _emit_native_tool_progress_message(
@@ -527,24 +528,7 @@ class AgentGraphRuntime:
                 observations.append(observation)
                 state.request.metadata["native_runtime_observations"] = observations
                 _record_native_observation_metadata(state, observation)
-                self._append_observability_event(
-                    state,
-                    canonical_event="tool.observation",
-                    node_name="native_runtime",
-                    status=observation.get("status") if isinstance(observation, dict) else None,
-                    tool_name=observation.get("tool_name") if isinstance(observation, dict) else None,
-                    attributes={
-                        "summary": observation.get("summary") if isinstance(observation, dict) else None,
-                        "output_ref": observation.get("output_ref") if isinstance(observation, dict) else None,
-                        "next_step_hint": observation.get("next_step_hint") if isinstance(observation, dict) else None,
-                    },
-                    error={
-                        "code": observation.get("error_code"),
-                        "message": observation.get("error_message"),
-                    }
-                    if isinstance(observation, dict) and observation.get("error_code")
-                    else None,
-                )
+                _append_native_tool_observation_event(self, state, observation)
                 if state.status == "failed":
                     return state
                 continue
@@ -1164,6 +1148,36 @@ def _record_native_observation_metadata(state: AgentState, observation: dict[str
             "next_step_hint": observation.get("next_step_hint"),
             "error": observation.get("error_message"),
         }
+    )
+
+
+def _append_native_tool_observation_event(
+    runtime: AgentGraphRuntime,
+    state: AgentState,
+    observation: dict[str, Any],
+) -> None:
+    runtime._append_observability_event(
+        state,
+        canonical_event="tool.observation",
+        node_name="native_runtime",
+        status=observation.get("status"),
+        tool_name=observation.get("tool_name"),
+        attributes={
+            "summary": observation.get("summary"),
+            "output_ref": observation.get("output_ref"),
+            "next_step_hint": observation.get("next_step_hint"),
+        },
+        output_summary={
+            "summary": observation.get("summary"),
+            "output_ref": observation.get("output_ref"),
+            "next_step_hint": observation.get("next_step_hint"),
+        },
+        error={
+            "code": observation.get("error_code"),
+            "message": observation.get("error_message"),
+        }
+        if observation.get("error_code")
+        else None,
     )
 
 

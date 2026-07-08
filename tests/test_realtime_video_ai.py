@@ -4,14 +4,21 @@ import pytest
 
 from assistant_agent.video_ai.app import RealtimeVideoUnderstandingApp
 from assistant_agent.video_ai.detection.semantic_detector import MetadataEmbeddingModel, SemanticChangeDetector
+from assistant_agent.video_ai.detection.vision_embedding_provider import VisionEmbeddingResult
 from assistant_agent.video_ai.keyframe.selector import KeyframeSelectorConfig
 from assistant_agent.video_ai.keyframe.storage import FileKeyframeStorage, NoopKeyframeStorage
-from assistant_agent.video_ai.qwen.vision_client import MockQwenVisionClient, VisionObservation
+from assistant_agent.video_ai.qwen.vision_client import MockQwenVisionClient, VisionObservation, _keyframe_prompt
 from assistant_agent.video_ai.sampling.adaptive_sampler import AdaptiveSamplerConfig
 from assistant_agent.video_ai.types import VideoFrame
 
 
 pytestmark = pytest.mark.fast
+
+
+def test_qwen_realtime_prompt_contains_lowercase_json_for_dashscope_response_format() -> None:
+    prompt = _keyframe_prompt("", [])
+
+    assert "json" in prompt
 
 
 def test_static_room_throttles_qwen_calls_and_logs_sampling_rate() -> None:
@@ -132,15 +139,116 @@ def test_selected_keyframe_is_persisted_when_frame_uri_is_not_usable(tmp_path: P
     assert Path(keyframe_uri).suffix == ".pgm"
 
 
+def test_static_scene_does_not_trigger_gated_vision_embedding_provider() -> None:
+    client = MockQwenVisionClient()
+    embeddings = RecordingEmbeddingProvider(
+        {
+            "first": [1.0, 0.0],
+            "still_1": [1.0, 0.0],
+            "still_2": [1.0, 0.0],
+        }
+    )
+    app = _app(
+        client,
+        semantic_detector=SemanticChangeDetector(embeddings, requires_visual_gate=True),
+        max_interval_seconds=5.0,
+    )
+
+    app.process_frame(_frame("first", 0.0, 20, embedding=[1.0, 0.0]))
+    app.process_frame(_frame("still_1", 1.0, 20, embedding=[1.0, 0.0]))
+    result = app.process_frame(_frame("still_2", 2.0, 20, embedding=[1.0, 0.0]))
+
+    assert embeddings.calls == []
+    assert result.metrics.semantic_change_score == 0.0
+    assert result.keyframe_selected is False
+
+
+def test_visual_candidate_triggers_embedding_and_low_similarity_selects_keyframe() -> None:
+    client = MockQwenVisionClient()
+    embeddings = RecordingEmbeddingProvider(
+        {
+            "empty": [1.0, 0.0],
+            "changed": [0.0, 1.0],
+        }
+    )
+    app = _app(
+        client,
+        semantic_detector=SemanticChangeDetector(embeddings, requires_visual_gate=True),
+        threshold=0.45,
+    )
+
+    app.process_frame(_frame("empty", 0.0, 20, embedding=[1.0, 0.0]))
+    result = app.process_frame(_frame("changed", 1.0, 220, embedding=[0.0, 1.0]))
+
+    assert embeddings.calls == ["changed", "empty"]
+    assert result.metrics.pixel_change_score >= 0.45 or result.metrics.structural_change_score >= 0.45
+    assert result.metrics.semantic_change_score == pytest.approx(1.0)
+    assert result.keyframe_selected is True
+    assert result.qwen_called is True
+
+
+def test_selected_keyframe_embedding_is_cached_for_next_semantic_comparison() -> None:
+    client = MockQwenVisionClient()
+    embeddings = RecordingEmbeddingProvider(
+        {
+            "empty": [1.0, 0.0],
+            "person": [0.0, 1.0],
+            "door": [0.7, 0.7],
+        }
+    )
+    app = _app(
+        client,
+        semantic_detector=SemanticChangeDetector(embeddings, requires_visual_gate=True),
+        threshold=0.35,
+    )
+
+    app.process_frame(_frame("empty", 0.0, 20, embedding=[1.0, 0.0]))
+    first_change = app.process_frame(_frame("person", 1.0, 220, embedding=[0.0, 1.0]))
+    second_change = app.process_frame(_frame("door", 2.0, 30, embedding=[0.7, 0.7]))
+
+    assert first_change.keyframe_selected is True
+    assert second_change.metrics.semantic_change_score > 0.0
+    assert embeddings.calls.count("person") == 1
+    assert embeddings.calls == ["person", "empty", "door"]
+
+
+def test_embedding_failure_records_error_and_falls_back_to_visual_scores() -> None:
+    client = MockQwenVisionClient()
+    embeddings = RecordingEmbeddingProvider(
+        {"empty": [1.0, 0.0]},
+        failures={
+            "changed": {
+                "code": "provider_timeout",
+                "message": "embedding timed out",
+                "recoverable": True,
+            }
+        },
+    )
+    app = _app(
+        client,
+        semantic_detector=SemanticChangeDetector(embeddings, requires_visual_gate=True),
+        threshold=0.35,
+    )
+
+    app.process_frame(_frame("empty", 0.0, 20, embedding=[1.0, 0.0]))
+    result = app.process_frame(_frame("changed", 1.0, 220, embedding=[0.0, 1.0]))
+
+    assert result.metrics.semantic_change_score == 0.0
+    assert result.errors[0]["code"] == "provider_timeout"
+    assert result.keyframe_selected is True
+    assert result.qwen_called is True
+
+
 def _app(
     client: MockQwenVisionClient,
     *,
     threshold: float = 0.35,
     max_interval_seconds: float = 5.0,
+    semantic_detector: SemanticChangeDetector | None = None,
 ) -> RealtimeVideoUnderstandingApp:
     return RealtimeVideoUnderstandingApp(
         qwen_client=client,
-        semantic_detector=SemanticChangeDetector(MetadataEmbeddingModel()),
+        semantic_detector=semantic_detector or SemanticChangeDetector(MetadataEmbeddingModel()),
         sampler_config=AdaptiveSamplerConfig(
             base_input_fps=5.0,
             still_fps=0.2,
@@ -159,6 +267,32 @@ def _app(
         ),
         keyframe_storage=NoopKeyframeStorage(),
     )
+
+
+class RecordingEmbeddingProvider:
+    def __init__(
+        self,
+        embeddings: dict[str, list[float]],
+        *,
+        failures: dict[str, dict[str, object]] | None = None,
+    ) -> None:
+        self.embeddings = embeddings
+        self.failures = failures or {}
+        self.calls: list[str] = []
+
+    def embed(self, frame: VideoFrame) -> VisionEmbeddingResult:
+        self.calls.append(frame.frame_id)
+        if frame.frame_id in self.failures:
+            return VisionEmbeddingResult(
+                provider="dashscope",
+                model="test-embedding",
+                errors=[self.failures[frame.frame_id]],
+            )
+        return VisionEmbeddingResult(
+            embedding=self.embeddings.get(frame.frame_id, []),
+            provider="dashscope",
+            model="test-embedding",
+        )
 
 
 def _frame(

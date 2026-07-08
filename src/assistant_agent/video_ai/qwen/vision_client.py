@@ -19,7 +19,7 @@ REALTIME_VIDEO_PROMPT = """你是一个实时视频理解系统。
 
 分析当前关键帧，并结合历史状态。
 
-输出：
+请只输出一个 json object，字段如下：
 
 {
  "scene": "",

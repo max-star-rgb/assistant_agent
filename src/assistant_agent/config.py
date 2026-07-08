@@ -29,6 +29,7 @@ DEFAULT_SQLITE_MEMORY_PATH = ".local/memory/long_term_memories.sqlite3"
 
 
 VisionProviderName = str
+VisionEmbeddingProviderName = Literal["mock", "dashscope"]
 ChatProviderName = str
 ImageGenerationProviderName = str
 ProductSearchProviderName = Literal["mock", "local_json", "http", "haodanku"]
@@ -65,6 +66,15 @@ class ProviderConfig:
     vision_base_url: str | None = None
     vision_model: str | None = None
     vision_adapter_kind: str = "mock"
+    vision_embedding_provider: VisionEmbeddingProviderName = "mock"
+    vision_embedding_api_key: str | None = None
+    vision_embedding_base_url: str = (
+        "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
+        "multimodal-embedding/multimodal-embedding"
+    )
+    vision_embedding_model: str = "tongyi-embedding-vision-flash-2026-03-06"
+    vision_embedding_dimension: int = 768
+    vision_embedding_timeout_seconds: float = 30.0
     openai_vision_base_url: str = "https://api.openai.com/v1"
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -164,6 +174,10 @@ class ProviderConfig:
             allow_real=allow_real_providers,
         )
         vision_settings = resolve_vision_provider(vision_provider, source)
+        vision_embedding_provider = _vision_embedding_provider(
+            source.get("MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER"),
+            allow_real=allow_real_providers,
+        )
         image_generation_provider = _image_generation_provider(
             source.get("MULTIMODAL_AGENT_IMAGE_PROVIDER"),
             allow_real=allow_real_providers,
@@ -202,6 +216,24 @@ class ProviderConfig:
             vision_base_url=vision_settings.base_url,
             vision_model=vision_settings.model,
             vision_adapter_kind=vision_settings.spec.adapter_kind,
+            vision_embedding_provider=vision_embedding_provider,
+            vision_embedding_api_key=(
+                _vision_embedding_api_key(source) if vision_embedding_provider == "dashscope" else None
+            ),
+            vision_embedding_base_url=source.get(
+                "DASHSCOPE_MULTIMODAL_EMBEDDING_BASE_URL",
+                "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
+                "multimodal-embedding/multimodal-embedding",
+            ),
+            vision_embedding_model=source.get(
+                "DASHSCOPE_VISION_EMBEDDING_MODEL",
+                "tongyi-embedding-vision-flash-2026-03-06",
+            ),
+            vision_embedding_dimension=_int_env(source.get("DASHSCOPE_VISION_EMBEDDING_DIMENSION"), 768),
+            vision_embedding_timeout_seconds=_float_env(
+                source.get("DASHSCOPE_VISION_EMBEDDING_TIMEOUT_SECONDS"),
+                30.0,
+            ),
             openai_vision_base_url=source.get("OPENAI_VISION_BASE_URL", "https://api.openai.com/v1"),
             openai_vision_model=source.get("OPENAI_VISION_MODEL", "gpt-4o-mini"),
             qwen_vision_base_url=source.get(
@@ -320,6 +352,7 @@ class ProviderConfig:
                 self.qwen_api_key,
                 self.dashscope_api_key,
                 self.ark_api_key,
+                self.vision_embedding_api_key,
                 self.qwen_vision_api_key,
                 self.qwen_image_api_key,
                 self.ark_vision_api_key,
@@ -505,6 +538,16 @@ def _default_conversation_history_path(memory_path: str) -> str:
 
 def _vision_provider(value: str | None, *, allow_real: bool = True) -> VisionProviderName:
     return select_vision_provider(value, allow_real=allow_real)
+
+
+def _vision_embedding_provider(value: str | None, *, allow_real: bool = True) -> VisionEmbeddingProviderName:
+    if allow_real and value == "dashscope":
+        return "dashscope"
+    return "mock"
+
+
+def _vision_embedding_api_key(source: Mapping[str, str]) -> str | None:
+    return source.get("DASHSCOPE_API_KEY") or source.get("QWEN_VISION_API_KEY")
 
 
 def _chat_provider(value: str | None, *, allow_real: bool = True) -> ChatProviderName:

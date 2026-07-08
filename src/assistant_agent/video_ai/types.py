@@ -77,6 +77,7 @@ class FrameProcessingResult:
     qwen_called: bool
     latency_ms: int
     decision_reason: str
+    errors: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

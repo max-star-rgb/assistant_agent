@@ -242,6 +242,23 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `scripts/run_gateway_client.py` | Local operator smoke client for the Gateway frame WebSocket route. |
 | `scripts/realtime_media_client.py` | Local Media Relay protocol smoke client for `/ws/realtime/media` scenarios. |
 
+### Entry Convergence Inventory
+
+Phase 0 treats these entry classifications as architecture contracts:
+
+| Entry | Current path | Classification |
+| --- | --- | --- |
+| HTTP `POST /agent/run` | `routes_agent.run_agent -> _run_agent_through_gateway -> GatewayTurnFacade -> GatewaySessionManager -> GatewayAgentAdapter -> AssistantRuntimeApp -> run_assistant_request -> AgentGraphRuntime` | Canonical Gateway-first product entry. |
+| Gateway WS `/ws/gateway` | `gateway_websocket -> get_gateway_bridge().bridge(...) -> GatewaySessionManager` | Canonical normalized Gateway entry. |
+| Realtime media WS `/ws/realtime/media` | media event validation -> Gateway frame mapper -> `get_gateway_bridge().bridge(...)` | Canonical realtime entry adapter. |
+| Local CLI `--text` | local `GatewaySessionManager + GatewayTurnFacade + GatewayAgentAdapter` | Canonical local Gateway-first entry. |
+| Legacy WS `/ws/agent/{session_id}` | local `GatewaySessionManager + GatewayTurnFacade + GatewayAgentAdapter`, with legacy `AgentEvent` stream mirroring | Compatibility transport surface, Gateway-first internally. Do not add new assistant behavior here. |
+| CLI `--scenario` | demo matrix through local `GatewayTurnFacade` in `scripts/run_demo_flows.py` | Offline demo adapter, Gateway-first internally. Do not expand into product behavior. |
+| Vendor `/agent-service/v1` | vendor `message` / `sessionId` / stringified `body` protocol; `assistantControlStart` remains a handshake and `chat` uses local `GatewayTurnFacade` internally | Compatibility vendor surface, Gateway-first internally. Do not add assistant behavior outside the Gateway path. |
+| HTTP `POST /agents/run` | explicit `AgentRouter` service call | Separate opt-in router/debug entry, not the default product path. |
+| Inbound A2A `/a2a/rpc` | protocol adapter over `AgentRouter` | Explicit adapter, not Gateway lifecycle. |
+| MCP `tool_run` | `ActionValidator -> ToolExecutor -> ToolRegistry` | Tool adapter path, not assistant entry. |
+
 ## OpenClaw Reference Boundary
 
 Use `/home/lenovo1/pycharm_project/runTime` only as a reference for compatibility behavior:
