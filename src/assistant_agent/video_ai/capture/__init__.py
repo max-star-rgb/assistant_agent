@@ -1,0 +1,1 @@
+"""Video frame capture helpers."""

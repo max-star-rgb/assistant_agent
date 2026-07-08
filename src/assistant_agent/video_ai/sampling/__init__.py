@@ -1,0 +1,1 @@
+"""Adaptive video frame sampling."""
