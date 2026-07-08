@@ -51,6 +51,12 @@ layer. When attached to `HookManager` through `HookTraceStore`, it stores
 redacted trace events and exposes the same aggregate shape as
 `build_trace_metrics()`. It is a developer harness helper, not a metrics
 exporter, dashboard, policy hook, or API surface.
+`TraceInvariantObserver` is the local in-memory audit observer for this hook
+layer. When attached to `HookManager` through `HookTraceStore`, it stores
+redacted trace events and reports prompt-safe `TraceInvariantViolation` records
+for broken run/tool sequencing or unredacted hook dispatch errors. It is
+passive: violations are inspected after a run or test, and the observer does
+not raise, cancel, export, or mutate runtime behavior.
 
 ## Canonical IDs
 
@@ -289,6 +295,10 @@ Regression tests should enforce these invariants:
 - Cancel, interrupt, timeout, and hangup traces include their source.
 - `/runs/{run_id}` and `/traces/{trace_id}` expose only redacted summaries.
 - No public trace, API response, or realtime trace event exposes hidden reasoning.
+- Local hook auditing can use `TraceInvariantObserver` to check the first local
+  invariant set in-process: run terminal events, tool terminal events,
+  `tool.observation` provenance, failed-tool error detail, and hook dispatch
+  error redaction.
 - Current harness development should stop after these invariant tests pass.
   Future work should be driven by a concrete debugging gap rather than adding
   more event types, dashboards, exporters, or debug endpoints preemptively.
