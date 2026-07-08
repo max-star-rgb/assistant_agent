@@ -117,6 +117,29 @@ def test_agent_graph_realtime_backend_maps_request_metadata_and_fields() -> None
     assert result.status == "completed"
 
 
+def test_agent_graph_realtime_backend_preserves_execution_strategy_metadata() -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        captured["request"] = request
+        return _completed_artifacts(request)
+
+    backend = AgentGraphRealtimeBackend(run_request=fake_run_assistant_request)
+    realtime_request = RealtimeAgentRequest(
+        user_id="user-1",
+        session_id="session-1",
+        text="plan this",
+        metadata={"execution_strategy": "plan_and_solve"},
+    )
+
+    result = asyncio.run(backend.run_turn(realtime_request))
+
+    request = captured["request"]
+    assert isinstance(request, UserRequest)
+    assert request.execution_strategy == "plan_and_solve"
+    assert result.status == "completed"
+
+
 def test_agent_graph_realtime_backend_forwards_runtime_progress_events() -> None:
     def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
         event_sink = kwargs["event_sink"]

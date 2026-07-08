@@ -4,23 +4,30 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from assistant_agent.gateway import GatewayBridge, GatewaySessionManager
 from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
+from assistant_agent.schemas.api import AgentRunResponse
 from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade
 
 _GATEWAY_SESSION_MANAGER: GatewaySessionManager | None = None
 _GATEWAY_BRIDGE: GatewayBridge | None = None
 _GATEWAY_TURN_FACADE: GatewayTurnFacade | None = None
+_GATEWAY_RUNTIME_LOOP_ID: int | None = None
+_GATEWAY_HTTP_RESPONSES: dict[str, AgentRunResponse] = {}
+_GATEWAY_HTTP_RESPONSES_LOCK = RLock()
 
 GATEWAY_MAX_SESSIONS_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_SESSIONS"
 GATEWAY_IDLE_TIMEOUT_S_ENV = "MULTIMODAL_AGENT_GATEWAY_IDLE_TIMEOUT_S"
 GATEWAY_HANGUP_GRACE_S_ENV = "MULTIMODAL_AGENT_GATEWAY_HANGUP_GRACE_S"
 GATEWAY_REAPER_INTERVAL_S_ENV = "MULTIMODAL_AGENT_GATEWAY_REAPER_INTERVAL_S"
 GATEWAY_START_REAPER_ENV = "MULTIMODAL_AGENT_GATEWAY_START_REAPER"
+GATEWAY_HTTP_RESPONSE_CAPTURE_ID = "http_response_capture_id"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 
@@ -28,9 +35,13 @@ _FALSE_VALUES = {"0", "false", "no", "off"}
 def get_gateway_session_manager() -> GatewaySessionManager:
     """Return the process-local Gateway session manager."""
 
-    global _GATEWAY_SESSION_MANAGER
-    if _GATEWAY_SESSION_MANAGER is None:
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_LOOP_ID
+    loop_id = _running_loop_id()
+    if _GATEWAY_SESSION_MANAGER is None or _gateway_runtime_loop_changed(loop_id):
         _GATEWAY_SESSION_MANAGER = create_gateway_session_manager()
+        _GATEWAY_RUNTIME_LOOP_ID = loop_id
+        _GATEWAY_BRIDGE = None
+        _GATEWAY_TURN_FACADE = None
     return _GATEWAY_SESSION_MANAGER
 
 
@@ -38,8 +49,9 @@ def get_gateway_bridge() -> GatewayBridge:
     """Return the process-local Gateway bridge."""
 
     global _GATEWAY_BRIDGE
+    manager = get_gateway_session_manager()
     if _GATEWAY_BRIDGE is None:
-        _GATEWAY_BRIDGE = GatewayBridge(session_manager=get_gateway_session_manager())
+        _GATEWAY_BRIDGE = GatewayBridge(session_manager=manager)
     return _GATEWAY_BRIDGE
 
 
@@ -47,8 +59,9 @@ def get_gateway_turn_facade() -> GatewayTurnFacade:
     """Return the process-local Gateway sync-turn facade."""
 
     global _GATEWAY_TURN_FACADE
+    manager = get_gateway_session_manager()
     if _GATEWAY_TURN_FACADE is None:
-        _GATEWAY_TURN_FACADE = create_gateway_turn_facade()
+        _GATEWAY_TURN_FACADE = create_gateway_turn_facade(manager=manager)
     return _GATEWAY_TURN_FACADE
 
 
@@ -90,7 +103,48 @@ def _default_gateway_backend_factory() -> RealtimeAgentBackend:
 def _run_assistant_request_with_http_runtime(request: Any, **kwargs: Any) -> Any:
     from assistant_agent.api.routes_agent import get_assistant_runtime_app
 
-    return get_assistant_runtime_app().run_request(request, **kwargs)
+    artifacts = get_assistant_runtime_app().run_request(request, **kwargs)
+    capture_id = _gateway_http_response_capture_id(getattr(request, "metadata", {}))
+    if capture_id is not None:
+        _capture_gateway_http_response(capture_id, artifacts.api_response())
+    return artifacts
+
+
+def new_gateway_http_response_capture_id() -> str:
+    """Create an opaque id for one in-process HTTP Gateway response capture."""
+
+    return str(uuid.uuid4())
+
+
+def gateway_http_capture_metadata(capture_id: str) -> dict[str, Any]:
+    """Return internal Gateway metadata used to capture an HTTP response."""
+
+    return {"gateway": {GATEWAY_HTTP_RESPONSE_CAPTURE_ID: capture_id}}
+
+
+def pop_gateway_http_response(capture_id: str) -> AgentRunResponse | None:
+    """Pop and return a captured HTTP response, if the backend produced one."""
+
+    with _GATEWAY_HTTP_RESPONSES_LOCK:
+        return _GATEWAY_HTTP_RESPONSES.pop(capture_id, None)
+
+
+def _capture_gateway_http_response(capture_id: str, response: AgentRunResponse) -> None:
+    with _GATEWAY_HTTP_RESPONSES_LOCK:
+        _GATEWAY_HTTP_RESPONSES[capture_id] = response
+
+
+def _gateway_http_response_capture_id(metadata: Any) -> str | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    for key in ("gateway", "runtime"):
+        value = metadata.get(key)
+        if not isinstance(value, Mapping):
+            continue
+        capture_id = value.get(GATEWAY_HTTP_RESPONSE_CAPTURE_ID)
+        if isinstance(capture_id, str) and capture_id:
+            return capture_id
+    return None
 
 
 def set_gateway_runtime_for_tests(
@@ -100,20 +154,24 @@ def set_gateway_runtime_for_tests(
 ) -> None:
     """Install explicit Gateway runtime services for tests."""
 
-    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_LOOP_ID
     _GATEWAY_SESSION_MANAGER = manager
     _GATEWAY_BRIDGE = bridge
     _GATEWAY_TURN_FACADE = None
+    _GATEWAY_RUNTIME_LOOP_ID = _running_loop_id()
+    _clear_gateway_http_responses()
 
 
 async def shutdown_gateway_runtime() -> None:
     """Close application-owned Gateway sessions and reset process globals."""
 
-    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_LOOP_ID
     manager = _GATEWAY_SESSION_MANAGER
     _GATEWAY_SESSION_MANAGER = None
     _GATEWAY_BRIDGE = None
     _GATEWAY_TURN_FACADE = None
+    _GATEWAY_RUNTIME_LOOP_ID = None
+    _clear_gateway_http_responses()
     if manager is not None:
         await manager.close()
 
@@ -121,11 +179,13 @@ async def shutdown_gateway_runtime() -> None:
 def reset_gateway_runtime_for_tests() -> None:
     """Best-effort synchronous reset for tests without an active event loop."""
 
-    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_LOOP_ID
     manager = _GATEWAY_SESSION_MANAGER
     _GATEWAY_SESSION_MANAGER = None
     _GATEWAY_BRIDGE = None
     _GATEWAY_TURN_FACADE = None
+    _GATEWAY_RUNTIME_LOOP_ID = None
+    _clear_gateway_http_responses()
     if manager is None:
         return
     try:
@@ -134,6 +194,24 @@ def reset_gateway_runtime_for_tests() -> None:
         asyncio.run(manager.close())
         return
     loop.create_task(manager.close())
+
+
+def _clear_gateway_http_responses() -> None:
+    with _GATEWAY_HTTP_RESPONSES_LOCK:
+        _GATEWAY_HTTP_RESPONSES.clear()
+
+
+def _running_loop_id() -> int | None:
+    try:
+        return id(asyncio.get_running_loop())
+    except RuntimeError:
+        return None
+
+
+def _gateway_runtime_loop_changed(loop_id: int | None) -> bool:
+    if _GATEWAY_RUNTIME_LOOP_ID is None or loop_id is None:
+        return False
+    return loop_id != _GATEWAY_RUNTIME_LOOP_ID
 
 
 def _int_env(env: Mapping[str, str], name: str, *, default: int) -> int:

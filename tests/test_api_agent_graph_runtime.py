@@ -115,6 +115,7 @@ def test_api_agent_run_defaults_to_graph_runtime(monkeypatch) -> None:
     assert len(runtime.requests) == 1
     assert runtime.requests[0].metadata["request_identity"]["identity_source"] == "request_body"
     assert runtime.requests[0].metadata["request_identity"]["auth_bound_identity"] is False
+    assert runtime.requests[0].metadata["runtime"]["history"] == ["你好"]
 
 
 def test_api_agent_run_strips_user_supplied_system_prompt_profile_metadata(monkeypatch) -> None:

@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from assistant_agent.agent_routing import AgentRouteRequest, AgentRouter, create_default_agent_router
+from assistant_agent.api import gateway_runtime
 from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
 from assistant_agent.schemas.agent_control_plane import (
     AgentAuditEvent,
@@ -59,6 +60,12 @@ from assistant_agent.services.beta_feedback import (
     summarize_feedback,
 )
 from assistant_agent.services.demo_examples import get_demo_examples
+from assistant_agent.services.gateway_turn_facade import (
+    GatewayTurnError,
+    GatewayTurnRequest,
+    GatewayTurnResult,
+    GatewayTurnTimeout,
+)
 from assistant_agent.services.memory_audit import MemoryAuditService
 from assistant_agent.services.memory_snapshot import MemorySnapshotService
 from assistant_agent.services.agent_pilot_readiness import PilotReadinessChecker, PilotReadinessReport
@@ -114,12 +121,89 @@ def get_trial_access_gate() -> TrialAccessGate:
     return trial_access_gate_from_env(base_dir=_REPO_ROOT)
 
 
+async def _run_agent_through_gateway(request: UserRequest) -> AgentRunResponse:
+    capture_id = gateway_runtime.new_gateway_http_response_capture_id()
+    try:
+        turn = await gateway_runtime.get_gateway_turn_facade().run_turn(
+            GatewayTurnRequest(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                text=request.text or "",
+                image_ids=list(request.image_ids),
+                video_ids=list(request.video_ids),
+                audio_id=request.audio_id,
+                metadata=_gateway_http_metadata(request, capture_id),
+            )
+        )
+    except GatewayTurnTimeout as exc:
+        gateway_runtime.pop_gateway_http_response(capture_id)
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "GATEWAY_TURN_TIMEOUT",
+                "message": str(exc),
+                "recoverable": True,
+            },
+        ) from exc
+    except GatewayTurnError as exc:
+        gateway_runtime.pop_gateway_http_response(capture_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "GATEWAY_TURN_FAILED",
+                "message": str(exc),
+                "recoverable": False,
+            },
+        ) from exc
+
+    response = gateway_runtime.pop_gateway_http_response(capture_id)
+    if response is not None:
+        return response
+    raise _missing_gateway_http_response(turn)
+
+
+def _gateway_http_metadata(request: UserRequest, capture_id: str) -> dict[str, Any]:
+    metadata = dict(request.metadata)
+    gateway_metadata = metadata.get("gateway")
+    gateway_payload = dict(gateway_metadata) if isinstance(gateway_metadata, dict) else {}
+    gateway_payload.update(gateway_runtime.gateway_http_capture_metadata(capture_id)["gateway"])
+    gateway_payload["suppress_realtime_backend_source"] = True
+    metadata["gateway"] = gateway_payload
+    metadata["execution_strategy"] = request.execution_strategy
+    return metadata
+
+
+def _missing_gateway_http_response(turn: GatewayTurnResult) -> HTTPException:
+    if turn.status == "error":
+        error = turn.terminal_frame.get("error")
+        detail = error if isinstance(error, dict) else {}
+        return HTTPException(
+            status_code=500,
+            detail={
+                "code": "GATEWAY_RUN_FAILED",
+                "message": detail.get("message") or "Gateway run failed before HTTP response capture.",
+                "error_type": detail.get("error_type"),
+                "recoverable": False,
+            },
+        )
+    return HTTPException(
+        status_code=500,
+        detail={
+            "code": "GATEWAY_HTTP_RESPONSE_MISSING",
+            "message": "Gateway run completed without a captured HTTP response.",
+            "run_id": turn.run_id,
+            "trace_id": turn.trace_id,
+            "recoverable": False,
+        },
+    )
+
+
 @router.post("/agent/run", response_model=AgentRunResponse)
-def run_agent(request: UserRequest, auth_context: AuthContext = Depends(get_auth_context)) -> AgentRunResponse:
+async def run_agent(request: UserRequest, auth_context: AuthContext = Depends(get_auth_context)) -> AgentRunResponse:
     identity_resolution = _identity_from_request(request, auth_context=auth_context)
     _require_trial_access_for_identity(identity_resolution)
     request = _with_identity_metadata(request, identity_resolution)
-    return get_assistant_runtime_app().run_request(request).api_response()
+    return await _run_agent_through_gateway(request)
 
 
 @router.post("/agents/run", response_model=AgentRunResponse)

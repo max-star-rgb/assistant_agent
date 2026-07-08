@@ -260,7 +260,8 @@ def realtime_request_to_user_request(request: RealtimeAgentRequest) -> UserReque
     realtime["run_id"] = request.run_id
     realtime["turn_id"] = request.turn_id
     metadata["realtime"] = realtime
-    metadata.setdefault("source", "realtime_agent_backend")
+    if not _suppress_default_source(metadata):
+        metadata.setdefault("source", "realtime_agent_backend")
 
     return UserRequest(
         user_id=request.user_id,
@@ -269,8 +270,21 @@ def realtime_request_to_user_request(request: RealtimeAgentRequest) -> UserReque
         image_ids=list(request.image_ids),
         video_ids=list(request.video_ids),
         audio_id=request.audio_id,
+        execution_strategy=_execution_strategy_from_metadata(metadata),
         metadata=metadata,
     )
+
+
+def _execution_strategy_from_metadata(metadata: dict[str, Any]) -> str:
+    return "plan_and_solve" if metadata.get("execution_strategy") == "plan_and_solve" else "react"
+
+
+def _suppress_default_source(metadata: dict[str, Any]) -> bool:
+    for key in ("gateway", "runtime"):
+        value = metadata.get(key)
+        if isinstance(value, dict) and value.get("suppress_realtime_backend_source") is True:
+            return True
+    return False
 
 
 def _task_revision_progress_event(request: UserRequest) -> RealtimeAgentEvent | None:

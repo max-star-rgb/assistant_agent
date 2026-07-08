@@ -11,6 +11,7 @@ from assistant_agent.api.app import create_app
 from assistant_agent.api.auth import AUTH_HEADER_ENABLED_ENV, AUTH_USER_ID_HEADER
 from assistant_agent.gateway import GatewayBridge, GatewaySessionManager
 from assistant_agent.realtime import RealtimeAgentEvent, RealtimeAgentResult
+from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.gateway_turn_facade import GatewayTurnRequest
 
 
@@ -440,6 +441,33 @@ def test_gateway_turn_facade_uses_process_local_manager() -> None:
     assert backend.requests[0].user_id == "facade-user"
     assert backend.requests[0].session_id == "facade-session"
     assert backend.requests[0].metadata["gateway"]["session_config"] == {"tone": "brief"}
+
+
+def test_gateway_http_runtime_captures_agent_run_response(monkeypatch) -> None:
+    class Runtime:
+        def run_state(self, request):
+            from assistant_agent.agent.state import AgentState
+            from assistant_agent.schemas.requests import AgentResponse
+
+            state = AgentState.from_request(request, run_id="run_capture_1")
+            state.set_response(AgentResponse(message="captured response"))
+            return state
+
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: Runtime())
+    capture_id = gateway_runtime.new_gateway_http_response_capture_id()
+    metadata = gateway_runtime.gateway_http_capture_metadata(capture_id)
+
+    artifacts = gateway_runtime._run_assistant_request_with_http_runtime(
+        UserRequest(user_id="capture-user", session_id="capture-session", text="capture me", metadata=metadata),
+        load_env=False,
+    )
+    response = gateway_runtime.pop_gateway_http_response(capture_id)
+
+    assert artifacts.state.run_id == "run_capture_1"
+    assert response is not None
+    assert response.run_id == "run_capture_1"
+    assert response.response_text == "captured response"
+    assert gateway_runtime.pop_gateway_http_response(capture_id) is None
 
 
 def _install_gateway_backend(backend) -> None:
