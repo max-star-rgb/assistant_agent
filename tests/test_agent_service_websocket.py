@@ -6,7 +6,21 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from assistant_agent.agent.state import AgentState
+from assistant_agent.api import routes_agent
 from assistant_agent.api.app import create_app
+from assistant_agent.schemas.requests import AgentResponse
+
+
+class RecordingRuntime:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def run_state(self, request):
+        self.requests.append(request)
+        state = AgentState.from_request(request, run_id="run_agent_service_gateway_test")
+        state.set_response(AgentResponse(message="agent service gateway response"))
+        return state
 
 
 def test_agent_service_start_ack_accepts_media_envelope() -> None:
@@ -60,6 +74,47 @@ def test_agent_service_chat_returns_mock_chat_response() -> None:
     assert body["number"] == "10086"
     assert body["message"]["chatIndex"] == 2
     assert "你好" in body["message"]["content"]
+
+
+def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/agent-service/v1?sessionId=s1") as websocket:
+        websocket.send_json(
+            _envelope(
+                "chat",
+                "s1",
+                {
+                    "chatIndex": 2,
+                    "userNumber": "10086",
+                    "contents": [
+                        {
+                            "speakerNumber": "10086",
+                            "speechContent": "你好",
+                            "time": "2026-07-06T10:00:00+08:00",
+                        }
+                    ],
+                },
+            )
+        )
+        response = websocket.receive_json()
+
+    body = _body(response)
+    assert response["message"] == "chatResponse"
+    assert response["sessionId"] == "s1"
+    assert body["number"] == "10086"
+    assert body["message"]["chatIndex"] == 2
+    assert body["message"]["content"] == "agent service gateway response"
+    assert len(runtime.requests) == 1
+    request = runtime.requests[0]
+    assert request.user_id == "10086"
+    assert request.session_id == "s1"
+    assert request.text == "你好"
+    assert request.metadata["runtime"]["history"] == ["你好"]
+    assert request.metadata["transport"] == "agent_service_websocket"
+    assert request.metadata["agent_service"]["chat_index"] == 2
 
 
 def test_agent_service_validates_required_start_fields() -> None:

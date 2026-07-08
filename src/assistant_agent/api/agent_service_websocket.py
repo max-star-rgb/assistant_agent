@@ -9,6 +9,16 @@ from typing import Any, ClassVar
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from assistant_agent.gateway import GatewaySessionManager
+from assistant_agent.realtime import GatewayAgentAdapter
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.gateway_turn_facade import (
+    GatewayTurnError,
+    GatewayTurnFacade,
+    GatewayTurnRequest,
+    GatewayTurnTimeout,
+)
+
 router = APIRouter()
 logger = logging.getLogger("assistant_agent.api.agent_service_websocket")
 
@@ -23,6 +33,8 @@ class AgentServiceConnectionState:
 
     session_id: str | None
     query_params: dict[str, str]
+    gateway_manager: GatewaySessionManager | None = None
+    gateway_facade: GatewayTurnFacade | None = None
     assistant_control_start: dict[str, Any] | None = None
     chats: list[dict[str, Any]] = field(default_factory=list)
 
@@ -136,6 +148,19 @@ class ChatHandler(BaseHandler):
             self._required_content_text(item, index, "time")
 
         state.chats.append(dict(body))
+        turn = await _run_agent_service_chat_turn(
+            state=state,
+            session_id=session_id,
+            user_number=user_number,
+            chat_index=chat_index,
+            latest_speech=latest_speech,
+            contents=contents,
+        )
+        if turn.status == "error":
+            return self.fail(
+                session_id=session_id,
+                message=turn.payload.get("message") or turn.reason or "Gateway run failed",
+            )
         return _response_envelope(
             message=self.response_message,
             session_id=session_id,
@@ -143,7 +168,7 @@ class ChatHandler(BaseHandler):
                 "number": user_number,
                 "message": {
                     "chatIndex": chat_index,
-                    "content": f"模拟回复：已收到「{latest_speech}」。",
+                    "content": turn.response_text,
                 },
             },
         )
@@ -193,6 +218,9 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         )
         return
 
+    gateway_manager = _create_agent_service_gateway_manager()
+    state.gateway_manager = gateway_manager
+    state.gateway_facade = GatewayTurnFacade(manager=gateway_manager)
     try:
         while True:
             raw = await websocket.receive_text()
@@ -201,6 +229,8 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             await _send_response(websocket, response)
     except WebSocketDisconnect:
         logger.info("agent-service websocket disconnected session_id=%s", state.session_id)
+    finally:
+        await gateway_manager.close()
 
 
 async def _handle_raw_message(
@@ -259,6 +289,70 @@ def _session_id_from_envelope(
     state: AgentServiceConnectionState,
 ) -> str | None:
     return _optional_text(envelope.get("sessionId")) or state.session_id
+
+
+def _create_agent_service_gateway_manager() -> GatewaySessionManager:
+    return GatewaySessionManager(
+        backend_factory=lambda: GatewayAgentAdapter(
+            run_request=_run_assistant_request_for_agent_service,
+            load_env=False,
+        ),
+        start_reaper=False,
+    )
+
+
+def _run_assistant_request_for_agent_service(request: UserRequest, **kwargs: Any) -> Any:
+    from assistant_agent.api import routes_agent
+
+    return routes_agent.get_assistant_runtime_app().run_request(request, **kwargs)
+
+
+async def _run_agent_service_chat_turn(
+    *,
+    state: AgentServiceConnectionState,
+    session_id: str,
+    user_number: str,
+    chat_index: Any,
+    latest_speech: str,
+    contents: list[Any],
+):
+    if state.gateway_facade is None:
+        raise RuntimeError("agent-service Gateway facade is not initialized")
+    try:
+        return await state.gateway_facade.run_turn(
+            GatewayTurnRequest(
+                user_id=user_number,
+                session_id=session_id,
+                text=latest_speech,
+                metadata=_agent_service_gateway_metadata(
+                    state=state,
+                    user_number=user_number,
+                    chat_index=chat_index,
+                    content_count=len(contents),
+                ),
+            )
+        )
+    except (GatewayTurnTimeout, GatewayTurnError) as exc:
+        raise AgentServiceProtocolError(str(exc)) from exc
+
+
+def _agent_service_gateway_metadata(
+    *,
+    state: AgentServiceConnectionState,
+    user_number: str,
+    chat_index: Any,
+    content_count: int,
+) -> dict[str, Any]:
+    return {
+        "transport": "agent_service_websocket",
+        "agent_service": {
+            "chat_index": chat_index,
+            "user_number": user_number,
+            "content_count": content_count,
+            "control_started": state.assistant_control_start is not None,
+        },
+        "gateway": {"suppress_realtime_backend_source": True},
+    }
 
 
 async def _send_response(websocket: WebSocket, response: dict[str, Any]) -> None:
