@@ -41,6 +41,11 @@ to several sinks, and `CompositeTraceStore` can fan out trace writes to a
 primary store plus secondary stores while keeping reads primary-only. These are
 observer composition primitives, not a generic HookManager and not interception
 points for changing assistant behavior.
+`HookManager` builds on those composition primitives as an observer-only
+vocabulary layer. `HookEventSink` forwards `AgentEvent` records to observers,
+and `HookTraceStore` forwards trace writes to observers when used as a secondary
+store. Hook observers cannot intercept or mutate assistant behavior; they only
+receive prompt-safe lifecycle records and hook dispatch errors.
 
 ## Canonical IDs
 
