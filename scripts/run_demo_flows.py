@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from collections.abc import Sequence
@@ -15,10 +16,13 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
+from assistant_agent.gateway import GatewaySessionManager
+from assistant_agent.realtime import GatewayAgentAdapter
 from assistant_agent.schemas.api import api_error_from_agent_error
-from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.assistant_run_service import create_runtime
+from assistant_agent.services.assistant_runtime_app import AssistantRuntimeApp
+from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade, GatewayTurnRequest
 
 
 SCENARIO_PATH = REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
@@ -59,8 +63,41 @@ def select_scenarios(
 
 
 def run_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
-    runtime = AgentGraphRuntime(config=ProviderConfig())
-    state = runtime.run_state(_request_from_scenario(scenario))
+    return asyncio.run(_run_scenario_through_gateway(scenario))
+
+
+async def _run_scenario_through_gateway(scenario: dict[str, Any]) -> dict[str, Any]:
+    app = AssistantRuntimeApp(
+        runtime_factory=lambda: create_runtime(config=ProviderConfig(), load_env=False)
+    )
+    captured: list[Any] = []
+
+    def run_request(request, **kwargs: Any) -> Any:
+        artifacts = app.run_request(request, **kwargs)
+        captured.append(artifacts)
+        return artifacts
+
+    manager = GatewaySessionManager(
+        backend_factory=lambda: GatewayAgentAdapter(
+            run_request=run_request,
+            load_env=False,
+        ),
+        start_reaper=False,
+    )
+    facade = GatewayTurnFacade(manager=manager)
+    try:
+        await facade.run_turn(_gateway_request_from_scenario(scenario))
+    finally:
+        await manager.close()
+
+    if not captured:
+        raise RuntimeError(
+            f"Gateway demo scenario {scenario['scenario_id']} completed without assistant artifacts."
+        )
+    return _result_from_state(scenario, captured[-1].state)
+
+
+def _result_from_state(scenario: dict[str, Any], state: Any) -> dict[str, Any]:
     response_text = state.response.message if state.response else ""
     tool_sequence = [call.tool_name for call in state.tool_calls]
     errors = [_api_error_payload(error) for error in state.errors]
@@ -119,18 +156,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 1 if summary["failed"] else 0
 
 
-def _request_from_scenario(scenario: dict[str, Any]) -> UserRequest:
-    metadata = dict(scenario.get("metadata", {}))
-    image_ids = list(metadata.pop("image_ids", []))
-    video_ids = list(metadata.pop("video_ids", []))
-    return UserRequest(
+def _gateway_request_from_scenario(scenario: dict[str, Any]) -> GatewayTurnRequest:
+    metadata, image_ids, video_ids, audio_id = _scenario_metadata_and_media(scenario)
+    metadata["offline"] = True
+    gateway_metadata = metadata.get("gateway")
+    if not isinstance(gateway_metadata, dict):
+        gateway_metadata = {}
+    metadata["gateway"] = {
+        **gateway_metadata,
+        "suppress_realtime_backend_source": True,
+    }
+    return GatewayTurnRequest(
         user_id="demo_user",
         session_id=f"demo_{scenario['scenario_id']}",
-        text=scenario.get("user_query"),
+        text=str(scenario.get("user_query") or ""),
         image_ids=image_ids,
         video_ids=video_ids,
+        audio_id=audio_id,
         metadata=metadata,
     )
+
+
+def _scenario_metadata_and_media(
+    scenario: dict[str, Any],
+) -> tuple[dict[str, Any], list[str], list[str], str | None]:
+    metadata = dict(scenario.get("metadata", {}))
+    image_ids = list(metadata.pop("image_ids", scenario.get("image_ids", [])))
+    video_ids = list(metadata.pop("video_ids", scenario.get("video_ids", [])))
+    audio_id = metadata.pop("audio_id", scenario.get("audio_id", None))
+    return metadata, image_ids, video_ids, str(audio_id) if audio_id is not None else None
 
 
 def _tools_contain_expected(actual_tools: list[str], expected_tools: list[str]) -> bool:

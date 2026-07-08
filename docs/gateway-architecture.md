@@ -12,7 +12,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default adapter is `GatewayAgentAdapter`, a semantic alias of the compatibility class name `AgentGraphRealtimeBackend`.
 - The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
-- Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and legacy `/ws/agent/{session_id}` now enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers are migration debt, not the target architecture.
+- Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, local CLI `--scenario` through demo flows, and legacy `/ws/agent/{session_id}` now enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
 - The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / `sessionId` / stringified `body` protocol. That route currently returns mock `assistantControlStartAck` and `chatResponse` envelopes and does not enter the Gateway session service or assistant runtime.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
@@ -91,8 +91,8 @@ AgentGraphRuntime / assistant loop
 `AssistantRuntimeApp` remains the thin backend-to-runtime boundary used by
 `GatewayAgentAdapter`. Product entry layers should not construct or pass
 `AgentGraphRuntime` directly, and their long-term target should not be direct
-`AssistantRuntimeApp` access either. Direct app callers may exist temporarily
-while CLI `--scenario`, eval, and demo flows are migrated behind
+`AssistantRuntimeApp` access either. Direct app callers in product paths may
+exist temporarily only as migration debt while those paths move behind
 Gateway-compatible facades.
 
 For request/response style entries, `GatewayTurnFacade` provides the in-process
@@ -110,8 +110,17 @@ schema without exposing the full HTTP response in Gateway WebSocket frames.
 Local offline CLI `--text` uses the same bridge with a local
 `GatewaySessionManager(start_reaper=False)` and a `GatewayAgentAdapter` callback
 that captures `AssistantRunArtifacts` for CLI payload formatting. CLI
-`--scenario` still uses the demo matrix directly and should migrate with
-demo/eval paths.
+`--scenario` uses the demo matrix, and each demo scenario now runs through the
+same local Gateway turn pattern before formatting the existing scenario result
+payload.
+
+Offline demo scenarios are entry-adapter smoke paths, so they should exercise
+Gateway lifecycle before reaching the assistant runtime. Offline eval harnesses
+are different: `scripts/run_evals.py` may call `AgentWorkflow`,
+`AgentGraphRuntime`, memory retrieval, provider policy, or MCP packaging layers
+directly when the eval case is measuring those lower-layer contracts. Eval
+harness direct calls are allowed only as explicit offline regression probes; they
+are not product entrypoint precedent.
 
 Legacy `/ws/agent/{session_id}` uses a local Gateway manager and facade per
 connection, but keeps its old external `AgentEvent` JSON stream. Its backend
@@ -223,6 +232,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/services/gateway_turn_facade.py` | In-process sync-turn facade for request/response entries that need Gateway lifecycle semantics without a WebSocket transport. |
 | `src/assistant_agent/services/assistant_runtime_app.py` | Backend-to-runtime boundary used behind `GatewayAgentAdapter`; owns the internal runtime reference without becoming the target product entry boundary. |
 | `src/assistant_agent/services/assistant_run_service.py` | Shared assistant request/run service used behind `AssistantRuntimeApp`, plus eval and demo utilities. |
+| `scripts/run_demo_flows.py` | Offline demo/scenario entry adapter that runs scenarios through a local `GatewayTurnFacade` and formats the existing demo summary payload. |
 | `scripts/run_gateway_client.py` | Local operator smoke client for the Gateway frame WebSocket route. |
 | `scripts/realtime_media_client.py` | Local Media Relay protocol smoke client for `/ws/realtime/media` scenarios. |
 

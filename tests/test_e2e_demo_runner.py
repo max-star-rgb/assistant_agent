@@ -2,6 +2,9 @@ import json
 import subprocess
 import sys
 
+from assistant_agent.agent.state import AgentState
+from assistant_agent.schemas.requests import AgentResponse
+import scripts.run_demo_flows as runner
 from scripts.run_demo_flows import run_demo_flows
 
 
@@ -14,6 +17,17 @@ REQUIRED_RESULT_KEYS = {
     "run_id",
     "trace_id",
 }
+
+
+class RecordingRuntime:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def run_state(self, request):
+        self.requests.append(request)
+        state = AgentState.from_request(request, run_id="run_demo_gateway_test")
+        state.set_response(AgentResponse(message="demo gateway response"))
+        return state
 
 
 def test_demo_runner_import_is_safe() -> None:
@@ -41,6 +55,21 @@ def test_demo_runner_runs_single_scenario() -> None:
     result = summary["results"][0]
     assert result["scenario_id"] == "product_search_compare"
     assert result["tool_sequence"] == ["product_search", "price_compare"]
+
+
+def test_demo_runner_runs_scenarios_through_gateway(monkeypatch) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(runner, "create_runtime", lambda **kwargs: runtime, raising=False)
+
+    summary = runner.run_demo_flows("product_search_compare")
+
+    result = summary["results"][0]
+    assert result["run_id"] == "run_demo_gateway_test"
+    assert result["response_text"] == "demo gateway response"
+    assert len(runtime.requests) == 1
+    request = runtime.requests[0]
+    assert request.metadata["runtime"]["history"] == [request.text]
+    assert request.metadata["offline"] is True
 
 
 def test_demo_runner_output_json_structure_from_cli() -> None:
