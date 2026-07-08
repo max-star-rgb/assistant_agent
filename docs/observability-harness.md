@@ -46,6 +46,11 @@ vocabulary layer. `HookEventSink` forwards `AgentEvent` records to observers,
 and `HookTraceStore` forwards trace writes to observers when used as a secondary
 store. Hook observers cannot intercept or mutate assistant behavior; they only
 receive prompt-safe lifecycle records and hook dispatch errors.
+`TraceMetricsObserver` is the local in-memory metrics observer for this hook
+layer. When attached to `HookManager` through `HookTraceStore`, it stores
+redacted trace events and exposes the same aggregate shape as
+`build_trace_metrics()`. It is a developer harness helper, not a metrics
+exporter, dashboard, policy hook, or API surface.
 
 ## Canonical IDs
 
@@ -235,6 +240,10 @@ machine-readable `--json` summary. API/debug endpoint exposure should be added
 only after the local metrics shape is stable. Tool metrics prefer terminal
 `tool.finished` / `tool.failed` lifecycle events and only count
 `tool.observation` for older traces that lack terminal tool events.
+For in-process hook composition, `TraceMetricsObserver` exposes the same metrics
+shape from trace events received during the current process. It is useful for
+tests and local harness wiring where reading the JSONL trace store is
+unnecessary.
 
 ## Redaction Rules
 
