@@ -174,11 +174,17 @@ class TraceInvariantObserver:
             key = _tool_call_key(event)
             if event.canonical_event in TOOL_LIFECYCLE_EVENTS and key is not None:
                 seen_tool_keys.add(key)
+                name_key = _tool_name_key(event)
+                if name_key is not None:
+                    seen_tool_keys.add(name_key)
                 continue
             if event.canonical_event == "action.validation.finished" and _is_validation_rejection(event):
                 rejected_runs.add(event.run_id)
                 if key is not None:
                     rejected_keys.add(key)
+                name_key = _tool_name_key(event)
+                if name_key is not None:
+                    rejected_keys.add(name_key)
                 continue
             if event.canonical_event != "tool.observation":
                 continue
@@ -266,6 +272,12 @@ def _tool_call_key(event: TraceEvent) -> tuple[str, str, str] | None:
     call_id = _tool_call_id(event)
     if call_id:
         return ("call", event.run_id, call_id)
+    if event.tool_name:
+        return ("tool", event.run_id, event.tool_name)
+    return None
+
+
+def _tool_name_key(event: TraceEvent) -> tuple[str, str, str] | None:
     if event.tool_name:
         return ("tool", event.run_id, event.tool_name)
     return None
