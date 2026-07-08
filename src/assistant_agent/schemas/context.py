@@ -53,6 +53,35 @@ class ContextBudgetReport(BaseModel):
     provider_total_tokens: int = Field(default=0, ge=0)
 
 
+class ContextReportSection(BaseModel):
+    """Prompt-safe context compiler section accounting."""
+
+    chars: int = Field(default=0, ge=0)
+    tokens: int | None = Field(default=None, ge=0)
+    item_count: int = Field(default=0, ge=0)
+    included: bool = False
+    compacted: bool = False
+    trimmed: bool = False
+    source: str = ""
+    notes: list[str] = Field(default_factory=list)
+
+
+class ContextReport(BaseModel):
+    """Prompt-safe v1 context compiler report for one LLM call."""
+
+    schema_version: str = "context_report_v1"
+    sections: dict[str, ContextReportSection] = Field(default_factory=dict)
+    total_chars: int = Field(default=0, ge=0)
+    max_chars: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    max_tokens: int = Field(default=0, ge=0)
+    selected_tool_names: list[str] = Field(default_factory=list)
+    memory_item_ids: list[str] = Field(default_factory=list)
+    compression_stage: str = "none"
+    compression_reasons: list[str] = Field(default_factory=list)
+    was_compacted: bool = False
+
+
 class ContextPolicy(BaseModel):
     """Context assembly and compaction thresholds."""
 

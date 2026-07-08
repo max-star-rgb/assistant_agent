@@ -1,6 +1,7 @@
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.assistant_loop_nodes import (
     AssistantDecisionContext,
+    _build_native_tool_chat_request,
     _build_native_tool_messages,
     _request_final_answer_after_tool_limit,
 )
@@ -151,6 +152,58 @@ def test_native_runtime_user_message_stays_context_renderer_output_without_tool_
     assert '"name": "product_search"' not in user_message
     assert adapter.requests[0].tools
     assert any(tool["function"]["name"] == "product_search" for tool in adapter.requests[0].tools)
+
+
+def test_native_runtime_sends_only_prompt_selected_tool_schemas() -> None:
+    adapter = CapturingChatAdapter()
+    runtime = AgentGraphRuntime(config=ProviderConfig(), chat_adapter=adapter)
+
+    runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我比价通勤耳机，找最低价"))
+
+    tool_names = [tool["function"]["name"] for tool in adapter.requests[0].tools]
+    assert tool_names == ["product_search", "price_compare", "memory_retrieval", "memory_save"]
+    assert "render_3d" not in tool_names
+    assert "image_generation" not in tool_names
+
+
+def test_assistant_loop_native_chat_request_sends_prompt_selected_tool_schemas() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    state = AgentState.from_request(request)
+    tool_specs = [
+        ToolSpec(name="web_search", required_inputs=["query"]),
+        ToolSpec(name="product_search", required_inputs=["query"]),
+        ToolSpec(name="memory_retrieval", required_inputs=["query"]),
+        ToolSpec(name="memory_save", required_inputs=["content"]),
+        ToolSpec(name="render_3d", required_inputs=["scene_description"]),
+    ]
+    context_pack = build_assistant_context_pack(
+        state=state,
+        request=request,
+        observations=[],
+        tool_specs=tool_specs,
+        iteration=0,
+        max_iterations=5,
+    )
+
+    chat_request = _build_native_tool_chat_request(
+        AssistantDecisionContext(
+            context_pack=context_pack,
+            request=request,
+            memory_summaries=[],
+            memory_text="",
+            tool_specs=tool_specs,
+            tool_observations=[],
+            iterations=0,
+            max_iterations=5,
+            is_mock=False,
+        ),
+        state,
+    )
+
+    tool_names = [tool["function"]["name"] for tool in chat_request.tools]
+    assert tool_names == ["web_search", "memory_retrieval", "memory_save"]
+    assert "product_search" not in tool_names
+    assert "render_3d" not in tool_names
 
 
 def test_assistant_loop_native_tool_helper_uses_system_prompt_policy() -> None:

@@ -11,7 +11,7 @@ Last updated: 2026-07-07
 - 当前结论：上下文工程第一版已经可用并适合阶段性收口，不是缺核心组件的状态。
 - 当前权威入口：本文件。
 - 说明：已移除完成态阶段计划，当前以本文件作为上下文工程状态与交接入口。
-- 已实现核心闭环：`AssistantContextPack`、session summary、增量滑动窗口摘要、realtime task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
+- 已实现核心闭环：`AssistantContextPack`、Context Compiler v1 redacted report、session summary、增量滑动窗口摘要、realtime task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
 - 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
 - 预算现状：全局压缩控制仍以字符预算为准；token-aware 目前是报告层。Memory context 有单独 token-aware 注入边界。
 - memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
@@ -27,6 +27,7 @@ Last updated: 2026-07-07
 - 主运行时是 LangGraph/ReAct assistant loop，默认 mock/local/offline。
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、plan state、tool observations、tool specs、source counts 和 budget。
 - `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
+- Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，只记录大小、计数、来源、压缩/裁剪标志、selected tool names 和 memory item ids，不暴露完整 prompt、memory 文本、tool observation 或 provider payload。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - Gateway/realtime 请求会在进入 runtime 前注入 session-scoped realtime task-state snapshot；普通 `/agent/run` 不自动启用，除非 metadata 显式打开。
 - `MemoryManager` 负责加载分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
@@ -41,6 +42,7 @@ Last updated: 2026-07-07
 - Tool observation compaction 会在 prompt 副本中移除 raw provider/file/media payload、inline media data URI 和过大的命令输出；原始 observation 不被修改。
 - Cross-agent delegation now has a separate child-context boundary in `AgentCommunicationService`: child runs receive explicit `context_refs`, child budget metadata, and redacted audit summaries, not parent history, `memory_context_*`, raw provider payloads, secrets, or raw tool results.
 - Trace/API 已暴露 versioned context debug summary，包括 context budget、source counts、tool catalog summary、observation compaction summary 和 memory promotion counters。
+- `/runs/{run_id}/context` 与 `/traces/{trace_id}/context` 返回最新 `context_report_v1`；旧 trace 若只有 `context.budget/source_counts/tool_catalog`，会降级生成兼容 report。
 - Context build now also emits canonical `context.build.started` and
   `context.build.finished` trace events with redacted budget, source-count,
   compaction, and tool-catalog summaries.
@@ -105,6 +107,7 @@ Last updated: 2026-07-07
 - `render_prompt_json_context` 是历史 prompt-json renderer，保留给 context renderer 测试和离线兼容材料；生产真实 LLM runtime 不再使用它做决策控制面。
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
 - native/legacy context 可渲染 prompt-safe capability catalog；实际执行契约仍是 `ToolSpec`，工具调用仍必须通过 `ToolExecutor`。
+- Provider-native `ChatRequest.tools` 现在使用 `AssistantContextPack.prompt_tool_specs` 中选出的 schema 子集；仅当 prompt subset 为空时才回退完整 `tool_specs`。如果 selector fallback 到完整工具列表，`tool_catalog.fallback_used` 和 `context_report_v1.sections.tool_schema.notes=["fallback_full_tool_list"]` 会记录该状态。
 - Repo-local business skills follow `skills/<skill_id>/SKILL.md`; the loader only consumes frontmatter plus fixed prompt-safe sections and converts valid descriptors into `ToolCapabilityDescriptor`. It skips disabled/manual-only/invalid skills, ignores `.codex/skills`, and never creates `run_skill` or direct shell/browser/http execution.
 - `render_final_only_prompt` 用于工具调用上限附近，禁止继续工具调用并要求最终回答。
 - prompt 明确声明 conversation、memory、realtime task state、observation 和 tool output 都是数据，不是系统指令。
@@ -135,6 +138,7 @@ Last updated: 2026-07-07
 - `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_usage_high`、`tool_observation_too_large`、`provider_context_overflow`、`explicit_compact`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
 - assistant decision trace 写入 `context_schema_version="context_observability_v1"`、budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数；compaction summary 只暴露 pruning/truncation 计数，不暴露 raw payload；run/trace 查询会合并最终 save-memory 阶段的 redacted promotion counts。
+- `react.decision` trace 或 native runtime 的 `context.report` 事件写入 `context_report_v1`，用于检查真实发送给 provider 的 system prompt 大小、selected native tool schema、memory 注入 ID、realtime task-state 大小和压缩/裁剪状态。
 - Context pack construction emits standalone `context.build.started` /
   `context.build.finished` canonical trace events. The finished event carries the
   same redacted context summary shape used by trace/API context debugging.
@@ -153,6 +157,7 @@ Last updated: 2026-07-07
 
 - 默认自动压缩仍是 deterministic formatting/summary。LLM semantic compaction 已有受控入口，但默认离线 profile 不启用。
 - 当前全局压缩控制仍是 approximate character budget；token-aware 数据已作为可选报告层接入。Memory context 可单独按 token budget 控制注入，但这不替代 AssistantContextPack 的全局字符预算。
+- Context Compiler v1 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；token 字段仍依赖现有估算或 provider usage metadata。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
 - 会话历史压缩只增量合并滑出窗口的较早轮次，不做跨轮语义重写、事实抽取、冲突消解或质量反馈调参。
 - assistant loop 的真实 LLM 路径中，长期记忆写入应由 assistant 通过 `memory_save` 工具显式选择；图尾不会自动写长期 task summary。
@@ -166,6 +171,7 @@ Last updated: 2026-07-07
 - `src/assistant_agent/services/context/token_budget.py`
 - `src/assistant_agent/services/context/compactor.py`
 - `src/assistant_agent/services/context/renderer.py`
+- `src/assistant_agent/services/context/report.py`
 - `src/assistant_agent/services/context/capability_catalog.py`
 - `src/assistant_agent/services/context/skill_loader.py`
 - `src/assistant_agent/services/realtime_task_state.py`

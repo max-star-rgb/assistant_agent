@@ -37,6 +37,7 @@ from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, crea
 from assistant_agent.services.checkpointer import create_checkpointer
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
 from assistant_agent.services.context.compactor import ContextCompactor, create_context_compactor
+from assistant_agent.services.context.report import build_context_report
 from assistant_agent.services.context.renderer import render_native_user_message
 from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
 from assistant_agent.services.response_observability import append_response_final_event
@@ -593,13 +594,15 @@ class AgentGraphRuntime:
             max_iterations=max_iterations,
             context_compactor=None,
         )
+        selected_tool_specs = [] if profile == SystemPromptProfile.FINAL_ONLY else _native_runtime_selected_tool_specs(context_pack)
+        system_prompt = render_system_instruction(
+            profile,
+            options=_system_prompt_options_from_request(request),
+        )
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
-                "content": render_system_instruction(
-                    profile,
-                    options=_system_prompt_options_from_request(request),
-                ),
+                "content": system_prompt,
             },
             {"role": "user", "content": render_native_user_message(context_pack)},
         ]
@@ -615,16 +618,54 @@ class AgentGraphRuntime:
                     "content": json.dumps(observation, ensure_ascii=False),
                 }
             )
+        self._record_native_runtime_context_report(
+            state,
+            context_pack=context_pack,
+            system_prompt=system_prompt,
+            selected_tool_specs=selected_tool_specs,
+            iteration=iteration,
+            max_iterations=max_iterations,
+        )
         return ChatRequest(
             user_id=state.user_id,
             session_id=state.session_id,
             user_query=request.text or "native runtime assistant turn",
             messages=messages,
-            tools=[] if profile == SystemPromptProfile.FINAL_ONLY else tool_specs_to_openai_tools(tool_specs),
+            tools=tool_specs_to_openai_tools(selected_tool_specs),
             tool_choice="none" if profile == SystemPromptProfile.FINAL_ONLY else "auto",
             temperature=0.2,
             max_tokens=1024,
             stream_callback=stream_callback,
+        )
+
+    def _record_native_runtime_context_report(
+        self,
+        state: AgentState,
+        *,
+        context_pack: Any,
+        system_prompt: str,
+        selected_tool_specs: list[ToolSpec],
+        iteration: int,
+        max_iterations: int,
+    ) -> None:
+        report = build_context_report(
+            context_pack,
+            system_prompt=system_prompt,
+            selected_tool_specs=selected_tool_specs,
+        ).model_dump(mode="json")
+        state.request.metadata["last_context_report_v1"] = report
+        self._append_observability_event(
+            state,
+            canonical_event="context.report",
+            node_name="native_runtime",
+            status="succeeded",
+            attributes={
+                "iteration": iteration + 1,
+                "max_iterations": max_iterations,
+                "selected_tool_count": len(selected_tool_specs),
+                "compression_stage": report.get("compression_stage"),
+            },
+            output_summary={"context_report_v1": report},
         )
 
     def _record_native_runtime_chat_call(
@@ -813,6 +854,7 @@ class AgentGraphRuntime:
         model: str | None = None,
         latency_ms: int | None = None,
         attributes: dict[str, Any] | None = None,
+        output_summary: dict[str, Any] | None = None,
         error: dict[str, Any] | None = None,
     ) -> None:
         append_observability_event(
@@ -829,6 +871,7 @@ class AgentGraphRuntime:
             model=model,
             latency_ms=latency_ms,
             attributes=attributes,
+            output_summary=output_summary,
             error=error,
         )
 
@@ -961,6 +1004,13 @@ def _native_runtime_tool_specs(registry: Any, state: AgentState) -> list[ToolSpe
     except Exception as exc:
         _set_native_tool_description_failure_response(state, exc)
         return None
+
+
+def _native_runtime_selected_tool_specs(context_pack: Any) -> list[ToolSpec]:
+    prompt_tool_specs = getattr(context_pack, "prompt_tool_specs", None)
+    if prompt_tool_specs:
+        return list(prompt_tool_specs)
+    return list(getattr(context_pack, "tool_specs", []) or [])
 
 
 def _set_native_tool_description_failure_response(state: AgentState, exc: Exception) -> None:

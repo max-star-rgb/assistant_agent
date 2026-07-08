@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.schemas.context import ContextReport
+from assistant_agent.services.context.report import context_report_from_trace_context_summary
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, trace_debug_summary, trace_event_summary
 
 
@@ -46,6 +48,14 @@ class ToolCallSummary(BaseModel):
 
     run_id: str
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ContextReportQueryResult(BaseModel):
+    """Public context report lookup result."""
+
+    run_id: str | None = None
+    trace_id: str | None = None
+    context_report_v1: ContextReport
 
 
 class TraceQueryService:
@@ -102,6 +112,26 @@ class TraceQueryService:
             tool_calls=[_tool_call_summary(event) for event in tool_events],
         )
 
+    def context_by_run(self, run_id: str) -> ContextReportQueryResult | None:
+        events = self.trace_store.list_by_run(run_id)
+        if not events:
+            return None
+        return ContextReportQueryResult(
+            run_id=run_id,
+            trace_id=events[0].trace_id,
+            context_report_v1=_latest_context_report(events),
+        )
+
+    def context_by_trace(self, trace_id: str) -> ContextReportQueryResult | None:
+        events = self.trace_store.list_by_trace(trace_id)
+        if not events:
+            return None
+        return ContextReportQueryResult(
+            run_id=events[0].run_id,
+            trace_id=trace_id,
+            context_report_v1=_latest_context_report(events),
+        )
+
 
 def _tool_call_summary(event: TraceEvent) -> dict[str, Any]:
     summary = trace_event_summary(event)
@@ -132,6 +162,21 @@ def _latest_context_summary(events: list[TraceEvent]) -> dict[str, Any]:
     if memory_promotion:
         latest_context.update(memory_promotion)
     return latest_context
+
+
+def _latest_context_report(events: list[TraceEvent]) -> ContextReport:
+    for event in reversed(events):
+        if not isinstance(event.output_summary, dict):
+            continue
+        report = event.output_summary.get("context_report_v1")
+        if isinstance(report, dict):
+            return ContextReport.model_validate(report)
+        context = event.output_summary.get("context")
+        if isinstance(context, dict):
+            nested_report = context.get("context_report_v1")
+            if isinstance(nested_report, dict):
+                return ContextReport.model_validate(nested_report)
+    return context_report_from_trace_context_summary(_latest_context_summary(events))
 
 
 def _latest_memory_promotion_summary(events: list[TraceEvent]) -> dict[str, Any]:

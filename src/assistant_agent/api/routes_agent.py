@@ -69,7 +69,13 @@ from assistant_agent.services.memory_snapshot import MemorySnapshotService
 from assistant_agent.services.agent_pilot_readiness import PilotReadinessChecker, PilotReadinessReport
 from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_readiness import build_provider_readiness_report
-from assistant_agent.services.trace_query import RunSummary, ToolCallSummary, TraceQueryService, TraceSummary
+from assistant_agent.services.trace_query import (
+    ContextReportQueryResult,
+    RunSummary,
+    ToolCallSummary,
+    TraceQueryService,
+    TraceSummary,
+)
 from assistant_agent.services.trial_access import (
     TrialAccessGate,
     TrialAccessStatus,
@@ -226,6 +232,14 @@ def get_run_summary(run_id: str) -> RunSummary:
     return summary
 
 
+@router.get("/runs/{run_id}/context", response_model=ContextReportQueryResult)
+def get_run_context(run_id: str) -> ContextReportQueryResult:
+    summary = TraceQueryService(get_agent_runtime().trace_store).context_by_run(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return summary
+
+
 def _public_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
     metadata = dict(scenario.get("metadata", {}))
     return {
@@ -242,6 +256,14 @@ def _public_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
 @router.get("/traces/{trace_id}", response_model=TraceSummary)
 def get_trace_summary(trace_id: str) -> TraceSummary:
     summary = TraceQueryService(get_agent_runtime().trace_store).trace_summary(trace_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="trace not found")
+    return summary
+
+
+@router.get("/traces/{trace_id}/context", response_model=ContextReportQueryResult)
+def get_trace_context(trace_id: str) -> ContextReportQueryResult:
+    summary = TraceQueryService(get_agent_runtime().trace_store).context_by_trace(trace_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="trace not found")
     return summary

@@ -156,6 +156,27 @@ def test_mock_runtime_emits_context_build_trace_with_budget_summary() -> None:
     assert "thought" not in dumped
 
 
+def test_react_decision_trace_includes_context_report_v1() -> None:
+    trace_store = InMemoryTraceStore()
+    state = AgentGraphRuntime(trace_store=trace_store).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我比价通勤耳机，找最低价")
+    )
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    decision_event = next(
+        event
+        for event in events
+        if event["canonical_event"] == "react.decision" and "context_report_v1" in event["output_summary"]
+    )
+    report = decision_event["output_summary"]["context_report_v1"]
+
+    assert report["schema_version"] == "context_report_v1"
+    assert report["sections"]["system_prompt"]["chars"] > 0
+    assert report["sections"]["tool_schema"]["item_count"] >= 1
+    assert "product_search" in report["selected_tool_names"]
+    assert "price_compare" in report["selected_tool_names"]
+
+
 def test_mock_runtime_emits_memory_lifecycle_trace_without_memory_content() -> None:
     trace_store = InMemoryTraceStore()
     state = AgentGraphRuntime(
@@ -300,6 +321,33 @@ def test_native_runtime_emits_context_build_trace_with_budget_summary() -> None:
     assert context_event["status"] == "succeeded"
     assert context_event["attributes"]["iteration"] == 1
     assert context_event["output_summary"]["context"]["budget"]["total_chars"] > 0
+
+
+def test_native_runtime_emits_context_report_with_selected_tool_schema() -> None:
+    trace_store = InMemoryTraceStore()
+    adapter = ScriptedNativeChatAdapter(
+        [
+            ChatResult(
+                response_text="可以直接回答。",
+                provider="scripted",
+                model="native-test",
+                latency_ms=7,
+                message_kind="content",
+            )
+        ]
+    )
+    state = AgentGraphRuntime(trace_store=trace_store, chat_adapter=adapter).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    )
+
+    events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
+    report_event = next(event for event in events if event["canonical_event"] == "context.report")
+    report = report_event["output_summary"]["context_report_v1"]
+
+    assert report["sections"]["system_prompt"]["chars"] > 0
+    assert report["selected_tool_names"] == ["web_search", "memory_retrieval", "memory_save"]
+    assert report["sections"]["tool_schema"]["item_count"] == 3
+    assert "product_search" not in report["selected_tool_names"]
 
 
 def test_native_runtime_emits_memory_load_trace_without_memory_content() -> None:

@@ -157,6 +157,102 @@ def test_context_pack_reports_estimated_tokens_when_enabled() -> None:
     assert pack.budget.compression_stage == "none"
 
 
+def test_context_report_v1_summarizes_sections_without_raw_payloads() -> None:
+    from assistant_agent.services.context.report import build_context_report
+
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="帮我继续比价",
+        metadata={
+            "context_budget_estimate_tokens": True,
+            "context_budget_max_tokens": 1000,
+            "conversation_context_text": "上一轮：用户偏好入耳式",
+            "memory_context_text": "相关历史：用户喜欢秘密品牌和降噪耳机",
+            "memory_context_injected_ids": ["mem_pref_1"],
+            "realtime_task_state": {"objective": "比价耳机", "raw_audio": "should-not-leak"},
+        },
+    )
+    state = AgentState.from_request(request)
+    observation = {
+        "tool_name": "product_search",
+        "status": "succeeded",
+        "summary": "found items",
+        "raw_provider_payload": {"token": "sk-test", "body": "secret payload"},
+    }
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[observation],
+        tool_specs=[
+            ToolSpec(name="product_search", required_inputs=["query"]),
+            ToolSpec(name="price_compare", required_inputs=["items"]),
+            ToolSpec(name="memory_retrieval", required_inputs=["query"]),
+            ToolSpec(name="memory_save", required_inputs=["content"]),
+            ToolSpec(name="render_3d", required_inputs=["scene_description"]),
+        ],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    report = build_context_report(
+        pack,
+        system_prompt="system instructions visible only as size",
+        selected_tool_specs=pack.prompt_tool_specs,
+    )
+    payload = json.dumps(report.model_dump(mode="json"), ensure_ascii=False)
+
+    assert report.schema_version == "context_report_v1"
+    assert set(report.sections) == {
+        "system_prompt",
+        "request",
+        "session_summary",
+        "recent_transcript",
+        "memory",
+        "realtime_task_state",
+        "plan_state",
+        "tool_observations",
+        "tool_schema",
+        "tool_capability",
+    }
+    assert report.sections["system_prompt"].chars == len("system instructions visible only as size")
+    assert report.sections["request"].chars == len(request.text or "")
+    assert report.sections["memory"].item_count == 1
+    assert report.sections["tool_observations"].item_count == 1
+    assert report.sections["tool_schema"].item_count == len(pack.prompt_tool_specs)
+    assert report.sections["memory"].tokens is not None
+    assert report.total_tokens > 0
+    assert report.max_tokens == 1000
+    assert report.selected_tool_names == ["product_search", "price_compare", "memory_retrieval", "memory_save"]
+    assert report.memory_item_ids == ["mem_pref_1"]
+    assert "secret payload" not in payload
+    assert "sk-test" not in payload
+    assert "should-not-leak" not in payload
+    assert "相关历史" not in payload
+
+
+def test_context_report_v1_marks_full_tool_schema_fallback() -> None:
+    from assistant_agent.services.context.report import build_context_report
+
+    request = UserRequest(user_id="u1", session_id="s1", text="随便聊聊")
+    state = AgentState.from_request(request)
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=[
+            ToolSpec(name="product_search", required_inputs=["query"]),
+            ToolSpec(name="render_3d", required_inputs=["scene_description"]),
+        ],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    report = build_context_report(pack, system_prompt="system", selected_tool_specs=pack.prompt_tool_specs)
+
+    assert pack.tool_catalog_summary.fallback_used is True
+    assert report.sections["tool_schema"].notes == ["fallback_full_tool_list"]
+    assert report.selected_tool_names == ["product_search", "render_3d"]
+
+
 def test_context_pack_prefers_provider_token_usage_over_estimates() -> None:
     request = UserRequest(
         user_id="u1",

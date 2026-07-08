@@ -50,6 +50,7 @@ from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult
 from assistant_agent.services.context.builder import build_assistant_context_pack
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
+from assistant_agent.services.context.report import build_context_report
 from assistant_agent.services.context.renderer import (
     render_final_only_prompt,
     render_native_user_message,
@@ -468,16 +469,25 @@ def _native_finish_reason(result: ChatResult, *, fallback: str) -> str:
 
 def _build_native_tool_chat_request(context: AssistantDecisionContext, state: AgentState) -> ChatRequest:
     messages = _build_native_tool_messages(context, state)
+    selected_tool_specs = _selected_native_tool_specs(context)
     return ChatRequest(
         user_id=state.user_id,
         session_id=state.session_id,
         user_query=context.request.text or "native_tools assistant turn",
         messages=messages,
-        tools=tool_specs_to_openai_tools(context.tool_specs),
+        tools=tool_specs_to_openai_tools(selected_tool_specs),
         tool_choice="auto",
         temperature=0.2,
         max_tokens=1024,
     )
+
+
+def _selected_native_tool_specs(context: AssistantDecisionContext) -> list[ToolSpec]:
+    """Return the provider tool schemas selected for this prompt."""
+
+    if context.context_pack.prompt_tool_specs:
+        return list(context.context_pack.prompt_tool_specs)
+    return list(context.tool_specs)
 
 
 def _build_native_tool_messages(context: AssistantDecisionContext, state: AgentState) -> list[dict[str, Any]]:
@@ -1670,6 +1680,7 @@ def _record_react_decision(
     }
     if context_summary:
         output_summary["context"] = context_summary
+        output_summary["context_report_v1"] = _context_report_summary(context)
     if memory_selection:
         output_summary["memory_tool_selection"] = memory_selection
     _append_trace(
@@ -1706,6 +1717,18 @@ def _context_trace_summary(context: AssistantDecisionContext | None) -> dict[str
         "memory_promotion_written": _metadata_int(pack.request.metadata, "memory_promotion_written"),
         "memory_tool_selection": _memory_tool_selection_trace(pack.request.metadata),
     }
+
+
+def _context_report_summary(context: AssistantDecisionContext) -> dict[str, Any]:
+    system_prompt = render_system_instruction(
+        SystemPromptProfile.TEXT_DEFAULT,
+        options=SystemPromptOptions(product_mode=True),
+    )
+    return build_context_report(
+        context.context_pack,
+        system_prompt=system_prompt,
+        selected_tool_specs=_selected_native_tool_specs(context),
+    ).model_dump(mode="json")
 
 
 def _memory_tool_selection_trace(metadata: dict[str, Any]) -> dict[str, Any]:
