@@ -1,7 +1,7 @@
 """Graph execution trace storage."""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol, TypeVar
@@ -10,6 +10,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+from assistant_agent.services.hook_dispatch import HookDispatchError, build_hook_dispatch_error
 
 
 TraceEventType = Literal[
@@ -171,6 +172,94 @@ class JsonlTraceStore:
             for event in remaining:
                 file.write(json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n")
         return deleted
+
+
+class CompositeTraceStore:
+    """Fan out trace writes while keeping reads deterministic from primary."""
+
+    def __init__(
+        self,
+        primary: TraceStore,
+        secondaries: Iterable[TraceStore] = (),
+        *,
+        continue_on_error: bool = True,
+    ) -> None:
+        self.primary = primary
+        self.secondaries = list(secondaries)
+        self.continue_on_error = continue_on_error
+        self._errors: list[HookDispatchError] = []
+
+    @property
+    def errors(self) -> list[HookDispatchError]:
+        return list(self._errors)
+
+    def append(self, event: TraceEvent) -> None:
+        for index, store in enumerate(self._stores()):
+            try:
+                store.append(event)
+            except Exception as exc:
+                self._record_error(
+                    target=store,
+                    target_index=index,
+                    operation="append",
+                    event=event,
+                    exc=exc,
+                )
+                if not self.continue_on_error:
+                    raise
+
+    def list_by_run(self, run_id: str) -> list[TraceEvent]:
+        return self.primary.list_by_run(run_id)
+
+    def list_by_trace(self, trace_id: str) -> list[TraceEvent]:
+        return self.primary.list_by_trace(trace_id)
+
+    def node_path(self, run_id: str) -> list[str]:
+        return self.primary.node_path(run_id)
+
+    def list_by_user(self, user_id: str) -> list[TraceEvent]:
+        return self.primary.list_by_user(user_id)
+
+    def delete_by_user(self, user_id: str) -> int:
+        deleted = 0
+        for index, store in enumerate(self._stores()):
+            try:
+                result = store.delete_by_user(user_id)
+                if index == 0:
+                    deleted = result
+            except Exception as exc:
+                self._record_error(
+                    target=store,
+                    target_index=index,
+                    operation="delete_by_user",
+                    event=None,
+                    exc=exc,
+                )
+                if not self.continue_on_error:
+                    raise
+        return deleted
+
+    def _stores(self) -> list[TraceStore]:
+        return [self.primary, *self.secondaries]
+
+    def _record_error(
+        self,
+        *,
+        target: object,
+        target_index: int,
+        operation: str,
+        event: TraceEvent | None,
+        exc: BaseException,
+    ) -> None:
+        self._errors.append(
+            build_hook_dispatch_error(
+                target=target,
+                target_index=target_index,
+                operation=operation,
+                event=event,
+                exc=exc,
+            )
+        )
 
 
 def new_trace_id() -> str:

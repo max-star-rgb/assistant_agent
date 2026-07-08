@@ -36,6 +36,12 @@ source for debug reconstruction should be the redacted trace timeline. API
 response fields and realtime events are projections of that timeline or live
 runtime lifecycle events.
 
+For local composition, `CompositeEventSink` can fan out one runtime event stream
+to several sinks, and `CompositeTraceStore` can fan out trace writes to a
+primary store plus secondary stores while keeping reads primary-only. These are
+observer composition primitives, not a generic HookManager and not interception
+points for changing assistant behavior.
+
 ## Canonical IDs
 
 Every run-observability record should carry the strongest available identity
