@@ -12,7 +12,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default adapter is `GatewayAgentAdapter`, a semantic alias of the compatibility class name `AgentGraphRealtimeBackend`.
 - The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
-- Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run` now enters Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers are migration debt, not the target architecture.
+- Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run` and local CLI `--text` now enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers are migration debt, not the target architecture.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
 - The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / `sessionId` / stringified `body` protocol. That route currently returns mock `assistantControlStartAck` and `chatResponse` envelopes and does not enter the Gateway session service or assistant runtime.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
@@ -92,8 +92,8 @@ AgentGraphRuntime / assistant loop
 `GatewayAgentAdapter`. Product entry layers should not construct or pass
 `AgentGraphRuntime` directly, and their long-term target should not be direct
 `AssistantRuntimeApp` access either. Direct app callers may exist temporarily
-while legacy `/ws/agent`, local CLI, eval, and demo flows are migrated behind
-Gateway-compatible facades.
+while legacy `/ws/agent`, CLI `--scenario`, eval, and demo flows are migrated
+behind Gateway-compatible facades.
 
 For request/response style entries, `GatewayTurnFacade` provides the in-process
 sync-turn bridge: it sends a normalized `message.user` frame through
@@ -106,6 +106,12 @@ Gateway runtime callback captures the full `AgentRunResponse` after
 `AssistantRuntimeApp.run_request()` returns, and the HTTP route pops that
 captured response after Gateway emits `run.end`. This preserves the public HTTP
 schema without exposing the full HTTP response in Gateway WebSocket frames.
+
+Local offline CLI `--text` uses the same bridge with a local
+`GatewaySessionManager(start_reaper=False)` and a `GatewayAgentAdapter` callback
+that captures `AssistantRunArtifacts` for CLI payload formatting. CLI
+`--scenario` still uses the demo matrix directly and should migrate with
+demo/eval paths.
 
 ## Gateway Responsibilities
 
