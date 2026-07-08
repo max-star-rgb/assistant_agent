@@ -143,6 +143,7 @@ def test_websocket_ignores_auth_headers_when_disabled(monkeypatch) -> None:
     metadata = runtime.requests[0].metadata["request_identity"]
     assert metadata["identity_source"] == "websocket_query"
     assert metadata["auth_bound_identity"] is False
+    assert runtime.requests[0].metadata["runtime"]["history"] == ["你好"]
 
 
 def test_websocket_rejects_enabled_header_auth_user_mismatch(monkeypatch) -> None:

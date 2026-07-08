@@ -3,15 +3,17 @@
 import asyncio
 import ipaddress
 import logging
-from threading import Thread
 from typing import Any
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from assistant_agent.api.auth import get_websocket_auth_context, require_auth_bound_identity
+from assistant_agent.gateway import GatewaySessionManager
+from assistant_agent.realtime import GatewayAgentAdapter
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.api_identity import IdentityPolicyError, enforce_identity_policy, resolve_request_identity
+from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade, GatewayTurnRequest
 
 
 router = APIRouter()
@@ -42,9 +44,30 @@ class WebSocketEventSink:
         if self.loop.is_closed():
             return
         try:
+            if asyncio.get_running_loop() is self.loop:
+                self.queue.put_nowait(event)
+                return
+        except RuntimeError:
+            pass
+        try:
             self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
         except RuntimeError:
             logger.debug("websocket event loop closed before event could be emitted", exc_info=True)
+
+
+class MirroringWebSocketEventSink:
+    """Forward runtime events to Gateway and the legacy WebSocket stream."""
+
+    def __init__(self, *, gateway_sink: Any, websocket_sink: WebSocketEventSink) -> None:
+        self._gateway_sink = gateway_sink
+        self._websocket_sink = websocket_sink
+        self.events: list[AgentEvent] = []
+
+    def emit(self, event: AgentEvent) -> None:
+        self.events.append(event)
+        if self._gateway_sink is not None:
+            self._gateway_sink.emit(event)
+        self._websocket_sink.emit(event)
 
 
 def mock_agent_events(session_id: str) -> list[AgentEvent]:
@@ -173,54 +196,106 @@ async def agent_websocket(
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[Any] = asyncio.Queue()
     event_sink = WebSocketEventSink(loop, queue)
+    turn_task = asyncio.create_task(
+        _run_legacy_websocket_gateway_turn(
+            request=request,
+            legacy_session_id=session_id,
+            event_sink=event_sink,
+            queue=queue,
+        )
+    )
 
-    def run_agent() -> None:
-        try:
-            from assistant_agent.api import routes_agent
-
-            artifacts = routes_agent.get_assistant_runtime_app().run_request(request, event_sink=event_sink)
-            response = artifacts.api_response()
-            logger.info(
-                "[ws] session=%s run=%s status=%s 返回: %s",
-                session_id,
-                response.run_id,
-                response.status,
-                _preview(response.response_text),
-            )
-            event_sink.emit(
-                AgentEvent(
-                    type="agent_response",
-                    session_id=session_id,
-                    run_id=response.run_id,
-                    text=response.response_text,
-                    payload={"response": response.model_dump(mode="json")},
-                )
-            )
-        except Exception as exc:
-            logger.exception("[ws] session=%s 运行失败: %s", session_id, exc)
-            event_sink.emit(
-                AgentEvent(
-                    type="agent_error",
-                    session_id=session_id,
-                    error={"code": "TASK_FAILED", "message": str(exc), "detail": {}, "recoverable": False},
-                )
-            )
-        finally:
-            if not loop.is_closed():
-                try:
-                    loop.call_soon_threadsafe(queue.put_nowait, None)
-                except RuntimeError:
-                    logger.debug("websocket event loop closed before completion signal", exc_info=True)
-
-    worker = Thread(target=run_agent, daemon=True)
-    worker.start()
-    while True:
-        event = await queue.get()
-        if event is None:
-            break
-        await websocket.send_json(event.model_dump(mode="json", exclude_none=True))
-    worker.join(timeout=1)
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            await websocket.send_json(event.model_dump(mode="json", exclude_none=True))
+    finally:
+        if not turn_task.done():
+            turn_task.cancel()
+        await asyncio.gather(turn_task, return_exceptions=True)
     await websocket.close()
+
+
+async def _run_legacy_websocket_gateway_turn(
+    *,
+    request: UserRequest,
+    legacy_session_id: str,
+    event_sink: WebSocketEventSink,
+    queue: asyncio.Queue[Any],
+) -> None:
+    captured: list[Any] = []
+
+    def run_request(gateway_request: UserRequest, **kwargs: Any) -> Any:
+        from assistant_agent.api import routes_agent
+
+        gateway_sink = kwargs.get("event_sink")
+        kwargs["event_sink"] = MirroringWebSocketEventSink(
+            gateway_sink=gateway_sink,
+            websocket_sink=event_sink,
+        )
+        artifacts = routes_agent.get_assistant_runtime_app().run_request(gateway_request, **kwargs)
+        captured.append(artifacts)
+        return artifacts
+
+    manager = GatewaySessionManager(
+        backend_factory=lambda: GatewayAgentAdapter(run_request=run_request),
+        start_reaper=False,
+    )
+    facade = GatewayTurnFacade(manager=manager)
+    try:
+        await facade.run_turn(
+            GatewayTurnRequest(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                text=request.text or "",
+                image_ids=list(request.image_ids),
+                video_ids=list(request.video_ids),
+                metadata=_legacy_websocket_gateway_metadata(request),
+            )
+        )
+        if not captured:
+            raise RuntimeError("Gateway WebSocket run completed without assistant artifacts.")
+        response = captured[-1].api_response()
+        logger.info(
+            "[ws] session=%s run=%s status=%s 返回: %s",
+            legacy_session_id,
+            response.run_id,
+            response.status,
+            _preview(response.response_text),
+        )
+        event_sink.emit(
+            AgentEvent(
+                type="agent_response",
+                session_id=legacy_session_id,
+                run_id=response.run_id,
+                text=response.response_text,
+                payload={"response": response.model_dump(mode="json")},
+            )
+        )
+    except Exception as exc:
+        logger.exception("[ws] session=%s 运行失败: %s", legacy_session_id, exc)
+        event_sink.emit(
+            AgentEvent(
+                type="agent_error",
+                session_id=legacy_session_id,
+                error={"code": "TASK_FAILED", "message": str(exc), "detail": {}, "recoverable": False},
+            )
+        )
+    finally:
+        await manager.close()
+        queue.put_nowait(None)
+
+
+def _legacy_websocket_gateway_metadata(request: UserRequest) -> dict[str, Any]:
+    metadata = dict(request.metadata)
+    gateway_metadata = metadata.get("gateway")
+    gateway_payload = dict(gateway_metadata) if isinstance(gateway_metadata, dict) else {}
+    gateway_payload["suppress_realtime_backend_source"] = True
+    metadata["gateway"] = gateway_payload
+    metadata["execution_strategy"] = request.execution_strategy
+    return metadata
 
 
 async def _read_request_payload(
