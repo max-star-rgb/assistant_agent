@@ -6,7 +6,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent_routing import AgentRouteRequest, AgentRouter, create_default_agent_router
 from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
 from assistant_agent.schemas.agent_control_plane import (
@@ -34,17 +33,13 @@ from assistant_agent.schemas.memory_audit import (
     MemoryProfileRepairResult,
     MemoryRetentionSweepResult,
 )
-from assistant_agent.schemas.memory_snapshot import MemorySnapshot, MemoryStorageSnapshot
+from assistant_agent.schemas.memory_snapshot import MemorySnapshot
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.sessions import SessionCreate, SessionDeleteResult, SessionList, SessionRecord
 from assistant_agent.services.assistant_run_service import (
-    clear_conversation_history,
-    clear_user_conversation_history,
     create_runtime,
-    get_default_conversation_store,
-    run_assistant_request,
-    runtime_info,
 )
+from assistant_agent.services.assistant_runtime_app import AssistantRuntimeApp
 from assistant_agent.services.agent_control_plane import AgentControlPlaneQueryService, audit_event
 from assistant_agent.services.api_identity import (
     ApiIdentitySource,
@@ -73,7 +68,6 @@ from assistant_agent.services.trace_query import (
     ContextReportQueryResult,
     RunSummary,
     ToolCallSummary,
-    TraceQueryService,
     TraceSummary,
 )
 from assistant_agent.services.trial_access import (
@@ -84,18 +78,22 @@ from assistant_agent.services.trial_access import (
 
 
 router = APIRouter()
-_RUNTIME: AgentGraphRuntime | None = None
+_RUNTIME: Any | None = None
 _AGENT_ROUTER: AgentRouter | None = None
 _FEEDBACK_STORE: BetaFeedbackStore | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
 
 
-def get_agent_runtime() -> AgentGraphRuntime:
+def get_agent_runtime() -> Any:
     global _RUNTIME
     if _RUNTIME is None:
         _RUNTIME = create_runtime()
     return _RUNTIME
+
+
+def get_assistant_runtime_app() -> AssistantRuntimeApp:
+    return AssistantRuntimeApp(runtime_factory=get_agent_runtime)
 
 
 def get_agent_router() -> AgentRouter:
@@ -121,7 +119,7 @@ def run_agent(request: UserRequest, auth_context: AuthContext = Depends(get_auth
     identity_resolution = _identity_from_request(request, auth_context=auth_context)
     _require_trial_access_for_identity(identity_resolution)
     request = _with_identity_metadata(request, identity_resolution)
-    return run_assistant_request(request, runtime=get_agent_runtime()).api_response()
+    return get_assistant_runtime_app().run_request(request).api_response()
 
 
 @router.post("/agents/run", response_model=AgentRunResponse)
@@ -159,10 +157,9 @@ def list_demo_examples() -> dict[str, Any]:
 def demo_runtime_info() -> dict[str, Any]:
     """Return a redacted runtime summary for the local Web Console."""
 
-    config = get_agent_runtime().config
     return {
         "protocol_version": PROTOCOL_VERSION,
-        **runtime_info(config),
+        **get_assistant_runtime_app().runtime_info(),
     }
 
 
@@ -179,7 +176,7 @@ def create_session(
     auth_context: AuthContext = Depends(get_auth_context),
 ) -> SessionRecord:
     _require_trial_access_for_identity(_identity_from_user_id(session.user_id, source="request_body", auth_context=auth_context))
-    return get_agent_runtime().session_store.create(session)
+    return get_assistant_runtime_app().create_session(session)
 
 
 @router.get("/sessions", response_model=SessionList)
@@ -188,8 +185,7 @@ def list_sessions(
     auth_context: AuthContext = Depends(get_auth_context),
 ) -> SessionList:
     identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="query", auth_context=auth_context))
-    sessions = get_agent_runtime().session_store.list_by_user(identity.user_id)
-    return SessionList(user_id=identity.user_id, total=len(sessions), sessions=sessions)
+    return get_assistant_runtime_app().list_sessions(identity.user_id)
 
 
 @router.get("/sessions/{session_id}", response_model=SessionRecord)
@@ -201,7 +197,7 @@ def get_session(
     identity = _require_trial_access_for_identity(
         _identity_from_user_id(user_id, session_id=session_id, source="query", auth_context=auth_context)
     )
-    record = get_agent_runtime().session_store.get(identity.user_id, session_id)
+    record = get_assistant_runtime_app().get_session(identity.user_id, session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
     return record
@@ -216,17 +212,15 @@ def delete_session(
     identity = _require_trial_access_for_identity(
         _identity_from_user_id(user_id, session_id=session_id, source="query", auth_context=auth_context)
     )
-    runtime = get_agent_runtime()
-    deleted = 1 if runtime.session_store.delete(identity.user_id, session_id) else 0
+    deleted = 1 if get_assistant_runtime_app().delete_session(identity.user_id, session_id) else 0
     if deleted == 0:
         raise HTTPException(status_code=404, detail="session not found")
-    clear_conversation_history(identity.user_id, session_id, config=runtime.config)
     return SessionDeleteResult(user_id=identity.user_id, deleted={"sessions": deleted})
 
 
 @router.get("/runs/{run_id}", response_model=RunSummary)
 def get_run_summary(run_id: str) -> RunSummary:
-    summary = TraceQueryService(get_agent_runtime().trace_store).run_summary(run_id)
+    summary = get_assistant_runtime_app().trace_query().run_summary(run_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="run not found")
     return summary
@@ -234,7 +228,7 @@ def get_run_summary(run_id: str) -> RunSummary:
 
 @router.get("/runs/{run_id}/context", response_model=ContextReportQueryResult)
 def get_run_context(run_id: str) -> ContextReportQueryResult:
-    summary = TraceQueryService(get_agent_runtime().trace_store).context_by_run(run_id)
+    summary = get_assistant_runtime_app().trace_query().context_by_run(run_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="run not found")
     return summary
@@ -255,7 +249,7 @@ def _public_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/traces/{trace_id}", response_model=TraceSummary)
 def get_trace_summary(trace_id: str) -> TraceSummary:
-    summary = TraceQueryService(get_agent_runtime().trace_store).trace_summary(trace_id)
+    summary = get_assistant_runtime_app().trace_query().trace_summary(trace_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="trace not found")
     return summary
@@ -263,7 +257,7 @@ def get_trace_summary(trace_id: str) -> TraceSummary:
 
 @router.get("/traces/{trace_id}/context", response_model=ContextReportQueryResult)
 def get_trace_context(trace_id: str) -> ContextReportQueryResult:
-    summary = TraceQueryService(get_agent_runtime().trace_store).context_by_trace(trace_id)
+    summary = get_assistant_runtime_app().trace_query().context_by_trace(trace_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="trace not found")
     return summary
@@ -271,7 +265,7 @@ def get_trace_context(trace_id: str) -> ContextReportQueryResult:
 
 @router.get("/runs/{run_id}/tool-calls", response_model=ToolCallSummary)
 def get_run_tool_calls(run_id: str) -> ToolCallSummary:
-    summary = TraceQueryService(get_agent_runtime().trace_store).tool_calls_by_run(run_id)
+    summary = get_assistant_runtime_app().trace_query().tool_calls_by_run(run_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="run not found")
     return summary
@@ -285,7 +279,7 @@ def get_control_plane_readiness(auth_context: AuthContext = Depends(get_auth_con
         production_required=require_auth_bound_identity(),
     )
     agent_router = get_agent_router()
-    config = get_agent_runtime().config
+    config = get_assistant_runtime_app().config
     report = PilotReadinessChecker().evaluate(
         directory=getattr(agent_router, "directory", None),
         runtime_profile=config.runtime_profile,
@@ -716,7 +710,7 @@ def export_beta_evaluations(
         else None
     )
     records = store.list_by_user(identity.user_id) if identity is not None else store.read_all()
-    trace_service = TraceQueryService(get_agent_runtime().trace_store)
+    trace_service = get_assistant_runtime_app().trace_query()
     items: list[BetaEvaluationItem] = []
     for record in records:
         summary = trace_service.run_summary(record.run_id)
@@ -736,32 +730,25 @@ def delete_beta_user_data(
 ) -> dict[str, Any]:
     identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
     user_id = identity.user_id
-    runtime = get_agent_runtime()
-    memory_items = runtime.memory_manager.list_by_user(user_id)
-    runtime.memory_manager.clear_user(user_id)
-    run_history_deleted = runtime.run_history.delete_by_user(user_id) if runtime.run_history is not None else 0
-    tool_history_deleted = runtime.tool_history.delete_by_user(user_id) if runtime.tool_history is not None else 0
-    trace_deleted = runtime.trace_store.delete_by_user(user_id)
+    runtime_deleted = get_assistant_runtime_app().delete_user_runtime_data(user_id)
     feedback_deleted = get_beta_feedback_store().delete_by_user(user_id)
-    conversation_sessions_deleted = clear_user_conversation_history(user_id, config=runtime.config)
-    session_records_deleted = runtime.session_store.delete_by_user(user_id)
     return {
         "protocol_version": PROTOCOL_VERSION,
         "user_id": user_id,
         "deleted": {
-            "memory_items": len(memory_items),
-            "run_history_records": run_history_deleted,
-            "tool_history_records": tool_history_deleted,
-            "trace_events": trace_deleted,
+            "memory_items": runtime_deleted["memory_items"],
+            "run_history_records": runtime_deleted["run_history_records"],
+            "tool_history_records": runtime_deleted["tool_history_records"],
+            "trace_events": runtime_deleted["trace_events"],
             "feedback_records": feedback_deleted,
-            "conversation_sessions": conversation_sessions_deleted,
-            "session_records": session_records_deleted,
+            "conversation_sessions": runtime_deleted["conversation_sessions"],
+            "session_records": runtime_deleted["session_records"],
         },
     }
 
 
 def _assert_run_belongs_to_user(run_id: str, user_id: str) -> None:
-    summary = TraceQueryService(get_agent_runtime().trace_store).run_summary(run_id)
+    summary = get_assistant_runtime_app().trace_query().run_summary(run_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="run not found")
     if summary.user_id != user_id:
@@ -769,28 +756,16 @@ def _assert_run_belongs_to_user(run_id: str, user_id: str) -> None:
 
 
 def _memory_audit_service() -> MemoryAuditService:
-    return MemoryAuditService(get_agent_runtime().memory_manager)
+    return get_assistant_runtime_app().memory_audit_service()
 
 
 def _memory_snapshot_service() -> MemorySnapshotService:
-    runtime = get_agent_runtime()
-    conversation_store = get_default_conversation_store(runtime.config)
-    return MemorySnapshotService(
-        memory_manager=runtime.memory_manager,
-        session_store=runtime.session_store,
-        conversation_store=conversation_store,
-        storage=MemoryStorageSnapshot(
-            memory_store=type(runtime.memory_store).__name__,
-            session_store=type(runtime.session_store).__name__,
-            conversation_store=type(conversation_store).__name__,
-            checkpointer=type(runtime.checkpointer).__name__ if runtime.checkpointer is not None else "none",
-        ),
-    )
+    return get_assistant_runtime_app().memory_snapshot_service()
 
 
 def _control_plane_query_service() -> AgentControlPlaneQueryService:
     return AgentControlPlaneQueryService(
-        trace_query=TraceQueryService(get_agent_runtime().trace_store),
+        trace_query=get_assistant_runtime_app().trace_query(),
         router_store=_control_plane_store(),
     )
 

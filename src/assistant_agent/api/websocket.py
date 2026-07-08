@@ -8,12 +8,10 @@ from typing import Any
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.api.auth import get_websocket_auth_context, require_auth_bound_identity
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.api_identity import IdentityPolicyError, enforce_identity_policy, resolve_request_identity
-from assistant_agent.services.assistant_run_service import run_assistant_request
 
 
 router = APIRouter()
@@ -25,14 +23,6 @@ def _preview(text: str | None, *, limit: int = 80) -> str:
 
     flat = " ".join((text or "").split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
-
-
-def get_agent_runtime() -> AgentGraphRuntime:
-    """Reuse the HTTP singleton runtime so WS and HTTP share trace_store."""
-
-    from assistant_agent.api import routes_agent
-
-    return routes_agent.get_agent_runtime()
 
 
 def get_trial_access_gate():
@@ -186,8 +176,9 @@ async def agent_websocket(
 
     def run_agent() -> None:
         try:
-            runtime = get_agent_runtime()
-            artifacts = run_assistant_request(request, runtime=runtime, event_sink=event_sink)
+            from assistant_agent.api import routes_agent
+
+            artifacts = routes_agent.get_assistant_runtime_app().run_request(request, event_sink=event_sink)
             response = artifacts.api_response()
             logger.info(
                 "[ws] session=%s run=%s status=%s 返回: %s",

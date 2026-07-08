@@ -22,10 +22,10 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.api import api_error_from_agent_error
-from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.assistant_run_service import create_runtime
+from assistant_agent.services.assistant_runtime_app import AssistantRuntimeApp
 
 from scripts.run_demo_flows import GENERIC_RESPONSE_TEXT, run_demo_flows
 
@@ -57,17 +57,19 @@ def run_text_prompt(
     user_id: str = "cli_user",
     session_id: str = "cli_session",
 ) -> dict[str, Any]:
-    runtime = AgentGraphRuntime(config=ProviderConfig())
-    state = runtime.run_state(
-        UserRequest(
-            user_id=user_id,
-            session_id=session_id,
-            text=text,
-            image_ids=list(image_refs or []),
-            video_ids=list(video_refs or []),
-            metadata={"source": "assistant_cli", "offline": True},
-        )
+    app = AssistantRuntimeApp(
+        runtime_factory=lambda: create_runtime(config=ProviderConfig(), load_env=False)
     )
+    artifacts = app.run_query(
+        text,
+        image_refs=image_refs,
+        video_refs=video_refs,
+        user_id=user_id,
+        session_id=session_id,
+        metadata={"source": "assistant_cli", "offline": True},
+        load_env=False,
+    )
+    state = artifacts.state
     response_text = state.response.message if state.response else ""
     tool_sequence = [call.tool_name for call in state.tool_calls]
     errors = [api_error_from_agent_error(error).model_dump(mode="json") for error in state.errors]

@@ -68,10 +68,9 @@ def _default_gateway_backend_factory() -> RealtimeAgentBackend:
 
 
 def _run_assistant_request_with_http_runtime(request: Any, **kwargs: Any) -> Any:
-    from assistant_agent.api.routes_agent import get_agent_runtime
-    from assistant_agent.services.assistant_run_service import run_assistant_request
+    from assistant_agent.api.routes_agent import get_assistant_runtime_app
 
-    return run_assistant_request(request, runtime=get_agent_runtime(), **kwargs)
+    return get_assistant_runtime_app().run_request(request, **kwargs)
 
 
 def set_gateway_runtime_for_tests(

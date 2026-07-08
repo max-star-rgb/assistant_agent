@@ -62,3 +62,26 @@ def test_gateway_agent_adapter_does_not_route_agents_directly() -> None:
     assert "AgentRouteRequest" not in source
     assert "agent_router" not in source
     assert "route_request" not in source
+
+
+def test_product_entry_layers_do_not_import_agent_graph_runtime_directly() -> None:
+    for path in (
+        "src/assistant_agent/api/routes_agent.py",
+        "src/assistant_agent/api/websocket.py",
+        "src/assistant_agent/api/gateway_runtime.py",
+        "scripts/run_assistant_cli.py",
+    ):
+        source = _source(path)
+        assert "from assistant_agent.agent.runtime import AgentGraphRuntime" not in source
+        assert "AgentGraphRuntime(" not in source
+
+
+def test_product_entry_layers_depend_on_runtime_app_boundary() -> None:
+    for path in (
+        "src/assistant_agent/api/routes_agent.py",
+        "src/assistant_agent/api/websocket.py",
+        "src/assistant_agent/api/gateway_runtime.py",
+        "scripts/run_assistant_cli.py",
+    ):
+        source = _source(path)
+        assert "AssistantRuntimeApp" in source or "get_assistant_runtime_app" in source

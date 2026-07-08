@@ -36,6 +36,12 @@ source for debug reconstruction should be the redacted trace timeline. API
 response fields and realtime events are projections of that timeline or live
 runtime lifecycle events.
 
+Product entry layers should reach assistant execution through
+`AssistantRuntimeApp` before entering `run_assistant_request` and
+`AgentGraphRuntime`. Hook observers should attach after this application
+runtime boundary is stable; they should not be wired separately inside Web,
+CLI, or Gateway transport adapters.
+
 For local composition, `CompositeEventSink` can fan out one runtime event stream
 to several sinks, and `CompositeTraceStore` can fan out trace writes to a
 primary store plus secondary stores while keeping reads primary-only. These are

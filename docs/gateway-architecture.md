@@ -70,6 +70,9 @@ The default non-realtime product path can stay simpler:
 CLI / HTTP / Web UI
         |
         v
+AssistantRuntimeApp
+        |
+        v
 run_assistant_request
         |
         v
@@ -77,6 +80,11 @@ AgentGraphRuntime / assistant loop
 ```
 
 That path is valid when the caller only needs one request/response run and does not need Gateway-managed reconnect, hangup, active-run cancellation, interrupt, stream-frame compatibility, or per-user realtime session reuse.
+Product entry layers should depend on `AssistantRuntimeApp` rather than
+constructing or passing `AgentGraphRuntime` directly. `AssistantRuntimeApp` owns
+the internal runtime reference for HTTP, WebSocket, local offline CLI, and the
+Gateway realtime backend callback, while Gateway still owns realtime
+session/run lifecycle semantics.
 
 ## Gateway Responsibilities
 
@@ -179,7 +187,8 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/api/gateway_websocket.py` | FastAPI entry adapters for `/ws/gateway` Gateway frames and `/ws/realtime/media` media-service events. |
 | `src/assistant_agent/api/agent_service_websocket.py` | FastAPI compatibility adapter for the vendor `/agent-service/v1` media protocol; parses `message` / `sessionId` / stringified `body` and returns mock envelopes without entering Gateway runtime. |
 | `src/assistant_agent/api/` | FastAPI HTTP/WebSocket entry adapters and product API routes. |
-| `src/assistant_agent/services/assistant_run_service.py` | Shared non-Gateway assistant request/run service used by CLI, HTTP, WebSocket, eval, and demos. |
+| `src/assistant_agent/services/assistant_runtime_app.py` | Product entry boundary that owns the internal runtime reference for HTTP, WebSocket, local offline CLI, and Gateway backend callbacks. |
+| `src/assistant_agent/services/assistant_run_service.py` | Shared non-Gateway assistant request/run service used behind `AssistantRuntimeApp`, plus eval and demo utilities. |
 | `scripts/run_gateway_client.py` | Local operator smoke client for the Gateway frame WebSocket route. |
 | `scripts/realtime_media_client.py` | Local Media Relay protocol smoke client for `/ws/realtime/media` scenarios. |
 
