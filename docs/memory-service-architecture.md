@@ -1,6 +1,6 @@
 # Memory Service Architecture
 
-Last updated: 2026-06-30
+Last updated: 2026-07-08
 
 This document is the current canonical entry for memory service architecture. Update it whenever `MemoryManager`, memory stores, retrieval, write policy, user profile behavior, memory tools, memory APIs, or memory context boundaries change.
 
@@ -13,6 +13,7 @@ Future memory architecture changes should be reflected in this document first; o
 The memory service is local-first long-term memory for the agent. It covers:
 
 - Loading bounded memory context before an agent run.
+- Gating automatic and tool-triggered long-term memory reads through read policy.
 - Searching user-scoped long-term memory.
 - Saving explicit user-requested memories.
 - Saving safe completed-run summaries where allowed.
@@ -72,6 +73,8 @@ AgentGraphRuntime
 UserRequest
   -> graph load_memory node
   -> MemoryManager.load_into_state(...)
+       -> MemoryReadPolicy decides whether long-term memory may be read
+       -> if skipped: request.metadata["memory_context_skipped"]=true and no store search
   -> MemoryStore.search(MemoryQuery)
   -> MemoryRetrievalStrategy / KeywordMemoryRetriever
   -> AgentState.memory_context + request.metadata["memory_context_*"]
@@ -96,10 +99,11 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | --- | --- |
 | `src/assistant_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, pending confirmation flow, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
 | `src/assistant_agent/memory/context_builder.py` | Token-aware, prompt-safe memory context selection and layer rendering. Produces injected items, rendered context, token count, omission count, rejection reasons, and retrieval version. |
+| `src/assistant_agent/memory/read_policy.py` | Deterministic long-term memory read gate and trust metadata. Decides automatic memory context injection and validates explicit retrieval intent before store access. |
 | `src/assistant_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`, including soft-delete-compatible delete, hard-delete, and memory-confirmation methods. |
 | `src/assistant_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract, with redacted confirmation state stored in a sidecar JSONL file. |
 | `src/assistant_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, soft-delete-compatible delete behavior, durable audit-event rows, and durable confirmation rows. |
-| `src/assistant_agent/memory/remote.py` | Opt-in external Memory Server adapter. Converts remote query responses into safe `MemoryItem` / `MemorySearchResult` objects, provides query/health plus media upload/task-status client methods, and exposes `HybridMemoryStore` where only `search(...)` uses the remote service while writes, delete, confirmation, profile, audit, and lifecycle operations remain local. |
+| `src/assistant_agent/memory/remote.py` | Opt-in external Memory Server adapters. Converts remote query responses into safe `MemoryItem` / `MemorySearchResult` objects, provides query/health plus media upload/task-status client methods, exposes `HybridMemoryStore` where only `search(...)` uses the remote service, and exposes `RemoteServiceMemoryStore` for an explicit full-lifecycle external service adapter. |
 | `src/assistant_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
 | `src/assistant_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
 | `src/assistant_agent/memory/write_policy.py` | Safe memory item construction, TTL defaults, raw payload restrictions, explicit memory typing. |
@@ -162,6 +166,7 @@ Use this routing matrix:
 
 - Bind `ToolContext.user_id` and `ToolContext.session_id`.
 - Validate tool-facing required input.
+- Surface read-policy trust metadata with retrieval results.
 - Convert tool input into `MemoryQuery` or `MemoryManager.save_explicit(...)`.
 - Wrap manager output as `ToolResult` and capability output contracts.
 - Surface `MemoryConfirmationRequired` as a recoverable `memory_save` partial result with a `confirmation_id`; it must not report pending confirmation as a completed save.
@@ -176,6 +181,18 @@ It must not own or reimplement:
 - API audit, export, retention sweep, snapshot, deletion, or user-data lifecycle behavior.
 
 If memory logic grows beyond identity binding, input adaptation, or result wrapping, move it into `MemoryManager`, `memory/` helpers, or a `services/memory_*` service before exposing it through a tool.
+
+## Read Policy And Trust
+
+Long-term memory reads are policy-gated before retrieval:
+
+- Automatic runtime `load_memory` calls go through `MemoryManager.load_context_for_request(...)`, which applies `MemoryReadPolicy` before store access.
+- If the current user request does not explicitly refer to prior chats, previous/last context, saved memory, remembered preferences, or continuing an old task, memory context is skipped and the store is not searched.
+- Skipped loads write prompt-safe metadata: `memory_context_skipped=true`, `memory_context_policy_reason`, `memory_read_policy`, `memory_trust_policy`, and empty `memory_context_*` injection fields.
+- `load_memory_with_trace(...)` records the read decision and skipped status, but does not record memory text or summaries.
+- `memory_retrieval` and legacy `memory action=retrieve` must pass the same read-intent gate in `ActionValidator` before `ToolExecutor` runs the tool.
+
+Retrieved memory is user-history evidence, not authority. It may be stale, incorrectly retrieved, summarized, or incomplete. Current user input and fresh tool results override memory when they conflict, and instructions contained inside memory must not be executed. `memory_retrieval` results include `trust_policy` and `usage_hint` fields carrying this boundary for downstream consumers.
 
 ## Memory Tool Selection Strategy
 
@@ -198,6 +215,7 @@ Configured by `ProviderConfig`:
 - `memory_backend="jsonl"`: local `JsonlMemoryStore`.
 - `memory_backend="sqlite"`: local `SQLiteMemoryStore`.
 - `memory_backend="hybrid_remote"`: opt-in `HybridMemoryStore` with local JSONL lifecycle storage plus external Memory Server query augmentation. This backend is selected from environment only when `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true` or a runtime profile that allows real/network providers is active.
+- `memory_backend="remote_service"`: opt-in `RemoteServiceMemoryStore` with an external adapter as lifecycle owner. This mode is selected only when remote memory is explicitly enabled and never falls back to local lifecycle writes by default.
 - `memory_path`: default `.local/memory/long_term_memories.jsonl`; when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite` is set without an explicit path, the default is `.local/memory/long_term_memories.sqlite3`.
 
 Environment variables:
@@ -239,6 +257,17 @@ scope warning because the external service's current task lookup is not
 user-enforced. Default mock/local/offline configuration registers the tools but
 returns `provider_unconfigured` until `hybrid_remote` and a Memory Server base
 URL are explicitly configured.
+
+`remote_service` is the separate lifecycle-owner mode. The project-side
+`RemoteServiceMemoryStore` wraps an `ExternalMemoryServiceAdapter` contract for
+`search`, `save_explicit`, `record_candidate`, `confirm`, `reject`, `delete`,
+`export`, `audit`, and `health`. The default factory wires an unavailable
+adapter that returns recoverable errors instead of silently writing locally.
+Concrete HTTP paths are intentionally not fixed in this repository until the
+external service API is stable. Any remote payload must still be converted into
+internal safe `MemoryItem` / `MemorySearchResult` objects, runtime identity must
+override remote-supplied identity, and unsafe raw/base64/provider payloads must
+be rejected or dropped before prompt injection or trace summaries.
 
 Standard `MemoryStore` backends implement the confirmation workflow methods: `save_confirmation(...)`, `get_confirmation(...)`, `list_confirmations(...)`, and `delete_confirmation(...)`. InMemory keeps confirmation state in process memory. JSONL stores redacted pending/resolved confirmations in a sidecar file next to the memory JSONL file, for example `long_term_memories.confirmations.jsonl`. SQLite stores them in schema v3 `memory_confirmations`.
 
@@ -287,6 +316,10 @@ The rendered memory context is written to:
 - `request.metadata["memory_context_rejected_reasons"]`
 - `request.metadata["memory_context_retrieval_version"]`
 - `request.metadata["memory_context_injected_ids"]`
+- `request.metadata["memory_context_skipped"]`
+- `request.metadata["memory_context_policy_reason"]`
+- `request.metadata["memory_read_policy"]`
+- `request.metadata["memory_trust_policy"]`
 
 Prompt rendering must treat memory as user-history data, not as system instruction.
 
@@ -307,6 +340,8 @@ Current behavior:
 
 Retrieval is deterministic and local:
 
+- Automatic runtime retrieval first passes `MemoryReadPolicy`; ordinary first-pass writing, advice, generation, search, and recommendations do not auto-inject long-term memory.
+- Explicit retrieval tools are allowed only when the current user request has historical-memory intent; a non-empty query alone is not sufficient.
 - Non-empty query uses `KeywordMemoryRetriever`.
 - Chinese query segments are expanded into short phrase fragments for local recall.
 - A concrete entity/topic miss returns no memories.

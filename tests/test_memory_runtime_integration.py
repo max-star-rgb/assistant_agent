@@ -5,7 +5,15 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.memory import factory as memory_factory
 from assistant_agent.memory.factory import create_memory_store
 from assistant_agent.memory.jsonl_store import JsonlMemoryStore
-from assistant_agent.memory.remote import HybridMemoryStore, MemoryServerRequest, RemoteMemoryClient
+import pytest
+
+from assistant_agent.memory.remote import (
+    HybridMemoryStore,
+    MemoryServerRequest,
+    MemoryServiceOperationError,
+    RemoteMemoryClient,
+    RemoteServiceMemoryStore,
+)
 from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.memory.write_policy import MemoryWritePolicy
@@ -55,6 +63,25 @@ def test_hybrid_remote_memory_backend_can_be_enabled_by_remote_flag() -> None:
     assert config.memory_server_include_media_chunks is True
 
 
+def test_remote_service_memory_backend_requires_explicit_remote_opt_in() -> None:
+    config = ProviderConfig.from_env({"MULTIMODAL_AGENT_MEMORY_BACKEND": "remote_service"})
+
+    assert config.memory_backend == "memory"
+
+
+def test_remote_service_memory_backend_can_be_enabled_by_remote_flag() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_MEMORY_BACKEND": "remote_service",
+            "MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED": "true",
+            "MEMORY_SERVER_BASE_URL": "http://memory.local",
+        }
+    )
+
+    assert config.memory_backend == "remote_service"
+    assert config.memory_server_base_url == "http://memory.local"
+
+
 def test_create_hybrid_remote_memory_store_wraps_local_jsonl_store(tmp_path) -> None:
     path = tmp_path / "hybrid_local.jsonl"
     store = create_memory_store(
@@ -79,6 +106,32 @@ def test_create_hybrid_remote_memory_store_wraps_local_jsonl_store(tmp_path) -> 
 
     assert path.exists()
     assert JsonlMemoryStore(path).get("u1", saved.memory_id) is not None
+
+
+def test_create_remote_service_store_uses_unavailable_adapter_without_local_fallback(tmp_path) -> None:
+    path = tmp_path / "remote_service_should_not_be_written.jsonl"
+    store = create_memory_store(
+        ProviderConfig(
+            memory_backend="remote_service",
+            memory_path=str(path),
+            memory_server_base_url="http://memory.local",
+        )
+    )
+
+    assert isinstance(store, RemoteServiceMemoryStore)
+    with pytest.raises(MemoryServiceOperationError) as exc_info:
+        store.save(
+            MemoryItem(
+                memory_id="m1",
+                user_id="u1",
+                session_id="s1",
+                memory_type="task",
+                summary="remote service write",
+                created_at=NOW,
+            )
+        )
+    assert exc_info.value.recoverable is True
+    assert not path.exists()
 
 
 def test_jsonl_memory_backend_writes_memory_file_when_auto_promotion_allowed(tmp_path) -> None:

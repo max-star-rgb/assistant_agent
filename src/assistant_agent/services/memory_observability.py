@@ -79,7 +79,7 @@ def load_memory_with_trace(
         session_id=state.session_id,
         canonical_event="memory.load.finished",
         node_name=node_name,
-        status="succeeded",
+        status="succeeded" if context.read_policy_allowed else "skipped",
         latency_ms=_elapsed_ms(started_at),
         span_id=span_id,
         attributes={
@@ -91,6 +91,7 @@ def load_memory_with_trace(
             "omitted_count": summary["omitted_count"],
             "rejected_count": summary["rejected_count"],
             "retrieval_version": summary["retrieval_version"],
+            "read_policy": summary["read_policy"],
         },
         output_summary={"memory": summary},
     )
@@ -185,6 +186,10 @@ def memory_load_trace_summary(context: MemoryContext) -> dict[str, Any]:
         "rejected_count": len(context.rejected_reasons),
         "rejected_reasons": context.rejected_reasons[:8],
         "retrieval_version": context.retrieval_version,
+        "read_policy": context.read_policy or {
+            "allowed": context.read_policy_allowed,
+            "reason": context.read_policy_reason,
+        },
     }
 
 

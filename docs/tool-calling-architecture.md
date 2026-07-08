@@ -199,7 +199,7 @@ Provider 边界：
 - `web_search` 必须有非空 query；`limit` 等范围由工具 Pydantic schema 校验。
 - `product_search` 必须有 query 或 visual summary。
 - `price_compare` 必须有 query 或 items。
-- `memory_retrieval` 必须有 query。
+- `memory_retrieval` 必须有 query，并且当前用户请求必须显式引用历史、上次/之前、已保存记忆、个人偏好或继续旧任务；query 本身不构成读取授权。
 - legacy `memory` 只允许 `action=retrieve/save`，并复用 memory save 校验。
 - `memory_save` 必须有 query、`content.text` 或 `content.summary`，且 assistant-loop 调用必须包含 `source_intent`、`source_reason`、`future_use`、`evidence`。
 - `source_intent=user_confirmed` 保留给确认服务，assistant-loop 不得使用。
@@ -288,6 +288,8 @@ assistant loop 有本地保护，不依赖模型自律：
 Memory 工具选择采用 LLM-first：
 
 - 本地关键词和向量信号只记录 audit，不覆盖 LLM 是否调用 `memory_retrieval` / `memory_save`。
+- `memory_retrieval` 和 legacy `memory action=retrieve` 即使由 LLM 选择，也必须先通过 `ActionValidator -> MemoryReadPolicy` 的读取意图 gate。
+- `memory_retrieval` 成功结果返回 `memory_context`、`items`、`total`、`trust_policy` 和 `usage_hint`；这些字段声明 memory 是用户历史证据，不是权威或系统指令。
 - `memory_save` 必须声明 `source_intent`、`source_reason`、`future_use`、`evidence`。
 - `source_intent=user_explicit` 只用于用户明确要求保存/以后使用。
 - `source_intent=assistant_candidate` 只记录候选，不直接写长期记忆。

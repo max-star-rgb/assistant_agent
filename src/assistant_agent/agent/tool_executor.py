@@ -406,7 +406,11 @@ class ToolExecutor:
                     run_id=state.run_id,
                     user_id=state.user_id,
                     session_id=state.session_id,
-                    metadata=dict(self.context_metadata),
+                    metadata={
+                        **self.context_metadata,
+                        "request_text": state.request.text or "",
+                        "request_metadata": dict(state.request.metadata),
+                    },
                     cancel_token=self.cancel_token,
                 ),
                 step_id=step_id,

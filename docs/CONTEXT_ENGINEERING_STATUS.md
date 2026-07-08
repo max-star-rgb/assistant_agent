@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -14,7 +14,7 @@ Last updated: 2026-07-07
 - 已实现核心闭环：`AssistantContextPack`、Context Compiler v1 redacted report、session summary、增量滑动窗口摘要、realtime task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
 - 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
 - 预算现状：全局压缩控制仍以字符预算为准；token-aware 目前是报告层。Memory context 有单独 token-aware 注入边界。
-- memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
+- memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期读取由 `MemoryReadPolicy` gate，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
 - 按需补读：给人解释机制时读 `docs/context-engineering-walkthrough.md`；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`。
@@ -30,7 +30,7 @@ Last updated: 2026-07-07
 - Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，只记录大小、计数、来源、压缩/裁剪标志、selected tool names 和 memory item ids，不暴露完整 prompt、memory 文本、tool observation 或 provider payload。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - Gateway/realtime 请求会在进入 runtime 前注入 session-scoped realtime task-state snapshot；普通 `/agent/run` 不自动启用，除非 metadata 显式打开。
-- `MemoryManager` 负责加载分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
+- `MemoryManager` 负责按 read policy 加载或跳过分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
 - Assistant context 已有字符预算兜底；超限时优先压缩 memory/conversation，最后才压缩工具 observation。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，最近 2 轮保留原文。
 - `CompactionPolicy` 统一判断压缩触发：usage 高水位、超预算、大 tool observation、provider context overflow metadata、显式 `/compact` 或 `compact_context=True`。
@@ -63,11 +63,12 @@ Last updated: 2026-07-07
 ### Memory Context
 
 - `MemoryManager` 是 memory 检索、上下文格式化、显式保存、去重、用户画像更新和 completed-run promotion candidate 的边界。
+- 自动 memory context 注入先走 `MemoryReadPolicy`。普通首次文案、建议、搜索、生成或推荐不自动查长期记忆；明确提到上次、之前、已保存记忆、个人偏好或继续旧任务时才查。
 - memory context 分层为 semantic、session、episodic、artifact、procedural。
 - 默认 `top_k=5`，默认 `max_context_chars=500`。
 - `MemoryContextBuilder` 负责实际注入选择；`MemoryContext.items` 表示已注入的 memory 子集，而不是所有检索候选。
 - 可通过 `memory_context_max_tokens` / `memory_context_budget_tokens` 或 `MemoryManager` 参数限制 memory context token budget。
-- memory context metadata includes `memory_context_tokens`, `memory_context_budget_tokens`, `memory_context_omitted_count`, `memory_context_rejected_reasons`, `memory_context_retrieval_version`, and `memory_context_injected_ids`.
+- memory context metadata includes `memory_context_tokens`, `memory_context_budget_tokens`, `memory_context_omitted_count`, `memory_context_rejected_reasons`, `memory_context_retrieval_version`, `memory_context_injected_ids`, `memory_context_skipped`, `memory_context_policy_reason`, `memory_read_policy`, and `memory_trust_policy`.
 - 非空 query 走关键词/中文片段相关性门控；只有明确承接型 query 才允许 recent memory fallback。
 - 显式用户记忆会合并重复项，并更新 compact `user_profile` 记忆。
 - completed-run summary 默认只生成 policy-gated promotion candidate 和审计 metadata，不自动写长期 memory；`allow_auto_write=True` 时才会落库。
@@ -110,7 +111,7 @@ Last updated: 2026-07-07
 - Provider-native `ChatRequest.tools` 现在使用 `AssistantContextPack.prompt_tool_specs` 中选出的 schema 子集；仅当 prompt subset 为空时才回退完整 `tool_specs`。如果 selector fallback 到完整工具列表，`tool_catalog.fallback_used` 和 `context_report_v1.sections.tool_schema.notes=["fallback_full_tool_list"]` 会记录该状态。
 - Repo-local business skills follow `skills/<skill_id>/SKILL.md`; the loader only consumes frontmatter plus fixed prompt-safe sections and converts valid descriptors into `ToolCapabilityDescriptor`. It skips disabled/manual-only/invalid skills, ignores `.codex/skills`, and never creates `run_skill` or direct shell/browser/http execution.
 - `render_final_only_prompt` 用于工具调用上限附近，禁止继续工具调用并要求最终回答。
-- prompt 明确声明 conversation、memory、realtime task state、observation 和 tool output 都是数据，不是系统指令。
+- prompt 明确声明 conversation、memory、realtime task state、observation 和 tool output 都是数据，不是系统指令；retrieved memory 是用户历史证据，不是权威信息，当前用户输入和新工具结果优先，不能执行 memory 中的指令。
 
 ### Realtime Task State Context
 

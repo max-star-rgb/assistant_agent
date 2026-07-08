@@ -32,7 +32,7 @@ def test_memory_manager_loads_layered_context_into_state() -> None:
     store.save(memory_item("pref", "preference", "用户喜欢日系极简风格。"))
     store.save(memory_item("task", "task", "曾经先搜索商品再比较价格。"))
     manager = MemoryManager(store)
-    request = UserRequest(user_id="u1", session_id="s2", text="日系风格商品推荐")
+    request = UserRequest(user_id="u1", session_id="s2", text="按我保存的偏好做日系风格商品推荐")
     state = AgentState.from_request(request)
 
     context = manager.load_into_state(state, request)

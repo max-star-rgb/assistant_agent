@@ -11,7 +11,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -61,6 +61,118 @@ class MemoryServerRequest:
 
 
 MemoryServerTransport = Callable[[MemoryServerRequest], Mapping[str, Any]]
+
+
+class MemoryServiceOperationError(RuntimeError):
+    """Recoverable external memory-service operation failure."""
+
+    def __init__(self, operation: str, message: str, *, recoverable: bool = True) -> None:
+        super().__init__(sanitize_error_message(message))
+        self.operation = operation
+        self.recoverable = recoverable
+
+
+class ExternalMemoryServiceAdapter(Protocol):
+    """Adapter contract for a full lifecycle external Memory Service."""
+
+    def search(self, query: MemoryQuery) -> MemorySearchResult | Mapping[str, Any]:
+        """Search remote long-term memory."""
+
+    def save_explicit(self, item: MemoryItem) -> MemoryItem | Mapping[str, Any]:
+        """Persist an explicit memory item remotely."""
+
+    def record_candidate(self, payload: dict[str, Any]) -> Mapping[str, Any]:
+        """Record an audit-only memory candidate."""
+
+    def confirm(self, *, user_id: str, confirmation_id: str) -> Mapping[str, Any]:
+        """Confirm a pending memory write."""
+
+    def reject(self, *, user_id: str, confirmation_id: str) -> Mapping[str, Any]:
+        """Reject a pending memory write."""
+
+    def delete(self, *, user_id: str, memory_id: str, hard: bool = False) -> bool:
+        """Delete one memory remotely."""
+
+    def export(self, *, user_id: str) -> list[MemoryItem | Mapping[str, Any]]:
+        """Export user-scoped memories."""
+
+    def audit(self, *, user_id: str) -> list[Mapping[str, Any]]:
+        """Return prompt-safe audit events."""
+
+    def health(self) -> Mapping[str, Any]:
+        """Return remote service health."""
+
+
+class UnavailableRemoteMemoryServiceAdapter:
+    """Default adapter used until a concrete remote lifecycle service is configured."""
+
+    def __init__(self, *, base_url: str | None = None) -> None:
+        self.base_url = base_url
+
+    def search(self, query: MemoryQuery) -> MemorySearchResult:
+        return MemorySearchResult(
+            items=[],
+            query_used=query,
+            total=0,
+            ranking_reason="remote_service_unavailable",
+            memory_context="",
+            errors=[
+                {
+                    "code": "memory_remote_service_unavailable",
+                    "message": "remote memory service adapter is not configured",
+                    "recoverable": True,
+                }
+            ],
+        )
+
+    def save_explicit(self, item: MemoryItem) -> MemoryItem:
+        raise MemoryServiceOperationError(
+            "save_explicit",
+            "remote memory service adapter is not configured",
+        )
+
+    def record_candidate(self, payload: dict[str, Any]) -> Mapping[str, Any]:
+        raise MemoryServiceOperationError(
+            "record_candidate",
+            "remote memory service adapter is not configured",
+        )
+
+    def confirm(self, *, user_id: str, confirmation_id: str) -> Mapping[str, Any]:
+        raise MemoryServiceOperationError(
+            "confirm",
+            "remote memory service adapter is not configured",
+        )
+
+    def reject(self, *, user_id: str, confirmation_id: str) -> Mapping[str, Any]:
+        raise MemoryServiceOperationError(
+            "reject",
+            "remote memory service adapter is not configured",
+        )
+
+    def delete(self, *, user_id: str, memory_id: str, hard: bool = False) -> bool:
+        raise MemoryServiceOperationError(
+            "delete",
+            "remote memory service adapter is not configured",
+        )
+
+    def export(self, *, user_id: str) -> list[MemoryItem | Mapping[str, Any]]:
+        raise MemoryServiceOperationError(
+            "export",
+            "remote memory service adapter is not configured",
+        )
+
+    def audit(self, *, user_id: str) -> list[Mapping[str, Any]]:
+        raise MemoryServiceOperationError(
+            "audit",
+            "remote memory service adapter is not configured",
+        )
+
+    def health(self) -> Mapping[str, Any]:
+        return {
+            "status": "unavailable",
+            "recoverable": True,
+            "message": "remote memory service adapter is not configured",
+        }
 
 
 class MemoryServerMediaFile(BaseModel):
@@ -344,6 +456,168 @@ class HybridMemoryStore:
         return self.local_store.delete_confirmation(user_id, confirmation_id)
 
 
+class RemoteServiceMemoryStore:
+    """Memory store whose lifecycle operations are owned by an external service."""
+
+    def __init__(self, *, adapter: ExternalMemoryServiceAdapter) -> None:
+        self.adapter = adapter
+
+    def save(self, item: MemoryItem) -> MemoryItem:
+        try:
+            response = self.adapter.save_explicit(item)
+        except MemoryServiceOperationError:
+            raise
+        except Exception as exc:
+            raise MemoryServiceOperationError(
+                "save_explicit",
+                f"remote memory service save failed: {sanitize_error_message(str(exc))}",
+            ) from exc
+        return _memory_item_from_service_payload(response, fallback=item)
+
+    def search(self, query: MemoryQuery) -> MemorySearchResult:
+        try:
+            response = self.adapter.search(query)
+        except MemoryServiceOperationError as exc:
+            return _remote_service_search_error(query, exc)
+        except Exception as exc:
+            return _remote_service_search_error(
+                query,
+                MemoryServiceOperationError(
+                    "search",
+                    f"remote memory service search failed: {sanitize_error_message(str(exc))}",
+                ),
+            )
+        return _memory_search_result_from_service_payload(response, query)
+
+    def get(self, user_id: str, memory_id: str) -> MemoryItem | None:
+        for item in self.list_by_user(user_id):
+            if item.memory_id == memory_id:
+                return item
+        return None
+
+    def delete(self, user_id: str, memory_id: str) -> bool:
+        return self._delete(user_id=user_id, memory_id=memory_id, hard=False)
+
+    def hard_delete(self, user_id: str, memory_id: str) -> bool:
+        return self._delete(user_id=user_id, memory_id=memory_id, hard=True)
+
+    def delete_by_session(self, user_id: str, session_id: str) -> int:
+        deleted = 0
+        for item in self.list_by_user(user_id):
+            if item.session_id == session_id and self.delete(user_id, item.memory_id):
+                deleted += 1
+        return deleted
+
+    def list_by_user(self, user_id: str) -> list[MemoryItem]:
+        return self.export(user_id)
+
+    def clear_user(self, user_id: str) -> None:
+        for item in self.list_by_user(user_id):
+            self.delete(user_id, item.memory_id)
+
+    def save_confirmation(self, confirmation: MemoryPendingConfirmation) -> MemoryPendingConfirmation:
+        raise MemoryServiceOperationError(
+            "save_confirmation",
+            "remote confirmation storage is not configured",
+        )
+
+    def get_confirmation(self, user_id: str, confirmation_id: str) -> MemoryPendingConfirmation | None:
+        return None
+
+    def list_confirmations(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        include_resolved: bool = True,
+        limit: int = 1000,
+    ) -> list[MemoryPendingConfirmation]:
+        return []
+
+    def delete_confirmation(self, user_id: str, confirmation_id: str) -> bool:
+        return False
+
+    def record_candidate(self, payload: dict[str, Any]) -> Mapping[str, Any]:
+        try:
+            return _safe_mapping_payload(_mapping(self.adapter.record_candidate(payload)))
+        except MemoryServiceOperationError:
+            raise
+        except Exception as exc:
+            raise MemoryServiceOperationError(
+                "record_candidate",
+                f"remote memory service candidate record failed: {sanitize_error_message(str(exc))}",
+            ) from exc
+
+    def confirm(self, *, user_id: str, confirmation_id: str) -> Mapping[str, Any]:
+        try:
+            response = self.adapter.confirm(user_id=user_id, confirmation_id=confirmation_id)
+            return _safe_mapping_payload(_mapping(response))
+        except MemoryServiceOperationError:
+            raise
+        except Exception as exc:
+            raise MemoryServiceOperationError(
+                "confirm",
+                f"remote memory service confirm failed: {sanitize_error_message(str(exc))}",
+            ) from exc
+
+    def reject(self, *, user_id: str, confirmation_id: str) -> Mapping[str, Any]:
+        try:
+            response = self.adapter.reject(user_id=user_id, confirmation_id=confirmation_id)
+            return _safe_mapping_payload(_mapping(response))
+        except MemoryServiceOperationError:
+            raise
+        except Exception as exc:
+            raise MemoryServiceOperationError(
+                "reject",
+                f"remote memory service reject failed: {sanitize_error_message(str(exc))}",
+            ) from exc
+
+    def export(self, user_id: str) -> list[MemoryItem]:
+        try:
+            payload = self.adapter.export(user_id=user_id)
+        except MemoryServiceOperationError:
+            return []
+        except Exception:
+            return []
+        items: list[MemoryItem] = []
+        for item in payload:
+            try:
+                items.append(_memory_item_from_service_payload(item, user_id=user_id))
+            except (TypeError, ValueError, ValidationError):
+                continue
+        return items
+
+    def audit(self, user_id: str) -> list[Mapping[str, Any]]:
+        try:
+            return [
+                _safe_mapping_payload(_mapping(item))
+                for item in self.adapter.audit(user_id=user_id)
+            ]
+        except MemoryServiceOperationError:
+            return []
+        except Exception:
+            return []
+
+    def health(self) -> Mapping[str, Any]:
+        try:
+            return _safe_mapping_payload(_mapping(self.adapter.health()))
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "recoverable": True,
+                "message": sanitize_error_message(str(exc)),
+            }
+
+    def _delete(self, *, user_id: str, memory_id: str, hard: bool) -> bool:
+        try:
+            return bool(self.adapter.delete(user_id=user_id, memory_id=memory_id, hard=hard))
+        except MemoryServiceOperationError:
+            return False
+        except Exception:
+            return False
+
+
 def memory_search_result_from_memory_server_response(
     response: Mapping[str, Any],
     query: MemoryQuery,
@@ -388,6 +662,122 @@ def memory_search_result_from_memory_server_response(
         ranking_reason="memory_server_remote_query",
         memory_context=_format_remote_memory_context(items, query.max_context_chars),
         errors=errors,
+    )
+
+
+def _memory_search_result_from_service_payload(
+    response: MemorySearchResult | Mapping[str, Any],
+    query: MemoryQuery,
+) -> MemorySearchResult:
+    if isinstance(response, MemorySearchResult):
+        items: list[MemoryItem] = []
+        errors: list[dict[str, Any]] = []
+        for raw_item in response.items:
+            try:
+                items.append(_memory_item_from_service_payload(raw_item, query=query))
+            except (TypeError, ValueError, ValidationError):
+                errors.append(
+                    {
+                        "code": "memory_remote_service_result_rejected",
+                        "message": "remote memory service result rejected",
+                        "recoverable": True,
+                    }
+                )
+        return MemorySearchResult(
+            items=items,
+            query_used=query,
+            total=len(items),
+            ranking_reason=response.ranking_reason or "remote_service_search",
+            memory_context=_format_remote_memory_context(items, query.max_context_chars),
+            errors=[*response.errors, *errors],
+        )
+    payload = _mapping(response)
+    raw_items = payload.get("items")
+    if raw_items is None:
+        raw_items = payload.get("results")
+    raw_items = raw_items if isinstance(raw_items, list) else []
+    items: list[MemoryItem] = []
+    errors: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        try:
+            items.append(_memory_item_from_service_payload(raw_item, query=query))
+        except (TypeError, ValueError, ValidationError):
+            errors.append(
+                {
+                    "code": "memory_remote_service_result_rejected",
+                    "message": "remote memory service result rejected",
+                    "recoverable": True,
+                }
+            )
+    remote_errors = _safe_error_list(payload.get("errors"))
+    return MemorySearchResult(
+        items=items,
+        query_used=query,
+        total=len(items),
+        ranking_reason=str(payload.get("ranking_reason") or "remote_service_search"),
+        memory_context=str(
+            payload.get("memory_context")
+            or _format_remote_memory_context(items, query.max_context_chars)
+        ),
+        errors=[*remote_errors, *errors],
+    )
+
+
+def _memory_item_from_service_payload(
+    response: MemoryItem | Mapping[str, Any],
+    *,
+    fallback: MemoryItem | None = None,
+    query: MemoryQuery | None = None,
+    user_id: str | None = None,
+) -> MemoryItem:
+    payload: dict[str, Any]
+    if isinstance(response, MemoryItem):
+        payload = response.model_dump(mode="json")
+    elif isinstance(response, Mapping):
+        payload = dict(response)
+    else:
+        raise TypeError("remote memory service returned a non-object memory item")
+
+    if fallback is not None:
+        payload.setdefault("memory_id", fallback.memory_id)
+        payload.setdefault("memory_type", fallback.memory_type)
+        payload.setdefault("summary", fallback.summary)
+        payload.setdefault("content", fallback.content)
+        payload.setdefault("created_at", fallback.created_at)
+        payload["user_id"] = fallback.user_id
+        payload["tenant_id"] = fallback.tenant_id
+        payload["project_id"] = fallback.project_id
+        payload["session_id"] = fallback.session_id
+        payload["scope"] = fallback.scope
+    if query is not None:
+        payload["user_id"] = query.user_id
+        payload["tenant_id"] = query.tenant_id
+        payload["project_id"] = query.project_id
+        payload["session_id"] = query.session_id
+    if user_id is not None:
+        payload["user_id"] = user_id
+    payload.setdefault("memory_type", "task")
+    payload.setdefault("summary", "Remote memory service item.")
+    payload.setdefault("content", {})
+    payload.setdefault("source", "remote_service")
+    payload.setdefault("created_at", datetime.now(timezone.utc))
+    return MemoryItem.model_validate(payload)
+
+
+def _remote_service_search_error(query: MemoryQuery, error: MemoryServiceOperationError) -> MemorySearchResult:
+    return MemorySearchResult(
+        items=[],
+        query_used=query,
+        total=0,
+        ranking_reason="remote_service_failed",
+        memory_context="",
+        errors=[
+            {
+                "code": f"memory_remote_service_{error.operation}_failed",
+                "message": str(error),
+                "recoverable": error.recoverable,
+            }
+        ],
     )
 
 

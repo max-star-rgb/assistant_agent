@@ -4,7 +4,12 @@ from pathlib import Path
 
 from assistant_agent.config import DEFAULT_JSONL_MEMORY_PATH, DEFAULT_SQLITE_MEMORY_PATH, ProviderConfig
 from assistant_agent.memory.jsonl_store import JsonlMemoryStore
-from assistant_agent.memory.remote import HybridMemoryStore, RemoteMemoryClient
+from assistant_agent.memory.remote import (
+    HybridMemoryStore,
+    RemoteMemoryClient,
+    RemoteServiceMemoryStore,
+    UnavailableRemoteMemoryServiceAdapter,
+)
 from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 from assistant_agent.memory.store import InMemoryStore, MemoryStore
 
@@ -33,6 +38,10 @@ def create_memory_store(config: ProviderConfig | None = None) -> MemoryStore:
                 include_media_chunks=resolved_config.memory_server_include_media_chunks,
                 direct_answer=resolved_config.memory_server_direct_answer,
             ),
+        )
+    if resolved_config.memory_backend == "remote_service":
+        return RemoteServiceMemoryStore(
+            adapter=UnavailableRemoteMemoryServiceAdapter(base_url=resolved_config.memory_server_base_url),
         )
     return InMemoryStore()
 

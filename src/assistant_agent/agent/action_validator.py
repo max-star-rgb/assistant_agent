@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from assistant_agent.agent.state import AgentState
+from assistant_agent.memory.read_policy import MemoryReadPolicy
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.tool_call_boundary import build_pre_tool_call_summary
@@ -61,6 +62,16 @@ class ActionValidator:
         semantic_error = _validate_required_semantic_inputs(tool_name, decision.tool_input)
         if semantic_error is not None:
             return _with_metadata(semantic_error, metadata)
+
+        memory_read_decision = _memory_read_decision(tool_name, decision.tool_input, request)
+        if memory_read_decision is not None:
+            metadata["memory_read_policy"] = memory_read_decision.prompt_safe_metadata()
+            if not memory_read_decision.allowed:
+                return _reject(
+                    "memory_read_intent_required",
+                    "memory retrieval requires an explicit request for prior chats, saved memory, previous context, or remembered preferences.",
+                    metadata=metadata,
+                )
 
         if tool_name == "render_3d" and not _has_explicit_render_intent(request.text or "", decision.tool_input):
             return _reject(
@@ -181,6 +192,30 @@ def _validate_memory_save_source(tool_input: dict[str, Any]) -> ActionValidation
         if not isinstance(tool_input.get(key), str) or not tool_input[key].strip():
             return _reject("invalid_tool_input", f"assistant-loop memory_save requires {key}.")
     return None
+
+
+def _memory_read_decision(
+    tool_name: str,
+    tool_input: dict[str, Any],
+    request: UserRequest,
+):
+    if tool_name == "memory_retrieval":
+        query = str(tool_input.get("query") or "")
+    elif tool_name == "memory" and tool_input.get("action") == "retrieve":
+        query = str(tool_input.get("query") or "")
+    else:
+        return None
+    content = tool_input.get("content")
+    content = content if isinstance(content, dict) else {}
+    return MemoryReadPolicy().decide_tool_retrieval(
+        request_text=request.text or "",
+        query_text=query,
+        metadata=request.metadata,
+        top_k=content.get("top_k") if isinstance(content.get("top_k"), int) else None,
+        max_context_chars=content.get("max_context_chars")
+        if isinstance(content.get("max_context_chars"), int)
+        else None,
+    )
 
 
 def _has_agent_delegation_payload(tool_input: dict[str, Any]) -> bool:

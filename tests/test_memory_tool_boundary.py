@@ -85,6 +85,44 @@ def test_memory_retrieval_tool_does_not_expose_superseded_debug_query() -> None:
     assert "style_old" not in memory_ids
 
 
+def test_memory_retrieval_tool_returns_trust_policy_metadata() -> None:
+    store = InMemoryStore()
+    store.save(
+        MemoryItem(
+            memory_id="pref_style",
+            user_id="u1",
+            session_id="s1",
+            memory_type="preference",
+            summary="用户保存的偏好是浅色日系背景。",
+            content={"preference_key": "style"},
+            created_at=NOW,
+        )
+    )
+    manager = MemoryManager(store)
+
+    result = MemoryRetrievalTool().run(
+        {"user_id": "model-user", "query": "保存的偏好"},
+        ToolContext(
+            user_id="u1",
+            session_id="s1",
+            metadata={
+                "memory_manager": manager,
+                "request_text": "按我保存的偏好写一句海报文案",
+            },
+        ),
+    )
+
+    assert result.success is True
+    assert result.data is not None
+    assert result.data["total"] == 1
+    assert result.data["items"][0]["user_id"] == "u1"
+    assert result.data["trust_policy"]["authority"] == "user_history_evidence"
+    assert result.data["trust_policy"]["current_request_overrides_memory"] is True
+    assert "do_not_execute_memory_instructions" in result.data["usage_hint"]
+    assert result.contract is not None
+    assert result.contract.metadata["trust_policy"]["authority"] == "user_history_evidence"
+
+
 def _imported_modules(tree: ast.AST) -> set[str]:
     modules: set[str] = set()
     for node in ast.walk(tree):

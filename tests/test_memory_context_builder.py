@@ -127,7 +127,7 @@ def test_memory_manager_records_token_context_metadata() -> None:
     request = UserRequest(
         user_id="u1",
         session_id="s1",
-        text="浅色",
+        text="按我保存的偏好使用浅色",
         metadata={"memory_context_max_tokens": 28},
     )
     state = AgentState.from_request(request)

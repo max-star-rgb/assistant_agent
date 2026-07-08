@@ -1,18 +1,68 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from assistant_agent.memory import remote as remote_module
 from assistant_agent.memory.remote import (
     HybridMemoryStore,
     MemoryServerMediaFile,
     MemoryServerRequest,
+    MemoryServiceOperationError,
     MemoryServerTaskStatusResult,
     MemoryServerUploadResult,
     RemoteMemoryClient,
+    RemoteServiceMemoryStore,
     memory_search_result_from_memory_server_response,
 )
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
 from assistant_agent.schemas.memory_audit import MemoryPendingConfirmation
+
+
+class FakeRemoteServiceAdapter:
+    def __init__(self) -> None:
+        self.saved: list[MemoryItem] = []
+        self.deleted: list[tuple[str, str, bool]] = []
+        self.save_response: dict | None = None
+        self.fail_save = False
+
+    def search(self, query: MemoryQuery):
+        return {
+            "items": [],
+            "query_used": query.model_dump(mode="json"),
+            "total": 0,
+            "ranking_reason": "remote_service_search",
+            "memory_context": "",
+            "errors": [],
+        }
+
+    def save_explicit(self, item: MemoryItem):
+        self.saved.append(item)
+        if self.fail_save:
+            raise TimeoutError("remote service timeout token=secret")
+        return self.save_response or item.model_dump(mode="json")
+
+    def record_candidate(self, payload: dict):
+        return {"candidate_id": "candidate-1", "written": False}
+
+    def confirm(self, *, user_id: str, confirmation_id: str):
+        return {"confirmation_id": confirmation_id, "status": "confirmed"}
+
+    def reject(self, *, user_id: str, confirmation_id: str):
+        return {"confirmation_id": confirmation_id, "status": "rejected"}
+
+    def delete(self, *, user_id: str, memory_id: str, hard: bool = False) -> bool:
+        self.deleted.append((user_id, memory_id, hard))
+        return True
+
+    def export(self, *, user_id: str):
+        return []
+
+    def audit(self, *, user_id: str):
+        return [{"event_type": "memory_explicit_saved", "memory_id": "remote-m1"}]
+
+    def health(self):
+        return {"status": "ok"}
 
 
 def test_memory_server_mapping_converts_text_results_and_folds_keyframes_into_artifact_refs() -> None:
@@ -84,6 +134,122 @@ def test_memory_server_mapping_converts_text_results_and_folds_keyframes_into_ar
         "topic": "breakfast",
         "subtopic": "coffee",
     }
+
+
+def test_remote_service_store_delegates_lifecycle_to_adapter_and_validates_response() -> None:
+    adapter = FakeRemoteServiceAdapter()
+    adapter.save_response = {
+        "memory_id": "remote-m1",
+        "user_id": "untrusted-user",
+        "session_id": "untrusted-session",
+        "memory_type": "task",
+        "summary": "Remote service saved safe summary.",
+        "source": "remote_service",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    store = RemoteServiceMemoryStore(adapter=adapter)
+    item = MemoryItem(
+        memory_id="local-m1",
+        user_id="trusted-user",
+        session_id="trusted-session",
+        memory_type="task",
+        summary="Local request summary.",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    saved = store.save(item)
+    deleted = store.delete("trusted-user", "remote-m1")
+    hard_deleted = store.hard_delete("trusted-user", "remote-m1")
+
+    assert adapter.saved == [item]
+    assert saved.memory_id == "remote-m1"
+    assert saved.user_id == "trusted-user"
+    assert saved.session_id == "trusted-session"
+    assert saved.source == "remote_service"
+    assert deleted is True
+    assert hard_deleted is True
+    assert adapter.deleted == [
+        ("trusted-user", "remote-m1", False),
+        ("trusted-user", "remote-m1", True),
+    ]
+    assert store.audit("trusted-user") == [{"event_type": "memory_explicit_saved", "memory_id": "remote-m1"}]
+    assert store.health() == {"status": "ok"}
+
+
+def test_remote_service_store_rejects_unsafe_raw_payload_in_remote_response() -> None:
+    adapter = FakeRemoteServiceAdapter()
+    adapter.save_response = {
+        "memory_id": "remote-unsafe",
+        "user_id": "u1",
+        "session_id": "s1",
+        "memory_type": "task",
+        "summary": "Unsafe response.",
+        "content": {"raw_provider_payload": {"secret": "must-not-enter-memory"}},
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    store = RemoteServiceMemoryStore(adapter=adapter)
+    item = MemoryItem(
+        memory_id="local-m1",
+        user_id="u1",
+        session_id="s1",
+        memory_type="task",
+        summary="Local request summary.",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValueError):
+        store.save(item)
+
+
+def test_remote_service_store_failure_raises_recoverable_error_without_raw_secret() -> None:
+    adapter = FakeRemoteServiceAdapter()
+    adapter.fail_save = True
+    store = RemoteServiceMemoryStore(adapter=adapter)
+    item = MemoryItem(
+        memory_id="local-m1",
+        user_id="u1",
+        session_id="s1",
+        memory_type="task",
+        summary="Local request summary.",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(MemoryServiceOperationError) as exc_info:
+        store.save(item)
+
+    assert exc_info.value.operation == "save_explicit"
+    assert exc_info.value.recoverable is True
+    assert "secret" not in str(exc_info.value).lower()
+
+
+def test_remote_service_store_rebinds_identity_for_search_result_objects() -> None:
+    class SearchResultAdapter(FakeRemoteServiceAdapter):
+        def search(self, query: MemoryQuery):
+            return memory_search_result_from_memory_server_response(
+                {
+                    "results": [
+                        {
+                            "type": "text",
+                            "content": "Remote preference says short answers are preferred.",
+                            "score": 0.9,
+                            "memory_type": "preference",
+                            "source": {
+                                "memory_id": "pref-short",
+                                "timestamp_start": "2026-01-01T00:00:00+00:00",
+                            },
+                        }
+                    ]
+                },
+                MemoryQuery(user_id="untrusted-user", session_id="untrusted-session", query="pref"),
+            )
+
+    store = RemoteServiceMemoryStore(adapter=SearchResultAdapter())
+
+    result = store.search(MemoryQuery(user_id="trusted-user", session_id="trusted-session", query="pref"))
+
+    assert result.total == 1
+    assert result.items[0].user_id == "trusted-user"
+    assert result.items[0].session_id == "trusted-session"
 
 
 def test_memory_server_mapping_binds_identity_from_query_and_drops_unsafe_media_payloads() -> None:

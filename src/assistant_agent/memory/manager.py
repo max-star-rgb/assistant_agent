@@ -8,6 +8,12 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.memory.context_builder import MemoryContextBlock, MemoryContextBuilder, MemoryLayer
 from assistant_agent.memory.profile import USER_PROFILE_MEMORY_ID, UserProfileMemory
+from assistant_agent.memory.read_policy import (
+    MemoryReadDecision,
+    MemoryReadPolicy,
+    memory_usage_hint,
+    trust_policy_metadata,
+)
 from assistant_agent.memory.store import MemoryStore
 from assistant_agent.memory.write_policy import (
     MemoryWritePolicy,
@@ -77,6 +83,11 @@ class MemoryContext(BaseModel):
     omitted_count: int = Field(default=0, ge=0)
     rejected_reasons: list[str] = Field(default_factory=list)
     retrieval_version: str = ""
+    read_policy_allowed: bool = True
+    read_policy_reason: str = ""
+    read_policy: dict[str, Any] = Field(default_factory=dict)
+    trust_policy: dict[str, Any] = Field(default_factory=trust_policy_metadata)
+    usage_hint: str = Field(default_factory=memory_usage_hint)
 
 
 class MemoryConfirmationRequired(ValueError):
@@ -119,11 +130,13 @@ class MemoryManager:
         default_max_context_chars: int = 500,
         default_max_context_tokens: int | None = None,
         context_builder: MemoryContextBuilder | None = None,
+        read_policy: MemoryReadPolicy | None = None,
         max_audit_events: int = 1000,
         default_confirmation_ttl_seconds: int = 86400,
     ) -> None:
         self.store = store
         self.write_policy = write_policy or MemoryWritePolicy()
+        self.read_policy = read_policy or MemoryReadPolicy()
         self.default_top_k = default_top_k
         self.default_max_context_chars = default_max_context_chars
         self.default_max_context_tokens = default_max_context_tokens
@@ -155,13 +168,42 @@ class MemoryManager:
     ) -> MemoryContext:
         """Load bounded, layered memory context for a user request."""
 
+        token_budget = max_context_tokens or _memory_context_token_budget_from_metadata(request.metadata)
+        decision = self.read_policy.decide_auto_load(
+            request_text=request.text or "",
+            metadata=request.metadata,
+            top_k=top_k or self.default_top_k,
+            max_context_chars=max_context_chars or self.default_max_context_chars,
+            max_context_tokens=token_budget,
+        )
+        if not decision.allowed:
+            context = _skipped_memory_context(decision)
+            identity = RequestIdentity.from_user_request(request)
+            self.record_audit_event(
+                "memory_context_loaded",
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=identity.session_id,
+                outcome="skipped",
+                summary="memory context skipped by read policy",
+                counts={
+                    "retrieved": 0,
+                    "injected": 0,
+                    "tokens": 0,
+                    "budget_tokens": context.budget_tokens,
+                },
+                metadata={"read_policy": decision.prompt_safe_metadata()},
+            )
+            return context
         return self.load_context_for_identity(
             RequestIdentity.from_user_request(request),
             query_text=request.text or "",
             capability=capability,
-            top_k=top_k,
-            max_context_chars=max_context_chars,
-            max_context_tokens=max_context_tokens or _memory_context_token_budget_from_metadata(request.metadata),
+            top_k=decision.top_k,
+            max_context_chars=decision.max_context_chars,
+            max_context_tokens=decision.max_context_tokens,
+            read_decision=decision,
         )
 
     def load_context_for_identity(
@@ -173,6 +215,7 @@ class MemoryManager:
         top_k: int | None = None,
         max_context_chars: int | None = None,
         max_context_tokens: int | None = None,
+        read_decision: MemoryReadDecision | None = None,
     ) -> MemoryContext:
         """Load bounded, layered memory context for an identity."""
 
@@ -192,6 +235,17 @@ class MemoryManager:
             max_chars=query.max_context_chars,
             max_tokens=max_context_tokens or self.default_max_context_tokens,
         )
+        if read_decision is not None:
+            context = context.model_copy(
+                update={
+                    "read_policy_allowed": read_decision.allowed,
+                    "read_policy_reason": read_decision.reason,
+                    "read_policy": read_decision.prompt_safe_metadata(),
+                    "trust_policy": read_decision.trust_policy,
+                    "usage_hint": read_decision.usage_hint,
+                },
+                deep=True,
+            )
         self.record_audit_event(
             "memory_context_loaded",
             user_id=identity.user_id,
@@ -213,6 +267,9 @@ class MemoryManager:
                 "retrieval_version": context.retrieval_version,
                 "injected_memory_ids": [item.memory_id for item in context.items],
                 "rejected_reasons": context.rejected_reasons[:8],
+                "read_policy": (
+                    read_decision.prompt_safe_metadata() if read_decision is not None else {}
+                ),
             },
         )
         return context
@@ -249,6 +306,11 @@ class MemoryManager:
         state.request.metadata["memory_context_rejected_reasons"] = context.rejected_reasons
         state.request.metadata["memory_context_retrieval_version"] = context.retrieval_version
         state.request.metadata["memory_context_injected_ids"] = [item.memory_id for item in context.items]
+        state.request.metadata["memory_context_skipped"] = context.read_policy_allowed is False
+        state.request.metadata["memory_context_policy_reason"] = context.read_policy_reason
+        state.request.metadata["memory_read_policy"] = context.read_policy
+        state.request.metadata["memory_trust_policy"] = context.trust_policy
+        state.request.metadata["memory_usage_hint"] = context.usage_hint
         return context
 
     def build_context(
@@ -1513,6 +1575,26 @@ def _memory_context_token_budget_from_metadata(metadata: dict[str, Any]) -> int 
         if isinstance(value, int) and value > 0:
             return value
     return None
+
+
+def _skipped_memory_context(decision: MemoryReadDecision) -> MemoryContext:
+    return MemoryContext(
+        items=[],
+        text="",
+        summaries=[],
+        artifact_refs=[],
+        blocks=[],
+        total_tokens=0,
+        budget_tokens=decision.max_context_tokens or 0,
+        omitted_count=0,
+        rejected_reasons=[],
+        retrieval_version="memory_read_policy_v1",
+        read_policy_allowed=False,
+        read_policy_reason=decision.reason,
+        read_policy=decision.prompt_safe_metadata(),
+        trust_policy=decision.trust_policy,
+        usage_hint=decision.usage_hint,
+    )
 
 
 def _is_expired(item: MemoryItem) -> bool:

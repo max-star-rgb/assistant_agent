@@ -21,7 +21,7 @@ from assistant_agent.schemas.provider_specs import (
 AgentGraphMode = Literal["conditional", "assistant_loop"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
-MemoryBackend = Literal["memory", "jsonl", "sqlite", "hybrid_remote"]
+MemoryBackend = Literal["memory", "jsonl", "sqlite", "hybrid_remote", "remote_service"]
 
 
 DEFAULT_JSONL_MEMORY_PATH = ".local/memory/long_term_memories.jsonl"
@@ -466,6 +466,8 @@ class ProviderConfig:
 def _memory_backend(value: str | None, *, allow_remote: bool = False) -> MemoryBackend:
     if value == "hybrid_remote" and allow_remote:
         return "hybrid_remote"
+    if value == "remote_service" and allow_remote:
+        return "remote_service"
     if value == "sqlite":
         return "sqlite"
     if value == "jsonl":
