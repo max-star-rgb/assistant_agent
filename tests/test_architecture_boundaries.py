@@ -22,7 +22,6 @@ def test_legacy_graph_helpers_delegate_runtime_dependency_assembly() -> None:
 def test_interfaces_do_not_bypass_tool_executor() -> None:
     for path in (
         "src/assistant_agent/api/routes_agent.py",
-        "src/assistant_agent/api/websocket.py",
         "src/assistant_agent/mcp/server.py",
     ):
         source = _source(path)
@@ -67,7 +66,6 @@ def test_gateway_agent_adapter_does_not_route_agents_directly() -> None:
 def test_product_entry_layers_do_not_import_agent_graph_runtime_directly() -> None:
     for path in (
         "src/assistant_agent/api/routes_agent.py",
-        "src/assistant_agent/api/websocket.py",
         "src/assistant_agent/api/agent_service_websocket.py",
         "src/assistant_agent/api/gateway_runtime.py",
         "scripts/run_assistant_cli.py",
@@ -81,7 +79,6 @@ def test_product_entry_layers_do_not_import_agent_graph_runtime_directly() -> No
 def test_product_entry_layers_depend_on_runtime_app_boundary() -> None:
     for path in (
         "src/assistant_agent/api/routes_agent.py",
-        "src/assistant_agent/api/websocket.py",
         "src/assistant_agent/api/agent_service_websocket.py",
         "src/assistant_agent/api/gateway_runtime.py",
         "scripts/run_assistant_cli.py",

@@ -4,117 +4,20 @@ import assistant_agent.api.app as app_module
 from assistant_agent.api.app import create_app
 
 
-def test_demo_console_page_is_served() -> None:
+def test_demo_console_page_is_not_served() -> None:
     client = TestClient(create_app())
 
     response = client.get("/demo/console")
 
-    assert response.status_code == 200
-    assert "Assistant Chat" in response.text
-    assert "请输入你的工号：00xxxx" in response.text
-    assert "new WebSocket" in response.text
-    assert "/ws/agent/" in response.text
-    assert "/ws/realtime/media" in response.text
+    assert response.status_code == 404
 
 
-def test_static_console_asset_is_served() -> None:
+def test_static_console_asset_is_not_served() -> None:
     client = TestClient(create_app())
 
     response = client.get("/static/index.html")
 
-    assert response.status_code == 200
-    assert "Examples" in response.text
-    assert "Conversation History" in response.text
-    assert "Product Results" in response.text
-    assert "Generated Images" in response.text
-    assert "Assistant ReAct Process" in response.text
-    assert "Web Chat" in response.text
-    assert "Realtime Call Debugger" in response.text
-    assert "experience-mode-select" in response.text
-    assert "assistant_agent_console_mode" in response.text
-    assert '<option value="web_chat">Web Chat</option>' in response.text
-    assert '<option value="app_media">Realtime Call Debugger</option>' in response.text
-    assert "Realtime Call" in response.text
-    assert "Call transcript" in response.text
-    assert "Start Call" in response.text
-    assert "Hang Up" in response.text
-    assert "Cancel Agent" in response.text
-    assert ">Say<" in response.text
-    assert ">Interrupt<" in response.text
-    assert "Gateway Timeline" in response.text
-    assert "Agent Trace" in response.text
-    assert "realtime-trace-output" in response.text
-    assert "loadRealtimeTraceSummary" in response.text
-    assert "App + Media Relay" not in response.text
-    assert "web-chat-workspace" in response.text
-    assert "app-media-workspace" in response.text
-    assert "chat-panel" in response.text
-    assert "app-media-panel" in response.text
-    assert '<div class="console-workspace web-chat-workspace" id="web-chat-workspace">' in response.text
-    assert '<div class="console-workspace app-media-workspace" id="app-media-workspace" hidden>' in response.text
-    assert '<section class="entry-panel active" id="chat-panel">' in response.text
-    assert '<section class="entry-panel" id="app-media-panel">' in response.text
-    assert '<details class="app-call-debug">' in response.text
-    assert "app-call-messages" in response.text
-    assert "app-call-state" in response.text
-    assert "app-call-timer" in response.text
-    assert "app-call-bubble.cancelled" in response.text
-    assert "app-call-bubble.stale" in response.text
-    assert "markActiveAgentDraftCancelled" in response.text
-    assert "markActiveAgentDraftStale" in response.text
-    assert "appCallProgressFromPayload" in response.text
-    assert "Using previous findings" in response.text
-    assert "Waiting for confirmation" in response.text
-    assert "Action committed" in response.text
-    assert "Revising task" in response.text
-    assert "reusable_artifact_count" in response.text
-    assert "pending_confirmation_count" in response.text
-    assert "committed_side_effect_count" in response.text
-    assert "compensatable_side_effect_count" in response.text
-    assert "isCurrentRealtimeRunFrame" in response.text
-    assert "realtime-connect" in response.text
-    assert "realtime-cancel" in response.text
-    assert "realtime-ping" in response.text
-    assert "sendMediaEvent" in response.text
-    assert "/ws/realtime/media" in response.text
-    assert "session.start" in response.text
-    assert "transcript.final" in response.text
-    assert "run.cancel" in response.text
-    assert "session.end" in response.text
-    assert "/ws/gateway" not in response.text
-    assert "Realtime Media Relay" not in response.text
-    assert "realtime-mode-tab" not in response.text
-    assert "realtime-panel" not in response.text
-    assert "data-experience-mode" not in response.text
-    assert "Developer Debug" not in response.text
-    assert "app-media-entry-tab" not in response.text
-    assert "chat-entry-tab" not in response.text
-    assert "Send Media Event" not in response.text
-    assert "Interrupt With Text" not in response.text
-    assert "/demo/access" in response.text
-    assert "/demo/examples" in response.text
-    assert "renderExamples" in response.text
-    assert "validateTrialUserId" in response.text
-    assert "collectProductResults" in response.text
-    assert "renderProductGallery" in response.text
-    assert "collectImageArtifacts" in response.text
-    assert "normalizeArtifactUrl" in response.text
-    assert "Control Plane" in response.text
-    assert "Pilot Readiness" in response.text
-    assert "Recent Runs / Audit" in response.text
-    assert "Gateway Route" in response.text
-    assert "Delegation Tree" in response.text
-    assert "Redaction Status" in response.text
-    assert "control-plane-run-id" in response.text
-    assert "control-plane-trace-id" in response.text
-    assert "/control-plane/readiness" in response.text
-    assert "/control-plane/audit/events?limit=12" in response.text
-    assert "/control-plane/runs/" in response.text
-    assert "refreshControlPlaneReadiness" in response.text
-    assert "refreshControlPlaneRun" in response.text
-    assert "refreshControlPlaneRecent" in response.text
-    assert "remote control" not in response.text.lower()
-    assert "provider toggle" not in response.text.lower()
+    assert response.status_code == 404
 
 
 def test_generated_artifact_static_path_is_served(monkeypatch, tmp_path) -> None:

@@ -239,7 +239,7 @@ def list_demo_examples() -> dict[str, Any]:
 
 @router.get("/demo/runtime-info")
 def demo_runtime_info() -> dict[str, Any]:
-    """Return a redacted runtime summary for the local Web Console."""
+    """Return a redacted runtime summary for local demo/debug clients."""
 
     return {
         "protocol_version": PROTOCOL_VERSION,
@@ -249,7 +249,7 @@ def demo_runtime_info() -> dict[str, Any]:
 
 @router.get("/demo/access", response_model=TrialAccessStatus)
 def demo_access(user_id: str = Query(...)) -> TrialAccessStatus:
-    """Validate a Web Console trial user id before enabling the demo UI."""
+    """Validate a pilot trial user id before enabling demo/realtime access."""
 
     return get_trial_access_gate().check(user_id)
 

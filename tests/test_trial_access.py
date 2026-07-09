@@ -310,26 +310,27 @@ def test_agent_run_rejects_unlisted_trial_user(monkeypatch) -> None:
     assert "试用名单" in response.json()["detail"]
 
 
-def test_websocket_rejects_unlisted_trial_user(monkeypatch) -> None:
+def test_gateway_websocket_rejects_unlisted_trial_user(monkeypatch) -> None:
     monkeypatch.setenv(TRIAL_USER_IDS_ENV, "pilot_01")
     client = TestClient(create_app())
 
-    with client.websocket_connect("/ws/agent/s1?text=你好&user_id=unknown") as websocket:
+    with client.websocket_connect("/ws/gateway?user_id=unknown") as websocket:
         event = websocket.receive_json()
 
-    assert event["type"] == "agent_error"
+    assert event["type"] == "error"
     assert event["error"]["code"] == "ACCESS_DENIED"
     assert "试用名单" in event["error"]["message"]
 
 
-def test_local_cli_websocket_can_bypass_trial_access(monkeypatch) -> None:
+def test_local_cli_gateway_websocket_can_bypass_trial_access(monkeypatch) -> None:
     monkeypatch.setenv(TRIAL_USER_IDS_ENV, "pilot_01")
     client = TestClient(create_app())
 
-    with client.websocket_connect("/ws/agent/s1?text=你好&user_id=unknown&client=cli") as websocket:
-        final = _receive_until(websocket, "agent_response")
+    with client.websocket_connect("/ws/gateway?user_id=unknown&client=cli") as websocket:
+        websocket.send_json({"type": "ping"})
+        event = websocket.receive_json()
 
-    assert final["payload"]["response"]["status"] == "completed"
+    assert event["type"] == "pong"
 
 
 def _receive_until(websocket, event_type: str, limit: int = 20) -> dict:

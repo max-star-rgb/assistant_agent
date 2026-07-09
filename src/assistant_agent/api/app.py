@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from assistant_agent.api.agent_service_websocket import router as agent_service_websocket_router
@@ -14,7 +14,6 @@ from assistant_agent.api.gateway_runtime import shutdown_gateway_runtime
 from assistant_agent.api.gateway_websocket import router as gateway_websocket_router
 from assistant_agent.api.routes_a2a import router as a2a_router
 from assistant_agent.api.routes_agent import router as agent_router
-from assistant_agent.api.websocket import router as websocket_router
 from assistant_agent.schemas.api import PROTOCOL_VERSION, api_error
 from assistant_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
 
@@ -24,7 +23,6 @@ SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 def create_app() -> FastAPI:
     load_repo_env_file()
     app = FastAPI(title="Multimodal Agent", lifespan=_lifespan)
-    static_dir = Path(__file__).resolve().parent / "static"
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request, exc: RequestValidationError) -> JSONResponse:
@@ -47,17 +45,11 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/demo/console", include_in_schema=False)
-    def demo_console() -> FileResponse:
-        return FileResponse(static_dir / "index.html")
-
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
     GENERATED_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/artifacts/generated", StaticFiles(directory=GENERATED_ARTIFACT_DIR), name="generated_artifacts")
     app.include_router(agent_router)
     app.include_router(a2a_router)
     app.include_router(agent_service_websocket_router)
-    app.include_router(websocket_router)
     app.include_router(gateway_websocket_router)
     return app
 

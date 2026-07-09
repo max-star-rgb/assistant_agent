@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Start the assistant backend server (FastAPI + uvicorn).
 
-This is the single backend service that both clients talk to: the Web Console
-at `/demo/console` and the CLI client (`scripts/run_client.py`). It owns all
-provider/env configuration. The wrapper is intentionally thin so IDEs such as
-PyCharm can launch it without a module-based uvicorn run configuration.
+This is the backend service for Gateway-first assistant entries. Realtime text
+call smoke should use `/ws/realtime/media`; normalized Gateway smoke should use
+`/ws/gateway`. The wrapper is intentionally thin so IDEs such as PyCharm can
+launch it without a module-based uvicorn run configuration.
 """
 
 from __future__ import annotations
@@ -55,12 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--trial-user-id",
         action="append",
         default=[],
-        help="Allowed Web Console trial user id(s). Repeat or comma-separate to allow multiple ids.",
+        help="Allowed realtime/Gateway trial user id(s). Repeat or comma-separate to allow multiple ids.",
     )
     parser.add_argument(
         "--trial-user-id-file",
         default=None,
-        help="Text file of allowed Web Console trial user ids, one per line or comma separated.",
+        help="Text file of allowed realtime/Gateway trial user ids, one per line or comma separated.",
     )
     parser.add_argument(
         "--provider",
@@ -196,16 +196,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         pkg_logger.propagate = False
 
     base = f"http://{args.host}:{args.port}"
-    url = f"{base}/demo/console"
     print(f"Starting Assistant backend server on {base}")
-    print(f"  Web Console (browser client): {url}")
-    print(f"  CLI client: python scripts/run_client.py --server {base} \"你好\"")
+    print(f"  Realtime media WS: {base}/ws/realtime/media")
+    print(f"  Gateway WS: {base}/ws/gateway")
+    print(
+        "  Realtime smoke: "
+        f"python scripts/realtime_media_client.py --server {base} --scenario basic"
+    )
+    print(f"  Gateway smoke: python scripts/run_gateway_client.py --server {base} \"你好\"")
     print(f"  access_log: {'enabled' if args.access_log else 'disabled'}")
     _print_runtime_summary(config, loaded_env_keys=sorted(loaded_env))
     if args.public_url:
         print(f"Share this URL with trial users: {args.public_url}")
     elif args.host in {"0.0.0.0", "::"}:
-        print(f"Share URL format: http://<your-machine-ip>:{args.port}/demo/console")
+        print(f"Share realtime WS base: http://<your-machine-ip>:{args.port}")
     print("Press Ctrl+C to stop.")
     uvicorn.run(
         "assistant_agent.api.app:create_app",

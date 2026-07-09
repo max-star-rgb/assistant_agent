@@ -1,8 +1,9 @@
 """Run the assistant agent from a local offline CLI.
 
 This runs the agent IN-PROCESS for offline development/smoke. It does NOT
-connect to a backend server. For the remote client that talks to a running
-`scripts/run_server.py`, use `scripts/run_client.py` instead.
+connect to a backend server. For server-backed realtime smoke, use
+`scripts/realtime_media_client.py` or `scripts/run_gateway_client.py` against
+`scripts/run_server.py`.
 """
 
 from __future__ import annotations

@@ -4,13 +4,13 @@ Last updated: 2026-07-09
 
 This document is the current canonical entry for multi-agent instance routing, agent-to-agent communication, and A2A-style protocol adapter boundaries. Update it whenever agent directory/router behavior, agent communication services, `delegate_to_agent` tools, cross-instance sessions, A2A routes, JSON-RPC transport, or related safety policy changes.
 
-Current status: opt-in local AgentRouter/delegation boundary, inbound A2A JSON-RPC adapter, default-disabled outbound A2A JSON-RPC pilot transport, read-only control-plane observability, explicit local JSONL durable delegation trace for readiness/pilot use, first-pass pilot operator workflow, read-only Web Console Control Plane surface, strict local pilot evidence package, and breaking cleanup of old router/runtime compatibility imports implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and Web demo paths on one default `AgentGraphRuntime` and does not register delegation in the default `ToolRegistry`. It now has a public `assistant_agent.agent_routing` aggregate entrypoint, protocol-neutral schemas, an `AgentDirectory`, deterministic `AgentRoutingPolicy`, `AgentDelegationPolicy`, `LocalAgentTransport`, `A2AJsonRpcTransport`, `AgentCommunicationService`, a local multi-runtime factory, an opt-in `delegate_to_agent` tool, an `AgentRouter` service with a default process-local redacted control-plane store plus opt-in `JsonlAgentControlPlaneStore`, a separate `POST /agents/run` API for same-process multi-agent routing/debugging, read-only `/control-plane/...` route/delegation/budget/readiness/audit/replay-preview APIs, a local Web Console panel that queries those APIs, `scripts/check_pilot_readiness.py`, `scripts/collect_pilot_evidence.py`, inbound `/.well-known/agent-card.json` plus `/a2a/rpc` routes with public card filtering and JSON-RPC error taxonomy, and outbound allowlist/timeout/payload/protocol-error controls. It does not implement public remote agent fabric, automatic Agent Card discovery/enablement, Web UI remote-control actions, or LLM target-agent selection.
+Current status: opt-in local AgentRouter/delegation boundary, inbound A2A JSON-RPC adapter, default-disabled outbound A2A JSON-RPC pilot transport, read-only control-plane observability, explicit local JSONL durable delegation trace for readiness/pilot use, first-pass pilot operator workflow, strict local pilot evidence package, and breaking cleanup of old router/runtime compatibility imports implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and realtime Gateway paths on one default `AgentGraphRuntime` and does not register delegation in the default `ToolRegistry`. It now has a public `assistant_agent.agent_routing` aggregate entrypoint, protocol-neutral schemas, an `AgentDirectory`, deterministic `AgentRoutingPolicy`, `AgentDelegationPolicy`, `LocalAgentTransport`, `A2AJsonRpcTransport`, `AgentCommunicationService`, a local multi-runtime factory, an opt-in `delegate_to_agent` tool, an `AgentRouter` service with a default process-local redacted control-plane store plus opt-in `JsonlAgentControlPlaneStore`, a separate `POST /agents/run` API for same-process multi-agent routing/debugging, read-only `/control-plane/...` route/delegation/budget/readiness/audit/replay-preview APIs, `scripts/check_pilot_readiness.py`, `scripts/collect_pilot_evidence.py`, inbound `/.well-known/agent-card.json` plus `/a2a/rpc` routes with public card filtering and JSON-RPC error taxonomy, and outbound allowlist/timeout/payload/protocol-error controls. It does not implement public remote agent fabric, automatic Agent Card discovery/enablement, Web UI remote-control actions, or LLM target-agent selection.
 
 Current stage boundary:
 
 ```text
 Current stage implements a local same-process AgentRouter, not a full OpenClaw chat/network fabric.
-Default product entrypoints still call agent.default through existing `/agent/run`, CLI, eval, and Web demo paths.
+Default product entrypoints still call agent.default through existing `/agent/run`, CLI, eval, and realtime Gateway paths.
 `/agents/run` is the explicit multi-agent router/debug entrypoint.
 `/.well-known/agent-card.json` and `/a2a/rpc` expose an inbound A2A-compatible JSON-RPC adapter over the local AgentRouter.
 delegate_to_agent exists only as an explicit registry-level opt-in local tool, enabled for the gateway controller runtime.
@@ -35,7 +35,7 @@ The intended design is OpenClaw-like at the runtime level: gateway, directory, s
 The default path remains single-instance and unchanged:
 
 ```text
-User / CLI / API / Web UI
+User / CLI / API / realtime entry
   -> FastAPI routes or local runner
   -> AgentGraphRuntime / assistant loop
   -> AssistantDecision
@@ -133,7 +133,6 @@ Implemented files:
 | `src/assistant_agent/services/a2a_adapter.py` | implemented | Inbound A2A adapter that maps public agent card and JSON-RPC `SendMessage` requests to/from `AgentRouter`, with public skill filtering. |
 | `src/assistant_agent/tools/agent_delegation_tool.py` | implemented | Opt-in `delegate_to_agent` tool backed by `AgentCommunicationService`. |
 | `src/assistant_agent/api/routes_agent.py` | implemented | Existing `/agent/run` plus separate `/agents/run` router/debug endpoint sharing trial access rules. |
-| `src/assistant_agent/api/static/index.html` | implemented | Local Web Console includes a read-only Control Plane panel for runtime profile, pilot readiness, recent audit activity, run/trace summaries, router route, delegation tree, budget, replay preview, and redaction status. |
 | `src/assistant_agent/api/routes_a2a.py` | implemented | Inbound A2A-compatible agent card and JSON-RPC endpoint over local AgentRouter, including parse/invalid/method/params/internal error mapping. |
 | `scripts/check_pilot_readiness.py` | implemented | Local operator command for read-only pilot readiness checks without server startup, provider calls, or remote-agent calls. |
 | `scripts/collect_pilot_evidence.py` | implemented | Strict local/offline evidence package collector covering `/agent/run`, `/agents/run`, inbound `/a2a/rpc`, readiness, route, delegation, budget, audit, replay-preview, and trace summaries without server startup, real provider calls, remote-agent calls, or raw trace bodies. |

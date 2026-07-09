@@ -82,7 +82,8 @@ User / CLI / API / Web UI
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py --provider mock --image-provider mock
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_client.py --server http://127.0.0.1:8000 "你好"
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/realtime_media_client.py --server http://127.0.0.1:8000 --scenario basic
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_gateway_client.py --server http://127.0.0.1:8000 "你好"
 ```
 
 只有在需要执行非 Python 命令且依赖 conda 激活环境变量时，才使用 `conda run -n hello_agent <command>`。

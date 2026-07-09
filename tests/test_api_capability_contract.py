@@ -53,16 +53,3 @@ def test_api_failed_tool_contract_has_errors() -> None:
     assert contract["status"] == "failed"
     assert contract["errors"][0]["code"]
     assert contract["errors"][0]["message"]
-
-
-def test_websocket_tool_finished_includes_contract_summary() -> None:
-    client = TestClient(create_app())
-
-    with client.websocket_connect("/ws/agent/s1?text=帮我找白色运动鞋") as websocket:
-        events = [websocket.receive_json() for _ in range(6)]
-
-    tool_finished = next(event for event in events if event["type"] == "tool_finished")
-
-    assert tool_finished["payload"]["contract"]["capability"] == "product_search"
-    assert tool_finished["payload"]["contract"]["status"] == "succeeded"
-    assert tool_finished["payload"]["contract"]["output_ref"] == "mock://products/white-low-top-sneaker"

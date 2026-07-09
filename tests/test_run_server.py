@@ -43,10 +43,10 @@ def test_run_server_parser_defaults() -> None:
 def test_run_server_parser_accepts_public_url() -> None:
     module = _load_module("run_server_parser_public_url_test")
 
-    args = module.build_parser().parse_args(["--host", "0.0.0.0", "--public-url", "http://demo.local/demo/console"])
+    args = module.build_parser().parse_args(["--host", "0.0.0.0", "--public-url", "http://demo.local/realtime"])
 
     assert args.host == "0.0.0.0"
-    assert args.public_url == "http://demo.local/demo/console"
+    assert args.public_url == "http://demo.local/realtime"
 
 
 def test_run_server_parser_accepts_access_log() -> None:

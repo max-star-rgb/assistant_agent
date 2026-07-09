@@ -1,4 +1,4 @@
-"""Shared demo example prompts for CLI and Web Console."""
+"""Shared demo example prompts for local CLI and API demo flows."""
 
 from __future__ import annotations
 

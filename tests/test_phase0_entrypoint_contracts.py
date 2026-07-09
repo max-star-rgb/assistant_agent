@@ -56,17 +56,13 @@ def test_local_cli_text_path_remains_gateway_first() -> None:
     assert "AgentGraphRuntime(" not in source
 
 
-def test_legacy_ws_agent_is_gateway_first_internally_but_keeps_legacy_event_surface() -> None:
-    source = _source("src/assistant_agent/api/websocket.py")
+def test_legacy_ws_agent_is_removed_from_product_app() -> None:
+    app_source = _source("src/assistant_agent/api/app.py")
 
-    assert '@router.websocket("/ws/agent/{session_id}")' in source
-    assert "GatewaySessionManager(" in source
-    assert "GatewayAgentAdapter(run_request=run_request)" in source
-    assert "GatewayTurnFacade(manager=manager)" in source
-    assert "facade.run_turn(" in source
-    assert "MirroringWebSocketEventSink(" in source
-    assert "get_assistant_runtime_app().run_request(gateway_request, **kwargs)" in source
-    assert "AgentGraphRuntime" not in source
+    assert not Path("src/assistant_agent/api/websocket.py").exists()
+    assert "assistant_agent.api.websocket" not in app_source
+    assert "from assistant_agent.api.websocket import router as websocket_router" not in app_source
+    assert "app.include_router(websocket_router)" not in app_source
 
 
 def test_vendor_agent_service_v1_is_gateway_first_internally_but_keeps_vendor_surface() -> None:

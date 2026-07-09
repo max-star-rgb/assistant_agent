@@ -37,194 +37,28 @@ def test_demo_runtime_info_is_redacted_and_offline_by_default() -> None:
     assert "bearer" not in response.text.lower()
 
 
-def test_phase7c_console_contains_productized_web_controls() -> None:
+def test_phase7c_legacy_browser_console_is_removed() -> None:
     client = TestClient(create_app())
 
     response = client.get("/demo/console")
-    html = response.text
+    route_paths = {getattr(route, "path", "") for route in client.app.routes}
 
-    assert response.status_code == 200
-    assert "Assistant Chat" in html
-    assert "试用入口" in html
-    assert "请输入你的工号：00xxxx" in html
-    assert ">确认<" in html
-    assert "trial-user-id" in html
-    assert "assistant_agent_trial_user_id" in html
-    assert "Examples" in html
-    assert "Input" in html
-    assert "Web Chat" in html
-    assert "experience-mode-select" in html
-    assert "assistant_agent_console_mode" in html
-    assert '<option value="web_chat">Web Chat</option>' in html
-    assert '<option value="app_media">Realtime Call Debugger</option>' in html
-    assert ">Mode</h2>" not in html
-    assert "Realtime Call Debugger" in html
-    assert "App + Media Relay" not in html
-    assert "Realtime Call" in html
-    assert "Call transcript" in html
-    assert "Start Call" in html
-    assert "Hang Up" in html
-    assert "Cancel Agent" in html
-    assert ">Say<" in html
-    assert ">Interrupt<" in html
-    assert "Gateway Timeline" in html
-    assert "Agent Trace" in html
-    assert "realtime-trace-output" in html
-    assert "loadRealtimeTraceSummary" in html
-    assert "setRealtimeTrace" in html
-    assert "web-chat-workspace" in html
-    assert "app-media-workspace" in html
-    assert "chat-panel" in html
-    assert "app-media-panel" in html
-    assert '<div class="console-workspace web-chat-workspace" id="web-chat-workspace">' in html
-    assert '<div class="console-workspace app-media-workspace" id="app-media-workspace" hidden>' in html
-    assert '<section class="entry-panel active" id="chat-panel">' in html
-    assert '<section class="entry-panel" id="app-media-panel">' in html
-    assert '<details class="app-call-debug">' in html
-    assert "app-call-messages" in html
-    assert "app-call-state" in html
-    assert "app-call-timer" in html
-    assert "app-call-bubble.cancelled" in html
-    assert "app-call-bubble.stale" in html
-    assert "markActiveAgentDraftCancelled" in html
-    assert "markActiveAgentDraftStale" in html
-    assert "appCallProgressFromPayload" in html
-    assert "Using previous findings" in html
-    assert "Waiting for confirmation" in html
-    assert "Action committed" in html
-    assert "Revising task" in html
-    assert "Preparing follow-up" in html
-    assert "isCurrentRealtimeRunFrame" in html
-    assert "realtime-connect" in html
-    assert "realtime-ping" in html
-    assert "realtime-send" in html
-    assert "realtime-cancel" in html
-    assert "realtime-end" in html
-    assert "realtime-interrupt" in html
-    assert "Realtime Media Relay" not in html
-    assert "realtime-mode-tab" not in html
-    assert "realtime-panel" not in html
-    assert "data-experience-mode" not in html
-    assert "Developer Debug" not in html
-    assert "chat-entry-tab" not in html
-    assert "app-media-entry-tab" not in html
-    assert "Send Media Event" not in html
-    assert "Interrupt With Text" not in html
-    assert "Plan Mode" in html
-    assert "普通 ReAct" in html
-    assert "计划优先" in html
-    assert 'name="execution-strategy"' in html
-    assert 'value="plan_and_solve"' in html
-    assert "Conversation History" in html
-    assert "Product Results" in html
-    assert "Assistant ReAct Process" in html
-    assert "Memory Snapshot" in html
-    assert "长期记忆" in html
-    assert "短期对话" in html
-    assert "技术信息" in html
-    assert "memoryStatusText" in html
-    assert "memoryLayerLabel" in html
-    assert "memoryTypeLabel" in html
-    assert "memorySourceLabel" in html
-    assert "memoryRecallText" in html
-    assert "memory-query" in html
-    assert "refreshMemorySnapshot" in html
-    assert "renderMemorySnapshot" in html
-    assert "deleteMemoryItem" in html
-    assert "removeLocalSession" in html
-    assert "/sessions/" in html
-    assert 'method: "POST"' in html
-    assert "会话已创建并写入服务端" in html
-    assert "服务端短期对话历史已清理" in html
-    assert "showMemoryDeleteConfirm" in html
-    assert "setMemoryDeleteBusy" in html
-    assert "确认删除" in html
-    assert "取消" in html
-    assert "已删除，snapshot 已刷新" in html
-    assert 'method: "DELETE"' in html
-    assert "/memory/users/" in html
-    assert "/items/" in html
-    assert "/snapshot?" in html
-    assert "记忆层" in html
-    assert "偏好/事实记忆" in html
-    assert "任务/经历记忆" in html
-    assert "来源" in html
-    assert "底层类型" in html
-    assert "召回原因" in html
-    assert "Thought" not in html
-    assert "thought" not in html
-    assert "思维链" not in html
-    assert "conversationHistory" in html
-    assert "renderConversationHistory" in html
-    assert "renderProductGallery" in html
-    assert "runAssistantStream" in html
-    assert "formatReactProcess" in html
-    assert "formatTimelineEvent" in html
-    assert "formatContextSummary" in html
-    assert "context_budget" in html
-    assert "context_compaction" in html
-    assert "[plan]" in html
-    assert "[tool:" in html
-    assert "Control Plane" in html
-    assert "Pilot Readiness" in html
-    assert "Runtime Profile" in html
-    assert "Selected Run Trace" in html
-    assert "Gateway Route" in html
-    assert "Delegation Tree" in html
-    assert "Redaction Status" in html
-    assert "Recent Runs / Audit" in html
-    assert "control-plane-run-id" in html
-    assert "control-plane-trace-id" in html
-    assert "/control-plane/readiness" in html
-    assert "/control-plane/audit/events?limit=12" in html
-    assert "/control-plane/runs/" in html
-    assert "setControlPlaneRun(payload.run_id, payload.trace_id)" in html
-    assert "refreshControlPlaneReadiness" in html
-    assert "refreshControlPlaneRun" in html
-    assert "refreshControlPlaneRecent" in html
-    assert "sanitizeControlPlaneDisplay" in html
-    assert "remote control" not in html.lower()
-    assert "provider toggle" not in html.lower()
-    assert "Final Decision Trace" not in html
-    assert "Live events" not in html
-    assert "formatReactSteps" not in html
-    assert "new WebSocket" in html
-    assert "params.set(\"user_id\", userId)" in html
-    assert "execution_strategy: currentExecutionStrategy()" in html
-    assert "socket.send(JSON.stringify(requestPayload))" in html
-    assert "/ws/agent/" in html
-    assert "/ws/realtime/media" in html
-    assert "/ws/gateway" not in html
-    assert "session.start" in html
-    assert "transcript.final" in html
-    assert "run.cancel" in html
-    assert "session.end" in html
-    assert "media -> gateway" in html
-    assert "gateway -> media" in html
-    assert "stream.chunk" in html
-    assert "event.progress" in html
-    assert 'payload.source === "native_tool_wait"' in html
-    assert "draftText: text" in html
-    assert "run.started" in html
-    assert "run.end" in html
-    assert "still running" in html
-    assert "sendMediaEvent" in html
-    assert "Run detail panel" not in html
-    assert "Trace detail panel" not in html
-    assert "Browser-session request history" not in html
+    assert response.status_code == 404
+    assert "/demo/console" not in route_paths
+    assert "/static" not in route_paths
 
 
-def test_phase7c_run_trace_detail_endpoints_support_console_flow() -> None:
+def test_phase7c_run_trace_detail_endpoints_support_http_debug_flow() -> None:
     routes_agent._RUNTIME = None
     client = TestClient(create_app())
 
     run_response = client.post(
         "/agent/run",
         json={
-            "user_id": "web_demo_user",
-            "session_id": "web_demo_productization",
+            "user_id": "http_debug_user",
+            "session_id": "http_debug_productization",
             "text": "生成一张日系极简商品海报。",
-            "metadata": {"source": "web_console", "offline": True},
+            "metadata": {"source": "http_agent_run_debug", "offline": True},
         },
     )
     run_payload = run_response.json()
@@ -259,17 +93,15 @@ def test_phase7c_run_trace_detail_endpoints_support_console_flow() -> None:
 def test_agent_run_accepts_explicit_plan_and_solve_strategy() -> None:
     try:
         routes_agent._RUNTIME = AgentGraphRuntime(
-            chat_adapter=ScriptedChatAdapter(
-                ["native plan strategy response"]
-            )
+            chat_adapter=ScriptedChatAdapter(["native plan strategy response"])
         )
         client = TestClient(create_app())
 
         response = client.post(
             "/agent/run",
             json={
-                "user_id": "web_demo_user",
-                "session_id": "web_demo_plan_strategy",
+                "user_id": "http_debug_user",
+                "session_id": "http_debug_plan_strategy",
                 "text": "找白色运动鞋",
                 "execution_strategy": "plan_and_solve",
             },
@@ -285,30 +117,8 @@ def test_agent_run_accepts_explicit_plan_and_solve_strategy() -> None:
     assert payload["data"]["native_runtime"] is True
 
 
-def test_phase7c_websocket_run_is_queryable_via_shared_http_runtime() -> None:
-    routes_agent._RUNTIME = None
+def test_phase7c_legacy_ws_agent_route_is_removed() -> None:
     client = TestClient(create_app())
+    route_paths = {getattr(route, "path", "") for route in client.app.routes}
 
-    with client.websocket_connect("/ws/agent/ws_shared?text=帮我找相似款") as websocket:
-        final = None
-        while True:
-            event = websocket.receive_json()
-            if event["type"] == "agent_response" and event.get("payload", {}).get("response"):
-                final = event["payload"]["response"]
-                break
-
-    assert final is not None
-    run_id = final["run_id"]
-    trace_id = final["trace_id"]
-
-    # WS and HTTP share the same singleton runtime, so the WS run resolves here.
-    run_detail = client.get(f"/runs/{run_id}")
-    trace_detail = client.get(f"/traces/{trace_id}")
-    tool_detail = client.get(f"/runs/{run_id}/tool-calls")
-
-    assert run_detail.status_code == 200
-    assert run_detail.json()["run_id"] == run_id
-    assert trace_detail.status_code == 200
-    assert trace_detail.json()["trace_id"] == trace_id
-    assert tool_detail.status_code == 200
-    assert tool_detail.json()["run_id"] == run_id
+    assert "/ws/agent/{session_id}" not in route_paths

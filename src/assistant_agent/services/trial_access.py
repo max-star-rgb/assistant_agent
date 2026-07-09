@@ -1,4 +1,4 @@
-"""Trial-user allowlist helpers for local/pilot Web Console access."""
+"""Trial-user allowlist helpers for local/pilot demo and realtime access."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ MAX_TRIAL_USER_ID_LENGTH = 64
 
 
 class TrialAccessStatus(BaseModel):
-    """Public status returned to the Web Console before enabling the demo UI."""
+    """Public status returned before enabling pilot/demo access."""
 
     user_id: str
     access_required: bool
@@ -71,7 +71,7 @@ class TrialAccessGate:
 
 
 def normalize_trial_user_id(value: object) -> str:
-    """Normalize the Web Console user id consistently on client and server."""
+    """Normalize the pilot/demo user id consistently on client and server."""
 
     return re.sub(r"\s+", "_", str(value or "").strip())[:MAX_TRIAL_USER_ID_LENGTH]
 
