@@ -313,6 +313,40 @@ subprocesses, or provider requests that do not cooperate. Those remain thread
 or adapter-level migration candidates and should be handled only where evidence
 shows a real bottleneck.
 
+## Phase 5 Thread Model Assessment
+
+Phase 5 audits the current thread and blocking model instead of removing thread
+bridges.
+
+The current production thread bridge is narrow:
+
+```text
+async consumer
+  -> run_stream() / run_assistant_request_stream()
+  -> asyncio.to_thread(sync runtime/service)
+  -> EventSink.emit(AgentEvent)
+  -> AsyncQueueEventSink
+  -> async iterator
+```
+
+This remains an async facade, not a fully async-native runtime. That is still
+the correct boundary for this stage because the synchronous runtime and shared
+assistant service own final state, artifacts, history, trace, realtime task
+state, memory policy, tool governance, and provider setup.
+
+The audit conclusion is selective async:
+
+- Keep the current `asyncio.to_thread()` bridges while the sync runtime remains
+  the source of truth.
+- Keep blocking tools, local memory work, artifact handling, and sync-only
+  provider SDKs behind governed sync boundaries.
+- Prefer async-native work first on high-value streaming and connection paths,
+  especially provider chat streaming.
+- Do not convert tools or memory to async just to remove threads.
+
+The detailed inventory and migration rules live in
+`docs/runtime-thread-model-audit.md`.
+
 ## Provider Event Direction
 
 Provider-native streaming should eventually move from provider callbacks:
