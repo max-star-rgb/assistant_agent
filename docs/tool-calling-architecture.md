@@ -90,6 +90,7 @@ UserRequest
 ## Backlog
 
 - 安全并行工具执行：当前不进入开发阶段，保留为长期候选能力。只有当 trace 或 eval 证明串行 native tool batch 成为明显瓶颈时再启动；首版只允许明确 read-only、无共享资源冲突、无确认需求的 tool calls 并行执行。副作用工具、confirmation-sensitive 工具、未知工具、资源或路径可能冲突的工具继续串行。任何并行调度都不得绕过 `ActionValidator -> ToolExecutor -> ToolRegistry`，并且必须保留每个工具独立的 trace、event、history、observation 和预算记录。
+- ToolRegistry 延迟注册 / factory descriptor：当前不采用 Hermes 风格的模块级全局单例 `registry`，避免 provider profile、adapter、video context、agent delegation 和测试隔离被全局状态污染。后续如果默认工具数量或 import 耦合明显增长，可以引入保留依赖注入语义的 `ToolRegistryBuilder` 或 lazy tool factory descriptor：`registry.py` 只保存轻量工具定义和 factory，`create_default_registry()` 按 `ProviderConfig`、runtime context 和 opt-in capability 实例化工具。该方案不得绕过 `ActionValidator -> ToolExecutor -> ToolRegistry`，也不得把工具执行入口改成全局 `registry.run(...)`。
 
 ## ToolSpec 契约
 
