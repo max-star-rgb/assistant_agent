@@ -1,6 +1,9 @@
+import asyncio
+
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services import assistant_run_service as run_service
 from assistant_agent.services.assistant_run_service import (
@@ -11,8 +14,30 @@ from assistant_agent.services.assistant_run_service import (
     clear_user_conversation_history,
     run_assistant_query,
     run_assistant_request,
+    run_assistant_request_stream,
 )
 from assistant_agent.services.context.builder import build_assistant_context_pack
+
+
+class RecordingSink:
+    def __init__(self) -> None:
+        self.events: list[AgentEvent] = []
+
+    def emit(self, event: AgentEvent) -> None:
+        self.events.append(event)
+
+
+class MutableCancelToken:
+    def __init__(self, cancelled: bool = False, metadata: dict[str, object] | None = None) -> None:
+        self.cancelled = cancelled
+        self._metadata = dict(metadata or {})
+
+    def is_cancelled(self) -> bool:
+        return self.cancelled
+
+    @property
+    def cancel_metadata(self) -> dict[str, object]:
+        return dict(self._metadata)
 
 
 def test_shared_assistant_run_service_returns_cli_and_api_shapes() -> None:
@@ -49,6 +74,86 @@ def test_shared_assistant_run_service_accepts_user_request() -> None:
     assert response.trace_id.startswith("trace_")
     assert response.runtime_info["graph_mode"] == "assistant_loop"
     assert response.current_stage
+
+
+def test_run_assistant_request_stream_yields_events_and_returns_artifacts() -> None:
+    async def scenario() -> tuple[list[str], str, list[str], int]:
+        store = InMemoryConversationStore()
+        stream = run_assistant_request_stream(
+            UserRequest(user_id="u1", session_id="s1", text="你好"),
+            load_env=False,
+            conversation_store=store,
+        )
+
+        events = [event async for event in stream]
+        artifacts = await stream.result()
+        return (
+            [event.type for event in events],
+            artifacts.state.status,
+            [event.type for event in artifacts.events],
+            len(store.get("u1", "s1")),
+        )
+
+    streamed_types, status, artifact_types, stored_turns = asyncio.run(scenario())
+
+    assert status == "completed"
+    assert streamed_types[0] == "task_started"
+    assert "response_delta" in streamed_types
+    assert streamed_types[-1] == "final_response"
+    assert streamed_types == artifact_types
+    assert stored_turns == 1
+
+
+def test_run_assistant_request_stream_preserves_compatibility_event_sink() -> None:
+    async def scenario() -> tuple[list[str], list[str], list[str]]:
+        compatibility_sink = RecordingSink()
+        stream = run_assistant_request_stream(
+            UserRequest(user_id="u1", session_id="s1", text="你好"),
+            load_env=False,
+            conversation_store=InMemoryConversationStore(),
+            event_sink=compatibility_sink,
+        )
+
+        events = [event async for event in stream]
+        artifacts = await stream.result()
+        return (
+            [event.type for event in events],
+            [event.type for event in artifacts.events],
+            [event.type for event in compatibility_sink.events],
+        )
+
+    streamed_types, artifact_types, compatibility_types = asyncio.run(scenario())
+
+    assert streamed_types
+    assert streamed_types == artifact_types == compatibility_types
+
+
+def test_run_assistant_request_stream_pre_graph_cancel_returns_cancelled_artifacts() -> None:
+    async def scenario() -> tuple[list[str], str, str]:
+        token = MutableCancelToken(
+            cancelled=True,
+            metadata={"cancel_source": "gateway", "cancel_reason": "client_disconnect"},
+        )
+        stream = run_assistant_request_stream(
+            UserRequest(user_id="u1", session_id="s1", text="hello"),
+            load_env=False,
+            conversation_store=InMemoryConversationStore(),
+            cancel_token=token,
+        )
+
+        events = [event async for event in stream]
+        artifacts = await stream.result()
+        return (
+            [event.type for event in events],
+            artifacts.state.status,
+            artifacts.state.errors[-1].details["cancel_source"],
+        )
+
+    event_types, status, cancel_source = asyncio.run(scenario())
+
+    assert event_types == ["task_started", "task_cancelled"]
+    assert status == "cancelled"
+    assert cancel_source == "gateway"
 
 
 def test_shared_assistant_run_service_injects_multi_turn_history() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import os
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.state import AgentState
 from assistant_agent.config import ProviderConfig
@@ -495,6 +497,47 @@ def run_assistant_request(
     raw_events = getattr(sink, "events", [])
     events = list(raw_events) if isinstance(raw_events, list) else []
     return AssistantRunArtifacts(runtime=resolved_runtime, state=state, events=events)
+
+
+def run_assistant_request_stream(
+    request: UserRequest,
+    *,
+    config: ProviderConfig | None = None,
+    event_sink: EventSink | None = None,
+    runtime: AgentGraphRuntime | None = None,
+    load_env: bool = True,
+    conversation_store: ConversationStore | None = None,
+    enable_conversation_history: bool = True,
+    realtime_task_state_store: RealtimeTaskStateStore | None = None,
+    cancel_token: Any | None = None,
+) -> AgentRunStream[AssistantRunArtifacts]:
+    """Run the shared assistant service and expose its AgentEvent records asynchronously."""
+
+    loop = asyncio.get_running_loop()
+    stream: AgentRunStream[AssistantRunArtifacts] = AgentRunStream(loop=loop)
+    stream_sink = AsyncQueueEventSink(loop=loop, stream=stream, inner=event_sink)
+
+    async def _run() -> None:
+        try:
+            artifacts = await asyncio.to_thread(
+                run_assistant_request,
+                request,
+                config=config,
+                event_sink=stream_sink,
+                runtime=runtime,
+                load_env=load_env,
+                conversation_store=conversation_store,
+                enable_conversation_history=enable_conversation_history,
+                realtime_task_state_store=realtime_task_state_store,
+                cancel_token=cancel_token,
+            )
+        except BaseException as exc:
+            stream.set_exception(exc)
+        else:
+            stream.set_result(artifacts)
+
+    asyncio.create_task(_run())
+    return stream
 
 
 class _RealtimeTaskStateTrackingEventSink:

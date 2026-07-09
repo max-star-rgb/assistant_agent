@@ -193,11 +193,10 @@ The stream facade should not invent new interrupt semantics.
 
 If the worker raises an unexpected exception before producing an `AgentState`, `AgentRunStream.result()` should re-raise that exception. The async iterator may also re-raise after queued events are drained. Tests should lock this behavior before implementation.
 
-## Service-Level Stream Facade
+## Phase 2 Service-Level Stream Facade
 
-Phase 1 only adds `AgentGraphRuntime.run_stream()`.
-
-The next phase should add a service-level stream facade:
+Phase 2 adds `run_assistant_request_stream()` on top of the shared assistant run
+service:
 
 ```python
 stream = run_assistant_request_stream(request, ...)
@@ -208,7 +207,11 @@ async for event in stream:
 artifacts = await stream.result()
 ```
 
-That phase is important because `run_assistant_request()` owns more than raw runtime execution:
+The stream yields existing `AgentEvent` objects. The terminal result remains
+`AssistantRunArtifacts`.
+
+This phase deliberately keeps `run_assistant_request()` as the synchronous
+source of truth because it owns more than raw runtime execution:
 
 - env and provider config resolution
 - runtime creation
@@ -219,7 +222,33 @@ That phase is important because `run_assistant_request()` owns more than raw run
 - final conversation turn recording
 - `AssistantRunArtifacts`
 
-`AgentGraphRealtimeBackend` should migrate to the service-level stream facade, not directly around `run_assistant_request()` to construct `AgentGraphRuntime` itself.
+Internally, Phase 2 still runs the existing service function in a worker thread
+and bridges `EventSink.emit()` into an async iterator. This is a service-level
+async facade, not a native async runtime. It changes the consumer boundary while
+preserving the current run service behavior and final-result contract.
+
+`AgentGraphRealtimeBackend` should migrate to the service-level stream facade,
+not directly around `run_assistant_request()` to construct `AgentGraphRuntime`
+itself.
+
+## Phase 2 Implemented Interfaces
+
+`run_assistant_request_stream(request, **kwargs)` accepts the same operational
+inputs as `run_assistant_request()` and returns
+`AgentRunStream[AssistantRunArtifacts]`.
+
+The facade forwards events to an optional compatibility `event_sink` while also
+recording them for `AssistantRunArtifacts.events`. This keeps callback-style
+observers working during migration and lets new consumers use:
+
+```python
+stream = run_assistant_request_stream(request, event_sink=legacy_sink)
+
+async for event in stream:
+    consume(event)
+
+artifacts = await stream.result()
+```
 
 ## Realtime Backend Migration
 

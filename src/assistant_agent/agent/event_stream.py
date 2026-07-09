@@ -91,8 +91,10 @@ class AsyncQueueEventSink:
         self._loop = loop
         self._stream = stream
         self._inner = inner
+        self.events: list[AgentEvent] = []
 
     def emit(self, event: AgentEvent) -> None:
+        self.events.append(event)
         self._stream.emit(event)
         if self._inner is not None:
             self._inner.emit(event)
