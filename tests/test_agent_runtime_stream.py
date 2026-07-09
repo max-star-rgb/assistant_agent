@@ -53,6 +53,7 @@ def test_async_queue_event_sink_forwards_from_worker_thread_in_order() -> None:
         async for event in stream:
             seen.append(event)
         thread.join(timeout=2)
+        assert not thread.is_alive()
 
         assert await stream.result() == "done"
         return seen
@@ -128,6 +129,23 @@ def test_runtime_run_stream_preserves_compatibility_event_sink() -> None:
         compatibility_sink = RecordingSink()
         request = UserRequest(user_id="u1", session_id="s1", text="你好")
         stream = runtime.run_stream(request, event_sink=compatibility_sink)
+
+        streamed = [event async for event in stream]
+        await stream.result()
+        return [event.type for event in streamed], [event.type for event in compatibility_sink.events]
+
+    streamed_types, compatibility_types = asyncio.run(scenario())
+
+    assert streamed_types
+    assert streamed_types == compatibility_types
+
+
+def test_runtime_run_stream_forwards_constructor_event_sink() -> None:
+    async def scenario() -> tuple[list[str], list[str]]:
+        compatibility_sink = RecordingSink()
+        runtime = AgentGraphRuntime(event_sink=compatibility_sink)
+        request = UserRequest(user_id="u1", session_id="s1", text="你好")
+        stream = runtime.run_stream(request)
 
         streamed = [event async for event in stream]
         await stream.result()

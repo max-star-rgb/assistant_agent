@@ -6,6 +6,8 @@
 
 **Architecture:** Keep `AgentGraphRuntime.run_state()` and `run()` as the authoritative synchronous implementations. Add a small `agent.event_stream` module that runs the sync runtime function in a worker thread, bridges synchronous `EventSink.emit()` calls into an event-loop-owned queue with `loop.call_soon_threadsafe`, and exposes both async event iteration and `await result()`. Do not change Gateway, realtime event schemas, tools, memory, or providers in this phase.
 
+**Status note:** Tasks 1-3 were executed and reviewed in the SDD ledger for this branch. Task 4 below records the documentation completion state for the plan file itself.
+
 **Tech Stack:** Python 3, asyncio, Pydantic models already in the repo, existing `AgentEvent` and `EventSink`, pytest, conda environment `hello_agent`.
 
 ## Global Constraints

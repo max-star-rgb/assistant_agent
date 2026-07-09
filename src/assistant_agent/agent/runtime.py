@@ -806,7 +806,8 @@ class AgentGraphRuntime:
 
         loop = asyncio.get_running_loop()
         stream: AgentRunStream[AgentState] = AgentRunStream(loop=loop)
-        stream_sink = AsyncQueueEventSink(loop=loop, stream=stream, inner=event_sink)
+        inner = event_sink if event_sink is not None else self.event_sink
+        stream_sink = AsyncQueueEventSink(loop=loop, stream=stream, inner=inner)
 
         async def _run() -> None:
             try:
