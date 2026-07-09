@@ -23,4 +23,6 @@ htmlcov/
 /demo_data/
 /docs/interview/
 /tmp/
+/.worktrees
+/.worktrees/
 /openclaw-study/
