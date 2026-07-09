@@ -76,6 +76,12 @@ class LLMToolCallDelta(BaseModel):
     arguments_delta: str | None = None
 
 
+class LLMProviderError(BaseModel):
+    code: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    recoverable: bool = False
+
+
 class LLMEvent(BaseModel):
     event_type: LLMEventType
     provider: str = Field(min_length=1)
@@ -84,7 +90,7 @@ class LLMEvent(BaseModel):
     tool_call_delta: LLMToolCallDelta | None = None
     finish_reason: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
-    error: ChatProviderError | None = None
+    error: LLMProviderError | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 ```
 
@@ -96,6 +102,8 @@ Boundary rules:
   chunks to Runtime consumers.
 - Keep provider and model metadata because they are useful for trace, payload,
   and debugging.
+- Keep provider errors in a provider-neutral `LLMProviderError` shape instead
+  of importing service-layer chat adapter models into schema code.
 - Keep raw provider responses out of `metadata`; only prompt-safe and
   trace-safe values belong there.
 
@@ -140,6 +148,8 @@ Add `LLMEvent`, `LLMToolCallDelta`, and a small accumulator helper that can:
 - collect token deltas into final response text;
 - collect tool-call deltas by index;
 - produce finalized `NativeToolCall` payloads;
+- allow parser callers to preserve the source `provider_format`, for example
+  `openai_compatible`, when finalizing tool calls;
 - carry `finish_reason` and `usage`.
 
 Keep this helper independent from any vendor SDK.

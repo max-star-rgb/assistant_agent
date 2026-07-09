@@ -26,14 +26,14 @@
 - Test: `tests/test_llm_events.py`
 
 **Interfaces:**
-- Produces: `LLMEvent`, `LLMToolCallDelta`, `LLMEventAccumulator`
+- Produces: `LLMEvent`, `LLMToolCallDelta`, `LLMProviderError`, `LLMEventAccumulator`
 
-- [ ] **Step 1: Write schema and accumulator tests**
+- [x] **Step 1: Write schema and accumulator tests**
 
 Create tests for token aggregation, tool-call argument aggregation by index,
 completion metadata, and provider error events.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -43,12 +43,12 @@ Run:
 
 Expected: fail because `assistant_agent.schemas.llm_events` does not exist.
 
-- [ ] **Step 3: Implement schema and accumulator**
+- [x] **Step 3: Implement schema and accumulator**
 
 Implement the minimum contract from
 `docs/provider-event-boundary-architecture.md`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run:
 
