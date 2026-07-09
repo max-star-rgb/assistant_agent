@@ -67,6 +67,23 @@ _EN_MEMORY_MARKERS = (
     "resume",
     "pick up where",
 )
+_CN_PERSONAL_PREFERENCE_MARKERS = (
+    "风格",
+    "偏好",
+    "喜好",
+    "口味",
+)
+_CN_PERSONALIZATION_TASK_MARKERS = (
+    "推荐",
+    "方案",
+    "文案",
+    "设计",
+    "搭配",
+    "回答",
+    "写",
+    "生成",
+    "继续",
+)
 
 
 class MemoryReadDecision(BaseModel):
@@ -204,6 +221,17 @@ class MemoryReadPolicy:
                 max_context_chars=max_context_chars,
                 max_context_tokens=max_context_tokens,
             )
+        personal_trigger = _first_personal_preference_trigger(query_text or request_text)
+        if personal_trigger:
+            return _decision(
+                mode=mode,
+                allowed=True,
+                reason="personal_preference_reference",
+                trigger=personal_trigger,
+                top_k=top_k,
+                max_context_chars=max_context_chars,
+                max_context_tokens=max_context_tokens,
+            )
         return _decision(
             mode=mode,
             allowed=False,
@@ -291,4 +319,19 @@ def _first_memory_trigger(text: str) -> str | None:
     for marker in _EN_MEMORY_MARKERS:
         if marker in lowered:
             return marker
+    return None
+
+
+def _first_personal_preference_trigger(text: str) -> str | None:
+    normalized = text.strip()
+    if not normalized:
+        return None
+    preference_marker = next(
+        (marker for marker in _CN_PERSONAL_PREFERENCE_MARKERS if marker in normalized),
+        None,
+    )
+    if preference_marker is None:
+        return None
+    if any(marker in normalized for marker in _CN_PERSONALIZATION_TASK_MARKERS):
+        return preference_marker
     return None

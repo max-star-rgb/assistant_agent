@@ -55,6 +55,31 @@ def test_auto_memory_load_skips_store_without_explicit_read_intent() -> None:
     assert state.request.metadata["memory_context_injected_ids"] == []
 
 
+def test_auto_memory_load_allows_personal_style_recommendation_intent() -> None:
+    store = CountingMemoryStore()
+    store.save(
+        MemoryItem(
+            memory_id="m-style",
+            user_id="u1",
+            session_id="s-old",
+            memory_type="preference",
+            summary="用户喜欢日系风格。",
+            created_at=NOW,
+        )
+    )
+    manager = MemoryManager(store)
+    request = UserRequest(user_id="u1", session_id="s1", text="日系风格推荐")
+    state = AgentState.from_request(request)
+
+    context = manager.load_into_state(state, request)
+
+    assert store.search_count == 1
+    assert [item.memory_id for item in context.items] == ["m-style"]
+    assert state.request.metadata["memory_context_skipped"] is False
+    assert state.request.metadata["memory_context_policy_reason"] == "personal_preference_reference"
+    assert state.request.metadata["memory_read_policy"]["trigger"] == "风格"
+
+
 def test_auto_memory_load_allows_previous_context_intent() -> None:
     store = CountingMemoryStore()
     _seed_store(store)

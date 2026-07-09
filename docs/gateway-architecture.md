@@ -179,7 +179,7 @@ Entry adapters may be implemented in TypeScript, Go, Rust, or another language w
 
 `/ws/realtime/media` is the primary realtime call entry for Media Relay integrations. It accepts media-entry events, validates identity and session binding against the WebSocket query/auth context, and maps valid events to Gateway frames:
 
-Local Media Relay testing should use `scripts/realtime_media_client.py` or `scripts/run_realtime_call_simulator.py`. A future Web UI can be added as a thin entry adapter, but it must not reintroduce a separate browser chat runtime or make the browser a second primary Gateway client path.
+Local Media Relay testing should use `scripts/realtime_media_client.py` or `scripts/run_realtime_call_simulator.py`; see `docs/development/realtime-runtime-operator-runbook.md` for the operator loop. A future Web UI can be added as a thin entry adapter, but it must not reintroduce a separate browser chat runtime or make the browser a second primary Gateway client path.
 
 | media event | required shape | Gateway mapping |
 | --- | --- | --- |

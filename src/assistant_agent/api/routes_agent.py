@@ -34,11 +34,12 @@ from assistant_agent.schemas.memory_audit import (
     MemoryProfileRepairResult,
     MemoryRetentionSweepResult,
 )
-from assistant_agent.schemas.memory_snapshot import MemorySnapshot
+from assistant_agent.schemas.memory_snapshot import MemorySnapshot, MemoryStorageSnapshot
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.sessions import SessionCreate, SessionDeleteResult, SessionList, SessionRecord
 from assistant_agent.services.assistant_run_service import (
     create_runtime,
+    get_default_conversation_store as _get_default_conversation_store,
 )
 from assistant_agent.services.assistant_runtime_app import AssistantRuntimeApp
 from assistant_agent.services.agent_control_plane import AgentControlPlaneQueryService, audit_event
@@ -101,6 +102,12 @@ def get_agent_runtime() -> Any:
 
 def get_assistant_runtime_app() -> AssistantRuntimeApp:
     return AssistantRuntimeApp(runtime_factory=get_agent_runtime)
+
+
+def get_default_conversation_store(config=None):
+    """Return the configured conversation store for API memory/session views."""
+
+    return _get_default_conversation_store(config)
 
 
 def get_agent_router() -> AgentRouter:
@@ -844,7 +851,19 @@ def _memory_audit_service() -> MemoryAuditService:
 
 
 def _memory_snapshot_service() -> MemorySnapshotService:
-    return get_assistant_runtime_app().memory_snapshot_service()
+    runtime = get_agent_runtime()
+    conversation_store = get_default_conversation_store(runtime.config)
+    return MemorySnapshotService(
+        memory_manager=runtime.memory_manager,
+        session_store=runtime.session_store,
+        conversation_store=conversation_store,
+        storage=MemoryStorageSnapshot(
+            memory_store=type(runtime.memory_store).__name__,
+            session_store=type(runtime.session_store).__name__,
+            conversation_store=type(conversation_store).__name__,
+            checkpointer=type(runtime.checkpointer).__name__ if runtime.checkpointer is not None else "none",
+        ),
+    )
 
 
 def _control_plane_query_service() -> AgentControlPlaneQueryService:

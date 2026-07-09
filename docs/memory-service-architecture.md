@@ -187,7 +187,8 @@ If memory logic grows beyond identity binding, input adaptation, or result wrapp
 Long-term memory reads are policy-gated before retrieval:
 
 - Automatic runtime `load_memory` calls go through `MemoryManager.load_context_for_request(...)`, which applies `MemoryReadPolicy` before store access.
-- If the current user request does not explicitly refer to prior chats, previous/last context, saved memory, remembered preferences, or continuing an old task, memory context is skipped and the store is not searched.
+- If the current user request does not explicitly refer to prior chats, previous/last context, saved memory, remembered preferences, continuing an old task, or a clearly personal style/preference customization task, memory context is skipped and the store is not searched.
+- The personal style/preference path is deliberately narrow: Chinese requests must contain a preference marker such as `风格`, `偏好`, `喜好`, or `口味` plus a task marker such as `推荐`, `方案`, `文案`, `设计`, `搭配`, `回答`, `写`, `生成`, or `继续`. Ordinary first-pass product search, generic advice, and generic copywriting still skip store access.
 - Skipped loads write prompt-safe metadata: `memory_context_skipped=true`, `memory_context_policy_reason`, `memory_read_policy`, `memory_trust_policy`, and empty `memory_context_*` injection fields.
 - `load_memory_with_trace(...)` records the read decision and skipped status, but does not record memory text or summaries.
 - `memory_retrieval` and legacy `memory action=retrieve` must pass the same read-intent gate in `ActionValidator` before `ToolExecutor` runs the tool.
@@ -343,7 +344,7 @@ Current behavior:
 
 Retrieval is deterministic and local:
 
-- Automatic runtime retrieval first passes `MemoryReadPolicy`; ordinary first-pass writing, advice, generation, search, and recommendations do not auto-inject long-term memory.
+- Automatic runtime retrieval first passes `MemoryReadPolicy`; ordinary first-pass writing, advice, generation, search, and recommendations do not auto-inject long-term memory. The exception is the narrow personal style/preference customization path described above, which supports Personal Assistant continuity without opening generic retrieval.
 - Explicit retrieval tools are allowed only when the current user request has historical-memory intent; a non-empty query alone is not sufficient.
 - Non-empty query uses `KeywordMemoryRetriever`.
 - Chinese query segments are expanded into short phrase fragments for local recall.

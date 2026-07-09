@@ -63,7 +63,7 @@ Last updated: 2026-07-08
 ### Memory Context
 
 - `MemoryManager` 是 memory 检索、上下文格式化、显式保存、去重、用户画像更新和 completed-run promotion candidate 的边界。
-- 自动 memory context 注入先走 `MemoryReadPolicy`。普通首次文案、建议、搜索、生成或推荐不自动查长期记忆；明确提到上次、之前、已保存记忆、个人偏好或继续旧任务时才查。
+- 自动 memory context 注入先走 `MemoryReadPolicy`。普通首次文案、建议、搜索、生成或推荐不自动查长期记忆；明确提到上次、之前、已保存记忆、个人偏好、继续旧任务，或明显是个人风格/偏好定制请求时才查。个人风格/偏好定制触发口径很窄，例如包含 `风格`/`偏好`/`喜好`/`口味` 且同时包含 `推荐`/`方案`/`文案`/`设计`/`搭配`/`回答`/`写`/`生成`/`继续`。
 - memory context 分层为 semantic、session、episodic、artifact、procedural。
 - 默认 `top_k=5`，默认 `max_context_chars=500`。
 - `MemoryContextBuilder` 负责实际注入选择；`MemoryContext.items` 表示已注入的 memory 子集，而不是所有检索候选。
