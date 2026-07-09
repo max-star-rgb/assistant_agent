@@ -113,18 +113,18 @@ Expected: all direct chat adapter tests pass.
 - Consumes: `LLMEvent(token_delta)`
 - Produces: existing `AgentEvent(type="response_delta")`
 
-- [ ] **Step 1: Write mapping tests**
+- [x] **Step 1: Write mapping tests**
 
 Assert that token deltas map to `response_delta` with provider/model payload
 preserved, and tool-call deltas do not produce user-visible runtime events in
 V1.
 
-- [ ] **Step 2: Implement mapper**
+- [x] **Step 2: Implement mapper**
 
 Add a small helper used by existing callback sites. The helper should keep
 Runtime-owned `source` values explicit.
 
-- [ ] **Step 3: Run runtime event tests**
+- [x] **Step 3: Run runtime event tests**
 
 Run:
 
@@ -143,7 +143,7 @@ suppressed.
 **Interfaces:**
 - Verifies all prior tasks
 
-- [ ] **Step 1: Run formatting and fast tests**
+- [x] **Step 1: Run formatting and fast tests**
 
 Run:
 

@@ -18,6 +18,7 @@ from typing import Any, NotRequired, TypedDict, cast
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.cancellation import AgentRunCancelled
 from assistant_agent.agent.intent import IntentDetector
+from assistant_agent.agent.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.agent.loop_guard import LoopGuard, LoopGuardDecision
 from assistant_agent.agent.memory_tool_selection import (
     build_memory_tool_selection_audit,
@@ -1059,17 +1060,16 @@ def _response_stream_callback(
     state = graph_state["state"]
 
     def emit_delta(text: str, payload: dict[str, Any]) -> None:
-        if not text:
-            return
-        event_sink.emit(
-            AgentEvent(
-                type="response_delta",
-                session_id=state.session_id,
-                run_id=state.run_id,
-                text=text,
-                payload={**dict(payload), "source": source},
-            )
+        event = stream_delta_to_agent_event(
+            text,
+            payload,
+            session_id=state.session_id,
+            run_id=state.run_id,
+            source=source,
         )
+        if event is None:
+            return
+        event_sink.emit(event)
 
     return emit_delta
 

@@ -179,6 +179,13 @@ Use it behind existing runtime callbacks so `assistant_loop_nodes.py`,
 `graph_nodes.py`, and `runtime.py` do not each hand-build subtly different
 response-delta payloads forever.
 
+Implemented status: `llm_event_mapping.py` now maps provider-neutral
+`LLMEvent(token_delta)` records to existing `response_delta` runtime events.
+Legacy `(text, payload)` callbacks are adapted through that helper in
+`assistant_loop_nodes.py`, `graph_nodes.py`, and `runtime.py`. Runtime-owned
+`source` values remain explicit, and callbacks without provider/model metadata
+preserve their previous payload shape.
+
 This mapper should not emit user-visible events for `tool_call_delta` in V1.
 
 ### Phase 6D: Optional Async Provider Stream

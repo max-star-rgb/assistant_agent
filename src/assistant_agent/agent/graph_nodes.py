@@ -4,6 +4,7 @@ from inspect import signature
 from typing import NotRequired, TypedDict
 
 from assistant_agent.agent.intent import IntentDetector
+from assistant_agent.agent.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
@@ -12,7 +13,6 @@ from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.agent.tool_input_builder import build_tool_input
 from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.schemas.capabilities import canonical_intent
-from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.planning import TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
@@ -320,17 +320,18 @@ def _with_response_stream_callback(
     state = graph_state["state"]
 
     def emit_delta(text: str, payload: dict) -> None:
-        if not text or not hasattr(event_sink, "emit"):
+        if not hasattr(event_sink, "emit"):
             return
-        event_sink.emit(
-            AgentEvent(
-                type="response_delta",
-                session_id=state.session_id,
-                run_id=state.run_id,
-                text=text,
-                payload={**dict(payload), "source": source},
-            )
+        event = stream_delta_to_agent_event(
+            text,
+            dict(payload),
+            session_id=state.session_id,
+            run_id=state.run_id,
+            source=source,
         )
+        if event is None:
+            return
+        event_sink.emit(event)
 
     return request.model_copy(update={"stream_callback": emit_delta})
 

@@ -11,6 +11,7 @@ from assistant_agent.agent.conditional_graph import build_conditional_agent_grap
 from assistant_agent.agent.assistant_loop_graph import build_assistant_loop_graph
 from assistant_agent.agent.graph_runtime import GraphRuntimeContext
 from assistant_agent.agent.intent import IntentDetector
+from assistant_agent.agent.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
@@ -1167,9 +1168,16 @@ class _NativeRuntimeResponseBuffer:
         self.events: list[AgentEvent] = []
 
     def emit_delta(self, text: str, payload: dict[str, Any]) -> None:
-        if not text:
+        event = stream_delta_to_agent_event(
+            text,
+            payload,
+            session_id=self.state.session_id,
+            run_id=self.state.run_id,
+            source="assistant_native_final_answer",
+        )
+        if event is None:
             return
-        self.events.append(_native_response_delta_event(self.state, text, payload))
+        self.events.append(event)
 
     def flush(self) -> None:
         for event in self.events:
@@ -1477,21 +1485,18 @@ def _native_runtime_stream_callback(state: AgentState, event_sink: EventSink | N
         return None
 
     def emit_delta(text: str, payload: dict[str, Any]) -> None:
-        if not text:
+        event = stream_delta_to_agent_event(
+            text,
+            payload,
+            session_id=state.session_id,
+            run_id=state.run_id,
+            source="assistant_native_final_answer",
+        )
+        if event is None:
             return
-        event_sink.emit(_native_response_delta_event(state, text, payload))
+        event_sink.emit(event)
 
     return emit_delta
-
-
-def _native_response_delta_event(state: AgentState, text: str, payload: dict[str, Any]) -> AgentEvent:
-    return AgentEvent(
-        type="response_delta",
-        session_id=state.session_id,
-        run_id=state.run_id,
-        text=text,
-        payload={**dict(payload), "source": "assistant_native_final_answer"},
-    )
 
 
 def _native_runtime_tool_call_payload(
