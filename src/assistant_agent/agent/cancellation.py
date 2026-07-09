@@ -41,6 +41,9 @@ def is_cancelled(cancel_token: Any | None) -> bool:
     checker = getattr(cancel_token, "is_cancelled", None)
     if callable(checker):
         return bool(checker())
+    is_set = getattr(cancel_token, "is_set", None)
+    if callable(is_set):
+        return bool(is_set())
     cancelled = getattr(cancel_token, "cancelled", None)
     return bool(cancelled) if isinstance(cancelled, bool) else False
 

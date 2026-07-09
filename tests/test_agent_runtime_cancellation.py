@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from assistant_agent.agent.cancellation import AgentRunCancelled
@@ -65,6 +67,19 @@ def test_runtime_pre_graph_cancel_records_token_metadata() -> None:
     assert state.errors[-1].details["cancel_source"] == "deadline"
     assert state.errors[-1].details["cancel_reason"] == "run_deadline_expired"
     assert state.errors[-1].details["deadline_ms"] == 100
+
+
+def test_runtime_accepts_raw_asyncio_event_cancel_token() -> None:
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+
+    state = AgentGraphRuntime().run_state(
+        UserRequest(user_id="u1", session_id="s1", text="hello"),
+        cancel_token=cancel_event,
+    )
+
+    assert state.status == "cancelled"
+    assert state.errors[-1].details["cancel_phase"] == "pre_graph"
 
 
 def test_bound_graph_node_raises_after_node_cancel_with_latest_state() -> None:

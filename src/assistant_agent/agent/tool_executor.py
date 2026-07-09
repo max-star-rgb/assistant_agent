@@ -1,6 +1,6 @@
 """Tool execution service used by workflows and LangGraph nodes."""
 
-from time import perf_counter, sleep
+from time import monotonic, perf_counter, sleep
 from typing import Any
 
 from assistant_agent.agent.cancellation import (
@@ -720,18 +720,12 @@ class ToolExecutor:
 
             retry_count += 1
             if self.execution_policy.retry.backoff_seconds > 0:
-                raise_if_cancelled(
+                _sleep_with_cancel(
                     self.cancel_token,
-                    phase="before_tool_retry_sleep",
-                    source="tool_executor",
-                    details={"tool_name": tool_name, "step_id": step_id, "retry_count": retry_count},
-                )
-                sleep(self.execution_policy.retry.backoff_seconds)
-                raise_if_cancelled(
-                    self.cancel_token,
-                    phase="after_tool_retry_sleep",
-                    source="tool_executor",
-                    details={"tool_name": tool_name, "step_id": step_id, "retry_count": retry_count},
+                    self.execution_policy.retry.backoff_seconds,
+                    tool_name=tool_name,
+                    step_id=step_id,
+                    retry_count=retry_count,
                 )
 
     def _run_once(self, tool_name: str, tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
@@ -745,6 +739,35 @@ class ToolExecutor:
     def _emit(self, event: AgentEvent) -> None:
         if self.event_sink is not None:
             self.event_sink.emit(event)
+
+
+def _sleep_with_cancel(
+    cancel_token: Any | None,
+    seconds: float,
+    *,
+    tool_name: str,
+    step_id: str,
+    retry_count: int,
+) -> None:
+    details = {"tool_name": tool_name, "step_id": step_id, "retry_count": retry_count}
+    raise_if_cancelled(
+        cancel_token,
+        phase="before_tool_retry_sleep",
+        source="tool_executor",
+        details=details,
+    )
+    deadline = monotonic() + seconds
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return
+        sleep(min(remaining, 0.05))
+        raise_if_cancelled(
+            cancel_token,
+            phase="after_tool_retry_sleep",
+            source="tool_executor",
+            details=details,
+        )
 
 
 def _append_tool_trace_event(

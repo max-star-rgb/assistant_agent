@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 from pydantic import BaseModel
 
@@ -6,6 +9,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.provider_policy import ProviderExecutionPolicy, RetryPolicy
 from assistant_agent.services.trace_store import InMemoryTraceStore, trace_debug_summary
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
@@ -207,3 +211,42 @@ def test_tool_executor_after_tool_attempt_cancel_records_deadline_metadata() -> 
     assert details["step_id"] == "step_1"
     assert state.errors[-1].details["cancel_source"] == "deadline"
     assert state.errors[-1].details["step_id"] == "step_1"
+
+
+def test_tool_executor_retry_backoff_wakes_when_cancelled() -> None:
+    token = MutableCancelToken(
+        metadata={
+            "cancel_source": "deadline",
+            "cancel_reason": "run_deadline_expired",
+            "deadline_ms": 20,
+        }
+    )
+
+    class RetryingTool(EchoTool):
+        def _run(self, input: EchoInput, context: ToolContext) -> ToolResult:
+            return ToolResult(tool_name=self.name, success=False, error="provider_timeout: timed out")
+
+    registry = ToolRegistry()
+    registry.register(RetryingTool())
+    state = AgentState.from_request(UserRequest(user_id="u1", session_id="s1", text="hello"))
+    timer = threading.Timer(0.02, lambda: setattr(token, "cancelled", True))
+    started_at = time.perf_counter()
+
+    try:
+        timer.start()
+        with pytest.raises(AgentRunCancelled) as exc_info:
+            ToolExecutor(
+                registry=registry,
+                cancel_token=token,
+                execution_policy=ProviderExecutionPolicy(
+                    retry=RetryPolicy(max_retries=1, backoff_seconds=0.5)
+                ),
+            ).run_tool(state, "step_1", "echo", {"text": "hello"})
+    finally:
+        timer.cancel()
+
+    elapsed = time.perf_counter() - started_at
+    assert elapsed < 0.2
+    assert exc_info.value.details["cancel_phase"] == "after_tool_retry_sleep"
+    assert exc_info.value.details["cancel_source"] == "deadline"
+    assert state.errors[-1].details["cancel_reason"] == "run_deadline_expired"

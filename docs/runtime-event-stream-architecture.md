@@ -286,6 +286,33 @@ This migration preserves:
 - `expects_reply`
 - stale event suppression after Gateway cancel or interrupt
 
+## Phase 4 Cancellation Propagation
+
+Phase 4 tightens cooperative cancellation without changing Gateway wire frames
+or rewriting runtime internals.
+
+The cancellation model remains:
+
+```text
+Gateway CancelToken / event-like token
+  -> run_assistant_request_stream(..., cancel_token=...)
+  -> AgentGraphRuntime.run_state(..., cancel_token=...)
+  -> raise_if_cancelled()
+  -> ToolExecutor / runtime node checks
+```
+
+Implemented Phase 4 changes:
+
+- `raise_if_cancelled()` now recognizes event-like tokens with `is_set()`, so
+  raw `asyncio.Event` style cancel tokens are treated as cancelled when set.
+- `ToolExecutor` retry backoff no longer sleeps as one uninterruptible block.
+  It sleeps in short chunks and checks the cancel token between chunks.
+
+This phase does not forcefully terminate blocking external SDK calls,
+subprocesses, or provider requests that do not cooperate. Those remain thread
+or adapter-level migration candidates and should be handled only where evidence
+shows a real bottleneck.
+
 ## Provider Event Direction
 
 Provider-native streaming should eventually move from provider callbacks:
