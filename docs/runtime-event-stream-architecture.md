@@ -118,6 +118,41 @@ AgentGraphRuntime.run_state()
 
 This is an async facade, not a native async runtime. The facade changes the consumer interface without changing the internal execution model.
 
+## Phase 1 Interfaces
+
+The first implementation should introduce a small runtime stream module:
+
+```text
+src/assistant_agent/agent/event_stream.py
+```
+
+Expected public objects:
+
+```python
+class AgentRunStream:
+    def __aiter__(self) -> AgentRunStream: ...
+    async def __anext__(self) -> AgentEvent: ...
+    async def result(self) -> AgentState: ...
+    async def wait(self) -> AgentState: ...
+
+
+class AsyncQueueEventSink:
+    def emit(self, event: AgentEvent) -> None: ...
+```
+
+`AgentGraphRuntime` then exposes:
+
+```python
+def run_stream(
+    self,
+    request: UserRequest,
+    *,
+    event_sink: EventSink | None = None,
+    cancel_token: Any | None = None,
+) -> AgentRunStream:
+    ...
+```
+
 ## Phase 1 Implemented Interfaces
 
 `AgentGraphRuntime.run_stream(request, *, event_sink=None, cancel_token=None)`
@@ -125,6 +160,8 @@ returns `AgentRunStream[AgentState]`.
 
 `AgentRunStream` supports async iteration over `AgentEvent` and
 `await stream.result()` for the terminal `AgentState`.
+
+The optional `event_sink` remains useful for compatibility observers. The stream sink should forward to that sink after enqueuing or before enqueuing, as long as order is deterministic and sink failures cannot leave the stream hanging.
 
 ## Threading Model
 

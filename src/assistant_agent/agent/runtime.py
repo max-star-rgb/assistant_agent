@@ -1,5 +1,6 @@
 """Default LangGraph runtime for agent execution."""
 
+import asyncio
 import json
 from time import perf_counter
 from typing import Any, Literal
@@ -12,6 +13,7 @@ from assistant_agent.agent.graph_runtime import GraphRuntimeContext
 from assistant_agent.agent.intent import IntentDetector
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
+from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.agent.system_prompt_policy import (
     SystemPromptOptions,
     SystemPromptProfile,
@@ -958,6 +960,36 @@ class AgentGraphRuntime:
                 "run_id": state.run_id,
             }
         }
+
+    def run_stream(
+        self,
+        request: UserRequest,
+        *,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+    ) -> AgentRunStream[AgentState]:
+        """Run the graph in a worker thread and expose AgentEvent records asynchronously."""
+
+        loop = asyncio.get_running_loop()
+        stream: AgentRunStream[AgentState] = AgentRunStream(loop=loop)
+        inner = event_sink if event_sink is not None else self.event_sink
+        stream_sink = AsyncQueueEventSink(loop=loop, stream=stream, inner=inner)
+
+        async def _run() -> None:
+            try:
+                state = await asyncio.to_thread(
+                    self.run_state,
+                    request,
+                    event_sink=stream_sink,
+                    cancel_token=cancel_token,
+                )
+            except BaseException as exc:
+                stream.set_exception(exc)
+            else:
+                stream.set_result(state)
+
+        asyncio.create_task(_run())
+        return stream
 
     def run(
         self,
