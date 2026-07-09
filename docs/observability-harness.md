@@ -257,6 +257,29 @@ shape from trace events received during the current process. It is useful for
 tests and local harness wiring where reading the JSONL trace store is
 unnecessary.
 
+## Trajectory Debug
+
+`assistant_agent.services.trajectory_debug` provides the Phase 5 local
+trajectory debug contract. It converts already-redacted `TraceEvent` records
+into `TrajectoryReplayCase` objects for debug, replay preview, and regression
+eval review.
+
+Trajectory replay cases are diagnostic artifacts only:
+
+- `replay_mode` is `debug_replay_eval_only`.
+- `production_mutation_allowed` and `raw_data_included` are always false.
+- Timeline entries keep only prompt-safe IDs, event names, statuses, tool names,
+  provider/model labels, error codes, latency, span links, and allowlisted
+  budget/retry/output-ref summaries.
+- They do not include raw user text, prompts, rendered context, raw memory
+  content, raw provider payloads, authorization values, or inline media bodies.
+
+`evaluate_trajectory_improvement_gate(...)` is a manual-review gate, not a
+learning loop. A trajectory-derived memory or skill improvement can enter manual
+review only when the replay case is redacted and the target regression suite has
+passed. The report never permits automatic production policy, memory, skill,
+prompt, routing, tool, or provider changes.
+
 ## Redaction Rules
 
 Trace and monitoring records must not include:
@@ -344,6 +367,15 @@ Regression tests should enforce these invariants:
 - Add optional OpenTelemetry-compatible export only after local harness semantics
   are stable.
 - Export should be disabled by default and must use the same redaction boundary.
+
+### Phase 5: Trajectory Debug Gate
+
+- Build redacted `TrajectoryReplayCase` artifacts from existing trace events.
+- Keep replay/eval local and diagnostic-only.
+- Require memory or skill regression evidence before any trajectory-derived
+  improvement reaches manual review.
+- Do not implement RL, automatic self-modification, private-data training, or
+  production policy updates.
 
 ## Update Rules
 

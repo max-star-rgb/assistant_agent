@@ -584,9 +584,15 @@ git diff --check -- AGENTS.md docs src tests scripts
 
 ### Phase 5 Gate
 
-- trajectory replay 使用脱敏数据。
-- learning loop 不会自动修改生产策略；早期只允许 debug/replay/eval。
-- memory 和 skill 改进有 regression eval。
+- trajectory replay 使用 `TrajectoryReplayCase` 脱敏数据，只保留 prompt-safe timeline。
+- learning loop 不会自动修改生产策略、memory、skill、prompt、routing、tool policy 或 provider policy；早期只允许 debug/replay/eval 和 manual review gate。
+- memory 和 skill 改进必须分别有 regression eval 证据，缺少目标 eval 时不得进入人工审查。
+- Gate commands:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase5_trajectory_debug_gate.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase2_memory_intelligence_gate.py tests/test_phase3_skill_system_gate.py -q
+```
 
 ## 与现有权威文档的关系
 
