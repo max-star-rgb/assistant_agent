@@ -65,6 +65,32 @@ With the server running, validate the Media Relay protocol surface:
 Use `--strict-cancel` only when the selected backend reliably returns terminal
 cancel status before the test timeout.
 
+## Manual Text Call Operator
+
+Use the same Media Relay route for an end-to-end manual text call. This simulates
+the media service sending final ASR text; ASR and TTS remain outside this
+repository.
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/realtime_media_client.py --server http://127.0.0.1:8000 --interactive --user-id test_user --session-id call-demo-001 --log-dir .data/realtime_sessions
+```
+
+Inside the prompt:
+
+```text
+call> 你好，今天帮我安排一下
+call> /interrupt 等一下，先记住我喜欢简短回答
+call> /cancel
+call> /report
+call> /trace last
+call> /hangup
+```
+
+The operator writes JSONL send/receive frame logs to
+`.data/realtime_sessions/<session_id>.jsonl` when `--log-dir` is set. It also
+prints the last `trace_id` from `run.end`, and `/trace last` shells out to
+`scripts/trace_view.py --server http://127.0.0.1:8000` for the current trace.
+
 ## Gateway Debug Smoke
 
 Use the normalized Gateway frame entry for low-level debugging:

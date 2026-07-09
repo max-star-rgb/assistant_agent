@@ -26,6 +26,7 @@ def test_realtime_runtime_runbook_covers_minimal_closed_loop() -> None:
         "scripts/run_server.py --provider mock --image-provider mock",
         "scripts/run_realtime_call_simulator.py --scenario all --quiet",
         "scripts/realtime_media_client.py --server http://127.0.0.1:8000 --scenario all",
+        "scripts/realtime_media_client.py --server http://127.0.0.1:8000 --interactive",
         "scripts/run_gateway_client.py --server http://127.0.0.1:8000",
         "GET /traces/{trace_id}",
         "cancelled/interrupted turns must not write durable memory",

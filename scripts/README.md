@@ -11,7 +11,7 @@ Use these when validating the realtime assistant loop:
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
   memory, trace, and tool-governed runtime routes.
 - `scripts/realtime_media_client.py`: server-backed Media Relay protocol smoke
-  client for `/ws/realtime/media`.
+  client and manual text-call operator for `/ws/realtime/media`.
 - `scripts/run_gateway_client.py`: server-backed normalized Gateway frame smoke
   client for `/ws/gateway`.
 - `scripts/run_realtime_call_simulator.py`: in-process text-only realtime gate
