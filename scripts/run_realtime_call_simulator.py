@@ -26,9 +26,10 @@ from assistant_agent.api.app import create_app
 from assistant_agent.gateway import GatewayBridge, GatewaySessionManager
 from assistant_agent.realtime import RealtimeAgentEvent, RealtimeAgentResult
 
-SCENARIOS = ("basic", "interrupt", "hangup", "all")
+SCENARIOS = ("basic", "interrupt", "hangup", "cancel", "tool_interrupt", "all")
 DEFAULT_TEXT = "你好，这是一次文本实时通话测试。"
 SLOW_TEXT = "__text_realtime_simulator_slow_turn__"
+TOOL_TEXT = "__text_realtime_simulator_tool_turn__"
 
 
 class SimulatorError(RuntimeError):
@@ -79,6 +80,39 @@ class TextSimulatorBackend:
             await _wait_for_cancel(cancel_token)
             return RealtimeAgentResult(
                 status="cancelled",
+                run_id=request.run_id,
+                trace_id=trace_id,
+                expects_reply=True,
+            )
+
+        if request.text == TOOL_TEXT:
+            if event_sink is not None:
+                await event_sink(
+                    RealtimeAgentEvent(
+                        type="tool.started",
+                        text="simulator slow tool started",
+                        payload={"tool_name": "simulator_slow_tool"},
+                    )
+                )
+            await _wait_for_cancel(cancel_token)
+            if event_sink is not None:
+                await event_sink(
+                    RealtimeAgentEvent(
+                        type="tool.finished",
+                        text="stale tool result should not leak",
+                        payload={"tool_name": "simulator_slow_tool"},
+                    )
+                )
+                await event_sink(
+                    RealtimeAgentEvent(
+                        type="response.chunk",
+                        text="stale tool result should not leak",
+                        payload={"simulator": "text_realtime"},
+                    )
+                )
+            return RealtimeAgentResult(
+                status="completed",
+                response_text="stale tool result should not leak",
                 run_id=request.run_id,
                 trace_id=trace_id,
                 expects_reply=True,
@@ -173,6 +207,17 @@ def _run_one_scenario(
                     )
                 elif name == "hangup":
                     _run_hangup(ws, summary, user_id=user_id, session_id=session_id, quiet=quiet)
+                elif name == "cancel":
+                    _run_cancel(ws, summary, user_id=user_id, session_id=session_id, quiet=quiet)
+                elif name == "tool_interrupt":
+                    _run_tool_interrupt(
+                        ws,
+                        summary,
+                        user_id=user_id,
+                        session_id=session_id,
+                        text=text,
+                        quiet=quiet,
+                    )
                 else:
                     raise SimulatorError(f"unsupported scenario: {name}")
 
@@ -227,6 +272,50 @@ def _run_hangup(ws, summary: ScenarioSummary, *, user_id: str, session_id: str, 
         quiet=quiet,
     )
     _receive_until(summary, ws, {"call.hangup_ack", "run.end"}, quiet=quiet)
+
+
+def _run_cancel(ws, summary: ScenarioSummary, *, user_id: str, session_id: str, quiet: bool) -> None:
+    _send(ws, _transcript_final_event(user_id=user_id, session_id=session_id, text=SLOW_TEXT), quiet=quiet)
+    _receive_until(summary, ws, {"run.started"}, quiet=quiet)
+    _send(
+        ws,
+        _run_cancel_event(
+            user_id=user_id,
+            session_id=session_id,
+            run_id=summary.run_ids[-1] if summary.run_ids else None,
+            reason="simulator_cancel",
+        ),
+        quiet=quiet,
+    )
+    _receive_until(summary, ws, {"run.end"}, quiet=quiet)
+    _send(ws, _session_end_event(user_id=user_id, session_id=session_id), quiet=quiet)
+    _receive_until(summary, ws, {"call.hangup_ack"}, quiet=quiet)
+
+
+def _run_tool_interrupt(
+    ws,
+    summary: ScenarioSummary,
+    *,
+    user_id: str,
+    session_id: str,
+    text: str,
+    quiet: bool,
+) -> None:
+    _send(ws, _transcript_final_event(user_id=user_id, session_id=session_id, text=TOOL_TEXT), quiet=quiet)
+    _receive_until(summary, ws, {"run.started"}, quiet=quiet)
+    _send(
+        ws,
+        _transcript_final_event(
+            user_id=user_id,
+            session_id=session_id,
+            text=text,
+            interrupt=True,
+        ),
+        quiet=quiet,
+    )
+    _receive_until_run_reasons(summary, ws, {"cancelled", "completed"}, quiet=quiet)
+    _send(ws, _session_end_event(user_id=user_id, session_id=session_id), quiet=quiet)
+    _receive_until(summary, ws, {"call.hangup_ack"}, quiet=quiet)
 
 
 def _receive_until(
@@ -308,6 +397,20 @@ def _validate_summary(summary: ScenarioSummary) -> None:
             raise SimulatorError(f"hangup expected a cancelled run, got {summary.terminal_reasons}")
         if summary.hangup_cancelled_active_run is not True:
             raise SimulatorError("hangup should cancel the active run")
+    elif summary.scenario == "cancel":
+        if summary.terminal_reasons != ["cancelled"]:
+            raise SimulatorError(f"cancel expected one cancelled run, got {summary.terminal_reasons}")
+        if summary.hangup_cancelled_active_run is not False:
+            raise SimulatorError("cancel cleanup hangup should not cancel a completed run")
+    elif summary.scenario == "tool_interrupt":
+        if set(summary.terminal_reasons) != {"cancelled", "completed"}:
+            raise SimulatorError(
+                f"tool_interrupt expected cancelled+completed, got {summary.terminal_reasons}"
+            )
+        if any("stale tool result" in text for text in summary.final_texts):
+            raise SimulatorError("tool_interrupt leaked stale tool output")
+        if summary.hangup_cancelled_active_run is not False:
+            raise SimulatorError("tool_interrupt cleanup hangup should not cancel a completed run")
     if not summary.requests:
         raise SimulatorError("scenario did not reach the realtime backend")
     for request in summary.requests:
@@ -369,6 +472,22 @@ def _session_end_event(
     }
 
 
+def _run_cancel_event(
+    *,
+    user_id: str,
+    session_id: str,
+    run_id: str | None,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "type": "run.cancel",
+        "session_id": session_id,
+        "user_id": user_id,
+        "run_id": run_id,
+        "payload": {"reason": reason},
+    }
+
+
 def _request_summary(request: Any) -> dict[str, Any]:
     return {
         "text": request.text,
@@ -411,7 +530,7 @@ async def _wait_for_cancel(cancel_token: Any) -> None:
 
 def _selected_scenarios(scenario: str) -> tuple[str, ...]:
     if scenario == "all":
-        return ("basic", "interrupt", "hangup")
+        return ("basic", "interrupt", "hangup", "cancel", "tool_interrupt")
     if scenario not in SCENARIOS:
         raise SimulatorError(f"unsupported scenario: {scenario}")
     return (scenario,)

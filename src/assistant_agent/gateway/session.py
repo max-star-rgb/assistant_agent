@@ -19,6 +19,7 @@ from assistant_agent.realtime import (
     RealtimeAgentRequest,
     RealtimeAgentResult,
 )
+from assistant_agent.services.provider_errors import sanitize_error_message
 
 
 @dataclass
@@ -281,7 +282,19 @@ class GatewaySessionService:
                         turn_id=turn_id,
                         run_id=run_id,
                         reason="cancelled",
-                        payload={"expects_reply": True},
+                        payload=_run_end_payload(
+                            result=RealtimeAgentResult(
+                                status="cancelled",
+                                run_id=run_id,
+                                expects_reply=True,
+                                metadata={
+                                    **cancel.cancel_metadata,
+                                    "cancel_phase": "gateway_exception",
+                                    "best_effort": True,
+                                },
+                            ),
+                            expects_reply=True,
+                        ),
                     )
                 )
             else:
@@ -530,7 +543,43 @@ def _run_end_payload(
     payload: dict[str, Any] = {"expects_reply": expects_reply}
     if result.trace_id:
         payload["trace_id"] = result.trace_id
+    if result.status == "cancelled":
+        cancel_payload = _run_end_cancel_payload(result.metadata)
+        if cancel_payload:
+            payload["cancel"] = cancel_payload
+        if not result.trace_id:
+            payload["trace"] = {
+                "status": "not_available",
+                "reason": "cancelled_before_backend_result",
+            }
     return payload
+
+
+def _run_end_cancel_payload(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    source = _prompt_safe_optional_string(metadata.get("cancel_source"))
+    if source:
+        payload["source"] = source
+    reason = _prompt_safe_optional_string(metadata.get("cancel_reason"))
+    if reason:
+        payload["reason"] = reason
+    phase = _prompt_safe_optional_string(metadata.get("cancel_phase"))
+    if phase:
+        payload["phase"] = phase
+    best_effort = metadata.get("best_effort")
+    if isinstance(best_effort, bool):
+        payload["best_effort"] = best_effort
+    deadline_ms = _positive_int(metadata.get("deadline_ms"))
+    if deadline_ms is not None:
+        payload["deadline_ms"] = deadline_ms
+    return payload
+
+
+def _prompt_safe_optional_string(value: Any) -> str | None:
+    text = _optional_string(value)
+    if text is None:
+        return None
+    return sanitize_error_message(text)
 
 
 def _discard_queued_frames(queue: asyncio.Queue[Frame]) -> None:

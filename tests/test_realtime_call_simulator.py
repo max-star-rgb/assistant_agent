@@ -26,7 +26,13 @@ def test_realtime_call_simulator_parser_defaults() -> None:
 def test_realtime_call_simulator_all_scenario_expands_to_phase1_order() -> None:
     module = _load_module("realtime_call_simulator_scenarios_test")
 
-    assert module._selected_scenarios("all") == ("basic", "interrupt", "hangup")
+    assert module._selected_scenarios("all") == (
+        "basic",
+        "interrupt",
+        "hangup",
+        "cancel",
+        "tool_interrupt",
+    )
 
 
 def test_realtime_call_simulator_basic_scenario_is_text_only() -> None:
@@ -72,11 +78,16 @@ def test_realtime_call_simulator_all_scenarios_pass() -> None:
     )
 
     by_name = {summary.scenario: summary.to_dict() for summary in summaries}
-    assert set(by_name) == {"basic", "interrupt", "hangup"}
+    assert set(by_name) == {"basic", "interrupt", "hangup", "cancel", "tool_interrupt"}
     assert by_name["basic"]["terminal_reasons"] == ["completed"]
     assert set(by_name["interrupt"]["terminal_reasons"]) == {"cancelled", "completed"}
     assert by_name["hangup"]["terminal_reasons"] == ["cancelled"]
     assert by_name["hangup"]["hangup_cancelled_active_run"] is True
+    assert by_name["cancel"]["terminal_reasons"] == ["cancelled"]
+    assert by_name["cancel"]["hangup_cancelled_active_run"] is False
+    assert set(by_name["tool_interrupt"]["terminal_reasons"]) == {"cancelled", "completed"}
+    assert by_name["tool_interrupt"]["hangup_cancelled_active_run"] is False
+    assert not any("stale tool result" in text for text in by_name["tool_interrupt"]["final_texts"])
     assert all(summary["status"] == "passed" for summary in by_name.values())
 
 
