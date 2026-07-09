@@ -68,12 +68,12 @@ Expected: all tests pass.
 - Consumes: `LLMEvent`, `LLMToolCallDelta`, `LLMEventAccumulator`
 - Preserves: `ChatRequest.stream_callback`, `ChatResult`
 
-- [ ] **Step 1: Add failing tests for internal LLMEvent emission**
+- [x] **Step 1: Add failing tests for internal LLMEvent emission**
 
 Extend focused stream tests so token deltas and tool-call deltas can be asserted
 through the accumulator without changing legacy callback output.
 
-- [ ] **Step 2: Run focused chat adapter tests**
+- [x] **Step 2: Run focused chat adapter tests**
 
 Run:
 
@@ -84,13 +84,13 @@ Run:
 Expected: existing tests pass before refactor; new internal-event tests fail
 until the parser is updated.
 
-- [ ] **Step 3: Route vendor chunks through LLMEvent**
+- [x] **Step 3: Route vendor chunks through LLMEvent**
 
 Refactor `_parse_openai_chat_stream()` so it converts provider chunks into
 `LLMEvent` records, feeds them into `LLMEventAccumulator`, and adapts
 `token_delta` events back into the existing legacy callback payload.
 
-- [ ] **Step 4: Run focused chat adapter tests again**
+- [x] **Step 4: Run focused chat adapter tests again**
 
 Run:
 

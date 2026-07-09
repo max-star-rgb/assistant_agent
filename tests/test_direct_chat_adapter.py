@@ -400,6 +400,99 @@ def test_stream_chunks_aggregate_content(monkeypatch) -> None:
     assert stream_events[0][1]["chunking_strategy"] == "provider_token_delta"
 
 
+def test_openai_stream_chunks_are_converted_to_llm_events() -> None:
+    events = list(
+        chat_adapter_module._openai_chat_stream_events(
+            [
+                {
+                    "model": "deepseek-chat",
+                    "choices": [{"delta": {"content": "真实"}, "finish_reason": None}],
+                },
+                {
+                    "choices": [{"delta": {"content": " DeepSeek 回复"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+                },
+            ],
+            provider="deepseek",
+            model="deepseek-fallback",
+        )
+    )
+
+    assert [event.event_type for event in events] == ["token_delta", "token_delta", "completed"]
+    assert [event.text for event in events[:2]] == ["真实", " DeepSeek 回复"]
+    assert events[0].provider == "deepseek"
+    assert events[0].model == "deepseek-chat"
+    assert events[-1].finish_reason == "stop"
+    assert events[-1].usage == {"prompt_tokens": 4, "completion_tokens": 3}
+
+
+def test_openai_stream_tool_call_chunks_are_converted_to_llm_events() -> None:
+    events = list(
+        chat_adapter_module._openai_chat_stream_events(
+            [
+                {
+                    "model": "deepseek-chat",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "product_search",
+                                            "arguments": '{"query": "通勤',
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {
+                                            "arguments": '耳机", "limit": 2}',
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                },
+            ],
+            provider="deepseek",
+            model="deepseek-fallback",
+        )
+    )
+
+    assert [event.event_type for event in events] == [
+        "tool_call_delta",
+        "tool_call_delta",
+        "completed",
+    ]
+    first_delta = events[0].tool_call_delta
+    second_delta = events[1].tool_call_delta
+    assert first_delta is not None
+    assert second_delta is not None
+    assert first_delta.index == 0
+    assert first_delta.id == "call_1"
+    assert first_delta.type == "function"
+    assert first_delta.name_delta == "product_search"
+    assert first_delta.arguments_delta == '{"query": "通勤'
+    assert second_delta.index == 0
+    assert second_delta.arguments_delta == '耳机", "limit": 2}'
+    assert events[-1].finish_reason == "tool_calls"
+
+
 def test_stream_chunks_aggregate_tool_call_arguments(monkeypatch) -> None:
     adapter, completions, _ = sdk_adapter(
         monkeypatch,

@@ -159,6 +159,11 @@ Keep this helper independent from any vendor SDK.
 Refactor `_parse_openai_chat_stream()` so vendor chunks first become
 `LLMEvent` records. Then build the existing `ChatResult` from the accumulator.
 
+Implemented status: `_parse_openai_chat_stream()` now consumes
+`_openai_chat_stream_events()`, feeds `LLMEvent` records into
+`LLMEventAccumulator`, and adapts `token_delta` events back into the legacy
+`ChatRequest.stream_callback` payload.
+
 Compatibility requirements:
 
 - `test_stream_chunks_aggregate_content` should still see the same legacy

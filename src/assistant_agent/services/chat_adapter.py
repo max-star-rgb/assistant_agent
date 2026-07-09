@@ -1,6 +1,6 @@
 """Direct chat adapter contracts and local implementations."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 import time
 from typing import Any, Literal, Protocol
@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.assistant_decision import NativeToolCall, openai_tool_call_to_native_tool_call
+from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator, LLMToolCallDelta
 from assistant_agent.services.provider_errors import ProviderAdapterError, build_provider_error
 
 
@@ -338,12 +339,49 @@ def _parse_openai_chat_stream(
     latency_ms: int,
     stream_callback: ChatStreamCallback | None = None,
 ) -> ChatResult:
-    content_parts: list[str] = []
-    refusal_parts: list[str] = []
-    tool_call_deltas: dict[int, dict[str, Any]] = {}
+    accumulator = LLMEventAccumulator()
+    refusal = ""
+    for event in _openai_chat_stream_events(stream, provider=provider, model=model):
+        accumulator.apply(event)
+        if event.event_type == "token_delta":
+            _emit_stream_delta(
+                stream_callback,
+                event.text or "",
+                provider=event.provider,
+                model=event.model,
+                token_streaming=True,
+                finish_reason=event.finish_reason,
+            )
+        elif event.event_type == "completed":
+            raw_refusal = event.metadata.get("refusal")
+            if isinstance(raw_refusal, str):
+                refusal = raw_refusal
+
+    content = accumulator.response_text
+    tool_calls = accumulator.finalize_tool_calls(provider_format="openai_compatible")
+    if not content.strip() and not tool_calls and not refusal:
+        raise ProviderAdapterError("provider_empty_response", "chat provider returned empty content")
+    return ChatResult(
+        response_text=content.strip(),
+        tool_calls=tool_calls,
+        finish_reason=accumulator.finish_reason,
+        refusal=refusal or None,
+        message_kind=_chat_message_kind(tool_calls=tool_calls, refusal=refusal or None, content=content),
+        provider=provider,
+        model=accumulator.model or model,
+        usage=accumulator.usage,
+        latency_ms=latency_ms,
+        output_ref=f"provider://chat/{provider}",
+    )
+
+
+def _openai_chat_stream_events(stream: Any, *, provider: str, model: str) -> Iterator[LLMEvent]:
+    """Translate OpenAI-compatible stream chunks into provider-neutral events."""
+
     response_model = model
     finish_reason: str | None = None
     usage: dict[str, Any] = {}
+    refusal_parts: list[str] = []
 
     for chunk in stream:
         data = _to_plain_data(chunk)
@@ -367,49 +405,45 @@ def _parse_openai_chat_stream(
                 continue
             content = delta.get("content")
             if isinstance(content, str):
-                content_parts.append(content)
-                _emit_stream_delta(
-                    stream_callback,
-                    content,
+                yield LLMEvent(
+                    event_type="token_delta",
                     provider=provider,
                     model=response_model,
-                    token_streaming=True,
+                    text=content,
                     finish_reason=finish_reason,
+                    metadata={"token_streaming": True, "chunking_strategy": "provider_token_delta"},
                 )
             elif isinstance(content, list):
                 chunk_text = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
-                content_parts.append(chunk_text)
-                _emit_stream_delta(
-                    stream_callback,
-                    chunk_text,
-                    provider=provider,
-                    model=response_model,
-                    token_streaming=True,
-                    finish_reason=finish_reason,
-                )
+                if chunk_text:
+                    yield LLMEvent(
+                        event_type="token_delta",
+                        provider=provider,
+                        model=response_model,
+                        text=chunk_text,
+                        finish_reason=finish_reason,
+                        metadata={"token_streaming": True, "chunking_strategy": "provider_token_delta"},
+                    )
             refusal = delta.get("refusal")
             if isinstance(refusal, str):
                 refusal_parts.append(refusal)
-            _merge_stream_tool_call_deltas(tool_call_deltas, delta.get("tool_calls"))
+            yield from _openai_tool_call_delta_events(
+                delta.get("tool_calls"),
+                provider=provider,
+                model=response_model,
+            )
 
-    message: dict[str, Any] = {
-        "content": "".join(content_parts),
-    }
-    refusal = "".join(refusal_parts)
-    if refusal:
-        message["refusal"] = refusal
-    tool_calls = [_finalize_stream_tool_call(value) for _, value in sorted(tool_call_deltas.items())]
-    if tool_calls:
-        message["tool_calls"] = tool_calls
-    return _parse_openai_chat_response(
-        {
-            "model": response_model,
-            "choices": [{"message": message, "finish_reason": finish_reason}],
-            "usage": usage,
-        },
+    metadata: dict[str, Any] = {}
+    refusal_text = "".join(refusal_parts)
+    if refusal_text:
+        metadata["refusal"] = refusal_text
+    yield LLMEvent(
+        event_type="completed",
         provider=provider,
-        model=model,
-        latency_ms=latency_ms,
+        model=response_model,
+        finish_reason=finish_reason,
+        usage=usage,
+        metadata=metadata,
     )
 
 
@@ -460,7 +494,12 @@ def _parse_openai_tool_calls(value: Any) -> list[NativeToolCall]:
     return calls
 
 
-def _merge_stream_tool_call_deltas(tool_call_deltas: dict[int, dict[str, Any]], value: Any) -> None:
+def _openai_tool_call_delta_events(
+    value: Any,
+    *,
+    provider: str,
+    model: str | None,
+) -> Iterator[LLMEvent]:
     if not isinstance(value, list):
         return
     for position, item in enumerate(value):
@@ -469,44 +508,27 @@ def _merge_stream_tool_call_deltas(tool_call_deltas: dict[int, dict[str, Any]], 
         index = item.get("index")
         if not isinstance(index, int):
             index = position
-        current = tool_call_deltas.setdefault(
-            index,
-            {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
-        )
+        delta_kwargs: dict[str, Any] = {"index": index}
         if item.get("id") is not None:
-            current["id"] = str(item["id"])
+            delta_kwargs["id"] = str(item["id"])
         if item.get("type") is not None:
-            current["type"] = str(item["type"])
+            delta_kwargs["type"] = str(item["type"])
         function = item.get("function")
-        if not isinstance(function, dict):
+        if isinstance(function, dict):
+            name = function.get("name")
+            if isinstance(name, str) and name:
+                delta_kwargs["name_delta"] = name
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                delta_kwargs["arguments_delta"] = arguments
+        if len(delta_kwargs) == 1:
             continue
-        current_function = current.setdefault("function", {"name": "", "arguments": ""})
-        name = function.get("name")
-        if isinstance(name, str) and name:
-            existing_name = current_function.get("name")
-            if not isinstance(existing_name, str) or not existing_name:
-                current_function["name"] = name
-            elif name == existing_name:
-                current_function["name"] = existing_name
-            elif name.startswith(existing_name):
-                current_function["name"] = name
-            else:
-                current_function["name"] = existing_name + name
-        arguments = function.get("arguments")
-        if isinstance(arguments, str):
-            current_function["arguments"] = str(current_function.get("arguments") or "") + arguments
-
-
-def _finalize_stream_tool_call(value: dict[str, Any]) -> dict[str, Any]:
-    function = value.get("function") if isinstance(value.get("function"), dict) else {}
-    return {
-        "id": value.get("id"),
-        "type": value.get("type") or "function",
-        "function": {
-            "name": function.get("name") or "",
-            "arguments": function.get("arguments") or "",
-        },
-    }
+        yield LLMEvent(
+            event_type="tool_call_delta",
+            provider=provider,
+            model=model,
+            tool_call_delta=LLMToolCallDelta(**delta_kwargs),
+        )
 
 
 def _to_plain_data(value: Any) -> Any:
