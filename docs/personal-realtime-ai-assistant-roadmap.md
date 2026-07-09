@@ -572,6 +572,19 @@ git diff --check -- AGENTS.md docs src tests scripts
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase0_tool_governance_contracts.py tests/test_tool_executor.py tests/test_architecture_boundaries.py -q
 ```
 
+### Phase 1-3 Integration Gate
+
+- Gateway text realtime turn reaches `GatewayAgentAdapter -> AgentGraphRuntime`.
+- One realtime session can save explicit user memory, recall it in a later turn, and keep memory writes out of cancelled stale turns.
+- Skill guidance can expose `realtime_web_search`, while actual execution still calls ordinary `web_search` through `ActionValidator -> ToolExecutor -> ToolRegistry`.
+- `run.end.payload.trace_id` can be used to find `context.report`, `tool.started`, `tool.finished`, `realtime.backend.finished`, and prompt-safe `skill_report_v1`.
+- This gate is not Phase 4 and does not introduce multi-agent, marketplace, scheduler, ASR, or TTS work.
+- Gate command:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_personal_realtime_assistant_runtime_gate.py -q
+```
+
 ### Phase 4 Gate
 
 - child agent 不接收父 agent 原始记忆上下文，且 control-plane 持久化前会过滤父级 raw memory/context metadata。
