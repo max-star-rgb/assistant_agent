@@ -61,6 +61,29 @@ def native_result(name: str, arguments: dict[str, object]) -> ChatResult:
     )
 
 
+def native_multi_result(calls: list[tuple[str, dict[str, object]]]) -> ChatResult:
+    return ChatResult(
+        response_text="",
+        tool_calls=[
+            NativeToolCall(
+                id=f"call_{index}",
+                name=name,
+                arguments=arguments,
+                raw={
+                    "id": f"call_{index}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"},
+                },
+            )
+            for index, (name, arguments) in enumerate(calls, start=1)
+        ],
+        finish_reason="tool_calls",
+        message_kind="tool_call",
+        provider="scripted-native",
+        model="native-test",
+    )
+
+
 def final_result(message: str) -> ChatResult:
     return ChatResult(
         response_text=message,
@@ -832,6 +855,124 @@ def test_native_runtime_direct_answer_uses_single_chat_call() -> None:
     assert state.tool_calls == []
     assert state.response is not None
     assert state.response.message == "native 模式直接回答。"
+
+
+def test_native_runtime_executes_multiple_tool_calls_serially_in_provider_order() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_multi_result(
+                [
+                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
+                ]
+            ),
+            final_result("已基于两个工具 observation 回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=5),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较价格"))
+
+    assert adapter.calls == 2
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
+    tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
+    assert len(tool_messages) == 2
+    assert tool_messages[0]["tool_call_id"] == "call_1"
+    assert tool_messages[1]["tool_call_id"] == "call_2"
+    assert "product_search" in tool_messages[0]["content"]
+    assert "web_search" in tool_messages[1]["content"]
+    assert state.response is not None
+    assert state.response.message == "已基于两个工具 observation 回答。"
+    assert state.response.data["tool_observations"] == 2
+
+
+def test_native_runtime_stops_multi_tool_batch_when_first_call_is_rejected() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_multi_result(
+                [
+                    ("unknown_tool", {}),
+                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                ]
+            )
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=5),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="use native unknown and then search"))
+
+    assert adapter.calls == 1
+    assert state.tool_calls == []
+    assert state.response is not None
+    assert state.response.data["validator_result"]["code"] == "unknown_tool"
+    assert len(state.request.metadata["native_tool_calls"]) == 1
+    assert state.request.metadata["native_tool_calls"][0]["name"] == "unknown_tool"
+
+
+def test_native_runtime_multi_tool_batch_respects_single_remaining_tool_budget() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_multi_result(
+                [
+                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
+                ]
+            ),
+            final_result("基于预算允许的工具 observation 给出最终回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=1),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较价格"))
+
+    assert adapter.calls == 2
+    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert adapter.requests[1].tools == []
+    assert adapter.requests[1].tool_choice == "none"
+    assert state.request.metadata["native_runtime_tool_calls_skipped_for_budget"] == 1
+    assert state.response is not None
+    assert state.response.message == "基于预算允许的工具 observation 给出最终回答。"
+    assert state.response.data["final_only_handoff"] is True
+    assert state.response.data["tool_observations"] == 1
+
+
+def test_native_runtime_multi_tool_batch_triggers_final_only_when_last_call_consumes_budget() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_multi_result(
+                [
+                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
+                ]
+            ),
+            final_result("基于两个工具 observation 的最终回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=2),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较价格"))
+
+    assert adapter.calls == 2
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
+    assert adapter.requests[1].tools == []
+    assert adapter.requests[1].tool_choice == "none"
+    assert state.request.metadata.get("native_runtime_tool_calls_skipped_for_budget") is None
+    assert state.response is not None
+    assert state.response.message == "基于两个工具 observation 的最终回答。"
+    assert state.response.data["final_only_handoff"] is True
+    assert state.response.data["tool_observations"] == 2
 
 
 def test_native_runtime_requests_final_only_answer_after_last_allowed_tool_call() -> None:

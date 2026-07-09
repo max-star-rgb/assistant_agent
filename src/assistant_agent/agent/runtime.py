@@ -453,103 +453,138 @@ class AgentGraphRuntime:
             if result.success and result.tool_calls:
                 if stream_buffer is not None:
                     stream_buffer.discard()
-                call = result.tool_calls[0]
-                call_payload = call.model_dump(mode="json")
-                native_calls.append(call_payload)
-                state.request.metadata.setdefault("native_tool_calls", []).append(call_payload)
-                _record_native_tool_call_preamble(state, tool_name=call.name, content=result.response_text)
-                decision = native_tool_call_to_assistant_decision(call)
-                _record_native_decision_metadata(
-                    state,
-                    request=request,
-                    decision=decision,
-                    iteration=iteration,
-                    max_iterations=max_iterations,
-                    safety_notes=["native_tool_call"],
-                )
-                self._append_observability_event(
-                    state,
-                    canonical_event="react.decision",
-                    node_name="native_runtime",
-                    status=decision.type,
-                    tool_name=decision.tool_name,
-                    attributes={
-                        "iteration": iteration + 1,
-                        "decision_type": decision.type,
-                        "reason": decision.reason,
-                        "safety_notes": decision.safety_notes,
-                    },
-                )
-                validation = ActionValidator().validate(
-                    decision=decision,
-                    registry=self.registry,
-                    request=request,
-                    state=state,
-                )
-                state.request.metadata["last_action_validator"] = validation.model_dump(mode="json")
-                self._append_observability_event(
-                    state,
-                    canonical_event="action.validation.finished",
-                    node_name="native_runtime",
-                    status="accepted" if validation.accepted else "rejected",
-                    tool_name=decision.tool_name,
-                    attributes=validation.model_dump(mode="json"),
-                    error={"code": validation.code, "message": validation.message} if not validation.accepted else None,
-                )
-                if not validation.accepted:
-                    observation = rejected_observation(
-                        tool_name=decision.tool_name or "unknown",
-                        error_code=validation.code,
-                        error_message=validation.message,
+                for call_index, call in enumerate(result.tool_calls):
+                    if len(observations) >= max_iterations:
+                        self._record_native_tool_calls_skipped_for_budget(
+                            state,
+                            skipped_count=len(result.tool_calls) - call_index,
+                        )
+                        if self._request_native_final_answer_after_tool_limit(
+                            request,
+                            state=state,
+                            observations=observations,
+                            native_calls=native_calls,
+                            event_sink=event_sink,
+                            iteration=iteration,
+                            max_iterations=max_iterations,
+                        ):
+                            return state
+                        self._set_native_runtime_max_iteration_response(
+                            state,
+                            observations=observations,
+                            max_iterations=max_iterations,
+                        )
+                        return state
+
+                    call_payload = call.model_dump(mode="json")
+                    native_calls.append(call_payload)
+                    state.request.metadata.setdefault("native_tool_calls", []).append(call_payload)
+                    _record_native_tool_call_preamble(state, tool_name=call.name, content=result.response_text)
+                    decision = native_tool_call_to_assistant_decision(call)
+                    _record_native_decision_metadata(
+                        state,
+                        request=request,
+                        decision=decision,
+                        iteration=iteration,
+                        max_iterations=max_iterations,
+                        safety_notes=["native_tool_call"],
+                    )
+                    self._append_observability_event(
+                        state,
+                        canonical_event="react.decision",
+                        node_name="native_runtime",
+                        status=decision.type,
+                        tool_name=decision.tool_name,
+                        attributes={
+                            "iteration": iteration + 1,
+                            "batch_index": call_index + 1,
+                            "batch_size": len(result.tool_calls),
+                            "decision_type": decision.type,
+                            "reason": decision.reason,
+                            "safety_notes": decision.safety_notes,
+                        },
+                    )
+                    validation = ActionValidator().validate(
+                        decision=decision,
+                        registry=self.registry,
+                        request=request,
+                        state=state,
+                    )
+                    state.request.metadata["last_action_validator"] = validation.model_dump(mode="json")
+                    self._append_observability_event(
+                        state,
+                        canonical_event="action.validation.finished",
+                        node_name="native_runtime",
+                        status="accepted" if validation.accepted else "rejected",
+                        tool_name=decision.tool_name,
+                        attributes={
+                            **validation.model_dump(mode="json"),
+                            "batch_index": call_index + 1,
+                            "batch_size": len(result.tool_calls),
+                        },
+                        error={"code": validation.code, "message": validation.message} if not validation.accepted else None,
+                    )
+                    if not validation.accepted:
+                        observation = rejected_observation(
+                            tool_name=decision.tool_name or "unknown",
+                            error_code=validation.code,
+                            error_message=validation.message,
+                        ).model_dump(mode="json")
+                        observations.append(observation)
+                        state.request.metadata["native_runtime_observations"] = observations
+                        _record_native_observation_metadata(state, observation)
+                        _append_native_tool_observation_event(self, state, observation)
+                        _set_native_validation_rejection_response(state, validation.model_dump(mode="json"))
+                        return state
+
+                    _emit_native_tool_progress_message(
+                        state,
+                        tool_name=decision.tool_name or call.name,
+                        event_sink=event_sink,
+                    )
+                    tool_result = tool_executor.run_tool(
+                        state,
+                        decision.step_id or f"native_runtime_{len(observations) + 1}",
+                        decision.tool_name or "",
+                        decision.tool_input or {},
+                        trace_store=self.trace_store,
+                        trace_id=state.trace_id,
+                        node_name="native_runtime",
+                    )
+                    observation = observation_from_tool_result(
+                        tool_result,
+                        request_text=request.text,
+                        prior_observations=observations,
                     ).model_dump(mode="json")
                     observations.append(observation)
                     state.request.metadata["native_runtime_observations"] = observations
                     _record_native_observation_metadata(state, observation)
                     _append_native_tool_observation_event(self, state, observation)
-                    _set_native_validation_rejection_response(state, validation.model_dump(mode="json"))
-                    return state
-                _emit_native_tool_progress_message(
-                    state,
-                    tool_name=decision.tool_name or call.name,
-                    event_sink=event_sink,
-                )
-                tool_result = tool_executor.run_tool(
-                    state,
-                    decision.step_id or f"native_runtime_{iteration + 1}",
-                    decision.tool_name or "",
-                    decision.tool_input or {},
-                    trace_store=self.trace_store,
-                    trace_id=state.trace_id,
-                    node_name="native_runtime",
-                )
-                observation = observation_from_tool_result(
-                    tool_result,
-                    request_text=request.text,
-                    prior_observations=observations,
-                ).model_dump(mode="json")
-                observations.append(observation)
-                state.request.metadata["native_runtime_observations"] = observations
-                _record_native_observation_metadata(state, observation)
-                _append_native_tool_observation_event(self, state, observation)
-                if state.status == "failed":
-                    return state
-                if iteration + 1 >= max_iterations:
-                    if self._request_native_final_answer_after_tool_limit(
-                        request,
-                        state=state,
-                        observations=observations,
-                        native_calls=native_calls,
-                        event_sink=event_sink,
-                        iteration=iteration,
-                        max_iterations=max_iterations,
-                    ):
+                    if state.status == "failed":
                         return state
-                    self._set_native_runtime_max_iteration_response(
-                        state,
-                        observations=observations,
-                        max_iterations=max_iterations,
-                    )
-                    return state
+                    if len(observations) >= max_iterations:
+                        remaining_calls = len(result.tool_calls) - call_index - 1
+                        if remaining_calls:
+                            self._record_native_tool_calls_skipped_for_budget(
+                                state,
+                                skipped_count=remaining_calls,
+                            )
+                        if self._request_native_final_answer_after_tool_limit(
+                            request,
+                            state=state,
+                            observations=observations,
+                            native_calls=native_calls,
+                            event_sink=event_sink,
+                            iteration=iteration,
+                            max_iterations=max_iterations,
+                        ):
+                            return state
+                        self._set_native_runtime_max_iteration_response(
+                            state,
+                            observations=observations,
+                            max_iterations=max_iterations,
+                        )
+                        return state
                 continue
 
             if stream_buffer is not None:
@@ -930,6 +965,20 @@ class AgentGraphRuntime:
                 },
             )
         )
+
+    def _record_native_tool_calls_skipped_for_budget(
+        self,
+        state: AgentState,
+        *,
+        skipped_count: int,
+    ) -> None:
+        if skipped_count <= 0:
+            return
+        metadata = state.request.metadata
+        current = metadata.get("native_runtime_tool_calls_skipped_for_budget")
+        previous = current if isinstance(current, int) and current >= 0 else 0
+        metadata["native_runtime_tool_calls_skipped_for_budget"] = previous + skipped_count
+        metadata["native_runtime_tool_call_budget_exhausted"] = True
 
     def _select_graph(
         self,
