@@ -531,6 +531,23 @@ class AgentGraphRuntime:
                 _append_native_tool_observation_event(self, state, observation)
                 if state.status == "failed":
                     return state
+                if iteration + 1 >= max_iterations:
+                    if self._request_native_final_answer_after_tool_limit(
+                        request,
+                        state=state,
+                        observations=observations,
+                        native_calls=native_calls,
+                        event_sink=event_sink,
+                        iteration=iteration,
+                        max_iterations=max_iterations,
+                    ):
+                        return state
+                    self._set_native_runtime_max_iteration_response(
+                        state,
+                        observations=observations,
+                        max_iterations=max_iterations,
+                    )
+                    return state
                 continue
 
             if stream_buffer is not None:
@@ -538,16 +555,10 @@ class AgentGraphRuntime:
             self._set_native_runtime_response(state, result, observations)
             return state
 
-        state.set_response(
-            AgentResponse(
-                message=f"已达到最大工具调用次数 ({max_iterations})，这是我能提供的最好回答。",
-                data={
-                    "native_runtime": True,
-                    "tool_count": len(state.tool_calls),
-                    "tool_observations": len(observations),
-                    "provider_budget": state.provider_budget.summary(),
-                },
-            )
+        self._set_native_runtime_max_iteration_response(
+            state,
+            observations=observations,
+            max_iterations=max_iterations,
         )
         return state
 
@@ -622,6 +633,136 @@ class AgentGraphRuntime:
             stream_callback=stream_callback,
         )
 
+    def _request_native_final_answer_after_tool_limit(
+        self,
+        request: UserRequest,
+        *,
+        state: AgentState,
+        observations: list[dict[str, Any]],
+        native_calls: list[dict[str, Any]],
+        event_sink: EventSink | None,
+        iteration: int,
+        max_iterations: int,
+    ) -> bool:
+        stream_callback = _native_runtime_stream_callback(state, event_sink)
+        chat_request = self._native_runtime_final_only_chat_request(
+            request,
+            state=state,
+            observations=observations,
+            native_calls=native_calls,
+            stream_callback=stream_callback,
+            iteration=iteration,
+            max_iterations=max_iterations,
+        )
+        chat_started_at = perf_counter()
+        result = self.chat_adapter.chat(chat_request)
+        chat_wall_latency_ms = int((perf_counter() - chat_started_at) * 1000)
+        self._record_native_runtime_chat_call(
+            state,
+            request,
+            result,
+            capability="direct_chat",
+        )
+        self._append_observability_event(
+            state,
+            canonical_event="llm.chat.finished",
+            node_name="native_runtime",
+            status="succeeded" if result.success else "failed",
+            provider=result.provider,
+            model=result.model,
+            latency_ms=result.latency_ms,
+            attributes={
+                "iteration": iteration + 2,
+                "max_iterations": max_iterations,
+                "final_only_handoff": True,
+                "message_kind": result.message_kind,
+                "finish_reason": result.finish_reason,
+                "tool_call_count": len(result.tool_calls),
+                "provider_latency_ms": result.latency_ms,
+                "wall_latency_ms": chat_wall_latency_ms,
+                "usage": result.usage,
+            },
+            error=_chat_result_error(result),
+        )
+        if result.success and not result.tool_calls:
+            self._set_native_runtime_response(state, result, observations)
+            if state.response is not None:
+                state.response.data["final_only_handoff"] = True
+            return True
+
+        metadata = state.request.metadata
+        if result.tool_calls:
+            metadata["native_runtime_final_only_returned_tool_call"] = True
+            metadata["native_runtime_final_only_handoff_failed"] = False
+        else:
+            metadata["native_runtime_final_only_handoff_failed"] = True
+        if result.errors:
+            metadata["native_runtime_final_only_error_code"] = result.errors[0].code
+        return False
+
+    def _native_runtime_final_only_chat_request(
+        self,
+        request: UserRequest,
+        *,
+        state: AgentState,
+        observations: list[dict[str, Any]],
+        native_calls: list[dict[str, Any]],
+        stream_callback: Any | None,
+        iteration: int,
+        max_iterations: int,
+    ) -> ChatRequest:
+        context_pack = build_traced_assistant_context_pack(
+            trace_store=self.trace_store,
+            trace_id=state.trace_id,
+            node_name="native_runtime",
+            state=state,
+            request=request,
+            observations=observations,
+            tool_specs=[],
+            iteration=iteration + 1,
+            max_iterations=max_iterations,
+            context_compactor=None,
+        )
+        system_prompt = render_system_instruction(
+            SystemPromptProfile.FINAL_ONLY,
+            options=_system_prompt_options_from_request(request),
+        )
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": render_native_user_message(context_pack)},
+        ]
+        for index, observation in enumerate(observations):
+            call = native_calls[index] if index < len(native_calls) else {}
+            tool_call_payload = _native_runtime_tool_call_payload(call, observation, index)
+            messages.append({"role": "assistant", "content": None, "tool_calls": [tool_call_payload]})
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_payload["id"],
+                    "name": tool_call_payload["function"]["name"],
+                    "content": json.dumps(observation, ensure_ascii=False),
+                }
+            )
+        self._record_native_runtime_context_report(
+            state,
+            context_pack=context_pack,
+            system_prompt=system_prompt,
+            selected_tool_specs=[],
+            iteration=iteration + 1,
+            max_iterations=max_iterations,
+        )
+        return ChatRequest(
+            user_id=state.user_id,
+            session_id=state.session_id,
+            user_query=request.text or "native runtime final answer",
+            messages=messages,
+            tools=[],
+            tool_choice="none",
+            temperature=0.2,
+            max_tokens=1024,
+            stream_callback=stream_callback,
+        )
+
     def _record_native_runtime_context_report(
         self,
         state: AgentState,
@@ -657,10 +798,12 @@ class AgentGraphRuntime:
         state: AgentState,
         request: UserRequest,
         result: Any,
+        *,
+        capability: str | None = None,
     ) -> None:
         state.provider_budget.record_call(
             run_id=state.run_id,
-            capability="direct_chat" if not result.tool_calls else "assistant_native_tool_call",
+            capability=capability or ("direct_chat" if not result.tool_calls else "assistant_native_tool_call"),
             provider=result.provider,
             model=result.model,
             input_size_bytes=len((request.text or "").encode("utf-8")),
@@ -761,6 +904,29 @@ class AgentGraphRuntime:
             node_name="native_runtime",
             state=state,
             source="native_runtime",
+        )
+
+    def _set_native_runtime_max_iteration_response(
+        self,
+        state: AgentState,
+        *,
+        observations: list[dict[str, Any]],
+        max_iterations: int,
+    ) -> None:
+        metadata = state.request.metadata
+        state.set_response(
+            AgentResponse(
+                message=f"已达到最大工具调用次数 ({max_iterations})，这是我能提供的最好回答。",
+                data={
+                    "native_runtime": True,
+                    "tool_count": len(state.tool_calls),
+                    "tool_observations": len(observations),
+                    "final_only_handoff_failed": bool(metadata.get("native_runtime_final_only_handoff_failed")),
+                    "final_only_returned_tool_call": bool(metadata.get("native_runtime_final_only_returned_tool_call")),
+                    "final_only_error_code": metadata.get("native_runtime_final_only_error_code"),
+                    "provider_budget": state.provider_budget.summary(),
+                },
+            )
         )
 
     def _select_graph(

@@ -7,7 +7,7 @@ from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult, ProviderChatCapabilities
+from assistant_agent.services.chat_adapter import ChatProviderError, ChatRequest, ChatResult, ProviderChatCapabilities
 from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaIngestionFile,
     MemoryMediaIngestionResult,
@@ -832,6 +832,93 @@ def test_native_runtime_direct_answer_uses_single_chat_call() -> None:
     assert state.tool_calls == []
     assert state.response is not None
     assert state.response.message == "native 模式直接回答。"
+
+
+def test_native_runtime_requests_final_only_answer_after_last_allowed_tool_call() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            final_result("这是基于最后一次工具 observation 的最终回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=1),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机"))
+
+    assert adapter.calls == 2
+    assert adapter.requests[0].tools
+    assert adapter.requests[0].tool_choice == "auto"
+    assert adapter.requests[1].tools == []
+    assert adapter.requests[1].tool_choice == "none"
+    assert any(message["role"] == "tool" for message in adapter.requests[1].messages)
+    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert state.response is not None
+    assert state.response.message == "这是基于最后一次工具 observation 的最终回答。"
+    assert state.response.data["final_only_handoff"] is True
+    assert state.response.data["tool_observations"] == 1
+    assert state.provider_budget.call_records[-1].capability == "direct_chat"
+
+
+def test_native_runtime_final_only_handoff_refuses_additional_tool_call() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            native_result("price_compare", {"query": "通勤耳机", "limit": 2}),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=1),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较价格"))
+
+    assert adapter.calls == 2
+    assert adapter.requests[1].tools == []
+    assert adapter.requests[1].tool_choice == "none"
+    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert state.response is not None
+    assert state.response.message == "已达到最大工具调用次数 (1)，这是我能提供的最好回答。"
+    assert state.response.data["final_only_returned_tool_call"] is True
+    assert state.response.data["final_only_handoff_failed"] is False
+    assert state.provider_budget.call_records[-1].capability == "direct_chat"
+
+
+def test_native_runtime_final_only_handoff_provider_error_falls_back() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            ChatResult(
+                provider="scripted-native",
+                model="native-test",
+                errors=[
+                    ChatProviderError(
+                        code="provider_timeout",
+                        message="timeout",
+                        recoverable=True,
+                    )
+                ],
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=1),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机"))
+
+    assert adapter.calls == 2
+    assert adapter.requests[1].tools == []
+    assert adapter.requests[1].tool_choice == "none"
+    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert state.response is not None
+    assert state.response.message == "已达到最大工具调用次数 (1)，这是我能提供的最好回答。"
+    assert state.response.data["final_only_handoff_failed"] is True
+    assert state.response.data["final_only_error_code"] == "provider_timeout"
 
 
 def test_runtime_uses_native_runtime_for_non_mock_adapter() -> None:
