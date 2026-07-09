@@ -60,6 +60,7 @@ class OperatorSessionState:
     active_run_id: str | None = None
     last_run_id: str | None = None
     last_trace_id: str | None = None
+    assistant_line_open: bool = False
     assistant_chunks: list[str] = field(default_factory=list)
     frame_counts: dict[str, int] = field(default_factory=dict)
 
@@ -425,6 +426,7 @@ async def run_interactive_operator(
         print(f"[error] interactive: {exc}", file=sys.stderr)
         return 2
 
+    _finish_assistant_line(state)
     print(json.dumps(state.report(), ensure_ascii=False))
     return 0
 
@@ -605,13 +607,16 @@ async def _handle_operator_command(
     if command.kind == "noop":
         return
     if command.kind == "help":
+        _finish_assistant_line(state)
         print(_operator_help())
         return
     if command.kind == "invalid":
+        _finish_assistant_line(state)
         print(f"operator> {command.text}")
         print(_operator_help())
         return
     if command.kind == "report":
+        _finish_assistant_line(state)
         print("operator> " + format_operator_report(state.report()))
         return
     if command.kind == "trace_last":
@@ -690,6 +695,7 @@ async def _operator_send(
 ) -> None:
     state.record_send(event)
     if not quiet:
+        _finish_assistant_line(state)
         print(_format_operator_send(event))
     await ws.send(json.dumps(event, ensure_ascii=False))
 
@@ -705,7 +711,7 @@ async def _operator_recv(
     frame = _json_object(raw, source="gateway frame")
     state.record_recv(frame)
     if not quiet:
-        print(_format_operator_recv(frame))
+        _print_operator_recv(frame, state)
     return frame
 
 
@@ -724,6 +730,7 @@ async def _await_receiver_shutdown(receiver: asyncio.Task[None]) -> None:
 
 
 async def _run_trace_last(state: OperatorSessionState, *, server: str) -> None:
+    _finish_assistant_line(state)
     if not state.last_trace_id:
         print("operator> no trace_id captured yet")
         return
@@ -793,6 +800,27 @@ def _format_operator_recv(frame: dict[str, Any]) -> str:
     if frame_type == "error":
         return f"error> {_frame_error_message(frame)}"
     return f"gateway> {json.dumps(frame, ensure_ascii=False)}"
+
+
+def _print_operator_recv(frame: dict[str, Any], state: OperatorSessionState) -> None:
+    frame_type = str(frame.get("type") or "")
+    if frame_type == "stream.chunk":
+        text = _chunk_text(frame)
+        if not text:
+            return
+        if not state.assistant_line_open:
+            print("assistant> ", end="", flush=True)
+            state.assistant_line_open = True
+        print(text, end="", flush=True)
+        return
+    _finish_assistant_line(state)
+    print(_format_operator_recv(frame))
+
+
+def _finish_assistant_line(state: OperatorSessionState) -> None:
+    if state.assistant_line_open:
+        print("", flush=True)
+        state.assistant_line_open = False
 
 
 def _selected_scenarios(scenario: str) -> tuple[str, ...]:

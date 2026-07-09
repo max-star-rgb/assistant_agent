@@ -142,6 +142,24 @@ def test_media_client_formats_trace_view_command() -> None:
     assert "scripts/trace_view.py trace_1 --server http://127.0.0.1:8000" in command
 
 
+def test_media_client_operator_stream_chunks_are_rendered_on_one_line(capsys) -> None:
+    module = _load_module("realtime_media_client_stream_render_test")
+    state = module.OperatorSessionState(session_id="s1")
+
+    module._print_operator_recv({"type": "stream.chunk", "payload": {"text": "夜景"}}, state)
+    module._print_operator_recv({"type": "stream.chunk", "payload": {"text": "结束"}}, state)
+    module._print_operator_recv(
+        {
+            "type": "run.end",
+            "reason": "completed",
+            "payload": {"trace_id": "trace_1"},
+        },
+        state,
+    )
+
+    assert capsys.readouterr().out == "assistant> 夜景结束\nrun> end completed trace=trace_1\n"
+
+
 def test_media_client_all_scenario_expands_to_regression_order() -> None:
     module = _load_module("realtime_media_client_scenarios_test")
 
