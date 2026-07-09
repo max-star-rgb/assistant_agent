@@ -194,7 +194,7 @@ Only after the parser is event-native, add an optional async stream path for
 providers that support async clients:
 
 ```python
-async def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
+def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
     ...
 ```
 

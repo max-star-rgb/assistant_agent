@@ -17,13 +17,38 @@ Use the conservative async-boundary option:
 
 ```python
 class AsyncStreamingChatAdapter(Protocol):
-    async def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
+    def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
         ...
 ```
 
 This is an additive provider capability. `ChatAdapter.chat()` remains the main
 compatibility contract, and `ChatResult` remains the terminal provider result
 for existing runtime paths.
+
+## Protocol Typing Note
+
+The protocol should model the call-site return value, not the implementation
+syntax. `stream_chat(request)` returns an `AsyncIterator[LLMEvent]`, so the
+protocol uses a regular `def`.
+
+Implementations are expected to be async generators:
+
+```python
+class OpenAICompatibleChatAdapter:
+    async def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
+        async for chunk in provider_stream:
+            yield event
+```
+
+The call site remains:
+
+```python
+async for event in adapter.stream_chat(request):
+    ...
+```
+
+The protocol must not imply that callers should first await
+`adapter.stream_chat(request)` to obtain the iterator.
 
 ## Current Boundary
 
@@ -72,6 +97,45 @@ fields, UI fields, raw provider chunks, API keys, or raw SDK responses.
 
 Runtime and Gateway must continue to consume `AgentEvent`, not `LLMEvent`.
 
+## Stream Invariants
+
+For every `stream_chat()` invocation:
+
+- the method returns an `AsyncIterator[LLMEvent]`;
+- implementations are expected to be async generators;
+- the stream yields zero or more non-terminal progress events;
+- the stream ends with exactly one terminal event, either `completed` or
+  `error`, unless the consumer cancels or explicitly closes the iterator;
+- `completed` and `error` are terminal events, and no event may be yielded
+  after either terminal event;
+- cancellation must propagate as cancellation and must not be converted into
+  `LLMEvent(error)`;
+- provider-level recoverable failures should be represented as
+  `LLMEvent(error)` with prompt-safe fields;
+- programming errors, invalid adapter state, and cancellation may still raise;
+- if `completed` is emitted, it should carry finish reason, usage, and
+  terminal metadata when available.
+
+These invariants forbid sequences such as:
+
+```text
+token_delta -> error -> completed
+token_delta -> completed -> token_delta
+```
+
+## Tool Call Delta Normalization
+
+`tool_call_delta` carries only provider-normalized incremental tool-call fields
+needed to reconstruct a tool call, such as `index`, `id`, `type`,
+`name_delta`, and `arguments_delta`. It must not include raw provider chunks,
+raw SDK response objects, headers, request bodies, response payloads, prompts,
+messages, or credentials.
+
+Tool-call argument deltas are internal model output. They must be accumulated,
+parsed, validated, and routed through `ActionValidator -> ToolExecutor ->
+ToolRegistry` before any tool execution. They must never be mapped to
+user-visible response text.
+
 ## Non-Goals
 
 - Do not remove or rename `ChatAdapter.chat()`.
@@ -107,17 +171,27 @@ OpenAI-compatible async provider stream
   -> LLMEvent
 ```
 
-Existing runtime stream remains:
+Existing compatibility path remains:
 
 ```text
-LLMEvent(token_delta)
-  -> runtime mapper
-  -> AgentEvent(response_delta)
+OpenAI-compatible parser
+  -> internal LLMEvent
+  -> ChatRequest.stream_callback(text, payload)
+  -> existing runtime AgentEvent(response_delta)
   -> RealtimeAgentEvent(response.chunk)
   -> Gateway stream.chunk
 ```
 
-The two streams have different scopes:
+Future runtime-native path, not in Phase 6D:
+
+```text
+AsyncStreamingChatAdapter.stream_chat()
+  -> LLMEvent
+  -> runtime-owned mapper
+  -> AgentEvent
+```
+
+The event boundaries have different scopes:
 
 - `LLMEvent` is provider-internal.
 - `AgentEvent` is runtime-internal and consumer-facing inside this project.
@@ -142,6 +216,18 @@ Provider exceptions should be converted at the adapter boundary into
 `LLMEvent(event_type="error", error=LLMProviderError(...))` when they are part
 of normal provider failure behavior.
 
+`LLMEvent(error)` is terminal. After yielding `error`, the adapter must stop
+iteration.
+
+Prompt-safe provider error data is limited to the existing `LLMProviderError`
+fields (`code`, `message`, and `recoverable`), the surrounding
+`LLMEvent.provider` and `LLMEvent.model`, and explicitly tested scalar metadata
+such as an HTTP status code if a future implementation adds it.
+
+Forbidden error data includes raw request bodies, raw response payloads,
+headers, API keys, SDK exception objects, prompts, messages, and provider chunk
+objects.
+
 The async generator may still raise for programming errors, invalid adapter
 state, or task cancellation. It must not leak raw SDK error objects or raw
 provider response payloads to runtime consumers.
@@ -151,6 +237,11 @@ provider response payloads to runtime consumers.
 The first implementation should rely on async generator cancellation semantics:
 when the consumer exits early or the task is cancelled, the adapter must close
 the underlying provider stream if the client exposes a close/aclose mechanism.
+
+Consumers that exit early should close the async iterator with `aclose()` or
+use `contextlib.aclosing(...)`. Adapter implementations must use `try/finally`
+or an async context manager to close the underlying provider stream when the
+iterator is closed or the task is cancelled.
 
 No new thread-shared cancellation flag should be introduced. Existing runtime
 and Gateway cancellation still flows through the current cancel token boundary.
@@ -186,14 +277,34 @@ The first implementation plan should be narrow:
 Focused provider tests should cover:
 
 - mock async stream emits `token_delta` then `completed`;
+- mock async stream treats `error` as terminal;
+- mock async stream does not emit after a terminal event;
+- early `aclose()` closes the underlying fake provider stream;
 - OpenAI-compatible async stream maps text deltas to `LLMEvent(token_delta)`;
 - OpenAI-compatible async stream maps tool-call deltas to
   `LLMEvent(tool_call_delta)`;
+- OpenAI-compatible async stream preserves finish reason and usage when
+  available;
+- multiple interleaved tool calls are reconstructed by index;
+- tool-call id may arrive after the first delta;
+- function name and arguments JSON may be split across chunks;
+- interleaved text and tool-call deltas do not expose tool arguments as
+  user-visible text;
+- empty or keepalive chunks are ignored;
+- completed with `finish_reason=tool_calls` is preserved;
 - provider errors become `LLMEvent(error)` with prompt-safe fields;
+- raw provider chunks and SDK objects are not present in `LLMEvent` payloads or
+  repr output;
 - existing `ChatAdapter.chat()` tests still pass unchanged.
 
-Runtime and Gateway tests should not need behavior changes for the first
-implementation. The fast test suite should remain green.
+Regression guard tests should cover:
+
+- `ChatAdapter.chat()` still works;
+- `ChatRequest.stream_callback` still works;
+- Gateway frame names remain unchanged;
+- runtime tests do not require behavior updates.
+
+The fast test suite should remain green.
 
 ## Acceptance Criteria
 
@@ -203,7 +314,12 @@ The Phase 6D implementation is acceptable only if:
 - `ChatResult` remains the terminal result for existing runtime paths;
 - Gateway frame names and realtime event types do not change;
 - `LLMEvent` does not cross into Gateway, TTS, UI, or public API contracts;
+- every normal stream ends with exactly one terminal event, `completed` or
+  `error`;
+- no event is emitted after a terminal event;
+- cancellation is not converted into `LLMEvent(error)`;
 - no provider raw chunks are exposed outside provider adapters;
+- raw SDK/provider objects are not present in event payloads or repr output;
 - no broad async rewrite of tool, memory, runtime, or Gateway code is included.
 
 ## Review
