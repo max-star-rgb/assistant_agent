@@ -21,6 +21,19 @@ def _event(event_type: str = "task_started", text: str | None = None) -> AgentEv
     return AgentEvent(type=event_type, session_id="s1", run_id="run_1", text=text)
 
 
+class MutableCancelToken:
+    def __init__(self, cancelled: bool = False, metadata: dict[str, object] | None = None) -> None:
+        self.cancelled = cancelled
+        self._metadata = dict(metadata or {})
+
+    def is_cancelled(self) -> bool:
+        return self.cancelled
+
+    @property
+    def cancel_metadata(self) -> dict[str, object]:
+        return dict(self._metadata)
+
+
 def test_async_queue_event_sink_forwards_from_worker_thread_in_order() -> None:
     async def scenario() -> list[AgentEvent]:
         loop = asyncio.get_running_loop()
@@ -124,3 +137,40 @@ def test_runtime_run_stream_preserves_compatibility_event_sink() -> None:
 
     assert streamed_types
     assert streamed_types == compatibility_types
+
+
+def test_runtime_run_stream_pre_graph_cancel_returns_cancelled_state_and_event() -> None:
+    async def scenario() -> tuple[list[str], str, str]:
+        token = MutableCancelToken(
+            cancelled=True,
+            metadata={"cancel_source": "deadline", "cancel_reason": "run_deadline_expired"},
+        )
+        runtime = AgentGraphRuntime()
+        request = UserRequest(user_id="u1", session_id="s1", text="hello")
+        stream = runtime.run_stream(request, cancel_token=token)
+
+        events = [event async for event in stream]
+        state = await stream.result()
+        return [event.type for event in events], state.status, state.errors[-1].details["cancel_source"]
+
+    event_types, status, cancel_source = asyncio.run(scenario())
+
+    assert event_types == ["task_started", "task_cancelled"]
+    assert status == "cancelled"
+    assert cancel_source == "deadline"
+
+
+def test_runtime_run_stream_failed_run_yields_task_failed_and_failed_state() -> None:
+    async def scenario() -> tuple[list[str], str]:
+        runtime = AgentGraphRuntime()
+        request = UserRequest(user_id="u1", session_id="s1", text="哪个便宜")
+        stream = runtime.run_stream(request)
+
+        events = [event async for event in stream]
+        state = await stream.result()
+        return [event.type for event in events], state.status
+
+    event_types, status = asyncio.run(scenario())
+
+    assert status == "failed"
+    assert event_types[-1] == "task_failed"
