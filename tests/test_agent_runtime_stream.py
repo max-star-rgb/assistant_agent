@@ -3,8 +3,10 @@ import threading
 
 import pytest
 
+from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.schemas.events import AgentEvent
+from assistant_agent.schemas.requests import UserRequest
 
 
 class RecordingSink:
@@ -85,3 +87,40 @@ def test_agent_run_stream_result_reraises_worker_exception_after_events_drain() 
 
     seen = asyncio.run(scenario())
     assert [event.type for event in seen] == ["task_started"]
+
+
+def test_runtime_run_stream_yields_existing_agent_events_and_result_state() -> None:
+    async def scenario() -> tuple[list[str], str, str]:
+        runtime = AgentGraphRuntime()
+        request = UserRequest(user_id="u1", session_id="s1", text="你好")
+        stream = runtime.run_stream(request)
+
+        events = [event async for event in stream]
+        state = await stream.result()
+        response_text = state.response.message if state.response is not None else ""
+        return [event.type for event in events], state.status, response_text
+
+    event_types, status, response_text = asyncio.run(scenario())
+
+    assert status == "completed"
+    assert event_types[0] == "task_started"
+    assert "response_delta" in event_types
+    assert event_types[-1] == "final_response"
+    assert response_text
+
+
+def test_runtime_run_stream_preserves_compatibility_event_sink() -> None:
+    async def scenario() -> tuple[list[str], list[str]]:
+        runtime = AgentGraphRuntime()
+        compatibility_sink = RecordingSink()
+        request = UserRequest(user_id="u1", session_id="s1", text="你好")
+        stream = runtime.run_stream(request, event_sink=compatibility_sink)
+
+        streamed = [event async for event in stream]
+        await stream.result()
+        return [event.type for event in streamed], [event.type for event in compatibility_sink.events]
+
+    streamed_types, compatibility_types = asyncio.run(scenario())
+
+    assert streamed_types
+    assert streamed_types == compatibility_types
