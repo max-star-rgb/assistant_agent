@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from concurrent.futures import Future
 from time import perf_counter
 from typing import Any
 
+from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.agent.cancellation import cancellation_metadata
 from assistant_agent.realtime.backend import RealtimeEventSink
 from assistant_agent.realtime.event_mapping import (
@@ -25,12 +25,16 @@ from assistant_agent.realtime.types import (
 )
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.assistant_run_service import run_assistant_request
+from assistant_agent.services.assistant_run_service import (
+    run_assistant_request,
+    run_assistant_request_stream,
+)
 from assistant_agent.services.realtime_task_state import realtime_metadata_requests_interrupt
 from assistant_agent.services.trace_store import append_observability_event
 
 
 RunAssistantRequest = Callable[..., Any]
+RunAssistantRequestStream = Callable[..., AgentRunStream[Any]]
 
 _RUN_EVENT_TYPES = {
     "task_started",
@@ -66,11 +70,13 @@ class AgentGraphRealtimeBackend:
         self,
         *,
         run_request: RunAssistantRequest | None = None,
+        run_request_stream: RunAssistantRequestStream | None = None,
         load_env: bool = True,
         enable_conversation_history: bool = True,
         progress_policy: ProgressPolicy | None = None,
     ) -> None:
         self._run_request = run_request
+        self._run_request_stream = run_request_stream
         self._load_env = load_env
         self._enable_conversation_history = enable_conversation_history
         self._progress_policy = progress_policy or ProgressPolicy()
@@ -103,9 +109,7 @@ class AgentGraphRealtimeBackend:
 
         user_request = realtime_request_to_user_request(request)
         backend_started_at = perf_counter()
-        loop = asyncio.get_running_loop()
         forwarder = _RealtimeForwardingEventSink(
-            loop=loop,
             event_sink=event_sink,
             progress_policy=self._progress_policy,
         )
@@ -116,17 +120,15 @@ class AgentGraphRealtimeBackend:
             revision_progress = _task_revision_progress_event(user_request)
             if revision_progress is not None:
                 await forwarder.forward_realtime_event(revision_progress)
-            run_request = self._run_request or run_assistant_request
             try:
                 runtime_call_started_at = perf_counter()
-                artifacts = await asyncio.to_thread(
-                    run_request,
+                stream = self._assistant_request_stream(
                     user_request,
-                    event_sink=forwarder,
-                    load_env=self._load_env,
-                    enable_conversation_history=self._enable_conversation_history,
                     cancel_token=cancel_token,
                 )
+                async for agent_event in stream:
+                    await forwarder.forward_agent_event(agent_event)
+                artifacts = await stream.result()
                 runtime_call_latency_ms = int((perf_counter() - runtime_call_started_at) * 1000)
             finally:
                 await _stop_task(first_progress_task)
@@ -213,6 +215,34 @@ class AgentGraphRealtimeBackend:
         finally:
             await _stop_task(first_progress_task)
             await _stop_task(heartbeat_task)
+
+    def _assistant_request_stream(
+        self,
+        request: UserRequest,
+        *,
+        cancel_token: RealtimeCancelToken | None = None,
+    ) -> AgentRunStream[Any]:
+        if self._run_request_stream is not None:
+            return self._run_request_stream(
+                request,
+                load_env=self._load_env,
+                enable_conversation_history=self._enable_conversation_history,
+                cancel_token=cancel_token,
+            )
+        if self._run_request is not None:
+            return _sync_run_request_stream(
+                self._run_request,
+                request,
+                load_env=self._load_env,
+                enable_conversation_history=self._enable_conversation_history,
+                cancel_token=cancel_token,
+            )
+        return run_assistant_request_stream(
+            request,
+            load_env=self._load_env,
+            enable_conversation_history=self._enable_conversation_history,
+            cancel_token=cancel_token,
+        )
 
 
 def _append_realtime_backend_finished_event(
@@ -307,20 +337,17 @@ def _task_revision_progress_event(request: UserRequest) -> RealtimeAgentEvent | 
 
 
 class _RealtimeForwardingEventSink:
-    """Synchronous EventSink that forwards selected events to an async sink."""
+    """Map runtime AgentEvent records to realtime events in the active event loop."""
 
     def __init__(
         self,
         *,
-        loop: asyncio.AbstractEventLoop,
         event_sink: RealtimeEventSink | None,
         progress_policy: ProgressPolicy,
     ) -> None:
         self.events: list[AgentEvent] = []
-        self._loop = loop
         self._event_sink = event_sink
         self._progress: ProgressTracker = progress_policy.tracker()
-        self._pending: list[Future[None]] = []
         self._response_delta_seen = False
 
     @property
@@ -330,7 +357,7 @@ class _RealtimeForwardingEventSink:
     def progress_summary(self) -> dict[str, object]:
         return self._progress.summary()
 
-    def emit(self, event: AgentEvent) -> None:
+    async def forward_agent_event(self, event: AgentEvent) -> None:
         self.events.append(event)
         if self._event_sink is None or event.type not in _RUN_EVENT_TYPES:
             return
@@ -339,9 +366,7 @@ class _RealtimeForwardingEventSink:
         mapped_events = map_agent_event_stream(event)
         if not mapped_events:
             return
-        self._pending.append(
-            asyncio.run_coroutine_threadsafe(self._forward_events(mapped_events), self._loop)
-        )
+        await self._forward_events(mapped_events)
 
     def start_heartbeat(
         self,
@@ -390,11 +415,38 @@ class _RealtimeForwardingEventSink:
                 await self._event_sink(heartbeat)
 
     async def drain(self) -> None:
-        if not self._pending:
-            return
-        pending = list(self._pending)
-        self._pending.clear()
-        await asyncio.gather(*(asyncio.wrap_future(future) for future in pending))
+        return None
+
+
+def _sync_run_request_stream(
+    run_request: RunAssistantRequest,
+    request: UserRequest,
+    *,
+    load_env: bool,
+    enable_conversation_history: bool,
+    cancel_token: RealtimeCancelToken | None,
+) -> AgentRunStream[Any]:
+    loop = asyncio.get_running_loop()
+    stream: AgentRunStream[Any] = AgentRunStream(loop=loop)
+    stream_sink = AsyncQueueEventSink(loop=loop, stream=stream)
+
+    async def _run() -> None:
+        try:
+            artifacts = await asyncio.to_thread(
+                run_request,
+                request,
+                event_sink=stream_sink,
+                load_env=load_env,
+                enable_conversation_history=enable_conversation_history,
+                cancel_token=cancel_token,
+            )
+        except BaseException as exc:
+            stream.set_exception(exc)
+        else:
+            stream.set_result(artifacts)
+
+    asyncio.create_task(_run())
+    return stream
 
 
 async def _stop_task(task: asyncio.Task[None] | None) -> None:

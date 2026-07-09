@@ -250,9 +250,9 @@ async for event in stream:
 artifacts = await stream.result()
 ```
 
-## Realtime Backend Migration
+## Phase 3 Realtime Backend Migration
 
-After the service-level stream facade exists, `AgentGraphRealtimeBackend` can move from this shape:
+Phase 3 moves `AgentGraphRealtimeBackend` from this shape:
 
 ```text
 asyncio.to_thread(run_assistant_request)
@@ -271,7 +271,12 @@ run_assistant_request_stream()
   -> RealtimeAgentResult
 ```
 
-This migration must preserve:
+The backend now consumes `run_assistant_request_stream()` by default. Existing
+sync `run_request=` injection remains supported through a compatibility stream
+wrapper so API adapters and focused tests can keep passing a synchronous run
+function during migration.
+
+This migration preserves:
 
 - progress throttling and heartbeat policy
 - final response chunking behavior

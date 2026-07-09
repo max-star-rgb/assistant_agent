@@ -2,6 +2,7 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+from assistant_agent.agent.event_stream import AgentRunStream
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent_routing import WORKER_AGENT_ID
@@ -138,6 +139,57 @@ def test_agent_graph_realtime_backend_preserves_execution_strategy_metadata() ->
     assert isinstance(request, UserRequest)
     assert request.execution_strategy == "plan_and_solve"
     assert result.status == "completed"
+
+
+def test_agent_graph_realtime_backend_consumes_run_request_stream_provider() -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_assistant_request_stream(
+        request: UserRequest,
+        **kwargs,
+    ) -> AgentRunStream[SimpleNamespace]:
+        captured["request"] = request
+        captured["kwargs"] = kwargs
+        loop = asyncio.get_running_loop()
+        stream: AgentRunStream[SimpleNamespace] = AgentRunStream(loop=loop)
+
+        async def publish() -> None:
+            stream.emit(
+                AgentEvent(
+                    type="response_delta",
+                    session_id=request.session_id,
+                    run_id="assistant-run-1",
+                    text="Alpha ",
+                    payload={"token_streaming": True, "source": "stream_provider"},
+                )
+            )
+            stream.set_result(
+                _completed_artifacts(request, run_id="assistant-run-1", message="Alpha beta.")
+            )
+
+        asyncio.create_task(publish())
+        return stream
+
+    backend = AgentGraphRealtimeBackend(run_request_stream=fake_run_assistant_request_stream)
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(user_id="user-1", session_id="session-1", text="hello"),
+            event_sink=collect,
+        )
+    )
+
+    assert result.status == "completed"
+    assert captured["request"].metadata["source"] == "realtime_agent_backend"
+    assert captured["kwargs"]["load_env"] is True
+    assert captured["kwargs"]["enable_conversation_history"] is True
+    assert "event_sink" not in captured["kwargs"]
+    assert [event.type for event in events] == ["response.chunk", "response.final"]
+    assert [event.text for event in events] == ["Alpha ", "Alpha beta."]
 
 
 def test_agent_graph_realtime_backend_forwards_runtime_progress_events() -> None:
