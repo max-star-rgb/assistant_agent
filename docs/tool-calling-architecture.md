@@ -13,7 +13,7 @@
 - `ToolExecutor` 是运行时治理边界：绑定 user/session 身份、检查 provider budget、记录 state/tool history/event/trace、执行 retry/recovery，再调用 registry。
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
 - 工具 observation 是下一轮 LLM 的数据，不是系统指令；写入 prompt 前会被摘要、脱敏、压缩。不要把 provider raw response、密钥、base64 大 payload 暴露给 assistant context。
-- 当前 native loop 每个 iteration 只执行第一个 native tool call；多步任务通过多轮 native tool call 完成。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
+- 当前 native loop 会按 provider 返回顺序串行执行同一轮中的多个 native tool calls；每个工具仍独立进入 `ActionValidator -> ToolExecutor -> ToolRegistry`，并受 `max_tool_iterations` 预算限制。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
 
 ## 当前主调用链
 
@@ -29,9 +29,9 @@ UserRequest
        ├─ content/refusal
        │    -> stream response_delta when available
        │    -> final_response
-       └─ tool_calls[0]
-            -> native tool call normalized to AssistantDecision(type="tool_call")
-            -> ActionValidator.validate()
+       └─ tool_calls[]
+            -> each native tool call normalized to AssistantDecision(type="tool_call")
+            -> execute serially in provider order through ActionValidator.validate()
             -> ToolExecutor.run_tool()
             -> append assistant tool_call + tool observation messages
             -> ChatAdapter.chat() again for final content or next tool call
@@ -82,10 +82,14 @@ UserRequest
 - 非 mock chat adapter 一律走 native loop；不再存在 `response_mode` 或 `assistant_tool_call_mode` 分支。
 - 请求向 provider 发送 `messages`、`tools` 和 `tool_choice="auto"`。
 - provider 返回 `content` 或 `refusal` 时，runtime 直接作为用户可见回答输出；普通 direct answer 应只有一次 chat call。
-- provider 返回 `tool_calls` 时，只执行第一个 tool call，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再归一化为内部 `AssistantDecision(type="tool_call")` 并进入 `ActionValidator -> ToolExecutor -> ToolRegistry`。
+- provider 返回 `tool_calls` 时，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再按 provider 顺序串行归一化并执行本轮可执行的 tool calls。每个 tool call 都会进入内部 `AssistantDecision(type="tool_call")`，再走 `ActionValidator -> ToolExecutor -> ToolRegistry`；超过 `max_tool_iterations` 的剩余调用会记录为预算跳过，而不是绕过治理边界。
 - 工具 observation 会作为后续 native messages 中的 `tool` role 内容回传；拿到工具结果后的第二次 LLM 调用是合理工具路径，不是隐藏控制面调用。
 - 如果 provider adapter 明确 `supports_native_tools=False`，runtime fails immediately，不静默 fallback 到旧 JSON 控制面。
 - `AssistantDecision` 仍是内部治理结构，用于复用 validator/executor/trace；真实 LLM 不再被要求输出自定义 `AssistantDecision` JSON。
+
+## Backlog
+
+- 安全并行工具执行：当前不进入开发阶段，保留为长期候选能力。只有当 trace 或 eval 证明串行 native tool batch 成为明显瓶颈时再启动；首版只允许明确 read-only、无共享资源冲突、无确认需求的 tool calls 并行执行。副作用工具、confirmation-sensitive 工具、未知工具、资源或路径可能冲突的工具继续串行。任何并行调度都不得绕过 `ActionValidator -> ToolExecutor -> ToolRegistry`，并且必须保留每个工具独立的 trace、event、history、observation 和预算记录。
 
 ## ToolSpec 契约
 
