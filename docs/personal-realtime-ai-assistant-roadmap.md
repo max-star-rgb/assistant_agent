@@ -571,9 +571,16 @@ git diff --check -- AGENTS.md docs src tests scripts
 
 ### Phase 4 Gate
 
-- child agent 不接收父 agent 原始记忆上下文。
-- delegation 有 durable trace。
-- repeated-pair 和 depth control 生效。
+- child agent 不接收父 agent 原始记忆上下文，且 control-plane 持久化前会过滤父级 raw memory/context metadata。
+- delegation 有显式 opt-in 的本地 JSONL durable trace；默认 `AgentRouter` 仍使用 process-local store。
+- repeated-pair、ping-pong 和 depth control 生效。
+- Phase 4 当前只完成 readiness gate，不代表默认启用 multi-agent fabric、agent swarm、远程自动发现或 LLM 自动选 agent。
+- Gate commands:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase4_multi_agent_readiness_gate.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_communication_routing.py tests/test_agent_router.py tests/test_agent_routing_policy.py tests/test_api_a2a.py tests/test_a2a_json_rpc_transport.py tests/test_agent_pilot_readiness.py tests/test_api_agent_graph_runtime.py -q
+```
 
 ### Phase 5 Gate
 

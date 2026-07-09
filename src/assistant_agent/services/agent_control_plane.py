@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Protocol
 
 from assistant_agent.schemas.agent_control_plane import (
@@ -107,6 +109,92 @@ class InMemoryAgentControlPlaneStore:
             and (event_type is None or event.event_type == event_type)
         ]
         return events[-max(limit, 0) :]
+
+    def retention(self) -> dict[str, Any]:
+        return dict(AUDIT_RETENTION)
+
+
+class JsonlAgentControlPlaneStore:
+    """JSONL-backed control-plane store for explicit local durable traces."""
+
+    def __init__(self, path: Path | str = ".data/agent_control_plane.jsonl") -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def record(self, record: AgentControlPlaneRunRecord) -> None:
+        self._append("run_record", record.model_dump(mode="json"))
+
+    def get(self, run_id: str) -> AgentControlPlaneRunRecord | None:
+        records = [record for record in self._read_records() if record.run_id == run_id]
+        return records[-1] if records else None
+
+    def get_by_trace_id(self, trace_id: str) -> AgentControlPlaneRunRecord | None:
+        records = [record for record in self._read_records() if record.trace_id == trace_id]
+        return records[-1] if records else None
+
+    def append_audit_event(self, event: AgentAuditEvent) -> None:
+        self._append("audit_event", event.model_dump(mode="json"))
+
+    def list_audit_events(
+        self,
+        *,
+        run_id: str | None = None,
+        trace_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> list[AgentAuditEvent]:
+        events = [
+            event
+            for event in self._read_audit_events()
+            if (run_id is None or event.run_id == run_id)
+            and (trace_id is None or event.trace_id == trace_id)
+            and (user_id is None or event.user_id == user_id)
+            and (session_id is None or event.session_id == session_id)
+            and (event_type is None or event.event_type == event_type)
+        ]
+        return events[-max(limit, 0) :]
+
+    def retention(self) -> dict[str, Any]:
+        return {
+            "storage": "jsonl_file",
+            "durable": True,
+            "retention_policy": "explicit_local_file_until_deleted",
+            "phase": "phase4_multi_agent_readiness",
+        }
+
+    def _append(self, kind: str, payload: dict[str, Any]) -> None:
+        with self.path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps({"kind": kind, "payload": payload}, ensure_ascii=False) + "\n")
+
+    def _read_records(self) -> list[AgentControlPlaneRunRecord]:
+        records: list[AgentControlPlaneRunRecord] = []
+        for envelope in self._read_envelopes():
+            if envelope.get("kind") == "run_record" and isinstance(envelope.get("payload"), dict):
+                records.append(AgentControlPlaneRunRecord.model_validate(envelope["payload"]))
+        return records
+
+    def _read_audit_events(self) -> list[AgentAuditEvent]:
+        events: list[AgentAuditEvent] = []
+        for envelope in self._read_envelopes():
+            if envelope.get("kind") == "audit_event" and isinstance(envelope.get("payload"), dict):
+                events.append(AgentAuditEvent.model_validate(envelope["payload"]))
+        return events
+
+    def _read_envelopes(self) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        envelopes: list[dict[str, Any]] = []
+        with self.path.open("r", encoding="utf-8") as file:
+            for line in file:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                payload = json.loads(stripped)
+                if isinstance(payload, dict):
+                    envelopes.append(payload)
+        return envelopes
 
 
 class AgentControlPlaneQueryService:
@@ -242,7 +330,7 @@ class AgentControlPlaneQueryService:
         return AgentAuditEventList(
             total=len(events),
             events=events,
-            retention=AUDIT_RETENTION,
+            retention=_audit_retention(self.router_store),
             redaction=CONTROL_PLANE_REDACTION,
         )
 
@@ -361,6 +449,15 @@ def audit_events_from_agent_router_record(record: AgentControlPlaneRunRecord) ->
         if remote_event is not None:
             events.append(remote_event)
     return events
+
+
+def _audit_retention(router_store: AgentControlPlaneStore | None) -> dict[str, Any]:
+    retention = getattr(router_store, "retention", None)
+    if callable(retention):
+        value = retention()
+        if isinstance(value, dict):
+            return dict(value)
+    return dict(AUDIT_RETENTION)
 
 
 def response_user_id(request: AgentRouteRequest, identity: dict[str, Any]) -> str:
@@ -536,7 +633,7 @@ def _delegated_tasks(
             payload = dict(task)
             task_id = payload.get("task_id")
             if isinstance(task_id, str) and task_id in metadata_by_task_id:
-                payload["metadata"] = metadata_by_task_id[task_id]
+                payload["metadata"] = _safe_delegation_metadata(metadata_by_task_id[task_id])
             merged.append(sanitize_error_detail(payload))
         return merged
     extracted: list[dict[str, Any]] = []
@@ -560,7 +657,7 @@ def _delegated_tasks(
                         for error in errors
                         if isinstance(error, dict) and error.get("code")
                     ],
-                    "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+                    "metadata": _safe_delegation_metadata(data.get("metadata")),
                 }
             )
         )
@@ -576,8 +673,29 @@ def _delegated_task_metadata_by_id(response: AgentRunResponse) -> dict[str, dict
         task_id = data.get("task_id") if isinstance(data, dict) else None
         task_metadata = data.get("metadata") if isinstance(data, dict) else None
         if isinstance(task_id, str) and isinstance(task_metadata, dict):
-            metadata[task_id] = sanitize_error_detail(task_metadata)
+            metadata[task_id] = _safe_delegation_metadata(task_metadata)
     return metadata
+
+
+def _safe_delegation_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_keys = {
+        "agent_communication",
+        "agent_context",
+        "child_context_budget",
+        "correlation_id",
+        "delegation_budget",
+        "delegation_pairs",
+        "endpoint_host",
+        "latency_ms",
+        "remote_context_id",
+        "remote_status_state",
+        "remote_task_id",
+        "tool_result_refs",
+        "transport",
+    }
+    return sanitize_error_detail({key: child for key, child in value.items() if key in allowed_keys})
 
 
 def _identity_payload(value: Any) -> dict[str, Any]:
