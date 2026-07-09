@@ -201,6 +201,11 @@ async def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
 This must be additive. `ChatAdapter.chat()` remains the compatibility contract
 until the runtime is ready to consume provider events natively.
 
+Design review status: Phase 6D should add only an optional provider-boundary
+async stream contract first; it must not make Runtime, Gateway, TTS, or UI
+consume `LLMEvent` directly. See
+`docs/superpowers/specs/2026-07-09-provider-async-stream-design.md`.
+
 ## Non-Goals
 
 - Do not change Gateway wire frame names.
