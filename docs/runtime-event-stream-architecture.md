@@ -347,6 +347,40 @@ The audit conclusion is selective async:
 The detailed inventory and migration rules live in
 `docs/runtime-thread-model-audit.md`.
 
+## Phase 6 Provider Event Boundary
+
+Phase 6 defines the provider-side event contract before adding more async-native
+provider code.
+
+The current chat provider stream is callback-shaped:
+
+```text
+provider chunk
+  -> ChatRequest.stream_callback(text, payload)
+  -> AgentEvent(type="response_delta")
+```
+
+The target provider boundary is event-shaped:
+
+```text
+provider chunk
+  -> LLMEvent
+  -> ChatResult accumulator
+  -> optional AgentEvent(type="response_delta") mapping
+```
+
+`LLMEvent` is not a Gateway frame and does not replace `AgentEvent`. It is an
+internal provider-boundary event for token deltas, tool-call deltas, completion
+metadata, and provider errors. Runtime code still decides which provider events
+become user-visible `AgentEvent` records.
+
+Phase 6 keeps `ChatAdapter.chat()`, `ChatResult`, and
+`ChatRequest.stream_callback` compatible. The first implementation step should
+add the schema and accumulator, then route the OpenAI-compatible stream parser
+through `LLMEvent` internally while preserving legacy callback output.
+
+The detailed contract lives in `docs/provider-event-boundary-architecture.md`.
+
 ## Provider Event Direction
 
 Provider-native streaming should eventually move from provider callbacks:
