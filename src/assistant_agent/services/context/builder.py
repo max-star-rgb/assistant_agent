@@ -160,6 +160,7 @@ def build_assistant_context_pack(
         prompt_tool_specs=prompt_tool_specs,
         tool_catalog_summary=tool_catalog.summary,
         tool_capabilities=tool_capabilities,
+        skill_report=tool_capability_catalog.skill_report,
         iteration=iteration,
         max_iterations=max_iterations,
         source_counts=source_counts,

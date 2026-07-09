@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from assistant_agent.schemas.context import (
+    SkillExposureReport,
+    SkillExposureSkip,
     ToolCapabilityCatalogSelection,
     ToolCapabilityDescriptor,
     ToolCatalogSummary,
@@ -60,18 +62,20 @@ def select_tool_capability_descriptors(
     if not available_tool_specs:
         return ToolCapabilityCatalogSelection(
             selection_reasons=["capability_catalog_skipped: no_tools_available"],
+            skill_report=SkillExposureReport(),
         )
     if tool_catalog_summary.fallback_used:
         return ToolCapabilityCatalogSelection(
             selection_reasons=["capability_catalog_skipped: tool_catalog_fallback"],
             fallback_used=True,
+            skill_report=SkillExposureReport(),
         )
 
     request_text = request.text or ""
     available_names = {spec.name for spec in available_tool_specs}
     prompt_names = {spec.name for spec in prompt_tool_specs}
     capabilities: list[ToolCapabilityDescriptor] = []
-    catalog_descriptors, reasons = _candidate_capability_descriptors(
+    catalog_descriptors, reasons, report = _candidate_capability_descriptors(
         repo_root=repo_root,
         skill_catalog=skill_catalog,
     )
@@ -79,16 +83,36 @@ def select_tool_capability_descriptors(
     for descriptor in catalog_descriptors:
         governed_names = set(descriptor.governed_tools)
         if not governed_names.issubset(available_names):
+            missing_names = sorted(governed_names - available_names)
+            report.unavailable_tool_count += len(missing_names)
+            for tool_name in missing_names:
+                report.skipped.append(
+                    SkillExposureSkip(
+                        skill_id=descriptor.name,
+                        reason="governed_tool_unavailable",
+                        tool_name=tool_name,
+                    )
+                )
             reasons.append(
                 f"capability_catalog_skipped:{descriptor.name}:governed_tool_unavailable"
             )
             continue
         if not governed_names.intersection(prompt_names):
+            report.skipped.append(
+                SkillExposureSkip(
+                    skill_id=descriptor.name,
+                    reason="governed_tool_not_prompt_selected",
+                )
+            )
             reasons.append(
                 f"capability_catalog_skipped:{descriptor.name}:governed_tool_not_prompt_selected"
             )
             continue
         capabilities.append(descriptor)
+        report.selected_skill_ids.append(descriptor.name)
+        report.governed_tool_names = _unique(
+            report.governed_tool_names + descriptor.governed_tools
+        )
         reasons.append(f"capability_catalog_selected:{descriptor.name}")
 
     if not capabilities and request_text.strip():
@@ -97,6 +121,7 @@ def select_tool_capability_descriptors(
     return ToolCapabilityCatalogSelection(
         capabilities=capabilities,
         selection_reasons=reasons,
+        skill_report=report,
     )
 
 
@@ -104,7 +129,7 @@ def _candidate_capability_descriptors(
     *,
     repo_root: Path | None,
     skill_catalog: SkillCatalog | None,
-) -> tuple[list[ToolCapabilityDescriptor], list[str]]:
+) -> tuple[list[ToolCapabilityDescriptor], list[str], SkillExposureReport]:
     catalog = skill_catalog or load_repo_skill_descriptors(repo_root or _DEFAULT_REPO_ROOT)
     repo_descriptors = [
         _skill_descriptor_to_tool_capability(descriptor)
@@ -112,10 +137,13 @@ def _candidate_capability_descriptors(
         if descriptor.enabled and not descriptor.disable_model_invocation
     ]
     repo_names = {descriptor.name for descriptor in repo_descriptors}
+    issue_names = {issue.skill_id for issue in catalog.issues if issue.skill_id}
+    override_names = _unique(sorted(repo_names | issue_names))
     descriptors = list(repo_descriptors)
-    descriptors.extend(
-        descriptor for descriptor in _DEFAULT_CAPABILITIES if descriptor.name not in repo_names
-    )
+    builtin_fallbacks = [
+        descriptor for descriptor in _DEFAULT_CAPABILITIES if descriptor.name not in override_names
+    ]
+    descriptors.extend(builtin_fallbacks)
 
     reasons = [
         f"capability_catalog_repo_skill_loaded:{descriptor.name}"
@@ -125,7 +153,21 @@ def _candidate_capability_descriptors(
         f"capability_catalog_skill_issue:{issue.skill_id or 'unknown'}:{issue.code}"
         for issue in catalog.issues
     )
-    return descriptors, reasons
+    report = SkillExposureReport(
+        loaded_skill_ids=_unique(sorted(repo_names)),
+        builtin_fallback_skill_ids=[descriptor.name for descriptor in builtin_fallbacks],
+        override_skill_ids=override_names,
+        skipped=[
+            SkillExposureSkip(skill_id=issue.skill_id or "unknown", reason=issue.code)
+            for issue in catalog.issues
+        ],
+        permission_issue_count=sum(
+            1
+            for issue in catalog.issues
+            if issue.code in {"missing_tool_permission", "invalid_permission"}
+        ),
+    )
+    return descriptors, reasons, report
 
 
 def _skill_descriptor_to_tool_capability(
@@ -145,3 +187,14 @@ def _skill_descriptor_to_tool_capability(
         safe_examples=descriptor.safe_examples,
         runtime_constraints=runtime_constraints,
     )
+
+
+def _unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result

@@ -245,6 +245,97 @@ description: Repo-local search guidance.
     assert descriptor.when_to_use == ["Repo guidance for latest information."]
     assert any("ToolExecutor" in item for item in descriptor.runtime_constraints)
     assert "capability_catalog_selected:realtime_web_search" in capability_selection.selection_reasons
+    assert capability_selection.skill_report.loaded_skill_ids == ["realtime_web_search"]
+    assert capability_selection.skill_report.selected_skill_ids == ["realtime_web_search"]
+    assert capability_selection.skill_report.override_skill_ids == ["realtime_web_search"]
+    assert capability_selection.skill_report.builtin_fallback_skill_ids == []
+    assert capability_selection.skill_report.governed_tool_names == ["web_search"]
+
+
+def test_capability_catalog_disabled_repo_skill_suppresses_builtin_fallback(
+    tmp_path: Path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "realtime_web_search",
+        """
+---
+name: realtime_web_search
+description: Disabled local search guidance.
+enabled: false
+---
+## Governed Tools
+- web_search
+
+## Permissions
+- tool:web_search
+""",
+    )
+    specs = create_default_registry().list_specs()
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    tool_selection = select_prompt_tool_specs(request, specs)
+
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        available_tool_specs=specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+        repo_root=tmp_path,
+    )
+
+    assert capability_selection.capabilities == []
+    assert capability_selection.skill_report.loaded_skill_ids == []
+    assert capability_selection.skill_report.selected_skill_ids == []
+    assert capability_selection.skill_report.override_skill_ids == ["realtime_web_search"]
+    assert capability_selection.skill_report.builtin_fallback_skill_ids == []
+    assert [
+        item.model_dump(mode="json") for item in capability_selection.skill_report.skipped
+    ] == [
+        {
+            "skill_id": "realtime_web_search",
+            "reason": "skill_disabled",
+            "tool_name": None,
+            "permission": None,
+        }
+    ]
+
+
+def test_capability_catalog_invalid_repo_skill_suppresses_builtin_fallback(
+    tmp_path: Path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "realtime_web_search",
+        """
+---
+name: realtime_web_search
+description: Invalid local search guidance.
+---
+## Governed Tools
+- web_search
+
+## Permissions
+- tool:web_search
+- shell:run
+""",
+    )
+    specs = create_default_registry().list_specs()
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    tool_selection = select_prompt_tool_specs(request, specs)
+
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        available_tool_specs=specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+        repo_root=tmp_path,
+    )
+
+    assert capability_selection.capabilities == []
+    assert capability_selection.skill_report.override_skill_ids == ["realtime_web_search"]
+    assert capability_selection.skill_report.builtin_fallback_skill_ids == []
+    assert capability_selection.skill_report.permission_issue_count == 1
+    assert capability_selection.skill_report.skipped[0].reason == "invalid_permission"
 
 
 def test_capability_catalog_omits_repo_skill_when_governed_tool_unavailable(

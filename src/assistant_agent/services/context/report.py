@@ -121,6 +121,7 @@ def build_context_report(
         max_tokens=pack.budget.max_tokens,
         selected_tool_names=[spec.name for spec in selected_specs],
         memory_item_ids=memory_item_ids,
+        skill_report=pack.skill_report,
         compression_stage=pack.budget.compression_stage,
         compression_reasons=list(pack.budget.compression_reasons),
         was_compacted=pack.budget.compaction_triggered or pack.budget.compression_stage != "none",

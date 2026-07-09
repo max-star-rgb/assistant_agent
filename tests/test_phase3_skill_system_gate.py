@@ -48,6 +48,9 @@ enabled: true
     assert descriptor.permissions == ["tool:web_search"]
     assert descriptor.required_inputs_by_tool == {"web_search": ["query"]}
     assert any("ToolExecutor" in item for item in descriptor.runtime_constraints)
+    assert selected.skill_report.schema_version == "skill_report_v1"
+    assert selected.skill_report.selected_skill_ids == ["realtime_web_search"]
+    assert selected.skill_report.governed_tool_names == ["web_search"]
 
 
 def test_phase3_disabled_and_missing_permission_skills_are_audited(tmp_path: Path) -> None:
@@ -116,6 +119,42 @@ description: Missing tool permission should omit the descriptor.
 
     assert "unsafe_search" not in [skill.name for skill in selected.capabilities]
     assert "capability_catalog_skill_issue:unsafe_search:missing_tool_permission" in selected.selection_reasons
+    assert selected.skill_report.permission_issue_count == 1
+    assert selected.skill_report.skipped[0].reason == "missing_tool_permission"
+
+
+def test_phase3_invalid_permission_never_reaches_prompt_catalog(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "unsafe_search",
+        """
+---
+name: unsafe_search
+description: Unknown permission vocabulary should omit the descriptor.
+---
+## Governed Tools
+- web_search
+
+## Permissions
+- tool:web_search
+- shell:run
+""",
+    )
+    specs = create_default_registry().list_specs()
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    tool_selection = select_prompt_tool_specs(request, specs)
+
+    selected = select_tool_capability_descriptors(
+        request=request,
+        available_tool_specs=specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+        repo_root=tmp_path,
+    )
+
+    assert "unsafe_search" not in [skill.name for skill in selected.capabilities]
+    assert "capability_catalog_skill_issue:unsafe_search:invalid_permission" in selected.selection_reasons
+    assert selected.skill_report.permission_issue_count == 1
 
 
 def test_phase3_skill_system_does_not_create_direct_execution_path() -> None:

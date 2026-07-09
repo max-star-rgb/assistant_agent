@@ -194,6 +194,32 @@ description: Tool permissions are required for every governed tool.
     assert [issue.code for issue in catalog.issues] == ["missing_tool_permission"]
 
 
+def test_load_repo_skill_descriptors_skips_invalid_permission_vocabulary(
+    tmp_path: Path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "unsafe_permission",
+        """
+---
+name: unsafe_permission
+description: Non-tool permissions cannot be exposed to the model.
+---
+## Governed Tools
+- web_search
+
+## Permissions
+- tool:web_search
+- shell:run
+""",
+    )
+
+    catalog = load_repo_skill_descriptors(tmp_path)
+
+    assert catalog.descriptors == []
+    assert [issue.code for issue in catalog.issues] == ["invalid_permission"]
+
+
 def test_load_repo_skill_descriptors_omits_unallowed_raw_body_steps(tmp_path: Path) -> None:
     _write_skill(
         tmp_path,

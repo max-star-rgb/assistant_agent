@@ -189,6 +189,19 @@ def _load_skill_file(
             )
         ]
     permissions = _permissions_from_section(sections.get("permissions", []))
+    invalid_permissions = [
+        permission for permission in permissions if not _is_valid_tool_permission(permission)
+    ]
+    if invalid_permissions:
+        return None, [
+            _issue(
+                "invalid_permission",
+                "Skill permissions must use the v1 tool:<name> vocabulary.",
+                root=root,
+                path=skill_file,
+                skill_id=skill_id,
+            )
+        ]
     missing_tool_permissions = [
         tool_name for tool_name in governed_tools if f"tool:{tool_name}" not in permissions
     ]
@@ -328,6 +341,10 @@ def _permissions_from_section(lines: list[str]) -> list[str]:
             if permission:
                 permissions.append(permission)
     return _unique(permissions)
+
+
+def _is_valid_tool_permission(permission: str) -> bool:
+    return re.match(r"^tool:[A-Za-z0-9_.-]+$", permission) is not None
 
 
 def _list_items_from_section(lines: list[str]) -> list[str]:

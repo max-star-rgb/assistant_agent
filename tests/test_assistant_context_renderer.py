@@ -27,6 +27,7 @@ from assistant_agent.services.context.renderer import (
     render_native_tool_context,
     render_prompt_json_context,
 )
+from assistant_agent.services.context.report import build_context_report
 from assistant_agent.tools.registry import create_default_registry
 
 
@@ -988,6 +989,25 @@ def test_native_context_renders_skill_style_capability_catalog_without_full_tool
     assert '"permissions": [' in message
     assert '"tool:web_search"' in message
     assert "可用工具 ToolSpec 列表" not in message
+
+
+def test_context_pack_and_report_include_skill_exposure_report() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    state = AgentState.from_request(request)
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=create_default_registry().list_specs(),
+        iteration=0,
+        max_iterations=5,
+    )
+
+    report = build_context_report(pack)
+
+    assert pack.skill_report.schema_version == "skill_report_v1"
+    assert pack.skill_report.selected_skill_ids == ["realtime_web_search"]
+    assert report.skill_report.selected_skill_ids == ["realtime_web_search"]
+    assert report.skill_report.governed_tool_names == ["web_search"]
 
 
 def test_native_context_does_not_render_unallowed_raw_skill_body(tmp_path: Path) -> None:

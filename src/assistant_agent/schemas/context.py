@@ -66,6 +66,29 @@ class ContextReportSection(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class SkillExposureSkip(BaseModel):
+    """Prompt-safe reason why a skill-style capability was not exposed."""
+
+    skill_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    tool_name: str | None = None
+    permission: str | None = None
+
+
+class SkillExposureReport(BaseModel):
+    """Prompt-safe Skill System v1 exposure report."""
+
+    schema_version: str = "skill_report_v1"
+    loaded_skill_ids: list[str] = Field(default_factory=list)
+    selected_skill_ids: list[str] = Field(default_factory=list)
+    skipped: list[SkillExposureSkip] = Field(default_factory=list)
+    builtin_fallback_skill_ids: list[str] = Field(default_factory=list)
+    override_skill_ids: list[str] = Field(default_factory=list)
+    governed_tool_names: list[str] = Field(default_factory=list)
+    permission_issue_count: int = Field(default=0, ge=0)
+    unavailable_tool_count: int = Field(default=0, ge=0)
+
+
 class ContextReport(BaseModel):
     """Prompt-safe v1 context compiler report for one LLM call."""
 
@@ -77,6 +100,7 @@ class ContextReport(BaseModel):
     max_tokens: int = Field(default=0, ge=0)
     selected_tool_names: list[str] = Field(default_factory=list)
     memory_item_ids: list[str] = Field(default_factory=list)
+    skill_report: SkillExposureReport = Field(default_factory=SkillExposureReport)
     compression_stage: str = "none"
     compression_reasons: list[str] = Field(default_factory=list)
     was_compacted: bool = False
@@ -136,6 +160,7 @@ class ToolCapabilityCatalogSelection(BaseModel):
     capabilities: list[ToolCapabilityDescriptor] = Field(default_factory=list)
     selection_reasons: list[str] = Field(default_factory=list)
     fallback_used: bool = False
+    skill_report: SkillExposureReport = Field(default_factory=SkillExposureReport)
 
 
 class AssistantContextPack(BaseModel):
@@ -155,6 +180,7 @@ class AssistantContextPack(BaseModel):
     prompt_tool_specs: list[ToolSpec] = Field(default_factory=list)
     tool_catalog_summary: ToolCatalogSummary = Field(default_factory=ToolCatalogSummary)
     tool_capabilities: list[ToolCapabilityDescriptor] = Field(default_factory=list)
+    skill_report: SkillExposureReport = Field(default_factory=SkillExposureReport)
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=1, ge=1)
     source_counts: dict[str, int] = Field(default_factory=dict)
