@@ -1,5 +1,6 @@
 """Memory manager boundary for layered agent memory access."""
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from uuid import uuid4
@@ -88,6 +89,7 @@ class MemoryContext(BaseModel):
     read_policy: dict[str, Any] = Field(default_factory=dict)
     trust_policy: dict[str, Any] = Field(default_factory=trust_policy_metadata)
     usage_hint: str = Field(default_factory=memory_usage_hint)
+    recall_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class MemoryConfirmationRequired(ValueError):
@@ -235,6 +237,15 @@ class MemoryManager:
             max_chars=query.max_context_chars,
             max_tokens=max_context_tokens or self.default_max_context_tokens,
         )
+        recall_report = _memory_recall_report(
+            identity=identity,
+            query_text=query_text,
+            result=result,
+            context=context,
+            read_decision=read_decision,
+            profile_item=self.get_for_identity(identity, USER_PROFILE_MEMORY_ID),
+            visible_items=self.list_for_identity(identity),
+        )
         if read_decision is not None:
             context = context.model_copy(
                 update={
@@ -243,9 +254,12 @@ class MemoryManager:
                     "read_policy": read_decision.prompt_safe_metadata(),
                     "trust_policy": read_decision.trust_policy,
                     "usage_hint": read_decision.usage_hint,
+                    "recall_report": recall_report,
                 },
                 deep=True,
             )
+        else:
+            context = context.model_copy(update={"recall_report": recall_report}, deep=True)
         self.record_audit_event(
             "memory_context_loaded",
             user_id=identity.user_id,
@@ -267,6 +281,7 @@ class MemoryManager:
                 "retrieval_version": context.retrieval_version,
                 "injected_memory_ids": [item.memory_id for item in context.items],
                 "rejected_reasons": context.rejected_reasons[:8],
+                "recall_report": context.recall_report,
                 "read_policy": (
                     read_decision.prompt_safe_metadata() if read_decision is not None else {}
                 ),
@@ -311,6 +326,7 @@ class MemoryManager:
         state.request.metadata["memory_read_policy"] = context.read_policy
         state.request.metadata["memory_trust_policy"] = context.trust_policy
         state.request.metadata["memory_usage_hint"] = context.usage_hint
+        state.request.metadata["memory_recall_report"] = context.recall_report
         return context
 
     def build_context(
@@ -1578,6 +1594,15 @@ def _memory_context_token_budget_from_metadata(metadata: dict[str, Any]) -> int 
 
 
 def _skipped_memory_context(decision: MemoryReadDecision) -> MemoryContext:
+    recall_report = _memory_recall_report(
+        identity=None,
+        query_text="",
+        result=None,
+        context=None,
+        read_decision=decision,
+        profile_item=None,
+        visible_items=[],
+    )
     return MemoryContext(
         items=[],
         text="",
@@ -1594,6 +1619,76 @@ def _skipped_memory_context(decision: MemoryReadDecision) -> MemoryContext:
         read_policy=decision.prompt_safe_metadata(),
         trust_policy=decision.trust_policy,
         usage_hint=decision.usage_hint,
+        recall_report=recall_report,
+    )
+
+
+def _memory_recall_report(
+    *,
+    identity: RequestIdentity | None,
+    query_text: str,
+    result: MemorySearchResult | None,
+    context: MemoryContext | None,
+    read_decision: MemoryReadDecision | None,
+    profile_item: MemoryItem | None,
+    visible_items: list[MemoryItem],
+) -> dict[str, Any]:
+    normalized_query = " ".join(str(query_text or "").split())
+    profile_source_ids = []
+    if profile_item is not None:
+        raw_source_ids = profile_item.content.get("source_memory_ids")
+        if isinstance(raw_source_ids, list):
+            profile_source_ids = [str(item) for item in raw_source_ids if str(item).strip()]
+    return {
+        "read_allowed": bool(read_decision.allowed) if read_decision is not None else True,
+        "policy_reason": read_decision.reason if read_decision is not None else "",
+        "query_present": bool(normalized_query),
+        "query_kind": _memory_recall_query_kind(normalized_query, read_decision),
+        "query_hash": _memory_query_hash(normalized_query),
+        "candidate_count": int(result.total) if result is not None else 0,
+        "injected_count": len(context.items) if context is not None else 0,
+        "omitted_count": context.omitted_count if context is not None else 0,
+        "rejected_reasons": list(context.rejected_reasons) if context is not None else [],
+        "retrieval_version": context.retrieval_version if context is not None else "memory_read_policy_v1",
+        "profile_source_ids": profile_source_ids,
+        "superseded_excluded_count": _superseded_excluded_count(identity, visible_items),
+    }
+
+
+def _memory_query_hash(normalized_query: str) -> str | None:
+    if not normalized_query:
+        return None
+    return hashlib.sha256(normalized_query.encode("utf-8")).hexdigest()
+
+
+def _memory_recall_query_kind(
+    normalized_query: str,
+    read_decision: MemoryReadDecision | None,
+) -> str:
+    if not normalized_query:
+        return "empty"
+    trigger = (read_decision.trigger if read_decision is not None else None) or ""
+    text = normalized_query.lower()
+    if any(marker in normalized_query for marker in ("保存的", "已保存", "偏好", "个人偏好", "按我保存", "按我的偏好")):
+        return "saved_preference"
+    if any(marker in normalized_query for marker in ("继续", "接着", "上次", "刚才", "之前", "上一轮")):
+        return "continuation"
+    if any(marker in normalized_query for marker in ("历史", "记忆", "记得", "以前", "过去")) or any(
+        marker in text for marker in ("previous", "previously", "saved memory", "last time", "last chat")
+    ):
+        return "history_reference"
+    if trigger:
+        return "history_reference"
+    return "keyword"
+
+
+def _superseded_excluded_count(identity: RequestIdentity | None, visible_items: list[MemoryItem]) -> int:
+    if identity is None:
+        return 0
+    return sum(
+        1
+        for item in visible_items
+        if _identity_allows_item(identity, item) and _is_superseded(item)
     )
 
 

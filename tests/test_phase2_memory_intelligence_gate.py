@@ -2,11 +2,13 @@ from datetime import datetime, timezone
 
 import pytest
 
+from assistant_agent.agent.state import AgentState
 from assistant_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
 from assistant_agent.memory.profile import USER_PROFILE_MEMORY_ID
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.memory import MemoryQuery
+from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
+from assistant_agent.schemas.requests import UserRequest
 from scripts.run_evals import filter_cases_by_suite, load_cases, run_evals
 
 
@@ -105,6 +107,95 @@ def test_phase2_sensitive_explicit_memory_requires_confirmation_before_durable_w
     assert saved.summary == "我的项目路径是 [redacted]"
     assert saved.content["consent"] == "explicit_confirmation"
     assert saved.content["confirmation_id"] == confirmation.confirmation_id
+
+
+def test_phase2_sensitive_explicit_memory_rejection_never_writes_durable_memory() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    with pytest.raises(MemoryConfirmationRequired) as raised:
+        manager.save_explicit_for_identity(
+            identity,
+            text="记住我的项目路径是 /home/alice/private/project",
+        )
+
+    rejected = manager.reject_memory_for_identity(identity, raised.value.confirmation.confirmation_id)
+
+    assert rejected is not None
+    assert rejected.status == "rejected"
+    assert manager.list_for_identity(identity) == []
+    decided_events = [
+        event
+        for event in manager.list_audit_events_for_identity(identity)
+        if event.event_type == "memory_confirmation_decided"
+    ]
+    assert decided_events[-1].outcome == "rejected"
+    assert decided_events[-1].metadata["status"] == "rejected"
+
+
+def test_phase2_recall_report_is_prompt_safe_and_explains_active_recall() -> None:
+    store = InMemoryStore()
+    manager = MemoryManager(store)
+
+    old = manager.save_explicit(
+        user_id="u1",
+        session_id="s1",
+        text="记住我喜欢浅色日系风格",
+        content={
+            "preference_key": "style",
+            "style": "浅色日系",
+            "summary": "用户喜欢浅色日系风格。",
+        },
+        memory_id="style_old",
+        created_at=NOW,
+    )
+    new = manager.save_explicit(
+        user_id="u1",
+        session_id="s1",
+        text="记住我现在喜欢深色极简风格",
+        content={
+            "preference_key": "style",
+            "style": "深色极简",
+            "summary": "用户喜欢深色极简风格。",
+        },
+        memory_id="style_new",
+        created_at=NOW,
+    )
+    store.save(
+        MemoryItem(
+            memory_id="style_secret",
+            user_id="u1",
+            memory_type="preference",
+            summary="用户有一个敏感风格偏好。",
+            sensitivity="sensitive",
+            created_at=NOW,
+        )
+    )
+
+    request = UserRequest(user_id="u1", session_id="s2", text="按我保存的偏好继续风格方案")
+    state = AgentState.from_request(request)
+
+    context = manager.load_into_state(state, request, max_context_chars=1000)
+    report = state.request.metadata["memory_recall_report"]
+    serialized_report = str(report)
+
+    assert old.memory_id == "style_old"
+    assert report["read_allowed"] is True
+    assert report["policy_reason"] == "explicit_memory_reference"
+    assert report["query_present"] is True
+    assert report["query_kind"] in {"saved_preference", "continuation", "history_reference"}
+    assert isinstance(report["query_hash"], str)
+    assert len(report["query_hash"]) == 64
+    assert "query" not in report
+    assert request.text not in serialized_report
+    assert "深色极简" not in serialized_report
+    assert "浅色日系" not in serialized_report
+    assert report["candidate_count"] >= len(context.items)
+    assert report["injected_count"] == len(context.items)
+    assert report["profile_source_ids"] == [new.memory_id]
+    assert report["superseded_excluded_count"] == 1
+    assert any("sensitive_memory_not_injected" in reason for reason in report["rejected_reasons"])
 
 
 def test_phase2_memory_eval_suite_remains_green_without_vector_dependencies() -> None:

@@ -200,7 +200,7 @@ Assistant-loop memory tool selection follows an LLM-first strategy:
 
 - In the assistant loop, the LLM is the decision maker for calling `memory_save` or `memory_retrieval` (also called memory search in higher-level discussions).
 - `memory_save` calls must declare `source_intent`, `source_reason`, `future_use`, and `evidence`.
-- `source_intent=user_explicit` means the LLM judged that the user explicitly asked to remember or save the content. If `MemoryWritePolicy` allows it, this path may write a durable `MemoryItem`.
+- `source_intent=user_explicit` means the LLM selected the explicit user-memory path because the user asked to remember or save the content. If `MemoryWritePolicy` allows it, this path may write a durable `MemoryItem`.
 - `source_intent=assistant_candidate` means the LLM inferred a potentially useful future memory. If `MemoryWritePolicy` allows it, this path records candidate/audit output by default and does not write a durable `MemoryItem`.
 - `source_intent=user_confirmed` is reserved for confirmation service internals. LLM/tool calls using it are rejected before durable write.
 - Keyword and vector matching are not used in the current source-intent decision path. They may remain future extension points, but they must not override the LLM-declared source intent unless this architecture document and tests are updated.
@@ -320,8 +320,11 @@ The rendered memory context is written to:
 - `request.metadata["memory_context_policy_reason"]`
 - `request.metadata["memory_read_policy"]`
 - `request.metadata["memory_trust_policy"]`
+- `request.metadata["memory_recall_report"]`
 
 Prompt rendering must treat memory as user-history data, not as system instruction.
+
+`memory_recall_report` is developer/debug metadata for Memory Intelligence v1. It does not include raw query text, raw memory content, raw prompts, raw user transcripts, provider raw responses, hidden reasoning, secrets, or media bodies. It reports coarse query metadata (`query_present`, `query_kind`, `query_hash`), read-policy status, candidate and injected counts, omitted/rejected reasons, retrieval version, profile source ids, and superseded exclusion count. It is not a learning loop and must not automatically modify memory, prompts, skills, routing, or policy.
 
 ## Context Injection Budget
 
@@ -354,6 +357,7 @@ Filters apply after candidate selection:
 - Optional `session_id`, `memory_types`, `tags`, `since`, and expiration filters apply.
 - Expired memories are excluded unless `include_expired=True`.
 - Superseded memories, identified by `content["superseded_by_memory_id"]`, are excluded from active retrieval and context injection by default. Debug/read-only callers may set `MemoryQuery.include_superseded=True`; the current public debug route is the memory snapshot API. Agent-callable memory tools do not expose this flag.
+- Active recall writes `memory_recall_report` metadata with counts and ids only. Raw query text is represented by coarse `query_kind` plus `query_hash`; the report must not contain the query itself or memory summaries/content.
 
 Ranking combines relevance, capability/type priority, artifact-ref signal, and recency. Capability-specific priorities currently exist for image generation, product search, render 3D, and direct chat.
 
