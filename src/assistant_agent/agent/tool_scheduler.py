@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from assistant_agent.agent.action_validator import ActionValidationResult
 from assistant_agent.schemas.assistant_decision import AssistantDecision
-from assistant_agent.tools.registry import tool_side_effect_policy
+from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 
 
 ToolScheduleMode = Literal["parallel", "serial"]
@@ -94,12 +94,12 @@ def build_scheduled_tool_call(
 ) -> ScheduledToolCall:
     """Attach static safety metadata to a normalized and validated call."""
 
-    policy = tool_side_effect_policy(decision.tool_name or "")
+    policy = ToolPolicyInterpreter().view_for_tool_name(decision.tool_name or "")
     return ScheduledToolCall(
         call_index=call_index,
         decision=decision,
         validation=validation,
-        side_effect_level=policy.level,
+        side_effect_level=policy.side_effect_level,
         requires_confirmation=policy.requires_confirmation,
         native_call_id=native_call_id,
     )
