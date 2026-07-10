@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, List, Dict
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy, ToolSpec
+from assistant_agent.schemas.tools import (
+    ToolPolicyMetadata,
+    ToolResult,
+    ToolSideEffectPolicy,
+    ToolSpec,
+)
 from assistant_agent.tools.base import BaseTool, ToolContext
 from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
@@ -75,6 +80,7 @@ class ToolRegistry:
                     when_not_to_use=usage.get("when_not_to_use", []),
                     runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
                     side_effect=tool_side_effect_policy(tool.name),
+                    policy=tool_policy_metadata(tool),
                 )
             )
         return specs
@@ -135,6 +141,19 @@ def tool_side_effect_policy(tool_name: str) -> ToolSideEffectPolicy:
     if isinstance(payload, dict):
         return ToolSideEffectPolicy.model_validate(payload)
     return ToolSideEffectPolicy()
+
+
+def tool_policy_metadata(tool: BaseTool) -> ToolPolicyMetadata | None:
+    """Return optional declarative policy metadata from a tool object."""
+
+    payload = getattr(tool, "policy", None)
+    if payload is None:
+        return None
+    if isinstance(payload, ToolPolicyMetadata):
+        return payload
+    if isinstance(payload, dict):
+        return ToolPolicyMetadata.model_validate(payload)
+    raise TypeError(f"Invalid policy metadata for tool {tool.name}: {type(payload).__name__}")
 
 
 _ACTION_USAGE: dict[str, dict[str, Any]] = {
