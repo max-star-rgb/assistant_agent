@@ -14,7 +14,7 @@
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
 - 工具 observation 是下一轮 LLM 的数据，不是系统指令；写入 prompt 前会被摘要、脱敏、压缩。不要把 provider raw response、密钥、base64 大 payload 暴露给 assistant context。
 - Provider capability facts live in `src/assistant_agent/schemas/provider_specs.py` as `ProviderSpec.capabilities`; chat adapters read that matrix for native tools, response format, streaming and modality switches instead of maintaining a separate provider table. Adapter factories should prefer `ResolvedProviderSpec.adapter_kind` / `ResolvedProviderSpec.capabilities` and must not maintain parallel provider-name dispatch tables.
-- 当前 native loop 会按 provider 返回顺序串行执行同一轮中的多个 native tool calls；每个工具仍独立进入 `ActionValidator -> ToolExecutor -> ToolRegistry`，并受 `max_tool_iterations` 预算限制。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
+- 当前 native loop 会先对同一轮 provider-native `tool_calls` 做 `ToolScheduler` 预检：明确 read-only、无确认需求、无已知依赖、无重复工具名且 provider budget 可安全检查的 batch 可以并发执行；其他 batch 继续按 provider 顺序串行执行。无论并发或串行，每个工具仍独立进入 `ActionValidator -> ToolExecutor -> ToolRegistry`，并受 `max_tool_iterations` 预算限制。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
 
 ## 设计收敛原则
 
@@ -42,9 +42,10 @@ UserRequest
        │    -> final_response
        └─ tool_calls[]
             -> each native tool call normalized to AssistantDecision(type="tool_call")
-            -> execute serially in provider order through ActionValidator.validate()
+            -> ToolScheduler batch precheck through ActionValidator.validate()
+            -> execute read-only independent calls concurrently, otherwise serially
             -> ToolExecutor.run_tool()
-            -> append assistant tool_call + tool observation messages
+            -> append assistant tool_call + tool observation messages in provider order
             -> ChatAdapter.chat() again for final content or next tool call
 
 Mock/local/offline compatibility path:
@@ -76,6 +77,7 @@ UserRequest
 相关源码：
 
 - `src/assistant_agent/agent/runtime.py`: 组装 registry、memory manager、chat adapter、tool executor、trace store，并承载真实非 mock provider 的 native content/tool_calls 主循环。
+- `src/assistant_agent/agent/tool_scheduler.py`: provider-native tool batch 的保守调度器；只把明确 read-only、独立、预算安全的 batch 标为 parallel。
 - `src/assistant_agent/agent/assistant_loop_nodes.py`: mock/offline assistant loop、native tool handoff 兼容节点、validator 调用、observation 回传和 loop guard。
 - `src/assistant_agent/agent/action_validator.py`: 工具执行前的本地校验边界。
 - `src/assistant_agent/agent/tool_executor.py`: 工具执行、预算、retry/recovery、event/history/trace 的统一边界。
@@ -93,14 +95,14 @@ UserRequest
 - 非 mock chat adapter 一律走 native loop；不再存在 `response_mode` 或 `assistant_tool_call_mode` 分支。
 - 请求向 provider 发送 `messages`、`tools` 和 `tool_choice="auto"`。
 - provider 返回 `content` 或 `refusal` 时，runtime 直接作为用户可见回答输出；普通 direct answer 应只有一次 chat call。
-- provider 返回 `tool_calls` 时，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再按 provider 顺序串行归一化并执行本轮可执行的 tool calls。每个 tool call 都会进入内部 `AssistantDecision(type="tool_call")`，再走 `ActionValidator -> ToolExecutor -> ToolRegistry`；超过 `max_tool_iterations` 的剩余调用会记录为预算跳过，而不是绕过治理边界。
+- provider 返回 `tool_calls` 时，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再把 batch 归一化为内部 `AssistantDecision(type="tool_call")` 并进入 `ToolScheduler`。调度器会批量预检 `ActionValidator` 和 side-effect policy；只有明确 read-only、无确认需求、无已知顺序依赖、无重复工具名、预算检查可并发安全的 batch 才会并发调用 `ToolExecutor.run_tool()`。其他情况保持 provider 顺序串行。无论哪种模式，observation 都按 provider call 顺序回填；超过 `max_tool_iterations` 的剩余调用会记录为预算跳过，而不是绕过治理边界。
 - 工具 observation 会作为后续 native messages 中的 `tool` role 内容回传；拿到工具结果后的第二次 LLM 调用是合理工具路径，不是隐藏控制面调用。
 - 如果 provider adapter 明确 `supports_native_tools=False`，runtime fails immediately，不静默 fallback 到旧 JSON 控制面。
 - `AssistantDecision` 仍是内部治理结构，用于复用 validator/executor/trace；真实 LLM 不再被要求输出自定义 `AssistantDecision` JSON。
 
 ## Backlog
 
-- 安全并行工具执行：当前不进入开发阶段，保留为长期候选能力。只有当 trace 或 eval 证明串行 native tool batch 成为明显瓶颈时再启动；首版只允许明确 read-only、无共享资源冲突、无确认需求的 tool calls 并行执行。副作用工具、confirmation-sensitive 工具、未知工具、资源或路径可能冲突的工具继续串行。任何并行调度都不得绕过 `ActionValidator -> ToolExecutor -> ToolRegistry`，并且必须保留每个工具独立的 trace、event、history、observation 和预算记录。
+- 安全并行工具执行扩展：当前 v1 已支持单个 read-only independent native batch 的保守并发执行。后续如需扩展到多组调度、重复同名 read-only 工具、共享资源冲突检测、动态依赖声明或 async executor，必须继续保持 `ToolExecutor` 为唯一执行入口，并保留每个工具独立的 trace、event、history、observation 和预算记录。副作用工具、confirmation-sensitive 工具、未知工具、资源或路径可能冲突的工具默认继续串行。
 - ToolRegistry 延迟注册 / factory descriptor：当前不采用 Hermes 风格的模块级全局单例 `registry`，避免 provider profile、adapter、video context、agent delegation 和测试隔离被全局状态污染。后续如果默认工具数量或 import 耦合明显增长，可以引入保留依赖注入语义的 `ToolRegistryBuilder` 或 lazy tool factory descriptor：`registry.py` 只保存轻量工具定义和 factory，`create_default_registry()` 按 `ProviderConfig`、runtime context 和 opt-in capability 实例化工具。该方案不得绕过 `ActionValidator -> ToolExecutor -> ToolRegistry`，也不得把工具执行入口改成全局 `registry.run(...)`。
 
 ## ToolSpec 契约

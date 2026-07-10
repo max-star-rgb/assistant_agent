@@ -1,4 +1,8 @@
 import json
+import time
+from threading import Lock
+
+from pydantic import BaseModel
 
 from assistant_agent.agent.runtime import AgentGraphRuntime, progress_message_for_tool
 from assistant_agent.config import ProviderConfig
@@ -7,6 +11,7 @@ from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatProviderError, ChatRequest, ChatResult, ProviderChatCapabilities
 from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaIngestionFile,
@@ -14,6 +19,7 @@ from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaTaskStatusResult,
 )
 from assistant_agent.services.event_sink import ListEventSink
+from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -128,6 +134,60 @@ def refusal_result(message: str) -> ChatResult:
         provider="scripted-native",
         model="native-test",
     )
+
+
+class SlowQueryInput(BaseModel):
+    query: str
+    limit: int | None = None
+
+
+class ParallelProbe:
+    def __init__(self) -> None:
+        self.active = 0
+        self.overlapped = False
+        self._lock = Lock()
+
+    def enter(self) -> None:
+        with self._lock:
+            self.active += 1
+            if self.active > 1:
+                self.overlapped = True
+
+    def exit(self) -> None:
+        with self._lock:
+            self.active -= 1
+
+
+class SlowReadOnlyTool(MockTool):
+    input_schema = SlowQueryInput
+    output_schema = BaseModel
+
+    def __init__(self, *, name: str, probe: ParallelProbe, delay_seconds: float = 0.05) -> None:
+        self.name = name
+        self.description = f"Slow test tool for {name}."
+        self._probe = probe
+        self._delay_seconds = delay_seconds
+
+    def _run(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        self._probe.enter()
+        try:
+            time.sleep(self._delay_seconds)
+            query = getattr(input, "query")
+            return ToolResult(
+                tool_name=self.name,
+                success=True,
+                data={"summary": f"{self.name} result for {query}"},
+            )
+        finally:
+            self._probe.exit()
+
+
+def slow_read_only_registry(probe: ParallelProbe) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(SlowReadOnlyTool(name="product_search", probe=probe))
+    registry.register(SlowReadOnlyTool(name="web_search", probe=probe))
+    registry.register(SlowReadOnlyTool(name="price_compare", probe=probe))
+    return registry
 
 
 def test_progress_message_for_tool_uses_simple_static_mapping() -> None:
@@ -887,6 +947,70 @@ def test_native_runtime_executes_multiple_tool_calls_serially_in_provider_order(
     assert state.response is not None
     assert state.response.message == "已基于两个工具 observation 回答。"
     assert state.response.data["tool_observations"] == 2
+
+
+def test_native_runtime_parallelizes_independent_read_only_tool_batch_through_executor() -> None:
+    probe = ParallelProbe()
+    adapter = NativeToolChatAdapter(
+        [
+            native_multi_result(
+                [
+                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
+                ]
+            ),
+            final_result("已基于两个并发 observation 回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=5),
+        chat_adapter=adapter,
+        registry=slow_read_only_registry(probe),
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"))
+
+    assert probe.overlapped is True
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
+    tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
+    assert [message["tool_call_id"] for message in tool_messages] == ["call_1", "call_2"]
+    assert "product_search" in tool_messages[0]["content"]
+    assert "web_search" in tool_messages[1]["content"]
+    schedule = state.request.metadata["native_tool_schedules"][0]
+    assert schedule["groups"][0]["mode"] == "parallel"
+    assert schedule["groups"][0]["tool_names"] == ["product_search", "web_search"]
+    assert state.response is not None
+    assert state.response.message == "已基于两个并发 observation 回答。"
+
+
+def test_native_runtime_keeps_dependent_read_only_tool_batch_serial() -> None:
+    probe = ParallelProbe()
+    adapter = NativeToolChatAdapter(
+        [
+            native_multi_result(
+                [
+                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("price_compare", {"query": "通勤耳机", "limit": 2}),
+                ]
+            ),
+            final_result("已基于串行 observation 回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=5),
+        chat_adapter=adapter,
+        registry=slow_read_only_registry(probe),
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较价格"))
+
+    assert probe.overlapped is False
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    schedule = state.request.metadata["native_tool_schedules"][0]
+    assert schedule["groups"][0]["mode"] == "serial"
+    assert schedule["groups"][0]["reason"] == "dependent_tool_order"
+    assert state.response is not None
+    assert state.response.message == "已基于串行 observation 回答。"
 
 
 def test_native_runtime_stops_multi_tool_batch_when_first_call_is_rejected() -> None:

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import perf_counter
 from typing import Any, Literal
 
@@ -26,6 +27,11 @@ from assistant_agent.agent.memory_tool_selection import (
     record_memory_tool_selection_audit,
 )
 from assistant_agent.agent.provider_streaming import ProviderStreamingTurnRunner, supports_async_streaming_chat
+from assistant_agent.agent.tool_scheduler import (
+    ToolExecutionGroup,
+    build_scheduled_tool_call,
+    plan_tool_schedule,
+)
 from assistant_agent.memory.factory import create_memory_store
 from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.config import ProviderConfig
@@ -35,7 +41,7 @@ from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tool_observation import observation_from_tool_result, rejected_observation
 from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
-from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
 from assistant_agent.services.checkpointer import create_checkpointer
@@ -386,6 +392,186 @@ class AgentGraphRuntime:
             return ProviderStreamingTurnRunner().run_turn(self.chat_adapter, chat_request)
         return self.chat_adapter.chat(chat_request)
 
+    def _plan_native_tool_schedule(
+        self,
+        tool_calls: list[Any],
+        *,
+        request: UserRequest,
+        state: AgentState,
+        remaining_tool_budget: int,
+    ):
+        scheduled_calls = []
+        for call_index, call in enumerate(tool_calls):
+            decision = native_tool_call_to_assistant_decision(call)
+            validation = ActionValidator().validate(
+                decision=decision,
+                registry=self.registry,
+                request=request,
+                state=state,
+            )
+            scheduled_calls.append(
+                build_scheduled_tool_call(
+                    call_index=call_index,
+                    decision=decision,
+                    validation=validation,
+                    native_call_id=call.id,
+                )
+            )
+            if not validation.accepted:
+                break
+
+        schedule = plan_tool_schedule(
+            scheduled_calls,
+            remaining_tool_budget=remaining_tool_budget,
+            provider_budget_parallel_safe=_native_provider_budget_parallel_safe(state, len(scheduled_calls)),
+        )
+        schedule_metadata = schedule.to_metadata()
+        state.request.metadata.setdefault("native_tool_schedules", []).append(schedule_metadata)
+        state.request.metadata["last_native_tool_schedule"] = schedule_metadata
+        return schedule
+
+    def _run_native_parallel_tool_group(
+        self,
+        request: UserRequest,
+        *,
+        state: AgentState,
+        tool_executor: ToolExecutor,
+        event_sink: EventSink | None,
+        result: ChatResult,
+        group: ToolExecutionGroup,
+        observations: list[dict[str, Any]],
+        native_calls: list[dict[str, Any]],
+        iteration: int,
+        max_iterations: int,
+    ) -> AgentState | None:
+        observation_start_index = len(observations)
+        step_ids: dict[int, str] = {}
+        for group_index, scheduled_call in enumerate(group.calls):
+            call = result.tool_calls[scheduled_call.call_index]
+            call_payload = call.model_dump(mode="json")
+            native_calls.append(call_payload)
+            state.request.metadata.setdefault("native_tool_calls", []).append(call_payload)
+            _record_native_tool_call_preamble(
+                state,
+                tool_name=call.name,
+                content=result.response_text,
+            )
+            decision = scheduled_call.decision
+            _record_native_decision_metadata(
+                state,
+                request=request,
+                decision=decision,
+                iteration=iteration,
+                max_iterations=max_iterations,
+                safety_notes=["native_tool_call"],
+            )
+            self._append_observability_event(
+                state,
+                canonical_event="react.decision",
+                node_name="native_runtime",
+                status=decision.type,
+                tool_name=decision.tool_name,
+                attributes={
+                    "iteration": iteration + 1,
+                    "batch_index": scheduled_call.call_index + 1,
+                    "batch_size": len(result.tool_calls),
+                    "decision_type": decision.type,
+                    "reason": decision.reason,
+                    "safety_notes": decision.safety_notes,
+                    "tool_schedule_mode": group.mode,
+                    "tool_schedule_reason": group.reason,
+                },
+            )
+            validation = scheduled_call.validation
+            state.request.metadata["last_action_validator"] = validation.model_dump(mode="json")
+            self._append_observability_event(
+                state,
+                canonical_event="action.validation.finished",
+                node_name="native_runtime",
+                status="accepted",
+                tool_name=decision.tool_name,
+                attributes={
+                    **validation.model_dump(mode="json"),
+                    "batch_index": scheduled_call.call_index + 1,
+                    "batch_size": len(result.tool_calls),
+                    "tool_schedule_mode": group.mode,
+                    "tool_schedule_reason": group.reason,
+                },
+            )
+            _emit_native_tool_progress_message(
+                state,
+                tool_name=decision.tool_name or call.name,
+                event_sink=event_sink,
+            )
+            step_ids[scheduled_call.call_index] = (
+                decision.step_id or f"native_runtime_{observation_start_index + group_index + 1}"
+            )
+
+        base_tool_call_count = len(state.tool_calls)
+        base_tool_result_count = len(state.tool_results)
+        tool_results: dict[int, ToolResult] = {}
+        with ThreadPoolExecutor(
+            max_workers=len(group.calls),
+            thread_name_prefix="native_tool_scheduler",
+        ) as executor:
+            future_to_call = {
+                executor.submit(
+                    tool_executor.run_tool,
+                    state,
+                    step_ids[scheduled_call.call_index],
+                    scheduled_call.decision.tool_name or "",
+                    scheduled_call.decision.tool_input or {},
+                    None,
+                    self.trace_store,
+                    state.trace_id,
+                    "native_runtime",
+                ): scheduled_call
+                for scheduled_call in group.calls
+            }
+            for future in as_completed(future_to_call):
+                scheduled_call = future_to_call[future]
+                tool_results[scheduled_call.call_index] = future.result()
+
+        _reorder_native_parallel_state_records(
+            state,
+            base_tool_call_count=base_tool_call_count,
+            base_tool_result_count=base_tool_result_count,
+            tool_names=[call.tool_name for call in group.calls],
+        )
+
+        for scheduled_call in group.calls:
+            tool_result = tool_results[scheduled_call.call_index]
+            observation = observation_from_tool_result(
+                tool_result,
+                request_text=request.text,
+                prior_observations=observations,
+            ).model_dump(mode="json")
+            observations.append(observation)
+            state.request.metadata["native_runtime_observations"] = observations
+            _record_native_observation_metadata(state, observation)
+            _append_native_tool_observation_event(self, state, observation)
+
+        if state.status == "failed":
+            return state
+        if len(observations) >= max_iterations:
+            if self._request_native_final_answer_after_tool_limit(
+                request,
+                state=state,
+                observations=observations,
+                native_calls=native_calls,
+                event_sink=event_sink,
+                iteration=iteration,
+                max_iterations=max_iterations,
+            ):
+                return state
+            self._set_native_runtime_max_iteration_response(
+                state,
+                observations=observations,
+                max_iterations=max_iterations,
+            )
+            return state
+        return None
+
     def _run_native_runtime(
         self,
         request: UserRequest,
@@ -466,6 +652,28 @@ class AgentGraphRuntime:
             if result.success and result.tool_calls:
                 if stream_buffer is not None:
                     stream_buffer.discard()
+                schedule = self._plan_native_tool_schedule(
+                    result.tool_calls,
+                    request=request,
+                    state=state,
+                    remaining_tool_budget=max_iterations - len(observations),
+                )
+                if _native_schedule_is_parallel(schedule):
+                    parallel_result = self._run_native_parallel_tool_group(
+                        request,
+                        state=state,
+                        tool_executor=tool_executor,
+                        event_sink=event_sink,
+                        result=result,
+                        group=schedule.groups[0],
+                        observations=observations,
+                        native_calls=native_calls,
+                        iteration=iteration,
+                        max_iterations=max_iterations,
+                    )
+                    if parallel_result is not None:
+                        return parallel_result
+                    continue
                 for call_index, call in enumerate(result.tool_calls):
                     if len(observations) >= max_iterations:
                         self._record_native_tool_calls_skipped_for_budget(
@@ -1178,6 +1386,48 @@ def _chat_result_error(result: Any) -> dict[str, Any] | None:
         "message": getattr(first, "message", "provider error"),
         "recoverable": getattr(first, "recoverable", False),
     }
+
+
+def _native_schedule_is_parallel(schedule: Any) -> bool:
+    if not getattr(schedule, "groups", None):
+        return False
+    first_group = schedule.groups[0]
+    return first_group.mode == "parallel" and len(first_group.calls) > 1
+
+
+def _native_provider_budget_parallel_safe(state: AgentState, call_count: int) -> bool:
+    budget = state.provider_budget
+    if budget.max_calls_per_capability:
+        return False
+    if budget.max_estimated_cost_per_run is not None or budget.max_input_bytes_per_run is not None:
+        return False
+    remaining_provider_calls = budget.max_provider_calls_per_run - budget.provider_call_count
+    return remaining_provider_calls >= call_count
+
+
+def _reorder_native_parallel_state_records(
+    state: AgentState,
+    *,
+    base_tool_call_count: int,
+    base_tool_result_count: int,
+    tool_names: list[str],
+) -> None:
+    _reorder_records_by_tool_name(state.tool_calls, base_tool_call_count, tool_names)
+    _reorder_records_by_tool_name(state.tool_results, base_tool_result_count, tool_names)
+
+
+def _reorder_records_by_tool_name(records: list[Any], start_index: int, tool_names: list[str]) -> None:
+    tail = list(records[start_index:])
+    ordered: list[Any] = []
+    for tool_name in tool_names:
+        match_index = next(
+            (index for index, record in enumerate(tail) if getattr(record, "tool_name", None) == tool_name),
+            None,
+        )
+        if match_index is None:
+            continue
+        ordered.append(tail.pop(match_index))
+    records[start_index:] = ordered + tail
 
 
 class _ResponseDeltaTrackingEventSink:
