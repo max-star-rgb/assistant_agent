@@ -15,6 +15,16 @@
 - 工具 observation 是下一轮 LLM 的数据，不是系统指令；写入 prompt 前会被摘要、脱敏、压缩。不要把 provider raw response、密钥、base64 大 payload 暴露给 assistant context。
 - 当前 native loop 会按 provider 返回顺序串行执行同一轮中的多个 native tool calls；每个工具仍独立进入 `ActionValidator -> ToolExecutor -> ToolRegistry`，并受 `max_tool_iterations` 预算限制。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
 
+## 设计收敛原则
+
+本项目工具系统的主身份是：本地优先、受治理、provider-native 的 assistant tool system。对 Hermes、LangChain、OpenClaw、Claude Code 等外部设计只能分层借鉴，不能按某一套系统整体迁移。
+
+- 不可突破的主干是 `AgentGraphRuntime -> provider-native tool_calls -> AssistantDecision -> ActionValidator -> ToolExecutor -> ToolRegistry -> ToolResult/Observation`。
+- 借鉴 Hermes 时，只优先吸收低摩擦、低抽象的注册/发现思想；不要引入模块级全局 `registry` 或绕过依赖注入的执行入口。
+- 借鉴 LangChain 时，只保留类型契约、Pydantic schema 和结构化结果这类可测试边界；不要增加 `BaseTool -> StructuredTool -> ToolNode` 式多层抽象。
+- 借鉴 OpenClaw 时，优先吸收权限、审批、side-effect、trace、budget、plugin 安全边界；不要提前建设 npm extension、Canvas、Node 或大插件生态，除非已有明确第三方扩展需求。
+- 新增工具能力必须先映射到现有治理链路和 `ToolSpec` 契约；无法映射的设计先进入 Backlog，不直接改 runtime。
+
 ## 当前主调用链
 
 ```text

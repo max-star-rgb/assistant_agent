@@ -111,6 +111,7 @@ User / CLI / API / Web UI
 - Memory 工具选择采用 LLM-first：assistant loop 由 LLM 语义判断是否调用 `memory_save` / `memory_retrieval`，`memory_save` 声明 `source_intent`，当前不以 keyword/vector 规则覆盖 `source_intent` 来决定选择，任何写入仍必须经过 `MemoryWritePolicy`。
 - 长期记忆读取和自动注入必须经过 `MemoryReadPolicy`；普通首次文案、建议、搜索、生成或推荐不自动查长期记忆，`memory_retrieval` / legacy retrieve 也必须先过 `ActionValidator` 读取意图 gate。
 - Phase 8 之后的 assistant loop 方向是真实 LLM 自主决策、追问、工具调用和最终回答；真实 LLM 路径不要依赖旧 intent/router/plan 来选择工具。
+- 工具系统设计收敛以 `docs/tool-calling-architecture.md` 的“设计收敛原则”为准；不要整体照搬 Hermes、LangChain、OpenClaw 或 Claude Code 的工具系统。
 - mock/offline 路径只作为稳定测试与本地演示兼容层，不把 mock 行为伪装成真实 LLM 能力。
 - 新增核心 ReAct/assistant loop 测试优先覆盖非 mock LLM 决策路径，例如 scripted/fake real chat adapter；真实外部网络调用只放在显式 opt-in 的 smoke/integration 测试中。
 - 业务功能建议从具体模块导入；只有明确包级公共入口才放进 `__init__.py` 聚合导出。
