@@ -18,6 +18,9 @@ from assistant_agent.gateway import (
     CALL_HANGUP,
     CALL_INCOMING,
     CONFIG_UPDATE,
+    GATEWAY_WEBSOCKET_CAPABILITIES,
+    REALTIME_MEDIA_ENTRY_CAPABILITIES,
+    EntryAdapterCapabilities,
     Frame,
     dumps_frame,
     frame,
@@ -539,8 +542,21 @@ def _message_payload_with_metadata(
     metadata["source"] = source
     metadata["transport"] = "websocket"
     metadata["request_identity"] = identity.metadata()
+    capabilities = _entry_capabilities_for_source(source)
+    if capabilities is not None:
+        gateway_metadata = dict(metadata.get("gateway") or {})
+        gateway_metadata["entry_capabilities"] = capabilities.to_metadata()
+        metadata["gateway"] = gateway_metadata
     normalized["metadata"] = metadata
     return normalized
+
+
+def _entry_capabilities_for_source(source: str) -> EntryAdapterCapabilities | None:
+    if source == "gateway_websocket":
+        return GATEWAY_WEBSOCKET_CAPABILITIES
+    if source == "realtime_media_websocket":
+        return REALTIME_MEDIA_ENTRY_CAPABILITIES
+    return None
 
 
 def _event_payload(event: dict[str, Any]) -> dict[str, Any]:

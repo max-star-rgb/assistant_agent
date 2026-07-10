@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes.
 
@@ -178,6 +178,27 @@ Entry adapters should not own assistant loop decisions, tool execution, memory p
 
 Entry adapters may be implemented in TypeScript, Go, Rust, or another language when that better fits a Web UI, BFF, vendor WebSocket adapter, Media Relay adapter, edge deployment, or telephony/media SDK. Those non-Python layers should stay thin: parse product or transport payloads, enforce entry-layer auth and UX contracts, and forward normalized HTTP requests or Gateway frames to the Python `assistant_agent` Gateway/runtime boundary without reimplementing assistant loop, Gateway lifecycle, tool calling, memory, or provider policy.
 
+## Entry Identity and Session Rules
+
+Gateway entry adapters must bind identity before a user turn reaches the assistant backend:
+
+- HTTP `/agent/run` resolves authenticated request identity at the route boundary, then runs the turn through `GatewayTurnFacade` with the resolved `user_id` and `session_id`.
+- Gateway WebSocket `/ws/gateway` resolves the WebSocket identity from auth/query context, rejects mismatched frame `user_id` or `session_id`, and injects trusted `source=gateway_websocket` metadata only after the frame passes that check.
+- Media Relay WebSocket `/ws/realtime/media` requires a bound session for non-`ping` events, maps media events into normalized Gateway frames, and injects trusted `source=realtime_media_websocket` metadata only at the adapter boundary.
+- Vendor `/agent-service/v1` preserves the vendor envelope at the entry layer, but `chat` turns use a local `GatewayTurnFacade`; raw `audio`, `video`, and `interrupt` messages remain entry-layer ACK traffic unless explicitly promoted to Gateway frames by future work.
+
+Entry adapters may attach prompt-safe `entry_capabilities` metadata so downstream code can distinguish text streaming, interrupt support, media reference support, raw media support, and TTS edge event support without inferring behavior from transport names. These capability declarations are informational; they do not authorize tool calls, provider selection, memory access, or new modalities.
+
+## Hermes-Inspired Boundaries
+
+Hermes' message gateway is useful reference material for defensive edge handling, but this project does not adopt its multi-IM runtime shape. Borrowed ideas should stay within the current Gateway boundaries:
+
+- Session isolation maps to explicit `user_id`, `session_id`, trusted `source`, and session config handling, not platform-specific session-key factories.
+- Running-agent control interception maps to Gateway control frames: `run.cancel`, explicit interrupt metadata, deadline cancellation, disconnect cancellation, and `call.hangup`.
+- Adapter capability fallback maps to small entry capability declarations and outbound formatters, not platform-specific send APIs in the Gateway core.
+- Hook-style lifecycle visibility maps to controlled Gateway lifecycle events and trace/observability records, not arbitrary user hook execution in the Gateway process.
+- Platform formatting, slash commands, memory flush, and external delivery routing remain outside Gateway unless implemented as thin entry adapters that forward normalized Gateway frames.
+
 ## Media Relay WebSocket
 
 `/ws/realtime/media` is the primary realtime call entry for Media Relay integrations. It accepts media-entry events, validates identity and session binding against the WebSocket query/auth context, and maps valid events to Gateway frames:
@@ -224,6 +245,8 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | module | responsibility |
 | --- | --- |
 | `src/assistant_agent/gateway/protocol.py` | Gateway wire frame helpers, call/config constants, and supported modalities. |
+| `src/assistant_agent/gateway/capabilities.py` | Prompt-safe entry adapter capability declarations used in Gateway metadata. |
+| `src/assistant_agent/gateway/observability.py` | Controlled fail-open Gateway lifecycle event model and sink helper. |
 | `src/assistant_agent/gateway/transport.py` | Transport-agnostic endpoint primitives for in-process tests and embedding. |
 | `src/assistant_agent/gateway/ws.py` | JSON text WebSocket adapter that presents a WebSocket as a Gateway endpoint. |
 | `src/assistant_agent/gateway/bridge.py` | External-client-to-session bridge: call lifecycle, frame forwarding, stale bridge eviction, disconnect cancellation, and modality gate. |

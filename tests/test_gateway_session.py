@@ -702,6 +702,113 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert "control" not in backend.requests[1].metadata
         assert "interrupt" not in backend.requests[1].metadata["gateway"]
 
+    async def test_lifecycle_sink_records_queued_and_terminal_run_events(self) -> None:
+        class QueueBackend:
+            def __init__(self) -> None:
+                self.release_first = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                if request.text == "first":
+                    await self.release_first.wait()
+                    return RealtimeAgentResult(status="completed", run_id=request.run_id)
+                assert event_sink is not None
+                await event_sink(RealtimeAgentEvent(type="response.chunk", text="second done"))
+                return RealtimeAgentResult(status="completed", run_id=request.run_id)
+
+        events = []
+        backend = QueueBackend()
+        session = GatewaySessionService(backend=backend, lifecycle_sink=events.append)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(type="message.user", session_id="lifecycle-queue", payload={"text": "first"})
+            )
+
+            async def _read_until_second_run_end() -> None:
+                saw_first_run = False
+                saw_second_run = False
+                async for received in client_ep:
+                    if received["type"] == "run.started" and not saw_first_run:
+                        saw_first_run = True
+                        await client_ep.send(
+                            frame(
+                                type="message.user",
+                                session_id="lifecycle-queue",
+                                payload={"text": "second"},
+                            )
+                        )
+                        backend.release_first.set()
+                    elif received["type"] == "run.started":
+                        saw_second_run = True
+                    elif received["type"] == "run.end" and saw_second_run:
+                        return
+
+            await asyncio.wait_for(_read_until_second_run_end(), timeout=3.0)
+        finally:
+            backend.release_first.set()
+            await _close_session(client_ep, session_ep, session_task)
+
+        event_types = [event.type for event in events]
+        assert event_types == [
+            "gateway.run.started",
+            "gateway.run.queued",
+            "gateway.run.completed",
+            "gateway.run.started",
+            "gateway.run.completed",
+        ]
+        queued = events[1]
+        assert queued.session_id == "lifecycle-queue"
+        assert queued.payload["queue_depth"] == 1
+
+    async def test_lifecycle_sink_records_cancel_request_and_cancelled_run_end(self) -> None:
+        class CancellableBackend:
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                await cancel_token.cancelled()
+                return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+
+        events = []
+        session = GatewaySessionService(backend=CancellableBackend(), lifecycle_sink=events.append)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        async def _read_cancel_flow() -> None:
+            async for received in client_ep:
+                if received["type"] == "run.started":
+                    await client_ep.send(
+                        frame(
+                            type="run.cancel",
+                            session_id="lifecycle-cancel",
+                            run_id=received["run_id"],
+                        )
+                    )
+                if received["type"] == "run.end":
+                    return
+            raise AssertionError("endpoint closed before run.end")
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="lifecycle-cancel",
+                    payload={"text": "cancel me"},
+                )
+            )
+            await asyncio.wait_for(_read_cancel_flow(), timeout=3.0)
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        event_types = [event.type for event in events]
+        assert event_types == [
+            "gateway.run.started",
+            "gateway.run.cancel_requested",
+            "gateway.run.cancelled",
+        ]
+        cancel_requested = events[1]
+        assert cancel_requested.session_id == "lifecycle-cancel"
+        assert cancel_requested.payload["source"] == "gateway_cancel"
+
     async def test_interrupt_suppresses_previous_run_events_after_new_message(self) -> None:
         class InterruptStaleEventBackend:
             def __init__(self) -> None:

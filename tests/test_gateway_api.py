@@ -183,6 +183,42 @@ def test_realtime_media_websocket_maps_text_and_video_to_gateway_message() -> No
     assert backend.requests[0].metadata["gateway"]["session_config"] == {"locale": "zh-CN"}
 
 
+def test_realtime_media_websocket_injects_entry_capabilities() -> None:
+    backend = RecordingRealtimeBackend()
+    _install_gateway_backend(backend)
+    try:
+        client = TestClient(create_app())
+
+        with client.websocket_connect("/ws/realtime/media?user_id=media-user&session_id=media-session") as websocket:
+            websocket.send_json({"type": "session.start", "payload": {"config": {"locale": "zh-CN"}}})
+            assert websocket.receive_json()["type"] == "call.ready"
+
+            websocket.send_json(
+                {
+                    "type": "transcript.final",
+                    "payload": {
+                        "text": "看一下这段媒体",
+                        "audio_id": "audio-1",
+                        "video_ids": ["video-1"],
+                    },
+                }
+            )
+            _receive_until(websocket, "run.end")
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+    capabilities = backend.requests[0].metadata["gateway"]["entry_capabilities"]
+    assert capabilities == {
+        "supports_text_streaming": True,
+        "supports_interrupt": True,
+        "supports_audio_refs": True,
+        "supports_image_refs": True,
+        "supports_video_refs": True,
+        "supports_raw_media": False,
+        "supports_tts_edge_events": True,
+    }
+
+
 def test_realtime_media_websocket_completed_run_hangup_does_not_cancel_inactive_run() -> None:
     backend = RecordingRealtimeBackend()
     _install_gateway_backend(backend)

@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from assistant_agent.gateway import GatewaySessionManager
+from assistant_agent.gateway import AGENT_SERVICE_ENTRY_CAPABILITIES, GatewaySessionManager
 from assistant_agent.realtime import GatewayAgentAdapter
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.gateway_turn_facade import (
@@ -527,7 +527,10 @@ def _agent_service_gateway_metadata(
             "content_count": content_count,
             "control_started": state.assistant_control_start is not None,
         },
-        "gateway": {"suppress_realtime_backend_source": True},
+        "gateway": {
+            "suppress_realtime_backend_source": True,
+            "entry_capabilities": AGENT_SERVICE_ENTRY_CAPABILITIES.to_metadata(),
+        },
     }
 
 

@@ -10,6 +10,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
+from assistant_agent.gateway.observability import (
+    GatewayLifecycleSink,
+    emit_gateway_lifecycle_event,
+)
 from assistant_agent.gateway.protocol import Frame, frame
 from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
 from assistant_agent.realtime import (
@@ -90,11 +94,13 @@ class GatewaySessionService:
         backend: RealtimeAgentBackend | None = None,
         backend_factory: Callable[[], RealtimeAgentBackend] | None = None,
         config: Mapping[str, Any] | None = None,
+        lifecycle_sink: GatewayLifecycleSink | None = None,
     ) -> None:
         self._user_id = user_id
         self._backend = backend
         self._backend_factory = backend_factory
         self._config: dict[str, Any] = dict(config or {})
+        self._lifecycle_sink = lifecycle_sink
         self._active_by_session: dict[str, ActiveRun] = {}
         self._pending_by_session: dict[str, list[PendingUserMessage]] = {}
         self._history_by_session: dict[str, list[str]] = {}
@@ -106,6 +112,25 @@ class GatewaySessionService:
 
     def update_config(self, values: Mapping[str, Any]) -> None:
         self._config.update({str(key): value for key, value in values.items()})
+
+    def _emit_lifecycle(
+        self,
+        event_type: str,
+        *,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        turn_id: str | None = None,
+        payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        emit_gateway_lifecycle_event(
+            self._lifecycle_sink,
+            type=event_type,
+            user_id=self._user_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            payload=payload,
+        )
 
     async def serve(self, ep: Endpoint) -> None:
         async for f in ep:
@@ -140,6 +165,11 @@ class GatewaySessionService:
             if has_active_run and not interrupt_requested:
                 pending = self._pending_by_session.setdefault(session_id, [])
                 pending.append(PendingUserMessage(endpoint=ep, frame=dict(f)))
+                self._emit_lifecycle(
+                    "gateway.run.queued",
+                    session_id=session_id,
+                    payload={"queue_depth": len(pending)},
+                )
                 return
 
         if interrupt_requested:
@@ -225,6 +255,12 @@ class GatewaySessionService:
         expects_reply = True
         end_reason = "error"
         try:
+            self._emit_lifecycle(
+                "gateway.run.started",
+                session_id=session_id,
+                run_id=run_id,
+                turn_id=turn_id,
+            )
             await ep.send(
                 frame(type="run.started", session_id=session_id, turn_id=turn_id, run_id=run_id)
             )
@@ -326,6 +362,13 @@ class GatewaySessionService:
             if deadline_task is not None:
                 deadline_task.cancel()
                 await asyncio.gather(deadline_task, return_exceptions=True)
+            self._emit_lifecycle(
+                _terminal_lifecycle_event_type(end_reason),
+                session_id=session_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                payload={"reason": end_reason, "expects_reply": expects_reply},
+            )
             if pending is not None:
                 await self._handle_user_message(pending.endpoint, pending.frame)
 
@@ -406,11 +449,22 @@ class GatewaySessionService:
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def _interrupt_if_needed(self, *, session_id: str) -> None:
+        interrupted: ActiveRun | None = None
         async with self._lock:
             cur = self._active_by_session.get(session_id)
             if not cur:
                 return
             cur.cancel.cancel(source="gateway_interrupt")
+            interrupted = cur
+        if interrupted is None:
+            return
+        self._emit_lifecycle(
+            "gateway.run.cancel_requested",
+            session_id=session_id,
+            run_id=interrupted.run_id,
+            turn_id=interrupted.turn_id,
+            payload={"source": "gateway_interrupt"},
+        )
 
     async def _handle_cancel(self, ep: Endpoint, f: Frame) -> None:
         run_id = f.get("run_id")
@@ -419,6 +473,9 @@ class GatewaySessionService:
         cancel_source = _cancel_source_from_payload(payload)
         cancel_reason = _optional_string(payload.get("reason"))
         did_cancel = False
+        cancelled_session_id: str | None = None
+        cancelled_run_id: str | None = None
+        cancelled_turn_id: str | None = None
 
         async with self._lock:
             if session_id and cancel_source in {"gateway_disconnect", "gateway_hangup"}:
@@ -428,14 +485,30 @@ class GatewaySessionService:
                 if cur and (run_id is None or cur.run_id == run_id):
                     cur.cancel.cancel(source=cancel_source, reason=cancel_reason)
                     did_cancel = True
+                    cancelled_session_id = str(session_id)
+                    cancelled_run_id = cur.run_id
+                    cancelled_turn_id = cur.turn_id
             elif run_id:
-                for cur in self._active_by_session.values():
+                for active_session_id, cur in self._active_by_session.items():
                     if cur.run_id == run_id:
                         cur.cancel.cancel(source=cancel_source, reason=cancel_reason)
                         did_cancel = True
+                        cancelled_session_id = active_session_id
+                        cancelled_run_id = cur.run_id
+                        cancelled_turn_id = cur.turn_id
                         break
 
         if did_cancel:
+            cancel_payload: dict[str, Any] = {"source": cancel_source}
+            if cancel_reason:
+                cancel_payload["reason"] = cancel_reason
+            self._emit_lifecycle(
+                "gateway.run.cancel_requested",
+                session_id=cancelled_session_id,
+                run_id=cancelled_run_id,
+                turn_id=cancelled_turn_id,
+                payload=cancel_payload,
+            )
             return
 
         await ep.send(
@@ -467,6 +540,7 @@ class GatewaySessionService:
 
         async def _monitor() -> None:
             await asyncio.sleep(deadline_ms / 1000)
+            cancelled_run: ActiveRun | None = None
             async with self._lock:
                 cur = self._active_by_session.get(session_id)
                 if cur is None or cur.run_id != run_id or cur.cancel is not cancel:
@@ -476,6 +550,20 @@ class GatewaySessionService:
                     reason="run_deadline_expired",
                     metadata={"deadline_ms": deadline_ms},
                 )
+                cancelled_run = cur
+            if cancelled_run is None:
+                return
+            self._emit_lifecycle(
+                "gateway.run.cancel_requested",
+                session_id=session_id,
+                run_id=cancelled_run.run_id,
+                turn_id=cancelled_run.turn_id,
+                payload={
+                    "source": "deadline",
+                    "reason": "run_deadline_expired",
+                    "deadline_ms": deadline_ms,
+                },
+            )
 
         return asyncio.create_task(_monitor(), name=f"gateway-run-deadline-{run_id}")
 
@@ -703,6 +791,7 @@ class GatewaySessionManager:
         backend_factory: Callable[[], RealtimeAgentBackend] | None = None,
         service_factory: Callable[[str, Mapping[str, Any]], GatewaySessionService] | None = None,
         start_reaper: bool = True,
+        lifecycle_sink: GatewayLifecycleSink | None = None,
     ) -> None:
         self.max_sessions = max_sessions
         self.idle_timeout_s = idle_timeout_s
@@ -710,6 +799,7 @@ class GatewaySessionManager:
         self.reaper_interval_s = reaper_interval_s
         self.backend_factory = backend_factory
         self.service_factory = service_factory
+        self.lifecycle_sink = lifecycle_sink
         self._entries: dict[str, _GatewaySessionEntry] = {}
         self._deferred_config: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
@@ -740,6 +830,15 @@ class GatewaySessionManager:
                 if resumed:
                     entry.hung_up_at = None
                 entry.touch()
+                self._emit_lifecycle(
+                    "gateway.session.acquired",
+                    user_id=user_id,
+                    payload={
+                        "created": False,
+                        "resumed": resumed,
+                        "active_count": len(self._entries),
+                    },
+                )
                 return GatewaySessionHandle(
                     user_id=user_id,
                     endpoint=entry.gateway_ep,  # type: ignore[arg-type]
@@ -761,6 +860,15 @@ class GatewaySessionManager:
             entry.start()
             self._entries[user_id] = entry
             self._ensure_reaper()
+            self._emit_lifecycle(
+                "gateway.session.acquired",
+                user_id=user_id,
+                payload={
+                    "created": True,
+                    "resumed": False,
+                    "active_count": len(self._entries),
+                },
+            )
             return GatewaySessionHandle(
                 user_id=user_id,
                 endpoint=entry.gateway_ep,  # type: ignore[arg-type]
@@ -771,13 +879,20 @@ class GatewaySessionManager:
             )
 
     async def mark_hangup(self, user_id: str) -> bool:
+        marked = False
         async with self._lock:
             entry = self._entries.get(user_id)
             if entry is None:
                 return False
             if entry.hung_up_at is None:
                 entry.hung_up_at = time.monotonic()
-            return True
+                marked = True
+        self._emit_lifecycle(
+            "gateway.session.hangup_marked",
+            user_id=user_id,
+            payload={"newly_marked": marked},
+        )
+        return True
 
     async def update_config(
         self,
@@ -810,6 +925,11 @@ class GatewaySessionManager:
         entry.stop()
         await entry.gateway_ep.close()
         await entry.session_ep.close()
+        self._emit_lifecycle(
+            "gateway.session.destroyed",
+            user_id=user_id,
+            payload={"active_count": self.active_count()},
+        )
         return True
 
     async def reap_once(self) -> list[str]:
@@ -831,6 +951,20 @@ class GatewaySessionManager:
 
     def has_active_session(self, user_id: str) -> bool:
         return user_id in self._entries
+
+    def _emit_lifecycle(
+        self,
+        event_type: str,
+        *,
+        user_id: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        emit_gateway_lifecycle_event(
+            self.lifecycle_sink,
+            type=event_type,
+            user_id=user_id,
+            payload=payload,
+        )
 
     async def close(self) -> None:
         """Stop the reaper and close all managed user sessions."""
@@ -860,6 +994,7 @@ class GatewaySessionManager:
                 user_id=user_id,
                 backend_factory=self.backend_factory,
                 config=config,
+                lifecycle_sink=self.lifecycle_sink,
             )
         return _GatewaySessionEntry(
             user_id=user_id,
@@ -886,6 +1021,14 @@ class GatewaySessionManager:
 def _payload_dict(f: Frame) -> dict[str, Any]:
     payload = f.get("payload")
     return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _terminal_lifecycle_event_type(reason: str) -> str:
+    if reason == "completed":
+        return "gateway.run.completed"
+    if reason == "cancelled":
+        return "gateway.run.cancelled"
+    return "gateway.run.errored"
 
 
 def _run_timeout_ms(payload: Mapping[str, Any], session_config: Mapping[str, Any]) -> int | None:

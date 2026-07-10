@@ -115,6 +115,15 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
     assert request.metadata["runtime"]["history"] == ["你好"]
     assert request.metadata["transport"] == "agent_service_websocket"
     assert request.metadata["agent_service"]["chat_index"] == 2
+    assert request.metadata["runtime"]["entry_capabilities"] == {
+        "supports_text_streaming": False,
+        "supports_interrupt": False,
+        "supports_audio_refs": False,
+        "supports_image_refs": False,
+        "supports_video_refs": False,
+        "supports_raw_media": False,
+        "supports_tts_edge_events": False,
+    }
 
 
 def test_agent_service_accepts_media_control_and_chat_protocol(monkeypatch) -> None:
