@@ -178,6 +178,12 @@ def risk_gate_level_for_policy(policy: ToolSideEffectPolicy) -> ToolRiskGateLeve
     return "hard_gate"
 
 
+def tool_owns_confirmation(tool_name: str) -> bool:
+    """Return whether a hard-gated tool performs its own confirmation workflow."""
+
+    return tool_name in _TOOL_OWNED_CONFIRMATION_TOOLS
+
+
 def evaluate_tool_risk(
     *,
     tool_name: str,
@@ -223,7 +229,7 @@ def evaluate_tool_risk(
             idempotency_generated=generated,
         )
 
-    confirmation_owned_by_tool = tool_name in _TOOL_OWNED_CONFIRMATION_TOOLS
+    confirmation_owned_by_tool = tool_owns_confirmation(tool_name)
     allow_execute = not enabled or confirmation_owned_by_tool
     return ToolRiskDecision(
         tool_name=tool_name,
