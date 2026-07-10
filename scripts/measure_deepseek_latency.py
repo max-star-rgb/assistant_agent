@@ -10,9 +10,10 @@ import json
 import os
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,7 @@ if str(SRC_ROOT) not in sys.path:
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.events import AgentEvent
+from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.services.chat_adapter import (
@@ -47,6 +49,15 @@ class TimingChatAdapter:
         self.calls: list[dict[str, Any]] = []
         self.provider = getattr(inner, "provider", "deepseek")
         self.model = getattr(inner, "model", None)
+        self.capabilities = getattr(inner, "capabilities", None)
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "stream_chat":
+            inner_stream_chat = getattr(self.inner, "stream_chat", None)
+            if callable(inner_stream_chat):
+                return self._stream_chat
+            raise AttributeError(name)
+        return getattr(self.inner, name)
 
     def chat(self, request: ChatRequest) -> ChatResult:
         call_index = len(self.calls) + 1
@@ -67,24 +78,12 @@ class TimingChatAdapter:
                 original_callback(text, payload)
 
         wrapped_request = request.model_copy(update={"stream_callback": record_delta})
-        record: dict[str, Any] = {
-            "call_index": call_index,
-            "status": "failed",
-            "provider": self.provider,
-            "model": self.model,
-            "message_kind": None,
-            "finish_reason": None,
-            "tool_call_count": 0,
-            "tool_names": [],
-            "ttft_ms": None,
-            "stream_open_ms": None,
-            "total_ms": None,
-            "post_first_delta_ms": None,
-            "delta_count": 0,
-            "first_delta_preview": "",
-            "response_chars": 0,
-            "errors": [],
-        }
+        record = _new_chat_call_record(
+            call_index=call_index,
+            stream_path="chat",
+            provider=self.provider,
+            model=self.model,
+        )
         try:
             result = self.inner.chat(wrapped_request)
         except Exception as exc:
@@ -109,6 +108,7 @@ class TimingChatAdapter:
                 "total_ms": _round_ms(total_ms),
                 "post_first_delta_ms": _round_ms(None if ttft_ms is None else total_ms - ttft_ms),
                 "delta_count": delta_count,
+                "event_counts": {},
                 "first_delta_preview": first_delta_preview,
                 "response_chars": len(result.response_text or ""),
                 "errors": [error.model_dump(mode="json") for error in result.errors],
@@ -116,6 +116,90 @@ class TimingChatAdapter:
         )
         self.calls.append(record)
         return result
+
+    async def _stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
+        call_index = len(self.calls) + 1
+        started_at = time.perf_counter()
+        first_delta_at: float | None = None
+        first_delta_preview = ""
+        delta_count = 0
+        event_counts: dict[str, int] = {}
+        accumulator = LLMEventAccumulator()
+        refusal: str | None = None
+        terminal_seen = False
+        appended = False
+        record = _new_chat_call_record(
+            call_index=call_index,
+            stream_path="async_stream",
+            provider=self.provider,
+            model=self.model,
+        )
+
+        try:
+            stream_chat = getattr(self.inner, "stream_chat")
+            async for event in stream_chat(request):
+                event_counts[event.event_type] = event_counts.get(event.event_type, 0) + 1
+                accumulator.apply(event)
+                if event.event_type == "token_delta" and event.text:
+                    delta_count += 1
+                    if first_delta_at is None:
+                        first_delta_at = time.perf_counter()
+                        first_delta_preview = _preview(event.text)
+                if event.event_type == "completed":
+                    terminal_seen = True
+                    raw_refusal = event.metadata.get("refusal")
+                    if isinstance(raw_refusal, str) and raw_refusal:
+                        refusal = raw_refusal
+                elif event.event_type == "error":
+                    terminal_seen = True
+                yield event
+        except Exception as exc:
+            record["total_ms"] = _round_ms(_elapsed_ms(started_at))
+            record["event_counts"] = dict(sorted(event_counts.items()))
+            record["errors"] = [{"code": exc.__class__.__name__, "message": str(exc)}]
+            self.calls.append(record)
+            appended = True
+            raise
+        finally:
+            if not appended:
+                total_ms = _elapsed_ms(started_at)
+                ttft_ms = None if first_delta_at is None else (first_delta_at - started_at) * 1000
+                tool_calls = accumulator.finalize_tool_calls(provider_format="llm_event")
+                error = accumulator.error
+                errors = [error.model_dump(mode="json")] if error is not None else []
+                if not terminal_seen and not errors:
+                    errors = [
+                        {
+                            "code": "provider_stream_incomplete",
+                            "message": "chat provider stream ended without a terminal event",
+                            "recoverable": False,
+                        }
+                    ]
+                record.update(
+                    {
+                        "status": "failed" if errors else "success",
+                        "provider": accumulator.provider or self.provider,
+                        "model": accumulator.model or self.model,
+                        "message_kind": _stream_message_kind(
+                            tool_calls=tool_calls,
+                            refusal=refusal,
+                            content=accumulator.response_text,
+                        ),
+                        "finish_reason": accumulator.finish_reason,
+                        "tool_call_count": len(tool_calls),
+                        "tool_names": [call.name for call in tool_calls],
+                        "ttft_ms": _round_ms(ttft_ms),
+                        "stream_open_ms": None,
+                        "total_ms": _round_ms(total_ms),
+                        "post_first_delta_ms": _round_ms(None if ttft_ms is None else total_ms - ttft_ms),
+                        "delta_count": delta_count,
+                        "event_counts": dict(sorted(event_counts.items())),
+                        "first_delta_preview": first_delta_preview,
+                        "response_chars": len(accumulator.response_text or ""),
+                        "errors": errors,
+                    }
+                )
+                self.calls.append(record)
 
 
 class TimingEventSink:
@@ -239,6 +323,10 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     if missing:
         _print_provider_unconfigured(missing)
         return 2
+    invalid_environment = _invalid_provider_smoke_environment(source)
+    if invalid_environment:
+        _print_environment_invalid(invalid_environment)
+        return 2
 
     config = ProviderConfig.from_env(source)
     if config.chat_provider != "deepseek":
@@ -270,6 +358,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         "model": config.chat_model,
         "mode": args.mode,
         "runs": args.runs,
+        "native_provider_streaming": config.native_provider_streaming,
         "metric_notes": {
             "provider.ttft_ms": "Direct adapter time from adapter.chat() call to first non-empty provider text delta.",
             "provider.stream_open_ms": (
@@ -282,6 +371,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 "End-to-end runtime time from run_state() call to first replaceable progress_message event."
             ),
             "runtime.chat_calls": "Provider calls made inside the runtime, each measured by TimingChatAdapter.",
+            "runtime.chat_calls.stream_path": "Measured provider path: async_stream for LLMEvent streams, chat for ChatResult.",
             "runtime.chat_calls.message_kind": "Provider-native response type: final_answer, tool_call, or refusal.",
             "runtime.chat_calls.tool_names": "Native tool names returned by the provider for that chat call.",
         },
@@ -302,6 +392,26 @@ def _missing_deepseek_config(source: Mapping[str, str]) -> str | None:
     missing = resolve_chat_provider("deepseek", source).missing_required_env()
     if missing:
         return f"missing {', '.join(missing)}"
+    return None
+
+
+def _invalid_provider_smoke_environment(source: Mapping[str, str]) -> str | None:
+    return _invalid_proxy_environment(source)
+
+
+def _invalid_proxy_environment(source: Mapping[str, str]) -> str | None:
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        value = source.get(name)
+        if not value:
+            continue
+        scheme = urlparse(value).scheme.lower()
+        if not scheme:
+            return f"{name} proxy URL is missing a scheme; use http:// or https://, or unset {name}."
+        if scheme == "socks":
+            return (
+                f"{name} has unsupported proxy URL scheme 'socks'; "
+                f"use http:// or https:// for this smoke, or unset {name}."
+            )
     return None
 
 
@@ -340,6 +450,7 @@ def _measure_runtime_sample(config: ProviderConfig, args: argparse.Namespace, ru
         total_ms = _elapsed_ms(started_at)
         return {
             "status": "failed",
+            "native_provider_streaming": config.native_provider_streaming,
             "total_ms": _round_ms(total_ms),
             **event_sink.as_payload(),
             "chat_calls": timed_adapter.calls,
@@ -356,6 +467,7 @@ def _measure_runtime_sample(config: ProviderConfig, args: argparse.Namespace, ru
     response_text = response.message if response is not None else ""
     payload = {
         "status": "success" if getattr(state, "status", "failed") != "failed" else "failed",
+        "native_provider_streaming": config.native_provider_streaming,
         "total_ms": _round_ms(total_ms),
         **event_sink.as_payload(),
         "chat_calls": timed_adapter.calls,
@@ -530,6 +642,45 @@ def _result_message_kind(result: ChatResult) -> str | None:
     return None
 
 
+def _stream_message_kind(*, tool_calls: list[Any], refusal: str | None, content: str) -> str | None:
+    if tool_calls:
+        return "tool_call"
+    if refusal:
+        return "refusal"
+    if content.strip():
+        return "final_answer"
+    return None
+
+
+def _new_chat_call_record(
+    *,
+    call_index: int,
+    stream_path: str,
+    provider: str,
+    model: Any,
+) -> dict[str, Any]:
+    return {
+        "call_index": call_index,
+        "stream_path": stream_path,
+        "status": "failed",
+        "provider": provider,
+        "model": model,
+        "message_kind": None,
+        "finish_reason": None,
+        "tool_call_count": 0,
+        "tool_names": [],
+        "ttft_ms": None,
+        "stream_open_ms": None,
+        "total_ms": None,
+        "post_first_delta_ms": None,
+        "delta_count": 0,
+        "event_counts": {},
+        "first_delta_preview": "",
+        "response_chars": 0,
+        "errors": [],
+    }
+
+
 def _elapsed_ms(started_at: float) -> float:
     return (time.perf_counter() - started_at) * 1000
 
@@ -553,6 +704,12 @@ def _print_provider_unconfigured(reason: str) -> None:
         "MULTIMODAL_AGENT_CHAT_PROVIDER=deepseek, DEEPSEEK_CHAT_API_KEY, "
         "and DEEPSEEK_CHAT_STREAM=true before measuring DeepSeek latency."
     )
+
+
+def _print_environment_invalid(reason: str) -> None:
+    print("environment_invalid")
+    print(reason)
+    print("Please fix the local environment before running DeepSeek latency smoke.")
 
 
 if __name__ == "__main__":

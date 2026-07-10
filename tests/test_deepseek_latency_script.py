@@ -3,11 +3,13 @@ import json
 import subprocess
 import sys
 from argparse import Namespace
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.events import AgentEvent
+from assistant_agent.schemas.llm_events import LLMEvent, LLMToolCallDelta
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 
@@ -380,6 +382,129 @@ def test_deepseek_latency_runtime_sample_records_native_tool_call_sequence(monke
     assert sample["first_response_delta_preview"] == "已找到"
 
 
+def test_deepseek_latency_runtime_sample_records_async_stream_tool_call_without_argument_leak(
+    monkeypatch,
+) -> None:
+    module = _load_module()
+
+    secret_query = "通勤蓝牙耳机-secret-args"
+
+    class FakeStreamingChatAdapter:
+        provider = "deepseek"
+        model = "deepseek-chat"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def chat(self, request: ChatRequest) -> ChatResult:
+            raise AssertionError("runtime should use stream_chat when native provider streaming is enabled")
+
+        def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
+            assert request.tools
+            assert request.tool_choice == "auto"
+            self.calls += 1
+            if self.calls == 1:
+                events = [
+                    LLMEvent(
+                        event_type="token_delta",
+                        provider=self.provider,
+                        model=self.model,
+                        text="好的",
+                    ),
+                    LLMEvent(
+                        event_type="tool_call_delta",
+                        provider=self.provider,
+                        model=self.model,
+                        tool_call_delta=LLMToolCallDelta(
+                            index=0,
+                            id="call_1",
+                            type="function",
+                            name_delta="product_",
+                            arguments_delta=f'{{"query": "{secret_query}", ',
+                        ),
+                    ),
+                    LLMEvent(
+                        event_type="tool_call_delta",
+                        provider=self.provider,
+                        model=self.model,
+                        tool_call_delta=LLMToolCallDelta(
+                            index=0,
+                            name_delta="search",
+                            arguments_delta='"limit": 2}',
+                        ),
+                    ),
+                    LLMEvent(
+                        event_type="completed",
+                        provider=self.provider,
+                        model=self.model,
+                        finish_reason="tool_calls",
+                    ),
+                ]
+            else:
+                events = [
+                    LLMEvent(
+                        event_type="token_delta",
+                        provider=self.provider,
+                        model=self.model,
+                        text="已找到",
+                    ),
+                    LLMEvent(
+                        event_type="completed",
+                        provider=self.provider,
+                        model=self.model,
+                        finish_reason="stop",
+                    ),
+                ]
+
+            async def stream() -> AsyncIterator[LLMEvent]:
+                for event in events:
+                    yield event
+
+            return stream()
+
+    monkeypatch.setattr(module, "create_chat_adapter", lambda config: FakeStreamingChatAdapter())
+    sample = module._measure_runtime_sample(
+        ProviderConfig(
+            runtime_profile=ProviderConfig.from_env({"MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke"}).runtime_profile,
+            chat_provider="deepseek",
+            chat_api_key="test-key",
+            chat_base_url="https://api.deepseek.com/v1",
+            chat_model="deepseek-chat",
+            chat_adapter_kind="openai_compatible",
+            native_provider_streaming=True,
+        ),
+        Namespace(
+            user_id="latency_user",
+            session_id="latency_session",
+            text="帮我找通勤蓝牙耳机",
+            expect_chat_calls=2,
+            expect_first_call_kind="tool_call",
+            expect_tool=["product_search"],
+        ),
+        1,
+    )
+
+    assert sample["status"] == "success"
+    assert sample["native_provider_streaming"] is True
+    assert sample["assertion_failures"] == []
+    assert len(sample["chat_calls"]) == 2
+    assert sample["chat_calls"][0]["stream_path"] == "async_stream"
+    assert sample["chat_calls"][0]["message_kind"] == "tool_call"
+    assert sample["chat_calls"][0]["finish_reason"] == "tool_calls"
+    assert sample["chat_calls"][0]["tool_call_count"] == 1
+    assert sample["chat_calls"][0]["tool_names"] == ["product_search"]
+    assert sample["chat_calls"][0]["event_counts"] == {
+        "completed": 1,
+        "token_delta": 1,
+        "tool_call_delta": 2,
+    }
+    assert sample["chat_calls"][0]["first_delta_preview"] == "好的"
+    assert sample["chat_calls"][1]["stream_path"] == "async_stream"
+    assert sample["chat_calls"][1]["message_kind"] == "final_answer"
+    assert sample["first_response_delta_preview"] == "已找到"
+    assert secret_query not in json.dumps(sample, ensure_ascii=False)
+
+
 def test_deepseek_latency_runtime_assertion_failure_marks_sample_failed(monkeypatch, capsys) -> None:
     module = _load_module()
 
@@ -430,3 +555,27 @@ def test_deepseek_latency_runtime_assertion_failure_marks_sample_failed(monkeypa
         "chat_call_count_mismatch",
         "first_call_kind_mismatch",
     }
+
+
+def test_deepseek_latency_invalid_proxy_scheme_exits_cleanly() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--runs", "1", "--mode", "runtime"],
+        env={
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING": "1",
+            "DEEPSEEK_CHAT_API_KEY": "test-key",
+            "DEEPSEEK_CHAT_STREAM": "true",
+            "ALL_PROXY": "socks://127.0.0.1:17891",
+            "all_proxy": "socks://127.0.0.1:17891",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "environment_invalid" in result.stdout
+    assert "ALL_PROXY" in result.stdout
+    assert "unsupported proxy URL scheme 'socks'" in result.stdout
+    assert "Traceback" not in result.stderr
