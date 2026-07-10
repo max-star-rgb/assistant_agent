@@ -27,6 +27,10 @@ from assistant_agent.memory.retrieval_eval import (
     evaluate_memory_retrieval_case,
     summarize_memory_retrieval_eval_dicts,
 )
+from assistant_agent.memory.quality_eval import (
+    evaluate_memory_quality_case,
+    summarize_memory_quality_eval_dicts,
+)
 from assistant_agent.schemas.api import agent_run_response_from_state
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.capabilities import canonical_intent
@@ -148,6 +152,8 @@ def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, 
         return evaluate_plan_mode_case(case, router_mode=router_mode)
     if case.get("suite") == "provider_safety":
         return evaluate_provider_safety_case(case, router_mode=router_mode)
+    if case.get("suite") == "memory_quality" and case.get("memory_quality_eval"):
+        return evaluate_memory_quality_case_detail(case, router_mode=router_mode)
     if case.get("suite") == "memory" and case.get("memory_scenario"):
         return evaluate_memory_case(case, router_mode=router_mode)
     if case.get("suite") == "packaging":
@@ -504,6 +510,47 @@ def evaluate_memory_case(case: dict[str, Any], router_mode: str = "rule") -> dic
     return detail
 
 
+def evaluate_memory_quality_case_detail(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
+    """Evaluate offline memory write-quality cases without external services."""
+
+    eval_result = evaluate_memory_quality_case(
+        {
+            "id": case["id"],
+            **case.get("memory_quality_eval", {}),
+        }
+    )
+    return {
+        "id": case["id"],
+        "router_mode": router_mode,
+        "suite": case.get("suite"),
+        "category": case.get("category"),
+        "scenario_id": case.get("scenario_id"),
+        "passed": eval_result.passed,
+        "intent_match": True,
+        "capability_match": True,
+        "tool_selection_match": True,
+        "ordered_tool_match": True,
+        "unexpected_tool_called": False,
+        "media_requirement_error": False,
+        "followup_expected": False,
+        "followup_match": True,
+        "response_contains_match": True,
+        "expected_intent": case.get("expected_intent"),
+        "actual_intent": case.get("expected_intent"),
+        "expected_capability": case.get("expected_capability"),
+        "actual_capability": case.get("expected_capability"),
+        "expected_tools": case.get("expected_tools", []),
+        "actual_tools": case.get("expected_tools", []),
+        "expected_response_contains": case.get("expected_response_contains", []),
+        "must_not_call": case.get("must_not_call", []),
+        "unexpected_tools": [],
+        "must_not_require": case.get("must_not_require", []),
+        "missing_slots": [],
+        "media_requirement_errors": [],
+        "memory_quality_eval": eval_result.model_dump(mode="json"),
+    }
+
+
 def evaluate_provider_safety_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
     """Evaluate offline provider safety cases without calling providers."""
 
@@ -685,6 +732,11 @@ def summarize_details(details: list[dict[str, Any]], include_suites: bool = True
         for detail in details
         if isinstance(detail.get("memory_retrieval_eval"), dict)
     ]
+    memory_quality_results = [
+        detail["memory_quality_eval"]
+        for detail in details
+        if isinstance(detail.get("memory_quality_eval"), dict)
+    ]
     summary = {
         "total": total,
         "passed": passed_count,
@@ -707,6 +759,8 @@ def summarize_details(details: list[dict[str, Any]], include_suites: bool = True
     }
     if memory_retrieval_results:
         summary["memory_retrieval_eval"] = summarize_memory_retrieval_eval_dicts(memory_retrieval_results)
+    if memory_quality_results:
+        summary["memory_quality_eval"] = summarize_memory_quality_eval_dicts(memory_quality_results)
     return summary
 
 

@@ -6,7 +6,15 @@ from pathlib import Path
 from scripts.run_evals import evaluate_case, filter_cases_by_suite, load_cases, run_evals
 
 
-EXPECTED_SUITES = {"routing", "e2e", "provider_safety", "memory", "packaging", "plan_mode"}
+EXPECTED_SUITES = {
+    "routing",
+    "e2e",
+    "provider_safety",
+    "memory",
+    "memory_quality",
+    "packaging",
+    "plan_mode",
+}
 
 
 def test_eval_cases_have_suite_and_category_fields() -> None:
@@ -34,6 +42,7 @@ def test_eval_cases_can_be_filtered_by_suite() -> None:
     e2e_cases = filter_cases_by_suite(cases, "e2e")
     provider_safety_cases = filter_cases_by_suite(cases, "provider_safety")
     memory_cases = filter_cases_by_suite(cases, "memory")
+    memory_quality_cases = filter_cases_by_suite(cases, "memory_quality")
     packaging_cases = filter_cases_by_suite(cases, "packaging")
     plan_mode_cases = filter_cases_by_suite(cases, "plan_mode")
 
@@ -41,12 +50,14 @@ def test_eval_cases_can_be_filtered_by_suite() -> None:
     assert e2e_cases
     assert provider_safety_cases
     assert memory_cases
+    assert memory_quality_cases
     assert packaging_cases
     assert plan_mode_cases
     assert all(case["suite"] == "routing" for case in routing_cases)
     assert all(case["suite"] == "e2e" for case in e2e_cases)
     assert all(case["suite"] == "provider_safety" for case in provider_safety_cases)
     assert all(case["suite"] == "memory" for case in memory_cases)
+    assert all(case["suite"] == "memory_quality" for case in memory_quality_cases)
     assert all(case["suite"] == "packaging" for case in packaging_cases)
     assert all(case["suite"] == "plan_mode" for case in plan_mode_cases)
 

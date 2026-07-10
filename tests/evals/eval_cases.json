@@ -1688,6 +1688,98 @@
     "expected_tools": []
   },
   {
+    "id": "memory_quality_explicit_preference_write_001",
+    "category": "memory_quality",
+    "suite": "memory_quality",
+    "scenario_id": "memory_quality_explicit_preference_write",
+    "expected_intent": "memory_quality_eval",
+    "expected_capability": "memory_quality_eval",
+    "expected_tools": [],
+    "memory_quality_eval": {
+      "case_kind": "explicit",
+      "text": "记住我喜欢短回答",
+      "content": {
+        "summary": "用户喜欢短回答。",
+        "preference_key": "answer_length"
+      },
+      "expected_action": "write",
+      "expected_destination": "user_profile",
+      "expected_sensitivity": "low"
+    }
+  },
+  {
+    "id": "memory_quality_secret_reject_001",
+    "category": "memory_quality",
+    "suite": "memory_quality",
+    "scenario_id": "memory_quality_secret_reject",
+    "expected_intent": "memory_quality_eval",
+    "expected_capability": "memory_quality_eval",
+    "expected_tools": [],
+    "memory_quality_eval": {
+      "case_kind": "explicit",
+      "text": "记住我的服务配置",
+      "content": {
+        "api_key": "placeholder"
+      },
+      "expected_action": "reject",
+      "expected_destination": "reject",
+      "expected_sensitivity": "secret"
+    }
+  },
+  {
+    "id": "memory_quality_sensitive_confirmation_001",
+    "category": "memory_quality",
+    "suite": "memory_quality",
+    "scenario_id": "memory_quality_sensitive_confirmation",
+    "expected_intent": "memory_quality_eval",
+    "expected_capability": "memory_quality_eval",
+    "expected_tools": [],
+    "memory_quality_eval": {
+      "case_kind": "explicit",
+      "text": "记住我的项目路径是 /home/alice/private/project",
+      "expected_action": "confirm",
+      "expected_destination": "task_checkpoint",
+      "expected_sensitivity": "high"
+    }
+  },
+  {
+    "id": "memory_quality_auto_promotion_reject_001",
+    "category": "memory_quality",
+    "suite": "memory_quality",
+    "scenario_id": "memory_quality_auto_promotion_reject",
+    "expected_intent": "memory_quality_eval",
+    "expected_capability": "memory_quality_eval",
+    "expected_tools": [],
+    "memory_quality_eval": {
+      "case_kind": "promotion",
+      "summary": "用户临时问了一次天气。",
+      "memory_type": "task",
+      "kind": "long_term_memory",
+      "expected_action": "reject",
+      "expected_destination": "reject",
+      "expected_sensitivity": "low"
+    }
+  },
+  {
+    "id": "memory_quality_user_intent_promotion_write_001",
+    "category": "memory_quality",
+    "suite": "memory_quality",
+    "scenario_id": "memory_quality_user_intent_promotion_write",
+    "expected_intent": "memory_quality_eval",
+    "expected_capability": "memory_quality_eval",
+    "expected_tools": [],
+    "memory_quality_eval": {
+      "case_kind": "promotion",
+      "summary": "用户明确要求以后优先推荐短回答。",
+      "memory_type": "preference",
+      "kind": "long_term_memory",
+      "user_intent_explicit": true,
+      "expected_action": "write",
+      "expected_destination": "user_profile",
+      "expected_sensitivity": "low"
+    }
+  },
+  {
     "id": "packaging_mcp_tool_inventory_001",
     "category": "packaging",
     "suite": "packaging",
