@@ -23,6 +23,10 @@ from assistant_agent.realtime import (
     RealtimeAgentRequest,
     RealtimeAgentResult,
 )
+from assistant_agent.schemas.realtime_cancellation import (
+    build_realtime_turn_cancellation_metadata,
+    realtime_turn_cancellation_from_metadata,
+)
 from assistant_agent.services.provider_errors import sanitize_error_message
 
 
@@ -61,7 +65,10 @@ class CancelToken:
         cancel_metadata["cancel_source"] = source
         if reason is not None:
             cancel_metadata["cancel_reason"] = reason
-        self._metadata = cancel_metadata
+        self._metadata = build_realtime_turn_cancellation_metadata(
+            cancel_metadata,
+            phase="final_streaming",
+        )
         self._evt.set()
 
     async def cancelled(self) -> None:
@@ -660,6 +667,12 @@ def _run_end_cancel_payload(metadata: Mapping[str, Any]) -> dict[str, Any]:
     deadline_ms = _positive_int(metadata.get("deadline_ms"))
     if deadline_ms is not None:
         payload["deadline_ms"] = deadline_ms
+    contract = realtime_turn_cancellation_from_metadata(metadata)
+    payload["cancelled_by"] = contract.cancelled_by
+    payload["phase"] = contract.phase
+    payload["stale_outputs"] = contract.stale_outputs
+    payload["can_reuse_tool_result"] = contract.can_reuse_tool_result
+    payload["speakable"] = contract.speakable
     return payload
 
 

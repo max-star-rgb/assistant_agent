@@ -29,6 +29,7 @@ ApprovalMode = Literal["never", "conditional", "always"]
 ToolIdempotencyPolicy = Literal["none", "optional", "required"]
 ToolDependencyMode = Literal["independent", "requires_prior_observation", "terminal"]
 RealtimeToolSafety = Literal["safe", "needs_progress", "needs_confirmation", "unsafe"]
+ToolArtifactReusePolicy = Literal["reusable", "requires_validation", "do_not_reuse"]
 
 
 class ToolSideEffectPolicy(BaseModel):
@@ -49,6 +50,8 @@ class ToolExecutionPolicy(BaseModel):
     resource_reads: list[str] = Field(default_factory=list)
     resource_writes: list[str] = Field(default_factory=list)
     realtime_safety: RealtimeToolSafety = "needs_confirmation"
+    artifact_reuse: ToolArtifactReusePolicy = "requires_validation"
+    progress_message: str | None = None
 
 
 class RealtimeToolPolicy(BaseModel):

@@ -15,6 +15,7 @@ from assistant_agent.schemas.api import api_error
 from assistant_agent.schemas.capability_output import build_capability_output_contract, contract_summary
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.planning import TaskStep
+from assistant_agent.schemas.realtime_cancellation import build_realtime_turn_cancellation_metadata
 from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.provider_budget import ProviderCallBudget
@@ -89,7 +90,6 @@ class ToolExecutor:
             state=state,
             step_id=step_id,
             policy=_side_effect_policy_for_registered_tool(self.registry, tool_name),
-            idempotency_required=_idempotency_required_for_registered_tool(self.registry, tool_name),
         )
         pre_tool_call = build_pre_tool_call_summary(
             tool_name=tool_name,
@@ -433,13 +433,21 @@ class ToolExecutor:
             )
         except AgentRunCancelled as exc:
             latency_ms = int((perf_counter() - started_at) * 1000)
-            result = _cancelled_tool_result(tool_name, latency_ms=latency_ms)
             error_details = {
                 **exc.details,
                 "step_id": step_id,
                 "tool_name": tool_name,
                 "retryable": False,
             }
+            error_details = build_realtime_turn_cancellation_metadata(
+                error_details,
+                phase="tool_running",
+            )
+            result = _cancelled_tool_result(
+                tool_name,
+                latency_ms=latency_ms,
+                cancel_metadata=error_details,
+            )
             post_tool_call = build_post_tool_call_summary(
                 tool_name=tool_name,
                 result=result,
@@ -944,12 +952,27 @@ def _capability_name(tool_name: str, step: TaskStep | None) -> str:
     return tool_map.get(tool_name, tool_name)
 
 
-def _cancelled_tool_result(tool_name: str, *, latency_ms: int) -> ToolResult:
+def _cancelled_tool_result(
+    tool_name: str,
+    *,
+    latency_ms: int,
+    cancel_metadata: dict[str, Any] | None = None,
+) -> ToolResult:
+    metadata = build_realtime_turn_cancellation_metadata(
+        cancel_metadata,
+        phase="tool_running",
+    )
     return ToolResult(
         tool_name=tool_name,
         success=False,
         error=f"{CANCELLATION_ERROR_CODE}: {DEFAULT_CANCELLATION_MESSAGE}",
-        data={"cancelled": True},
+        data={
+            "cancelled": True,
+            "stale_outputs": metadata["stale_outputs"],
+            "can_reuse_tool_result": metadata["can_reuse_tool_result"],
+            "speakable": metadata["speakable"],
+            "realtime_turn_cancellation": metadata["realtime_turn_cancellation"],
+        },
         latency_ms=latency_ms,
     )
 
@@ -1077,18 +1100,4 @@ def _side_effect_policy_for_registered_tool(
             confirmation_kind=view.confirmation_kind,
             compensation_hint=view.compensation_hint,
         )
-    return None
-
-
-def _idempotency_required_for_registered_tool(
-    registry: ToolRegistry,
-    tool_name: str,
-) -> bool | None:
-    for spec in registry.list_specs():
-        if spec.name != tool_name:
-            continue
-        if spec.policy is None:
-            return None
-        view = ToolPolicyInterpreter().view_for_spec(spec)
-        return view.idempotency_required
     return None

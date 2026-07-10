@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.tools import (
     RealtimeToolSafety,
+    ToolArtifactReusePolicy,
     ToolDependencyMode,
     ToolExecutionPolicy,
     ToolPolicyMetadata,
@@ -45,6 +46,8 @@ class ToolPolicyView(BaseModel):
     resource_reads: list[str] = Field(default_factory=list)
     resource_writes: list[str] = Field(default_factory=list)
     realtime_safety: RealtimeToolSafety = "needs_confirmation"
+    artifact_reuse: ToolArtifactReusePolicy = "requires_validation"
+    progress_message: str | None = None
     idempotency_required: bool = False
     description: str = ""
     compensation_hint: str | None = None
@@ -119,6 +122,8 @@ class ToolPolicyInterpreter:
             resource_reads=list(execution_policy.resource_reads),
             resource_writes=list(execution_policy.resource_writes),
             realtime_safety=execution_policy.realtime_safety,
+            artifact_reuse=execution_policy.artifact_reuse,
+            progress_message=execution_policy.progress_message,
             idempotency_required=idempotency_required,
             description=side_effect_policy.description,
             compensation_hint=side_effect_policy.compensation_hint,
@@ -180,6 +185,8 @@ class ToolPolicyInterpreter:
             resource_reads=list(execution_policy.resource_reads),
             resource_writes=list(execution_policy.resource_writes),
             realtime_safety=execution_policy.realtime_safety,
+            artifact_reuse=execution_policy.artifact_reuse,
+            progress_message=execution_policy.progress_message,
             idempotency_required=risk_gate_level == "soft_gate",
             description=policy.description,
             compensation_hint=policy.compensation_hint,

@@ -5,10 +5,25 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from assistant_agent.schemas.realtime_cancellation import (
+    REALTIME_TURN_CANCELLATION_METADATA_KEY,
+    build_realtime_turn_cancellation_metadata,
+)
+
 
 CANCELLATION_ERROR_CODE = "agent_run_cancelled"
 DEFAULT_CANCELLATION_MESSAGE = "Agent run cancelled."
-_CANCEL_METADATA_KEYS = frozenset({"cancel_source", "cancel_reason", "deadline_ms"})
+_CANCEL_METADATA_KEYS = frozenset(
+    {
+        "cancel_source",
+        "cancel_reason",
+        "deadline_ms",
+        REALTIME_TURN_CANCELLATION_METADATA_KEY,
+        "stale_outputs",
+        "can_reuse_tool_result",
+        "speakable",
+    }
+)
 
 
 class AgentRunCancelled(RuntimeError):
@@ -60,7 +75,10 @@ def raise_if_cancelled(
     """Raise AgentRunCancelled when the run token has been cancelled."""
 
     if is_cancelled(cancel_token):
-        cancel_details = cancellation_metadata(cancel_token)
+        cancel_details = build_realtime_turn_cancellation_metadata(
+            cancellation_metadata(cancel_token),
+            phase=phase,
+        )
         if details is not None:
             cancel_details.update(details)
         raise AgentRunCancelled(

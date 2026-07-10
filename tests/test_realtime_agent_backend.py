@@ -75,6 +75,24 @@ def _no_visible_realtime_progress() -> dict[str, object]:
     }
 
 
+def _assert_realtime_cancel_contract(
+    metadata: dict[str, object],
+    *,
+    cancelled_by: str,
+    phase: str,
+) -> None:
+    assert metadata["stale_outputs"] is True
+    assert metadata["can_reuse_tool_result"] is False
+    assert metadata["speakable"] is False
+    assert metadata["realtime_turn_cancellation"] == {
+        "cancelled_by": cancelled_by,
+        "phase": phase,
+        "stale_outputs": True,
+        "can_reuse_tool_result": False,
+        "speakable": False,
+    }
+
+
 def test_agent_graph_realtime_backend_maps_request_metadata_and_fields() -> None:
     captured: dict[str, object] = {}
 
@@ -811,7 +829,13 @@ def test_agent_graph_realtime_backend_pre_run_cancel_does_not_call_runner() -> N
     assert calls == 0
     assert result.status == "cancelled"
     assert result.run_id == "runtime-run-1"
-    assert result.metadata == {"cancel_phase": "pre_run", "best_effort": True}
+    assert result.metadata["cancel_phase"] == "pre_run"
+    assert result.metadata["best_effort"] is True
+    _assert_realtime_cancel_contract(
+        result.metadata,
+        cancelled_by="run.cancel",
+        phase="before_llm",
+    )
 
 
 def test_agent_graph_realtime_backend_post_run_cancel_skips_final_events() -> None:
@@ -841,12 +865,15 @@ def test_agent_graph_realtime_backend_post_run_cancel_skips_final_events() -> No
     assert result.status == "cancelled"
     assert result.run_id == "assistant-run-1"
     assert result.trace_id == "trace-1"
-    assert result.metadata == {
-        "assistant_run_id": "assistant-run-1",
-        "realtime_progress": _no_visible_realtime_progress(),
-        "cancel_phase": "post_run",
-        "best_effort": True,
-    }
+    assert result.metadata["assistant_run_id"] == "assistant-run-1"
+    assert result.metadata["realtime_progress"] == _no_visible_realtime_progress()
+    assert result.metadata["cancel_phase"] == "post_run"
+    assert result.metadata["best_effort"] is True
+    _assert_realtime_cancel_contract(
+        result.metadata,
+        cancelled_by="run.cancel",
+        phase="final_streaming",
+    )
     assert [event.type for event in events] == []
 
 
@@ -872,15 +899,18 @@ def test_agent_graph_realtime_backend_post_run_cancel_includes_token_metadata() 
     )
 
     assert result.status == "cancelled"
-    assert result.metadata == {
-        "assistant_run_id": "assistant-run-1",
-        "realtime_progress": _no_visible_realtime_progress(),
-        "cancel_source": "deadline",
-        "cancel_reason": "run_deadline_expired",
-        "deadline_ms": 50,
-        "cancel_phase": "post_run",
-        "best_effort": True,
-    }
+    assert result.metadata["assistant_run_id"] == "assistant-run-1"
+    assert result.metadata["realtime_progress"] == _no_visible_realtime_progress()
+    assert result.metadata["cancel_source"] == "deadline"
+    assert result.metadata["cancel_reason"] == "run_deadline_expired"
+    assert result.metadata["deadline_ms"] == 50
+    assert result.metadata["cancel_phase"] == "post_run"
+    assert result.metadata["best_effort"] is True
+    _assert_realtime_cancel_contract(
+        result.metadata,
+        cancelled_by="deadline",
+        phase="final_streaming",
+    )
 
 
 def test_agent_graph_realtime_backend_maps_internal_agent_cancel_without_final_events() -> None:
@@ -919,12 +949,15 @@ def test_agent_graph_realtime_backend_maps_internal_agent_cancel_without_final_e
     assert result.status == "cancelled"
     assert result.run_id == "runtime-run-1"
     assert result.trace_id == "trace-1"
-    assert result.metadata == {
-        "assistant_run_id": "assistant-run-1",
-        "realtime_progress": _no_visible_realtime_progress(),
-        "cancel_phase": "after_node",
-        "best_effort": True,
-    }
+    assert result.metadata["assistant_run_id"] == "assistant-run-1"
+    assert result.metadata["realtime_progress"] == _no_visible_realtime_progress()
+    assert result.metadata["cancel_phase"] == "after_node"
+    assert result.metadata["best_effort"] is True
+    _assert_realtime_cancel_contract(
+        result.metadata,
+        cancelled_by="run.cancel",
+        phase="llm_streaming",
+    )
     assert [event.type for event in events] == []
 
 
@@ -955,15 +988,18 @@ def test_agent_graph_realtime_backend_maps_internal_agent_cancel_metadata() -> N
     )
 
     assert result.status == "cancelled"
-    assert result.metadata == {
-        "assistant_run_id": "assistant-run-1",
-        "realtime_progress": _no_visible_realtime_progress(),
-        "cancel_source": "deadline",
-        "cancel_reason": "run_deadline_expired",
-        "deadline_ms": 75,
-        "cancel_phase": "after_node",
-        "best_effort": True,
-    }
+    assert result.metadata["assistant_run_id"] == "assistant-run-1"
+    assert result.metadata["realtime_progress"] == _no_visible_realtime_progress()
+    assert result.metadata["cancel_source"] == "deadline"
+    assert result.metadata["cancel_reason"] == "run_deadline_expired"
+    assert result.metadata["deadline_ms"] == 75
+    assert result.metadata["cancel_phase"] == "after_node"
+    assert result.metadata["best_effort"] is True
+    _assert_realtime_cancel_contract(
+        result.metadata,
+        cancelled_by="deadline",
+        phase="llm_streaming",
+    )
 
 
 def test_agent_graph_realtime_backend_completed_run_sends_chunk_then_final() -> None:

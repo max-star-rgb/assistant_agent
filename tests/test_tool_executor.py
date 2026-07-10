@@ -209,8 +209,19 @@ def test_tool_executor_after_tool_attempt_cancel_records_deadline_metadata() -> 
     assert details["deadline_ms"] == 40
     assert details["tool_name"] == "echo"
     assert details["step_id"] == "step_1"
+    assert details["realtime_turn_cancellation"] == {
+        "cancelled_by": "deadline",
+        "phase": "tool_running",
+        "stale_outputs": True,
+        "can_reuse_tool_result": False,
+        "speakable": False,
+    }
     assert state.errors[-1].details["cancel_source"] == "deadline"
     assert state.errors[-1].details["step_id"] == "step_1"
+    assert state.tool_results[-1].data["stale_outputs"] is True
+    assert state.tool_results[-1].data["can_reuse_tool_result"] is False
+    assert state.tool_results[-1].data["speakable"] is False
+    assert state.tool_results[-1].data["realtime_turn_cancellation"]["phase"] == "tool_running"
 
 
 def test_tool_executor_retry_backoff_wakes_when_cancelled() -> None:

@@ -202,10 +202,17 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         assert ack["payload"]["cancelled_active_run"] is True
         assert run_end["reason"] == "cancelled"
         await asyncio.wait_for(backend.cancel_seen.wait(), timeout=2.0)
-        assert backend.cancel_metadata == {
-            "cancel_source": "gateway_hangup",
-            "cancel_reason": "call_hangup",
+        assert backend.cancel_metadata["cancel_source"] == "gateway_hangup"
+        assert backend.cancel_metadata["cancel_reason"] == "call_hangup"
+        assert backend.cancel_metadata["realtime_turn_cancellation"] == {
+            "cancelled_by": "hangup",
+            "phase": "final_streaming",
+            "stale_outputs": True,
+            "can_reuse_tool_result": False,
+            "speakable": False,
         }
+        assert run_end["payload"]["cancel"]["cancelled_by"] == "hangup"
+        assert run_end["payload"]["cancel"]["speakable"] is False
 
 
 if __name__ == "__main__":

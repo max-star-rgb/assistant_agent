@@ -633,11 +633,20 @@ def _task_state_event_status(agent_event_type: str) -> str | None:
 def _task_state_cancel_metadata_from_error(error: dict[str, Any]) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     detail = error.get("detail")
+    keys = (
+        "cancel_source",
+        "cancel_reason",
+        "deadline_ms",
+        "realtime_turn_cancellation",
+        "stale_outputs",
+        "can_reuse_tool_result",
+        "speakable",
+    )
     if isinstance(detail, dict):
-        for key in ("cancel_source", "cancel_reason", "deadline_ms"):
+        for key in keys:
             if key in detail:
                 metadata[key] = detail[key]
-    for key in ("cancel_source", "cancel_reason", "deadline_ms"):
+    for key in keys:
         if key in error:
             metadata[key] = error[key]
     return metadata

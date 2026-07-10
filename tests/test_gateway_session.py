@@ -52,6 +52,20 @@ async def _assert_no_frame(client_ep, *, timeout_s: float = 0.08) -> None:
     raise AssertionError(f"unexpected frame after run end: {received}")
 
 
+def _assert_gateway_cancel_payload(
+    payload: dict,
+    *,
+    cancelled_by: str,
+    phase: str,
+) -> None:
+    cancel = payload["cancel"]
+    assert cancel["cancelled_by"] == cancelled_by
+    assert cancel["phase"] == phase
+    assert cancel["stale_outputs"] is True
+    assert cancel["can_reuse_tool_result"] is False
+    assert cancel["speakable"] is False
+
+
 class CapturingChatAdapter:
     provider = "scripted-native"
 
@@ -491,6 +505,12 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert len(backend.requests) == 1
         assert backend.requests[0].text == "cancel realtime"
         assert backend.cancel_metadata["cancel_source"] == "gateway_cancel"
+        assert backend.cancel_metadata["realtime_turn_cancellation"]["cancelled_by"] == "run.cancel"
+        _assert_gateway_cancel_payload(
+            frames[-1]["payload"],
+            cancelled_by="run.cancel",
+            phase="final_streaming",
+        )
 
     async def test_cancel_suppresses_backend_events_emitted_after_cancel(self) -> None:
         class StaleEventBackend:
@@ -925,11 +945,15 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert frames[-1]["payload"]["expects_reply"] is True
         await asyncio.wait_for(backend.cancel_seen.wait(), timeout=2.0)
         assert backend.cancel_seen.is_set()
-        assert backend.cancel_metadata == {
-            "deadline_ms": 30,
-            "cancel_source": "deadline",
-            "cancel_reason": "run_deadline_expired",
-        }
+        assert backend.cancel_metadata["deadline_ms"] == 30
+        assert backend.cancel_metadata["cancel_source"] == "deadline"
+        assert backend.cancel_metadata["cancel_reason"] == "run_deadline_expired"
+        assert backend.cancel_metadata["realtime_turn_cancellation"]["cancelled_by"] == "deadline"
+        _assert_gateway_cancel_payload(
+            frames[-1]["payload"],
+            cancelled_by="deadline",
+            phase="final_streaming",
+        )
         assert backend.requests[0].metadata["runtime"]["session_config"]["run_timeout_ms"] == 30
 
     async def test_run_deadline_from_message_metadata_overrides_session_config(self) -> None:
@@ -1006,11 +1030,15 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert [received["type"] for received in frames] == ["run.started", "run.end"]
         assert frames[-1]["reason"] == "cancelled"
         assert frames[-1]["payload"]["expects_reply"] is True
-        assert backend.cancel_metadata == {
-            "deadline_ms": 20,
-            "cancel_source": "deadline",
-            "cancel_reason": "run_deadline_expired",
-        }
+        assert backend.cancel_metadata["deadline_ms"] == 20
+        assert backend.cancel_metadata["cancel_source"] == "deadline"
+        assert backend.cancel_metadata["cancel_reason"] == "run_deadline_expired"
+        assert backend.cancel_metadata["realtime_turn_cancellation"]["cancelled_by"] == "deadline"
+        _assert_gateway_cancel_payload(
+            frames[-1]["payload"],
+            cancelled_by="deadline",
+            phase="final_streaming",
+        )
 
     async def test_completed_run_cleans_deadline_monitor(self) -> None:
         class FastBackend:

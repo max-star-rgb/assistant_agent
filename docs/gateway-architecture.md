@@ -148,6 +148,7 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Convert backend failures into protocol-level `run.end` or `error` frames.
 - Queue ordinary same-session user messages behind the active run; cancel active runs on explicit `run.cancel`, disconnect, deadline expiry, or explicit same-session interrupt.
 - Cancel active runs immediately on `call.hangup` / media `session.end`, then return `call.hangup_ack`.
+- Treat cancel/interrupt as a first-class realtime turn outcome. After cancel, old run output is not speakable or user-visible; late backend/tool results may be retained only as trace or stale artifacts.
 - Manage per-user session reuse, reconnect, hangup grace, idle eviction, and live session config.
 - Treat user-message `metadata` as untrusted for system-prompt/profile selection. `system_prompt_profile`, profile-driving `channel`, and profile-driving `source` are stripped from message payload metadata; realtime phone profile selection must come from trusted Gateway/session config, not ordinary user text or arbitrary payload metadata.
 - Keep external connection lifecycle separate from the assistant runtime internals.
@@ -159,6 +160,24 @@ the active run, preserve session continuity, and start the next turn. It should
 not own semantic task revision such as merging the old goal with new
 constraints, deciding whether intermediate artifacts are reusable, or resolving
 committed side effects.
+
+Realtime turn cancellation metadata is normalized through
+`RealtimeTurnCancellationContract`:
+
+```text
+cancelled_by = interrupt | run.cancel | hangup | disconnect | deadline
+phase = before_llm | llm_streaming | tool_running | final_streaming | tts_playing
+stale_outputs = true
+can_reuse_tool_result = false
+speakable = false
+```
+
+Current text-only realtime v1 does not invoke or manage a TTS provider, but it
+still uses `speakable=false` as the outbound text gate for entry adapters. The
+Gateway cancel token, realtime backend result metadata, `run.end.payload.cancel`,
+and ToolExecutor cancellation result data all preserve the same prompt-safe
+contract while retaining legacy `cancel_source`, `cancel_reason`, `cancel_phase`,
+and `deadline_ms` fields for compatibility.
 
 Realtime task state, deterministic fallback behavior, tool-wait boundaries, and interrupt/cancel handling are part of the current Gateway lifecycle contract when implemented. Keep current behavior in this document and in tests, not in archived phase plans.
 

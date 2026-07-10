@@ -23,6 +23,9 @@ from assistant_agent.realtime.types import (
     RealtimeBackendCapabilities,
     RealtimeCancelToken,
 )
+from assistant_agent.schemas.realtime_cancellation import (
+    build_realtime_turn_cancellation_metadata,
+)
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.assistant_run_service import (
@@ -101,7 +104,10 @@ class AgentGraphRealtimeBackend:
                 status="cancelled",
                 run_id=request.run_id,
                 metadata={
-                    **cancellation_metadata(cancel_token),
+                    **build_realtime_turn_cancellation_metadata(
+                        cancellation_metadata(cancel_token),
+                        phase="pre_run",
+                    ),
                     "cancel_phase": "pre_run",
                     "best_effort": True,
                 },
@@ -150,6 +156,7 @@ class AgentGraphRealtimeBackend:
 
             if state.status == "cancelled":
                 state_cancel_metadata = _cancel_metadata_from_state(state)
+                cancel_phase = _cancel_phase_from_state(state) or "agent_run"
                 return RealtimeAgentResult(
                     status="cancelled",
                     run_id=result_run_id,
@@ -157,8 +164,11 @@ class AgentGraphRealtimeBackend:
                     metadata={
                         **result_metadata,
                         "realtime_progress": forwarder.progress_summary(),
-                        **state_cancel_metadata,
-                        "cancel_phase": _cancel_phase_from_state(state) or "agent_run",
+                        **build_realtime_turn_cancellation_metadata(
+                            state_cancel_metadata,
+                            phase=cancel_phase,
+                        ),
+                        "cancel_phase": cancel_phase,
                         "best_effort": True,
                     },
                 )
@@ -171,7 +181,10 @@ class AgentGraphRealtimeBackend:
                     metadata={
                         **result_metadata,
                         "realtime_progress": forwarder.progress_summary(),
-                        **cancellation_metadata(cancel_token),
+                        **build_realtime_turn_cancellation_metadata(
+                            cancellation_metadata(cancel_token),
+                            phase="post_run",
+                        ),
                         "cancel_phase": "post_run",
                         "best_effort": True,
                     },
@@ -524,7 +537,15 @@ def _cancel_metadata_from_state(state: Any) -> dict[str, Any]:
     if not isinstance(details, dict):
         return {}
     metadata: dict[str, Any] = {}
-    for key in ("cancel_source", "cancel_reason", "deadline_ms"):
+    for key in (
+        "cancel_source",
+        "cancel_reason",
+        "deadline_ms",
+        "realtime_turn_cancellation",
+        "stale_outputs",
+        "can_reuse_tool_result",
+        "speakable",
+    ):
         if key in details:
             metadata[key] = details[key]
     return metadata
