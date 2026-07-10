@@ -192,6 +192,7 @@ def evaluate_tool_risk(
     state: AgentState,
     step_id: str | None,
     policy: ToolSideEffectPolicy | None = None,
+    idempotency_required: bool | None = None,
 ) -> ToolRiskDecision:
     """Return the runtime risk/idempotency decision for a tool call."""
 
@@ -231,6 +232,33 @@ def evaluate_tool_risk(
         )
 
     confirmation_owned_by_tool = tool_owns_confirmation(tool_name)
+    confirmed = _tool_confirmation_granted(request, tool_name)
+    requires_idempotency = bool(idempotency_required)
+    if confirmed:
+        if requires_idempotency and supplied_key is None:
+            return ToolRiskDecision(
+                tool_name=tool_name,
+                level=level,
+                side_effect_level=policy.level,
+                enabled=enabled,
+                allow_execute=False,
+                requires_confirmation=True,
+                confirmation_kind=policy.confirmation_kind or "tool_execution",
+                reason="idempotency_key_required_after_confirmation",
+                idempotency_required=True,
+            )
+        return ToolRiskDecision(
+            tool_name=tool_name,
+            level=level,
+            side_effect_level=policy.level,
+            enabled=enabled,
+            allow_execute=True,
+            requires_confirmation=False,
+            confirmation_kind=policy.confirmation_kind,
+            reason="user_confirmation_granted",
+            idempotency_required=requires_idempotency,
+            idempotency_key=supplied_key,
+        )
     allow_execute = not enabled or confirmation_owned_by_tool
     return ToolRiskDecision(
         tool_name=tool_name,
@@ -320,7 +348,7 @@ def record_successful_idempotent_result(
 
 
 def should_record_idempotent_result(decision: ToolRiskDecision, result: ToolResult) -> bool:
-    if decision.level != "soft_gate" or decision.idempotency_key is None:
+    if not decision.idempotency_required or decision.idempotency_key is None:
         return False
     if not result.success:
         return False
@@ -345,6 +373,16 @@ def _risk_gate_enabled(request: UserRequest) -> bool:
     if isinstance(realtime, dict):
         return True
     return isinstance(metadata.get("realtime_task_state"), dict)
+
+
+def _tool_confirmation_granted(request: UserRequest, tool_name: str) -> bool:
+    confirmation = request.metadata.get("tool_confirmation")
+    if not isinstance(confirmation, dict):
+        return False
+    if confirmation.get("confirmed") is not True:
+        return False
+    confirmed_tool = _metadata_string(confirmation.get("tool_name"))
+    return confirmed_tool in {None, tool_name}
 
 
 def _can_generate_idempotency_key(step_id: str | None) -> bool:

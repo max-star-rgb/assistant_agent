@@ -89,6 +89,7 @@ class ToolExecutor:
             state=state,
             step_id=step_id,
             policy=_side_effect_policy_for_registered_tool(self.registry, tool_name),
+            idempotency_required=_idempotency_required_for_registered_tool(self.registry, tool_name),
         )
         pre_tool_call = build_pre_tool_call_summary(
             tool_name=tool_name,
@@ -1076,4 +1077,18 @@ def _side_effect_policy_for_registered_tool(
             confirmation_kind=view.confirmation_kind,
             compensation_hint=view.compensation_hint,
         )
+    return None
+
+
+def _idempotency_required_for_registered_tool(
+    registry: ToolRegistry,
+    tool_name: str,
+) -> bool | None:
+    for spec in registry.list_specs():
+        if spec.name != tool_name:
+            continue
+        if spec.policy is None:
+            return None
+        view = ToolPolicyInterpreter().view_for_spec(spec)
+        return view.idempotency_required
     return None

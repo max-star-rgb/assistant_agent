@@ -148,6 +148,7 @@ Runtime gate 映射：
 - `auto`: `local_read`、`external_read` 或无副作用工具，直接执行，不需要幂等 ledger。
 - `soft_gate`: `compensatable` 工具，执行前解析或生成幂等 key；同一 user/session/tool/key 已提交时返回 safe duplicate-suppressed result，不再次调用 registry。
 - `hard_gate`: `pending_confirmation`、`committed` 或未分类工具。realtime/Gateway 上下文中的未分类工具会返回 pending-confirmation result，不执行实际工具；`memory` / `memory_save` 继续交给 memory service 自己的确认边界处理。
+- 显式确认后的外部写工具可通过 request metadata `tool_confirmation.confirmed=true` 和匹配的 `tool_name` 放行；若工具声明 `execution.idempotency=required`，确认后仍必须提供 `idempotency_key`，成功提交会写入幂等 ledger，重复提交返回 duplicate-suppressed result。
 - `block`: 预留给后续策略禁止类工具，本阶段没有默认工具映射到 block。
 
 当前限制：risk gate 和 idempotency ledger 是 process-local runtime guard；完整用户确认 UX、持久化 ledger、跨进程恢复和 irreversible external action provider 仍未接入。
