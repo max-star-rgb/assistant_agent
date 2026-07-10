@@ -107,4 +107,23 @@ def _native_description(spec: ToolSpec) -> str:
         if spec.side_effect.compensation_hint:
             side_effect_parts.append("compensation: " + spec.side_effect.compensation_hint)
         parts.append("Side effects: " + "; ".join(side_effect_parts))
+    execution_constraints = _prompt_safe_execution_constraints(spec)
+    if execution_constraints:
+        parts.append("Execution constraints: " + "; ".join(execution_constraints))
     return "\n".join(parts)
+
+
+def _prompt_safe_execution_constraints(spec: ToolSpec) -> list[str]:
+    constraints: list[str] = []
+    if spec.execution.dependency_mode == "requires_prior_observation":
+        constraints.append("requires prior observation before dependent multi-tool use")
+    elif spec.execution.dependency_mode == "terminal":
+        constraints.append("terminal tool; expect the next assistant message to answer from its result")
+
+    if spec.execution.realtime_safety == "needs_progress":
+        constraints.append("surface progress while running")
+    elif spec.execution.realtime_safety == "needs_confirmation":
+        constraints.append("needs confirmation-sensitive handling")
+    elif spec.execution.realtime_safety == "unsafe":
+        constraints.append("unsafe for realtime auto-execution")
+    return constraints

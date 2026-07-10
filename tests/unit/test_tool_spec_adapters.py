@@ -5,7 +5,7 @@ from assistant_agent.schemas.tool_spec_adapters import (
     tool_specs_to_mcp_tools,
     tool_specs_to_openai_tools,
 )
-from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.schemas.tools import ToolExecutionPolicy, ToolSpec
 from assistant_agent.tools.registry import create_default_registry
 
 
@@ -70,6 +70,43 @@ def test_tool_spec_to_openai_tool_uses_function_calling_shape() -> None:
     assert "Use only through ToolExecutor." in tool["function"]["description"]
     assert "Side effects:" in tool["function"]["description"]
     assert "requires_confirmation=true" in tool["function"]["description"]
+
+
+def test_tool_spec_to_openai_tool_adds_prompt_safe_execution_constraints_only() -> None:
+    spec = ToolSpec(
+        name="price_compare",
+        description="Compare prices.",
+        execution=ToolExecutionPolicy(
+            dependency_mode="requires_prior_observation",
+            concurrency_group="catalog",
+            resource_reads=["product_search.results"],
+            resource_writes=["internal.debug"],
+            realtime_safety="safe",
+        ),
+    )
+
+    description = tool_spec_to_openai_tool(spec)["function"]["description"]
+
+    assert "Execution constraints:" in description
+    assert "requires prior observation" in description
+    assert "resource_reads" not in description
+    assert "resource_writes" not in description
+    assert "concurrency_group" not in description
+
+
+def test_terminal_tool_openai_description_mentions_terminal_constraint() -> None:
+    spec = ToolSpec(
+        name="image_generation",
+        description="Generate images.",
+        execution=ToolExecutionPolicy(
+            dependency_mode="terminal",
+            realtime_safety="needs_progress",
+        ),
+    )
+
+    description = tool_spec_to_openai_tool(spec)["function"]["description"]
+
+    assert "terminal tool" in description
 
 
 def test_tool_spec_to_mcp_tool_uses_mcp_input_schema_shape() -> None:

@@ -134,6 +134,11 @@ def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
     if isinstance(input_schema, dict):
         payload["input_schema"] = _compact_prompt_input_schema(input_schema)
     policy = ToolPolicyInterpreter().view_for_spec(spec)
+    compact_execution = _compact_prompt_execution(policy)
+    if compact_execution:
+        payload["execution"] = compact_execution
+    else:
+        payload.pop("execution", None)
     if (
         policy.side_effect_level in {"none", "local_read", "external_read"}
         and not policy.requires_confirmation
@@ -147,6 +152,19 @@ def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
         compact_side_effect["confirmation_kind"] = policy.confirmation_kind
     payload["side_effect"] = compact_side_effect
     return payload
+
+
+def _compact_prompt_execution(policy: Any) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    if policy.dependency_mode != "independent":
+        compact["dependency_mode"] = policy.dependency_mode
+    if policy.realtime_safety != "safe":
+        compact["realtime_safety"] = policy.realtime_safety
+    if policy.concurrency_group:
+        compact["concurrency_group"] = policy.concurrency_group
+    if policy.resource_writes:
+        compact["resource_writes"] = list(policy.resource_writes)
+    return compact
 
 
 def _compact_prompt_input_schema(input_schema: dict[str, Any]) -> dict[str, Any]:

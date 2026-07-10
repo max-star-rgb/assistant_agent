@@ -979,6 +979,8 @@ def test_native_runtime_parallelizes_independent_read_only_tool_batch_through_ex
     schedule = state.request.metadata["native_tool_schedules"][0]
     assert schedule["groups"][0]["mode"] == "parallel"
     assert schedule["groups"][0]["tool_names"] == ["product_search", "web_search"]
+    assert schedule["dependency_modes"] == ["independent", "independent"]
+    assert schedule["realtime_safety"] == ["safe", "safe"]
     assert state.response is not None
     assert state.response.message == "已基于两个并发 observation 回答。"
 
@@ -1008,7 +1010,8 @@ def test_native_runtime_keeps_dependent_read_only_tool_batch_serial() -> None:
     assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
     schedule = state.request.metadata["native_tool_schedules"][0]
     assert schedule["groups"][0]["mode"] == "serial"
-    assert schedule["groups"][0]["reason"] == "dependent_tool_order"
+    assert schedule["groups"][0]["reason"] == "requires_prior_observation"
+    assert schedule["dependency_modes"] == ["independent", "requires_prior_observation"]
     assert state.response is not None
     assert state.response.message == "已基于串行 observation 回答。"
 

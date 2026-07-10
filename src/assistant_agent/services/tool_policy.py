@@ -7,6 +7,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.tools import (
+    RealtimeToolSafety,
+    ToolDependencyMode,
+    ToolExecutionPolicy,
     ToolPolicyMetadata,
     ToolRisk,
     ToolSideEffectLevel,
@@ -18,7 +21,7 @@ from assistant_agent.services.tool_risk_gate import (
     risk_gate_level_for_policy,
     tool_owns_confirmation,
 )
-from assistant_agent.tools.registry import tool_side_effect_policy
+from assistant_agent.tools.registry import tool_execution_policy, tool_side_effect_policy
 
 
 TOOL_POLICY_VIEW_SCHEMA_VERSION = "tool_policy_view_v1"
@@ -37,6 +40,11 @@ class ToolPolicyView(BaseModel):
     confirmation_owner: ToolConfirmationOwner = "none"
     tool_owned_confirmation: bool = False
     auto_executable: bool = False
+    dependency_mode: ToolDependencyMode = "requires_prior_observation"
+    concurrency_group: str | None = None
+    resource_reads: list[str] = Field(default_factory=list)
+    resource_writes: list[str] = Field(default_factory=list)
+    realtime_safety: RealtimeToolSafety = "needs_confirmation"
     idempotency_required: bool = False
     description: str = ""
     compensation_hint: str | None = None
@@ -65,17 +73,27 @@ class ToolPolicyInterpreter:
         """Return the current policy view for an explicit tool spec."""
 
         if spec.policy is not None:
-            return self.view_for_metadata(tool_name=spec.name, metadata=spec.policy)
-        return self.view_for_policy(tool_name=spec.name, policy=spec.side_effect)
+            return self.view_for_metadata(
+                tool_name=spec.name,
+                metadata=spec.policy,
+                execution=spec.execution,
+            )
+        return self.view_for_policy(
+            tool_name=spec.name,
+            policy=spec.side_effect,
+            execution=spec.execution,
+        )
 
     def view_for_metadata(
         self,
         *,
         tool_name: str,
         metadata: ToolPolicyMetadata,
+        execution: ToolExecutionPolicy | None = None,
     ) -> ToolPolicyView:
         """Return the current policy view for explicit governance metadata."""
 
+        execution_policy = execution or ToolExecutionPolicy()
         side_effect_policy = _side_effect_policy_from_metadata(metadata)
         risk_gate_level = risk_gate_level_for_policy(side_effect_policy)
         idempotency_required = (
@@ -96,6 +114,11 @@ class ToolPolicyInterpreter:
             ),
             tool_owned_confirmation=tool_owned_confirmation,
             auto_executable=risk_gate_level == "auto",
+            dependency_mode=execution_policy.dependency_mode,
+            concurrency_group=execution_policy.concurrency_group,
+            resource_reads=list(execution_policy.resource_reads),
+            resource_writes=list(execution_policy.resource_writes),
+            realtime_safety=execution_policy.realtime_safety,
             idempotency_required=idempotency_required,
             description=side_effect_policy.description,
             compensation_hint=side_effect_policy.compensation_hint,
@@ -123,6 +146,7 @@ class ToolPolicyInterpreter:
         return self.view_for_policy(
             tool_name=tool_name,
             policy=tool_side_effect_policy(tool_name),
+            execution=tool_execution_policy(tool_name),
         )
 
     def view_for_policy(
@@ -130,9 +154,11 @@ class ToolPolicyInterpreter:
         *,
         tool_name: str,
         policy: ToolSideEffectPolicy,
+        execution: ToolExecutionPolicy | None = None,
     ) -> ToolPolicyView:
         """Return the current policy view for a policy payload."""
 
+        execution_policy = execution or ToolExecutionPolicy()
         risk_gate_level = risk_gate_level_for_policy(policy)
         tool_owned_confirmation = policy.requires_confirmation and tool_owns_confirmation(
             tool_name
@@ -149,6 +175,11 @@ class ToolPolicyInterpreter:
             ),
             tool_owned_confirmation=tool_owned_confirmation,
             auto_executable=risk_gate_level == "auto",
+            dependency_mode=execution_policy.dependency_mode,
+            concurrency_group=execution_policy.concurrency_group,
+            resource_reads=list(execution_policy.resource_reads),
+            resource_writes=list(execution_policy.resource_writes),
+            realtime_safety=execution_policy.realtime_safety,
             idempotency_required=risk_gate_level == "soft_gate",
             description=policy.description,
             compensation_hint=policy.compensation_hint,

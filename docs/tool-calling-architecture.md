@@ -6,7 +6,7 @@
 
 - 默认真实 LLM 运行时是 `AgentGraphRuntime` 内的 provider-native loop；非 mock chat adapter 不再进入 prompt-json 控制面调用。
 - 工具契约由 `ToolSpec` 表达，来源是 `ToolRegistry.list_specs()`；真实 LLM 路径把 ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
-- `ToolSpec.side_effect` 表达工具副作用策略；未知工具默认按 confirmation-sensitive 处理。realtime task-state 会消费该策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
+- `ToolSpec.side_effect` 表达工具副作用策略，`ToolSpec.execution` 表达稳定调度/依赖/资源事实；未知工具默认按 confirmation-sensitive 且需要串行观察处理。realtime task-state 会消费 side-effect 策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
 - 真实 LLM 只能返回自然语言 `content` 或 provider-native `tool_calls`。native tool call 会先归一化成内部 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
 - 当第一轮 native response 是 `tool_calls` 时，runtime 不把该轮模型 `content` 当作正式回答输出；它只记录为内部 preamble，并发出一条可替换的 `progress_message` 事件（例如 `product_search` -> “我查一下。”）。该事件不写入 LLM messages，也不参与第二轮回答生成。
 - 工具执行必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。API、WebSocket、MCP 或新增入口都不能直接 `registry.run(...)`。
@@ -14,7 +14,7 @@
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
 - 工具 observation 是下一轮 LLM 的数据，不是系统指令；写入 prompt 前会被摘要、脱敏、压缩。不要把 provider raw response、密钥、base64 大 payload 暴露给 assistant context。
 - Provider capability facts live in `src/assistant_agent/schemas/provider_specs.py` as `ProviderSpec.capabilities`; chat adapters read that matrix for native tools, response format, streaming and modality switches instead of maintaining a separate provider table. Adapter factories should prefer `ResolvedProviderSpec.adapter_kind` / `ResolvedProviderSpec.capabilities` and must not maintain parallel provider-name dispatch tables.
-- 当前 native loop 会先对同一轮 provider-native `tool_calls` 做 `ToolScheduler` 预检：明确 read-only、无确认需求、无已知依赖、无重复工具名且 provider budget 可安全检查的 batch 可以并发执行；其他 batch 继续按 provider 顺序串行执行。无论并发或串行，每个工具仍独立进入 `ActionValidator -> ToolExecutor -> ToolRegistry`，并受 `max_tool_iterations` 预算限制。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
+- 当前 native loop 会先对同一轮 provider-native `tool_calls` 做 `ToolScheduler` 预检：明确 read-only、无确认需求、`execution.dependency_mode=independent`、无重复工具名、无资源写入、无 concurrency/resource 冲突且 provider budget 可安全检查的 batch 可以并发执行；`requires_prior_observation`、`terminal`、`needs_confirmation`、`unsafe` 或未知执行属性继续按 provider 顺序串行执行。无论并发或串行，每个工具仍独立进入 `ActionValidator -> ToolExecutor -> ToolRegistry`，并受 `max_tool_iterations` 预算限制。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
 
 ## 设计收敛原则
 
@@ -43,7 +43,7 @@ UserRequest
        └─ tool_calls[]
             -> each native tool call normalized to AssistantDecision(type="tool_call")
             -> ToolScheduler batch precheck through ActionValidator.validate()
-            -> execute read-only independent calls concurrently, otherwise serially
+            -> execute read-only independent execution-safe calls concurrently, otherwise serially
             -> ToolExecutor.run_tool()
             -> append assistant tool_call + tool observation messages in provider order
             -> ChatAdapter.chat() again for final content or next tool call
@@ -83,7 +83,7 @@ UserRequest
 - `src/assistant_agent/agent/tool_executor.py`: 工具执行、预算、retry/recovery、event/history/trace 的统一边界。
 - `src/assistant_agent/tools/registry.py`: 工具注册、ToolSpec 生成和默认工具集合。
 - `src/assistant_agent/tools/base.py`: `ToolContext`、`BaseTool`、`MockTool` 基础契约。
-- `src/assistant_agent/schemas/tools.py`: `ToolSpec`、`ToolResult`、`ToolCallRecord`。
+- `src/assistant_agent/schemas/tools.py`: `ToolSpec`、`ToolExecutionPolicy`、`ToolResult`、`ToolCallRecord`。
 - `src/assistant_agent/schemas/assistant_decision.py`: 内部 assistant decision 和 native tool call 归一化。
 - `src/assistant_agent/schemas/tool_spec_adapters.py`: ToolSpec 到 OpenAI/MCP 工具 schema 的转换。
 - `src/assistant_agent/schemas/tool_observation.py`: assistant-facing observation 摘要和脱敏。
@@ -95,14 +95,14 @@ UserRequest
 - 非 mock chat adapter 一律走 native loop；不再存在 `response_mode` 或 `assistant_tool_call_mode` 分支。
 - 请求向 provider 发送 `messages`、`tools` 和 `tool_choice="auto"`。
 - provider 返回 `content` 或 `refusal` 时，runtime 直接作为用户可见回答输出；普通 direct answer 应只有一次 chat call。
-- provider 返回 `tool_calls` 时，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再把 batch 归一化为内部 `AssistantDecision(type="tool_call")` 并进入 `ToolScheduler`。调度器会批量预检 `ActionValidator` 和 side-effect policy；只有明确 read-only、无确认需求、无已知顺序依赖、无重复工具名、预算检查可并发安全的 batch 才会并发调用 `ToolExecutor.run_tool()`。其他情况保持 provider 顺序串行。无论哪种模式，observation 都按 provider call 顺序回填；超过 `max_tool_iterations` 的剩余调用会记录为预算跳过，而不是绕过治理边界。
+- provider 返回 `tool_calls` 时，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再把 batch 归一化为内部 `AssistantDecision(type="tool_call")` 并进入 `ToolScheduler`。调度器会批量预检 `ActionValidator`，并通过 `ToolPolicyInterpreter` 消费 `ToolSpec.side_effect + ToolSpec.execution`；只有明确 read-only、无确认需求、`dependency_mode=independent`、无重复工具名、无资源写入、无 concurrency/resource 冲突、预算检查可并发安全的 batch 才会并发调用 `ToolExecutor.run_tool()`。其他情况保持 provider 顺序串行。无论哪种模式，observation 都按 provider call 顺序回填；超过 `max_tool_iterations` 的剩余调用会记录为预算跳过，而不是绕过治理边界。
 - 工具 observation 会作为后续 native messages 中的 `tool` role 内容回传；拿到工具结果后的第二次 LLM 调用是合理工具路径，不是隐藏控制面调用。
 - 如果 provider adapter 明确 `supports_native_tools=False`，runtime fails immediately，不静默 fallback 到旧 JSON 控制面。
 - `AssistantDecision` 仍是内部治理结构，用于复用 validator/executor/trace；真实 LLM 不再被要求输出自定义 `AssistantDecision` JSON。
 
 ## Backlog
 
-- 安全并行工具执行扩展：当前 v1 已支持单个 read-only independent native batch 的保守并发执行。后续如需扩展到多组调度、重复同名 read-only 工具、共享资源冲突检测、动态依赖声明或 async executor，必须继续保持 `ToolExecutor` 为唯一执行入口，并保留每个工具独立的 trace、event、history、observation 和预算记录。副作用工具、confirmation-sensitive 工具、未知工具、资源或路径可能冲突的工具默认继续串行。
+- 安全并行工具执行扩展：当前 v1 已支持单个 read-only independent native batch 的保守并发执行，并消费静态 `ToolSpec.execution` 做依赖、资源写入和 concurrency group 检查。后续如需扩展到多组调度、重复同名 read-only 工具、动态依赖声明、realtime 动态 `max_tool_iterations` 或 async executor，必须继续保持 `ToolExecutor` 为唯一执行入口，并保留每个工具独立的 trace、event、history、observation 和预算记录。副作用工具、confirmation-sensitive 工具、未知工具、资源或路径可能冲突的工具默认继续串行。
 - ToolRegistry 延迟注册 / factory descriptor：当前不采用 Hermes 风格的模块级全局单例 `registry`，避免 provider profile、adapter、video context、agent delegation 和测试隔离被全局状态污染。后续如果默认工具数量或 import 耦合明显增长，可以引入保留依赖注入语义的 `ToolRegistryBuilder` 或 lazy tool factory descriptor：`registry.py` 只保存轻量工具定义和 factory，`create_default_registry()` 按 `ProviderConfig`、runtime context 和 opt-in capability 实例化工具。该方案不得绕过 `ActionValidator -> ToolExecutor -> ToolRegistry`，也不得把工具执行入口改成全局 `registry.run(...)`。
 
 ## ToolSpec 契约
@@ -118,6 +118,7 @@ when_to_use
 when_not_to_use
 runtime_constraints
 side_effect
+execution
 ```
 
 ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema` 生成，并补充 `_ACTION_USAGE` 中的使用条件和运行约束。默认约束包含 `Use only through ToolExecutor.`。
@@ -126,9 +127,10 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 
 - memory dedicated tools 会隐藏 `user_id`、`session_id` 这类运行时身份字段；模型不应决定记忆归属。
 - `tool_spec_to_json_schema()` 会输出 object schema，并设置 `additionalProperties=False`。
-- provider-native tools 发送完整 ToolSpec；旧 prompt-facing ToolSpec 子集只服务历史 renderer 测试和离线兼容材料，不是生产决策路径。
+- provider-native tools 发送完整 ToolSpec，并把 `terminal` / `requires_prior_observation` 等执行约束追加成简短 prompt-safe 描述；旧 prompt-facing ToolSpec 子集只服务历史 renderer 测试和离线兼容材料，不是生产决策路径。
 - `side_effect` 包含 `level`、`requires_confirmation`、`description`、可选 `confirmation_kind` 和 `compensation_hint`；provider-native/MCP 描述也会包含该信息。
-- 未分类工具使用保守默认：`level=pending_confirmation` 且 `requires_confirmation=true`。
+- `execution` 包含 `dependency_mode`、可选 `concurrency_group`、`resource_reads`、`resource_writes` 和 `realtime_safety`。它只表达调度/依赖/资源事实，不表达“允许并发”命令。
+- 未分类工具使用保守默认：`level=pending_confirmation`、`requires_confirmation=true`、`dependency_mode=requires_prior_observation` 且 `realtime_safety=needs_confirmation`。
 - MCP 工具 schema 通过 `tool_spec_to_mcp_tool()` 支持，但当前 `OfflineMCPServer.list_tools()` 暴露的是 MCP wrapper 工具；registry ToolSpec 通过 `tool_list` 返回。
 
 ## Tool Side-Effect Policy
@@ -178,6 +180,14 @@ Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are capa
 - `memory`、`memory_save`: `pending_confirmation`，成功提交后从 realtime interrupt 视角记为 `committed`。
 - `memory_media_ingest`: `committed` / confirmation-sensitive because it submits media to an external Memory Server task that may create durable remote memories. It is only selected for explicit media-ingestion-into-memory requests and returns `provider_unconfigured` unless remote memory is explicitly configured.
 - `delegate_to_agent`: `compensatable`，因为子任务可能已经开始，需要取消、覆盖或补发修正。
+
+默认执行属性：
+
+- `web_search`、`product_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`。
+- `price_compare`: `dependency_mode=requires_prior_observation`，因为同一批次中通常需要先消费商品候选或先前 observation。
+- `image_generation`、`render_3d`、`delegate_to_agent`: `dependency_mode=terminal`、`realtime_safety=needs_progress`。
+- `memory_save`、`memory_media_ingest`: `dependency_mode=independent`、`realtime_safety=needs_confirmation`，并声明 memory 资源写入。
+- legacy `memory`: 保守视为 `requires_prior_observation`、`needs_confirmation`，并声明 memory 读写。
 
 ## Web Search 工具
 

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, List, Dict
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.tools import (
+    ToolExecutionPolicy,
     ToolPolicyMetadata,
     ToolResult,
     ToolSideEffectPolicy,
@@ -80,6 +81,7 @@ class ToolRegistry:
                     when_not_to_use=usage.get("when_not_to_use", []),
                     runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
                     side_effect=tool_side_effect_policy(tool.name),
+                    execution=tool_execution_policy(tool.name),
                     policy=tool_policy_metadata(tool),
                 )
             )
@@ -143,6 +145,20 @@ def tool_side_effect_policy(tool_name: str) -> ToolSideEffectPolicy:
     return ToolSideEffectPolicy()
 
 
+def tool_execution_policy(tool_name: str) -> ToolExecutionPolicy:
+    """Return static execution policy for a tool name.
+
+    Unknown tools intentionally receive the conservative default policy.
+    """
+
+    payload = _ACTION_USAGE.get(tool_name, {}).get("execution")
+    if isinstance(payload, ToolExecutionPolicy):
+        return payload
+    if isinstance(payload, dict):
+        return ToolExecutionPolicy.model_validate(payload)
+    return ToolExecutionPolicy()
+
+
 def tool_policy_metadata(tool: BaseTool) -> ToolPolicyMetadata | None:
     """Return optional declarative policy metadata from a tool object."""
 
@@ -166,6 +182,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "requires_confirmation": False,
             "description": "Reads media/provider data and does not mutate external state.",
         },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["media:image"],
+            "realtime_safety": "safe",
+        },
     },
     "video_understanding": {
         "when_to_use": ["Summarize or analyze video content.", "User provided video_ids and asks what happens in the video."],
@@ -175,6 +196,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "level": "external_read",
             "requires_confirmation": False,
             "description": "Reads media/provider data and does not mutate external state.",
+        },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["media:video"],
+            "realtime_safety": "safe",
         },
     },
     "image_generation": {
@@ -187,6 +213,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "description": "Creates a generated artifact; an interrupt cannot erase the existing artifact or provider cost.",
             "compensation_hint": "Generate a corrected replacement or explain that the previous artifact already exists.",
         },
+        "execution": {
+            "dependency_mode": "terminal",
+            "resource_writes": ["artifact:image"],
+            "realtime_safety": "needs_progress",
+        },
     },
     "render_3d": {
         "when_to_use": ["User explicitly asks for 3D, rendering, modeling, scene preview, or displaying an object in a space."],
@@ -198,6 +229,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "description": "Creates a render/model artifact; an interrupt should revise or replace it rather than claim it was undone.",
             "compensation_hint": "Render a corrected replacement or explain which preview already exists.",
         },
+        "execution": {
+            "dependency_mode": "terminal",
+            "resource_writes": ["artifact:3d"],
+            "realtime_safety": "needs_progress",
+        },
     },
     "product_search": {
         "when_to_use": ["Search for products, similar items, or product candidates."],
@@ -208,6 +244,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "requires_confirmation": False,
             "description": "Reads product/provider data and does not mutate external state.",
         },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["product_catalog"],
+            "realtime_safety": "safe",
+        },
     },
     "price_compare": {
         "when_to_use": ["Compare prices, offers, or cheapest options."],
@@ -217,6 +258,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "level": "external_read",
             "requires_confirmation": False,
             "description": "Reads offer/provider data and does not mutate external state.",
+        },
+        "execution": {
+            "dependency_mode": "requires_prior_observation",
+            "resource_reads": ["product_candidates", "offers"],
+            "realtime_safety": "safe",
         },
     },
     "web_search": {
@@ -239,6 +285,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "requires_confirmation": False,
             "description": "Reads web search provider data and does not mutate external state.",
         },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["web_search"],
+            "realtime_safety": "safe",
+        },
     },
     "memory": {
         "when_to_use": ["Legacy memory retrieve/save compatibility tool."],
@@ -249,6 +300,12 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "requires_confirmation": True,
             "description": "May write durable user memory depending on action; treat as confirmation-sensitive.",
             "confirmation_kind": "memory_write",
+        },
+        "execution": {
+            "dependency_mode": "requires_prior_observation",
+            "resource_reads": ["memory"],
+            "resource_writes": ["memory"],
+            "realtime_safety": "needs_confirmation",
         },
     },
     "memory_retrieval": {
@@ -266,6 +323,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "level": "local_read",
             "requires_confirmation": False,
             "description": "Reads user-scoped memory context and does not mutate memory.",
+        },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["memory"],
+            "realtime_safety": "safe",
         },
     },
     "memory_save": {
@@ -291,6 +353,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "confirmation_kind": "memory_write",
             "compensation_hint": "Confirm, reject, delete, or update the saved memory through the memory confirmation/audit path.",
         },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_writes": ["memory"],
+            "realtime_safety": "needs_confirmation",
+        },
     },
     "memory_media_ingest": {
         "when_to_use": [
@@ -314,6 +381,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "confirmation_kind": "memory_media_ingest",
             "compensation_hint": "Report the submitted task id and use memory_ingest_status to monitor completion.",
         },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_writes": ["memory_media"],
+            "realtime_safety": "needs_confirmation",
+        },
     },
     "memory_ingest_status": {
         "when_to_use": [
@@ -331,6 +403,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "level": "external_read",
             "requires_confirmation": False,
             "description": "Reads external Memory Server task status and does not submit new media.",
+        },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["memory_media"],
+            "realtime_safety": "safe",
         },
     },
     "delegate_to_agent": {
@@ -354,6 +431,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "requires_confirmation": False,
             "description": "Starts work in another local agent; interruption should cancel, supersede, or follow up rather than claim the child task never started.",
             "compensation_hint": "Cancel or supersede the delegated task when the transport supports it, otherwise send a follow-up correction.",
+        },
+        "execution": {
+            "dependency_mode": "terminal",
+            "resource_writes": ["agent_task"],
+            "realtime_safety": "needs_progress",
         },
     },
 }

@@ -401,6 +401,7 @@ class AgentGraphRuntime:
         remaining_tool_budget: int,
     ):
         scheduled_calls = []
+        specs_by_name = {spec.name: spec for spec in self.registry.list_specs()}
         for call_index, call in enumerate(tool_calls):
             decision = native_tool_call_to_assistant_decision(call)
             validation = ActionValidator().validate(
@@ -415,6 +416,7 @@ class AgentGraphRuntime:
                     decision=decision,
                     validation=validation,
                     native_call_id=call.id,
+                    tool_spec=specs_by_name.get(decision.tool_name or ""),
                 )
             )
             if not validation.accepted:

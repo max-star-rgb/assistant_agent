@@ -1,6 +1,7 @@
 import pytest
 
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
+from assistant_agent.services.agent_communication import AgentCommunicationService
 from assistant_agent.tools.product_search_tool import ProductSearchTool
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
@@ -64,10 +65,46 @@ def test_registry_list_specs_is_the_canonical_tool_description() -> None:
     image = next(spec for spec in specs if spec.name == "image_generation")
     assert image.side_effect.level == "compensatable"
     assert image.side_effect.compensation_hint
+    assert image.execution.dependency_mode == "terminal"
+    assert image.execution.realtime_safety == "needs_progress"
 
     memory_save = next(spec for spec in specs if spec.name == "memory_save")
     assert memory_save.side_effect.level == "pending_confirmation"
     assert memory_save.side_effect.requires_confirmation is True
+    assert memory_save.execution.realtime_safety == "needs_confirmation"
+    assert memory_save.execution.resource_writes == ["memory"]
+
+    product_search = next(spec for spec in specs if spec.name == "product_search")
+    assert product_search.execution.dependency_mode == "independent"
+    assert product_search.execution.realtime_safety == "safe"
+    assert product_search.execution.resource_writes == []
+
+    price_compare = next(spec for spec in specs if spec.name == "price_compare")
+    assert price_compare.execution.dependency_mode == "requires_prior_observation"
+
+    memory_ingest_status = next(spec for spec in specs if spec.name == "memory_ingest_status")
+    assert memory_ingest_status.execution.dependency_mode == "independent"
+    assert memory_ingest_status.execution.realtime_safety == "safe"
+
+
+def test_unknown_tool_execution_policy_is_conservative() -> None:
+    spec = ToolSpec(name="custom_notification")
+
+    assert spec.execution.dependency_mode == "requires_prior_observation"
+    assert spec.execution.realtime_safety == "needs_confirmation"
+    assert spec.execution.resource_reads == []
+    assert spec.execution.resource_writes == []
+
+
+def test_opt_in_delegate_tool_uses_terminal_execution_policy() -> None:
+    registry = create_default_registry(
+        enable_agent_delegation=True,
+        agent_communication_service=AgentCommunicationService(),
+    )
+    spec = next(spec for spec in registry.list_specs() if spec.name == "delegate_to_agent")
+
+    assert spec.execution.dependency_mode == "terminal"
+    assert spec.execution.realtime_safety == "needs_progress"
 
 
 def test_registry_run_returns_tool_result() -> None:

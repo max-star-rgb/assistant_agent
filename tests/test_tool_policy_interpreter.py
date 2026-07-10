@@ -1,4 +1,4 @@
-from assistant_agent.schemas.tools import ToolSideEffectPolicy, ToolSpec
+from assistant_agent.schemas.tools import ToolExecutionPolicy, ToolSideEffectPolicy, ToolSpec
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 from assistant_agent.services.tool_risk_gate import risk_gate_level_for_policy
 from assistant_agent.tools.registry import create_default_registry
@@ -17,6 +17,11 @@ def test_policy_interpreter_matches_existing_default_tool_risk_rules() -> None:
         assert view.risk_gate_level == risk_gate_level_for_policy(spec.side_effect)
         assert view.idempotency_required is (view.risk_gate_level == "soft_gate")
         assert view.auto_executable is (view.risk_gate_level == "auto")
+        assert view.dependency_mode == spec.execution.dependency_mode
+        assert view.concurrency_group == spec.execution.concurrency_group
+        assert view.resource_reads == spec.execution.resource_reads
+        assert view.resource_writes == spec.execution.resource_writes
+        assert view.realtime_safety == spec.execution.realtime_safety
 
 
 def test_policy_interpreter_keeps_unknown_tool_conservative() -> None:
@@ -29,6 +34,8 @@ def test_policy_interpreter_keeps_unknown_tool_conservative() -> None:
     assert view.confirmation_owner == "runtime"
     assert view.auto_executable is False
     assert view.idempotency_required is False
+    assert view.dependency_mode == "requires_prior_observation"
+    assert view.realtime_safety == "needs_confirmation"
 
 
 def test_policy_interpreter_preserves_tool_owned_confirmation_behavior() -> None:
@@ -49,6 +56,12 @@ def test_policy_interpreter_accepts_explicit_spec_without_registry_lookup() -> N
             requires_confirmation=False,
             description="Reads calendar events without writing.",
         ),
+        execution=ToolExecutionPolicy(
+            dependency_mode="independent",
+            concurrency_group="calendar",
+            resource_reads=["calendar.events"],
+            realtime_safety="safe",
+        ),
     )
 
     view = ToolPolicyInterpreter().view_for_spec(spec)
@@ -57,3 +70,8 @@ def test_policy_interpreter_accepts_explicit_spec_without_registry_lookup() -> N
     assert view.side_effect_level == "external_read"
     assert view.risk_gate_level == "auto"
     assert view.auto_executable is True
+    assert view.dependency_mode == "independent"
+    assert view.concurrency_group == "calendar"
+    assert view.resource_reads == ["calendar.events"]
+    assert view.resource_writes == []
+    assert view.realtime_safety == "safe"

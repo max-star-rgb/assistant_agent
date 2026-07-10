@@ -27,6 +27,8 @@ ToolRisk = Literal[
 RealtimeToolMode = Literal["inline", "blocking", "deferred", "confirm_then_execute"]
 ApprovalMode = Literal["never", "conditional", "always"]
 ToolIdempotencyPolicy = Literal["none", "optional", "required"]
+ToolDependencyMode = Literal["independent", "requires_prior_observation", "terminal"]
+RealtimeToolSafety = Literal["safe", "needs_progress", "needs_confirmation", "unsafe"]
 
 
 class ToolSideEffectPolicy(BaseModel):
@@ -37,6 +39,16 @@ class ToolSideEffectPolicy(BaseModel):
     description: str = "Unclassified tool; treat as requiring confirmation before irreversible work."
     confirmation_kind: str | None = None
     compensation_hint: str | None = None
+
+
+class ToolExecutionPolicy(BaseModel):
+    """Static scheduling and realtime execution metadata for one tool contract."""
+
+    dependency_mode: ToolDependencyMode = "requires_prior_observation"
+    concurrency_group: str | None = None
+    resource_reads: list[str] = Field(default_factory=list)
+    resource_writes: list[str] = Field(default_factory=list)
+    realtime_safety: RealtimeToolSafety = "needs_confirmation"
 
 
 class RealtimeToolPolicy(BaseModel):
@@ -109,6 +121,11 @@ class ToolResult(BaseModel):
     tool_name: str = Field(min_length=1)
     success: bool
     data: dict[str, Any] | None = None
+    voice_summary: str | None = None
+    model_observation: dict[str, Any] | None = None
+    trace_summary: dict[str, Any] | None = None
+    audit_payload: dict[str, Any] | None = None
+    raw_data_ref: str | None = None
     error: str | None = None
     output_ref: str | None = None
     latency_ms: int | None = Field(default=None, ge=0)
@@ -126,6 +143,7 @@ class ToolSpec(BaseModel):
     when_not_to_use: list[str] = Field(default_factory=list)
     runtime_constraints: list[str] = Field(default_factory=list)
     side_effect: ToolSideEffectPolicy = Field(default_factory=ToolSideEffectPolicy)
+    execution: ToolExecutionPolicy = Field(default_factory=ToolExecutionPolicy)
     policy: ToolPolicyMetadata | None = None
 
 
