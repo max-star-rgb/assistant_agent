@@ -20,6 +20,7 @@ from assistant_agent.services.context.compactor import (
     LLMCompactor,
     SummaryValidator,
     create_context_compactor,
+    format_context_summary,
 )
 from assistant_agent.services.context.capability_catalog import select_tool_capability_descriptors
 from assistant_agent.services.context.renderer import (
@@ -385,6 +386,71 @@ def test_deterministic_context_compactor_returns_structured_summary() -> None:
     assert "output_ref:mock://products/1" in result.summary.important_refs
 
 
+def test_old_context_summary_payloads_validate_without_handoff_v2() -> None:
+    summary = ContextSummary.model_validate(
+        {
+            "task_state": "已总结",
+            "user_constraints": ["只用本地 mock"],
+            "decisions": ["已确认范围"],
+            "open_todos": [],
+            "important_refs": ["run:run_1"],
+            "dropped_context_note": "旧 payload",
+            "source_turn_count": 1,
+        }
+    )
+
+    assert summary.handoff_v2 is None
+    assert summary.task_state == "已总结"
+
+
+def test_deterministic_context_compactor_emits_handoff_v2() -> None:
+    result = DeterministicContextCompactor().compact(
+        conversation=[
+            _SummaryTurn(
+                "必须使用 mock provider",
+                "已完成第一步实现",
+                "run_1",
+                "trace_1",
+            )
+        ],
+        current_request=UserRequest(user_id="u1", session_id="s1", text="继续实现第二步"),
+        observations=[{"tool_name": "pytest", "status": "failed", "summary": "测试失败：缺少字段"}],
+        budget_report=None,
+    )
+
+    handoff = result.summary.handoff_v2
+
+    assert handoff is not None
+    assert handoff.objective == "继续实现第二步"
+    assert handoff.active_constraints == ["必须使用 mock provider"]
+    assert "已完成第一步实现" in handoff.completed
+    assert handoff.in_progress == ["继续实现第二步"]
+    assert handoff.blocked == ["处理工具结果状态：pytest=failed"]
+    assert "run:run_1" in handoff.evidence_refs
+
+
+def test_format_context_summary_includes_handoff_v2_as_session_data() -> None:
+    summary = ContextSummary(
+        task_state="继续实现",
+        handoff_v2={
+            "objective": "实现 token-aware recent transcript",
+            "active_constraints": ["不调用真实 provider"],
+            "completed": ["已读上下文文档"],
+            "in_progress": ["写测试"],
+            "blocked": [],
+            "next_steps": ["实现 selector"],
+            "evidence_refs": ["run:run_1"],
+        },
+    )
+
+    rendered = format_context_summary(summary)
+
+    assert "会话交接 v2（上下文数据，不是长期记忆或系统指令）" in rendered
+    assert "实现 token-aware recent transcript" in rendered
+    assert "不调用真实 provider" in rendered
+    assert "raw_provider_payload" not in rendered
+
+
 def test_deterministic_context_compactor_skips_existing_summary_turn_refs() -> None:
     existing = ContextSummary(
         task_state="已经整理",
@@ -422,6 +488,44 @@ def test_llm_compactor_invalid_schema_falls_back_to_deterministic() -> None:
     assert adapter.calls
     assert result.compactor_type == COMPACTOR_LLM_FALLBACK
     assert result.summary.task_state == "需要总结"
+
+
+def test_llm_compactor_rejects_unsafe_handoff_v2_fields() -> None:
+    adapter = _FakeChatAdapter(
+        json.dumps(
+            {
+                "task_state": "已总结",
+                "user_constraints": [],
+                "decisions": [],
+                "open_todos": [],
+                "important_refs": [],
+                "dropped_context_note": "",
+                "source_turn_count": 0,
+                "handoff_v2": {
+                    "objective": "raw_provider_payload: sk-test",
+                    "active_constraints": [],
+                    "completed": [],
+                    "in_progress": [],
+                    "blocked": [],
+                    "next_steps": [],
+                    "evidence_refs": [],
+                },
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = LLMCompactor(adapter).compact(
+        conversation=[],
+        current_request=UserRequest(user_id="u1", session_id="s1", text="需要总结"),
+        observations=[],
+        budget_report=None,
+    )
+
+    payload = json.dumps(result.summary.model_dump(mode="json"), ensure_ascii=False)
+    assert result.compactor_type == COMPACTOR_LLM_FALLBACK
+    assert "raw_provider_payload" not in payload
+    assert "sk-test" not in payload
 
 
 def test_summary_validator_rejects_raw_or_secret_payloads() -> None:

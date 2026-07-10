@@ -26,6 +26,7 @@ from assistant_agent.services.context.compactor import (
 from assistant_agent.services.context.conversation import (
     conversation_context_metadata,
     format_conversation_context,
+    select_conversation_window,
 )
 from assistant_agent.services.context.policy import context_policy_from_request
 from assistant_agent.services.event_sink import EventSink, ListEventSink
@@ -873,6 +874,15 @@ def _prepare_conversation_request(
         conversation_store.clear(request.user_id, request.session_id)
     history = conversation_store.get(request.user_id, request.session_id)
     summary = conversation_store.get_summary(request.user_id, request.session_id)
+    policy = context_policy_from_request(request)
+    force_minimum_recent = _force_minimum_recent_window(request)
+    recent_selection = select_conversation_window(
+        history,
+        recent_turns=policy.keep_recent_turns,
+        metadata=metadata,
+        context_policy=policy,
+        force_minimum_recent=force_minimum_recent,
+    )
     summary = _maybe_update_session_summary(
         request=request,
         history=history,
@@ -882,7 +892,15 @@ def _prepare_conversation_request(
     if not history:
         metadata.setdefault("conversation_history", [])
         if summary is not None:
-            metadata.update(_summary_metadata(summary, recent_turns=0))
+            metadata.update(
+                _summary_metadata(
+                    summary,
+                    recent_turns=0,
+                    recent_tokens=recent_selection.recent_tokens,
+                    recent_token_budget=recent_selection.token_budget,
+                    token_aware=recent_selection.token_aware,
+                )
+            )
             metadata.setdefault("conversation_context_text", format_context_summary(summary))
         else:
             metadata.setdefault("conversation_context_text", "")
@@ -890,21 +908,37 @@ def _prepare_conversation_request(
         return request.model_copy(update={"metadata": metadata}, deep=True)
     metadata["conversation_history"] = [turn.model_dump() for turn in history]
     if summary is not None:
-        recent_turn_limit = context_policy_from_request(request).keep_recent_turns
-        recent_history = history[-recent_turn_limit:]
         metadata["conversation_context_text"] = _format_summary_and_recent_context(
             summary,
-            recent_history,
-            start_index=len(history) - len(recent_history) + 1,
+            recent_selection.recent_turns,
+            start_index=recent_selection.recent_start_index,
         )
-        metadata.update(_summary_metadata(summary, recent_turns=len(recent_history)))
+        metadata.update(
+            _summary_metadata(
+                summary,
+                recent_turns=len(recent_selection.recent_turns),
+                recent_tokens=recent_selection.recent_tokens,
+                recent_token_budget=recent_selection.token_budget,
+                token_aware=recent_selection.token_aware,
+            )
+        )
     else:
-        recent_turn_limit = context_policy_from_request(request).keep_recent_turns
         metadata["conversation_context_text"] = format_conversation_context(
             history,
-            recent_turns=recent_turn_limit,
+            recent_turns=policy.keep_recent_turns,
+            metadata=metadata,
+            context_policy=policy,
+            force_minimum_recent=force_minimum_recent,
         )
-        metadata.update(conversation_context_metadata(history, recent_turns=recent_turn_limit))
+        metadata.update(
+            conversation_context_metadata(
+                history,
+                recent_turns=policy.keep_recent_turns,
+                metadata=metadata,
+                context_policy=policy,
+                force_minimum_recent=force_minimum_recent,
+            )
+        )
     metadata["conversation_turn_index"] = len(history) + 1
     return request.model_copy(update={"metadata": metadata}, deep=True)
 
@@ -990,18 +1024,14 @@ def _turns_to_compact(
     if not history:
         return []
     policy = context_policy_from_request(request)
-    recent_turn_limit = policy.keep_recent_turns
-    if _explicit_compact_metadata(request.metadata) or (request.text or "").strip() == "/compact":
-        candidates = history
-    else:
-        history_chars = sum(len(turn.user_text) + len(turn.assistant_text) for turn in history)
-        max_chars = policy.max_context_chars
-        high_usage = max_chars > 0 and history_chars / max_chars >= 0.80
-        candidates = (
-            history
-            if high_usage and len(history) <= recent_turn_limit
-            else history[:-recent_turn_limit]
-        )
+    selection = select_conversation_window(
+        history,
+        recent_turns=policy.keep_recent_turns,
+        metadata=request.metadata,
+        context_policy=policy,
+        force_minimum_recent=_force_minimum_recent_window(request),
+    )
+    candidates = selection.compacted_turns
     if not candidates:
         return []
     summarized_refs = set(existing_summary.important_refs) if existing_summary else set()
@@ -1029,16 +1059,30 @@ def _format_summary_and_recent_context(
     return "\n".join(line for line in lines if line)
 
 
-def _summary_metadata(summary: ContextSummary, *, recent_turns: int) -> dict[str, Any]:
+def _summary_metadata(
+    summary: ContextSummary,
+    *,
+    recent_turns: int,
+    recent_tokens: int = 0,
+    recent_token_budget: int = 0,
+    token_aware: bool = True,
+) -> dict[str, Any]:
     return {
         "session_context_summary": summary.model_dump(mode="json"),
         "context_summary": summary.model_dump(mode="json"),
         "context_summary_text": format_context_summary(summary),
         "context_summary_present": True,
+        "conversation_context_token_aware": token_aware,
         "conversation_context_recent_turns": recent_turns,
+        "conversation_context_recent_tokens": recent_tokens,
+        "conversation_context_recent_token_budget": recent_token_budget,
         "conversation_context_compacted_turns": summary.source_turn_count,
         "conversation_context_compacted": True,
     }
+
+
+def _force_minimum_recent_window(request: UserRequest) -> bool:
+    return _explicit_compact_metadata(request.metadata) or (request.text or "").strip() == "/compact"
 
 
 def _explicit_compact_metadata(metadata: dict[str, Any]) -> bool:

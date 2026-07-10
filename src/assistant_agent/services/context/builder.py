@@ -9,6 +9,7 @@ from assistant_agent.schemas.context import (
     AssistantContextPack,
     AssistantPlanContext,
     ContextBudgetReport,
+    ContextPolicy,
     ContextSummary,
     ToolCapabilityDescriptor,
 )
@@ -21,6 +22,7 @@ from assistant_agent.services.context.compactor import (
     format_context_summary,
 )
 from assistant_agent.services.context.compaction import compact_observations_for_context
+from assistant_agent.services.context.conversation import select_conversation_window
 from assistant_agent.services.context.policy import (
     COMPRESSION_REASON_CONTEXT_BUDGET_TRIMMED,
     COMPRESSION_REASON_CONTEXT_OVER_BUDGET,
@@ -111,7 +113,7 @@ def build_assistant_context_pack(
     if compaction_decision.triggered:
         compactor = context_compactor or DeterministicContextCompactor()
         compaction = compactor.compact(
-            conversation=_conversation_history_turns(active_request),
+            conversation=_conversation_turns_to_compact(active_request, context_policy=context_policy),
             current_request=active_request,
             observations=context_observations,
             budget_report=initial_budget,
@@ -572,6 +574,35 @@ def _conversation_history_turns(request: UserRequest) -> list[_ConversationTurnF
             )
         )
     return turns
+
+
+def _conversation_turns_to_compact(
+    request: UserRequest,
+    *,
+    context_policy: ContextPolicy,
+) -> list[_ConversationTurnForSummary]:
+    turns = _conversation_history_turns(request)
+    if not turns:
+        return []
+    selection = select_conversation_window(
+        turns,
+        recent_turns=context_policy.keep_recent_turns,
+        metadata=request.metadata,
+        context_policy=context_policy,
+        force_minimum_recent=_force_minimum_recent_window(request),
+    )
+    return list(selection.compacted_turns)
+
+
+def _force_minimum_recent_window(request: UserRequest) -> bool:
+    metadata = request.metadata
+    if metadata.get("compact_context") is True:
+        return True
+    for key in ("slash_command", "command"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip() == "/compact":
+            return True
+    return bool((request.text or "").strip() == "/compact")
 
 
 def _unique(values: list[str]) -> list[str]:

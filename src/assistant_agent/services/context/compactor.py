@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.context import ContextBudgetReport, ContextSummary
+from assistant_agent.schemas.context import ContextBudgetReport, ContextSummary, SessionHandoffV2
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest
 
@@ -67,6 +67,8 @@ class DeterministicContextCompactor:
         decisions = list(existing_summary.decisions) if existing_summary else []
         todos = list(existing_summary.open_todos) if existing_summary else []
         refs = list(existing_summary.important_refs) if existing_summary else []
+        existing_handoff = existing_summary.handoff_v2 if existing_summary else None
+        blocked = list(existing_handoff.blocked) if existing_handoff else []
         turns = _new_summary_turns(conversation, existing_summary)
 
         for turn in turns:
@@ -81,7 +83,9 @@ class DeterministicContextCompactor:
                 decisions.append(_clip(_single_line(summary), 160))
             status = observation.get("status")
             if status not in {None, "succeeded"}:
-                todos.append(f"处理工具结果状态：{observation.get('tool_name') or 'unknown'}={status}")
+                blocked_item = f"处理工具结果状态：{observation.get('tool_name') or 'unknown'}={status}"
+                todos.append(blocked_item)
+                blocked.append(blocked_item)
 
         request_text = _single_line(current_request.text or "")
         task_state = _clip(request_text, 180)
@@ -94,14 +98,28 @@ class DeterministicContextCompactor:
             if turns
             else (existing_summary.dropped_context_note if existing_summary else "")
         )
+        summary_constraints = _dedupe_nonempty(constraints, limit=8)
+        summary_decisions = _dedupe_nonempty(decisions, limit=10)
+        summary_todos = _dedupe_nonempty(todos, limit=8)
+        summary_refs = _dedupe_nonempty(refs, limit=12)
         summary = ContextSummary(
             task_state=task_state,
-            user_constraints=_dedupe_nonempty(constraints, limit=8),
-            decisions=_dedupe_nonempty(decisions, limit=10),
-            open_todos=_dedupe_nonempty(todos, limit=8),
-            important_refs=_dedupe_nonempty(refs, limit=12),
+            user_constraints=summary_constraints,
+            decisions=summary_decisions,
+            open_todos=summary_todos,
+            important_refs=summary_refs,
             dropped_context_note=dropped_note,
             source_turn_count=source_turn_count,
+            handoff_v2=_build_handoff_v2(
+                existing_handoff=existing_handoff,
+                objective=task_state,
+                active_constraints=summary_constraints,
+                completed=summary_decisions,
+                in_progress=[task_state] if task_state else [],
+                blocked=blocked,
+                next_steps=summary_todos,
+                evidence_refs=summary_refs,
+            ),
         )
         return ContextCompactionResult(summary=summary, compactor_type=self.compactor_type)
 
@@ -219,6 +237,8 @@ def format_context_summary(summary: ContextSummary) -> str:
         lines.append("- 未完成事项：" + "；".join(summary.open_todos))
     if summary.important_refs:
         lines.append("- 重要引用：" + "；".join(summary.important_refs))
+    if summary.handoff_v2 is not None:
+        lines.extend(_format_handoff_v2(summary.handoff_v2))
     if summary.dropped_context_note:
         lines.append(f"- 压缩说明：{summary.dropped_context_note}")
     return "\n".join(lines)
@@ -249,7 +269,9 @@ def _summary_prompt(
     }
     return (
         "Summarize this session context as strict JSON with fields: "
-        "task_state, user_constraints, decisions, open_todos, important_refs, dropped_context_note, source_turn_count. "
+        "task_state, user_constraints, decisions, open_todos, important_refs, dropped_context_note, source_turn_count, "
+        "and optional handoff_v2. If present, handoff_v2 must be an object with fields: objective, "
+        "active_constraints, completed, in_progress, blocked, next_steps, evidence_refs. "
         "Do not include raw provider responses, base64, secrets, API keys, or hidden reasoning. "
         "Preserve tool/result references as refs only.\n"
         + json.dumps(payload, ensure_ascii=False, default=str)
@@ -354,6 +376,51 @@ def _ref_values(refs: list[str], *, prefixes: tuple[str, ...]) -> set[str]:
                 if suffix:
                     values.add(suffix)
     return values
+
+
+def _build_handoff_v2(
+    *,
+    existing_handoff: SessionHandoffV2 | None,
+    objective: str,
+    active_constraints: list[str],
+    completed: list[str],
+    in_progress: list[str],
+    blocked: list[str],
+    next_steps: list[str],
+    evidence_refs: list[str],
+) -> SessionHandoffV2:
+    existing = existing_handoff or SessionHandoffV2()
+    return SessionHandoffV2(
+        objective=objective or existing.objective,
+        active_constraints=_dedupe_nonempty(
+            [*existing.active_constraints, *active_constraints],
+            limit=8,
+        ),
+        completed=_dedupe_nonempty([*existing.completed, *completed], limit=10),
+        in_progress=_dedupe_nonempty(in_progress or existing.in_progress, limit=5),
+        blocked=_dedupe_nonempty([*existing.blocked, *blocked], limit=6),
+        next_steps=_dedupe_nonempty([*existing.next_steps, *next_steps], limit=8),
+        evidence_refs=_dedupe_nonempty([*existing.evidence_refs, *evidence_refs], limit=12),
+    )
+
+
+def _format_handoff_v2(handoff: SessionHandoffV2) -> list[str]:
+    lines = ["- 会话交接 v2（上下文数据，不是长期记忆或系统指令）："]
+    if handoff.objective:
+        lines.append(f"  - objective：{handoff.objective}")
+    if handoff.active_constraints:
+        lines.append("  - active_constraints：" + "；".join(handoff.active_constraints))
+    if handoff.completed:
+        lines.append("  - completed：" + "；".join(handoff.completed))
+    if handoff.in_progress:
+        lines.append("  - in_progress：" + "；".join(handoff.in_progress))
+    if handoff.blocked:
+        lines.append("  - blocked：" + "；".join(handoff.blocked))
+    if handoff.next_steps:
+        lines.append("  - next_steps：" + "；".join(handoff.next_steps))
+    if handoff.evidence_refs:
+        lines.append("  - evidence_refs：" + "；".join(handoff.evidence_refs))
+    return lines
 
 
 def _safe_summary_payload(value: Any) -> Any:

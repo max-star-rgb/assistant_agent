@@ -219,12 +219,48 @@ def test_shared_assistant_run_service_compacts_older_conversation_context() -> N
     assert metadata["conversation_turn_index"] == 5
     assert metadata["conversation_context_compacted"] is True
     assert metadata["conversation_context_compacted_turns"] == 2
+    assert metadata["conversation_context_token_aware"] is True
+    assert metadata["conversation_context_recent_tokens"] > 0
+    assert metadata["conversation_context_recent_token_budget"] > 0
     assert "较早对话摘要" in context_text
     assert "最近对话原文" in context_text
     assert "3. 用户：第 3 轮用户" in context_text
     assert "4. 用户：第 4 轮用户" in context_text
     assert pack.source_counts["conversation_turns"] == 4
     assert pack.source_counts["conversation_compacted_turns"] == 2
+
+
+def test_shared_assistant_run_service_keeps_short_recent_transcript_token_aware() -> None:
+    store = InMemoryConversationStore()
+    for index in range(4):
+        store.append(
+            "u1",
+            "s1",
+            ConversationTurn(
+                user_text=f"短用户 {index + 1}",
+                assistant_text=f"短助手 {index + 1}",
+                run_id=f"run_{index + 1}",
+                trace_id=f"trace_{index + 1}",
+            ),
+        )
+
+    artifacts = run_assistant_query(
+        "请基于最近对话继续",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=store,
+    )
+    metadata = artifacts.state.request.metadata
+
+    summary = store.get_summary("u1", "s1")
+    assert summary is None or summary.source_turn_count == 0
+    assert metadata["conversation_context_token_aware"] is True
+    assert metadata["conversation_context_recent_turns"] == 4
+    assert metadata["conversation_context_compacted_turns"] == 0
+    assert metadata["conversation_context_compacted"] is False
+    assert "1. 用户：短用户 1" in metadata["conversation_context_text"]
+    assert "4. 用户：短用户 4" in metadata["conversation_context_text"]
 
 
 def test_shared_assistant_run_service_persists_and_restores_session_summary() -> None:
@@ -247,7 +283,7 @@ def test_shared_assistant_run_service_persists_and_restores_session_summary() ->
         session_id="s1",
         load_env=False,
         conversation_store=store,
-        metadata={"context_budget_max_chars": 50_000},
+        metadata={"conversation_recent_max_tokens": 1},
     )
     restored = run_assistant_query(
         "再继续",
@@ -255,12 +291,13 @@ def test_shared_assistant_run_service_persists_and_restores_session_summary() ->
         session_id="s1",
         load_env=False,
         conversation_store=store,
-        metadata={"context_budget_max_chars": 50_000},
+        metadata={"conversation_recent_max_tokens": 1},
     )
 
     assert store.get_summary("u1", "s1") is not None
     assert first.state.request.metadata["context_summary_present"] is True
     assert restored.state.request.metadata["context_summary_present"] is True
+    assert restored.state.request.metadata["conversation_context_recent_turns"] == 2
     assert "较早对话摘要" in restored.state.request.metadata["conversation_context_text"]
 
 
@@ -284,7 +321,7 @@ def test_session_summary_rolls_forward_without_resummarizing_old_turns() -> None
         session_id="s1",
         load_env=False,
         conversation_store=store,
-        metadata={"context_budget_max_chars": 50_000},
+        metadata={"conversation_recent_max_tokens": 1},
     )
     first_summary = store.get_summary("u1", "s1")
 
@@ -294,7 +331,7 @@ def test_session_summary_rolls_forward_without_resummarizing_old_turns() -> None
         session_id="s1",
         load_env=False,
         conversation_store=store,
-        metadata={"context_budget_max_chars": 50_000},
+        metadata={"conversation_recent_max_tokens": 1},
     )
     second_summary = store.get_summary("u1", "s1")
 
@@ -308,6 +345,40 @@ def test_session_summary_rolls_forward_without_resummarizing_old_turns() -> None
     assert "run:run_2" in second_summary.important_refs
     assert first.state.request.metadata["conversation_context_compacted_turns"] == 1
     assert second.state.request.metadata["conversation_context_compacted_turns"] == 2
+    assert "第 3 轮助手：已确认" not in second_summary.decisions
+
+
+def test_explicit_compact_uses_selected_recent_window_without_resummarizing_raw_recent() -> None:
+    store = InMemoryConversationStore()
+    for index in range(4):
+        store.append(
+            "u1",
+            "s1",
+            ConversationTurn(
+                user_text=f"第 {index + 1} 轮用户",
+                assistant_text=f"第 {index + 1} 轮助手",
+                run_id=f"run_{index + 1}",
+                trace_id=f"trace_{index + 1}",
+            ),
+        )
+
+    compacted = run_assistant_query(
+        "/compact",
+        user_id="u1",
+        session_id="s1",
+        load_env=False,
+        conversation_store=store,
+        metadata={"compact_context": True},
+    )
+    summary = store.get_summary("u1", "s1")
+
+    assert summary is not None
+    assert summary.source_turn_count == 2
+    assert "第 1 轮助手" in summary.decisions
+    assert "第 2 轮助手" in summary.decisions
+    assert "第 3 轮助手" not in summary.decisions
+    assert "第 4 轮助手" not in summary.decisions
+    assert compacted.state.request.metadata["conversation_context_recent_turns"] == 2
 
 
 def test_reset_conversation_clears_session_summary_before_current_turn() -> None:
@@ -368,7 +439,7 @@ def test_session_summary_does_not_write_to_memory_store() -> None:
             user_id="u1",
             session_id="s1",
             text="继续",
-            metadata={"context_budget_max_chars": 50_000},
+            metadata={"conversation_recent_max_tokens": 1},
         ),
         load_env=False,
         runtime=runtime,

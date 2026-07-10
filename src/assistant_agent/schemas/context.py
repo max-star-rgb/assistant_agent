@@ -117,6 +117,18 @@ class ContextPolicy(BaseModel):
     max_memory_context_chars: int = Field(default=500, ge=50)
 
 
+class SessionHandoffV2(BaseModel):
+    """Compact additive session handoff, kept separate from long-term memory."""
+
+    objective: str = ""
+    active_constraints: list[str] = Field(default_factory=list)
+    completed: list[str] = Field(default_factory=list)
+    in_progress: list[str] = Field(default_factory=list)
+    blocked: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 class ContextSummary(BaseModel):
     """Session-scoped semantic summary used as current context, not long-term memory."""
 
@@ -127,6 +139,7 @@ class ContextSummary(BaseModel):
     important_refs: list[str] = Field(default_factory=list)
     dropped_context_note: str = ""
     source_turn_count: int = Field(default=0, ge=0)
+    handoff_v2: SessionHandoffV2 | None = None
 
 
 class ToolCatalogSummary(BaseModel):
