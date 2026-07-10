@@ -44,6 +44,7 @@ from assistant_agent.services.context.compactor import ContextCompactor, create_
 from assistant_agent.services.context.report import build_context_report
 from assistant_agent.services.context.renderer import render_native_user_message
 from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
+from assistant_agent.services.memory_core_status import build_memory_core_status, update_memory_core_status_errors
 from assistant_agent.services.response_observability import append_response_final_event
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
@@ -164,6 +165,10 @@ class AgentGraphRuntime:
                 "native_runtime": self._should_use_native_runtime(),
             },
         )
+        request.metadata["memory_core_status"] = build_memory_core_status(
+            config=self.config,
+            memory_store=self.memory_store,
+        ).model_dump(mode="json")
 
         runtime_context = GraphRuntimeContext(
             intent_detector=self.intent_detector,
@@ -368,6 +373,7 @@ class AgentGraphRuntime:
                 ),
                 run_event_sink,
             )
+        _update_memory_core_status_from_recall(state.request.metadata)
         return state
 
     def _should_use_native_runtime(self) -> bool:
@@ -1143,6 +1149,23 @@ def _latest_state_error(state: AgentState) -> dict[str, Any] | None:
         "source": error.source,
         "recovery_action": error.details.get("recovery_action"),
     }
+
+
+def _update_memory_core_status_from_recall(metadata: dict[str, Any]) -> None:
+    core_status = metadata.get("memory_core_status")
+    recall_report = metadata.get("memory_recall_report")
+    if not isinstance(core_status, dict) or not isinstance(recall_report, dict):
+        return
+    error_codes = recall_report.get("search_error_codes")
+    errors = (
+        [{"code": code} for code in error_codes if isinstance(code, str) and code]
+        if isinstance(error_codes, list)
+        else []
+    )
+    metadata["memory_core_status"] = update_memory_core_status_errors(
+        core_status,
+        remote_errors=errors,
+    )
 
 
 def _chat_result_error(result: Any) -> dict[str, Any] | None:

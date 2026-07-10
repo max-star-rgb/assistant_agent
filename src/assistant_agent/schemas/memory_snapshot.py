@@ -3,6 +3,7 @@
 from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.api import PROTOCOL_VERSION
+from assistant_agent.schemas.memory_core import MemoryCoreStatus
 from assistant_agent.schemas.memory_audit import MemoryAuditItem, MemoryAuditReport
 from assistant_agent.schemas.sessions import SessionRecord
 
@@ -16,6 +17,7 @@ class MemoryStorageSnapshot(BaseModel):
     conversation_store: str
     checkpointer: str = "none"
     langgraph_thread_scope: str = "run_id"
+    core_status: MemoryCoreStatus | None = None
 
 
 class ConversationTurnSnapshot(BaseModel):

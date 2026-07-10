@@ -5,6 +5,9 @@ from fastapi.testclient import TestClient
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.api import routes_agent
 from assistant_agent.api.app import create_app
+from assistant_agent.config import ProviderConfig
+from assistant_agent.memory.remote import HybridMemoryStore, MemoryServerRequest, RemoteMemoryClient
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryItem
@@ -64,6 +67,54 @@ def test_memory_snapshot_api_shows_memory_boundaries(monkeypatch) -> None:
     assert payload["storage"]["memory_store"] == "InMemoryStore"
     assert payload["storage"]["conversation_store"] == "InMemoryConversationStore"
     assert payload["storage"]["langgraph_thread_scope"] == "run_id"
+
+
+def test_memory_snapshot_api_exposes_dual_core_status(monkeypatch, tmp_path) -> None:
+    remote_requests: list[MemoryServerRequest] = []
+
+    def transport(request: MemoryServerRequest) -> dict:
+        remote_requests.append(request)
+        raise TimeoutError("memory server unavailable")
+
+    local_store = SQLiteMemoryStore(tmp_path / "dual_core.sqlite3")
+    memory_store = HybridMemoryStore(
+        local_store=local_store,
+        remote_client=RemoteMemoryClient(base_url="http://memory.local", transport=transport),
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            memory_backend="dual_core",
+            memory_local_backend="sqlite",
+            memory_path=str(tmp_path / "dual_core.sqlite3"),
+            memory_server_base_url="http://memory.local",
+        ),
+        memory_store=memory_store,
+        trace_store=InMemoryTraceStore(),
+        session_store=InMemorySessionStore(),
+    )
+    local_store.save(_memory("pref", "preference", "用户喜欢浅色日系风格。", content={"style": "浅色日系"}))
+
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_default_conversation_store", lambda config=None: InMemoryConversationStore())
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/memory/users/u1/snapshot",
+        params={"query": "浅色日系"},
+    )
+
+    assert response.status_code == 200
+    core_status = response.json()["storage"]["core_status"]
+    assert core_status["mode"] == "dual_core"
+    assert core_status["memory_backend"] == "dual_core"
+    assert core_status["memory_local_backend"] == "sqlite"
+    assert core_status["active_store"] == "HybridMemoryStore"
+    assert core_status["local_store"] == "SQLiteMemoryStore"
+    assert core_status["external_core_configured"] is True
+    assert core_status["remote_query_enabled"] is True
+    assert core_status["remote_query_degraded"] is True
+    assert core_status["remote_error_codes"] == ["memory_server_query_failed"]
+    assert remote_requests[0].path == "/v1/memories/query"
 
 
 def test_memory_snapshot_api_can_include_sanitized_content(monkeypatch) -> None:

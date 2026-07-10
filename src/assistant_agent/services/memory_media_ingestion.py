@@ -142,7 +142,7 @@ def create_memory_media_ingestion_service(config: ProviderConfig | None = None) 
     """Create the media-ingestion service without enabling remote calls by default."""
 
     resolved_config = config or ProviderConfig.from_env()
-    if resolved_config.memory_backend != "hybrid_remote" or not resolved_config.memory_server_base_url:
+    if resolved_config.memory_backend not in {"hybrid_remote", "dual_core"} or not resolved_config.memory_server_base_url:
         return MemoryMediaIngestionService(remote_client=None)
     return MemoryMediaIngestionService(
         remote_client=RemoteMemoryClient(

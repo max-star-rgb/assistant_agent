@@ -5,6 +5,7 @@ import pytest
 from assistant_agent.memory import remote as remote_module
 from assistant_agent.memory.remote import (
     HybridMemoryStore,
+    HttpRemoteMemoryServiceAdapter,
     MemoryServerMediaFile,
     MemoryServerRequest,
     MemoryServiceOperationError,
@@ -250,6 +251,127 @@ def test_remote_service_store_rebinds_identity_for_search_result_objects() -> No
     assert result.total == 1
     assert result.items[0].user_id == "trusted-user"
     assert result.items[0].session_id == "trusted-session"
+
+
+def test_http_remote_service_adapter_posts_lifecycle_requests_and_rebinds_identity() -> None:
+    requests: list[MemoryServerRequest] = []
+
+    def transport(request: MemoryServerRequest) -> dict:
+        requests.append(request)
+        if request.path == "/v1/memories":
+            return {
+                "memory_id": "remote-m1",
+                "user_id": "untrusted-user",
+                "session_id": "untrusted-session",
+                "memory_type": "task",
+                "summary": "Remote lifecycle save.",
+                "source": "remote_service",
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+        if request.path == "/v1/memories/search":
+            return {
+                "items": [
+                    {
+                        "memory_id": "remote-hit",
+                        "user_id": "untrusted-user",
+                        "session_id": "untrusted-session",
+                        "memory_type": "preference",
+                        "summary": "Remote lifecycle search.",
+                        "source": "remote_service",
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ],
+                "ranking_reason": "remote_service_search",
+            }
+        if request.path == "/v1/memories/delete":
+            return {"deleted": True}
+        if request.path == "/v1/memories/export":
+            return {"items": []}
+        raise AssertionError(f"unexpected path: {request.path}")
+
+    store = RemoteServiceMemoryStore(
+        adapter=HttpRemoteMemoryServiceAdapter(
+            base_url="http://memory.local",
+            timeout_seconds=1.25,
+            transport=transport,
+        )
+    )
+    item = MemoryItem(
+        memory_id="local-m1",
+        user_id="trusted-user",
+        session_id="trusted-session",
+        memory_type="task",
+        summary="Local request summary.",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    saved = store.save(item)
+    result = store.search(
+        MemoryQuery(user_id="trusted-user", session_id="trusted-session", query="remote", top_k=3)
+    )
+    deleted = store.delete("trusted-user", "remote-m1")
+
+    assert saved.memory_id == "remote-m1"
+    assert saved.user_id == "trusted-user"
+    assert saved.session_id == "trusted-session"
+    assert [memory.memory_id for memory in result.items] == ["remote-hit"]
+    assert result.items[0].user_id == "trusted-user"
+    assert result.items[0].session_id == "trusted-session"
+    assert deleted is True
+    assert requests == [
+        MemoryServerRequest(
+            method="POST",
+            path="/v1/memories",
+            body=item.model_dump(mode="json"),
+            timeout_seconds=1.25,
+        ),
+        MemoryServerRequest(
+            method="POST",
+            path="/v1/memories/search",
+            body={
+                "user_id": "trusted-user",
+                "tenant_id": None,
+                "project_id": None,
+                "session_id": "trusted-session",
+                "query": "remote",
+                "capability": None,
+                "memory_types": [],
+                "allowed_scopes": [],
+                "tags": [],
+                "top_k": 3,
+                "max_context_chars": 500,
+                "since": None,
+                "include_expired": False,
+                "include_superseded": False,
+            },
+            timeout_seconds=1.25,
+        ),
+        MemoryServerRequest(
+            method="POST",
+            path="/v1/memories/delete",
+            body={"user_id": "trusted-user", "memory_id": "remote-m1", "hard": False},
+            timeout_seconds=1.25,
+        ),
+    ]
+
+
+def test_http_remote_service_adapter_returns_prompt_safe_errors_when_transport_fails() -> None:
+    def transport(request: MemoryServerRequest) -> dict:
+        raise TimeoutError("remote service timed out with token=secret")
+
+    store = RemoteServiceMemoryStore(
+        adapter=HttpRemoteMemoryServiceAdapter(base_url="http://memory.local", transport=transport)
+    )
+    result = store.search(MemoryQuery(user_id="u1", query="remote"))
+
+    assert result.items == []
+    assert result.errors == [
+        {
+            "code": "memory_remote_service_search_failed",
+            "message": "remote memory service search failed: remote service timed out with [redacted]",
+            "recoverable": True,
+        }
+    ]
 
 
 def test_memory_server_mapping_binds_identity_from_query_and_drops_unsafe_media_payloads() -> None:

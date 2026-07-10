@@ -21,7 +21,9 @@ from assistant_agent.schemas.provider_specs import (
 AgentGraphMode = Literal["conditional", "assistant_loop"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
-MemoryBackend = Literal["memory", "jsonl", "sqlite", "hybrid_remote", "remote_service"]
+LocalMemoryBackend = Literal["memory", "jsonl", "sqlite"]
+MemoryBackend = Literal["memory", "jsonl", "sqlite", "hybrid_remote", "dual_core", "remote_service"]
+RemoteMemoryServiceAdapterKind = Literal["unavailable", "http"]
 
 
 DEFAULT_JSONL_MEMORY_PATH = ".local/memory/long_term_memories.jsonl"
@@ -84,12 +86,14 @@ class ProviderConfig:
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
     seed_vision_model: str = "seed-vision"
     memory_backend: MemoryBackend = "memory"
+    memory_local_backend: LocalMemoryBackend = "jsonl"
     memory_path: str = DEFAULT_JSONL_MEMORY_PATH
     memory_server_base_url: str | None = None
     memory_server_timeout_seconds: float = 2.0
     memory_server_query_strategy: str = "vector"
     memory_server_direct_answer: bool = False
     memory_server_include_media_chunks: bool = False
+    memory_remote_service_adapter: RemoteMemoryServiceAdapterKind = "unavailable"
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 8
@@ -189,7 +193,14 @@ class ProviderConfig:
             source.get("MULTIMODAL_AGENT_MEMORY_BACKEND"),
             allow_remote=allow_real_providers or memory_remote_enabled,
         )
-        memory_path = source.get("MULTIMODAL_AGENT_MEMORY_PATH") or _default_memory_path(memory_backend)
+        memory_local_backend = _memory_local_backend(
+            source.get("MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND"),
+            memory_backend=memory_backend,
+        )
+        memory_path = source.get("MULTIMODAL_AGENT_MEMORY_PATH") or _default_memory_path(
+            memory_backend,
+            memory_local_backend=memory_local_backend,
+        )
         conversation_history_backend = _conversation_history_backend(
             source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND"),
             memory_backend=memory_backend,
@@ -247,6 +258,7 @@ class ProviderConfig:
             seed_vision_base_url=source.get("SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"),
             seed_vision_model=source.get("SEED_VISION_MODEL", "seed-vision"),
             memory_backend=memory_backend,
+            memory_local_backend=memory_local_backend,
             memory_path=memory_path,
             memory_server_base_url=source.get("MEMORY_SERVER_BASE_URL")
             or source.get("MULTIMODAL_AGENT_MEMORY_SERVER_BASE_URL"),
@@ -254,6 +266,11 @@ class ProviderConfig:
             memory_server_query_strategy=source.get("MEMORY_SERVER_QUERY_STRATEGY") or "vector",
             memory_server_direct_answer=_bool_env(source.get("MEMORY_SERVER_DIRECT_ANSWER"), False),
             memory_server_include_media_chunks=_bool_env(source.get("MEMORY_SERVER_INCLUDE_MEDIA_CHUNKS"), False),
+            memory_remote_service_adapter=_memory_remote_service_adapter(
+                source.get("MULTIMODAL_AGENT_MEMORY_REMOTE_SERVICE_ADAPTER")
+                or source.get("MEMORY_REMOTE_SERVICE_ADAPTER"),
+                allow_remote=allow_real_providers or memory_remote_enabled,
+            ),
             conversation_history_backend=conversation_history_backend,
             conversation_history_path=conversation_history_path,
             max_conversation_history_turns=_int_env(
@@ -504,6 +521,8 @@ class ProviderConfig:
 def _memory_backend(value: str | None, *, allow_remote: bool = False) -> MemoryBackend:
     if value == "hybrid_remote" and allow_remote:
         return "hybrid_remote"
+    if value == "dual_core" and allow_remote:
+        return "dual_core"
     if value == "remote_service" and allow_remote:
         return "remote_service"
     if value == "sqlite":
@@ -511,6 +530,28 @@ def _memory_backend(value: str | None, *, allow_remote: bool = False) -> MemoryB
     if value == "jsonl":
         return "jsonl"
     return "memory"
+
+
+def _memory_local_backend(value: str | None, *, memory_backend: MemoryBackend) -> LocalMemoryBackend:
+    if value in {"memory", "jsonl", "sqlite"}:
+        return value
+    if memory_backend == "sqlite":
+        return "sqlite"
+    if memory_backend == "jsonl":
+        return "jsonl"
+    if memory_backend in {"hybrid_remote", "dual_core"}:
+        return "jsonl"
+    return "memory"
+
+
+def _memory_remote_service_adapter(
+    value: str | None,
+    *,
+    allow_remote: bool = False,
+) -> RemoteMemoryServiceAdapterKind:
+    if allow_remote and value and value.strip().lower() == "http":
+        return "http"
+    return "unavailable"
 
 
 def _conversation_history_backend(
@@ -525,8 +566,14 @@ def _conversation_history_backend(
     return "jsonl" if memory_backend == "jsonl" else "memory"
 
 
-def _default_memory_path(memory_backend: MemoryBackend) -> str:
-    if memory_backend == "sqlite":
+def _default_memory_path(
+    memory_backend: MemoryBackend,
+    *,
+    memory_local_backend: LocalMemoryBackend | None = None,
+) -> str:
+    if memory_backend == "sqlite" or (
+        memory_backend in {"hybrid_remote", "dual_core"} and memory_local_backend == "sqlite"
+    ):
         return DEFAULT_SQLITE_MEMORY_PATH
     return DEFAULT_JSONL_MEMORY_PATH
 

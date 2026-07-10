@@ -2,10 +2,16 @@
 
 from pathlib import Path
 
-from assistant_agent.config import DEFAULT_JSONL_MEMORY_PATH, DEFAULT_SQLITE_MEMORY_PATH, ProviderConfig
+from assistant_agent.config import (
+    DEFAULT_JSONL_MEMORY_PATH,
+    DEFAULT_SQLITE_MEMORY_PATH,
+    LocalMemoryBackend,
+    ProviderConfig,
+)
 from assistant_agent.memory.jsonl_store import JsonlMemoryStore
 from assistant_agent.memory.remote import (
     HybridMemoryStore,
+    HttpRemoteMemoryServiceAdapter,
     RemoteMemoryClient,
     RemoteServiceMemoryStore,
     UnavailableRemoteMemoryServiceAdapter,
@@ -22,11 +28,14 @@ def create_memory_store(config: ProviderConfig | None = None) -> MemoryStore:
 
     resolved_config = config or ProviderConfig.from_env()
     if resolved_config.memory_backend == "jsonl":
-        return JsonlMemoryStore(_repo_relative_path(resolved_config.memory_path))
+        return _create_local_memory_store("jsonl", resolved_config.memory_path)
     if resolved_config.memory_backend == "sqlite":
-        return SQLiteMemoryStore(_repo_relative_path(_sqlite_memory_path(resolved_config.memory_path)))
-    if resolved_config.memory_backend == "hybrid_remote":
-        local_store = JsonlMemoryStore(_repo_relative_path(resolved_config.memory_path))
+        return _create_local_memory_store("sqlite", resolved_config.memory_path)
+    if resolved_config.memory_backend in {"hybrid_remote", "dual_core"}:
+        local_store = _create_local_memory_store(
+            resolved_config.memory_local_backend,
+            resolved_config.memory_path,
+        )
         if not resolved_config.memory_server_base_url:
             return local_store
         return HybridMemoryStore(
@@ -41,8 +50,25 @@ def create_memory_store(config: ProviderConfig | None = None) -> MemoryStore:
         )
     if resolved_config.memory_backend == "remote_service":
         return RemoteServiceMemoryStore(
-            adapter=UnavailableRemoteMemoryServiceAdapter(base_url=resolved_config.memory_server_base_url),
+            adapter=_create_remote_service_adapter(resolved_config),
         )
+    return InMemoryStore()
+
+
+def _create_remote_service_adapter(config: ProviderConfig):
+    if config.memory_remote_service_adapter == "http" and config.memory_server_base_url:
+        return HttpRemoteMemoryServiceAdapter(
+            base_url=config.memory_server_base_url,
+            timeout_seconds=config.memory_server_timeout_seconds,
+        )
+    return UnavailableRemoteMemoryServiceAdapter(base_url=config.memory_server_base_url)
+
+
+def _create_local_memory_store(backend: LocalMemoryBackend, path: str) -> MemoryStore:
+    if backend == "jsonl":
+        return JsonlMemoryStore(_repo_relative_path(path))
+    if backend == "sqlite":
+        return SQLiteMemoryStore(_repo_relative_path(_sqlite_memory_path(path)))
     return InMemoryStore()
 
 

@@ -175,6 +175,128 @@ class UnavailableRemoteMemoryServiceAdapter:
         }
 
 
+class HttpRemoteMemoryServiceAdapter:
+    """HTTP adapter for a full lifecycle external Memory Service.
+
+    This is intentionally separate from ``RemoteMemoryClient``: the client
+    covers Memory Server query/media endpoints for dual-core retrieval, while
+    this adapter owns the full remote_service lifecycle contract.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float = 2.0,
+        transport: MemoryServerTransport | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self._transport = transport or _urllib_transport(self.base_url)
+
+    def search(self, query: MemoryQuery) -> Mapping[str, Any]:
+        return self._request(
+            "search",
+            method="POST",
+            path="/v1/memories/search",
+            body=query.model_dump(mode="json"),
+        )
+
+    def save_explicit(self, item: MemoryItem) -> Mapping[str, Any]:
+        return self._request(
+            "save_explicit",
+            method="POST",
+            path="/v1/memories",
+            body=item.model_dump(mode="json"),
+        )
+
+    def record_candidate(self, payload: dict[str, Any]) -> Mapping[str, Any]:
+        return self._request(
+            "record_candidate",
+            method="POST",
+            path="/v1/memory_candidates",
+            body=_safe_mapping_payload(payload),
+        )
+
+    def confirm(self, *, user_id: str, confirmation_id: str) -> Mapping[str, Any]:
+        return self._request(
+            "confirm",
+            method="POST",
+            path="/v1/memory_confirmations/confirm",
+            body={"user_id": user_id, "confirmation_id": confirmation_id},
+        )
+
+    def reject(self, *, user_id: str, confirmation_id: str) -> Mapping[str, Any]:
+        return self._request(
+            "reject",
+            method="POST",
+            path="/v1/memory_confirmations/reject",
+            body={"user_id": user_id, "confirmation_id": confirmation_id},
+        )
+
+    def delete(self, *, user_id: str, memory_id: str, hard: bool = False) -> bool:
+        response = self._request(
+            "delete",
+            method="POST",
+            path="/v1/memories/delete",
+            body={"user_id": user_id, "memory_id": memory_id, "hard": hard},
+        )
+        status = str(response.get("status") or "").lower()
+        return bool(response.get("deleted") is True or response.get("success") is True or status in {"deleted", "ok"})
+
+    def export(self, *, user_id: str) -> list[MemoryItem | Mapping[str, Any]]:
+        response = self._request(
+            "export",
+            method="POST",
+            path="/v1/memories/export",
+            body={"user_id": user_id},
+        )
+        raw_items = response.get("items")
+        if raw_items is None:
+            raw_items = response.get("memories")
+        return list(raw_items) if isinstance(raw_items, list) else []
+
+    def audit(self, *, user_id: str) -> list[Mapping[str, Any]]:
+        response = self._request(
+            "audit",
+            method="POST",
+            path="/v1/memory_audit/search",
+            body={"user_id": user_id},
+        )
+        raw_events = response.get("events")
+        if raw_events is None:
+            raw_events = response.get("audit_events")
+        if not isinstance(raw_events, list):
+            return []
+        return [event for event in raw_events if isinstance(event, Mapping)]
+
+    def health(self) -> Mapping[str, Any]:
+        return self._request("health", method="GET", path="/v1/health")
+
+    def _request(
+        self,
+        operation: str,
+        *,
+        method: str,
+        path: str,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        try:
+            return self._transport(
+                MemoryServerRequest(
+                    method=method,
+                    path=path,
+                    body=body,
+                    timeout_seconds=self.timeout_seconds,
+                )
+            )
+        except Exception as exc:
+            raise MemoryServiceOperationError(
+                operation,
+                f"remote memory service {operation} failed: {sanitize_error_message(str(exc))}",
+            ) from exc
+
+
 class MemoryServerMediaFile(BaseModel):
     """Safe file reference accepted by the external media ingestion API."""
 

@@ -863,6 +863,7 @@ def _memory_snapshot_service() -> MemorySnapshotService:
             conversation_store=type(conversation_store).__name__,
             checkpointer=type(runtime.checkpointer).__name__ if runtime.checkpointer is not None else "none",
         ),
+        config=runtime.config,
     )
 
 

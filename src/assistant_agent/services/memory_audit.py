@@ -3,6 +3,7 @@
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
+from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.memory.profile import USER_PROFILE_MEMORY_ID
 from assistant_agent.schemas.identity import RequestIdentity
@@ -22,13 +23,15 @@ from assistant_agent.schemas.memory_audit import (
     MemoryProfileRepairResult,
     MemoryRetentionSweepResult,
 )
+from assistant_agent.services.memory_core_status import build_memory_core_status
 
 
 class MemoryAuditService:
     """User-scoped memory inspection and deletion helpers."""
 
-    def __init__(self, memory_manager: MemoryManager) -> None:
+    def __init__(self, memory_manager: MemoryManager, *, config: ProviderConfig | None = None) -> None:
         self.memory_manager = memory_manager
+        self.config = config
 
     def list_items(
         self,
@@ -229,6 +232,10 @@ class MemoryAuditService:
         by_outcome = Counter(event.outcome for event in events)
         return MemoryMetricsReport(
             user_id=identity.user_id,
+            core_status=build_memory_core_status(
+                config=self.config,
+                memory_store=self.memory_manager.store,
+            ),
             total_events=len(events),
             by_event_type=dict(by_event_type),
             by_outcome=dict(by_outcome),
@@ -475,6 +482,10 @@ def _metrics_counters(events: list[MemoryAuditEvent]) -> dict[str, int]:
                 "conflicts",
                 event.counts.get("issues", 0),
             )
+        elif event.event_type == "memory_remote_degraded":
+            counters["memory.remote.degraded.count"] += event.counts.get("failed", 1)
+        elif event.event_type == "memory_remote_lifecycle_failed":
+            counters["memory.remote.lifecycle_failed.count"] += event.counts.get("failed", 1)
     return dict(sorted(counters.items()))
 
 

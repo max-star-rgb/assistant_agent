@@ -7,8 +7,11 @@ from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.api import routes_agent
 from assistant_agent.api.auth import AUTH_MODE_ENV, AUTH_REQUIRE_BOUND_IDENTITY_ENV, AUTH_USER_ID_HEADER
 from assistant_agent.api.app import create_app
+from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.manager import MemoryConfirmationRequired
 from assistant_agent.memory.profile import USER_PROFILE_MEMORY_ID
+from assistant_agent.memory.remote import HybridMemoryStore, RemoteMemoryClient
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryItem
@@ -243,6 +246,41 @@ def test_memory_audit_api_lists_events_and_metrics(monkeypatch) -> None:
     assert metric_payload["by_event_type"]["memory_exported"] == 1
     assert metric_payload["counters"]["memory.write.allowed.count"] == 1
     assert metric_payload["counters"]["memory.export.count"] == 1
+
+
+def test_memory_metrics_api_exposes_dual_core_status(monkeypatch, tmp_path) -> None:
+    def transport(request):
+        return {"results": []}
+
+    local_store = SQLiteMemoryStore(tmp_path / "dual_core.sqlite3")
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            memory_backend="dual_core",
+            memory_local_backend="sqlite",
+            memory_path=str(tmp_path / "dual_core.sqlite3"),
+            memory_server_base_url="http://memory.local",
+        ),
+        memory_store=HybridMemoryStore(
+            local_store=local_store,
+            remote_client=RemoteMemoryClient(base_url="http://memory.local", transport=transport),
+        ),
+        trace_store=InMemoryTraceStore(),
+    )
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    metrics = client.get("/memory/users/u1/metrics")
+
+    assert metrics.status_code == 200
+    core_status = metrics.json()["core_status"]
+    assert core_status["mode"] == "dual_core"
+    assert core_status["memory_backend"] == "dual_core"
+    assert core_status["memory_local_backend"] == "sqlite"
+    assert core_status["active_store"] == "HybridMemoryStore"
+    assert core_status["local_store"] == "SQLiteMemoryStore"
+    assert core_status["external_core_configured"] is True
+    assert core_status["remote_query_enabled"] is True
+    assert core_status["remote_query_degraded"] is False
 
 
 def test_memory_audit_api_confirms_pending_sensitive_memory(monkeypatch) -> None:

@@ -6,6 +6,14 @@ import pytest
 
 from assistant_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
 from assistant_agent.memory.profile import USER_PROFILE_MEMORY_ID
+from assistant_agent.memory.remote import (
+    HybridMemoryStore,
+    MemoryServerRequest,
+    MemoryServiceOperationError,
+    RemoteMemoryClient,
+    RemoteServiceMemoryStore,
+    UnavailableRemoteMemoryServiceAdapter,
+)
 from assistant_agent.memory.retrieval import MemoryRetrievalStrategy
 from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 from assistant_agent.memory.store import InMemoryStore
@@ -160,6 +168,81 @@ def test_memory_audit_events_and_metrics_cover_lifecycle_operations() -> None:
     assert metrics.counters["memory.export.count"] == 1
     assert metrics.counters["memory.ttl.swept.count"] == 1
     assert metrics.counters["memory.delete.soft.count"] == 1
+
+
+def test_remote_query_degradation_emits_prompt_safe_audit_event_and_metrics() -> None:
+    def transport(request: MemoryServerRequest) -> dict:
+        raise TimeoutError("remote query timed out token=secret")
+
+    manager = MemoryManager(
+        HybridMemoryStore(
+            local_store=InMemoryStore(),
+            remote_client=RemoteMemoryClient(
+                base_url="http://memory.local",
+                transport=transport,
+            ),
+        )
+    )
+    service = MemoryAuditService(manager)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    context = manager.load_context_for_identity(identity, query_text="早餐")
+    events = service.events_for_identity(identity, event_type="memory_remote_degraded")
+    metrics = service.metrics_for_identity(identity)
+
+    assert context.recall_report["search_error_codes"] == ["memory_server_query_failed"]
+    assert events.total == 1
+    event = events.items[0]
+    assert event.event_type == "memory_remote_degraded"
+    assert event.outcome == "failed"
+    assert event.counts == {"attempted": 1, "failed": 1, "local_results": 0}
+    assert event.metadata == {
+        "operation": "search",
+        "mode": "dual_core",
+        "active_store": "HybridMemoryStore",
+        "error_codes": ["memory_server_query_failed"],
+    }
+    assert "secret" not in str(event.model_dump(mode="json")).lower()
+    assert "memory.local" not in str(event.model_dump(mode="json")).lower()
+    assert metrics.by_event_type["memory_remote_degraded"] == 1
+    assert metrics.counters["memory.remote.degraded.count"] == 1
+
+
+def test_remote_service_lifecycle_failure_emits_prompt_safe_audit_event_and_metrics() -> None:
+    manager = MemoryManager(
+        RemoteServiceMemoryStore(
+            adapter=UnavailableRemoteMemoryServiceAdapter(base_url="http://memory.local")
+        )
+    )
+    service = MemoryAuditService(manager)
+    identity = RequestIdentity.for_user(user_id="u1", session_id="s1")
+
+    with pytest.raises(MemoryServiceOperationError):
+        manager.save_explicit_for_identity(
+            identity,
+            text="记住我喜欢短回答",
+            content={"summary": "用户喜欢短回答。"},
+        )
+
+    events = service.events_for_identity(identity, event_type="memory_remote_lifecycle_failed")
+    metrics = service.metrics_for_identity(identity)
+
+    assert events.total == 1
+    event = events.items[0]
+    assert event.event_type == "memory_remote_lifecycle_failed"
+    assert event.outcome == "failed"
+    assert event.counts == {"attempted": 1, "failed": 1}
+    assert event.metadata == {
+        "operation": "save_explicit",
+        "mode": "remote_service",
+        "active_store": "RemoteServiceMemoryStore",
+        "error_code": "memory_remote_service_save_explicit_failed",
+        "recoverable": True,
+    }
+    assert "secret" not in str(event.model_dump(mode="json")).lower()
+    assert "memory.local" not in str(event.model_dump(mode="json")).lower()
+    assert metrics.by_event_type["memory_remote_lifecycle_failed"] == 1
+    assert metrics.counters["memory.remote.lifecycle_failed.count"] == 1
 
 
 def test_rejected_explicit_memory_emits_audit_event_without_persisting() -> None:

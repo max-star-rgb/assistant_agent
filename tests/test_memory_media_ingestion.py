@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.state import AgentState
+from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.remote import MemoryServerRequest, RemoteMemoryClient
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.identity import RequestIdentity
@@ -12,6 +13,7 @@ from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaIngestionResult,
     MemoryMediaIngestionService,
     MemoryMediaTaskStatusResult,
+    create_memory_media_ingestion_service,
 )
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
@@ -98,6 +100,18 @@ def test_memory_media_ingestion_service_returns_provider_unconfigured_without_cl
             "recoverable": True,
         }
     ]
+
+
+def test_dual_core_memory_media_ingestion_service_uses_remote_client() -> None:
+    service = create_memory_media_ingestion_service(
+        ProviderConfig(
+            memory_backend="dual_core",
+            memory_server_base_url="http://memory.local",
+        )
+    )
+
+    assert service.remote_client is not None
+    assert service.remote_client.base_url == "http://memory.local"
 
 
 def test_memory_media_ingestion_service_reports_task_status_scope_warning() -> None:

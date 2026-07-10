@@ -1,6 +1,7 @@
 """Memory boundary snapshot service."""
 
 from assistant_agent.memory.manager import MemoryManager
+from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.memory_audit import MemoryAuditItem
@@ -13,6 +14,7 @@ from assistant_agent.schemas.memory_snapshot import (
     MemoryStorageSnapshot,
 )
 from assistant_agent.services.assistant_run_service import ConversationStore
+from assistant_agent.services.memory_core_status import build_memory_core_status
 from assistant_agent.services.memory_audit import MemoryAuditService
 from assistant_agent.services.session_store import SessionStore
 
@@ -27,11 +29,13 @@ class MemorySnapshotService:
         session_store: SessionStore,
         conversation_store: ConversationStore,
         storage: MemoryStorageSnapshot,
+        config: ProviderConfig | None = None,
     ) -> None:
         self.memory_manager = memory_manager
         self.session_store = session_store
         self.conversation_store = conversation_store
         self.storage = storage
+        self.config = config
 
     def snapshot(
         self,
@@ -89,6 +93,12 @@ class MemorySnapshotService:
             result.items,
             max_chars=max_context_chars,
         )
+        core_status = build_memory_core_status(
+            config=self.config,
+            memory_store=self.memory_manager.store,
+            remote_errors=result.errors,
+        )
+        storage = self.storage.model_copy(update={"core_status": core_status}, deep=True)
         return MemorySnapshot(
             user_id=identity.user_id,
             session_id=session_id,
@@ -114,8 +124,11 @@ class MemorySnapshotService:
                     for block in context.blocks
                 ],
             ),
-            audit=MemoryAuditService(self.memory_manager).audit_for_identity(identity),
-            storage=self.storage,
+            audit=MemoryAuditService(
+                self.memory_manager,
+                config=self.config,
+            ).audit_for_identity(identity),
+            storage=storage,
         )
 
     def _conversation_history(self, *, user_id: str, session_id: str | None) -> ConversationHistorySnapshot:

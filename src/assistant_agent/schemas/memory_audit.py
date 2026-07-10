@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.api import PROTOCOL_VERSION
 from assistant_agent.schemas.memory import MemoryItem, MemoryType
+from assistant_agent.schemas.memory_core import MemoryCoreStatus
 
 MemoryAuditEventType = Literal[
     "memory_context_loaded",
@@ -21,6 +22,8 @@ MemoryAuditEventType = Literal[
     "memory_exported",
     "memory_retention_swept",
     "memory_profile_repaired",
+    "memory_remote_degraded",
+    "memory_remote_lifecycle_failed",
 ]
 MemoryAuditEventOutcome = Literal["succeeded", "skipped", "rejected", "failed"]
 MemoryProfileRepairAction = Literal["none", "create", "update", "delete"]
@@ -164,6 +167,7 @@ class MemoryMetricsReport(BaseModel):
 
     protocol_version: str = PROTOCOL_VERSION
     user_id: str
+    core_status: MemoryCoreStatus | None = None
     total_events: int = Field(ge=0)
     by_event_type: dict[str, int] = Field(default_factory=dict)
     by_outcome: dict[str, int] = Field(default_factory=dict)

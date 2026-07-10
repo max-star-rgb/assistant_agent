@@ -9,6 +9,7 @@ import pytest
 
 from assistant_agent.memory.remote import (
     HybridMemoryStore,
+    HttpRemoteMemoryServiceAdapter,
     MemoryServerRequest,
     MemoryServiceOperationError,
     RemoteMemoryClient,
@@ -19,6 +20,10 @@ from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.memory.write_policy import MemoryWritePolicy
 from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.memory_core_status import (
+    build_memory_core_status,
+    update_memory_core_status_errors,
+)
 
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -63,6 +68,28 @@ def test_hybrid_remote_memory_backend_can_be_enabled_by_remote_flag() -> None:
     assert config.memory_server_include_media_chunks is True
 
 
+def test_dual_core_memory_backend_requires_explicit_remote_opt_in() -> None:
+    config = ProviderConfig.from_env({"MULTIMODAL_AGENT_MEMORY_BACKEND": "dual_core"})
+
+    assert config.memory_backend == "memory"
+
+
+def test_dual_core_memory_backend_can_be_enabled_with_configurable_local_core() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_MEMORY_BACKEND": "dual_core",
+            "MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED": "true",
+            "MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND": "sqlite",
+            "MEMORY_SERVER_BASE_URL": "http://memory.local",
+        }
+    )
+
+    assert config.memory_backend == "dual_core"
+    assert config.memory_local_backend == "sqlite"
+    assert config.memory_path.endswith("long_term_memories.sqlite3")
+    assert config.memory_server_base_url == "http://memory.local"
+
+
 def test_remote_service_memory_backend_requires_explicit_remote_opt_in() -> None:
     config = ProviderConfig.from_env({"MULTIMODAL_AGENT_MEMORY_BACKEND": "remote_service"})
 
@@ -80,6 +107,20 @@ def test_remote_service_memory_backend_can_be_enabled_by_remote_flag() -> None:
 
     assert config.memory_backend == "remote_service"
     assert config.memory_server_base_url == "http://memory.local"
+
+
+def test_remote_service_http_adapter_requires_explicit_adapter_kind() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_MEMORY_BACKEND": "remote_service",
+            "MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED": "true",
+            "MULTIMODAL_AGENT_MEMORY_REMOTE_SERVICE_ADAPTER": "http",
+            "MEMORY_SERVER_BASE_URL": "http://memory.local",
+        }
+    )
+
+    assert config.memory_backend == "remote_service"
+    assert config.memory_remote_service_adapter == "http"
 
 
 def test_create_hybrid_remote_memory_store_wraps_local_jsonl_store(tmp_path) -> None:
@@ -108,6 +149,59 @@ def test_create_hybrid_remote_memory_store_wraps_local_jsonl_store(tmp_path) -> 
     assert JsonlMemoryStore(path).get("u1", saved.memory_id) is not None
 
 
+def test_create_dual_core_memory_store_wraps_configured_local_core(tmp_path) -> None:
+    path = tmp_path / "dual_core_local.sqlite3"
+    store = create_memory_store(
+        ProviderConfig(
+            memory_backend="dual_core",
+            memory_local_backend="sqlite",
+            memory_path=str(path),
+            memory_server_base_url="http://memory.local",
+        )
+    )
+
+    assert isinstance(store, HybridMemoryStore)
+    assert isinstance(store.local_store, SQLiteMemoryStore)
+    saved = store.save(
+        MemoryItem(
+            memory_id="m1",
+            user_id="u1",
+            session_id="s1",
+            memory_type="task",
+            summary="dual core local write",
+            created_at=NOW,
+        )
+    )
+
+    assert path.exists()
+    assert SQLiteMemoryStore(path).get("u1", saved.memory_id) is not None
+
+
+def test_create_dual_core_memory_store_without_remote_url_returns_local_core(tmp_path) -> None:
+    path = tmp_path / "dual_core_offline.jsonl"
+    store = create_memory_store(
+        ProviderConfig(
+            memory_backend="dual_core",
+            memory_local_backend="jsonl",
+            memory_path=str(path),
+        )
+    )
+
+    assert isinstance(store, JsonlMemoryStore)
+    store.save(
+        MemoryItem(
+            memory_id="m1",
+            user_id="u1",
+            session_id="s1",
+            memory_type="task",
+            summary="dual core offline local write",
+            created_at=NOW,
+        )
+    )
+
+    assert path.exists()
+
+
 def test_create_remote_service_store_uses_unavailable_adapter_without_local_fallback(tmp_path) -> None:
     path = tmp_path / "remote_service_should_not_be_written.jsonl"
     store = create_memory_store(
@@ -132,6 +226,19 @@ def test_create_remote_service_store_uses_unavailable_adapter_without_local_fall
         )
     assert exc_info.value.recoverable is True
     assert not path.exists()
+
+
+def test_create_remote_service_store_uses_http_adapter_only_when_explicitly_configured() -> None:
+    store = create_memory_store(
+        ProviderConfig(
+            memory_backend="remote_service",
+            memory_remote_service_adapter="http",
+            memory_server_base_url="http://memory.local",
+        )
+    )
+
+    assert isinstance(store, RemoteServiceMemoryStore)
+    assert isinstance(store.adapter, HttpRemoteMemoryServiceAdapter)
 
 
 def test_jsonl_memory_backend_writes_memory_file_when_auto_promotion_allowed(tmp_path) -> None:
@@ -300,3 +407,70 @@ def test_runtime_injects_hybrid_remote_memory_context_without_network() -> None:
     assert requests[0].path == "/v1/memories/query"
     assert requests[0].body["user_id"] == "u1"
     assert "session_id" not in requests[0].body
+
+
+def test_runtime_writes_dual_core_status_to_request_metadata() -> None:
+    requests: list[MemoryServerRequest] = []
+
+    def transport(request: MemoryServerRequest) -> dict:
+        requests.append(request)
+        raise TimeoutError("memory server unavailable")
+
+    store = HybridMemoryStore(
+        local_store=InMemoryStore(),
+        remote_client=RemoteMemoryClient(base_url="http://memory.local", transport=transport),
+    )
+    state = AgentGraphRuntime(
+        config=ProviderConfig(
+            memory_backend="dual_core",
+            memory_local_backend="memory",
+            memory_server_base_url="http://memory.local",
+        ),
+        memory_store=store,
+    ).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="上次早餐吃了什么")
+    )
+
+    core_status = state.request.metadata["memory_core_status"]
+    assert core_status["mode"] == "dual_core"
+    assert core_status["memory_backend"] == "dual_core"
+    assert core_status["memory_local_backend"] == "memory"
+    assert core_status["active_store"] == "HybridMemoryStore"
+    assert core_status["local_store"] == "InMemoryStore"
+    assert core_status["external_core_configured"] is True
+    assert core_status["remote_query_enabled"] is True
+    assert core_status["remote_query_degraded"] is True
+    assert core_status["remote_error_codes"] == ["memory_server_query_failed"]
+    assert requests[0].path == "/v1/memories/query"
+
+
+def test_memory_core_status_keeps_only_stable_remote_error_codes() -> None:
+    store = HybridMemoryStore(
+        local_store=InMemoryStore(),
+        remote_client=RemoteMemoryClient(base_url="http://memory.local", transport=lambda request: {}),
+    )
+    config = ProviderConfig(
+        memory_backend="dual_core",
+        memory_local_backend="memory",
+        memory_server_base_url="http://memory.local",
+    )
+
+    status = build_memory_core_status(
+        config=config,
+        memory_store=store,
+        remote_errors=[
+            {"code": "memory_server_query_failed"},
+            {"code": "raw_traceback_with_token"},
+            {"code": "memory_server_query_failed"},
+        ],
+    )
+    updated = update_memory_core_status_errors(
+        status.model_dump(mode="json"),
+        remote_errors=[
+            {"code": "database_password_leaked"},
+            {"code": "memory_remote_service_search_failed"},
+        ],
+    )
+
+    assert status.remote_error_codes == ["memory_server_query_failed"]
+    assert updated["remote_error_codes"] == ["memory_remote_service_search_failed"]

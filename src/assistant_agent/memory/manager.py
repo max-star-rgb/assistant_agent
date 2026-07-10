@@ -15,6 +15,7 @@ from assistant_agent.memory.read_policy import (
     memory_usage_hint,
     trust_policy_metadata,
 )
+from assistant_agent.memory.remote import MemoryServiceOperationError
 from assistant_agent.memory.store import MemoryStore
 from assistant_agent.memory.write_policy import (
     MemoryWritePolicy,
@@ -157,7 +158,9 @@ class MemoryManager:
         """Search memory for an identity, ignoring caller-supplied user_id."""
 
         scoped_query = _query_for_identity(identity, query)
-        return self.search(scoped_query)
+        result = self.search(scoped_query)
+        self._record_remote_search_event(identity=identity, result=result)
+        return result
 
     def load_context_for_request(
         self,
@@ -560,7 +563,28 @@ class MemoryManager:
                     "scope": scope or item.scope,
                 }
             )
-        saved = self._merge_or_save(item)
+        try:
+            saved = self._merge_or_save(item)
+        except MemoryServiceOperationError as exc:
+            self._record_remote_lifecycle_failure(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                session_id=session_id,
+                operation=exc.operation,
+                recoverable=exc.recoverable,
+            )
+            raise
+        except Exception:
+            self._record_remote_lifecycle_failure(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                session_id=session_id,
+                operation="save_explicit",
+                recoverable=True,
+            )
+            raise
         self._upsert_user_profile(saved)
         self.record_audit_event(
             "memory_explicit_saved",
@@ -1082,6 +1106,86 @@ class MemoryManager:
         del self._audit_events[:-self.max_audit_events]
         return event
 
+    def _record_remote_search_event(
+        self,
+        *,
+        identity: RequestIdentity,
+        result: MemorySearchResult,
+    ) -> None:
+        error_codes = _remote_error_codes(result.errors)
+        if not error_codes:
+            return
+        active_store = type(self.store).__name__
+        if active_store == "RemoteServiceMemoryStore":
+            self.record_audit_event(
+                "memory_remote_lifecycle_failed",
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=identity.session_id,
+                outcome="failed",
+                summary="remote memory lifecycle search failed",
+                counts={"attempted": 1, "failed": 1},
+                metadata={
+                    "operation": "search",
+                    "mode": "remote_service",
+                    "active_store": active_store,
+                    "error_code": error_codes[0],
+                    "recoverable": True,
+                },
+            )
+            return
+        self.record_audit_event(
+            "memory_remote_degraded",
+            user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            session_id=identity.session_id,
+            outcome="failed",
+            summary="remote memory query degraded to local results",
+            counts={
+                "attempted": 1,
+                "failed": 1,
+                "local_results": result.total,
+            },
+            metadata={
+                "operation": "search",
+                "mode": "dual_core",
+                "active_store": active_store,
+                "error_codes": error_codes,
+            },
+        )
+
+    def _record_remote_lifecycle_failure(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None,
+        project_id: str | None,
+        session_id: str | None,
+        operation: str,
+        recoverable: bool,
+    ) -> None:
+        if type(self.store).__name__ != "RemoteServiceMemoryStore":
+            return
+        self.record_audit_event(
+            "memory_remote_lifecycle_failed",
+            user_id=user_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            session_id=session_id,
+            outcome="failed",
+            summary="remote memory lifecycle operation failed",
+            counts={"attempted": 1, "failed": 1},
+            metadata={
+                "operation": operation,
+                "mode": "remote_service",
+                "active_store": type(self.store).__name__,
+                "error_code": f"memory_remote_service_{operation}_failed",
+                "recoverable": recoverable,
+            },
+        )
+
     def list_audit_events_for_identity(
         self,
         identity: RequestIdentity,
@@ -1332,6 +1436,17 @@ def _identity_allows_confirmation(identity: RequestIdentity, confirmation: Memor
     if confirmation.scope is not None and confirmation.scope not in _allowed_memory_scopes(identity):
         return False
     return True
+
+
+def _remote_error_codes(errors: list[dict[str, Any]]) -> list[str]:
+    codes: list[str] = []
+    for error in errors:
+        code = str(error.get("code") or "").strip()
+        if not code.startswith(("memory_server_", "memory_remote_service_")):
+            continue
+        if code not in codes:
+            codes.append(code)
+    return codes
 
 
 def _confirmation_is_expired(confirmation: MemoryPendingConfirmation) -> bool:
@@ -1649,10 +1764,20 @@ def _memory_recall_report(
         "injected_count": len(context.items) if context is not None else 0,
         "omitted_count": context.omitted_count if context is not None else 0,
         "rejected_reasons": list(context.rejected_reasons) if context is not None else [],
+        "search_error_codes": _search_error_codes(result.errors if result is not None else []),
         "retrieval_version": context.retrieval_version if context is not None else "memory_read_policy_v1",
         "profile_source_ids": profile_source_ids,
         "superseded_excluded_count": _superseded_excluded_count(identity, visible_items),
     }
+
+
+def _search_error_codes(errors: list[dict[str, Any]]) -> list[str]:
+    codes: list[str] = []
+    for error in errors:
+        code = error.get("code") if isinstance(error, dict) else None
+        if isinstance(code, str) and code and code not in codes:
+            codes.append(code)
+    return codes
 
 
 def _memory_query_hash(normalized_query: str) -> str | None:

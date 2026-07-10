@@ -70,7 +70,8 @@ class AssistantRuntimeApp:
         return TraceQueryService(self.runtime.trace_store)
 
     def memory_audit_service(self) -> MemoryAuditService:
-        return MemoryAuditService(self.runtime.memory_manager)
+        runtime = self.runtime
+        return MemoryAuditService(runtime.memory_manager, config=runtime.config)
 
     def memory_snapshot_service(self) -> MemorySnapshotService:
         runtime = self.runtime
@@ -85,6 +86,7 @@ class AssistantRuntimeApp:
                 conversation_store=type(conversation_store).__name__,
                 checkpointer=type(runtime.checkpointer).__name__ if runtime.checkpointer is not None else "none",
             ),
+            config=runtime.config,
         )
 
     def create_session(self, session: SessionCreate) -> SessionRecord:
