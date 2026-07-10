@@ -8,7 +8,7 @@ from assistant_agent.agent.cancellation import cancellation_metadata
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
 from assistant_agent.services.tool_lifecycle import build_tool_lifecycle_summary
 from assistant_agent.tools.registry import ToolRegistry
@@ -254,6 +254,8 @@ def _cancel_metadata_summary(cancel_metadata: dict[str, Any] | None) -> dict[str
 
 
 def _observation_summary(result: ToolResult) -> dict[str, Any]:
+    if isinstance(result.trace_summary, dict):
+        return _trace_observation_summary(result)
     data = result.data or {}
     summary = _data_string(result, "summary")
     return _drop_none(
@@ -266,6 +268,26 @@ def _observation_summary(result: ToolResult) -> dict[str, Any]:
             "error_message": _safe_error_message(result.error),
         }
     )
+
+
+def _trace_observation_summary(result: ToolResult) -> dict[str, Any]:
+    safe_trace = sanitize_error_detail(result.trace_summary or {})
+    payload: dict[str, Any] = {
+        "success": result.success,
+        "summary": None,
+        "output_ref": result.output_ref,
+    }
+    if isinstance(safe_trace, dict):
+        for key, value in safe_trace.items():
+            if key in {"raw_data_ref", "raw_provider_payload", "provider_raw_response"}:
+                continue
+            payload[key] = value
+    summary = payload.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        payload["summary"] = _clip(summary)
+    elif result.error:
+        payload["summary"] = _safe_error_message(result.error)
+    return {key: value for key, value in payload.items() if key == "output_ref" or value is not None}
 
 
 def _data_string(result: ToolResult, key: str) -> str | None:

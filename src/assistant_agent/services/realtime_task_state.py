@@ -828,7 +828,8 @@ def _side_effect_summary(
 ) -> str:
     data = result.data if isinstance(result.data, dict) else {}
     summary = (
-        _metadata_string(data.get("side_effect_summary"))
+        _metadata_string(result.voice_summary)
+        or _metadata_string(data.get("side_effect_summary"))
         or _metadata_string(data.get("summary"))
         or _metadata_string(policy.description)
         or observation_summary

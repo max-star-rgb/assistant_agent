@@ -276,6 +276,11 @@ Phase 0 tool governance rejection tests live in `tests/test_phase0_tool_governan
 tool_name
 success
 data
+voice_summary
+model_observation
+trace_summary
+audit_payload
+raw_data_ref
 error
 output_ref
 latency_ms
@@ -285,6 +290,11 @@ contract
 实践规则：
 
 - `data` 必须是结构化 JSON-compatible dict；不要只塞散乱字符串。
+- `model_observation` 是 assistant-facing 结构化视图；存在时优先用于 `ToolObservation`，否则回退 `data`。
+- `voice_summary` 是实时通话口播/恢复摘要；存在时优先用于 realtime side-effect snapshot。
+- `trace_summary` 是 prompt-safe 调试摘要；存在时优先用于 post boundary、trace 和 tool history output summary。
+- `audit_payload` 只保存显式提供的审计 payload，不从 raw provider response 自动派生。
+- `raw_data_ref` 只能引用外部原始数据位置，不能进入 prompt、trace summary 或 observation。
 - 推荐提供 `CapabilityOutputContract`，并在 `data["contract"]` 中保留 JSON 形式，便于 API/WebSocket/response composer 统一消费。
 - `error` 应是可解释、已脱敏的错误信息。
 - `output_ref` 用于引用生成物、搜索结果、记忆项、agent task 等 artifact。

@@ -37,7 +37,8 @@ def observation_from_tool_result(
     """Build a redacted observation from a ToolResult."""
 
     status: ObservationStatus = "succeeded" if result.success else "failed"
-    data = sanitize_error_detail(result.data or {})
+    data_source = result.model_observation if isinstance(result.model_observation, dict) else result.data
+    data = sanitize_error_detail(data_source or {})
     error_message = sanitize_error_message(result.error or "") if result.error else None
     return ToolObservation(
         tool_name=result.tool_name,
@@ -81,6 +82,10 @@ def _summary_from_result(result: ToolResult, data: Any, error_message: str | Non
     if not result.success:
         return error_message or "Tool execution failed."
     if isinstance(data, dict):
+        if isinstance(result.model_observation, dict):
+            explicit_summary = data.get("summary") or data.get("message")
+            if isinstance(explicit_summary, str) and explicit_summary.strip():
+                return sanitize_error_message(explicit_summary)
         web_summary = _web_search_summary(result.tool_name, data)
         if web_summary:
             return web_summary

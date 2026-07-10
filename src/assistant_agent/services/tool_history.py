@@ -18,6 +18,9 @@ class ToolCallHistoryRecord(BaseModel):
     tool_name: str = Field(min_length=1)
     status: Literal["started", "succeeded", "failed"]
     input_summary: dict[str, Any] = Field(default_factory=dict)
+    output_summary: dict[str, Any] = Field(default_factory=dict)
+    audit_payload: dict[str, Any] = Field(default_factory=dict)
+    raw_data_ref: str | None = None
     output_ref: str | None = None
     error: str | None = None
     latency_ms: int | None = Field(default=None, ge=0)
@@ -63,6 +66,9 @@ class ToolHistoryStore:
         error: str | None = None,
         user_id: str | None = None,
         session_id: str | None = None,
+        output_summary: dict[str, Any] | None = None,
+        audit_payload: dict[str, Any] | None = None,
+        raw_data_ref: str | None = None,
     ) -> ToolCallHistoryRecord:
         record = ToolCallHistoryRecord(
             run_id=run_id,
@@ -71,6 +77,9 @@ class ToolHistoryStore:
             call_id=call_id,
             tool_name=tool_name,
             status=status,
+            output_summary=output_summary or {},
+            audit_payload=audit_payload or {},
+            raw_data_ref=raw_data_ref,
             output_ref=output_ref,
             error=error,
             latency_ms=latency_ms,

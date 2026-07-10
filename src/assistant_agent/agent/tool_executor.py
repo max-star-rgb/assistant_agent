@@ -18,7 +18,7 @@ from assistant_agent.schemas.planning import TaskStep
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.provider_budget import ProviderCallBudget
-from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.provider_policy import ProviderExecutionPolicy
 from assistant_agent.services.tool_call_boundary import (
     build_post_tool_call_summary,
@@ -196,6 +196,9 @@ class ToolExecutor:
                     output_ref=result.output_ref,
                     user_id=state.user_id,
                     session_id=state.session_id,
+                    output_summary=_output_summary(result),
+                    audit_payload=result.audit_payload,
+                    raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
                 trace_store,
@@ -265,6 +268,9 @@ class ToolExecutor:
                     output_ref=result.output_ref,
                     user_id=state.user_id,
                     session_id=state.session_id,
+                    output_summary=_output_summary(result),
+                    audit_payload=result.audit_payload,
+                    raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
                 trace_store,
@@ -372,6 +378,9 @@ class ToolExecutor:
                     error=budget_error.message,
                     user_id=state.user_id,
                     session_id=state.session_id,
+                    output_summary=_output_summary(result),
+                    audit_payload=result.audit_payload,
+                    raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
                 trace_store,
@@ -476,6 +485,9 @@ class ToolExecutor:
                     error=DEFAULT_CANCELLATION_MESSAGE,
                     user_id=state.user_id,
                     session_id=state.session_id,
+                    output_summary=_output_summary(result),
+                    audit_payload=result.audit_payload,
+                    raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
                 trace_store,
@@ -569,6 +581,9 @@ class ToolExecutor:
                     output_ref=result.output_ref,
                     user_id=state.user_id,
                     session_id=state.session_id,
+                    output_summary=_output_summary(result),
+                    audit_payload=result.audit_payload,
+                    raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
                 trace_store,
@@ -656,6 +671,9 @@ class ToolExecutor:
                     error=decision.message,
                     user_id=state.user_id,
                     session_id=state.session_id,
+                    output_summary=_output_summary(result),
+                    audit_payload=result.audit_payload,
+                    raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
                 trace_store,
@@ -1013,9 +1031,21 @@ def _input_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _output_summary(result: ToolResult) -> dict[str, Any]:
     data = result.data or {}
-    return {
+    payload: dict[str, Any] = {
         "success": result.success,
         "output_ref": result.output_ref,
-        "item_count": len(data.get("items", [])) if isinstance(data.get("items"), list) else None,
         "error_code": classify_error(result.error or "") if result.error else None,
     }
+    if isinstance(result.trace_summary, dict):
+        safe_trace = sanitize_error_detail(result.trace_summary)
+        if isinstance(safe_trace, dict):
+            payload.update(
+                {
+                    key: value
+                    for key, value in safe_trace.items()
+                    if key not in {"raw_data_ref", "raw_provider_payload", "provider_raw_response"}
+                }
+            )
+    else:
+        payload["item_count"] = len(data.get("items", [])) if isinstance(data.get("items"), list) else None
+    return payload
