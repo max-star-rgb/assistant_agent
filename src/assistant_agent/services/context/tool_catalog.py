@@ -8,6 +8,7 @@ from typing import Any, Iterable
 from assistant_agent.schemas.context import ToolCatalogSummary
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 
 
 @dataclass(frozen=True)
@@ -132,23 +133,19 @@ def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
     input_schema = payload.get("input_schema")
     if isinstance(input_schema, dict):
         payload["input_schema"] = _compact_prompt_input_schema(input_schema)
-    side_effect = payload.get("side_effect")
-    if isinstance(side_effect, dict):
-        level = side_effect.get("level")
-        requires_confirmation = side_effect.get("requires_confirmation")
-        if (
-            level in {"none", "local_read", "external_read"}
-            and not requires_confirmation
-        ):
-            payload.pop("side_effect", None)
-            return payload
-        compact_side_effect = {"level": level}
-        if requires_confirmation:
-            compact_side_effect["requires_confirmation"] = True
-        confirmation_kind = side_effect.get("confirmation_kind")
-        if confirmation_kind:
-            compact_side_effect["confirmation_kind"] = confirmation_kind
-        payload["side_effect"] = compact_side_effect
+    policy = ToolPolicyInterpreter().view_for_spec(spec)
+    if (
+        policy.side_effect_level in {"none", "local_read", "external_read"}
+        and not policy.requires_confirmation
+    ):
+        payload.pop("side_effect", None)
+        return payload
+    compact_side_effect = {"level": policy.side_effect_level}
+    if policy.requires_confirmation:
+        compact_side_effect["requires_confirmation"] = True
+    if policy.confirmation_kind:
+        compact_side_effect["confirmation_kind"] = policy.confirmation_kind
+    payload["side_effect"] = compact_side_effect
     return payload
 
 
