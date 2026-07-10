@@ -211,6 +211,8 @@ def test_realtime_media_websocket_injects_entry_capabilities() -> None:
     assert capabilities == {
         "supports_text_streaming": True,
         "supports_interrupt": True,
+        "supports_tts_state": True,
+        "supports_realtime_task_state": True,
         "supports_audio_refs": True,
         "supports_image_refs": True,
         "supports_video_refs": True,

@@ -11,7 +11,7 @@ from assistant_agent.schemas.tool_observation import observation_from_tool_resul
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult, ToolSideEffectLevel, ToolSideEffectPolicy
 from assistant_agent.services.context.compaction import compact_observation_for_context
-from assistant_agent.tools.registry import tool_side_effect_policy
+from assistant_agent.tools.registry import tool_execution_policy, tool_side_effect_policy
 
 
 REALTIME_TASK_STATE_SCHEMA_VERSION = "realtime_task_state_v1"
@@ -66,12 +66,6 @@ ArtifactReusePolicy = Literal[
 ]
 
 _INTERRUPT_CONTROLS = {"interrupt", "barge_in", "cancel_previous"}
-_REALTIME_SOURCES = {
-    "gateway_websocket",
-    "realtime_agent_backend",
-    "realtime_media_websocket",
-    "phone_runtime",
-}
 _MAX_TEXT_CHARS = 1_200
 _MAX_SOURCE_IDS = 24
 _MAX_ARTIFACTS = 12
@@ -79,22 +73,6 @@ _MAX_SNAPSHOT_ARTIFACTS = 6
 _MAX_SIDE_EFFECTS = 12
 _MAX_SNAPSHOT_SIDE_EFFECTS = 6
 _MAX_CHECKPOINT_ARTIFACT_REFS = 6
-_REUSABLE_TOOL_NAMES = {
-    "product_search",
-    "price_compare",
-    "vision_understanding",
-    "video_understanding",
-    "memory_retrieval",
-}
-_REQUIRES_VALIDATION_TOOL_NAMES = {
-    "image_generation",
-    "render_3d",
-}
-_DO_NOT_REUSE_TOOL_NAMES = {
-    "delegate_to_agent",
-    "memory_save",
-    "shell_command",
-}
 _INVALIDATE_ARTIFACT_MARKERS = (
     "重新搜索",
     "重新找",
@@ -362,13 +340,26 @@ def realtime_task_state_enabled(request: UserRequest) -> bool:
         return True
     if metadata.get("enable_realtime_task_state") is True:
         return True
-    source = _metadata_string(metadata.get("source"))
-    if source in _REALTIME_SOURCES:
+    if _metadata_string(metadata.get("interaction_mode")) == "realtime":
         return True
-    if isinstance(metadata.get("gateway"), dict):
+    if _entry_capabilities_enable_realtime_task_state(metadata):
         return True
-    realtime = metadata.get("realtime")
-    return isinstance(realtime, dict) and ("run_id" in realtime or "turn_id" in realtime)
+    return False
+
+
+def _entry_capabilities_enable_realtime_task_state(metadata: dict[str, Any]) -> bool:
+    capability_sources = [
+        metadata.get("entry_capabilities"),
+        metadata.get("gateway"),
+        metadata.get("runtime"),
+    ]
+    for candidate in capability_sources:
+        capabilities = candidate
+        if isinstance(candidate, dict) and "entry_capabilities" in candidate:
+            capabilities = candidate.get("entry_capabilities")
+        if isinstance(capabilities, dict) and capabilities.get("supports_realtime_task_state") is True:
+            return True
+    return False
 
 
 def realtime_metadata_requests_interrupt(metadata: dict[str, Any]) -> bool:
@@ -660,9 +651,7 @@ def _checkpoint_artifacts_from_tool_artifacts(
     reusable_steps = [
         artifact
         for artifact in tool_artifacts
-        if artifact.kind == "observation"
-        and artifact.reuse_policy == "reusable"
-        and artifact.tool_name in _REUSABLE_TOOL_NAMES
+        if artifact.kind == "observation" and artifact.reuse_policy == "reusable"
     ]
     if len(reusable_steps) < 2:
         return []
@@ -891,13 +880,7 @@ def _merge_side_effects(
 
 
 def _reuse_policy_for_tool(tool_name: str) -> ArtifactReusePolicy:
-    if tool_name in _REUSABLE_TOOL_NAMES:
-        return "reusable"
-    if tool_name in _REQUIRES_VALIDATION_TOOL_NAMES:
-        return "requires_validation"
-    if tool_name in _DO_NOT_REUSE_TOOL_NAMES:
-        return "do_not_reuse"
-    return "requires_validation"
+    return tool_execution_policy(tool_name).artifact_reuse
 
 
 def _select_continuation_strategy(state: RealtimeTaskState) -> ContinuationStrategy:
@@ -907,10 +890,7 @@ def _select_continuation_strategy(state: RealtimeTaskState) -> ContinuationStrat
     reusable_artifacts = [artifact for artifact in state.artifacts if artifact.reuse_policy == "reusable"]
     if any(artifact.kind == "checkpoint" for artifact in reusable_artifacts):
         return "resume_from_checkpoint"
-    if any(
-        artifact.kind in {"observation", "media_ref"} or artifact.tool_name in _REUSABLE_TOOL_NAMES
-        for artifact in reusable_artifacts
-    ):
+    if any(artifact.kind in {"observation", "media_ref"} for artifact in reusable_artifacts):
         return "reuse_and_replan"
     return "restart"
 

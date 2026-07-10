@@ -129,8 +129,8 @@ ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema`
 - `tool_spec_to_json_schema()` 会输出 object schema，并设置 `additionalProperties=False`。
 - provider-native tools 发送完整 ToolSpec，并把 `terminal` / `requires_prior_observation` 等执行约束追加成简短 prompt-safe 描述；旧 prompt-facing ToolSpec 子集只服务历史 renderer 测试和离线兼容材料，不是生产决策路径。
 - `side_effect` 包含 `level`、`requires_confirmation`、`description`、可选 `confirmation_kind` 和 `compensation_hint`；provider-native/MCP 描述也会包含该信息。
-- `execution` 包含 `dependency_mode`、可选 `concurrency_group`、`resource_reads`、`resource_writes` 和 `realtime_safety`。它只表达调度/依赖/资源事实，不表达“允许并发”命令。
-- 未分类工具使用保守默认：`level=pending_confirmation`、`requires_confirmation=true`、`dependency_mode=requires_prior_observation` 且 `realtime_safety=needs_confirmation`。
+- `execution` 包含 `dependency_mode`、可选 `concurrency_group`、`resource_reads`、`resource_writes`、`realtime_safety`、`artifact_reuse` 和可选 `progress_message`。它只表达调度/依赖/资源事实、realtime artifact 复用提示和等待提示，不表达“允许并发”命令。
+- 未分类工具使用保守默认：`level=pending_confirmation`、`requires_confirmation=true`、`dependency_mode=requires_prior_observation`、`realtime_safety=needs_confirmation` 且 `artifact_reuse=requires_validation`。
 - MCP 工具 schema 通过 `tool_spec_to_mcp_tool()` 支持，但当前 `OfflineMCPServer.list_tools()` 暴露的是 MCP wrapper 工具；registry ToolSpec 通过 `tool_list` 返回。
 
 ## Tool Side-Effect Policy
@@ -186,11 +186,12 @@ Repo/user-local Python tools use the explicit `@tool` decorator plus `load_local
 
 默认执行属性：
 
-- `web_search`、`product_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`。
+- `web_search`、`product_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`、`artifact_reuse=reusable`。
 - `price_compare`: `dependency_mode=requires_prior_observation`，因为同一批次中通常需要先消费商品候选或先前 observation。
-- `image_generation`、`render_3d`、`delegate_to_agent`: `dependency_mode=terminal`、`realtime_safety=needs_progress`。
-- `memory_save`、`memory_media_ingest`: `dependency_mode=independent`、`realtime_safety=needs_confirmation`，并声明 memory 资源写入。
-- legacy `memory`: 保守视为 `requires_prior_observation`、`needs_confirmation`，并声明 memory 读写。
+- `image_generation`、`render_3d`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=requires_validation`。
+- `delegate_to_agent`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=do_not_reuse`。
+- `memory_save`、`memory_media_ingest`: `dependency_mode=independent`、`realtime_safety=needs_confirmation`、`artifact_reuse=do_not_reuse`，并声明 memory 资源写入。
+- legacy `memory`: 保守视为 `requires_prior_observation`、`needs_confirmation`、`artifact_reuse=do_not_reuse`，并声明 memory 读写。
 
 ## Web Search 工具
 

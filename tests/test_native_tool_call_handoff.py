@@ -11,7 +11,7 @@ from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ToolExecutionPolicy, ToolResult, ToolSpec
 from assistant_agent.services.chat_adapter import ChatProviderError, ChatRequest, ChatResult, ProviderChatCapabilities
 from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaIngestionFile,
@@ -190,7 +190,7 @@ def slow_read_only_registry(probe: ParallelProbe) -> ToolRegistry:
     return registry
 
 
-def test_progress_message_for_tool_uses_simple_static_mapping() -> None:
+def test_progress_message_for_tool_uses_default_policy_messages() -> None:
     assert progress_message_for_tool("product_search") == "我查一下。"
     assert progress_message_for_tool("price_compare") == "我比一下价格。"
     assert progress_message_for_tool("vision_understanding") == "我看一下。"
@@ -198,6 +198,15 @@ def test_progress_message_for_tool_uses_simple_static_mapping() -> None:
     assert progress_message_for_tool("web_search") == "我联网查一下。"
     assert progress_message_for_tool("image_generation") == "我开始生成，可能需要一点时间。"
     assert progress_message_for_tool("unknown_tool") == "我处理一下。"
+
+
+def test_progress_message_for_tool_prefers_tool_execution_policy() -> None:
+    spec = ToolSpec(
+        name="calendar.search_events",
+        execution=ToolExecutionPolicy(progress_message="我核对一下日程。"),
+    )
+
+    assert progress_message_for_tool("calendar.search_events", tool_spec=spec) == "我核对一下日程。"
 
 
 def test_native_tool_call_runs_through_validator_executor_and_observation() -> None:
@@ -983,6 +992,39 @@ def test_native_runtime_parallelizes_independent_read_only_tool_batch_through_ex
     assert schedule["realtime_safety"] == ["safe", "safe"]
     assert state.response is not None
     assert state.response.message == "已基于两个并发 observation 回答。"
+
+
+def test_native_runtime_replays_parallel_tool_events_in_provider_order() -> None:
+    probe = ParallelProbe()
+    registry = ToolRegistry()
+    registry.register(SlowReadOnlyTool(name="product_search", probe=probe, delay_seconds=0.1))
+    registry.register(SlowReadOnlyTool(name="web_search", probe=probe, delay_seconds=0.01))
+    sink = ListEventSink()
+    adapter = NativeToolChatAdapter(
+        [
+            native_multi_result(
+                [
+                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
+                ]
+            ),
+            final_result("已基于两个并发 observation 回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=5),
+        chat_adapter=adapter,
+        registry=registry,
+    )
+
+    runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"),
+        event_sink=sink,
+    )
+
+    assert probe.overlapped is True
+    finished_tools = [event.tool_name for event in sink.events if event.type == "tool_finished"]
+    assert finished_tools == ["product_search", "web_search"]
 
 
 def test_native_runtime_keeps_dependent_read_only_tool_batch_serial() -> None:

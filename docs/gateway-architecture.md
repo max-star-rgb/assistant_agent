@@ -206,7 +206,9 @@ Gateway entry adapters must bind identity before a user turn reaches the assista
 - Media Relay WebSocket `/ws/realtime/media` requires a bound session for non-`ping` events, maps media events into normalized Gateway frames, and injects trusted `source=realtime_media_websocket` metadata only at the adapter boundary.
 - Vendor `/agent-service/v1` preserves the vendor envelope at the entry layer, but `chat` turns use a local `GatewayTurnFacade`; raw `audio`, `video`, and `interrupt` messages remain entry-layer ACK traffic unless explicitly promoted to Gateway frames by future work.
 
-Entry adapters may attach prompt-safe `entry_capabilities` metadata so downstream code can distinguish text streaming, interrupt support, media reference support, raw media support, and TTS edge event support without inferring behavior from transport names. These capability declarations are informational; they do not authorize tool calls, provider selection, memory access, or new modalities.
+Entry adapters may attach prompt-safe `entry_capabilities` metadata so downstream code can distinguish text streaming, interrupt support, TTS state support, realtime task-state support, media reference support, raw media support, and TTS edge event support without inferring behavior from transport names. These capability declarations are informational; they do not authorize tool calls, provider selection, memory access, or new modalities.
+
+Realtime task-state is opt-in at the request/capability level. Ordinary Gateway metadata, `source=gateway_*`, or a `realtime.run_id`/`turn_id` pair does not by itself enable phone/realtime task semantics. Realtime call adapters such as `/ws/realtime/media` and `/agent-service/v1` declare `supports_realtime_task_state=true`; ordinary request/response chat facades should leave that capability false unless they explicitly want realtime interruption, pending-tool, TTS/display, and artifact-reuse behavior.
 
 ## Hermes-Inspired Boundaries
 

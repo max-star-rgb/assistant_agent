@@ -22,6 +22,8 @@ def test_policy_interpreter_matches_existing_default_tool_risk_rules() -> None:
         assert view.resource_reads == spec.execution.resource_reads
         assert view.resource_writes == spec.execution.resource_writes
         assert view.realtime_safety == spec.execution.realtime_safety
+        assert view.artifact_reuse == spec.execution.artifact_reuse
+        assert view.progress_message == spec.execution.progress_message
 
 
 def test_policy_interpreter_keeps_unknown_tool_conservative() -> None:
@@ -36,6 +38,8 @@ def test_policy_interpreter_keeps_unknown_tool_conservative() -> None:
     assert view.idempotency_required is False
     assert view.dependency_mode == "requires_prior_observation"
     assert view.realtime_safety == "needs_confirmation"
+    assert view.artifact_reuse == "requires_validation"
+    assert view.progress_message is None
 
 
 def test_policy_interpreter_preserves_tool_owned_confirmation_behavior() -> None:
@@ -61,6 +65,8 @@ def test_policy_interpreter_accepts_explicit_spec_without_registry_lookup() -> N
             concurrency_group="calendar",
             resource_reads=["calendar.events"],
             realtime_safety="safe",
+            artifact_reuse="reusable",
+            progress_message="我核对一下日程。",
         ),
     )
 
@@ -75,3 +81,5 @@ def test_policy_interpreter_accepts_explicit_spec_without_registry_lookup() -> N
     assert view.resource_reads == ["calendar.events"]
     assert view.resource_writes == []
     assert view.realtime_safety == "safe"
+    assert view.artifact_reuse == "reusable"
+    assert view.progress_message == "我核对一下日程。"

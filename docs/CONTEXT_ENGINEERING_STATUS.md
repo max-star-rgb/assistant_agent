@@ -29,7 +29,7 @@ Last updated: 2026-07-10
 - `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
 - Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，只记录大小、计数、来源、压缩/裁剪标志、selected tool names 和 memory item ids，不暴露完整 prompt、memory 文本、tool observation 或 provider payload。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
-- Gateway/realtime 请求会在进入 runtime 前注入 session-scoped realtime task-state snapshot；普通 `/agent/run` 不自动启用，除非 metadata 显式打开。
+- Realtime task-state snapshot 只在进入 runtime 前显式启用：`interaction_mode=realtime`、`enable_realtime_task_state=true` 或 entry capability `supports_realtime_task_state=true`。普通 `/agent/run` 即使经由 Gateway 生命周期，也不会因为存在 `gateway` metadata 或 `realtime.run_id`/`turn_id` 自动启用。
 - `MemoryManager` 负责按 read policy 加载或跳过分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
 - Assistant context 已有字符预算兜底；超限时优先压缩 memory/conversation，最后才压缩工具 observation。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，`keep_recent_turns=2` 是 recent transcript 的最小原文保留 guard。
@@ -118,12 +118,12 @@ Last updated: 2026-07-10
 
 ### Realtime Task State Context
 
-- `prepare_realtime_task_state_request` 在 realtime/Gateway 请求进入 `AgentGraphRuntime.run_state(...)` 前生成 prompt-safe task-state snapshot。
+- `prepare_realtime_task_state_request` 只在显式 realtime mode/capability 的请求进入 `AgentGraphRuntime.run_state(...)` 前生成 prompt-safe task-state snapshot。
 - Task-state 记录 session 内当前 objective、active constraints、source turn/run ids、interrupt 产生的 `IntentRevision`，以及 completed run 后的 prompt-safe `TaskArtifact`、lightweight checkpoint artifact 和 `SideEffectRecord`。
 - Task-state 现在也记录 prompt-safe realtime call state：`pending_tool`、`tts_state`、`last_spoken_progress`、`speech_turn_id`、`barge_in_source` 和 bounded `last_realtime_event_ids`，用于表达工具等待、展示/TTS 状态和打断来源；工具完成/失败、取消和挂断会清理 pending tool，TTS/display started/finished/superseded 会更新展示状态；不保存 raw audio、raw transcript stream 或 provider payload。
 - `pending_tool` 会消费 `tool_started` 事件中的 prompt-safe `pre_tool_call` 摘要，保留工具副作用等级、risk gate、idempotency key 摘要和是否需要确认，便于 interrupt 后选择重规划、等待确认、去重或补偿路径。
 - Interrupt run 的 snapshot 会保留原始 objective，并把最新 interrupt 文本写入 `latest_revision`；普通 queued follow-up 只更新 current user text 和 provenance，不创建 revision。
-- Completed realtime run 会把 selected tool observations 和 media refs 记录为 task artifacts；tool observation artifact 复用现有 prompt compaction 逻辑，不保存 raw provider/file/media payload。
+- Completed realtime run 会按 `ToolSpec.execution.artifact_reuse` 把 selected tool observations 和 media refs 记录为 task artifacts；tool observation artifact 复用现有 prompt compaction 逻辑，不保存 raw provider/file/media payload。
 - 多步 realtime run 在同一轮完成至少两个 reusable tool observations 时，会记录 bounded `checkpoint` artifact；interrupt 只有在 checkpoint 仍可复用时才选择 `resume_from_checkpoint`，用户明确重来/换一批会把 checkpoint 标为 stale。
 - Interrupt 会用简单策略选择 `restart`、`reuse_and_replan`、`ask_confirmation`、`report_committed` 或 `compensate`；如果用户明确要求重新搜索/换一批/不要之前结果，已有 reusable artifacts 会标记为 `stale`，不会重新注入 prompt snapshot。
 - Side-effect records 来自 `ToolSpec.side_effect` 和工具结果中的 prompt-safe override（例如 `requires_confirmation`、`confirmation_id`、`side_effect_level`）；read-only 工具不阻塞重规划，pending confirmation 会让下一轮先处理确认，committed action 不会被描述成已取消，compensatable artifact 会倾向修正版/补偿路径。

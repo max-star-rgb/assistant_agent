@@ -3,6 +3,7 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Literal
 
@@ -57,7 +58,7 @@ from assistant_agent.services.session_store import SessionStore, create_session_
 from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
-from assistant_agent.tools.registry import ToolRegistry, create_default_registry
+from assistant_agent.tools.registry import ToolRegistry, create_default_registry, tool_execution_policy
 
 
 PROGRESS_MESSAGES = {
@@ -70,10 +71,35 @@ PROGRESS_MESSAGES = {
 }
 
 
-def progress_message_for_tool(tool_name: str) -> str:
+def progress_message_for_tool(tool_name: str, *, tool_spec: ToolSpec | None = None) -> str:
     """Return the deterministic user-visible wait message for a tool."""
 
+    policy_message = None
+    if tool_spec is not None:
+        policy_message = tool_spec.execution.progress_message
+    if policy_message is None:
+        policy_message = tool_execution_policy(tool_name).progress_message
+    if policy_message:
+        return policy_message
     return PROGRESS_MESSAGES.get(tool_name, "我处理一下。")
+
+
+@dataclass(frozen=True)
+class _ParallelToolRunResult:
+    call_index: int
+    state: AgentState
+    tool_result: ToolResult
+    events: list[AgentEvent]
+
+
+class _BufferedEventSink:
+    """Collect tool events emitted by an isolated parallel branch."""
+
+    def __init__(self) -> None:
+        self.events: list[AgentEvent] = []
+
+    def emit(self, event: AgentEvent) -> None:
+        self.events.append(event)
 
 
 class AgentGraphRuntime:
@@ -504,6 +530,7 @@ class AgentGraphRuntime:
                 state,
                 tool_name=decision.tool_name or call.name,
                 event_sink=event_sink,
+                tool_spec=scheduled_call.tool_spec,
             )
             step_ids[scheduled_call.call_index] = (
                 decision.step_id or f"native_runtime_{observation_start_index + group_index + 1}"
@@ -511,22 +538,22 @@ class AgentGraphRuntime:
 
         base_tool_call_count = len(state.tool_calls)
         base_tool_result_count = len(state.tool_results)
-        tool_results: dict[int, ToolResult] = {}
+        base_error_count = len(state.errors)
+        base_provider_call_count = len(state.provider_budget.call_records)
+        tool_results: dict[int, _ParallelToolRunResult] = {}
         with ThreadPoolExecutor(
             max_workers=len(group.calls),
             thread_name_prefix="native_tool_scheduler",
         ) as executor:
             future_to_call = {
                 executor.submit(
-                    tool_executor.run_tool,
-                    state,
+                    _run_native_parallel_tool_call,
+                    tool_executor,
+                    state.model_copy(deep=True),
+                    scheduled_call,
                     step_ids[scheduled_call.call_index],
-                    scheduled_call.decision.tool_name or "",
-                    scheduled_call.decision.tool_input or {},
-                    None,
-                    self.trace_store,
-                    state.trace_id,
-                    "native_runtime",
+                    trace_store=self.trace_store,
+                    trace_id=state.trace_id,
                 ): scheduled_call
                 for scheduled_call in group.calls
             }
@@ -534,15 +561,21 @@ class AgentGraphRuntime:
                 scheduled_call = future_to_call[future]
                 tool_results[scheduled_call.call_index] = future.result()
 
-        _reorder_native_parallel_state_records(
+        _merge_native_parallel_state_records(
             state,
             base_tool_call_count=base_tool_call_count,
             base_tool_result_count=base_tool_result_count,
-            tool_names=[call.tool_name for call in group.calls],
+            base_error_count=base_error_count,
+            base_provider_call_count=base_provider_call_count,
+            ordered_results=[tool_results[scheduled_call.call_index] for scheduled_call in group.calls],
+        )
+        _replay_native_parallel_events(
+            [tool_results[scheduled_call.call_index] for scheduled_call in group.calls],
+            event_sink=event_sink,
         )
 
         for scheduled_call in group.calls:
-            tool_result = tool_results[scheduled_call.call_index]
+            tool_result = tool_results[scheduled_call.call_index].tool_result
             observation = observation_from_tool_result(
                 tool_result,
                 request_text=request.text,
@@ -676,6 +709,11 @@ class AgentGraphRuntime:
                     if parallel_result is not None:
                         return parallel_result
                     continue
+                scheduled_by_index = {
+                    scheduled_call.call_index: scheduled_call
+                    for group in schedule.groups
+                    for scheduled_call in group.calls
+                }
                 for call_index, call in enumerate(result.tool_calls):
                     if len(observations) >= max_iterations:
                         self._record_native_tool_calls_skipped_for_budget(
@@ -764,6 +802,11 @@ class AgentGraphRuntime:
                         state,
                         tool_name=decision.tool_name or call.name,
                         event_sink=event_sink,
+                        tool_spec=(
+                            scheduled_by_index[call_index].tool_spec
+                            if call_index in scheduled_by_index
+                            else None
+                        ),
                     )
                     tool_result = tool_executor.run_tool(
                         state,
@@ -1407,29 +1450,84 @@ def _native_provider_budget_parallel_safe(state: AgentState, call_count: int) ->
     return remaining_provider_calls >= call_count
 
 
-def _reorder_native_parallel_state_records(
+def _run_native_parallel_tool_call(
+    tool_executor: ToolExecutor,
+    branch_state: AgentState,
+    scheduled_call: Any,
+    step_id: str,
+    *,
+    trace_store: TraceStore | None,
+    trace_id: str | None,
+) -> _ParallelToolRunResult:
+    event_buffer = _BufferedEventSink()
+    branch_executor = ToolExecutor(
+        registry=tool_executor.registry,
+        tool_history=tool_executor.tool_history,
+        event_sink=event_buffer,
+        recovery_policy=tool_executor.recovery_policy,
+        execution_policy=tool_executor.execution_policy,
+        context_metadata=tool_executor.context_metadata,
+        cancel_token=tool_executor.cancel_token,
+        idempotency_ledger=tool_executor.idempotency_ledger,
+    )
+    result = branch_executor.run_tool(
+        branch_state,
+        step_id,
+        scheduled_call.decision.tool_name or "",
+        scheduled_call.decision.tool_input or {},
+        None,
+        trace_store,
+        trace_id,
+        "native_runtime",
+    )
+    return _ParallelToolRunResult(
+        call_index=scheduled_call.call_index,
+        state=branch_state,
+        tool_result=result,
+        events=list(event_buffer.events),
+    )
+
+
+def _merge_native_parallel_state_records(
     state: AgentState,
     *,
     base_tool_call_count: int,
     base_tool_result_count: int,
-    tool_names: list[str],
+    base_error_count: int,
+    base_provider_call_count: int,
+    ordered_results: list[_ParallelToolRunResult],
 ) -> None:
-    _reorder_records_by_tool_name(state.tool_calls, base_tool_call_count, tool_names)
-    _reorder_records_by_tool_name(state.tool_results, base_tool_result_count, tool_names)
-
-
-def _reorder_records_by_tool_name(records: list[Any], start_index: int, tool_names: list[str]) -> None:
-    tail = list(records[start_index:])
-    ordered: list[Any] = []
-    for tool_name in tool_names:
-        match_index = next(
-            (index for index, record in enumerate(tail) if getattr(record, "tool_name", None) == tool_name),
-            None,
+    state.tool_calls = list(state.tool_calls[:base_tool_call_count])
+    state.tool_results = list(state.tool_results[:base_tool_result_count])
+    state.errors = list(state.errors[:base_error_count])
+    state.provider_budget.call_records = list(state.provider_budget.call_records[:base_provider_call_count])
+    failed = False
+    any_tool_record = False
+    for result in ordered_results:
+        state.tool_calls.extend(result.state.tool_calls[base_tool_call_count:])
+        state.tool_results.extend(result.state.tool_results[base_tool_result_count:])
+        state.errors.extend(result.state.errors[base_error_count:])
+        state.provider_budget.call_records.extend(
+            result.state.provider_budget.call_records[base_provider_call_count:]
         )
-        if match_index is None:
-            continue
-        ordered.append(tail.pop(match_index))
-    records[start_index:] = ordered + tail
+        any_tool_record = any_tool_record or len(result.state.tool_calls) > base_tool_call_count
+        failed = failed or result.state.status == "failed"
+    if failed:
+        state.status = "failed"
+    elif any_tool_record:
+        state.status = "running"
+
+
+def _replay_native_parallel_events(
+    ordered_results: list[_ParallelToolRunResult],
+    *,
+    event_sink: EventSink | None,
+) -> None:
+    if event_sink is None:
+        return
+    for result in ordered_results:
+        for event in result.events:
+            event_sink.emit(event)
 
 
 class _ResponseDeltaTrackingEventSink:
@@ -1738,10 +1836,11 @@ def _emit_native_tool_progress_message(
     *,
     tool_name: str,
     event_sink: EventSink | None,
+    tool_spec: ToolSpec | None = None,
 ) -> None:
     if event_sink is None:
         return
-    text = progress_message_for_tool(tool_name)
+    text = progress_message_for_tool(tool_name, tool_spec=tool_spec)
     event_sink.emit(
         AgentEvent(
             type="progress_message",

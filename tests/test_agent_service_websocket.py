@@ -118,6 +118,8 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
     assert request.metadata["runtime"]["entry_capabilities"] == {
         "supports_text_streaming": False,
         "supports_interrupt": False,
+        "supports_tts_state": False,
+        "supports_realtime_task_state": True,
         "supports_audio_refs": False,
         "supports_image_refs": False,
         "supports_video_refs": False,

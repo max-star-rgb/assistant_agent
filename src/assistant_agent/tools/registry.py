@@ -199,6 +199,8 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "independent",
             "resource_reads": ["media:image"],
             "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我看一下。",
         },
     },
     "video_understanding": {
@@ -214,6 +216,8 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "independent",
             "resource_reads": ["media:video"],
             "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我分析一下。",
         },
     },
     "image_generation": {
@@ -230,6 +234,8 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "terminal",
             "resource_writes": ["artifact:image"],
             "realtime_safety": "needs_progress",
+            "artifact_reuse": "requires_validation",
+            "progress_message": "我开始生成，可能需要一点时间。",
         },
     },
     "render_3d": {
@@ -246,6 +252,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "terminal",
             "resource_writes": ["artifact:3d"],
             "realtime_safety": "needs_progress",
+            "artifact_reuse": "requires_validation",
         },
     },
     "product_search": {
@@ -261,6 +268,8 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "independent",
             "resource_reads": ["product_catalog"],
             "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我查一下。",
         },
     },
     "price_compare": {
@@ -276,6 +285,8 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "requires_prior_observation",
             "resource_reads": ["product_candidates", "offers"],
             "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我比一下价格。",
         },
     },
     "web_search": {
@@ -302,6 +313,8 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "independent",
             "resource_reads": ["web_search"],
             "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我联网查一下。",
         },
     },
     "memory": {
@@ -319,6 +332,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "resource_reads": ["memory"],
             "resource_writes": ["memory"],
             "realtime_safety": "needs_confirmation",
+            "artifact_reuse": "do_not_reuse",
         },
     },
     "memory_retrieval": {
@@ -341,6 +355,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "independent",
             "resource_reads": ["memory"],
             "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
         },
     },
     "memory_save": {
@@ -370,6 +385,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "independent",
             "resource_writes": ["memory"],
             "realtime_safety": "needs_confirmation",
+            "artifact_reuse": "do_not_reuse",
         },
     },
     "memory_media_ingest": {
@@ -398,6 +414,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "independent",
             "resource_writes": ["memory_media"],
             "realtime_safety": "needs_confirmation",
+            "artifact_reuse": "do_not_reuse",
         },
     },
     "memory_ingest_status": {
@@ -421,6 +438,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "independent",
             "resource_reads": ["memory_media"],
             "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
         },
     },
     "delegate_to_agent": {
@@ -449,6 +467,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "dependency_mode": "terminal",
             "resource_writes": ["agent_task"],
             "realtime_safety": "needs_progress",
+            "artifact_reuse": "do_not_reuse",
         },
     },
 }

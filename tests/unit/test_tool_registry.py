@@ -67,17 +67,22 @@ def test_registry_list_specs_is_the_canonical_tool_description() -> None:
     assert image.side_effect.compensation_hint
     assert image.execution.dependency_mode == "terminal"
     assert image.execution.realtime_safety == "needs_progress"
+    assert image.execution.artifact_reuse == "requires_validation"
+    assert image.execution.progress_message == "我开始生成，可能需要一点时间。"
 
     memory_save = next(spec for spec in specs if spec.name == "memory_save")
     assert memory_save.side_effect.level == "pending_confirmation"
     assert memory_save.side_effect.requires_confirmation is True
     assert memory_save.execution.realtime_safety == "needs_confirmation"
     assert memory_save.execution.resource_writes == ["memory"]
+    assert memory_save.execution.artifact_reuse == "do_not_reuse"
 
     product_search = next(spec for spec in specs if spec.name == "product_search")
     assert product_search.execution.dependency_mode == "independent"
     assert product_search.execution.realtime_safety == "safe"
     assert product_search.execution.resource_writes == []
+    assert product_search.execution.artifact_reuse == "reusable"
+    assert product_search.execution.progress_message == "我查一下。"
 
     price_compare = next(spec for spec in specs if spec.name == "price_compare")
     assert price_compare.execution.dependency_mode == "requires_prior_observation"
@@ -92,6 +97,8 @@ def test_unknown_tool_execution_policy_is_conservative() -> None:
 
     assert spec.execution.dependency_mode == "requires_prior_observation"
     assert spec.execution.realtime_safety == "needs_confirmation"
+    assert spec.execution.artifact_reuse == "requires_validation"
+    assert spec.execution.progress_message is None
     assert spec.execution.resource_reads == []
     assert spec.execution.resource_writes == []
 

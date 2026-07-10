@@ -31,6 +31,7 @@ class ScheduledToolCall:
     resource_writes: tuple[str, ...] = ()
     realtime_safety: RealtimeToolSafety = "needs_confirmation"
     native_call_id: str | None = None
+    tool_spec: ToolSpec | None = None
 
     @property
     def tool_name(self) -> str:
@@ -130,6 +131,7 @@ def build_scheduled_tool_call(
         resource_writes=tuple(policy.resource_writes),
         realtime_safety=policy.realtime_safety,
         native_call_id=native_call_id,
+        tool_spec=tool_spec,
     )
 
 

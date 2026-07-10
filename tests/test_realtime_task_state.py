@@ -1,7 +1,7 @@
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ToolExecutionPolicy, ToolResult
 from assistant_agent.services.assistant_run_service import (
     InMemoryConversationStore,
     run_assistant_request,
@@ -29,6 +29,75 @@ def test_realtime_task_state_skips_non_realtime_request_by_default() -> None:
     )
 
     assert prepared.metadata == {}
+
+
+def test_realtime_task_state_skips_plain_gateway_metadata_without_realtime_capability() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="普通 Gateway chat facade 请求",
+        metadata={
+            "gateway": {
+                "history": ["普通 Gateway chat facade 请求"],
+                "entry_capabilities": {
+                    "supports_interrupt": True,
+                    "supports_realtime_task_state": False,
+                },
+            },
+            "realtime": {"run_id": "run-1", "turn_id": "turn-1"},
+        },
+    )
+
+    prepared = prepare_realtime_task_state_request(
+        request,
+        store=InMemoryRealtimeTaskStateStore(),
+    )
+
+    assert prepared.metadata == request.metadata
+
+
+def test_realtime_task_state_enables_for_explicit_interaction_mode() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="实时通话请求",
+        metadata={
+            "interaction_mode": "realtime",
+            "realtime": {"run_id": "run-1", "turn_id": "turn-1"},
+        },
+    )
+
+    prepared = prepare_realtime_task_state_request(
+        request,
+        store=InMemoryRealtimeTaskStateStore(),
+    )
+
+    assert prepared.metadata[REALTIME_TASK_STATE_METADATA_KEY]["objective"] == "实时通话请求"
+    assert prepared.metadata["realtime_task_state_enabled"] is True
+
+
+def test_realtime_task_state_enables_for_entry_capability() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="媒体入口请求",
+        metadata={
+            "gateway": {
+                "entry_capabilities": {
+                    "supports_interrupt": True,
+                    "supports_realtime_task_state": True,
+                },
+            },
+            "realtime": {"run_id": "run-1", "turn_id": "turn-1"},
+        },
+    )
+
+    prepared = prepare_realtime_task_state_request(
+        request,
+        store=InMemoryRealtimeTaskStateStore(),
+    )
+
+    assert prepared.metadata[REALTIME_TASK_STATE_METADATA_KEY]["objective"] == "媒体入口请求"
 
 
 def test_realtime_task_state_first_turn_creates_snapshot() -> None:
@@ -114,6 +183,7 @@ def test_realtime_task_state_records_speech_turn_and_barge_in_source_on_interrup
         audio_id="audio-turn-2",
         metadata={
             "source": "realtime_media_websocket",
+            "interaction_mode": "realtime",
             "control": "interrupt",
             "realtime": {
                 "run_id": "run-2",
@@ -377,6 +447,37 @@ def test_realtime_task_state_reuses_completed_product_search_artifact_on_interru
     assert reusable_artifact["output_ref"] == "mock://products/headphones"
     assert reusable_artifact["context"]["structured_output"]["items"][0]["title"] == "通勤降噪耳机 A"
     assert "raw_provider_payload" not in str(reusable_artifact)
+
+
+def test_realtime_task_state_artifact_reuse_uses_tool_execution_policy(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "assistant_agent.services.realtime_task_state.tool_execution_policy",
+        lambda tool_name: ToolExecutionPolicy(artifact_reuse="reusable")
+        if tool_name == "calendar.search_events"
+        else ToolExecutionPolicy(),
+    )
+    task_store = InMemoryRealtimeTaskStateStore()
+
+    run_assistant_request(
+        _realtime_request("查一下我的日程", run_id="run-1", turn_id="turn-1"),
+        runtime=_CalendarSearchRuntime(),
+        conversation_store=InMemoryConversationStore(),
+        realtime_task_state_store=task_store,
+        load_env=False,
+    )
+    prepared = prepare_realtime_task_state_request(
+        _realtime_request(
+            "等等，加上明天下午",
+            run_id="run-2",
+            turn_id="turn-2",
+            control="interrupt",
+        ),
+        store=task_store,
+    )
+
+    snapshot = prepared.metadata[REALTIME_TASK_STATE_METADATA_KEY]
+    assert snapshot["latest_revision"]["strategy"] == "reuse_and_replan"
+    assert snapshot["reusable_artifacts"][0]["tool_name"] == "calendar.search_events"
 
 
 def test_realtime_task_state_marks_artifacts_stale_when_user_restarts_search() -> None:
@@ -944,6 +1045,28 @@ class _UnknownSuccessfulToolRuntime:
         return state
 
 
+class _CalendarSearchRuntime:
+    def run_state(self, request: UserRequest, **kwargs) -> AgentState:
+        state = AgentState.from_request(request)
+        state.tool_results.append(
+            ToolResult(
+                tool_name="calendar.search_events",
+                success=True,
+                output_ref="calendar://events/tomorrow",
+                data={
+                    "summary": "Found two calendar events tomorrow.",
+                    "side_effect": {
+                        "level": "external_read",
+                        "requires_confirmation": False,
+                        "description": "Reads calendar events without writing.",
+                    },
+                },
+            )
+        )
+        state.set_response(AgentResponse(message="找到两个日程。"))
+        return state
+
+
 class _RealtimeEventRuntime:
     def run_state(self, request: UserRequest, event_sink: ListEventSink, **kwargs) -> AgentState:
         event_sink.emit(
@@ -1102,6 +1225,7 @@ def _realtime_request(
 ) -> UserRequest:
     metadata = {
         "source": "realtime_agent_backend",
+        "interaction_mode": "realtime",
         "realtime": {"run_id": run_id, "turn_id": turn_id},
     }
     if control:

@@ -11,6 +11,8 @@ class EntryAdapterCapabilities:
 
     supports_text_streaming: bool = True
     supports_interrupt: bool = True
+    supports_tts_state: bool = False
+    supports_realtime_task_state: bool = False
     supports_audio_refs: bool = False
     supports_image_refs: bool = False
     supports_video_refs: bool = False
@@ -21,6 +23,8 @@ class EntryAdapterCapabilities:
         return {
             "supports_text_streaming": self.supports_text_streaming,
             "supports_interrupt": self.supports_interrupt,
+            "supports_tts_state": self.supports_tts_state,
+            "supports_realtime_task_state": self.supports_realtime_task_state,
             "supports_audio_refs": self.supports_audio_refs,
             "supports_image_refs": self.supports_image_refs,
             "supports_video_refs": self.supports_video_refs,
@@ -36,6 +40,8 @@ GATEWAY_WEBSOCKET_CAPABILITIES = EntryAdapterCapabilities(
 )
 
 REALTIME_MEDIA_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
+    supports_tts_state=True,
+    supports_realtime_task_state=True,
     supports_audio_refs=True,
     supports_image_refs=True,
     supports_video_refs=True,
@@ -45,4 +51,5 @@ REALTIME_MEDIA_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
 AGENT_SERVICE_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
     supports_text_streaming=False,
     supports_interrupt=False,
+    supports_realtime_task_state=True,
 )
