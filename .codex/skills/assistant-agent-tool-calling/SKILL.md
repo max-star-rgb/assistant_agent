@@ -14,8 +14,9 @@ Use this skill as the execution wrapper for tool-calling work in the `assistant_
    - If those files are absent, ask for the `assistant_agent` repository path before editing.
 2. Read `AGENTS.md`.
 3. Read `docs/tool-calling-architecture.md` completely enough for the task.
-4. Search relevant source and tests before changing behavior.
-5. Treat `docs/development/**` as historical only unless the user explicitly asks for historical decisions.
+4. For tool-system design, registry changes, or comparisons with Hermes, LangChain, OpenClaw, Claude Code, or similar references, explicitly apply the `docs/tool-calling-architecture.md` "设计收敛原则" before proposing or editing.
+5. Search relevant source and tests before changing behavior.
+6. Treat `docs/development/**` as historical only unless the user explicitly asks for historical decisions.
 
 ## Source Map
 
@@ -34,6 +35,7 @@ Inspect these areas as relevant:
 - Preserve mock/local/offline defaults for tests and demos.
 - Do not enable real external providers just because keys exist.
 - Keep provider-native tool call support as an adapter path, not a bypass around tool governance.
+- Do not migrate wholesale toward Hermes, LangChain, OpenClaw, or Claude Code. Borrow only the layer that fits the documented convergence rules; otherwise put the idea in Backlog.
 - For new tools, add or update the tool spec, validation, execution behavior, tests and docs together.
 - For failures, return explainable errors to the agent instead of leaking unhandled exceptions.
 
