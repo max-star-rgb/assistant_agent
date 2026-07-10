@@ -1,6 +1,9 @@
 from assistant_agent.agent import tool_scheduler
 from assistant_agent.agent.action_validator import ActionValidationResult
+from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.assistant_decision import AssistantDecision
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services import tool_call_boundary
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
 from assistant_agent.tools.registry import create_default_registry
 
@@ -64,3 +67,43 @@ def test_scheduler_policy_metadata_matches_default_interpreter_views() -> None:
 
         assert scheduled.side_effect_level == view.side_effect_level
         assert scheduled.requires_confirmation is view.requires_confirmation
+
+
+def test_pre_tool_call_boundary_summary_uses_policy_view(monkeypatch) -> None:
+    class FakePolicyInterpreter:
+        def view_for_tool_name(self, tool_name: str) -> ToolPolicyView:
+            assert tool_name == "product_search"
+            return ToolPolicyView(
+                tool_name=tool_name,
+                side_effect_level="compensatable",
+                risk_gate_level="soft_gate",
+                requires_confirmation=True,
+                confirmation_kind="verbal_confirmation",
+                description="Fake policy view for boundary wiring.",
+                compensation_hint="Report that the generated artifact already exists.",
+            )
+
+    monkeypatch.setattr(
+        tool_call_boundary,
+        "ToolPolicyInterpreter",
+        FakePolicyInterpreter,
+        raising=False,
+    )
+    request = UserRequest(user_id="u1", session_id="s1", text="hello")
+    state = AgentState.from_request(request, run_id="run-1")
+
+    summary = tool_call_boundary.build_pre_tool_call_summary(
+        tool_name="product_search",
+        tool_input={"query": "headphones"},
+        registry=create_default_registry(),
+        request=request,
+        state=state,
+    )
+
+    assert summary["side_effect"]["level"] == "compensatable"
+    assert summary["side_effect"]["requires_confirmation"] is True
+    assert summary["side_effect"]["confirmation_kind"] == "verbal_confirmation"
+    assert summary["confirmation"] == {
+        "required": True,
+        "kind": "verbal_confirmation",
+    }

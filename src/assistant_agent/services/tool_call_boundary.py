@@ -9,7 +9,8 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
-from assistant_agent.tools.registry import ToolRegistry, tool_side_effect_policy
+from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
+from assistant_agent.tools.registry import ToolRegistry
 
 
 TOOL_CALL_BOUNDARY_SCHEMA_VERSION = "tool_call_boundary_v1"
@@ -117,8 +118,9 @@ def _post_status(result: ToolResult, *, cancel_metadata: dict[str, Any] | None) 
 
 
 def _side_effect_summary(tool_name: str, *, result: ToolResult | None = None) -> dict[str, Any]:
-    policy = tool_side_effect_policy(tool_name)
-    payload = policy.model_dump(mode="json", exclude_none=True)
+    payload = _side_effect_summary_from_policy_view(
+        ToolPolicyInterpreter().view_for_tool_name(tool_name)
+    )
     if result is not None:
         data = result.data or {}
         override = data.get("side_effect")
@@ -136,6 +138,18 @@ def _side_effect_summary(tool_name: str, *, result: ToolResult | None = None) ->
             payload["level"] = "committed"
             payload["requires_confirmation"] = False
     return payload
+
+
+def _side_effect_summary_from_policy_view(view: ToolPolicyView) -> dict[str, Any]:
+    return _drop_none(
+        {
+            "level": view.side_effect_level,
+            "requires_confirmation": view.requires_confirmation,
+            "description": view.description,
+            "confirmation_kind": view.confirmation_kind,
+            "compensation_hint": view.compensation_hint,
+        }
+    )
 
 
 def _idempotency_summary(tool_input: dict[str, Any]) -> dict[str, Any]:
