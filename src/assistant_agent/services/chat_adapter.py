@@ -324,7 +324,7 @@ def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
     missing = settings.missing_required_env()
     if missing:
         return UnconfiguredChatAdapter(resolved.chat_provider, ", ".join(missing))
-    if settings.spec.adapter_kind == "openai_compatible":
+    if settings.adapter_kind == "openai_compatible":
         return OpenAICompatibleChatAdapter(
             provider=settings.provider,
             api_key=settings.api_key or "",

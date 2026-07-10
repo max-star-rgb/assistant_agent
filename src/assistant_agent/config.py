@@ -216,7 +216,7 @@ class ProviderConfig:
             vision_api_key=vision_settings.api_key,
             vision_base_url=vision_settings.base_url,
             vision_model=vision_settings.model,
-            vision_adapter_kind=vision_settings.spec.adapter_kind,
+            vision_adapter_kind=vision_settings.adapter_kind,
             vision_embedding_provider=vision_embedding_provider,
             vision_embedding_api_key=(
                 _vision_embedding_api_key(source) if vision_embedding_provider == "dashscope" else None
@@ -265,7 +265,7 @@ class ProviderConfig:
             chat_api_key=chat_settings.api_key,
             chat_base_url=chat_settings.base_url,
             chat_model=chat_settings.model,
-            chat_adapter_kind=chat_settings.spec.adapter_kind,
+            chat_adapter_kind=chat_settings.adapter_kind,
             chat_stream=_chat_stream(source, chat_provider),
             native_provider_streaming=_bool_env(
                 source.get("MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING"),
@@ -283,7 +283,7 @@ class ProviderConfig:
             image_generation_api_key=image_generation_settings.api_key,
             image_generation_base_url=image_generation_settings.base_url,
             image_generation_model=image_generation_settings.model,
-            image_generation_adapter_kind=image_generation_settings.spec.adapter_kind,
+            image_generation_adapter_kind=image_generation_settings.adapter_kind,
             openai_image_model=source.get("OPENAI_IMAGE_MODEL", "gpt-image-1"),
             qwen_image_base_url=source.get("QWEN_IMAGE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"),
             qwen_image_model=source.get("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro"),

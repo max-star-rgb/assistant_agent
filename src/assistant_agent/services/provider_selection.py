@@ -13,7 +13,7 @@ def create_vision_adapter(config: ProviderConfig | None = None) -> VisionUnderst
 
     resolved_config = config or ProviderConfig.from_env()
     provider = resolved_config.resolved_vision_provider()
-    if provider.spec.adapter_kind == "ark_responses":
+    if provider.adapter_kind == "ark_responses":
         from assistant_agent.providers.ark_vision import ArkVisionProviderAdapter, ArkVisionProviderConfig
 
         return ArkVisionProviderAdapter(
@@ -24,7 +24,7 @@ def create_vision_adapter(config: ProviderConfig | None = None) -> VisionUnderst
                 model=provider.model or "",
             )
         )
-    if provider.spec.adapter_kind == "openai_compatible":
+    if provider.adapter_kind == "openai_compatible":
         return HttpVisionProviderAdapter(
             RealVisionProviderConfig(
                 provider=provider.provider,

@@ -78,7 +78,7 @@ def create_image_generation_adapter(config: ProviderConfig | None = None) -> Ima
     missing = provider.missing_required_env()
     if missing:
         return UnconfiguredImageGenerationAdapter(provider.provider, ", ".join(missing))
-    if provider.provider == "qwen" and provider.spec.adapter_kind == "dashscope_image":
+    if provider.adapter_kind == "dashscope_image":
         from assistant_agent.providers.qwen_image_generation import (
             QwenImageGenerationAdapter,
             QwenImageGenerationConfig,
@@ -92,7 +92,7 @@ def create_image_generation_adapter(config: ProviderConfig | None = None) -> Ima
                 default_size=resolved.qwen_image_default_size,
             )
         )
-    if provider.provider == "ark" and provider.spec.adapter_kind == "ark_image":
+    if provider.adapter_kind == "ark_image":
         from assistant_agent.providers.ark_image_generation import (
             ArkImageGenerationAdapter,
             ArkImageGenerationConfig,

@@ -53,6 +53,8 @@ def test_resolve_chat_provider_returns_missing_required_env_names() -> None:
     resolved = resolve_chat_provider("deepseek", {})
 
     assert resolved.provider == "deepseek"
+    assert resolved.adapter_kind == "openai_compatible"
+    assert resolved.capabilities == CHAT_PROVIDER_SPECS["deepseek"].capabilities
     assert resolved.base_url == "https://api.deepseek.com/v1"
     assert resolved.model == "deepseek-chat"
     assert resolved.missing_required_env() == ["DEEPSEEK_CHAT_API_KEY"]
@@ -188,7 +190,21 @@ def test_resolve_qwen_image_generation_provider_uses_dashscope_key() -> None:
     resolved = resolve_image_generation_provider("qwen", {"QWEN_IMAGE_API_KEY": "test-key"})
 
     assert resolved.provider == "qwen"
+    assert resolved.adapter_kind == "dashscope_image"
     assert resolved.api_key == "test-key"
     assert resolved.base_url == "https://dashscope.aliyuncs.com/api/v1"
     assert resolved.model == "qwen-image-2.0-pro"
     assert resolved.missing_required_env() == []
+
+
+def test_resolve_ark_image_generation_provider_exposes_adapter_kind() -> None:
+    resolved = resolve_image_generation_provider(
+        "ark",
+        {
+            "ARK_IMAGE_API_KEY": "test-key",
+            "ARK_IMAGE_BASE_URL": "https://ark.local/api/v3",
+            "ARK_IMAGE_MODEL": "ark-image-test",
+        },
+    )
+
+    assert resolved.adapter_kind == "ark_image"

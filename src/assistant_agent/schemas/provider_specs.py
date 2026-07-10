@@ -119,6 +119,14 @@ class ResolvedProviderSpec:
     def provider(self) -> str:
         return self.spec.name
 
+    @property
+    def adapter_kind(self) -> AdapterKind:
+        return self.spec.adapter_kind
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return self.spec.capabilities
+
     def missing_required_env(self) -> list[str]:
         missing: list[str] = []
         if self.spec.requires_api_key and self.spec.api_key_env and not self.api_key:

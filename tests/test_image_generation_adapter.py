@@ -1,5 +1,10 @@
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.generation import ImageGenerationResult
+from assistant_agent.schemas.provider_specs import (
+    IMAGE_GENERATION_CAPABILITIES,
+    ProviderSpec,
+    ResolvedProviderSpec,
+)
 from assistant_agent.services import generated_artifacts
 from assistant_agent.services.generated_artifacts import materialize_image_generation_result
 from assistant_agent.services.image_generation_adapter import (
@@ -80,6 +85,62 @@ def test_ark_image_provider_with_config_uses_real_adapter() -> None:
             ark_image_default_size="2K",
         )
     )
+
+    assert isinstance(adapter, ArkImageGenerationAdapter)
+    assert adapter.config.api_key == "test-ark-key"
+    assert adapter.config.base_url == "https://ark.local/api/v3"
+    assert adapter.config.model == "ark-image-test"
+    assert adapter.config.default_size == "2K"
+
+
+def test_image_provider_dispatches_dashscope_adapter_by_adapter_kind_not_provider_name() -> None:
+    class AliasConfig(ProviderConfig):
+        def resolved_image_generation_provider(self) -> ResolvedProviderSpec:
+            return ResolvedProviderSpec(
+                spec=ProviderSpec(
+                    name="dashscope_alias",
+                    capability="image_generation",
+                    provider_env="TEST_IMAGE_PROVIDER",
+                    adapter_kind="dashscope_image",
+                    capabilities=IMAGE_GENERATION_CAPABILITIES,
+                    requires_api_key=False,
+                    requires_base_url=False,
+                    requires_model=False,
+                ),
+                api_key="test-dashscope-key",
+                base_url="https://dashscope.local/api/v1",
+                model="qwen-image-test",
+            )
+
+    adapter = create_image_generation_adapter(AliasConfig(qwen_image_default_size="256*256"))
+
+    assert isinstance(adapter, QwenImageGenerationAdapter)
+    assert adapter.config.api_key == "test-dashscope-key"
+    assert adapter.config.base_url == "https://dashscope.local/api/v1"
+    assert adapter.config.model == "qwen-image-test"
+    assert adapter.config.default_size == "256*256"
+
+
+def test_image_provider_dispatches_ark_adapter_by_adapter_kind_not_provider_name() -> None:
+    class AliasConfig(ProviderConfig):
+        def resolved_image_generation_provider(self) -> ResolvedProviderSpec:
+            return ResolvedProviderSpec(
+                spec=ProviderSpec(
+                    name="ark_alias",
+                    capability="image_generation",
+                    provider_env="TEST_IMAGE_PROVIDER",
+                    adapter_kind="ark_image",
+                    capabilities=IMAGE_GENERATION_CAPABILITIES,
+                    requires_api_key=False,
+                    requires_base_url=False,
+                    requires_model=False,
+                ),
+                api_key="test-ark-key",
+                base_url="https://ark.local/api/v3",
+                model="ark-image-test",
+            )
+
+    adapter = create_image_generation_adapter(AliasConfig(ark_image_default_size="2K"))
 
     assert isinstance(adapter, ArkImageGenerationAdapter)
     assert adapter.config.api_key == "test-ark-key"
