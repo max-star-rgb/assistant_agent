@@ -6,7 +6,10 @@ This document is the current canonical entry for memory service architecture. Up
 
 Older Phase 8 memory documents remain background references. They are not the current design source when this file and code disagree.
 
-Future memory architecture changes should be reflected in this document first; operational SQLite procedures remain in `docs/development/memory-sqlite-operator-runbook.md`.
+Future memory architecture changes should be reflected in this document first.
+Operational dual-core configuration examples live in
+`docs/development/memory-dual-core-operator-runbook.md`; operational SQLite
+procedures remain in `docs/development/memory-sqlite-operator-runbook.md`.
 
 ## Scope
 
@@ -21,6 +24,31 @@ The memory service is local-first long-term memory for the agent. It covers:
 - Exposing audit, audit-event, metrics, export, retention sweep, delete, and snapshot views through service/API boundaries.
 
 Conversation history is related but separate. Session conversation context, including session-scoped `context_summary`, is owned by conversation/session services and is combined with memory only in context packs and memory snapshots. `context_summary` is not a long-term memory item.
+
+## Dual-Core Model
+
+The memory architecture has two cores behind the same governed runtime contract:
+
+- Built-in local core: `InMemoryStore`, `JsonlMemoryStore`, or `SQLiteMemoryStore`. This core is a real memory service boundary for local/offline runs, tests, demos, and deployments that do not need an external service.
+- External Memory Service core: opt-in network-backed memory capability exposed through adapters. It can augment local retrieval or own the full memory lifecycle, depending on backend mode.
+
+Both cores must stay behind `MemoryManager`, `MemoryStore`, `MemoryReadPolicy`, `MemoryWritePolicy`, identity binding, prompt-safe conversion, and audit/snapshot/export boundaries. Agent nodes, prompt builders, tools, and API routes must not special-case a concrete local store or external provider.
+
+The runtime modes are:
+
+- Local-only: `memory`, `jsonl`, or `sqlite`; all lifecycle operations stay in the built-in local core.
+- Dual-core retrieval: `dual_core` or legacy `hybrid_remote`; writes, confirmations, profile, audit, export, retention, and deletion stay in the configured local core, while search may merge local results with safe external Memory Server results.
+- External lifecycle owner: `remote_service`; lifecycle operations are delegated to an `ExternalMemoryServiceAdapter`, with no silent local-write fallback.
+
+Memory observability exposes a prompt-safe `core_status` object through memory
+snapshot storage metadata, memory metrics, and per-run request debug metadata
+under `request.metadata["memory_core_status"]`. It reports `mode`,
+`memory_backend`, `memory_local_backend`, active/local store class names,
+whether an external core is configured, whether remote query is enabled, and
+whether the latest remote query degraded to local results. It may include
+stable remote error codes such as `memory_server_query_failed`; it must not
+include remote URLs, raw exception messages, credentials, raw provider payloads,
+or memory content.
 
 ## Boundary With Context Engineering
 
@@ -103,10 +131,11 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/assistant_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`, including soft-delete-compatible delete, hard-delete, and memory-confirmation methods. |
 | `src/assistant_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract, with redacted confirmation state stored in a sidecar JSONL file. |
 | `src/assistant_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, soft-delete-compatible delete behavior, durable audit-event rows, and durable confirmation rows. |
-| `src/assistant_agent/memory/remote.py` | Opt-in external Memory Server adapters. Converts remote query responses into safe `MemoryItem` / `MemorySearchResult` objects, provides query/health plus media upload/task-status client methods, exposes `HybridMemoryStore` where only `search(...)` uses the remote service, and exposes `RemoteServiceMemoryStore` for an explicit full-lifecycle external service adapter. |
+| `src/assistant_agent/memory/remote.py` | Opt-in external Memory Server adapters. Converts remote query responses into safe `MemoryItem` / `MemorySearchResult` objects, provides query/health plus media upload/task-status client methods, exposes `HybridMemoryStore` for `dual_core`/legacy `hybrid_remote` where only `search(...)` uses the remote service, and exposes `RemoteServiceMemoryStore` plus `HttpRemoteMemoryServiceAdapter` for an explicit full-lifecycle external service adapter. |
 | `src/assistant_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
 | `src/assistant_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
 | `src/assistant_agent/memory/write_policy.py` | Safe memory item construction, TTL defaults, raw payload restrictions, explicit memory typing. |
+| `src/assistant_agent/memory/quality_eval.py` | Offline write-quality eval helpers over `MemoryWritePolicy`. Produces deterministic policy feedback metrics for write/reject/confirmation behavior without training, network calls, or policy mutation. |
 | `src/assistant_agent/memory/profile.py` | Compact `user_profile` memory derived from explicit preference/product/task memories. |
 | `src/assistant_agent/schemas/identity.py` | `RequestIdentity` contract for request/auth-derived user, tenant, project, session, and allowed memory scopes. |
 | `src/assistant_agent/tools/memory_tool.py` | Agent-callable `memory`, `memory_retrieval`, and `memory_save` tools. Uses `MemoryManager` from tool context when present. |
@@ -215,13 +244,16 @@ Configured by `ProviderConfig`:
 - `memory_backend="memory"`: default process-local `InMemoryStore`.
 - `memory_backend="jsonl"`: local `JsonlMemoryStore`.
 - `memory_backend="sqlite"`: local `SQLiteMemoryStore`.
-- `memory_backend="hybrid_remote"`: opt-in `HybridMemoryStore` with local JSONL lifecycle storage plus external Memory Server query augmentation. This backend is selected from environment only when `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true` or a runtime profile that allows real/network providers is active.
+- `memory_backend="dual_core"`: opt-in `HybridMemoryStore` with a configurable built-in local core plus external Memory Server query augmentation. This backend is selected from environment only when `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true` or a runtime profile that allows real/network providers is active.
+- `memory_backend="hybrid_remote"`: legacy alias for the same retrieval-augmentation shape as `dual_core`; kept for compatibility.
 - `memory_backend="remote_service"`: opt-in `RemoteServiceMemoryStore` with an external adapter as lifecycle owner. This mode is selected only when remote memory is explicitly enabled and never falls back to local lifecycle writes by default.
-- `memory_path`: default `.local/memory/long_term_memories.jsonl`; when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite` is set without an explicit path, the default is `.local/memory/long_term_memories.sqlite3`.
+- `memory_local_backend`: local core used by `dual_core` / `hybrid_remote`; allowed values are `memory`, `jsonl`, and `sqlite`. Default is `jsonl` for dual-core modes.
+- `memory_path`: default `.local/memory/long_term_memories.jsonl`; when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite`, or a dual-core mode uses `MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND=sqlite`, the default is `.local/memory/long_term_memories.sqlite3`.
 
 Environment variables:
 
 - `MULTIMODAL_AGENT_MEMORY_BACKEND`
+- `MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND`
 - `MULTIMODAL_AGENT_MEMORY_PATH`
 - `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED`
 - `MEMORY_SERVER_BASE_URL`
@@ -229,18 +261,23 @@ Environment variables:
 - `MEMORY_SERVER_QUERY_STRATEGY`
 - `MEMORY_SERVER_DIRECT_ANSWER`
 - `MEMORY_SERVER_INCLUDE_MEDIA_CHUNKS`
+- `MULTIMODAL_AGENT_MEMORY_REMOTE_SERVICE_ADAPTER`
+
+Operational examples for local-only SQLite, `dual_core`, legacy
+`hybrid_remote`, and `remote_service` configurations live in
+`docs/development/memory-dual-core-operator-runbook.md`.
 
 Relative JSONL and SQLite paths resolve from the repository root. JSONL and SQLite are still local-first storage, not real external providers. Additional PostgreSQL, vector DB, or external memory service adapters must sit behind `MemoryStore` and `MemoryManager`.
 
-`hybrid_remote` is retrieval augmentation, not a full memory-service
-replacement. `HybridMemoryStore.search(...)` merges local search results with
+`dual_core` / `hybrid_remote` are retrieval augmentation, not full memory-service
+replacements. `HybridMemoryStore.search(...)` merges local search results with
 safe remote query results from the external Memory Server. Local results remain
 first, remote failures are returned as recoverable `MemorySearchResult.errors`,
 and the agent run must still proceed with local results when the remote service
 is unavailable. `HybridMemoryStore.save(...)`, get/list/delete/hard-delete,
 confirmation, profile, audit, export, retention, and user-data lifecycle paths
-delegate to the local store until the external service exposes equivalent
-governed APIs.
+delegate to the configured local core until the external service exposes
+equivalent governed APIs.
 
 Remote Memory Server query defaults are conservative: `direct_answer=false` and
 media chunks disabled unless explicitly configured. Remote text results are
@@ -256,19 +293,25 @@ rejected when it contains raw/base64 or secret-like keys, generated `file_id`
 values are created inside `assistant_agent`, and task status results carry a
 scope warning because the external service's current task lookup is not
 user-enforced. Default mock/local/offline configuration registers the tools but
-returns `provider_unconfigured` until `hybrid_remote` and a Memory Server base
-URL are explicitly configured.
+returns `provider_unconfigured` until `dual_core` / `hybrid_remote` and a
+Memory Server base URL are explicitly configured.
 
 `remote_service` is the separate lifecycle-owner mode. The project-side
 `RemoteServiceMemoryStore` wraps an `ExternalMemoryServiceAdapter` contract for
 `search`, `save_explicit`, `record_candidate`, `confirm`, `reject`, `delete`,
-`export`, `audit`, and `health`. The default factory wires an unavailable
+`export`, `audit`, and `health`. The default factory still wires an unavailable
 adapter that returns recoverable errors instead of silently writing locally.
-Concrete HTTP paths are intentionally not fixed in this repository until the
-external service API is stable. Any remote payload must still be converted into
-internal safe `MemoryItem` / `MemorySearchResult` objects, runtime identity must
-override remote-supplied identity, and unsafe raw/base64/provider payloads must
-be rejected or dropped before prompt injection or trace summaries.
+When `MULTIMODAL_AGENT_MEMORY_REMOTE_SERVICE_ADAPTER=http`,
+`MULTIMODAL_AGENT_MEMORY_BACKEND=remote_service`,
+`MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true`, and `MEMORY_SERVER_BASE_URL` are
+all configured, the factory builds `HttpRemoteMemoryServiceAdapter`. That HTTP
+adapter is the project-side lifecycle integration point; it posts trusted
+request/user identity in the body for save, search, delete, export, audit,
+candidate, and confirmation operations. Any remote payload must still be
+converted into internal safe `MemoryItem` / `MemorySearchResult` objects,
+runtime identity must override remote-supplied identity, and unsafe
+raw/base64/provider payloads must be rejected or dropped before prompt
+injection or trace summaries.
 
 Standard `MemoryStore` backends implement the confirmation workflow methods: `save_confirmation(...)`, `get_confirmation(...)`, `list_confirmations(...)`, and `delete_confirmation(...)`. InMemory keeps confirmation state in process memory. JSONL stores redacted pending/resolved confirmations in a sidecar file next to the memory JSONL file, for example `long_term_memories.confirmations.jsonl`. SQLite stores them in schema v3 `memory_confirmations`.
 
@@ -322,10 +365,11 @@ The rendered memory context is written to:
 - `request.metadata["memory_read_policy"]`
 - `request.metadata["memory_trust_policy"]`
 - `request.metadata["memory_recall_report"]`
+- `request.metadata["memory_core_status"]`
 
 Prompt rendering must treat memory as user-history data, not as system instruction.
 
-`memory_recall_report` is developer/debug metadata for Memory Intelligence v1. It does not include raw query text, raw memory content, raw prompts, raw user transcripts, provider raw responses, hidden reasoning, secrets, or media bodies. It reports coarse query metadata (`query_present`, `query_kind`, `query_hash`), read-policy status, candidate and injected counts, omitted/rejected reasons, retrieval version, profile source ids, and superseded exclusion count. It is not a learning loop and must not automatically modify memory, prompts, skills, routing, or policy.
+`memory_recall_report` is developer/debug metadata for Memory Intelligence v1. It does not include raw query text, raw memory content, raw prompts, raw user transcripts, provider raw responses, hidden reasoning, secrets, or media bodies. It reports coarse query metadata (`query_present`, `query_kind`, `query_hash`), read-policy status, candidate and injected counts, omitted/rejected reasons, stable search error codes, retrieval version, profile source ids, and superseded exclusion count. It is not a learning loop and must not automatically modify memory, prompts, skills, routing, or policy.
 
 ## Context Injection Budget
 
@@ -373,6 +417,31 @@ Current local eval boundary:
 - Metrics include Recall@k, MRR, false-positive rate, correct-empty rate, cross-user leakage rate, sensitive/expired injection rate, and token budget compliance.
 - Initial coverage includes black-bag recall, color preference recall, task/product resume, budget preference, unrelated empty recall, cross-user isolation, expired exclusion, sensitive non-injection, token budget compliance, and superseded-preference exclusion from active profile/context.
 - Phase 2 Memory Intelligence v1 gate tests live in `tests/test_phase2_memory_intelligence_gate.py`; they verify candidate audit-only behavior, explicit profile memory, deterministic supersede, active recall, confirmation-before-write, and local memory eval metrics without vector or external memory dependencies.
+
+## Write Quality Eval
+
+The useful Hermes-style lesson for this project is a measurable feedback loop
+around memory quality, not immediate RL training. The current implementation
+keeps that loop offline and deterministic:
+
+- `src/assistant_agent/memory/quality_eval.py` evaluates explicit saves and
+  promotion candidates through the existing `MemoryWritePolicy`.
+- `scripts/run_evals.py --suite memory_quality` runs fixed cases from
+  `tests/evals/eval_cases.json`.
+- `scripts/smoke_memory_dual_core.py --offline-only` includes the
+  `memory_quality` suite in the broader dual-core operator acceptance smoke.
+- Metrics include action accuracy, write precision/recall, reject recall,
+  confirmation recall, secret rejection rate, and false-write rate.
+- Eval output includes prompt-safe feedback fields: action, allowed,
+  destination, confirmation requirement, and sensitivity. It must not include
+  raw user text, secrets, provider payloads, raw media, or external service
+  responses.
+
+This eval suite may inform future policy changes or curated training data, but
+it does not mutate `MemoryWritePolicy`, prompts, routes, skills, or stores at
+runtime. Any later RL or preference-optimization work must treat these evals as
+offline evidence and must still preserve explicit write policy, identity, audit,
+and redaction boundaries.
 
 ## Writes
 
@@ -473,7 +542,32 @@ List and snapshot endpoints do not include memory `content` by default. `include
 
 Confirmation endpoints list pending or resolved explicit-memory confirmations and let a user accept or reject a sensitive-but-redacted explicit memory. Confirmed entries become normal durable memory items; rejected or expired entries remain audit/governance state only.
 
-`MemoryManager` records prompt-safe lifecycle events: context load, explicit save/reject, confirmation create/decide, promotion decision, soft delete, hard delete, session delete, and user clear. `MemoryAuditService` adds export and retention-sweep events, and derives `MemoryMetricsReport` counters from the same event stream. In-memory and JSONL paths keep a bounded in-process event list. SQLite schema v2 persists events in `memory_audit_events`, with common filter fields split into columns and the full redacted event saved as JSON payload, so events survive runtime restarts for the local SQLite backend. SQLite schema v3 persists redacted pending/resolved confirmations in `memory_confirmations`; JSONL persists the same confirmation payload shape in its sidecar file. Production-grade external metrics export, backup packaging, and full rollback/rebuild runbooks remain future work. Event metadata must stay redacted and must not include raw memory content, raw tool/provider payloads, base64/media bodies, or secrets.
+`MemoryManager` records prompt-safe lifecycle events: context load, explicit
+save/reject, confirmation create/decide, promotion decision, soft delete, hard
+delete, session delete, user clear, remote query degradation, and remote
+lifecycle failure. Dual-core retrieval failures emit `memory_remote_degraded`
+when the external Memory Server search fails and the run continues with local
+results. `remote_service` search/write failures emit
+`memory_remote_lifecycle_failed` because the external service owns that
+lifecycle path and no local lifecycle fallback is allowed. `MemoryAuditService`
+adds export and retention-sweep events, and derives `MemoryMetricsReport`
+counters from the same event stream, including `memory.remote.degraded.count`
+and `memory.remote.lifecycle_failed.count`. In-memory and JSONL paths keep a
+bounded in-process event list. SQLite schema v2 persists events in
+`memory_audit_events`, with common filter fields split into columns and the full
+redacted event saved as JSON payload, so events survive runtime restarts for the
+local SQLite backend. SQLite schema v3 persists redacted pending/resolved
+confirmations in `memory_confirmations`; JSONL persists the same confirmation
+payload shape in its sidecar file. Production-grade external metrics export,
+backup packaging, and full rollback/rebuild runbooks remain future work. Event
+metadata must stay redacted and must not include remote URLs, raw exception
+messages, raw memory content, raw tool/provider payloads, base64/media bodies,
+or secrets.
+
+Memory snapshot `storage.core_status` and memory metrics `core_status` expose
+the same dual-core status contract used in request debug metadata. Metrics
+counters remain derived from audit events; `core_status` is runtime topology
+metadata, not a counter and not a remote health probe.
 
 `DELETE /beta/users/{user_id}/data` clears memory through `runtime.memory_manager.clear_user(user_id)` as part of broader user-data deletion.
 
@@ -485,6 +579,7 @@ Confirmation endpoints list pending or resolved explicit-memory confirmations an
 - Keep memory tools thin. Tool code may adapt tool input/output, but service behavior belongs in `MemoryManager`, `memory/`, or `services/memory_*`.
 - Do not bypass `MemoryWritePolicy` or `MemoryItem` validation when writing memory.
 - Do not add embedding/vector/external memory by changing prompt builders or agent nodes directly; add an adapter behind `MemoryStore`/retrieval and keep deterministic local behavior for tests.
+- Keep the built-in local memory core usable as a first-class service path; do not make normal local/offline memory depend on external Memory Server availability.
 - Keep default behavior mock/local/offline. A memory backend must not become a network provider merely because credentials exist.
 - When memory context rendering, conversation context, context budget, or prompt injection handling changes, also read `docs/CONTEXT_ENGINEERING_STATUS.md`.
 - Update this file, `AGENTS.md`, and any affected tests when the architecture changes. `README.md` remains a temporary placeholder until the project stabilizes.
@@ -500,6 +595,8 @@ Focused validation for memory changes:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_tool_boundary.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_retrieval_eval.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory_quality
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_dual_core.py --offline-only
 ```
 
 For broad behavior changes, run the full offline suite:

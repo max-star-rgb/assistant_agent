@@ -17,6 +17,11 @@ External Memory Server contract/reference material:
 - `docs/memory_server_api_spec.md`
 - `docs/memory_server_software_implementation_design.md`
 
+Memory operation runbooks:
+
+- `docs/development/memory-dual-core-operator-runbook.md`
+- `docs/development/memory-sqlite-operator-runbook.md`
+
 Walkthroughs for project-owner explanations:
 
 - `docs/context-engineering-walkthrough.md`

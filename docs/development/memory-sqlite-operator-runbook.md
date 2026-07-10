@@ -1,10 +1,14 @@
 # Memory SQLite Operator Runbook
 
-This runbook covers local SQLite operations for the memory kernel. It applies when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite` or `ProviderConfig(memory_backend="sqlite")` is used.
+This runbook covers local SQLite operations for the memory kernel. It applies
+when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite`,
+`ProviderConfig(memory_backend="sqlite")`, or a dual-core mode with
+`MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND=sqlite` is used.
 
 Reference docs:
 
 - `docs/memory-service-architecture.md`
+- `docs/development/memory-dual-core-operator-runbook.md`
 
 ## Scope
 

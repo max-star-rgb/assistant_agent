@@ -323,7 +323,7 @@ Memory Server media ingestion uses separate tools:
 - `memory_media_ingest` submits safe media file references to the configured external Memory Server ingestion API. It is not `memory_save`, does not accept raw media/base64 payloads, and must bind user/session identity from `ToolContext`.
 - `memory_ingest_status` reads an ingestion task status and surfaces the external service's current weak user-scope warning.
 - `ActionValidator` only accepts `memory_media_ingest` when the user request explicitly asks to upload/import media into memory; ordinary image/video analysis should use `vision_understanding` or `video_understanding`.
-- Default local/mock runs register these tools but keep them unconfigured unless `hybrid_remote` plus a Memory Server URL is explicitly enabled.
+- Default local/mock runs register these tools but keep them unconfigured unless `dual_core` / `hybrid_remote` plus a Memory Server URL is explicitly enabled.
 
 ## MCP 和外部入口
 

@@ -40,6 +40,7 @@ User / CLI / API / Web UI
 - 工具调用必须经过 validator、executor、tool registry、policy/audit 相关边界。
 - Provider adapter 负责真实或 mock 能力接入；默认 profile 必须是 mock/local/offline。
 - Memory 行为归 `MemoryManager`、`memory/` 或 `services/memory_*`；memory tools 只做 `ToolContext` 身份绑定、输入适配、调用服务和包装 `ToolResult`。
+- Memory 采用内置 local core 与可选外部 Memory Service core 的双核边界；两者都必须经过同一套 identity、read/write policy、manager/store、audit/snapshot/export 治理链路。
 - 多 agent / A2A 行为走 `assistant_agent.agent_routing`、AgentRouter、agent communication service、directory、transport adapter 和工具治理边界。
 - CLI、Web UI、App、HTTP、WebSocket、realtime call adapter 属于入口层；Gateway 是入口层之后的标准化消息、session/run 生命周期、cancel/interrupt、reconnect/hangup 和 stream frame 控制边界。
 - `assistant_agent.realtime` / `GatewayAgentAdapter` 是 Gateway 到当前主运行时的薄适配层，不承担主大脑职责。
