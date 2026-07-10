@@ -10,6 +10,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
+from assistant_agent.services.tool_lifecycle import build_tool_lifecycle_summary
 from assistant_agent.tools.registry import ToolRegistry
 
 
@@ -75,6 +76,12 @@ def build_post_tool_call_summary(
 
     status = _post_status(result, cancel_metadata=cancel_metadata)
     side_effect = _side_effect_summary(tool_name, result=result)
+    lifecycle = build_tool_lifecycle_summary(
+        result=result,
+        side_effect=side_effect,
+        status=status,
+        cancel_metadata=cancel_metadata,
+    )
     return _drop_none(
         {
             "schema_version": TOOL_CALL_BOUNDARY_SCHEMA_VERSION,
@@ -83,6 +90,7 @@ def build_post_tool_call_summary(
             "step_id": step_id,
             "call_id": call_id,
             "status": status,
+            "lifecycle": lifecycle,
             "runtime_identity": {
                 "user_id": state.user_id,
                 "session_id": state.session_id,
