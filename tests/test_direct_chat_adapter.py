@@ -420,10 +420,30 @@ def test_openai_stream_chunks_are_converted_to_llm_events() -> None:
 
     assert [event.event_type for event in events] == ["token_delta", "token_delta", "completed"]
     assert [event.text for event in events[:2]] == ["真实", " DeepSeek 回复"]
+    assert all(event.finish_reason is None for event in events[:2])
     assert events[0].provider == "deepseek"
     assert events[0].model == "deepseek-chat"
     assert events[-1].finish_reason == "stop"
     assert events[-1].usage == {"prompt_tokens": 4, "completion_tokens": 3}
+
+
+def test_openai_stream_ignores_empty_keepalive_chunks() -> None:
+    events = list(
+        chat_adapter_module._openai_chat_stream_events(
+            [
+                {"model": "deepseek-chat", "choices": []},
+                {"choices": [{"delta": {}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]},
+            ],
+            provider="deepseek",
+            model="fallback",
+        )
+    )
+
+    assert [event.event_type for event in events] == ["token_delta", "completed"]
+    assert events[0].text == "ok"
+    assert events[0].finish_reason is None
+    assert events[-1].finish_reason == "stop"
 
 
 def test_openai_stream_tool_call_chunks_are_converted_to_llm_events() -> None:

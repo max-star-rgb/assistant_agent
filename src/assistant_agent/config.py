@@ -99,6 +99,7 @@ class ProviderConfig:
     chat_model: str | None = None
     chat_adapter_kind: str = "mock"
     chat_stream: bool = False
+    native_provider_streaming: bool = False
     openai_chat_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
     qwen_chat_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -266,6 +267,10 @@ class ProviderConfig:
             chat_model=chat_settings.model,
             chat_adapter_kind=chat_settings.spec.adapter_kind,
             chat_stream=_chat_stream(source, chat_provider),
+            native_provider_streaming=_bool_env(
+                source.get("MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING"),
+                False,
+            ),
             openai_chat_base_url=source.get("OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"),
             openai_chat_model=source.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
             qwen_chat_base_url=source.get("QWEN_CHAT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),

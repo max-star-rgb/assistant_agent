@@ -12,6 +12,7 @@ from assistant_agent.schemas.provider_specs import (
     supported_image_generation_providers,
     supported_vision_providers,
 )
+from assistant_agent.services.chat_adapter import chat_capabilities_for_provider
 
 
 def test_chat_provider_specs_include_openai_compatible_providers() -> None:
@@ -22,6 +23,24 @@ def test_chat_provider_specs_include_openai_compatible_providers() -> None:
     assert CHAT_PROVIDER_SPECS["deepseek"].model_env == "DEEPSEEK_CHAT_MODEL"
     assert CHAT_PROVIDER_SPECS["deepseek"].default_base_url == "https://api.deepseek.com/v1"
     assert CHAT_PROVIDER_SPECS["deepseek"].default_model == "deepseek-chat"
+
+
+def test_chat_provider_specs_expose_native_tool_capabilities() -> None:
+    for provider in ("openai", "qwen", "deepseek"):
+        capabilities = CHAT_PROVIDER_SPECS[provider].capabilities
+
+        assert capabilities.supports_native_tools is True
+        assert capabilities.supports_tool_choice is True
+        assert capabilities.supports_response_format is True
+        assert capabilities.supports_streaming is True
+        assert capabilities.supports_async_streaming is True
+        assert capabilities.max_tokens_param == "max_tokens"
+        assert capabilities.input_modalities == ("text",)
+        assert capabilities.output_modalities == ("text", "tool_calls")
+
+
+def test_chat_adapter_capabilities_are_read_from_provider_specs() -> None:
+    assert chat_capabilities_for_provider("deepseek") == CHAT_PROVIDER_SPECS["deepseek"].capabilities
 
 
 def test_select_chat_provider_obeys_runtime_profile_guard() -> None:
@@ -67,6 +86,19 @@ def test_vision_provider_specs_include_openai_compatible_providers() -> None:
     assert VISION_PROVIDER_SPECS["ark"].model_env == "ARK_VISION_MODEL"
     assert VISION_PROVIDER_SPECS["ark"].default_base_url == "https://ark.cn-beijing.volces.com/api/v3"
     assert VISION_PROVIDER_SPECS["ark"].default_model == "doubao-seed-2-0-lite-260215"
+
+
+def test_non_chat_provider_specs_expose_modalities_without_native_tool_support() -> None:
+    qwen_vision = VISION_PROVIDER_SPECS["qwen"].capabilities
+    qwen_image = IMAGE_GENERATION_PROVIDER_SPECS["qwen"].capabilities
+
+    assert qwen_vision.supports_native_tools is False
+    assert qwen_vision.input_modalities == ("text", "image")
+    assert qwen_vision.output_modalities == ("text",)
+
+    assert qwen_image.supports_native_tools is False
+    assert qwen_image.input_modalities == ("text", "image")
+    assert qwen_image.output_modalities == ("image",)
 
 
 def test_select_vision_provider_obeys_runtime_profile_guard() -> None:

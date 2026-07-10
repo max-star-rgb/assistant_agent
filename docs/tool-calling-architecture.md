@@ -13,6 +13,7 @@
 - `ToolExecutor` 是运行时治理边界：绑定 user/session 身份、检查 provider budget、记录 state/tool history/event/trace、执行 retry/recovery，再调用 registry。
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
 - 工具 observation 是下一轮 LLM 的数据，不是系统指令；写入 prompt 前会被摘要、脱敏、压缩。不要把 provider raw response、密钥、base64 大 payload 暴露给 assistant context。
+- Provider capability facts live in `src/assistant_agent/schemas/provider_specs.py` as `ProviderSpec.capabilities`; chat adapters read that matrix for native tools, response format, streaming and modality switches instead of maintaining a separate provider table.
 - 当前 native loop 会按 provider 返回顺序串行执行同一轮中的多个 native tool calls；每个工具仍独立进入 `ActionValidator -> ToolExecutor -> ToolRegistry`，并受 `max_tool_iterations` 预算限制。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
 
 ## 设计收敛原则

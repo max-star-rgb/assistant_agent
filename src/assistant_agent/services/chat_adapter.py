@@ -1,7 +1,8 @@
 """Direct chat adapter contracts and local implementations."""
 
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Callable, Iterator
+from dataclasses import dataclass, field
+import inspect
 import time
 from typing import Any, Literal, Protocol
 
@@ -19,7 +20,8 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.assistant_decision import NativeToolCall, openai_tool_call_to_native_tool_call
-from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator, LLMToolCallDelta
+from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator, LLMProviderError, LLMToolCallDelta
+from assistant_agent.schemas.provider_specs import CHAT_PROVIDER_SPECS, ProviderCapabilities
 from assistant_agent.services.provider_errors import ProviderAdapterError, build_provider_error
 
 
@@ -27,29 +29,16 @@ ChatProviderName = Literal["mock", "openai", "qwen", "deepseek", "local"]
 ChatStreamCallback = Callable[[str, dict[str, Any]], None]
 
 
-@dataclass(frozen=True)
-class ProviderChatCapabilities:
-    """OpenAI-compatible chat payload switches for one provider."""
-
-    supports_response_format: bool = True
-    supports_native_tools: bool = True
-    supports_tool_choice: bool = True
-    max_tokens_param: str | None = "max_tokens"
-    include_stream_usage: bool = False
-
-
-_OPENAI_COMPATIBLE_CHAT_CAPABILITIES = ProviderChatCapabilities()
-_PROVIDER_CHAT_CAPABILITIES: dict[str, ProviderChatCapabilities] = {
-    "openai": _OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
-    "qwen": _OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
-    "deepseek": _OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
-}
+ProviderChatCapabilities = ProviderCapabilities
 
 
 def chat_capabilities_for_provider(provider: str) -> ProviderChatCapabilities:
     """Return conservative OpenAI-compatible chat capabilities for a provider."""
 
-    return _PROVIDER_CHAT_CAPABILITIES.get(provider.lower(), _OPENAI_COMPATIBLE_CHAT_CAPABILITIES)
+    spec = CHAT_PROVIDER_SPECS.get(provider.lower())
+    if spec is None:
+        return ProviderChatCapabilities()
+    return spec.capabilities
 
 
 class ChatRequest(BaseModel):
@@ -104,6 +93,27 @@ class ChatAdapter(Protocol):
         """Return a direct text response."""
 
 
+class AsyncStreamingChatAdapter(Protocol):
+    """Optional provider boundary for async LLM event streams."""
+
+    def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
+        """Return provider-neutral streaming events without replacing chat()."""
+
+
+def _mock_chat_response_text(request: ChatRequest) -> str:
+    context_note = ""
+    if request.memory_context:
+        context_note = f" 已参考 {len(request.memory_context)} 条记忆。"
+    return f"已收到你的请求：{request.user_query}。这是一个离线 mock direct_chat 回复。{context_note}".strip()
+
+
+def _mock_chat_usage(request: ChatRequest) -> dict[str, int]:
+    return {
+        "input_chars": len(request.user_query),
+        "output_chars": 35 + len(request.user_query),
+    }
+
+
 class MockChatAdapter:
     """Deterministic local chat adapter used by default tests and runtime."""
 
@@ -111,10 +121,8 @@ class MockChatAdapter:
     model = "mock-direct-chat"
 
     def chat(self, request: ChatRequest) -> ChatResult:
-        context_note = ""
-        if request.memory_context:
-            context_note = f" 已参考 {len(request.memory_context)} 条记忆。"
-        response_text = f"已收到你的请求：{request.user_query}。这是一个离线 mock direct_chat 回复。{context_note}".strip()
+        response_text = _mock_chat_response_text(request)
+        usage = _mock_chat_usage(request)
         _emit_stream_delta(
             request.stream_callback,
             response_text,
@@ -127,12 +135,30 @@ class MockChatAdapter:
             response_text=response_text,
             provider=self.provider,
             model=self.model,
-            usage={
-                "input_chars": len(request.user_query),
-                "output_chars": 35 + len(request.user_query),
-            },
+            usage=usage,
             latency_ms=1,
             output_ref="mock://chat/direct",
+        )
+
+    async def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
+        response_text = _mock_chat_response_text(request)
+        usage = _mock_chat_usage(request)
+        yield LLMEvent(
+            event_type="token_delta",
+            provider=self.provider,
+            model=self.model,
+            text=response_text,
+            metadata={
+                "token_streaming": False,
+                "chunking_strategy": "mock_full_text",
+            },
+        )
+        yield LLMEvent(
+            event_type="completed",
+            provider=self.provider,
+            model=self.model,
+            finish_reason="stop",
+            usage=usage,
         )
 
 
@@ -178,6 +204,7 @@ class OpenAICompatibleChatAdapter:
         timeout_seconds: float = 30.0,
         stream: bool = False,
         client: Any | None = None,
+        async_client: Any | None = None,
     ) -> None:
         self.provider = provider
         self.api_key = api_key
@@ -186,11 +213,10 @@ class OpenAICompatibleChatAdapter:
         self.timeout_seconds = timeout_seconds
         self.stream = stream
         self.capabilities = chat_capabilities_for_provider(provider)
-        self._client = (
-            client
-            if client is not None
-            else OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
-        )
+        self._client = client
+        if self._client is None and async_client is None:
+            self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
+        self._async_client = async_client
 
     def chat(self, request: ChatRequest) -> ChatResult:
         started_at = time.perf_counter()
@@ -202,7 +228,7 @@ class OpenAICompatibleChatAdapter:
         )
         try:
             if self.stream:
-                stream = self._client.chat.completions.create(**payload)
+                stream = self._sdk_client().chat.completions.create(**payload)
                 return _parse_openai_chat_stream(
                     stream,
                     provider=self.provider,
@@ -210,7 +236,7 @@ class OpenAICompatibleChatAdapter:
                     latency_ms=int((time.perf_counter() - started_at) * 1000),
                     stream_callback=request.stream_callback,
                 )
-            data = self._client.chat.completions.create(**payload)
+            data = self._sdk_client().chat.completions.create(**payload)
             return _parse_openai_chat_response(
                 data,
                 provider=self.provider,
@@ -232,6 +258,62 @@ class OpenAICompatibleChatAdapter:
             ValueError,
         ) as exc:
             return _chat_error_from_exception(self.provider, exc)
+
+    def _sdk_client(self) -> Any:
+        if self._client is None:
+            self._client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout_seconds,
+            )
+        return self._client
+
+    def _async_sdk_client(self) -> Any:
+        if self._async_client is None:
+            from openai import AsyncOpenAI
+
+            self._async_client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout_seconds,
+            )
+        return self._async_client
+
+    async def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
+        payload = _build_chat_completions_payload(
+            request,
+            self.model,
+            self.capabilities,
+            stream=True,
+        )
+        stream: Any | None = None
+        try:
+            stream_result = self._async_sdk_client().chat.completions.create(**payload)
+            stream = await stream_result if inspect.isawaitable(stream_result) else stream_result
+            async for event in _openai_async_chat_stream_events(
+                stream,
+                provider=self.provider,
+                model=self.model,
+            ):
+                yield event
+        except (
+            ProviderAdapterError,
+            APITimeoutError,
+            TimeoutError,
+            AuthenticationError,
+            PermissionDeniedError,
+            RateLimitError,
+            APIConnectionError,
+            APIStatusError,
+            OpenAIError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            yield _llm_error_event_from_exception(self.provider, self.model, exc)
+        finally:
+            if stream is not None:
+                await _close_provider_stream(stream)
 
 
 def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
@@ -375,76 +457,105 @@ def _parse_openai_chat_stream(
     )
 
 
-def _openai_chat_stream_events(stream: Any, *, provider: str, model: str) -> Iterator[LLMEvent]:
-    """Translate OpenAI-compatible stream chunks into provider-neutral events."""
-
-    response_model = model
+@dataclass
+class _OpenAIStreamState:
+    response_model: str
     finish_reason: str | None = None
-    usage: dict[str, Any] = {}
-    refusal_parts: list[str] = []
+    usage: dict[str, Any] = field(default_factory=dict)
+    refusal_parts: list[str] = field(default_factory=list)
 
-    for chunk in stream:
-        data = _to_plain_data(chunk)
-        if not isinstance(data, dict):
+
+def _openai_chat_chunk_events(
+    chunk: Any,
+    *,
+    provider: str,
+    state: _OpenAIStreamState,
+) -> Iterator[LLMEvent]:
+    data = _to_plain_data(chunk)
+    if not isinstance(data, dict):
+        return
+    if data.get("model"):
+        state.response_model = str(data["model"])
+    chunk_usage = data.get("usage")
+    if isinstance(chunk_usage, dict):
+        state.usage = dict(chunk_usage)
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return
+    for choice in choices:
+        if not isinstance(choice, dict):
             continue
-        if data.get("model"):
-            response_model = str(data["model"])
-        chunk_usage = data.get("usage")
-        if isinstance(chunk_usage, dict):
-            usage = chunk_usage
-        choices = data.get("choices")
-        if not isinstance(choices, list):
+        if choice.get("finish_reason") is not None:
+            state.finish_reason = str(choice["finish_reason"])
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
             continue
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            if choice.get("finish_reason") is not None:
-                finish_reason = str(choice["finish_reason"])
-            delta = choice.get("delta")
-            if not isinstance(delta, dict):
-                continue
-            content = delta.get("content")
-            if isinstance(content, str):
+        content = delta.get("content")
+        if isinstance(content, str):
+            yield LLMEvent(
+                event_type="token_delta",
+                provider=provider,
+                model=state.response_model,
+                text=content,
+                metadata={"token_streaming": True, "chunking_strategy": "provider_token_delta"},
+            )
+        elif isinstance(content, list):
+            chunk_text = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+            if chunk_text:
                 yield LLMEvent(
                     event_type="token_delta",
                     provider=provider,
-                    model=response_model,
-                    text=content,
-                    finish_reason=finish_reason,
+                    model=state.response_model,
+                    text=chunk_text,
                     metadata={"token_streaming": True, "chunking_strategy": "provider_token_delta"},
                 )
-            elif isinstance(content, list):
-                chunk_text = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
-                if chunk_text:
-                    yield LLMEvent(
-                        event_type="token_delta",
-                        provider=provider,
-                        model=response_model,
-                        text=chunk_text,
-                        finish_reason=finish_reason,
-                        metadata={"token_streaming": True, "chunking_strategy": "provider_token_delta"},
-                    )
-            refusal = delta.get("refusal")
-            if isinstance(refusal, str):
-                refusal_parts.append(refusal)
-            yield from _openai_tool_call_delta_events(
-                delta.get("tool_calls"),
-                provider=provider,
-                model=response_model,
-            )
+        refusal = delta.get("refusal")
+        if isinstance(refusal, str):
+            state.refusal_parts.append(refusal)
+        yield from _openai_tool_call_delta_events(
+            delta.get("tool_calls"),
+            provider=provider,
+            model=state.response_model,
+        )
 
+
+def _openai_stream_completed_event(*, provider: str, state: _OpenAIStreamState) -> LLMEvent:
     metadata: dict[str, Any] = {}
-    refusal_text = "".join(refusal_parts)
+    refusal_text = "".join(state.refusal_parts)
     if refusal_text:
         metadata["refusal"] = refusal_text
-    yield LLMEvent(
+    return LLMEvent(
         event_type="completed",
         provider=provider,
-        model=response_model,
-        finish_reason=finish_reason,
-        usage=usage,
+        model=state.response_model,
+        finish_reason=state.finish_reason,
+        usage=dict(state.usage),
         metadata=metadata,
     )
+
+
+def _openai_chat_stream_events(stream: Any, *, provider: str, model: str) -> Iterator[LLMEvent]:
+    """Translate OpenAI-compatible stream chunks into provider-neutral events."""
+
+    state = _OpenAIStreamState(response_model=model)
+    for chunk in stream:
+        yield from _openai_chat_chunk_events(chunk, provider=provider, state=state)
+    yield _openai_stream_completed_event(provider=provider, state=state)
+
+
+async def _openai_async_chat_stream_events(
+    stream: Any,
+    *,
+    provider: str,
+    model: str,
+) -> AsyncIterator[LLMEvent]:
+    """Translate OpenAI-compatible async stream chunks into provider-neutral events."""
+
+    state = _OpenAIStreamState(response_model=model)
+    async for chunk in stream:
+        for event in _openai_chat_chunk_events(chunk, provider=provider, state=state):
+            yield event
+    yield _openai_stream_completed_event(provider=provider, state=state)
 
 
 def _emit_stream_delta(
@@ -569,6 +680,58 @@ def _chat_error(provider: str, code: str, message: object, *, recoverable: bool 
             )
         ],
     )
+
+
+def _llm_error_event_from_exception(provider: str, model: str | None, exc: Exception) -> LLMEvent:
+    result = _chat_error_from_exception(provider, exc)
+    error = (
+        result.errors[0]
+        if result.errors
+        else ChatProviderError(
+            code="provider_unknown_error",
+            message=_safe_llm_provider_error_message("provider_unknown_error"),
+            recoverable=False,
+        )
+    )
+    return LLMEvent(
+        event_type="error",
+        provider=provider,
+        model=model,
+        error=LLMProviderError(
+            code=error.code,
+            message=_safe_llm_provider_error_message(error.code),
+            recoverable=error.recoverable,
+        ),
+    )
+
+
+def _safe_llm_provider_error_message(code: str) -> str:
+    messages = {
+        "provider_auth_failed": "Chat provider authentication failed.",
+        "provider_bad_response": "Chat provider returned an invalid response.",
+        "provider_context_overflow": "Chat provider context limit was exceeded.",
+        "provider_empty_response": "Chat provider returned empty content.",
+        "provider_network_error": "Chat provider network request failed.",
+        "provider_rate_limited": "Chat provider rate limit was reached.",
+        "provider_timeout": "Chat provider request timed out.",
+        "provider_unavailable": "Chat provider is unavailable.",
+        "provider_unknown_error": "Chat provider error.",
+    }
+    return messages.get(code, "Chat provider error.")
+
+
+async def _close_provider_stream(stream: Any) -> None:
+    aclose = getattr(stream, "aclose", None)
+    if callable(aclose):
+        result = aclose()
+        if inspect.isawaitable(result):
+            await result
+        return
+    close = getattr(stream, "close", None)
+    if callable(close):
+        result = close()
+        if inspect.isawaitable(result):
+            await result
 
 
 def _chat_error_from_exception(provider: str, exc: Exception) -> ChatResult:

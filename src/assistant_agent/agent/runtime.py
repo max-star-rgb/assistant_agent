@@ -25,6 +25,7 @@ from assistant_agent.agent.memory_tool_selection import (
     build_memory_tool_selection_audit,
     record_memory_tool_selection_audit,
 )
+from assistant_agent.agent.provider_streaming import ProviderStreamingTurnRunner, supports_async_streaming_chat
 from assistant_agent.memory.factory import create_memory_store
 from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.config import ProviderConfig
@@ -36,7 +37,7 @@ from assistant_agent.schemas.tool_observation import observation_from_tool_resul
 from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.event_sink import EventSink
-from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, create_chat_adapter
+from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
 from assistant_agent.services.checkpointer import create_checkpointer
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
 from assistant_agent.services.context.compactor import ContextCompactor, create_context_compactor
@@ -374,6 +375,11 @@ class AgentGraphRuntime:
 
         return not _is_mock_chat_adapter(self.chat_adapter)
 
+    def _run_native_chat_turn(self, chat_request: ChatRequest) -> ChatResult:
+        if self.config.native_provider_streaming and supports_async_streaming_chat(self.chat_adapter):
+            return ProviderStreamingTurnRunner().run_turn(self.chat_adapter, chat_request)
+        return self.chat_adapter.chat(chat_request)
+
     def _run_native_runtime(
         self,
         request: UserRequest,
@@ -429,7 +435,7 @@ class AgentGraphRuntime:
             if chat_request is None:
                 return state
             chat_started_at = perf_counter()
-            result = self.chat_adapter.chat(chat_request)
+            result = self._run_native_chat_turn(chat_request)
             chat_wall_latency_ms = int((perf_counter() - chat_started_at) * 1000)
             self._record_native_runtime_chat_call(state, request, result)
             self._append_observability_event(
@@ -693,7 +699,7 @@ class AgentGraphRuntime:
             max_iterations=max_iterations,
         )
         chat_started_at = perf_counter()
-        result = self.chat_adapter.chat(chat_request)
+        result = self._run_native_chat_turn(chat_request)
         chat_wall_latency_ms = int((perf_counter() - chat_started_at) * 1000)
         self._record_native_runtime_chat_call(
             state,
@@ -857,16 +863,21 @@ class AgentGraphRuntime:
     ) -> None:
         errors = [error.model_dump(mode="json") for error in result.errors]
         if not result.success:
+            first_error = result.errors[0] if result.errors else None
             message = (
-                f"处理失败：{result.errors[0].code}: {result.errors[0].message}"
-                if result.errors
+                f"处理失败：{first_error.code}: {first_error.message}"
+                if first_error is not None
                 else "处理失败：provider returned an error."
             )
+            details: dict[str, Any] = {"errors": errors}
+            if first_error is not None:
+                details["code"] = first_error.code
+                details["retryable"] = first_error.recoverable
             state.errors.append(
                 AgentError(
                     message=message,
                     source="native_runtime",
-                    details={"errors": errors},
+                    details=details,
                 )
             )
             state.response = AgentResponse(

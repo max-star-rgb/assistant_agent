@@ -117,6 +117,149 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
     assert request.metadata["agent_service"]["chat_index"] == 2
 
 
+def test_agent_service_accepts_media_control_and_chat_protocol(monkeypatch) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/agent-service/v1") as websocket:
+        websocket.send_json(
+            _media_envelope(
+                "assistantControl",
+                {
+                    "number": "10086",
+                    "callType": "AUDIO",
+                    "modelName": "mock-model",
+                },
+            )
+        )
+        control_response = websocket.receive_json()
+
+        websocket.send_json(
+            _media_envelope(
+                "chat",
+                {
+                    "chatIndex": "chat-1",
+                    "userNumber": "10086",
+                    "contents": [
+                        {
+                            "speakerNumber": "10086",
+                            "speechContent": "你好",
+                            "time": "2026-07-09T10:00:00+08:00",
+                        },
+                        {
+                            "speakerNumber": "10086",
+                            "imageContent": "aW1hZ2U=",
+                            "time": "2026-07-09T10:00:01+08:00",
+                        }
+                    ],
+                    "stream": True,
+                },
+            )
+        )
+        chat_response = websocket.receive_json()
+
+    assert control_response["message"] == "assistantControl"
+    assert "sessionId" not in control_response
+    assert _body(control_response) == {
+        "code": 0,
+        "message": "success",
+        "phoneNumber": "10086",
+    }
+
+    assert chat_response["message"] == "chatResponse"
+    assert "sessionId" not in chat_response
+    body = _body(chat_response)
+    assert body == {
+        "message": {
+            "chatIndex": "chat-1",
+            "content": {
+                "intentResult": {
+                    "description": "agent service gateway response",
+                    "status": "SUCCESS",
+                }
+            },
+        },
+        "display_only": False,
+    }
+    assert len(runtime.requests) == 1
+    request = runtime.requests[0]
+    assert request.user_id == "10086"
+    assert request.session_id == "10086"
+    assert request.text == "你好"
+    assert request.metadata["transport"] == "agent_service_websocket"
+    assert request.metadata["agent_service"]["chat_index"] == "chat-1"
+
+
+def test_agent_service_accepts_media_audio_video_and_interrupt_protocol() -> None:
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/agent-service/v1") as websocket:
+        websocket.send_json(
+            _media_envelope(
+                "assistantControl",
+                {
+                    "number": "10086",
+                    "callType": "VIDEO",
+                },
+            )
+        )
+        websocket.receive_json()
+
+        websocket.send_json(
+            _media_envelope(
+                "audio",
+                {
+                    "userNumber": "10086",
+                    "audioIndex": "audio-1",
+                    "contents": [
+                        {
+                            "speakerNumber": "10086",
+                            "audioContent": "00ff",
+                            "time": "2026-07-09T10:00:01+08:00",
+                        }
+                    ],
+                    "audioConfig": {"codec": "opus", "sampleRate": 16000, "channels": 1},
+                },
+            )
+        )
+        audio_response = websocket.receive_json()
+
+        websocket.send_json(
+            _media_envelope(
+                "video",
+                {
+                    "userNumber": "10086",
+                    "videoIndex": "video-1",
+                    "contents": [
+                        {
+                            "speakerNumber": "10086",
+                            "videoContent": "00ff",
+                            "time": "2026-07-09T10:00:02+08:00",
+                        }
+                    ],
+                    "videoConfig": {"codec": "H264", "resolution": "1280x720", "frameRate": 30},
+                },
+            )
+        )
+        video_response = websocket.receive_json()
+
+        websocket.send_json(_media_envelope("interrupt", {"number": "10086"}))
+        interrupt_response = websocket.receive_json()
+
+    assert audio_response["message"] == "audioResponse"
+    assert "sessionId" not in audio_response
+    assert _body(audio_response) == {"code": 0, "message": "audio received"}
+
+    assert video_response["message"] == "videoResponse"
+    assert "sessionId" not in video_response
+    assert _body(video_response) == {"code": 0, "message": "video received"}
+
+    assert interrupt_response["message"] == "interrupt"
+    assert "sessionId" not in interrupt_response
+    assert _body(interrupt_response) == {"code": 0, "message": "interrupted"}
+
+
 def test_agent_service_validates_required_start_fields() -> None:
     client = TestClient(create_app())
 
@@ -213,6 +356,13 @@ def _envelope(message: str, session_id: str, body: dict) -> dict:
     return {
         "message": message,
         "sessionId": session_id,
+        "body": json.dumps(body, ensure_ascii=False),
+    }
+
+
+def _media_envelope(message: str, body: dict) -> dict:
+    return {
+        "message": message,
         "body": json.dumps(body, ensure_ascii=False),
     }
 

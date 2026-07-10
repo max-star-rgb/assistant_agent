@@ -14,7 +14,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
 - Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and local CLI `--scenario` through demo flows enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
-- The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / `sessionId` / stringified `body` protocol. It preserves vendor envelopes externally; `assistantControlStart` remains an entry-layer handshake, and `chat` now enters Gateway internally before returning a `chatResponse`.
+- The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, and treats raw `audio` / `video` / `interrupt` frames as entry-layer ACK traffic.
 - The old browser Web Chat console, `/demo/console`, `/static/index.html`, `scripts/run_client.py`, and legacy `/ws/agent/{session_id}` event stream are removed from the product app. Do not reintroduce ordinary chat entrypoints before the realtime assistant runtime is stable.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
 
@@ -124,10 +124,13 @@ harness direct calls are allowed only as explicit offline regression probes; the
 are not product entrypoint precedent.
 
 Vendor `/agent-service/v1` also uses a local Gateway manager and facade per
-connection, but keeps the vendor `message` / `sessionId` / stringified `body`
-envelope. `assistantControlStart` validates and records vendor control state;
-`chat` maps the latest `speechContent` to a Gateway turn and wraps the final
-assistant response in `chatResponse.body.message.content`.
+connection, but keeps the vendor `message` / optional `sessionId` / stringified
+`body` envelope. `assistantControl` validates and records media control state,
+and the legacy `assistantControlStart` handshake remains accepted for older
+clients. `chat` maps the latest `speechContent` to a Gateway turn and wraps the
+final assistant response in the media `chatResponse` shape when the media
+protocol is used. `audio`, `video`, and `interrupt` are accepted as transport
+compatibility messages and acknowledged at the entry layer.
 
 ## Gateway Responsibilities
 
@@ -231,7 +234,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/realtime/audio_edge.py` | Prompt-safe helper for entry adapters that convert speakable Gateway text frames into TTS edge events without invoking a provider. |
 | `src/assistant_agent/api/gateway_runtime.py` | Process-local FastAPI-owned `GatewaySessionManager`, `GatewayBridge`, `GatewayTurnFacade`, HTTP response capture, and shutdown cleanup. |
 | `src/assistant_agent/api/gateway_websocket.py` | FastAPI entry adapters for `/ws/gateway` Gateway frames and `/ws/realtime/media` media-service events. |
-| `src/assistant_agent/api/agent_service_websocket.py` | FastAPI compatibility adapter for the vendor `/agent-service/v1` media protocol; preserves `message` / `sessionId` / stringified `body` envelopes while routing `chat` through a local `GatewayTurnFacade`. |
+| `src/assistant_agent/api/agent_service_websocket.py` | FastAPI compatibility adapter for the vendor `/agent-service/v1` media protocol; preserves `message` / optional `sessionId` / stringified `body` envelopes, accepts media `assistantControl` / `chat` / `audio` / `video` / `interrupt`, and routes `chat` through a local `GatewayTurnFacade`. |
 | `src/assistant_agent/api/` | FastAPI HTTP/WebSocket entry adapters and product API routes. |
 | `src/assistant_agent/services/gateway_turn_facade.py` | In-process sync-turn facade for request/response entries that need Gateway lifecycle semantics without a WebSocket transport. |
 | `src/assistant_agent/services/assistant_runtime_app.py` | Backend-to-runtime boundary used behind `GatewayAgentAdapter`; owns the internal runtime reference without becoming the target product entry boundary. |
@@ -252,7 +255,7 @@ Phase 0 treats these entry classifications as architecture contracts:
 | Realtime media WS `/ws/realtime/media` | media event validation -> Gateway frame mapper -> `get_gateway_bridge().bridge(...)` | Canonical realtime entry adapter. |
 | Local CLI `--text` | local `GatewaySessionManager + GatewayTurnFacade + GatewayAgentAdapter` | Canonical local Gateway-first entry. |
 | CLI `--scenario` | demo matrix through local `GatewayTurnFacade` in `scripts/run_demo_flows.py` | Offline demo adapter, Gateway-first internally. Do not expand into product behavior. |
-| Vendor `/agent-service/v1` | vendor `message` / `sessionId` / stringified `body` protocol; `assistantControlStart` remains a handshake and `chat` uses local `GatewayTurnFacade` internally | Compatibility vendor surface, Gateway-first internally. Do not add assistant behavior outside the Gateway path. |
+| Vendor `/agent-service/v1` | vendor `message` / optional `sessionId` / stringified `body` protocol; `assistantControl` is the media handshake, legacy `assistantControlStart` remains accepted, `chat` uses local `GatewayTurnFacade` internally, and raw media/control frames are acknowledged at the entry layer | Compatibility vendor surface, Gateway-first internally for `chat`. Do not add assistant behavior outside the Gateway path. |
 | HTTP `POST /agents/run` | explicit `AgentRouter` service call | Separate opt-in router/debug entry, not the default product path. |
 | Inbound A2A `/a2a/rpc` | protocol adapter over `AgentRouter` | Explicit adapter, not Gateway lifecycle. |
 | MCP `tool_run` | `ActionValidator -> ToolExecutor -> ToolRegistry` | Tool adapter path, not assistant entry. |

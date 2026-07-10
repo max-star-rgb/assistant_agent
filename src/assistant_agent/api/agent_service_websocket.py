@@ -33,6 +33,8 @@ class AgentServiceConnectionState:
 
     session_id: str | None
     query_params: dict[str, str]
+    response_session_id: str | None = None
+    media_protocol: bool = False
     gateway_manager: GatewaySessionManager | None = None
     gateway_facade: GatewayTurnFacade | None = None
     assistant_control_start: dict[str, Any] | None = None
@@ -70,10 +72,10 @@ class BaseHandler:
             raise AgentServiceProtocolError("body JSON must be an object")
         return body
 
-    def fail(self, *, session_id: str | None, message: str) -> dict[str, Any]:
+    def fail(self, *, state: AgentServiceConnectionState, message: str) -> dict[str, Any]:
         return _response_envelope(
             message=self.response_message,
-            session_id=session_id,
+            session_id=state.response_session_id,
             body={"code": FAIL_CODE, "message": message},
         )
 
@@ -117,8 +119,33 @@ class AssistantControlStartHandler(BaseHandler):
         state.assistant_control_start = dict(body)
         return _response_envelope(
             message=self.response_message,
-            session_id=session_id,
+            session_id=state.response_session_id,
             body={"code": SUCCESS_CODE},
+        )
+
+
+class AssistantControlHandler(BaseHandler):
+    message_type = "assistantControl"
+    response_message = "assistantControl"
+
+    async def handle(
+        self,
+        *,
+        session_id: str,
+        body: dict[str, Any],
+        state: AgentServiceConnectionState,
+    ) -> dict[str, Any]:
+        _ = session_id
+        number = self.required_text(body, "number")
+        call_type = self.required_text(body, "callType").upper()
+        if call_type not in {"AUDIO", "VIDEO"}:
+            raise AgentServiceProtocolError("callType must be AUDIO or VIDEO")
+        state.media_protocol = True
+        state.assistant_control_start = dict(body)
+        return _response_envelope(
+            message=self.response_message,
+            session_id=state.response_session_id,
+            body={"code": 0, "message": "success", "phoneNumber": number},
         )
 
 
@@ -144,8 +171,15 @@ class ChatHandler(BaseHandler):
             if not isinstance(item, dict):
                 raise AgentServiceProtocolError(f"contents[{index}] must be an object")
             self._required_content_text(item, index, "speakerNumber")
-            latest_speech = self._required_content_text(item, index, "speechContent")
             self._required_content_text(item, index, "time")
+            speech = self._optional_content_text(item, "speechContent")
+            if speech:
+                latest_speech = speech
+            elif not self._optional_content_text(item, "imageContent"):
+                raise AgentServiceProtocolError(f"missing contents[{index}].speechContent")
+
+        if not latest_speech:
+            raise AgentServiceProtocolError("missing contents[].speechContent")
 
         state.chats.append(dict(body))
         turn = await _run_agent_service_chat_turn(
@@ -158,12 +192,30 @@ class ChatHandler(BaseHandler):
         )
         if turn.status == "error":
             return self.fail(
-                session_id=session_id,
+                state=state,
                 message=turn.payload.get("message") or turn.reason or "Gateway run failed",
+            )
+        if _uses_media_chat_response(body=body, state=state):
+            state.media_protocol = True
+            return _response_envelope(
+                message=self.response_message,
+                session_id=state.response_session_id,
+                body={
+                    "message": {
+                        "chatIndex": chat_index,
+                        "content": {
+                            "intentResult": {
+                                "description": turn.response_text,
+                                "status": "SUCCESS",
+                            }
+                        },
+                    },
+                    "display_only": False,
+                },
             )
         return _response_envelope(
             message=self.response_message,
-            session_id=session_id,
+            session_id=state.response_session_id,
             body={
                 "number": user_number,
                 "message": {
@@ -181,10 +233,89 @@ class ChatHandler(BaseHandler):
             raise AgentServiceProtocolError(f"missing contents[{index}].{field_name}")
         return text
 
+    @staticmethod
+    def _optional_content_text(item: dict[str, Any], field_name: str) -> str | None:
+        return _optional_text(item.get(field_name))
+
+
+class AudioHandler(BaseHandler):
+    message_type = "audio"
+    response_message = "audioResponse"
+
+    async def handle(
+        self,
+        *,
+        session_id: str,
+        body: dict[str, Any],
+        state: AgentServiceConnectionState,
+    ) -> dict[str, Any]:
+        _ = session_id
+        self.required_text(body, "userNumber")
+        self.require_present(body, "audioIndex")
+        _validate_media_contents(body=body, content_field="audioContent")
+        if not isinstance(body.get("audioConfig"), dict):
+            raise AgentServiceProtocolError("missing audioConfig")
+        state.media_protocol = True
+        return _response_envelope(
+            message=self.response_message,
+            session_id=state.response_session_id,
+            body={"code": 0, "message": "audio received"},
+        )
+
+
+class VideoHandler(BaseHandler):
+    message_type = "video"
+    response_message = "videoResponse"
+
+    async def handle(
+        self,
+        *,
+        session_id: str,
+        body: dict[str, Any],
+        state: AgentServiceConnectionState,
+    ) -> dict[str, Any]:
+        _ = session_id
+        self.required_text(body, "userNumber")
+        self.require_present(body, "videoIndex")
+        _validate_media_contents(body=body, content_field="videoContent")
+        if not isinstance(body.get("videoConfig"), dict):
+            raise AgentServiceProtocolError("missing videoConfig")
+        state.media_protocol = True
+        return _response_envelope(
+            message=self.response_message,
+            session_id=state.response_session_id,
+            body={"code": 0, "message": "video received"},
+        )
+
+
+class InterruptHandler(BaseHandler):
+    message_type = "interrupt"
+    response_message = "interrupt"
+
+    async def handle(
+        self,
+        *,
+        session_id: str,
+        body: dict[str, Any],
+        state: AgentServiceConnectionState,
+    ) -> dict[str, Any]:
+        _ = session_id
+        self.required_text(body, "number")
+        state.media_protocol = True
+        return _response_envelope(
+            message=self.response_message,
+            session_id=state.response_session_id,
+            body={"code": 0, "message": "interrupted"},
+        )
+
 
 _HANDLERS: dict[str, BaseHandler] = {
     AssistantControlStartHandler.message_type: AssistantControlStartHandler(),
+    AssistantControlHandler.message_type: AssistantControlHandler(),
     ChatHandler.message_type: ChatHandler(),
+    AudioHandler.message_type: AudioHandler(),
+    VideoHandler.message_type: VideoHandler(),
+    InterruptHandler.message_type: InterruptHandler(),
 }
 
 
@@ -224,7 +355,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
-            logger.info("agent-service websocket received session_id=%s raw=%s", state.session_id, raw)
+            logger.info("agent-service websocket received session_id=%s bytes=%s", state.session_id, len(raw))
             response = await _handle_raw_message(raw, state=state)
             await _send_response(websocket, response)
     except WebSocketDisconnect:
@@ -243,26 +374,30 @@ async def _handle_raw_message(
         inbound_message = _required_envelope_text(envelope, "message")
         handler = _HANDLERS.get(inbound_message)
         response_message = handler.response_message if handler is not None else "error"
-        session_id = _session_id_from_envelope(envelope, state)
-        if session_id is None:
-            return _response_envelope(
-                message=response_message,
-                session_id=state.session_id,
-                body={"code": FAIL_CODE, "message": "missing sessionId"},
-            )
-        state.session_id = session_id
+        state.response_session_id = _response_session_id_from_envelope(envelope, state)
 
         if handler is None:
             return _error_response(
-                session_id=session_id,
+                session_id=state.response_session_id,
                 message=f"unknown message type: {inbound_message}",
             )
 
         try:
             body = handler.parse_body(envelope)
+            session_id = _session_id_from_envelope(envelope, state) or _session_id_from_body(
+                inbound_message,
+                body,
+            )
+            if session_id is None:
+                return _response_envelope(
+                    message=response_message,
+                    session_id=state.response_session_id,
+                    body={"code": FAIL_CODE, "message": "missing sessionId"},
+                )
+            state.session_id = session_id
             return await handler.handle(session_id=session_id, body=body, state=state)
         except Exception as exc:  # noqa: BLE001 - protocol boundary.
-            return handler.fail(session_id=session_id, message=str(exc))
+            return handler.fail(state=state, message=str(exc))
     except Exception as exc:  # noqa: BLE001 - protocol boundary.
         return _error_response(session_id=state.session_id, message=str(exc))
 
@@ -289,6 +424,47 @@ def _session_id_from_envelope(
     state: AgentServiceConnectionState,
 ) -> str | None:
     return _optional_text(envelope.get("sessionId")) or state.session_id
+
+
+def _response_session_id_from_envelope(
+    envelope: dict[str, Any],
+    state: AgentServiceConnectionState,
+) -> str | None:
+    return _optional_text(envelope.get("sessionId")) or _optional_text(state.query_params.get("sessionId"))
+
+
+def _session_id_from_body(message_type: str, body: dict[str, Any]) -> str | None:
+    if message_type == "assistantControl":
+        return _optional_text(body.get("number"))
+    if message_type in {"chat", "audio", "video"}:
+        return _optional_text(body.get("userNumber"))
+    if message_type == "interrupt":
+        return _optional_text(body.get("number"))
+    return None
+
+
+def _uses_media_chat_response(*, body: dict[str, Any], state: AgentServiceConnectionState) -> bool:
+    return state.media_protocol or "stream" in body or state.response_session_id is None
+
+
+def _validate_media_contents(*, body: dict[str, Any], content_field: str) -> None:
+    contents = body.get("contents")
+    if not isinstance(contents, list) or not contents:
+        raise AgentServiceProtocolError("missing contents")
+    for index, item in enumerate(contents):
+        if not isinstance(item, dict):
+            raise AgentServiceProtocolError(f"contents[{index}] must be an object")
+        _required_item_text(item, index, "speakerNumber")
+        _required_item_text(item, index, content_field)
+        _required_item_text(item, index, "time")
+
+
+def _required_item_text(item: dict[str, Any], index: int, field_name: str) -> str:
+    value = item.get(field_name)
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        raise AgentServiceProtocolError(f"missing contents[{index}].{field_name}")
+    return text
 
 
 def _create_agent_service_gateway_manager() -> GatewaySessionManager:
