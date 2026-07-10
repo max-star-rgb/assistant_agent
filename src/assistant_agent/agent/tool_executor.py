@@ -15,7 +15,7 @@ from assistant_agent.schemas.api import api_error
 from assistant_agent.schemas.capability_output import build_capability_output_contract, contract_summary
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.planning import TaskStep
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
@@ -25,6 +25,7 @@ from assistant_agent.services.tool_call_boundary import (
     build_pre_tool_call_summary,
 )
 from assistant_agent.services.tool_history import ToolHistoryStore
+from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 from assistant_agent.services.tool_risk_gate import (
     ToolIdempotencyLedger,
     confirmation_required_result,
@@ -87,6 +88,7 @@ class ToolExecutor:
             request=state.request,
             state=state,
             step_id=step_id,
+            policy=_side_effect_policy_for_registered_tool(self.registry, tool_name),
         )
         pre_tool_call = build_pre_tool_call_summary(
             tool_name=tool_name,
@@ -169,6 +171,7 @@ class ToolExecutor:
                 retry_count=0,
                 risk_gate=risk_decision.risk_summary(),
                 idempotency=risk_decision.idempotency_summary(duplicate_suppressed=True),
+                registry=self.registry,
             )
             self._emit(
                 AgentEvent(
@@ -241,6 +244,7 @@ class ToolExecutor:
                 retry_count=0,
                 risk_gate=risk_decision.risk_summary(),
                 idempotency=risk_decision.idempotency_summary(),
+                registry=self.registry,
             )
             self._emit(
                 AgentEvent(
@@ -329,6 +333,7 @@ class ToolExecutor:
                 retry_count=0,
                 risk_gate=risk_decision.risk_summary(),
                 idempotency=risk_decision.idempotency_summary(),
+                registry=self.registry,
             )
             state.fail_tool_call(
                 call.call_id,
@@ -445,6 +450,7 @@ class ToolExecutor:
                 cancel_metadata=error_details,
                 risk_gate=risk_decision.risk_summary(),
                 idempotency=risk_decision.idempotency_summary(),
+                registry=self.registry,
             )
             state.fail_tool_call(
                 call.call_id,
@@ -553,6 +559,7 @@ class ToolExecutor:
                     **risk_decision.idempotency_summary(),
                     "status": idempotency_record.status if idempotency_record is not None else None,
                 },
+                registry=self.registry,
             )
             self._emit(
                 AgentEvent(
@@ -622,6 +629,7 @@ class ToolExecutor:
                 retry_count=retry_count,
                 risk_gate=risk_decision.risk_summary(),
                 idempotency=risk_decision.idempotency_summary(),
+                registry=self.registry,
             )
             state.fail_tool_call(
                 call.call_id,
@@ -1049,3 +1057,23 @@ def _output_summary(result: ToolResult) -> dict[str, Any]:
     else:
         payload["item_count"] = len(data.get("items", [])) if isinstance(data.get("items"), list) else None
     return payload
+
+
+def _side_effect_policy_for_registered_tool(
+    registry: ToolRegistry,
+    tool_name: str,
+) -> ToolSideEffectPolicy | None:
+    for spec in registry.list_specs():
+        if spec.name != tool_name:
+            continue
+        if spec.policy is None:
+            return None
+        view = ToolPolicyInterpreter().view_for_spec(spec)
+        return ToolSideEffectPolicy(
+            level=view.side_effect_level,
+            requires_confirmation=view.requires_confirmation,
+            description=view.description,
+            confirmation_kind=view.confirmation_kind,
+            compensation_hint=view.compensation_hint,
+        )
+    return None

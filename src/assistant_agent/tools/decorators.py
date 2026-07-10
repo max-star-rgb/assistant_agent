@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from assistant_agent.schemas.tools import ToolPolicyMetadata, ToolResult
+from assistant_agent.schemas.tools import ToolExecutionPolicy, ToolPolicyMetadata, ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.tools.base import ToolContext
 
@@ -25,12 +25,14 @@ class DecoratedTool:
         description: str,
         input_schema: type[BaseModel],
         handler: ToolHandler,
+        execution: ToolExecutionPolicy | dict[str, Any] | None = None,
         policy: ToolPolicyMetadata | dict[str, Any] | None = None,
     ) -> None:
         self.name = name
         self.description = description
         self.input_schema = input_schema
         self.output_schema = input_schema
+        self.execution = execution
         self.policy = policy
         self._handler = handler
 
@@ -68,6 +70,7 @@ def tool(
     name: str,
     description: str = "",
     input_schema: type[BaseModel],
+    execution: ToolExecutionPolicy | dict[str, Any] | None = None,
     policy: ToolPolicyMetadata | dict[str, Any] | None = None,
 ) -> Callable[[ToolHandler], DecoratedTool]:
     """Return a local tool object without registering it globally."""
@@ -78,6 +81,7 @@ def tool(
             description=description,
             input_schema=input_schema,
             handler=handler,
+            execution=execution,
             policy=policy,
         )
 

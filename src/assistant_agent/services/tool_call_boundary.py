@@ -32,7 +32,7 @@ def build_pre_tool_call_summary(
 ) -> dict[str, Any]:
     """Build prompt-safe metadata before a tool is executed."""
 
-    side_effect = _side_effect_summary(tool_name)
+    side_effect = _side_effect_summary(tool_name, registry=registry)
     return _drop_none(
         {
             "schema_version": TOOL_CALL_BOUNDARY_SCHEMA_VERSION,
@@ -71,11 +71,12 @@ def build_post_tool_call_summary(
     cancel_metadata: dict[str, Any] | None = None,
     risk_gate: dict[str, Any] | None = None,
     idempotency: dict[str, Any] | None = None,
+    registry: ToolRegistry | None = None,
 ) -> dict[str, Any]:
     """Build prompt-safe metadata after a tool succeeds, fails, or is cancelled."""
 
     status = _post_status(result, cancel_metadata=cancel_metadata)
-    side_effect = _side_effect_summary(tool_name, result=result)
+    side_effect = _side_effect_summary(tool_name, result=result, registry=registry)
     lifecycle = build_tool_lifecycle_summary(
         result=result,
         side_effect=side_effect,
@@ -125,10 +126,13 @@ def _post_status(result: ToolResult, *, cancel_metadata: dict[str, Any] | None) 
     return "succeeded" if result.success else "failed"
 
 
-def _side_effect_summary(tool_name: str, *, result: ToolResult | None = None) -> dict[str, Any]:
-    payload = _side_effect_summary_from_policy_view(
-        ToolPolicyInterpreter().view_for_tool_name(tool_name)
-    )
+def _side_effect_summary(
+    tool_name: str,
+    *,
+    result: ToolResult | None = None,
+    registry: ToolRegistry | None = None,
+) -> dict[str, Any]:
+    payload = _side_effect_summary_from_policy_view(_policy_view_for_tool(tool_name, registry=registry))
     if result is not None:
         data = result.data or {}
         override = data.get("side_effect")
@@ -146,6 +150,15 @@ def _side_effect_summary(tool_name: str, *, result: ToolResult | None = None) ->
             payload["level"] = "committed"
             payload["requires_confirmation"] = False
     return payload
+
+
+def _policy_view_for_tool(tool_name: str, *, registry: ToolRegistry | None) -> ToolPolicyView:
+    interpreter = ToolPolicyInterpreter()
+    if registry is not None and hasattr(interpreter, "view_for_spec"):
+        for spec in registry.list_specs():
+            if spec.name == tool_name and spec.policy is not None:
+                return interpreter.view_for_spec(spec)
+    return interpreter.view_for_tool_name(tool_name)
 
 
 def _side_effect_summary_from_policy_view(view: ToolPolicyView) -> dict[str, Any]:

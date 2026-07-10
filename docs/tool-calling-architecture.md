@@ -171,6 +171,8 @@ Runtime gate 映射：
 
 Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are capability metadata, not execution plugins. A skill can declare governed tools and `tool:<name>` permissions, and the context capability catalog may expose that prompt-safe descriptor only when the governed tools are available and prompt-selected. Unknown permission vocabulary is rejected before prompt rendering, and a repo-local skill id suppresses same-name built-in fallback even when the local manifest is disabled or invalid. Skill exposure is reported through prompt-safe `skill_report_v1`; skills do not register `run_skill`, do not call `ToolRegistry.run(...)`, and do not bypass `ActionValidator -> ToolExecutor -> ToolRegistry`.
 
+Repo/user-local Python tools use the explicit `@tool` decorator plus `load_local_tools()` / `register_local_tools()`. They are not import-time global registrations. A local tool may declare `ToolPolicyMetadata` and `ToolExecutionPolicy`; when present, runtime risk gate, boundary summaries, scheduler metadata, trace/history summaries, and `tools simulate` consume that declaration through the same `ToolSpec -> ToolPolicyView -> ActionValidator -> ToolExecutor` path. `assistant_agent.tools.cli validate` checks declaration shape and policy requirements; `simulate` executes one explicitly loaded tool through validator/executor for local verification.
+
 默认副作用分类：
 
 - `vision_understanding`、`video_understanding`、`web_search`、`product_search`、`price_compare`: `external_read`。

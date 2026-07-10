@@ -191,10 +191,11 @@ def evaluate_tool_risk(
     request: UserRequest,
     state: AgentState,
     step_id: str | None,
+    policy: ToolSideEffectPolicy | None = None,
 ) -> ToolRiskDecision:
     """Return the runtime risk/idempotency decision for a tool call."""
 
-    policy = tool_side_effect_policy(tool_name)
+    policy = policy or tool_side_effect_policy(tool_name)
     level = risk_gate_level_for_policy(policy)
     enabled = _risk_gate_enabled(request)
     supplied_key = _metadata_string(tool_input.get("idempotency_key"))

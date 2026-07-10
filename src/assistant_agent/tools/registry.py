@@ -81,7 +81,7 @@ class ToolRegistry:
                     when_not_to_use=usage.get("when_not_to_use", []),
                     runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
                     side_effect=tool_side_effect_policy(tool.name),
-                    execution=tool_execution_policy(tool.name),
+                    execution=tool_execution_metadata(tool) or tool_execution_policy(tool.name),
                     policy=tool_policy_metadata(tool),
                 )
             )
@@ -170,6 +170,19 @@ def tool_policy_metadata(tool: BaseTool) -> ToolPolicyMetadata | None:
     if isinstance(payload, dict):
         return ToolPolicyMetadata.model_validate(payload)
     raise TypeError(f"Invalid policy metadata for tool {tool.name}: {type(payload).__name__}")
+
+
+def tool_execution_metadata(tool: BaseTool) -> ToolExecutionPolicy | None:
+    """Return optional scheduling metadata from a tool object."""
+
+    payload = getattr(tool, "execution", None)
+    if payload is None:
+        return None
+    if isinstance(payload, ToolExecutionPolicy):
+        return payload
+    if isinstance(payload, dict):
+        return ToolExecutionPolicy.model_validate(payload)
+    raise TypeError(f"Invalid execution metadata for tool {tool.name}: {type(payload).__name__}")
 
 
 _ACTION_USAGE: dict[str, dict[str, Any]] = {
