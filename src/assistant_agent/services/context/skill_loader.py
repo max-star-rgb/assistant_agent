@@ -9,11 +9,21 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 
+class SkillVisibility(BaseModel):
+    """Prompt-safe visibility declaration for one repo-local skill."""
+
+    toolset: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    enabled_by_default: bool = True
+    skill_only: bool = False
+
+
 class SkillDescriptor(BaseModel):
     """Prompt-safe repo-local skill descriptor backed by governed tools."""
 
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    manifest_version: int = Field(default=1, ge=1)
     enabled: bool = True
     disable_model_invocation: bool = False
     governed_tools: list[str] = Field(default_factory=list)
@@ -23,6 +33,8 @@ class SkillDescriptor(BaseModel):
     when_not_to_use: list[str] = Field(default_factory=list)
     safe_examples: list[str] = Field(default_factory=list)
     runtime_constraints: list[str] = Field(default_factory=list)
+    visibility: SkillVisibility = Field(default_factory=SkillVisibility)
+    tests: list[str] = Field(default_factory=list)
 
 
 class SkillLoadIssue(BaseModel):
@@ -49,6 +61,8 @@ _ALLOWED_SECTION_TITLES = {
     "when not to use": "when_not_to_use",
     "safe examples": "safe_examples",
     "runtime constraints": "runtime_constraints",
+    "visibility": "visibility",
+    "tests": "tests",
 }
 
 
@@ -220,6 +234,7 @@ def _load_skill_file(
         descriptor = SkillDescriptor(
             name=name,
             description=description,
+            manifest_version=_metadata_int(metadata, "manifest-version", default=1),
             enabled=enabled,
             disable_model_invocation=disable_model_invocation,
             governed_tools=governed_tools,
@@ -233,6 +248,8 @@ def _load_skill_file(
             runtime_constraints=_list_items_from_section(
                 sections.get("runtime_constraints", [])
             ),
+            visibility=_visibility_from_section(sections.get("visibility", [])),
+            tests=_list_items_from_section(sections.get("tests", [])),
         )
     except ValidationError as exc:
         issues.append(
@@ -343,6 +360,29 @@ def _permissions_from_section(lines: list[str]) -> list[str]:
     return _unique(permissions)
 
 
+def _visibility_from_section(lines: list[str]) -> SkillVisibility:
+    values: dict[str, Any] = {}
+    for item in _list_items_from_section(lines):
+        if ":" not in item:
+            continue
+        raw_key, raw_value = item.split(":", 1)
+        key = raw_key.strip().replace("-", "_").lower()
+        value = raw_value.strip()
+        if key == "toolset":
+            values["toolset"] = _clean_token(value)
+        elif key == "tags":
+            values["tags"] = [
+                _clean_token(candidate)
+                for candidate in value.split(",")
+                if _clean_token(candidate)
+            ]
+        elif key == "enabled_by_default":
+            values["enabled_by_default"] = _bool_from_text(value, default=True)
+        elif key == "skill_only":
+            values["skill_only"] = _bool_from_text(value, default=False)
+    return SkillVisibility(**values)
+
+
 def _is_valid_tool_permission(permission: str) -> bool:
     return re.match(r"^tool:[A-Za-z0-9_.-]+$", permission) is not None
 
@@ -389,6 +429,23 @@ def _metadata_bool(metadata: dict[str, Any], key: str, *, default: bool) -> bool
             return True
         if normalized in {"false", "no", "0"}:
             return False
+    return default
+
+
+def _metadata_int(metadata: dict[str, Any], key: str, *, default: int) -> int:
+    value = metadata.get(key)
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _bool_from_text(value: str, *, default: bool) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "yes", "1"}:
+        return True
+    if normalized in {"false", "no", "0"}:
+        return False
     return default
 
 
