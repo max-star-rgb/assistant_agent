@@ -27,6 +27,23 @@ def test_video_context_store_keeps_recent_three_frame_window() -> None:
     assert [frame.uri for frame in frames] == ["frame_3.jpg", "frame_4.jpg", "frame_5.jpg"]
 
 
+def test_video_context_store_remove_video_returns_and_clears_frames() -> None:
+    store = InMemoryVideoContextStore(window_size=3)
+    frame = VideoFrame(
+        video_id="video1",
+        frame_id="frame_1",
+        uri="frame_1.jpg",
+        sequence=1,
+    )
+    store.append_frame(frame)
+
+    removed = store.remove_video("video1")
+
+    assert removed == [frame]
+    assert store.get_recent_frames("video1") == []
+    assert store.remove_video("video1") == []
+
+
 def test_demo_video1_frames_load_into_recent_three_frame_context() -> None:
     store = InMemoryVideoContextStore(window_size=3)
 

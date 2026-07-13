@@ -34,6 +34,9 @@ class VideoContextStore(Protocol):
     def get_recent_frames(self, video_id: str, *, limit: int | None = None) -> list[VideoFrame]:
         """Return a snapshot of the most recent frames for a video id."""
 
+    def remove_video(self, video_id: str) -> list[VideoFrame]:
+        """Remove and return all retained frames for one video id."""
+
 
 class InMemoryVideoContextStore:
     """Small process-local sliding-window store for video frames."""
@@ -57,6 +60,10 @@ class InMemoryVideoContextStore:
     def frame_count(self, video_id: str) -> int:
         with self._lock:
             return len(self._frames.get(video_id, []))
+
+    def remove_video(self, video_id: str) -> list[VideoFrame]:
+        with self._lock:
+            return self._frames.pop(video_id, [])
 
 
 def load_demo_video_frames(
