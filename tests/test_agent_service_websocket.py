@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -207,6 +208,35 @@ def test_agent_service_video_context_reaches_following_chat(monkeypatch, tmp_pat
     assert capabilities["supports_video_refs"] is True
     assert capabilities["supports_raw_media"] is True
     assert ingestion.cleaned == ["agent-service-video-test"]
+
+
+def test_agent_service_video_chat_allows_provider_timeout_budget() -> None:
+    captured = {}
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=["agent-service-video-test"],
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-video-timeout",
+            latest_speech="识别眼前物体",
+            contents=[{"speechContent": "识别眼前物体"}],
+        )
+    )
+
+    assert captured["request"].timeout_s == 90.0
 
 
 def test_agent_service_accepts_media_control_and_chat_protocol(monkeypatch) -> None:

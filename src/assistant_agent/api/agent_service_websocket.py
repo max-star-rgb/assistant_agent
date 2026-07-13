@@ -27,6 +27,7 @@ logger = logging.getLogger("assistant_agent.api.agent_service_websocket")
 SUCCESS_CODE = "OK"
 FAIL_CODE = "FAIL"
 POLICY_VIOLATION_CLOSE_CODE = 1008
+VIDEO_TURN_TIMEOUT_SECONDS = 90.0
 
 
 @dataclass
@@ -532,6 +533,7 @@ async def _run_agent_service_chat_turn(
                 session_id=session_id,
                 text=latest_speech,
                 video_ids=list(state.video_ids),
+                timeout_s=VIDEO_TURN_TIMEOUT_SECONDS if state.video_ids else 30.0,
                 metadata=_agent_service_gateway_metadata(
                     state=state,
                     user_number=user_number,
