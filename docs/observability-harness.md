@@ -6,6 +6,20 @@ harness contract for understanding one run end to end without exposing raw
 provider payloads, full prompts, memory content, secrets, media bodies, or hidden
 reasoning.
 
+## Agent-Service Delivery Audit
+
+`/agent-service/v1` writes prompt-safe delivery transitions to
+`.data/agent_service_delivery.jsonl`. Records distinguish `accepted`,
+`processing`, `sent`, `acked`, `failed`, `disconnected_before_send`, and
+`disconnected_before_ack`. A `sent` record only proves that WebSocket
+`send_text()` returned; only `acked` proves the media application processed the
+final response.
+
+Records use digests for session and chat identifiers and may include run/trace
+ids, close code, and a close-reason category. They never include response text,
+raw media, phone numbers, credentials, or provider payloads. This JSONL file is
+local runtime evidence, not a durable cross-host delivery database.
+
 ## Purpose
 
 The observability harness should answer five developer questions quickly:

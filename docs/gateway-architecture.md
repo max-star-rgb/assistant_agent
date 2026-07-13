@@ -135,6 +135,12 @@ independently decodable H.264 Annex-B frames, decodes them to a three-frame
 JPEG window, and attaches the stable session video reference to later chat
 turns. The entry adapter does not call the video provider directly.
 
+Vendor chat execution is detached from the WebSocket receive loop, so a long
+Gateway turn does not prevent later raw media frames from being validated and
+acknowledged. Optional `clientCapabilities` negotiate prompt-free
+`chatProgress` and application-level `chatResponseAck`. Clients that do not
+negotiate these extensions retain the legacy single-final-response behavior.
+
 ## Gateway Responsibilities
 
 Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normalized traffic:

@@ -52,6 +52,8 @@ Agent 兼容说明：
 | `audioResponse` | 音频响应 | 参见 4.3 |
 | `videoResponse` | 视频响应 | 参见 4.4 |
 | `interrupt` | 打断响应 | 参见 4.5 |
+| `chatProgress` | 可选的长任务处理中状态 | 参见 4.2 |
+| `chatResponseAck` | 最终响应应用层确认 | 参见 4.2 |
 | `error` | 未知消息或无法归属到具体 handler 的协议错误 | 参见 5 |
 
 ## 4. 消息体详细结构
@@ -64,7 +66,8 @@ Agent 兼容说明：
 {
   "number": "用户号码",
   "callType": "AUDIO",
-  "modelName": "模型名称(可选)"
+  "modelName": "模型名称(可选)",
+  "clientCapabilities": {"chatProgress": true, "chatResponseAck": true}
 }
 ```
 
@@ -75,6 +78,8 @@ Agent 兼容说明：
 | `number` | string | 是 | 用户号码；无外层 `sessionId` 时也作为内部 session id |
 | `callType` | string | 是 | `AUDIO` 或 `VIDEO` |
 | `modelName` | string | 否 | 媒体侧希望使用的模型名称；Agent 当前记录但不直接用它绕过 provider/runtime policy |
+| `clientCapabilities.chatProgress` | boolean | 否 | 为 true 时立即并每 15 秒发送 `chatProgress` |
+| `clientCapabilities.chatResponseAck` | boolean | 否 | 为 true 时最终响应携带 `deliveryId`，媒体处理后回 ACK |
 
 响应 `agent -> client`：
 
@@ -137,6 +142,22 @@ Agent 兼容说明：
 - Agent 使用最新一条非空 `speechContent` 作为本轮 Gateway 输入文本。
 - 只包含 `imageContent` 的内容项可以随请求传入，但当前不单独触发图像理解。
 - `chat` 会进入 `GatewayTurnFacade -> GatewaySessionManager -> GatewayAgentAdapter -> AssistantRuntimeApp -> AgentGraphRuntime`。
+- chat run 在独立任务中执行，WebSocket 主循环会继续接收并 ACK 后续媒体消息。
+- 未声明扩展能力的旧客户端仍只收到一个最终 `chatResponse`。
+
+协商 `chatProgress` 后，Agent 立即并每 15 秒发送一次：
+
+```json
+{"message":"chatProgress","body":"{\"chatIndex\":\"chat-1\",\"deliveryId\":\"delivery_xxx\",\"status\":\"PROCESSING\"}"}
+```
+
+协商 `chatResponseAck` 后，最终响应增加 `deliveryId`。媒体处理完成后发送：
+
+```json
+{"message":"chatResponseAck","body":"{\"deliveryId\":\"delivery_xxx\",\"chatIndex\":\"chat-1\"}"}
+```
+
+Agent 返回 `chatResponseAck` 且 `code=0` 才表示应用层 ACK 已记录。媒体端对视频理解 turn 的等待时间必须至少为 90 秒。
 
 响应 `agent -> client`：
 
