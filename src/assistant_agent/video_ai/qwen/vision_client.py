@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.services.provider_http import without_unsupported_socks_proxy_env
 from assistant_agent.services.real_vision_adapter import _json_object_from_text, image_to_data_url
 from assistant_agent.video_ai.memory.state_manager import KeyframeMemoryRecord
 from assistant_agent.video_ai.types import QueryAnswer, VideoFrame
@@ -247,7 +248,12 @@ class QwenVLClient:
             from openai import OpenAI
         except ImportError as exc:
             raise RuntimeError("openai package is required for qwen vision client") from exc
-        client = OpenAI(api_key=self.config.api_key, base_url=self.config.base_url, timeout=self.config.timeout_seconds)
+        with without_unsupported_socks_proxy_env():
+            client = OpenAI(
+                api_key=self.config.api_key,
+                base_url=self.config.base_url,
+                timeout=self.config.timeout_seconds,
+            )
         kwargs: dict[str, Any] = {
             "model": self.config.model,
             "messages": [{"role": "user", "content": content}],

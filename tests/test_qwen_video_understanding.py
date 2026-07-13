@@ -1,9 +1,12 @@
+import os
 from pathlib import Path
+
+import openai
 
 from assistant_agent.providers.qwen_video_understanding import QwenVideoUnderstandingAdapter
 from assistant_agent.schemas.perception import VideoUnderstandingRequest
 from assistant_agent.video_ai.memory.state_manager import KeyframeMemoryRecord
-from assistant_agent.video_ai.qwen.vision_client import QwenVLConfig, VisionObservation
+from assistant_agent.video_ai.qwen.vision_client import QwenVLClient, QwenVLConfig, VisionObservation
 from assistant_agent.video_ai.types import VideoFrame
 
 
@@ -117,3 +120,28 @@ def test_qwen_video_adapter_preserves_structured_client_failure() -> None:
         }
     ]
     assert result.latency_ms == 17
+
+
+def test_qwen_client_hides_unsupported_socks_proxy_during_client_init(monkeypatch) -> None:
+    captured: dict[str, str | None] = {}
+
+    class FakeCompletions:
+        def create(self, **_payload):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.chat = type("FakeChat", (), {"completions": FakeCompletions()})()
+
+    def fake_openai(**_kwargs):
+        captured["all_proxy"] = os.environ.get("ALL_PROXY")
+        return FakeClient()
+
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:17891/")
+    monkeypatch.setattr(openai, "OpenAI", fake_openai)
+    client = QwenVLClient(_config())
+
+    client._chat([{"type": "text", "text": "test"}], json_response=False)
+
+    assert captured["all_proxy"] is None
+    assert os.environ["ALL_PROXY"] == "socks://127.0.0.1:17891/"

@@ -1,3 +1,5 @@
+import os
+
 import httpx
 import pytest
 from openai import (
@@ -182,6 +184,27 @@ def test_deepseek_chat_provider_uses_openai_sdk(monkeypatch) -> None:
     assert completions.calls[0]["model"] == "deepseek-chat"
     assert completions.calls[0]["messages"][-1]["content"] == "请用一句话介绍项目"
     assert "stream" not in completions.calls[0]
+
+
+def test_openai_compatible_chat_hides_unsupported_socks_proxy_during_client_init(monkeypatch) -> None:
+    captured: dict[str, str | None] = {}
+
+    def fake_openai(**_kwargs):
+        captured["all_proxy"] = os.environ.get("ALL_PROXY")
+        return FakeSDKClient(FakeCompletions())
+
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:17891/")
+    monkeypatch.setattr(chat_adapter_module, "OpenAI", fake_openai)
+
+    OpenAICompatibleChatAdapter(
+        provider="deepseek",
+        api_key="test-key",
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-chat",
+    )
+
+    assert captured["all_proxy"] is None
+    assert os.environ["ALL_PROXY"] == "socks://127.0.0.1:17891/"
 
 
 def test_openai_compatible_chat_payload_sends_default_chat_fields(monkeypatch) -> None:
