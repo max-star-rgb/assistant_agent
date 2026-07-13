@@ -47,6 +47,7 @@ class VideoUnderstandingResult(BaseModel):
 
     summary: str = Field(min_length=1)
     objects: list[str] = Field(default_factory=list)
+    people: list[str] = Field(default_factory=list)
     actions: list[str] = Field(default_factory=list)
     events: list[str] = Field(default_factory=list)
     scene: str | None = None

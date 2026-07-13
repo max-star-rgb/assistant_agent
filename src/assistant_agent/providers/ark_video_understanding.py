@@ -124,6 +124,7 @@ def map_ark_video_result(
     return VideoUnderstandingResult(
         summary=_string(data.get("summary")) or "已完成视频帧理解。",
         objects=_string_list(data.get("objects")),
+        people=_string_list(data.get("people")),
         actions=_string_list(data.get("actions")),
         events=_string_list(data.get("events")),
         scene=_string(data.get("scene")),
@@ -227,7 +228,7 @@ def _ark_video_prompt(request: VideoUnderstandingRequest) -> str:
         f"{query}\n"
         f"这里有 {frame_count} 张按时间顺序排列的视频上下文帧。"
         "请只输出一个 JSON object，字段必须符合："
-        "summary: string, objects: string[], actions: string[], events: string[], "
+        "summary: string, objects: string[], people: string[], actions: string[], events: string[], "
         "scene: string | null, products: string[], brands: string[], colors: string[], "
         "materials: string[], text_in_video: string[], timestamps: object[], "
         "style_tags: string[], confidence: number。"

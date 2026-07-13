@@ -8,6 +8,7 @@ from assistant_agent.services.video_adapter import (
     create_video_understanding_adapter,
 )
 from assistant_agent.services.video_context import DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE, VideoContextStore
+from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore, RealtimeVideoSnapshot
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
@@ -22,13 +23,22 @@ class VideoUnderstandingTool(MockTool):
         adapter: VideoUnderstandingAdapter | None = None,
         *,
         context_store: VideoContextStore | None = None,
+        memory_store: RealtimeVideoMemoryStore | None = None,
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
     ) -> None:
         self.adapter = adapter or create_video_understanding_adapter()
         self.context_store = context_store
+        self.memory_store = memory_store
         self.context_window_size = context_window_size
 
     def _run(self, input: VideoUnderstandingRequest, context: ToolContext) -> ToolResult:
+        video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)
+        observation_mode = context.metadata.get("realtime_video_observation") is True
+        if video_ref and not observation_mode and self.memory_store is not None:
+            snapshot = self.memory_store.snapshot(video_ref)
+            if snapshot is not None and snapshot.healthy:
+                return self._memory_result(snapshot)
+
         input = self._with_context_frames(input)
         try:
             result = self.adapter.understand_video(input)
@@ -40,7 +50,8 @@ class VideoUnderstandingTool(MockTool):
             )
             return ToolResult(tool_name=self.name, success=False, error=str(exc), contract=contract)
 
-        payload = result.model_dump(mode="json")
+        source = "background_keyframe_observation" if observation_mode else "recent_frame_fallback"
+        payload = {**result.model_dump(mode="json"), "source": source}
         output_ref = result.output_ref
         status = "failed" if result.errors else "succeeded"
         contract = build_capability_output_contract(
@@ -53,6 +64,7 @@ class VideoUnderstandingTool(MockTool):
                 "provider": result.provider,
                 "model": result.model,
                 "latency_ms": result.latency_ms,
+                "source": source,
             },
         )
         return ToolResult(
@@ -62,6 +74,56 @@ class VideoUnderstandingTool(MockTool):
             error=result.errors[0]["message"] if result.errors else None,
             output_ref=output_ref,
             latency_ms=result.latency_ms,
+            contract=contract,
+        )
+
+    def _memory_result(self, snapshot: RealtimeVideoSnapshot) -> ToolResult:
+        output_ref = f"memory://realtime-video/{_safe_ref(snapshot.video_id)}"
+        payload = {
+            "summary": snapshot.current_state,
+            "objects": list(snapshot.objects),
+            "people": list(snapshot.people),
+            "actions": list(snapshot.actions),
+            "events": list(snapshot.events),
+            "scene": snapshot.scene,
+            "products": list(snapshot.products),
+            "brands": list(snapshot.brands),
+            "colors": list(snapshot.colors),
+            "materials": list(snapshot.materials),
+            "text_in_video": list(snapshot.text_in_video),
+            "timestamps": [dict(item) for item in snapshot.timestamps],
+            "style_tags": list(snapshot.style_tags),
+            "confidence": snapshot.confidence,
+            "provider": snapshot.provider or "rolling_video_memory",
+            "model": snapshot.model,
+            "output_ref": output_ref,
+            "errors": [],
+            "latency_ms": 0,
+            "source": "rolling_video_memory",
+            "snapshot_sequence": snapshot.last_success_sequence,
+            "observed_timestamp_ms": snapshot.last_success_timestamp_ms,
+            "keyframe_count": len(snapshot.keyframes),
+        }
+        contract = build_capability_output_contract(
+            capability="video_understanding",
+            status="succeeded",
+            output_ref=output_ref,
+            data=payload,
+            metadata={
+                "provider": payload["provider"],
+                "model": payload["model"],
+                "latency_ms": 0,
+                "source": "rolling_video_memory",
+                "snapshot_sequence": snapshot.last_success_sequence,
+                "keyframe_count": len(snapshot.keyframes),
+            },
+        )
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data=payload,
+            output_ref=output_ref,
+            latency_ms=0,
             contract=contract,
         )
 
@@ -95,3 +157,8 @@ def _error_code(message: str) -> str:
     if ":" in message:
         return message.split(":", maxsplit=1)[0]
     return "video_understanding_failed"
+
+
+def _safe_ref(value: str) -> str:
+    normalized = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in value)
+    return normalized or "video"

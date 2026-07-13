@@ -58,6 +58,7 @@ from assistant_agent.services.session_store import SessionStore, create_session_
 from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
+from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry, tool_execution_policy
 
 
@@ -120,13 +121,23 @@ class AgentGraphRuntime:
         chat_adapter: ChatAdapter | None = None,
         context_compactor: ContextCompactor | None = None,
         video_context_store: VideoContextStore | None = None,
+        realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
         checkpointer: Any | None = None,
     ) -> None:
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
+        self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
         self.memory_store = memory_store or create_memory_store(self.config)
         self.memory_manager = MemoryManager(self.memory_store)
-        self.registry = registry or create_default_registry(self.config, video_context_store=self.video_context_store)
+        self.registry = registry or create_default_registry(
+            self.config,
+            video_context_store=self.video_context_store,
+            realtime_video_memory_store=self.realtime_video_memory_store,
+        )
+        if registry is not None and "video_understanding" in self.registry.list():
+            video_tool = self.registry.get("video_understanding")
+            if getattr(video_tool, "memory_store", None) is None:
+                video_tool.memory_store = self.realtime_video_memory_store
         self.intent_detector = intent_detector or IntentDetector()
         self.router = router or ToolRouter()
         self.run_history = run_history

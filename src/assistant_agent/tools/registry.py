@@ -28,6 +28,7 @@ from assistant_agent.services.provider_selection import create_vision_adapter
 from assistant_agent.services.render_adapter import create_render_adapter
 from assistant_agent.services.video_adapter import create_video_understanding_adapter
 from assistant_agent.services.video_context import VideoContextStore
+from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 from assistant_agent.tools.vision_tool import VisionUnderstandingTool
 from assistant_agent.tools.web_search_tool import WebSearchTool
@@ -477,6 +478,7 @@ def create_default_registry(
     config: ProviderConfig | None = None,
     *,
     video_context_store: VideoContextStore | None = None,
+    realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
     enable_agent_delegation: bool = False,
     agent_communication_service: AgentCommunicationService | None = None,
 ) -> ToolRegistry:
@@ -484,7 +486,11 @@ def create_default_registry(
     memory_media_service = create_memory_media_ingestion_service(config)
     for tool in (
         VisionUnderstandingTool(adapter=create_vision_adapter(config)),
-        VideoUnderstandingTool(adapter=create_video_understanding_adapter(config), context_store=video_context_store),
+        VideoUnderstandingTool(
+            adapter=create_video_understanding_adapter(config),
+            context_store=video_context_store,
+            memory_store=realtime_video_memory_store,
+        ),
         ProductSearchTool(adapter=create_product_search_adapter(config)),
         PriceCompareTool(adapter=create_price_compare_adapter(config)),
         WebSearchTool(adapter=create_web_search_adapter(config)),
