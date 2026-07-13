@@ -1,6 +1,7 @@
 """Agent HTTP routes."""
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,10 @@ from assistant_agent.services.trace_query import (
     ToolCallSummary,
     TraceSummary,
 )
+from assistant_agent.services.trace_persistence import (
+    close_trace_store,
+    create_server_trace_store,
+)
 from assistant_agent.services.trial_access import (
     TrialAccessGate,
     TrialAccessStatus,
@@ -91,13 +96,29 @@ _AGENT_ROUTER: AgentRouter | None = None
 _FEEDBACK_STORE: BetaFeedbackStore | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
+SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
 
 
 def get_agent_runtime() -> Any:
     global _RUNTIME
     if _RUNTIME is None:
-        _RUNTIME = create_runtime()
+        trace_store = (
+            create_server_trace_store()
+            if os.environ.get(SERVER_TRACE_ENABLED_ENV) == "1"
+            else None
+        )
+        _RUNTIME = create_runtime(trace_store=trace_store)
     return _RUNTIME
+
+
+def shutdown_agent_runtime() -> None:
+    """Flush owned trace persistence and clear the process runtime singleton."""
+
+    global _RUNTIME
+    runtime = _RUNTIME
+    _RUNTIME = None
+    if runtime is not None:
+        close_trace_store(getattr(runtime, "trace_store", None), timeout=1.0)
 
 
 def get_assistant_runtime_app() -> AssistantRuntimeApp:

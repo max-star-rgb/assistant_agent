@@ -7,6 +7,8 @@ call smoke should use `/ws/realtime/media`; normalized Gateway smoke should use
 launch it without a module-based uvicorn run configuration.
 """
 
+# ruff: noqa: E402 - repository src path must be installed before package imports.
+
 from __future__ import annotations
 
 import argparse
@@ -36,6 +38,7 @@ from assistant_agent.services.trial_access import (
 
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
+SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,6 +93,7 @@ def _prepare_environment(args: argparse.Namespace) -> dict[str, str]:
     if args.image_provider:
         _allow_real_provider_if_needed(args.image_provider)
         os.environ["MULTIMODAL_AGENT_IMAGE_PROVIDER"] = args.image_provider
+    os.environ[SERVER_TRACE_ENABLED_ENV] = "1"
     _configure_trial_user_allowlist(args)
     return loaded
 

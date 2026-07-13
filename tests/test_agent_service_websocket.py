@@ -24,6 +24,8 @@ from assistant_agent.services.agent_service_delivery import (
 )
 from assistant_agent.services.agent_service_latency import AgentServiceTurnTiming
 from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.services.trace_persistence import BufferedJsonlTraceStore, close_trace_store
+from assistant_agent.services.trace_store import CompositeTraceStore, TraceEvent
 
 
 class RecordingRuntime:
@@ -204,6 +206,55 @@ def test_agent_service_chat_appends_correlated_turn_latency_trace(
     assert "10086" not in dumped
     assert "private-chat-index" not in dumped
     assert any(record.getMessage().startswith("turn_latency status=sent") for record in caplog.records)
+
+
+def test_blocked_trace_persistence_does_not_delay_chat_response(monkeypatch) -> None:
+    started = Event()
+    release = Event()
+
+    class BlockingSink(InMemoryTraceStore):
+        def append(self, event: TraceEvent) -> None:
+            started.set()
+            assert release.wait(timeout=3)
+            super().append(event)
+
+    primary = InMemoryTraceStore()
+    buffered = BufferedJsonlTraceStore(BlockingSink(), capacity=128)
+    trace_store = CompositeTraceStore(primary, [buffered])
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    try:
+        with client.websocket_connect("/agent-service/v1?sessionId=s1") as websocket:
+            websocket.send_json(
+                _envelope(
+                    "chat",
+                    "s1",
+                    {
+                        "chatIndex": "chat-blocked-trace",
+                        "userNumber": "10086",
+                        "contents": [
+                            {
+                                "speakerNumber": "10086",
+                                "speechContent": "answer while persistence is blocked",
+                                "time": "2026-07-13T08:30:00Z",
+                            }
+                        ],
+                    },
+                )
+            )
+            assert started.wait(timeout=2)
+            response = websocket.receive_json()
+
+        assert response["message"] == "chatResponse"
+        assert any(
+            event.canonical_event == "agent_service.turn.finished"
+            for event in primary.events
+        )
+    finally:
+        release.set()
+        assert close_trace_store(trace_store, timeout=1.0) is True
 
 
 def test_chat_response_ack_appends_separate_latency_event(tmp_path: Path) -> None:

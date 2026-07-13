@@ -13,7 +13,7 @@ from assistant_agent.api.agent_service_websocket import router as agent_service_
 from assistant_agent.api.gateway_runtime import shutdown_gateway_runtime
 from assistant_agent.api.gateway_websocket import router as gateway_websocket_router
 from assistant_agent.api.routes_a2a import router as a2a_router
-from assistant_agent.api.routes_agent import router as agent_router
+from assistant_agent.api.routes_agent import router as agent_router, shutdown_agent_runtime
 from assistant_agent.schemas.api import PROTOCOL_VERSION, api_error
 from assistant_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
 
@@ -61,6 +61,7 @@ async def _lifespan(app: FastAPI):
         yield
     finally:
         await shutdown_gateway_runtime()
+        shutdown_agent_runtime()
 
 
 def load_repo_env_file(path: Path | None = None, *, override: bool = False) -> dict[str, str]:

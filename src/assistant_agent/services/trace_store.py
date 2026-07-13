@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Any, Literal, Protocol, TypeVar
 from uuid import uuid4
 
@@ -173,7 +174,6 @@ class JsonlTraceStore:
                 file.write(json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n")
         return deleted
 
-
 class CompositeTraceStore:
     """Fan out trace writes while keeping reads deterministic from primary."""
 
@@ -238,6 +238,34 @@ class CompositeTraceStore:
                 if not self.continue_on_error:
                     raise
         return deleted
+
+    def close(self, *, timeout: float = 1.0) -> bool:
+        """Close owned stores in reverse fan-out order within one deadline."""
+
+        deadline = monotonic() + max(0.0, timeout)
+        closed = True
+        stores = [*reversed(self.secondaries), self.primary]
+        for index, store in enumerate(stores):
+            close = getattr(store, "close", None)
+            if not callable(close):
+                continue
+            remaining = max(0.0, deadline - monotonic())
+            try:
+                result = close(timeout=remaining)
+                if result is False:
+                    closed = False
+            except Exception as exc:
+                closed = False
+                self._record_error(
+                    target=store,
+                    target_index=index,
+                    operation="close",
+                    event=None,
+                    exc=exc,
+                )
+                if not self.continue_on_error:
+                    raise
+        return closed
 
     def _stores(self) -> list[TraceStore]:
         return [self.primary, *self.secondaries]
