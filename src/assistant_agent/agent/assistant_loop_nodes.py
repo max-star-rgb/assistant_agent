@@ -10,7 +10,6 @@ tool listing, native tool-call normalization, validation, execution, loop
 limits, trace recording, and state mutation.
 """
 
-import json
 from inspect import signature
 from dataclasses import dataclass
 from typing import Any, NotRequired, TypedDict, cast
@@ -46,16 +45,18 @@ from assistant_agent.schemas.tool_observation import (
     observation_from_tool_result,
     rejected_observation,
 )
-from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult
 from assistant_agent.services.context.builder import build_assistant_context_pack
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
-from assistant_agent.services.context.report import build_context_report
-from assistant_agent.services.context.renderer import (
-    render_final_only_prompt,
-    render_native_user_message,
+from assistant_agent.services.context.prompt_compiler import (
+    PromptCompileMode,
+    PromptCompileRequest,
+    PromptCompileResult,
+    PromptCompiler,
+    prompt_tool_specs_for_mode,
 )
+from assistant_agent.services.context.report import build_context_report
 from assistant_agent.services.context.token_budget import normalize_provider_token_usage
 from assistant_agent.services.trace_store import TraceEvent, sanitize_trace_value
 
@@ -469,53 +470,42 @@ def _native_finish_reason(result: ChatResult, *, fallback: str) -> str:
 
 
 def _build_native_tool_chat_request(context: AssistantDecisionContext, state: AgentState) -> ChatRequest:
-    messages = _build_native_tool_messages(context, state)
-    selected_tool_specs = _selected_native_tool_specs(context)
-    return ChatRequest(
-        user_id=state.user_id,
-        session_id=state.session_id,
-        user_query=context.request.text or "native_tools assistant turn",
-        messages=messages,
-        tools=tool_specs_to_openai_tools(selected_tool_specs),
-        tool_choice="auto",
-        temperature=0.2,
-        max_tokens=1024,
+    return _compile_native_tool_chat_request(context, state).chat_request
+
+
+def _compile_native_tool_chat_request(
+    context: AssistantDecisionContext,
+    state: AgentState,
+) -> PromptCompileResult:
+    return PromptCompiler().compile(
+        PromptCompileRequest(
+            user_id=state.user_id,
+            session_id=state.session_id,
+            mode=PromptCompileMode.NATIVE_TOOL,
+            user_query_fallback="native_tools assistant turn",
+            profile=SystemPromptProfile.TEXT_DEFAULT,
+            options=SystemPromptOptions(product_mode=True),
+            context_pack=context.context_pack,
+            observations=tuple(context.tool_observations),
+            native_calls=tuple(_native_tool_calls_from_metadata(state)),
+            tool_call_id_prefix="call_",
+        )
     )
 
 
 def _selected_native_tool_specs(context: AssistantDecisionContext) -> list[ToolSpec]:
     """Return the provider tool schemas selected for this prompt."""
 
-    if context.context_pack.prompt_tool_specs:
-        return list(context.context_pack.prompt_tool_specs)
-    return list(context.tool_specs)
+    return list(
+        prompt_tool_specs_for_mode(
+            context.context_pack,
+            PromptCompileMode.NATIVE_TOOL,
+        )
+    )
 
 
 def _build_native_tool_messages(context: AssistantDecisionContext, state: AgentState) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = [
-        {
-            "role": "system",
-            "content": render_system_instruction(
-                SystemPromptProfile.TEXT_DEFAULT,
-                options=SystemPromptOptions(product_mode=True),
-            ),
-        },
-        {"role": "user", "content": render_native_user_message(context.context_pack)},
-    ]
-    native_calls = _native_tool_calls_from_metadata(state)
-    for index, observation in enumerate(context.tool_observations):
-        call = native_calls[index] if index < len(native_calls) else {}
-        tool_call_payload = _native_tool_call_payload(call, observation, index)
-        messages.append({"role": "assistant", "content": None, "tool_calls": [tool_call_payload]})
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call_payload["id"],
-                "name": tool_call_payload["function"]["name"],
-                "content": json.dumps(observation, ensure_ascii=False),
-            }
-        )
-    return messages
+    return _compile_native_tool_chat_request(context, state).chat_request.messages
 
 
 def _record_native_tool_call(state: AgentState, call: Any) -> None:
@@ -527,28 +517,6 @@ def _record_native_tool_call(state: AgentState, call: Any) -> None:
 def _native_tool_calls_from_metadata(state: AgentState) -> list[dict[str, Any]]:
     calls = state.request.metadata.get("native_tool_calls", [])
     return [call for call in calls if isinstance(call, dict)] if isinstance(calls, list) else []
-
-
-def _native_tool_call_payload(call: dict[str, Any], observation: dict[str, Any], index: int) -> dict[str, Any]:
-    call_id = str(call.get("id") or f"call_{index + 1}")
-    name = str(call.get("name") or observation.get("tool_name") or "unknown")
-    arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
-    raw = call.get("raw") if isinstance(call.get("raw"), dict) else {}
-    payload = dict(raw) if isinstance(raw, dict) else {}
-    function = payload.get("function") if isinstance(payload.get("function"), dict) else {}
-    function = {
-        **function,
-        "name": str(function.get("name") or name),
-        "arguments": _native_arguments_json(function.get("arguments"), arguments),
-    }
-    payload.update({"id": str(payload.get("id") or call_id), "type": payload.get("type") or "function", "function": function})
-    return payload
-
-
-def _native_arguments_json(value: Any, fallback: dict[str, Any]) -> str:
-    if isinstance(value, str) and value.strip():
-        return value
-    return json.dumps(fallback, ensure_ascii=False)
 
 
 def _apply_decision_guards(
@@ -822,23 +790,21 @@ def _request_final_answer_after_tool_limit(
         memory_text=memory_text,
         context_compactor=context_compactor,
     )
-    prompt = render_final_only_prompt(context_pack)
-    result = chat_adapter.chat(
-        ChatRequest(
+    compilation = PromptCompiler().compile(
+        PromptCompileRequest(
             user_id=state.user_id,
             session_id=state.session_id,
-            user_query=prompt,
-            messages=[
-                {
-                    "role": "system",
-                    "content": render_system_instruction(SystemPromptProfile.FINAL_ONLY),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_tokens=1024,
+            mode=PromptCompileMode.SUMMARY_FINAL_ONLY,
+            user_query_fallback="unused",
+            profile=SystemPromptProfile.FINAL_ONLY,
+            options=SystemPromptOptions(),
+            context_pack=context_pack,
+            observations=tuple(observations),
+            native_calls=(),
+            tool_call_id_prefix="call_",
         )
     )
+    result = chat_adapter.chat(compilation.chat_request)
     _record_chat_usage_metadata(state, result)
     if result.success:
         decision = _native_final_decision(result)

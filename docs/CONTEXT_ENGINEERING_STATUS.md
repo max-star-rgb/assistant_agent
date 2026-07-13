@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-10
+Last updated: 2026-07-13
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -26,6 +26,7 @@ Last updated: 2026-07-10
 - 多阶段 Context Engine + Memory Policy 计划已经完成；后续应把 `docs/CONTEXT_ENGINEERING_STATUS.md` 作为当前入口。
 - 主运行时是 LangGraph/ReAct assistant loop，默认 mock/local/offline。
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、plan state、tool observations、tool specs、source counts 和 budget。
+- 生产 provider-native `ChatRequest` 现在统一通过无副作用 `PromptCompiler` 编译；native tool、native-context final-only 和 summary final-only 使用显式 mode，保留各自既有 renderer、tool choice、tool-call evidence 和生成参数。legacy prompt-json renderer 仍只用于离线兼容与测试。
 - `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
 - Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，只记录大小、计数、来源、压缩/裁剪标志、selected tool names 和 memory item ids，不暴露完整 prompt、memory 文本、tool observation 或 provider payload。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
@@ -108,6 +109,7 @@ Last updated: 2026-07-10
 ### Prompt Rendering
 
 - `render_prompt_json_context` 是历史 prompt-json renderer，保留给 context renderer 测试和离线兼容材料；生产真实 LLM runtime 不再使用它做决策控制面。
+- `PromptCompiler` 是生产 provider 请求的唯一提示词编译入口；它只组合已解析 system profile、已构建 `AssistantContextPack`、已有 native calls/observations 和已选 ToolSpec，不读取 memory/store、不访问 ToolRegistry、不调用 Provider，也不写 trace。
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
 - native/legacy context 可渲染 prompt-safe capability catalog；实际执行契约仍是 `ToolSpec`，工具调用仍必须通过 `ToolExecutor`。
 - Provider-native `ChatRequest.tools` 现在使用 `AssistantContextPack.prompt_tool_specs` 中选出的 schema 子集；仅当 prompt subset 为空时才回退完整 `tool_specs`。如果 selector fallback 到完整工具列表，`tool_catalog.fallback_used` 和 `context_report_v1.sections.tool_schema.notes=["fallback_full_tool_list"]` 会记录该状态。

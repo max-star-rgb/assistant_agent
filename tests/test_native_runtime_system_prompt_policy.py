@@ -55,6 +55,9 @@ def test_native_runtime_uses_system_prompt_policy_for_default_profile() -> None:
     assert "实时电话助手" not in str(request.messages[0]["content"])
     assert request.tools
     assert request.tool_choice == "auto"
+    assert request.user_query == "你好"
+    assert request.temperature == 0.2
+    assert request.max_tokens == 1024
 
 
 def test_native_runtime_can_select_realtime_phone_profile_from_metadata() -> None:
@@ -243,6 +246,40 @@ def test_assistant_loop_native_tool_helper_uses_system_prompt_policy() -> None:
     }
 
 
+def test_assistant_loop_native_tool_helper_preserves_compatibility_payload() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="")
+    state = AgentState.from_request(request)
+    observation = {"tool_name": "product_search", "status": "succeeded"}
+    tool_specs = [ToolSpec(name="product_search", required_inputs=["query"])]
+    context_pack = build_assistant_context_pack(
+        state=state,
+        request=request,
+        observations=[observation],
+        tool_specs=tool_specs,
+        iteration=1,
+        max_iterations=5,
+    )
+    context = AssistantDecisionContext(
+        context_pack=context_pack,
+        request=request,
+        memory_summaries=[],
+        memory_text="",
+        tool_specs=tool_specs,
+        tool_observations=[observation],
+        iterations=1,
+        max_iterations=5,
+        is_mock=False,
+    )
+
+    chat_request = _build_native_tool_chat_request(context, state)
+
+    assert chat_request.user_query == "native_tools assistant turn"
+    assert chat_request.messages[2]["tool_calls"][0]["id"] == "call_1"
+    assert chat_request.tool_choice == "auto"
+    assert chat_request.temperature == 0.2
+    assert chat_request.max_tokens == 1024
+
+
 def test_final_only_handoff_uses_system_prompt_policy_and_existing_context_prompt() -> None:
     adapter = CapturingChatAdapter()
     request = UserRequest(user_id="u1", session_id="s1", text="总结已有结果")
@@ -264,3 +301,8 @@ def test_final_only_handoff_uses_system_prompt_policy_and_existing_context_promp
         "content": render_system_instruction(SystemPromptProfile.FINAL_ONLY),
     }
     assert "不要继续调用任何工具" in adapter.requests[0].messages[1]["content"]
+    final_request = adapter.requests[0]
+    assert final_request.user_query == final_request.messages[1]["content"]
+    assert final_request.tools == []
+    assert final_request.tool_choice is None
+    assert all(message["role"] != "tool" for message in final_request.messages)

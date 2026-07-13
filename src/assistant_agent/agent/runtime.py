@@ -1,7 +1,6 @@
 """Default LangGraph runtime for agent execution."""
 
 import asyncio
-import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from time import perf_counter
@@ -20,7 +19,6 @@ from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSi
 from assistant_agent.agent.system_prompt_policy import (
     SystemPromptOptions,
     SystemPromptProfile,
-    render_system_instruction,
 )
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.agent.memory_tool_selection import (
@@ -41,15 +39,19 @@ from assistant_agent.schemas.api import api_error_from_agent_error
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tool_observation import observation_from_tool_result, rejected_observation
-from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
 from assistant_agent.services.checkpointer import create_checkpointer
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
 from assistant_agent.services.context.compactor import ContextCompactor, create_context_compactor
+from assistant_agent.services.context.prompt_compiler import (
+    PromptCompileMode,
+    PromptCompileRequest,
+    PromptCompileResult,
+    PromptCompiler,
+)
 from assistant_agent.services.context.report import build_context_report
-from assistant_agent.services.context.renderer import render_native_user_message
 from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
 from assistant_agent.services.memory_core_status import build_memory_core_status, update_memory_core_status_errors
 from assistant_agent.services.response_observability import append_response_final_event
@@ -908,49 +910,34 @@ class AgentGraphRuntime:
             max_iterations=max_iterations,
             context_compactor=None,
         )
-        selected_tool_specs = [] if profile == SystemPromptProfile.FINAL_ONLY else _native_runtime_selected_tool_specs(context_pack)
-        system_prompt = render_system_instruction(
-            profile,
-            options=_system_prompt_options_from_request(request),
+        mode = (
+            PromptCompileMode.NATIVE_FINAL_ONLY
+            if profile == SystemPromptProfile.FINAL_ONLY
+            else PromptCompileMode.NATIVE_TOOL
         )
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {"role": "user", "content": render_native_user_message(context_pack)},
-        ]
-        for index, observation in enumerate(observations):
-            call = native_calls[index] if index < len(native_calls) else {}
-            tool_call_payload = _native_runtime_tool_call_payload(call, observation, index)
-            messages.append({"role": "assistant", "content": None, "tool_calls": [tool_call_payload]})
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_payload["id"],
-                    "name": tool_call_payload["function"]["name"],
-                    "content": json.dumps(observation, ensure_ascii=False),
-                }
+        compilation = PromptCompiler().compile(
+            PromptCompileRequest(
+                user_id=state.user_id,
+                session_id=state.session_id,
+                mode=mode,
+                user_query_fallback="native runtime assistant turn",
+                profile=profile,
+                options=_system_prompt_options_from_request(request),
+                context_pack=context_pack,
+                observations=tuple(observations),
+                native_calls=tuple(native_calls),
+                tool_call_id_prefix="native_runtime_call_",
+                stream_callback=stream_callback,
             )
+        )
         self._record_native_runtime_context_report(
             state,
             context_pack=context_pack,
-            system_prompt=system_prompt,
-            selected_tool_specs=selected_tool_specs,
+            compilation=compilation,
             iteration=iteration,
             max_iterations=max_iterations,
         )
-        return ChatRequest(
-            user_id=state.user_id,
-            session_id=state.session_id,
-            user_query=request.text or "native runtime assistant turn",
-            messages=messages,
-            tools=tool_specs_to_openai_tools(selected_tool_specs),
-            tool_choice="none" if profile == SystemPromptProfile.FINAL_ONLY else "auto",
-            temperature=0.2,
-            max_tokens=1024,
-            stream_callback=stream_callback,
-        )
+        return compilation.chat_request
 
     def _request_native_final_answer_after_tool_limit(
         self,
@@ -1042,60 +1029,43 @@ class AgentGraphRuntime:
             max_iterations=max_iterations,
             context_compactor=None,
         )
-        system_prompt = render_system_instruction(
-            SystemPromptProfile.FINAL_ONLY,
-            options=_system_prompt_options_from_request(request),
-        )
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": render_native_user_message(context_pack)},
-        ]
-        for index, observation in enumerate(observations):
-            call = native_calls[index] if index < len(native_calls) else {}
-            tool_call_payload = _native_runtime_tool_call_payload(call, observation, index)
-            messages.append({"role": "assistant", "content": None, "tool_calls": [tool_call_payload]})
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_payload["id"],
-                    "name": tool_call_payload["function"]["name"],
-                    "content": json.dumps(observation, ensure_ascii=False),
-                }
+        compilation = PromptCompiler().compile(
+            PromptCompileRequest(
+                user_id=state.user_id,
+                session_id=state.session_id,
+                mode=PromptCompileMode.NATIVE_FINAL_ONLY,
+                user_query_fallback="native runtime final answer",
+                profile=SystemPromptProfile.FINAL_ONLY,
+                options=_system_prompt_options_from_request(request),
+                context_pack=context_pack,
+                observations=tuple(observations),
+                native_calls=tuple(native_calls),
+                tool_call_id_prefix="native_runtime_call_",
+                stream_callback=stream_callback,
             )
+        )
         self._record_native_runtime_context_report(
             state,
             context_pack=context_pack,
-            system_prompt=system_prompt,
-            selected_tool_specs=[],
+            compilation=compilation,
             iteration=iteration + 1,
             max_iterations=max_iterations,
         )
-        return ChatRequest(
-            user_id=state.user_id,
-            session_id=state.session_id,
-            user_query=request.text or "native runtime final answer",
-            messages=messages,
-            tools=[],
-            tool_choice="none",
-            temperature=0.2,
-            max_tokens=1024,
-            stream_callback=stream_callback,
-        )
+        return compilation.chat_request
 
     def _record_native_runtime_context_report(
         self,
         state: AgentState,
         *,
         context_pack: Any,
-        system_prompt: str,
-        selected_tool_specs: list[ToolSpec],
+        compilation: PromptCompileResult,
         iteration: int,
         max_iterations: int,
     ) -> None:
         report = build_context_report(
             context_pack,
-            system_prompt=system_prompt,
-            selected_tool_specs=selected_tool_specs,
+            system_prompt=compilation.system_instruction,
+            selected_tool_specs=list(compilation.selected_tool_specs),
         ).model_dump(mode="json")
         state.request.metadata["last_context_report_v1"] = report
         self._append_observability_event(
@@ -1106,7 +1076,7 @@ class AgentGraphRuntime:
             attributes={
                 "iteration": iteration + 1,
                 "max_iterations": max_iterations,
-                "selected_tool_count": len(selected_tool_specs),
+                "selected_tool_count": len(compilation.selected_tool_specs),
                 "compression_stage": report.get("compression_stage"),
             },
             output_summary={"context_report_v1": report},
@@ -1645,13 +1615,6 @@ def _native_runtime_tool_specs(registry: Any, state: AgentState) -> list[ToolSpe
         return None
 
 
-def _native_runtime_selected_tool_specs(context_pack: Any) -> list[ToolSpec]:
-    prompt_tool_specs = getattr(context_pack, "prompt_tool_specs", None)
-    if prompt_tool_specs:
-        return list(prompt_tool_specs)
-    return list(getattr(context_pack, "tool_specs", []) or [])
-
-
 def _set_native_tool_description_failure_response(state: AgentState, exc: Exception) -> None:
     message = f"工具描述读取失败：{exc}"
     state.request.metadata["tool_description_error"] = {
@@ -1898,35 +1861,3 @@ def _native_runtime_stream_callback(state: AgentState, event_sink: EventSink | N
         event_sink.emit(event)
 
     return emit_delta
-
-
-def _native_runtime_tool_call_payload(
-    call: dict[str, Any],
-    observation: dict[str, Any],
-    index: int,
-) -> dict[str, Any]:
-    call_id = str(call.get("id") or f"native_runtime_call_{index + 1}")
-    name = str(call.get("name") or observation.get("tool_name") or "unknown")
-    arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
-    raw = call.get("raw") if isinstance(call.get("raw"), dict) else {}
-    payload = dict(raw) if isinstance(raw, dict) else {}
-    function = payload.get("function") if isinstance(payload.get("function"), dict) else {}
-    function = {
-        **function,
-        "name": str(function.get("name") or name),
-        "arguments": _native_runtime_arguments_json(function.get("arguments"), arguments),
-    }
-    payload.update(
-        {
-            "id": str(payload.get("id") or call_id),
-            "type": payload.get("type") or "function",
-            "function": function,
-        }
-    )
-    return payload
-
-
-def _native_runtime_arguments_json(value: Any, fallback: dict[str, Any]) -> str:
-    if isinstance(value, str) and value.strip():
-        return value
-    return json.dumps(fallback, ensure_ascii=False)

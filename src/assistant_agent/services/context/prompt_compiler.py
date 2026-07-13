@@ -1,0 +1,200 @@
+"""Compile governed assistant context into provider-native chat requests."""
+
+from dataclasses import dataclass
+from enum import StrEnum
+import json
+from typing import Any
+
+from assistant_agent.agent.system_prompt_policy import (
+    SystemPromptOptions,
+    SystemPromptProfile,
+    render_system_instruction,
+)
+from assistant_agent.schemas.context import AssistantContextPack, RenderedAssistantContext
+from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
+from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.services.chat_adapter import ChatRequest, ChatStreamCallback
+from assistant_agent.services.context.renderer import (
+    render_final_only_context,
+    render_native_tool_context,
+)
+
+
+class PromptCompileMode(StrEnum):
+    """Supported production provider-request compilation modes."""
+
+    NATIVE_TOOL = "native_tool"
+    NATIVE_FINAL_ONLY = "native_final_only"
+    SUMMARY_FINAL_ONLY = "summary_final_only"
+
+
+@dataclass(frozen=True)
+class PromptCompileRequest:
+    """Inputs needed to compile one provider-native chat request."""
+
+    user_id: str
+    session_id: str
+    mode: PromptCompileMode
+    user_query_fallback: str
+    profile: SystemPromptProfile
+    options: SystemPromptOptions
+    context_pack: AssistantContextPack
+    observations: tuple[dict[str, Any], ...]
+    native_calls: tuple[dict[str, Any], ...]
+    tool_call_id_prefix: str
+    stream_callback: ChatStreamCallback | None = None
+    temperature: float = 0.2
+    max_tokens: int = 1024
+
+
+@dataclass(frozen=True)
+class PromptCompileResult:
+    """Compiled request plus prompt-safe materials used by observability."""
+
+    chat_request: ChatRequest
+    system_instruction: str
+    rendered_context: RenderedAssistantContext
+    selected_tool_specs: tuple[ToolSpec, ...]
+
+
+class PromptCompiler:
+    """Deterministically assemble an existing context pack for a provider."""
+
+    def compile(self, request: PromptCompileRequest) -> PromptCompileResult:
+        system_instruction = render_system_instruction(
+            request.profile,
+            options=request.options,
+        )
+        rendered_context = _render_context(request)
+        user_content = _rendered_user_content(rendered_context, request.mode)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_content},
+        ]
+        if request.mode != PromptCompileMode.SUMMARY_FINAL_ONLY:
+            messages.extend(_native_tool_messages(request))
+
+        selected_tool_specs = prompt_tool_specs_for_mode(
+            request.context_pack,
+            request.mode,
+        )
+        user_query = (
+            user_content
+            if request.mode == PromptCompileMode.SUMMARY_FINAL_ONLY
+            else (request.context_pack.request.text or request.user_query_fallback)
+        )
+        chat_request = ChatRequest(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            user_query=user_query,
+            messages=messages,
+            tools=tool_specs_to_openai_tools(selected_tool_specs),
+            tool_choice=_tool_choice(request.mode),
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            stream_callback=request.stream_callback,
+        )
+        return PromptCompileResult(
+            chat_request=chat_request,
+            system_instruction=system_instruction,
+            rendered_context=rendered_context,
+            selected_tool_specs=selected_tool_specs,
+        )
+
+
+def prompt_tool_specs_for_mode(
+    pack: AssistantContextPack,
+    mode: PromptCompileMode,
+) -> tuple[ToolSpec, ...]:
+    """Return the already-governed tool subset exposed for this mode."""
+
+    if mode != PromptCompileMode.NATIVE_TOOL:
+        return ()
+    return tuple(pack.prompt_tool_specs or pack.tool_specs)
+
+
+def _render_context(request: PromptCompileRequest) -> RenderedAssistantContext:
+    if request.mode == PromptCompileMode.SUMMARY_FINAL_ONLY:
+        return render_final_only_context(request.context_pack)
+    return render_native_tool_context(request.context_pack)
+
+
+def _rendered_user_content(
+    rendered: RenderedAssistantContext,
+    mode: PromptCompileMode,
+) -> str:
+    if mode == PromptCompileMode.SUMMARY_FINAL_ONLY:
+        return rendered.final_only_prompt or ""
+    return rendered.native_user_message or ""
+
+
+def _native_tool_messages(request: PromptCompileRequest) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for index, observation in enumerate(request.observations):
+        call = request.native_calls[index] if index < len(request.native_calls) else {}
+        tool_call_payload = _native_tool_call_payload(
+            call,
+            observation,
+            index,
+            id_prefix=request.tool_call_id_prefix,
+        )
+        messages.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [tool_call_payload],
+            }
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_payload["id"],
+                "name": tool_call_payload["function"]["name"],
+                "content": json.dumps(observation, ensure_ascii=False),
+            }
+        )
+    return messages
+
+
+def _native_tool_call_payload(
+    call: dict[str, Any],
+    observation: dict[str, Any],
+    index: int,
+    *,
+    id_prefix: str,
+) -> dict[str, Any]:
+    call_id = str(call.get("id") or f"{id_prefix}{index + 1}")
+    name = str(call.get("name") or observation.get("tool_name") or "unknown")
+    arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+    raw = call.get("raw") if isinstance(call.get("raw"), dict) else {}
+    payload = dict(raw)
+    raw_function = payload.get("function")
+    function = dict(raw_function) if isinstance(raw_function, dict) else {}
+    function.update(
+        {
+            "name": str(function.get("name") or name),
+            "arguments": _arguments_json(function.get("arguments"), arguments),
+        }
+    )
+    payload.update(
+        {
+            "id": str(payload.get("id") or call_id),
+            "type": payload.get("type") or "function",
+            "function": function,
+        }
+    )
+    return payload
+
+
+def _arguments_json(value: Any, fallback: dict[str, Any]) -> str:
+    if isinstance(value, str) and value.strip():
+        return value
+    return json.dumps(fallback, ensure_ascii=False)
+
+
+def _tool_choice(mode: PromptCompileMode) -> str | None:
+    if mode == PromptCompileMode.NATIVE_TOOL:
+        return "auto"
+    if mode == PromptCompileMode.NATIVE_FINAL_ONLY:
+        return "none"
+    return None
