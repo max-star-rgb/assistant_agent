@@ -41,6 +41,11 @@ from assistant_agent.services.proactive_wake.policy import (
     DeterministicWakeEvaluator,
     build_notification_envelope,
 )
+from assistant_agent.services.proactive_wake.activity import (
+    GatewayUserActivityReader,
+    NullUserActivityReader,
+    UserActivityReader,
+)
 
 __all__ = [
     "AttentionDecision",
@@ -50,7 +55,9 @@ __all__ = [
     "DeliveryStatus",
     "DeterministicWakeEvaluator",
     "GovernedProbeRunner",
+    "GatewayUserActivityReader",
     "NotificationEnvelope",
+    "NullUserActivityReader",
     "ProbeObservation",
     "ProactiveWakeRunResult",
     "ProactiveRuleValidation",
@@ -58,6 +65,7 @@ __all__ = [
     "QuietHours",
     "SQLiteProactiveWakeStore",
     "Severity",
+    "UserActivityReader",
     "WakeAttentionSpec",
     "WakeConditionMode",
     "WakeConditionSpec",
