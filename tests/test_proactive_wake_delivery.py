@@ -1,6 +1,10 @@
 import asyncio
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from assistant_agent.schemas.proactive_wake import (
     DeliveryResult,
@@ -46,6 +50,26 @@ class CountingProbe:
 
     def record_producer_probe(self) -> None:
         self.call_count += 1
+
+
+class ExceptionTransport:
+    def __init__(self, failing_delivery_id: str) -> None:
+        self.failing_delivery_id = failing_delivery_id
+        self.sent: list[NotificationEnvelope] = []
+
+    async def send(self, notification: NotificationEnvelope) -> DeliveryResult:
+        self.sent.append(notification)
+        if notification.delivery_id == self.failing_delivery_id:
+            raise RuntimeError("secret-provider-token-must-not-persist")
+        return DeliveryResult(
+            accepted=True,
+            provider_message_id=f"accepted:{notification.delivery_id}",
+        )
+
+
+class CancelledTransport:
+    async def send(self, notification: NotificationEnvelope) -> DeliveryResult:
+        raise asyncio.CancelledError
 
 
 def make_rule() -> WakeRule:
@@ -377,3 +401,234 @@ def test_same_idempotency_key_cannot_create_second_outbox_row(tmp_path) -> None:
 
     assert duplicate.delivery_id == first.delivery_id == "delivery-original"
     assert [item.delivery_id for item in store.list_outbox()] == ["delivery-original"]
+
+
+def test_transport_exception_retries_dead_letters_and_continues_batch(tmp_path) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    failing = enqueue(
+        store,
+        rule,
+        make_notification(
+            rule,
+            delivery_id="delivery-failing",
+            idempotency_key="key-failing",
+        ),
+        signal_id="signal-failing",
+    )
+    succeeding = enqueue(
+        store,
+        rule,
+        make_notification(
+            rule,
+            delivery_id="delivery-succeeding",
+            idempotency_key="key-succeeding",
+        ),
+        signal_id="signal-succeeding",
+    )
+    clock = Clock()
+    transport = ExceptionTransport(failing.delivery_id)
+    worker = NotificationDeliveryWorker(
+        store=store,
+        transport=transport,
+        now_fn=clock,
+        max_attempts=3,
+    )
+
+    first = drain(worker)
+
+    assert [(item.delivery_id, item.status) for item in first] == [
+        (failing.delivery_id, "retry_wait"),
+        (succeeding.delivery_id, "sent"),
+    ]
+    assert first[0].last_reason_code == "transport_exception"
+    assert first[0].deliver_after == NOW + timedelta(seconds=5)
+
+    clock.now = first[0].deliver_after
+    second = drain(worker)[0]
+    clock.now = second.deliver_after
+    third = drain(worker)[0]
+
+    assert third.status == "dead_letter"
+    assert third.attempt_count == 3
+    assert [tuple(row) for row in attempts(store, failing.delivery_id)] == [
+        (1, "rejected", "transport_exception"),
+        (2, "rejected", "transport_exception"),
+        (3, "rejected", "transport_exception"),
+    ]
+    assert [tuple(row) for row in attempts(store, succeeding.delivery_id)] == [
+        (1, "accepted", None)
+    ]
+    assert b"secret-provider-token-must-not-persist" not in store.path.read_bytes()
+
+
+def test_cancelled_transport_preserves_cancellation_with_started_attempt(tmp_path) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    notification = enqueue(store, rule, make_notification(rule))
+    worker = NotificationDeliveryWorker(
+        store=store,
+        transport=CancelledTransport(),
+        now_fn=lambda: NOW,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        drain(worker)
+
+    persisted = store.list_outbox()[0]
+    assert persisted.delivery_id == notification.delivery_id
+    assert persisted.status == "leased"
+    assert persisted.attempt_count == 1
+    assert [tuple(row) for row in attempts(store, notification.delivery_id)] == [
+        (1, "started", None)
+    ]
+
+
+def test_expired_reclaimed_lease_fences_old_worker_result_and_attempt(tmp_path) -> None:
+    path = tmp_path / "wake.sqlite3"
+    store = SQLiteProactiveWakeStore(path)
+    rule = make_rule()
+    notification = enqueue(store, rule, make_notification(rule))
+
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class BlockingTransport:
+            async def send(self, claimed: NotificationEnvelope) -> DeliveryResult:
+                started.set()
+                await release.wait()
+                return DeliveryResult(
+                    accepted=True,
+                    provider_message_id="provider:stale-result",
+                )
+
+        old_worker = NotificationDeliveryWorker(
+            store=store,
+            transport=BlockingTransport(),
+            now_fn=lambda: NOW,
+        )
+        old_task = asyncio.create_task(old_worker.drain_once())
+        await started.wait()
+
+        in_flight = store.list_outbox()[0]
+        assert in_flight.status == "leased"
+        assert in_flight.attempt_count == 1
+        assert [tuple(row) for row in attempts(store, notification.delivery_id)] == [
+            (1, "started", None)
+        ]
+
+        restarted_store = SQLiteProactiveWakeStore(path)
+        new_worker = NotificationDeliveryWorker(
+            store=restarted_store,
+            transport=MockProactiveNotificationTransport(),
+            now_fn=lambda: NOW + timedelta(seconds=30),
+        )
+        new_result = await new_worker.drain_once()
+        release.set()
+        old_result = await old_task
+        return restarted_store, new_result, old_result
+
+    restarted_store, new_result, old_result = asyncio.run(scenario())
+
+    persisted = restarted_store.list_outbox()[0]
+    assert new_result[0].delivery_id == notification.delivery_id
+    assert old_result == []
+    assert persisted.status == "sent"
+    assert persisted.attempt_count == 2
+    assert persisted.provider_message_id == f"mock:{notification.delivery_id}"
+    assert [tuple(row) for row in attempts(restarted_store, notification.delivery_id)] == [
+        (1, "stale", None),
+        (2, "accepted", None),
+    ]
+    assert_indexed_state_matches_json(restarted_store, notification.delivery_id)
+
+
+def test_concurrent_claims_lease_each_delivery_only_once(tmp_path) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    notification = enqueue(store, rule, make_notification(rule))
+    barrier = threading.Barrier(3)
+
+    def claim():
+        barrier.wait()
+        return store.claim_due_notifications(now=NOW)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(claim) for _ in range(2)]
+        barrier.wait()
+        results = [future.result() for future in futures]
+
+    claimed_ids = [item.delivery_id for result in results for item in result]
+    assert claimed_ids == [notification.delivery_id]
+    assert sorted(len(result) for result in results) == [0, 1]
+    assert store.list_outbox()[0].status == "leased"
+    assert attempts(store, notification.delivery_id) == []
+
+
+def test_claim_due_notifications_honors_limit_and_due_order(tmp_path) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    specifications = [
+        ("delivery-later", "key-later", NOW - timedelta(seconds=1)),
+        ("delivery-b", "key-b", NOW - timedelta(seconds=2)),
+        ("delivery-a", "key-a", NOW - timedelta(seconds=2)),
+    ]
+    for index, (delivery_id, key, available_at) in enumerate(specifications):
+        enqueue(
+            store,
+            rule,
+            make_notification(
+                rule,
+                delivery_id=delivery_id,
+                idempotency_key=key,
+                deliver_after=available_at,
+            ),
+            signal_id=f"signal-{index}",
+        )
+
+    claimed = store.claim_due_notifications(now=NOW, limit=2)
+
+    assert [item.delivery_id for item in claimed] == ["delivery-a", "delivery-b"]
+    assert [(item.delivery_id, item.status) for item in store.list_outbox()] == [
+        ("delivery-later", "queued"),
+        ("delivery-b", "leased"),
+        ("delivery-a", "leased"),
+    ]
+
+
+def test_missing_and_wrong_status_transitions_are_rejected(tmp_path) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    notification = enqueue(store, rule, make_notification(rule))
+
+    with pytest.raises(LookupError, match="notification not found"):
+        store.mark_notification_sent("missing", provider_message_id=None, now=NOW)
+
+    wrong_status_calls = [
+        lambda: store.mark_notification_sent(
+            notification.delivery_id,
+            provider_message_id=None,
+            now=NOW,
+        ),
+        lambda: store.mark_notification_failed(
+            notification.delivery_id,
+            error_code="rejected",
+            retry_at=NOW + timedelta(seconds=5),
+            now=NOW,
+            max_attempts=3,
+        ),
+        lambda: store.defer_notification(
+            notification.delivery_id,
+            available_at=NOW + timedelta(seconds=60),
+            reason_code="active_conversation",
+            now=NOW,
+        ),
+        lambda: store.mark_notification_expired(notification.delivery_id, now=NOW),
+    ]
+    for call in wrong_status_calls:
+        with pytest.raises(RuntimeError, match="notification is not leased"):
+            call()
+
+    assert store.list_outbox() == [notification]
+    assert attempts(store, notification.delivery_id) == []

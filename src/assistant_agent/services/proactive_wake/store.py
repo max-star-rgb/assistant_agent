@@ -22,6 +22,11 @@ from assistant_agent.schemas.proactive_wake import (
 
 _SCHEMA_VERSION = 2
 
+
+class StaleNotificationLeaseError(RuntimeError):
+    """Raised when a notification transition no longer owns its claimed lease."""
+
+
 _CREATE_SCHEMA_VERSION = """
 CREATE TABLE IF NOT EXISTS proactive_wake_schema_version (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -481,33 +486,87 @@ class SQLiteProactiveWakeStore:
                 claimed.append(notification)
         return claimed
 
+    def begin_notification_attempt(
+        self,
+        delivery_id: str,
+        *,
+        expected_lease_until: datetime,
+        now: datetime,
+    ) -> tuple[NotificationEnvelope, str]:
+        with self._connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = _notification(connection, delivery_id)
+            if not _owns_notification_lease(
+                current,
+                expected_lease_until=expected_lease_until,
+                now=now,
+            ):
+                raise StaleNotificationLeaseError("notification lease is stale")
+            notification = current.model_copy(
+                update={"attempt_count": current.attempt_count + 1}
+            )
+            attempt_id = f"wake_attempt_{uuid4().hex}"
+            _update_outbox_notification(connection, notification, now=now)
+            _insert_notification_attempt(
+                connection,
+                attempt_id=attempt_id,
+                notification=notification,
+                outcome="started",
+                error_code=None,
+                now=now,
+            )
+        return notification, attempt_id
+
     def mark_notification_sent(
         self,
         delivery_id: str,
         *,
         provider_message_id: str | None,
         now: datetime,
+        expected_lease_until: datetime | None = None,
+        attempt_id: str | None = None,
     ) -> NotificationEnvelope:
+        stale = False
         with self._connect() as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            current = _leased_notification(connection, delivery_id)
-            notification = current.model_copy(
-                update={
-                    "status": "sent",
-                    "attempt_count": current.attempt_count + 1,
-                    "lease_until": None,
-                    "provider_message_id": provider_message_id,
-                    "last_reason_code": None,
-                }
-            )
-            _update_outbox_notification(connection, notification, now=now)
-            _record_notification_attempt(
-                connection,
-                notification,
-                outcome="accepted",
-                error_code=None,
+            current = _notification(connection, delivery_id)
+            stale = _transition_is_stale(
+                current,
+                expected_lease_until=expected_lease_until,
                 now=now,
             )
+            if stale:
+                if attempt_id is not None:
+                    _complete_notification_attempt(
+                        connection,
+                        attempt_id=attempt_id,
+                        delivery_id=delivery_id,
+                        outcome="stale",
+                        error_code=None,
+                    )
+                notification = current
+            else:
+                attempt_count = current.attempt_count + (1 if attempt_id is None else 0)
+                notification = current.model_copy(
+                    update={
+                        "status": "sent",
+                        "attempt_count": attempt_count,
+                        "lease_until": None,
+                        "provider_message_id": provider_message_id,
+                        "last_reason_code": None,
+                    }
+                )
+                _update_outbox_notification(connection, notification, now=now)
+                _finalize_or_record_notification_attempt(
+                    connection,
+                    attempt_id=attempt_id,
+                    notification=notification,
+                    outcome="accepted",
+                    error_code=None,
+                    now=now,
+                )
+        if stale:
+            raise StaleNotificationLeaseError("notification lease is stale")
         return notification
 
     def defer_notification(
@@ -517,19 +576,31 @@ class SQLiteProactiveWakeStore:
         available_at: datetime,
         reason_code: str,
         now: datetime,
+        expected_lease_until: datetime | None = None,
     ) -> NotificationEnvelope:
+        stale = False
         with self._connect() as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            current = _leased_notification(connection, delivery_id)
-            notification = current.model_copy(
-                update={
-                    "status": "retry_wait",
-                    "deliver_after": available_at,
-                    "lease_until": None,
-                    "last_reason_code": reason_code,
-                }
+            current = _notification(connection, delivery_id)
+            stale = _transition_is_stale(
+                current,
+                expected_lease_until=expected_lease_until,
+                now=now,
             )
-            _update_outbox_notification(connection, notification, now=now)
+            if stale:
+                notification = current
+            else:
+                notification = current.model_copy(
+                    update={
+                        "status": "retry_wait",
+                        "deliver_after": available_at,
+                        "lease_until": None,
+                        "last_reason_code": reason_code,
+                    }
+                )
+                _update_outbox_notification(connection, notification, now=now)
+        if stale:
+            raise StaleNotificationLeaseError("notification lease is stale")
         return notification
 
     def mark_notification_failed(
@@ -540,30 +611,52 @@ class SQLiteProactiveWakeStore:
         retry_at: datetime | None,
         now: datetime,
         max_attempts: int,
+        expected_lease_until: datetime | None = None,
+        attempt_id: str | None = None,
     ) -> NotificationEnvelope:
+        stale = False
         with self._connect() as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            current = _leased_notification(connection, delivery_id)
-            attempt_count = current.attempt_count + 1
-            exhausted = attempt_count >= max_attempts or retry_at is None
-            notification = current.model_copy(
-                update={
-                    "status": "dead_letter" if exhausted else "retry_wait",
-                    "deliver_after": current.deliver_after if exhausted else retry_at,
-                    "attempt_count": attempt_count,
-                    "lease_until": None,
-                    "provider_message_id": None,
-                    "last_reason_code": error_code,
-                }
-            )
-            _update_outbox_notification(connection, notification, now=now)
-            _record_notification_attempt(
-                connection,
-                notification,
-                outcome="rejected",
-                error_code=error_code,
+            current = _notification(connection, delivery_id)
+            stale = _transition_is_stale(
+                current,
+                expected_lease_until=expected_lease_until,
                 now=now,
             )
+            if stale:
+                if attempt_id is not None:
+                    _complete_notification_attempt(
+                        connection,
+                        attempt_id=attempt_id,
+                        delivery_id=delivery_id,
+                        outcome="stale",
+                        error_code=None,
+                    )
+                notification = current
+            else:
+                attempt_count = current.attempt_count + (1 if attempt_id is None else 0)
+                exhausted = attempt_count >= max_attempts or retry_at is None
+                notification = current.model_copy(
+                    update={
+                        "status": "dead_letter" if exhausted else "retry_wait",
+                        "deliver_after": current.deliver_after if exhausted else retry_at,
+                        "attempt_count": attempt_count,
+                        "lease_until": None,
+                        "provider_message_id": None,
+                        "last_reason_code": error_code,
+                    }
+                )
+                _update_outbox_notification(connection, notification, now=now)
+                _finalize_or_record_notification_attempt(
+                    connection,
+                    attempt_id=attempt_id,
+                    notification=notification,
+                    outcome="rejected",
+                    error_code=error_code,
+                    now=now,
+                )
+        if stale:
+            raise StaleNotificationLeaseError("notification lease is stale")
         return notification
 
     def mark_notification_expired(
@@ -571,18 +664,30 @@ class SQLiteProactiveWakeStore:
         delivery_id: str,
         *,
         now: datetime,
+        expected_lease_until: datetime | None = None,
     ) -> NotificationEnvelope:
+        stale = False
         with self._connect() as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            current = _leased_notification(connection, delivery_id)
-            notification = current.model_copy(
-                update={
-                    "status": "expired",
-                    "lease_until": None,
-                    "last_reason_code": "notification_expired",
-                }
+            current = _notification(connection, delivery_id)
+            stale = _transition_is_stale(
+                current,
+                expected_lease_until=expected_lease_until,
+                now=now,
             )
-            _update_outbox_notification(connection, notification, now=now)
+            if stale:
+                notification = current
+            else:
+                notification = current.model_copy(
+                    update={
+                        "status": "expired",
+                        "lease_until": None,
+                        "last_reason_code": "notification_expired",
+                    }
+                )
+                _update_outbox_notification(connection, notification, now=now)
+        if stale:
+            raise StaleNotificationLeaseError("notification lease is stale")
         return notification
 
     def list_runs(self, owner: WakeOwner, *, limit: int = 100) -> list[WakeRun]:
@@ -671,13 +776,13 @@ def _run_values(run: WakeRun) -> tuple[object, ...]:
     )
 
 
-def _leased_notification(
+def _notification(
     connection: sqlite3.Connection,
     delivery_id: str,
 ) -> NotificationEnvelope:
     row = connection.execute(
         """
-        SELECT status, envelope_json
+        SELECT envelope_json
         FROM notification_outbox
         WHERE delivery_id = ?
         """,
@@ -685,9 +790,137 @@ def _leased_notification(
     ).fetchone()
     if row is None:
         raise LookupError("notification not found")
-    if row["status"] != "leased":
-        raise RuntimeError("notification is not leased")
     return NotificationEnvelope.model_validate_json(str(row["envelope_json"]))
+
+
+def _transition_is_stale(
+    notification: NotificationEnvelope,
+    *,
+    expected_lease_until: datetime | None,
+    now: datetime,
+) -> bool:
+    if expected_lease_until is None:
+        if notification.status != "leased":
+            raise RuntimeError("notification is not leased")
+        return False
+    return not _owns_notification_lease(
+        notification,
+        expected_lease_until=expected_lease_until,
+        now=now,
+    )
+
+
+def _owns_notification_lease(
+    notification: NotificationEnvelope,
+    *,
+    expected_lease_until: datetime,
+    now: datetime,
+) -> bool:
+    return (
+        notification.status == "leased"
+        and notification.lease_until == expected_lease_until
+        and notification.lease_until is not None
+        and notification.lease_until > now
+    )
+
+
+def _require_started_attempt(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    delivery_id: str,
+) -> None:
+    row = connection.execute(
+        """
+        SELECT outcome
+        FROM notification_attempts
+        WHERE attempt_id = ? AND delivery_id = ?
+        """,
+        (attempt_id, delivery_id),
+    ).fetchone()
+    if row is None:
+        raise LookupError("notification attempt not found")
+    if row["outcome"] != "started":
+        raise RuntimeError("notification attempt is not started")
+
+
+def _complete_notification_attempt(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    delivery_id: str,
+    outcome: str,
+    error_code: str | None,
+) -> None:
+    _require_started_attempt(
+        connection,
+        attempt_id=attempt_id,
+        delivery_id=delivery_id,
+    )
+    connection.execute(
+        """
+        UPDATE notification_attempts
+        SET outcome = ?, error_code = ?
+        WHERE attempt_id = ? AND delivery_id = ?
+        """,
+        (outcome, error_code, attempt_id, delivery_id),
+    )
+
+
+def _finalize_or_record_notification_attempt(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str | None,
+    notification: NotificationEnvelope,
+    outcome: str,
+    error_code: str | None,
+    now: datetime,
+) -> None:
+    if attempt_id is not None:
+        _complete_notification_attempt(
+            connection,
+            attempt_id=attempt_id,
+            delivery_id=notification.delivery_id,
+            outcome=outcome,
+            error_code=error_code,
+        )
+        return
+    _insert_notification_attempt(
+        connection,
+        attempt_id=f"wake_attempt_{uuid4().hex}",
+        notification=notification,
+        outcome=outcome,
+        error_code=error_code,
+        now=now,
+    )
+
+
+def _insert_notification_attempt(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    notification: NotificationEnvelope,
+    outcome: str,
+    error_code: str | None,
+    now: datetime,
+) -> None:
+    if notification.attempt_count < 1:
+        raise RuntimeError("notification attempt number must be positive")
+    connection.execute(
+        """
+        INSERT INTO notification_attempts (
+            attempt_id, delivery_id, attempt_number, outcome, error_code, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            attempt_id,
+            notification.delivery_id,
+            notification.attempt_count,
+            outcome,
+            error_code,
+            _datetime_text(now),
+        ),
+    )
 
 
 def _update_outbox_notification(
@@ -717,31 +950,6 @@ def _update_outbox_notification(
             notification.last_reason_code,
             _datetime_text(now),
             notification.delivery_id,
-        ),
-    )
-
-
-def _record_notification_attempt(
-    connection: sqlite3.Connection,
-    notification: NotificationEnvelope,
-    *,
-    outcome: str,
-    error_code: str | None,
-    now: datetime,
-) -> None:
-    connection.execute(
-        """
-        INSERT INTO notification_attempts (
-            attempt_id, delivery_id, attempt_number, outcome, error_code, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            f"wake_attempt_{uuid4().hex}",
-            notification.delivery_id,
-            notification.attempt_count,
-            outcome,
-            error_code,
-            _datetime_text(now),
         ),
     )
 

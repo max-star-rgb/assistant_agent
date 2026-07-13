@@ -14,7 +14,10 @@ from assistant_agent.services.proactive_wake.activity import (
     NullUserActivityReader,
     UserActivityReader,
 )
-from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
+from assistant_agent.services.proactive_wake.store import (
+    SQLiteProactiveWakeStore,
+    StaleNotificationLeaseError,
+)
 
 
 class ProactiveNotificationTransport(Protocol):
@@ -58,47 +61,73 @@ class NotificationDeliveryWorker:
         claimed = self.store.claim_due_notifications(now=now, limit=limit)
         completed = []
         for notification in claimed:
-            if notification.expires_at <= now:
-                completed.append(
-                    self.store.mark_notification_expired(
-                        notification.delivery_id,
-                        now=now,
+            lease_until = notification.lease_until
+            if lease_until is None:  # pragma: no cover - defensive store boundary
+                raise RuntimeError("claimed notification has no lease")
+            try:
+                item_now = self.now_fn()
+                if notification.expires_at <= item_now:
+                    completed.append(
+                        self.store.mark_notification_expired(
+                            notification.delivery_id,
+                            now=item_now,
+                            expected_lease_until=lease_until,
+                        )
                     )
-                )
-                continue
-            if await self.activity_reader.is_active(notification.owner):
-                completed.append(
-                    self.store.defer_notification(
-                        notification.delivery_id,
-                        available_at=now + timedelta(seconds=60),
-                        reason_code="active_conversation",
-                        now=now,
+                    continue
+                if await self.activity_reader.is_active(notification.owner):
+                    item_now = self.now_fn()
+                    completed.append(
+                        self.store.defer_notification(
+                            notification.delivery_id,
+                            available_at=item_now + timedelta(seconds=60),
+                            reason_code="active_conversation",
+                            now=item_now,
+                            expected_lease_until=lease_until,
+                        )
                     )
-                )
-                continue
+                    continue
 
-            result = await self.transport.send(notification)
-            if result.accepted:
-                completed.append(
-                    self.store.mark_notification_sent(
-                        notification.delivery_id,
-                        provider_message_id=result.provider_message_id,
-                        now=now,
-                    )
-                )
-                continue
-
-            retry_at = None
-            if notification.attempt_count + 1 < self.max_attempts:
-                delay_s = min(300, 5 * 2**notification.attempt_count)
-                retry_at = now + timedelta(seconds=delay_s)
-            completed.append(
-                self.store.mark_notification_failed(
+                in_flight, attempt_id = self.store.begin_notification_attempt(
                     notification.delivery_id,
-                    error_code=result.error_code or "delivery_rejected",
-                    retry_at=retry_at,
-                    now=now,
-                    max_attempts=self.max_attempts,
+                    expected_lease_until=lease_until,
+                    now=self.now_fn(),
                 )
-            )
+                try:
+                    result = await self.transport.send(in_flight)
+                except Exception:
+                    result = DeliveryResult(
+                        accepted=False,
+                        error_code="transport_exception",
+                    )
+                item_now = self.now_fn()
+                if result.accepted:
+                    completed.append(
+                        self.store.mark_notification_sent(
+                            notification.delivery_id,
+                            provider_message_id=result.provider_message_id,
+                            now=item_now,
+                            expected_lease_until=lease_until,
+                            attempt_id=attempt_id,
+                        )
+                    )
+                    continue
+
+                retry_at = None
+                if in_flight.attempt_count < self.max_attempts:
+                    delay_s = min(300, 5 * 2 ** (in_flight.attempt_count - 1))
+                    retry_at = item_now + timedelta(seconds=delay_s)
+                completed.append(
+                    self.store.mark_notification_failed(
+                        notification.delivery_id,
+                        error_code=result.error_code or "delivery_rejected",
+                        retry_at=retry_at,
+                        now=item_now,
+                        max_attempts=self.max_attempts,
+                        expected_lease_until=lease_until,
+                        attempt_id=attempt_id,
+                    )
+                )
+            except StaleNotificationLeaseError:
+                continue
         return completed
