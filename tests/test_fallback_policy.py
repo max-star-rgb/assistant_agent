@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ApprovalPolicy, ToolPolicyMetadata, ToolResult
 from assistant_agent.services.provider_policy import FallbackPolicy, ProviderExecutionPolicy, RetryPolicy
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
@@ -18,6 +18,10 @@ class FailingProviderTool(MockTool):
     description = "Fails like a provider adapter."
     input_schema = FallbackInput
     output_schema = FallbackInput
+    policy = ToolPolicyMetadata(
+        risk="external_read",
+        approval=ApprovalPolicy(mode="never"),
+    )
 
     def _run(self, input: FallbackInput, context: ToolContext) -> ToolResult:
         return ToolResult(

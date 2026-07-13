@@ -31,6 +31,21 @@ def test_get_missing_tool_fails() -> None:
         registry.get("missing")
 
 
+def test_get_spec_uses_the_same_contract_as_list_specs() -> None:
+    registry = create_default_registry()
+
+    listed = {spec.name: spec for spec in registry.list_specs()}
+
+    assert registry.get_spec("product_search") == listed["product_search"]
+
+
+def test_get_spec_missing_tool_fails() -> None:
+    registry = ToolRegistry()
+
+    with pytest.raises(KeyError, match="Tool not registered"):
+        registry.get_spec("missing")
+
+
 def test_default_registry_contains_mock_tools() -> None:
     registry = create_default_registry()
 

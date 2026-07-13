@@ -17,18 +17,22 @@ def test_calendar_create_event_requires_confirmation_before_external_write(
     monkeypatch.syspath_prepend(str(tmp_path))
     module = importlib.import_module("calendar_write_tools")
     registry = _registry_from_module()
-    state = _state(metadata={"realtime": {"run_id": "run-1"}})
+    state = _state(metadata={})
 
-    result = ToolExecutor(registry=registry).run_tool(
-        state,
+    executor = ToolExecutor(registry=registry)
+    tool_input = {"title": "Team sync", "start_time": "2026-07-10T10:00:00+08:00"}
+    result = executor.run_tool(state, "step-1", "calendar.create_event", tool_input)
+    realtime_result = executor.run_tool(
+        _state(metadata={"source": "realtime_agent_backend"}),
         "step-1",
         "calendar.create_event",
-        {"title": "Team sync", "start_time": "2026-07-10T10:00:00+08:00"},
+        tool_input,
     )
 
     assert result.success is True
     assert result.data["requires_confirmation"] is True
     assert result.data["risk_gate"]["reason"] == "confirmation_required"
+    assert realtime_result.data["risk_gate"] == result.data["risk_gate"]
     assert result.output_ref == "local://tool-confirmations/calendar.create_event"
     assert module.CALLS == []
 

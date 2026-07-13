@@ -58,6 +58,7 @@ from assistant_agent.services.response_observability import append_response_fina
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
 from assistant_agent.services.tool_history import ToolHistoryStore
+from assistant_agent.services.tool_policy import max_result_chars_for_registered_tool
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
@@ -598,6 +599,10 @@ class AgentGraphRuntime:
                 tool_result,
                 request_text=request.text,
                 prior_observations=observations,
+                max_result_chars=max_result_chars_for_registered_tool(
+                    self.registry,
+                    tool_result.tool_name,
+                ),
             ).model_dump(mode="json")
             observations.append(observation)
             state.request.metadata["native_runtime_observations"] = observations
@@ -839,6 +844,10 @@ class AgentGraphRuntime:
                         tool_result,
                         request_text=request.text,
                         prior_observations=observations,
+                        max_result_chars=max_result_chars_for_registered_tool(
+                            self.registry,
+                            tool_result.tool_name,
+                        ),
                     ).model_dump(mode="json")
                     observations.append(observation)
                     state.request.metadata["native_runtime_observations"] = observations

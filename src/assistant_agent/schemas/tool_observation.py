@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
@@ -26,6 +27,8 @@ class ToolObservation(BaseModel):
     error_message: str | None = None
     next_step_hint: str | None = None
     redacted: bool = True
+    truncated: bool = False
+    original_chars: int | None = Field(default=None, ge=0)
 
 
 def observation_from_tool_result(
@@ -33,6 +36,7 @@ def observation_from_tool_result(
     *,
     request_text: str | None = None,
     prior_observations: Sequence[Mapping[str, Any]] | None = None,
+    max_result_chars: int | None = None,
 ) -> ToolObservation:
     """Build a redacted observation from a ToolResult."""
 
@@ -40,7 +44,7 @@ def observation_from_tool_result(
     data_source = result.model_observation if isinstance(result.model_observation, dict) else result.data
     data = sanitize_error_detail(data_source or {})
     error_message = sanitize_error_message(result.error or "") if result.error else None
-    return ToolObservation(
+    observation = ToolObservation(
         tool_name=result.tool_name,
         status=status,
         summary=_summary_from_result(result, data, error_message),
@@ -56,6 +60,7 @@ def observation_from_tool_result(
             prior_observations=prior_observations or (),
         ),
     )
+    return _bound_observation(observation, max_result_chars=max_result_chars)
 
 
 def rejected_observation(
@@ -228,3 +233,77 @@ def _request_asks_for_price_compare(request_text: str | None) -> bool:
         "cheapest",
     )
     return any(marker in text or marker in lowered for marker in markers)
+
+
+def _bound_observation(
+    observation: ToolObservation,
+    *,
+    max_result_chars: int | None,
+) -> ToolObservation:
+    if max_result_chars is None:
+        return observation
+    original_payload = observation.model_dump(mode="json")
+    original_chars = _json_chars(original_payload)
+    if original_chars <= max_result_chars:
+        return observation
+
+    field_names = sorted(observation.structured_output)[:20]
+    bounded = observation.model_copy(
+        update={
+            "structured_output": {
+                "truncated": True,
+                "original_chars": original_chars,
+                "field_names": field_names,
+                "preview": _bounded_structured_preview(observation.structured_output),
+            },
+            "truncated": True,
+            "original_chars": original_chars,
+        },
+        deep=True,
+    )
+    if _json_chars(bounded.model_dump(mode="json")) <= max_result_chars:
+        return bounded
+
+    bounded.next_step_hint = None
+    overflow = _json_chars(bounded.model_dump(mode="json")) - max_result_chars
+    if overflow > 0:
+        bounded.summary = _clip_to_chars(bounded.summary, max(1, len(bounded.summary) - overflow))
+    if _json_chars(bounded.model_dump(mode="json")) <= max_result_chars:
+        return bounded
+
+    bounded.error_message = None
+    return bounded
+
+
+def _json_chars(payload: dict[str, Any]) -> int:
+    return len(json.dumps(payload, ensure_ascii=False))
+
+
+def _clip_to_chars(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    if max_chars <= 3:
+        return value[:max_chars]
+    return value[: max_chars - 3].rstrip() + "..."
+
+
+def _bounded_structured_preview(value: Any, *, depth: int = 0) -> Any:
+    if isinstance(value, str):
+        return _clip_to_chars(value, 80)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if depth >= 2:
+        return "[truncated]"
+    if isinstance(value, Mapping):
+        preview: dict[str, Any] = {}
+        for key in sorted(str(item) for item in value)[:5]:
+            if key == "max_result_chars":
+                continue
+            preview[key] = _bounded_structured_preview(value.get(key), depth=depth + 1)
+        return preview
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [
+            _bounded_structured_preview(item, depth=depth + 1)
+            for item in list(value)[:2]
+        ]
+    return _clip_to_chars(str(value), 80)

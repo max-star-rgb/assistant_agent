@@ -12,6 +12,7 @@ from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tool_observation import observation_from_tool_result
+from assistant_agent.services.tool_policy import max_result_chars_for_registered_tool
 from assistant_agent.schemas.tools import ToolPolicyMetadata
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.tools.loader import LocalToolLoadIssue, load_local_tools
@@ -123,7 +124,11 @@ def _run_simulate(args: argparse.Namespace) -> int:
         args.tool,
         tool_input,
     )
-    observation = observation_from_tool_result(result, request_text=request.text)
+    observation = observation_from_tool_result(
+        result,
+        request_text=request.text,
+        max_result_chars=max_result_chars_for_registered_tool(registry, result.tool_name),
+    )
     finished = next(
         (event for event in sink.events if event.type in {"tool_finished", "tool_failed"}),
         None,

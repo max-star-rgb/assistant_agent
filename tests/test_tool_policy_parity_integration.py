@@ -192,6 +192,9 @@ def test_scheduler_serializes_terminal_confirmation_unsafe_and_resource_write_ba
 
 def test_pre_tool_call_boundary_summary_uses_policy_view(monkeypatch) -> None:
     class FakePolicyInterpreter:
+        def view_for_spec(self, spec: ToolSpec) -> ToolPolicyView:
+            return self.view_for_tool_name(spec.name)
+
         def view_for_tool_name(self, tool_name: str) -> ToolPolicyView:
             assert tool_name == "product_search"
             return ToolPolicyView(

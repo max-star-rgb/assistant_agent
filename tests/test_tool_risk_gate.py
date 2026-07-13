@@ -3,7 +3,13 @@ from pydantic import BaseModel
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy
+from assistant_agent.schemas.tools import (
+    ApprovalPolicy,
+    ExecutionPolicy,
+    ToolPolicyMetadata,
+    ToolResult,
+    ToolSideEffectPolicy,
+)
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.realtime_task_state import (
     RealtimeTaskState,
@@ -241,7 +247,7 @@ def test_realtime_unknown_tool_defaults_to_confirmation_gate_without_execution()
         _realtime_state(run_id="run-1"),
         "step-1",
         tool.name,
-        {"text": "发给团队"},
+        {"text": "发给团队", "confirmed": True, "user_id": "forged-user"},
     )
 
     assert result.success is True
@@ -294,7 +300,7 @@ def test_realtime_pending_tool_keeps_risk_gate_and_idempotency_summary() -> None
     }
 
 
-def test_non_realtime_unknown_tool_keeps_legacy_executor_behavior() -> None:
+def test_non_realtime_unknown_tool_uses_the_same_conservative_confirmation_gate() -> None:
     tool = RecordingTool("custom_notification")
     registry = ToolRegistry()
     registry.register(tool)
@@ -305,8 +311,58 @@ def test_non_realtime_unknown_tool_keeps_legacy_executor_behavior() -> None:
         state,
         "step-1",
         tool.name,
-        {"text": "发给团队"},
+        {"text": "发给团队", "confirmed": True, "user_id": "forged-user"},
+    )
+
+    assert result.success is True
+    assert result.data["requires_confirmation"] is True
+    assert result.data["risk_gate"]["reason"] == "confirmation_required"
+    assert tool.calls == 0
+
+
+def test_explicit_approval_never_does_not_add_runtime_confirmation() -> None:
+    tool = RecordingTool("trusted_local_write")
+    tool.policy = ToolPolicyMetadata(
+        risk="local_write",
+        approval=ApprovalPolicy(mode="never"),
+    )
+    registry = ToolRegistry()
+    registry.register(tool)
+    state = AgentState.from_request(UserRequest(user_id="u1", session_id="s1", text="本地任务"))
+
+    result = ToolExecutor(registry=registry).run_tool(
+        state,
+        "step-1",
+        tool.name,
+        {"text": "更新本地状态"},
     )
 
     assert result.success is True
     assert tool.calls == 1
+
+
+def test_approval_never_with_required_idempotency_blocks_without_a_key() -> None:
+    tool = RecordingTool("trusted_idempotent_write")
+    tool.policy = ToolPolicyMetadata(
+        risk="local_write",
+        approval=ApprovalPolicy(mode="never"),
+        execution=ExecutionPolicy(idempotency="required"),
+    )
+    registry = ToolRegistry()
+    registry.register(tool)
+    sink = ListEventSink()
+    state = AgentState.from_request(UserRequest(user_id="u1", session_id="s1", text="本地任务"))
+
+    result = ToolExecutor(registry=registry, event_sink=sink).run_tool(
+        state,
+        "step-1",
+        tool.name,
+        {"text": "更新本地状态"},
+    )
+
+    assert result.success is True
+    assert result.data["status"] == "idempotency_key_required"
+    assert result.data["requires_confirmation"] is False
+    assert tool.calls == 0
+    finished = next(event for event in sink.events if event.type == "tool_finished")
+    assert finished.payload["post_tool_call"]["status"] == "idempotency_key_required"

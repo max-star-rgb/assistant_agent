@@ -16,7 +16,7 @@ from assistant_agent.schemas.capability_output import build_capability_output_co
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.planning import TaskStep
 from assistant_agent.schemas.realtime_cancellation import build_realtime_turn_cancellation_metadata
-from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy
+from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
@@ -26,7 +26,7 @@ from assistant_agent.services.tool_call_boundary import (
     build_pre_tool_call_summary,
 )
 from assistant_agent.services.tool_history import ToolHistoryStore
-from assistant_agent.services.tool_policy import ToolPolicyInterpreter
+from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
 from assistant_agent.services.tool_risk_gate import (
     ToolIdempotencyLedger,
     confirmation_required_result,
@@ -83,13 +83,14 @@ class ToolExecutor:
             state=state,
         )
         tool_input = _bind_runtime_identity(tool_name, tool_input, state)
+        policy_view = ToolPolicyInterpreter().view_for_spec(self.registry.get_spec(tool_name))
         risk_decision = evaluate_tool_risk(
             tool_name=tool_name,
             tool_input=tool_input,
             request=state.request,
             state=state,
             step_id=step_id,
-            policy=_side_effect_policy_for_registered_tool(self.registry, tool_name),
+            policy_view=policy_view,
         )
         pre_tool_call = build_pre_tool_call_summary(
             tool_name=tool_name,
@@ -141,7 +142,7 @@ class ToolExecutor:
                 state.run_id,
                 call.call_id,
                 tool_name,
-                tool_input,
+                _policy_safe_input_summary(tool_input, policy_view),
                 user_id=state.user_id,
                 session_id=state.session_id,
             )
@@ -200,8 +201,8 @@ class ToolExecutor:
                     output_ref=result.output_ref,
                     user_id=state.user_id,
                     session_id=state.session_id,
-                    output_summary=_output_summary(result),
-                    audit_payload=result.audit_payload,
+                    output_summary=_policy_safe_output_summary(result, policy_view),
+                    audit_payload=_policy_safe_audit_payload(result, policy_view),
                     raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
@@ -221,7 +222,7 @@ class ToolExecutor:
                 risk_gate=risk_decision.risk_summary(),
                 idempotency=risk_decision.idempotency_summary(duplicate_suppressed=True),
                 input_summary=_input_summary(tool_input),
-                output_summary=_output_summary(result),
+                output_summary=_policy_safe_output_summary(result, policy_view),
                 provider=_provider_name(result.data or {}),
                 model=_model_name(result.data or {}),
             )
@@ -273,8 +274,8 @@ class ToolExecutor:
                     output_ref=result.output_ref,
                     user_id=state.user_id,
                     session_id=state.session_id,
-                    output_summary=_output_summary(result),
-                    audit_payload=result.audit_payload,
+                    output_summary=_policy_safe_output_summary(result, policy_view),
+                    audit_payload=_policy_safe_audit_payload(result, policy_view),
                     raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
@@ -294,7 +295,7 @@ class ToolExecutor:
                 risk_gate=risk_decision.risk_summary(),
                 idempotency=risk_decision.idempotency_summary(),
                 input_summary=_input_summary(tool_input),
-                output_summary=_output_summary(result),
+                output_summary=_policy_safe_output_summary(result, policy_view),
                 provider=_provider_name(result.data or {}),
                 model=_model_name(result.data or {}),
             )
@@ -381,11 +382,11 @@ class ToolExecutor:
                     tool_name,
                     "failed",
                     latency_ms,
-                    error=budget_error.message,
+                    error=_policy_safe_error(budget_error.message, policy_view),
                     user_id=state.user_id,
                     session_id=state.session_id,
-                    output_summary=_output_summary(result),
-                    audit_payload=result.audit_payload,
+                    output_summary=_policy_safe_output_summary(result, policy_view),
+                    audit_payload=_policy_safe_audit_payload(result, policy_view),
                     raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
@@ -414,6 +415,16 @@ class ToolExecutor:
             return result
 
         try:
+            context_metadata = {
+                **self.context_metadata,
+                "request_text": state.request.text or "",
+                "request_metadata": dict(state.request.metadata),
+            }
+            if policy_view.timeout_s is not None:
+                context_metadata["tool_execution"] = {
+                    "timeout_s": policy_view.timeout_s,
+                    "deadline_monotonic_s": monotonic() + policy_view.timeout_s,
+                }
             result, retry_count = self._run_with_retry(
                 tool_name,
                 tool_input,
@@ -421,16 +432,18 @@ class ToolExecutor:
                     run_id=state.run_id,
                     user_id=state.user_id,
                     session_id=state.session_id,
-                    metadata={
-                        **self.context_metadata,
-                        "request_text": state.request.text or "",
-                        "request_metadata": dict(state.request.metadata),
-                    },
+                    metadata=context_metadata,
                     cancel_token=self.cancel_token,
                 ),
                 step_id=step_id,
                 preserve_success_after_cancel=_preserve_success_after_cancel(risk_decision),
+                max_retries=_effective_max_retries(
+                    policy_view=policy_view,
+                    risk_decision=risk_decision,
+                    global_max_retries=self.execution_policy.retry.max_retries,
+                ),
             )
+            result = _mark_unknown_mutating_timeout(result, policy_view=policy_view)
         except AgentRunCancelled as exc:
             latency_ms = int((perf_counter() - started_at) * 1000)
             error_details = {
@@ -497,11 +510,11 @@ class ToolExecutor:
                     tool_name,
                     "failed",
                     latency_ms,
-                    error=DEFAULT_CANCELLATION_MESSAGE,
+                    error=_policy_safe_error(DEFAULT_CANCELLATION_MESSAGE, policy_view),
                     user_id=state.user_id,
                     session_id=state.session_id,
-                    output_summary=_output_summary(result),
-                    audit_payload=result.audit_payload,
+                    output_summary=_policy_safe_output_summary(result, policy_view),
+                    audit_payload=_policy_safe_audit_payload(result, policy_view),
                     raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
@@ -597,8 +610,8 @@ class ToolExecutor:
                     output_ref=result.output_ref,
                     user_id=state.user_id,
                     session_id=state.session_id,
-                    output_summary=_output_summary(result),
-                    audit_payload=result.audit_payload,
+                    output_summary=_policy_safe_output_summary(result, policy_view),
+                    audit_payload=_policy_safe_audit_payload(result, policy_view),
                     raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
@@ -621,7 +634,10 @@ class ToolExecutor:
                     "status": idempotency_record.status if idempotency_record is not None else None,
                 },
                 input_summary=_input_summary(tool_input),
-                output_summary=_output_summary(result),
+                output_summary={
+                    **_policy_safe_output_summary(result, policy_view),
+                    **_deadline_trace_summary(policy_view=policy_view, result=result),
+                },
                 provider=_provider_name(result.data or {}),
                 model=_model_name(result.data or {}),
             )
@@ -685,11 +701,11 @@ class ToolExecutor:
                     tool_name,
                     "failed",
                     result.latency_ms or latency_ms,
-                    error=decision.message,
+                    error=_policy_safe_error(decision.message, policy_view),
                     user_id=state.user_id,
                     session_id=state.session_id,
-                    output_summary=_output_summary(result),
-                    audit_payload=result.audit_payload,
+                    output_summary=_policy_safe_output_summary(result, policy_view),
+                    audit_payload=_policy_safe_audit_payload(result, policy_view),
                     raw_data_ref=result.raw_data_ref,
                 )
             _append_tool_trace_event(
@@ -710,11 +726,14 @@ class ToolExecutor:
                 risk_gate=risk_decision.risk_summary(),
                 idempotency=risk_decision.idempotency_summary(),
                 input_summary=_input_summary(tool_input),
-                output_summary=_output_summary(result),
+                output_summary={
+                    **_policy_safe_output_summary(result, policy_view),
+                    **_deadline_trace_summary(policy_view=policy_view, result=result),
+                },
                 provider=_provider_name(result.data or {}),
                 model=_model_name(result.data or {}),
                 error_code=decision.error_code,
-                error_message=decision.message,
+                error_message=_policy_safe_error(decision.message, policy_view),
                 recovery_action=decision.action,
             )
         return result
@@ -727,6 +746,7 @@ class ToolExecutor:
         *,
         step_id: str,
         preserve_success_after_cancel: bool = False,
+        max_retries: int,
     ) -> tuple[ToolResult, int]:
         failed_attempts = 0
         retry_count = 0
@@ -750,7 +770,10 @@ class ToolExecutor:
 
             error_code = classify_error(result.error or "")
             failed_attempts += 1
-            if not self.execution_policy.retry.should_retry(error_code, failed_attempts):
+            if (
+                failed_attempts > max_retries
+                or not self.execution_policy.retry.is_retryable(error_code)
+            ):
                 return result, retry_count
 
             retry_count += 1
@@ -1083,21 +1106,132 @@ def _output_summary(result: ToolResult) -> dict[str, Any]:
     return payload
 
 
-def _side_effect_policy_for_registered_tool(
-    registry: ToolRegistry,
-    tool_name: str,
-) -> ToolSideEffectPolicy | None:
-    for spec in registry.list_specs():
-        if spec.name != tool_name:
-            continue
-        if spec.policy is None:
-            return None
-        view = ToolPolicyInterpreter().view_for_spec(spec)
-        return ToolSideEffectPolicy(
-            level=view.side_effect_level,
-            requires_confirmation=view.requires_confirmation,
-            description=view.description,
-            confirmation_kind=view.confirmation_kind,
-            compensation_hint=view.compensation_hint,
-        )
-    return None
+def _policy_safe_input_summary(
+    payload: dict[str, Any],
+    policy_view: ToolPolicyView,
+) -> dict[str, Any]:
+    if not policy_view.redact_in_trace:
+        return payload
+    return {
+        "redacted": True,
+        "field_names": sorted(str(key) for key in payload),
+        "field_count": len(payload),
+        "input_size_bytes": _input_size_bytes(payload),
+    }
+
+
+def _policy_safe_output_summary(
+    result: ToolResult,
+    policy_view: ToolPolicyView,
+) -> dict[str, Any]:
+    if not policy_view.redact_in_trace:
+        return _output_summary(result)
+    data = result.data if isinstance(result.data, dict) else {}
+    trace = result.trace_summary if isinstance(result.trace_summary, dict) else {}
+    approved_summary = trace.get("summary")
+    return {
+        "redacted": True,
+        "success": result.success,
+        "output_ref": result.output_ref,
+        "error_code": classify_error(result.error or "") if result.error else None,
+        "summary": (
+            sanitize_error_message(approved_summary)[:240]
+            if isinstance(approved_summary, str) and approved_summary.strip()
+            else None
+        ),
+        "data_field_names": sorted(str(key) for key in data),
+        "trace_field_names": sorted(str(key) for key in trace),
+        "result_size_bytes": len(str(data).encode("utf-8")),
+    }
+
+
+def _policy_safe_audit_payload(
+    result: ToolResult,
+    policy_view: ToolPolicyView,
+) -> dict[str, Any] | None:
+    payload = result.audit_payload
+    if not policy_view.redact_in_trace or not isinstance(payload, dict):
+        return payload
+    if payload.get("redacted") is True:
+        safe_payload = sanitize_error_detail(payload)
+        if isinstance(safe_payload, dict):
+            return {
+                key: value
+                for key, value in safe_payload.items()
+                if key
+                in {
+                    "provider",
+                    "request_id",
+                    "operation_id",
+                    "status",
+                    "item_count",
+                    "redacted",
+                }
+            }
+    return {
+        "redacted": True,
+        "field_names": sorted(str(key) for key in payload),
+        "payload_size_bytes": len(str(payload).encode("utf-8")),
+    }
+
+
+def _policy_safe_error(error: str | None, policy_view: ToolPolicyView) -> str | None:
+    if error is None or not policy_view.redact_in_trace:
+        return error
+    return classify_error(error)
+
+
+def _mark_unknown_mutating_timeout(
+    result: ToolResult,
+    *,
+    policy_view: ToolPolicyView,
+) -> ToolResult:
+    if result.success or classify_error(result.error or "") != "provider_timeout":
+        return result
+    if policy_view.side_effect_level in {"none", "local_read", "external_read"}:
+        return result
+    return result.model_copy(
+        update={
+            "data": {
+                **(result.data or {}),
+                "status": "unknown_after_timeout",
+                "side_effect_state": "unknown",
+                "summary": "Tool timed out after a mutating request; commit status is unknown.",
+            }
+        },
+        deep=True,
+    )
+
+
+def _effective_max_retries(
+    *,
+    policy_view: ToolPolicyView,
+    risk_decision: Any,
+    global_max_retries: int,
+) -> int:
+    """Return the retry ceiling after replay-safety and tool policy checks."""
+
+    replay_safe = policy_view.side_effect_level in {"none", "local_read", "external_read"}
+    if policy_view.idempotency_required and risk_decision.idempotency_key is not None:
+        replay_safe = True
+    if not replay_safe:
+        return 0
+    if policy_view.retry_count is None:
+        return global_max_retries
+    return min(policy_view.retry_count, global_max_retries)
+
+
+def _deadline_trace_summary(
+    *,
+    policy_view: ToolPolicyView,
+    result: ToolResult,
+) -> dict[str, Any]:
+    if policy_view.timeout_s is None:
+        return {}
+    trace_summary = result.trace_summary if isinstance(result.trace_summary, dict) else {}
+    adapter_enforced = trace_summary.get("deadline_enforced") is True
+    return {
+        "timeout_s_declared": policy_view.timeout_s,
+        "deadline_propagated": True,
+        "deadline_enforcement": "adapter_reported" if adapter_enforced else "not_reported",
+    }

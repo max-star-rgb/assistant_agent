@@ -69,7 +69,18 @@ def test_mcp_proxy_tool_runs_through_validator_executor_registry() -> None:
     proxy_tool = adapter.proxy_tool_for_definition(_search_definition())
     registry = ToolRegistry()
     registry.register(proxy_tool)
-    request = UserRequest(user_id="u1", session_id="s1", text="search calendar")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="search calendar",
+        metadata={
+            "tool_confirmation": {
+                "tool_name": "mcp.calendar.search_events",
+                "confirmed": True,
+                "confirmed_by": "user",
+            }
+        },
+    )
     state = AgentState.from_request(request, run_id="run-1")
     validation = ActionValidator().validate(
         decision=AssistantDecision(

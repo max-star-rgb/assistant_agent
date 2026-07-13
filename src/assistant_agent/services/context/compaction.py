@@ -36,6 +36,8 @@ _TOP_LEVEL_KEYS = (
     "error_message",
     "next_step_hint",
     "redacted",
+    "truncated",
+    "original_chars",
 )
 
 _RAW_PAYLOAD_KEYS = {

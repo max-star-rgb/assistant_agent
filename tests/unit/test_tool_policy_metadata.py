@@ -15,7 +15,10 @@ from assistant_agent.schemas.tools import (
     ToolSpec,
     VisibilityPolicy,
 )
-from assistant_agent.services.tool_policy import ToolPolicyInterpreter
+from assistant_agent.services.tool_policy import (
+    ToolPolicyInterpreter,
+    max_result_chars_for_registered_tool,
+)
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
@@ -55,7 +58,11 @@ def test_tool_spec_accepts_policy_metadata_without_replacing_side_effect() -> No
         ),
         policy=ToolPolicyMetadata(
             risk="external_write",
-            realtime=RealtimeToolPolicy(mode="confirm_then_execute"),
+            realtime=RealtimeToolPolicy(
+                mode="confirm_then_execute",
+                interruptible=False,
+                commit_boundary="provider_ack",
+            ),
             approval=ApprovalPolicy(mode="always", confirmation_kind="calendar_write"),
             execution=ExecutionPolicy(timeout_s=8, idempotency="required"),
             data=DataPolicy(
@@ -76,6 +83,8 @@ def test_tool_spec_accepts_policy_metadata_without_replacing_side_effect() -> No
     assert view.requires_confirmation is True
     assert view.confirmation_kind == "calendar_write"
     assert view.realtime_mode == "confirm_then_execute"
+    assert view.interruptible is False
+    assert view.commit_boundary == "provider_ack"
     assert view.idempotency_required is True
     assert view.reads_private_data is True
     assert view.writes_private_data is True
@@ -101,6 +110,7 @@ def test_registry_copies_tool_policy_metadata_to_specs() -> None:
     assert view.toolset == "personal.calendar"
     assert view.enabled_by_default is False
     assert view.tags == ["calendar", "search"]
+    assert max_result_chars_for_registered_tool(registry, spec.name) == 800
 
 
 def test_default_registry_policy_views_still_fall_back_to_side_effect() -> None:

@@ -10,7 +10,7 @@
 - 真实 LLM 只能返回自然语言 `content` 或 provider-native `tool_calls`。native tool call 会先归一化成内部 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
 - 当第一轮 native response 是 `tool_calls` 时，runtime 不把该轮模型 `content` 当作正式回答输出；它只记录为内部 preamble，并发出一条可替换的 `progress_message` 事件（例如 `product_search` -> “我查一下。”）。该事件不写入 LLM messages，也不参与第二轮回答生成。
 - 工具执行必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。API、WebSocket、MCP 或新增入口都不能直接 `registry.run(...)`。
-- `ToolExecutor` 是运行时治理边界：绑定 user/session 身份、检查 provider budget、记录 state/tool history/event/trace、执行 retry/recovery，再调用 registry。
+- `ToolExecutor` 是运行时治理边界：重新从 registry 解析 `ToolPolicyView`，绑定 user/session 身份，执行 approval/idempotency、安全 retry 和 deadline 传播，检查 provider budget，记录 state/tool history/event/trace，再调用 registry。
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
 - 工具 observation 是下一轮 LLM 的数据，不是系统指令；写入 prompt 前会被摘要、脱敏、压缩。不要把 provider raw response、密钥、base64 大 payload 暴露给 assistant context。
 - Provider capability facts live in `src/assistant_agent/schemas/provider_specs.py` as `ProviderSpec.capabilities`; chat adapters read that matrix for native tools, response format, streaming and modality switches instead of maintaining a separate provider table. Adapter factories should prefer `ResolvedProviderSpec.adapter_kind` / `ResolvedProviderSpec.capabilities` and must not maintain parallel provider-name dispatch tables.

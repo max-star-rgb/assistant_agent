@@ -17,16 +17,14 @@ from assistant_agent.schemas.tools import (
     ToolSideEffectPolicy,
     ToolSpec,
 )
-from assistant_agent.services.tool_risk_gate import (
-    ToolRiskGateLevel,
-    risk_gate_level_for_policy,
-    tool_owns_confirmation,
-)
 from assistant_agent.tools.registry import tool_execution_policy, tool_side_effect_policy
 
 
 TOOL_POLICY_VIEW_SCHEMA_VERSION = "tool_policy_view_v1"
 ToolConfirmationOwner = Literal["none", "tool", "runtime"]
+ToolRiskGateLevel = Literal["auto", "soft_gate", "hard_gate", "block"]
+
+_TOOL_OWNED_CONFIRMATION_TOOLS = {"memory", "memory_save"}
 
 
 class ToolPolicyView(BaseModel):
@@ -53,6 +51,8 @@ class ToolPolicyView(BaseModel):
     compensation_hint: str | None = None
     risk: ToolRisk | None = None
     realtime_mode: str | None = None
+    interruptible: bool = True
+    commit_boundary: str | None = None
     approval_mode: str | None = None
     timeout_s: int | None = None
     retry_count: int | None = None
@@ -70,7 +70,7 @@ class ToolPolicyView(BaseModel):
 
 
 class ToolPolicyInterpreter:
-    """Interpret existing ToolSpec side-effect policy without changing behavior."""
+    """Compile a ToolSpec into the canonical read-only runtime policy view."""
 
     def view_for_spec(self, spec: ToolSpec) -> ToolPolicyView:
         """Return the current policy view for an explicit tool spec."""
@@ -129,6 +129,8 @@ class ToolPolicyInterpreter:
             compensation_hint=side_effect_policy.compensation_hint,
             risk=metadata.risk,
             realtime_mode=metadata.realtime.mode,
+            interruptible=metadata.realtime.interruptible,
+            commit_boundary=metadata.realtime.commit_boundary,
             approval_mode=metadata.approval.mode,
             timeout_s=metadata.execution.timeout_s,
             retry_count=metadata.execution.retry_count,
@@ -193,6 +195,16 @@ class ToolPolicyInterpreter:
         )
 
 
+def max_result_chars_for_registered_tool(registry: object, tool_name: str) -> int | None:
+    """Return the registry-owned LLM observation limit for one tool."""
+
+    get_spec = getattr(registry, "get_spec", None)
+    if not callable(get_spec):
+        return None
+    spec = get_spec(tool_name)
+    return ToolPolicyInterpreter().view_for_spec(spec).max_result_chars
+
+
 def _side_effect_policy_from_metadata(metadata: ToolPolicyMetadata) -> ToolSideEffectPolicy:
     side_effect_level = _side_effect_level_for_risk(metadata.risk)
     requires_confirmation = _requires_confirmation(metadata)
@@ -202,6 +214,22 @@ def _side_effect_policy_from_metadata(metadata: ToolPolicyMetadata) -> ToolSideE
         description=f"Declared tool policy risk={metadata.risk}.",
         confirmation_kind=metadata.approval.confirmation_kind,
     )
+
+
+def risk_gate_level_for_policy(policy: ToolSideEffectPolicy) -> ToolRiskGateLevel:
+    """Map a declared side-effect policy onto its static runtime gate level."""
+
+    if policy.level in {"none", "local_read", "external_read"} and not policy.requires_confirmation:
+        return "auto"
+    if policy.level == "compensatable" and not policy.requires_confirmation:
+        return "soft_gate"
+    return "hard_gate"
+
+
+def tool_owns_confirmation(tool_name: str) -> bool:
+    """Return whether a hard-gated tool owns its current confirmation workflow."""
+
+    return tool_name in _TOOL_OWNED_CONFIRMATION_TOOLS
 
 
 def _side_effect_level_for_risk(risk: ToolRisk) -> ToolSideEffectLevel:

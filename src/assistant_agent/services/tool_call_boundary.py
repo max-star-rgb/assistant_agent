@@ -76,7 +76,13 @@ def build_post_tool_call_summary(
     """Build prompt-safe metadata after a tool succeeds, fails, or is cancelled."""
 
     status = _post_status(result, cancel_metadata=cancel_metadata)
-    side_effect = _side_effect_summary(tool_name, result=result, registry=registry)
+    policy_view = _policy_view_for_tool(tool_name, registry=registry)
+    side_effect = _side_effect_summary(
+        tool_name,
+        result=result,
+        registry=registry,
+        policy_view=policy_view,
+    )
     lifecycle = build_tool_lifecycle_summary(
         result=result,
         side_effect=side_effect,
@@ -108,7 +114,10 @@ def build_post_tool_call_summary(
             "output_ref": result.output_ref,
             "latency_ms": result.latency_ms if result.latency_ms is not None else latency_ms,
             "retry_count": retry_count,
-            "observation_summary": _observation_summary(result),
+            "observation_summary": _observation_summary(
+                result,
+                redact_in_trace=policy_view.redact_in_trace,
+            ),
             "cancel": _cancel_metadata_summary(cancel_metadata),
         }
     )
@@ -118,6 +127,10 @@ def _post_status(result: ToolResult, *, cancel_metadata: dict[str, Any] | None) 
     if cancel_metadata or (result.data or {}).get("cancelled") is True:
         return "cancelled"
     data = result.data or {}
+    if data.get("status") == "idempotency_key_required":
+        return "idempotency_key_required"
+    if data.get("status") == "unknown_after_timeout":
+        return "unknown_after_timeout"
     idempotency = data.get("idempotency")
     if isinstance(idempotency, dict) and idempotency.get("duplicate_suppressed") is True:
         return "duplicate_suppressed"
@@ -131,8 +144,11 @@ def _side_effect_summary(
     *,
     result: ToolResult | None = None,
     registry: ToolRegistry | None = None,
+    policy_view: ToolPolicyView | None = None,
 ) -> dict[str, Any]:
-    payload = _side_effect_summary_from_policy_view(_policy_view_for_tool(tool_name, registry=registry))
+    payload = _side_effect_summary_from_policy_view(
+        policy_view or _policy_view_for_tool(tool_name, registry=registry)
+    )
     if result is not None:
         data = result.data or {}
         override = data.get("side_effect")
@@ -154,10 +170,8 @@ def _side_effect_summary(
 
 def _policy_view_for_tool(tool_name: str, *, registry: ToolRegistry | None) -> ToolPolicyView:
     interpreter = ToolPolicyInterpreter()
-    if registry is not None and hasattr(interpreter, "view_for_spec"):
-        for spec in registry.list_specs():
-            if spec.name == tool_name and spec.policy is not None:
-                return interpreter.view_for_spec(spec)
+    if registry is not None:
+        return interpreter.view_for_spec(registry.get_spec(tool_name))
     return interpreter.view_for_tool_name(tool_name)
 
 
@@ -266,7 +280,30 @@ def _cancel_metadata_summary(cancel_metadata: dict[str, Any] | None) -> dict[str
     return result or None
 
 
-def _observation_summary(result: ToolResult) -> dict[str, Any]:
+def _observation_summary(
+    result: ToolResult,
+    *,
+    redact_in_trace: bool = False,
+) -> dict[str, Any]:
+    if redact_in_trace:
+        data = result.data if isinstance(result.data, dict) else {}
+        trace = result.trace_summary if isinstance(result.trace_summary, dict) else {}
+        approved_summary = trace.get("summary")
+        return _drop_none(
+            {
+                "success": result.success,
+                "output_ref": result.output_ref,
+                "redacted": True,
+                "summary": (
+                    _clip(sanitize_error_message(approved_summary))
+                    if isinstance(approved_summary, str) and approved_summary.strip()
+                    else None
+                ),
+                "data_field_names": sorted(str(key) for key in data),
+                "trace_field_names": sorted(str(key) for key in trace),
+                "error_code": _error_code(result.error),
+            }
+        )
     if isinstance(result.trace_summary, dict):
         return _trace_observation_summary(result)
     data = result.data or {}

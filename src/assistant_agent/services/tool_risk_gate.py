@@ -11,21 +11,19 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult, ToolSideEffectPolicy
-from assistant_agent.tools.registry import tool_side_effect_policy
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.tool_policy import (
+    ToolPolicyInterpreter,
+    ToolPolicyView,
+    ToolRiskGateLevel,
+    risk_gate_level_for_policy,
+    tool_owns_confirmation,
+)
 
 
 TOOL_RISK_GATE_SCHEMA_VERSION = "tool_risk_gate_v1"
-ToolRiskGateLevel = Literal["auto", "soft_gate", "hard_gate", "block"]
 ToolIdempotencyStatus = Literal["committed", "pending_confirmation"]
 
-_REALTIME_SOURCES = {
-    "gateway_websocket",
-    "realtime_agent_backend",
-    "realtime_media_websocket",
-    "phone_runtime",
-}
-_TOOL_OWNED_CONFIRMATION_TOOLS = {"memory", "memory_save"}
 
 
 class ToolRiskDecision(BaseModel):
@@ -168,22 +166,6 @@ def get_default_tool_idempotency_ledger() -> ToolIdempotencyLedger:
     return _DEFAULT_IDEMPOTENCY_LEDGER
 
 
-def risk_gate_level_for_policy(policy: ToolSideEffectPolicy) -> ToolRiskGateLevel:
-    """Map ToolSpec side-effect policy onto a runtime gate level."""
-
-    if policy.level in {"none", "local_read", "external_read"} and not policy.requires_confirmation:
-        return "auto"
-    if policy.level == "compensatable" and not policy.requires_confirmation:
-        return "soft_gate"
-    return "hard_gate"
-
-
-def tool_owns_confirmation(tool_name: str) -> bool:
-    """Return whether a hard-gated tool performs its own confirmation workflow."""
-
-    return tool_name in _TOOL_OWNED_CONFIRMATION_TOOLS
-
-
 def evaluate_tool_risk(
     *,
     tool_name: str,
@@ -191,21 +173,20 @@ def evaluate_tool_risk(
     request: UserRequest,
     state: AgentState,
     step_id: str | None,
-    policy: ToolSideEffectPolicy | None = None,
-    idempotency_required: bool | None = None,
+    policy_view: ToolPolicyView | None = None,
 ) -> ToolRiskDecision:
     """Return the runtime risk/idempotency decision for a tool call."""
 
-    policy = policy or tool_side_effect_policy(tool_name)
-    level = risk_gate_level_for_policy(policy)
-    enabled = _risk_gate_enabled(request)
+    view = policy_view or ToolPolicyInterpreter().view_for_tool_name(tool_name)
+    level = view.risk_gate_level
+    enabled = True
     supplied_key = _metadata_string(tool_input.get("idempotency_key"))
 
     if level == "auto":
         return ToolRiskDecision(
             tool_name=tool_name,
             level=level,
-            side_effect_level=policy.level,
+            side_effect_level=view.side_effect_level,
             enabled=enabled,
             allow_execute=True,
             requires_confirmation=False,
@@ -221,7 +202,7 @@ def evaluate_tool_risk(
         return ToolRiskDecision(
             tool_name=tool_name,
             level=level,
-            side_effect_level=policy.level,
+            side_effect_level=view.side_effect_level,
             enabled=enabled,
             allow_execute=True,
             requires_confirmation=False,
@@ -231,45 +212,69 @@ def evaluate_tool_risk(
             idempotency_generated=generated,
         )
 
-    confirmation_owned_by_tool = tool_owns_confirmation(tool_name)
+    requires_idempotency = view.idempotency_required
+    if not view.requires_confirmation:
+        if requires_idempotency and supplied_key is None:
+            return ToolRiskDecision(
+                tool_name=tool_name,
+                level=level,
+                side_effect_level=view.side_effect_level,
+                enabled=enabled,
+                allow_execute=False,
+                requires_confirmation=False,
+                reason="idempotency_key_required",
+                idempotency_required=True,
+            )
+        return ToolRiskDecision(
+            tool_name=tool_name,
+            level=level,
+            side_effect_level=view.side_effect_level,
+            enabled=enabled,
+            allow_execute=True,
+            requires_confirmation=False,
+            reason="policy_allows_without_confirmation",
+            idempotency_required=requires_idempotency,
+            idempotency_key=supplied_key,
+        )
+
+    confirmation_owned_by_tool = view.confirmation_owner == "tool"
     confirmed = _tool_confirmation_granted(request, tool_name)
-    requires_idempotency = bool(idempotency_required)
     if confirmed:
         if requires_idempotency and supplied_key is None:
             return ToolRiskDecision(
                 tool_name=tool_name,
                 level=level,
-                side_effect_level=policy.level,
+                side_effect_level=view.side_effect_level,
                 enabled=enabled,
                 allow_execute=False,
                 requires_confirmation=True,
-                confirmation_kind=policy.confirmation_kind or "tool_execution",
+                confirmation_kind=view.confirmation_kind or "tool_execution",
                 reason="idempotency_key_required_after_confirmation",
                 idempotency_required=True,
             )
         return ToolRiskDecision(
             tool_name=tool_name,
             level=level,
-            side_effect_level=policy.level,
+            side_effect_level=view.side_effect_level,
             enabled=enabled,
             allow_execute=True,
             requires_confirmation=False,
-            confirmation_kind=policy.confirmation_kind,
+            confirmation_kind=view.confirmation_kind,
             reason="user_confirmation_granted",
             idempotency_required=requires_idempotency,
             idempotency_key=supplied_key,
         )
-    allow_execute = not enabled or confirmation_owned_by_tool
+    allow_execute = confirmation_owned_by_tool
     return ToolRiskDecision(
         tool_name=tool_name,
         level=level,
-        side_effect_level=policy.level,
+        side_effect_level=view.side_effect_level,
         enabled=enabled,
         allow_execute=allow_execute,
         requires_confirmation=True,
-        confirmation_kind=policy.confirmation_kind or "tool_execution",
+        confirmation_kind=view.confirmation_kind or "tool_execution",
         reason="tool_owned_confirmation" if confirmation_owned_by_tool else "confirmation_required",
-        idempotency_required=False,
+        idempotency_required=requires_idempotency,
         idempotency_key=supplied_key,
     )
 
@@ -308,13 +313,19 @@ def confirmation_required_result(
 ) -> ToolResult:
     """Build a pending-confirmation result without executing the tool."""
 
+    idempotency_only = decision.reason == "idempotency_key_required"
     return ToolResult(
         tool_name=tool_name,
         success=True,
         data={
-            "status": "confirmation_required",
-            "summary": "Tool execution requires user confirmation before continuing.",
-            "requires_confirmation": True,
+            "status": "idempotency_key_required" if idempotency_only else "confirmation_required",
+            "summary": (
+                "Tool execution requires an idempotency key before continuing."
+                if idempotency_only
+                else "Tool execution requires user confirmation before continuing."
+            ),
+            "requires_confirmation": decision.requires_confirmation,
+            "requires_idempotency_key": idempotency_only,
             "confirmation_kind": decision.confirmation_kind,
             "side_effect_level": "pending_confirmation",
             "risk_gate": decision.risk_summary(),
@@ -358,21 +369,6 @@ def should_record_idempotent_result(decision: ToolRiskDecision, result: ToolResu
     if isinstance(data.get("idempotency"), dict) and data["idempotency"].get("duplicate_suppressed") is True:
         return False
     return True
-
-
-def _risk_gate_enabled(request: UserRequest) -> bool:
-    metadata = request.metadata
-    if metadata.get("tool_risk_gate_enabled") is True:
-        return True
-    source = _metadata_string(metadata.get("source"))
-    if source in _REALTIME_SOURCES:
-        return True
-    if isinstance(metadata.get("gateway"), dict):
-        return True
-    realtime = metadata.get("realtime")
-    if isinstance(realtime, dict):
-        return True
-    return isinstance(metadata.get("realtime_task_state"), dict)
 
 
 def _tool_confirmation_granted(request: UserRequest, tool_name: str) -> bool:

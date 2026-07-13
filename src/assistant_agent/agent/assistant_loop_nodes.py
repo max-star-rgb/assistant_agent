@@ -45,6 +45,7 @@ from assistant_agent.schemas.tool_observation import (
     observation_from_tool_result,
     rejected_observation,
 )
+from assistant_agent.services.tool_policy import max_result_chars_for_registered_tool
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult
 from assistant_agent.services.context.builder import build_assistant_context_pack
@@ -1288,6 +1289,10 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
             result,
             request_text=graph_state["request"].text,
             prior_observations=tool_observations,
+            max_result_chars=max_result_chars_for_registered_tool(
+                tool_executor.registry,
+                result.tool_name,
+            ),
         )
         if _is_plan_mode_active(state) and not result.success and state.status == "failed":
             state.status = "running"

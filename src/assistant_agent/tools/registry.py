@@ -65,28 +65,31 @@ class ToolRegistry:
     ) -> ToolResult:
         return self.get(name).run(input, context)
 
+    def get_spec(self, name: str) -> ToolSpec:
+        """Return the provider-neutral contract for one registered tool."""
+
+        return self._tool_spec(self.get(name))
+
     def list_specs(self) -> list[ToolSpec]:
         """Return provider-neutral specs for all registered tools."""
 
-        specs: list[ToolSpec] = []
-        for name in sorted(self._tools.keys()):
-            tool = self._tools[name]
-            usage = _ACTION_USAGE.get(tool.name, {})
-            specs.append(
-                ToolSpec(
-                    name=tool.name,
-                    description=tool.description,
-                    input_schema=_schema_to_dict(tool.input_schema, tool_name=tool.name),
-                    required_inputs=_required_inputs(tool.input_schema),
-                    when_to_use=usage.get("when_to_use", []),
-                    when_not_to_use=usage.get("when_not_to_use", []),
-                    runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
-                    side_effect=tool_side_effect_policy(tool.name),
-                    execution=tool_execution_metadata(tool) or tool_execution_policy(tool.name),
-                    policy=tool_policy_metadata(tool),
-                )
-            )
-        return specs
+        return [self._tool_spec(self._tools[name]) for name in sorted(self._tools)]
+
+    @staticmethod
+    def _tool_spec(tool: BaseTool) -> ToolSpec:
+        usage = _ACTION_USAGE.get(tool.name, {})
+        return ToolSpec(
+            name=tool.name,
+            description=tool.description,
+            input_schema=_schema_to_dict(tool.input_schema, tool_name=tool.name),
+            required_inputs=_required_inputs(tool.input_schema),
+            when_to_use=usage.get("when_to_use", []),
+            when_not_to_use=usage.get("when_not_to_use", []),
+            runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
+            side_effect=tool_side_effect_policy(tool.name),
+            execution=tool_execution_metadata(tool) or tool_execution_policy(tool.name),
+            policy=tool_policy_metadata(tool),
+        )
 
     def describe_tools(self) -> List[Dict[str, Any]]:
         """Return legacy dict descriptions of all registered tools for the assistant."""

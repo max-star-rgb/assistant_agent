@@ -4,7 +4,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.planning import TaskStep
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ApprovalPolicy, ToolPolicyMetadata, ToolResult
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.tools.base import MockTool, ToolContext
@@ -20,6 +20,10 @@ class CountingTool(MockTool):
     description = "Counts executions."
     input_schema = BudgetInput
     output_schema = BudgetInput
+    policy = ToolPolicyMetadata(
+        risk="external_read",
+        approval=ApprovalPolicy(mode="never"),
+    )
 
     def __init__(self) -> None:
         self.calls = 0

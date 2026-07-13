@@ -1,3 +1,5 @@
+import json
+
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
@@ -35,6 +37,33 @@ def test_tool_result_model_observation_is_assistant_facing_data() -> None:
     }
     assert "legacy item" not in str(observation)
     assert "provider://raw/search-1" not in str(observation)
+
+
+def test_tool_observation_applies_registry_owned_result_limit() -> None:
+    huge_value = "private-payload-" * 300
+    result = ToolResult(
+        tool_name="calendar.search_events",
+        success=True,
+        data={
+            "summary": "Found matching events.",
+            "events": [{"title": huge_value}],
+            "max_result_chars": 100_000,
+        },
+        output_ref="calendar://search/result-1",
+        raw_data_ref="provider://raw/calendar-1",
+    )
+
+    observation = observation_from_tool_result(result, max_result_chars=600)
+    payload = observation.model_dump(mode="json")
+
+    assert observation.truncated is True
+    assert observation.original_chars is not None
+    assert observation.original_chars > 600
+    assert observation.output_ref == "calendar://search/result-1"
+    assert observation.status == "succeeded"
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 600
+    assert huge_value not in str(payload)
+    assert "provider://raw/calendar-1" not in str(payload)
 
 
 def test_post_boundary_uses_trace_summary_without_raw_data_ref() -> None:
