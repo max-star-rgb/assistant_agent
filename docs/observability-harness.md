@@ -20,6 +20,51 @@ ids, close code, and a close-reason category. They never include response text,
 raw media, phone numbers, credentials, or provider payloads. This JSONL file is
 local runtime evidence, not a durable cross-host delivery database.
 
+## Agent-Service Turn Latency
+
+Every accepted `/agent-service/v1` chat delivery can produce one prompt-safe
+`agent_service.turn.finished` summary after the final WebSocket `send_text()`
+returns. This is the user-visible send boundary. When `chatResponseAck` was
+negotiated, application delivery confirmation remains a later, separate
+`agent_service.delivery.acked` event. A turn with `ack_status=pending` was sent
+but has not been confirmed by the media application.
+
+The correlation identifiers are deliberately distinct:
+
+- `delivery_id` identifies media delivery and optional ACK state;
+- `gateway_run_id` identifies the Gateway lifecycle wrapper;
+- `assistant_run_id` identifies the Assistant runtime execution whose trace
+  contains LLM/tool stages;
+- `trace_id` is the common lookup key used by trace queries and `trace_view.py`.
+
+The latency summary is a non-overlapping critical-path view where possible:
+
+| level | stages | interpretation |
+| --- | --- | --- |
+| Media transport | `entry_parse`, `chat_queue_wait` | Request validation and same-session serialization before Gateway execution. |
+| Assistant leaves | `conversation_prepare`, `memory_load`, `context_build`, `llm_chat[n]`, `action_validation`, `tool_execute[name]`, `response_finalize`, `runtime_postprocess` | Work performed by the Assistant runtime. |
+| Gateway/response | `gateway_overhead`, `websocket_send` | Gateway wrapper cost not explained by backend execution, then final socket backpressure. |
+| Residual | `unattributed` | Positive end-to-end time not represented by the measured leaves. |
+
+For LLM stages, wall time participates in the critical path; Provider-reported
+latency is a nested diagnostic and is not added again. The bottleneck is the
+largest critical-path stage, including positive `unattributed`. ACK latency and
+background video diagnostics are secondary measurements and do not change the
+send-path bottleneck.
+
+The safe INFO records have this shape and never contain prompts or responses:
+
+```text
+turn_latency status=sent trace=trace_x gateway_run=run_g assistant_run=run_a delivery=delivery_x session_turn=2 total=824ms bottleneck=llm_chat[2] bottleneck_ms=410ms share=49.8%
+delivery_ack status=acked trace=trace_x gateway_run=run_g assistant_run=run_a delivery=delivery_x session_turn=2 ack_latency=18ms
+```
+
+`scripts/run_server.py` enables an in-memory primary trace store plus a bounded
+background JSONL writer. Response delivery never waits for JSONL I/O: a full
+secondary queue drops observability events and increments its drop counter.
+Shutdown attempts a bounded flush. This persistence is local diagnostic data,
+not a delivery authority.
+
 ## Realtime Video Observation
 
 Realtime video observation remains visible through governed
@@ -45,6 +90,14 @@ fingerprint decode, context registration, and local selection scheduling
 completed. It is not evidence that background MLLM observation completed.
 Connection cleanup stops scheduling, rejects late semantic updates, then removes
 rolling snapshots and both retained and raw JPEG artifacts.
+
+H.264 decode, keyframe selection, observer queue wait, Provider observation,
+and snapshot publication run before or outside the chat critical path. The turn
+summary projects only the latest semantic snapshot actually consumed by that
+turn: source, snapshot age/sequence, observation latency, queue state, and
+Provider/model. If `recent_frame_fallback` performs a query-time Provider call,
+that work is inside `tool_execute[video_understanding]` and can become the turn
+bottleneck.
 
 ## Purpose
 
@@ -231,17 +284,38 @@ Current query surfaces:
 GET /runs/{run_id}
 GET /traces/{trace_id}
 GET /runs/{run_id}/tool-calls
+GET /traces/{trace_id}/conversation  # explicit loopback debug only
 ```
 
-Target local CLI:
+Local CLI:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --json
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --server http://127.0.0.1:8000
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py --trace-path .data/graph_trace.jsonl
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py --json
 ```
+
+The server-backed view renders `turn_latency`, stage rows, bottleneck, ACK
+state, and consumed-video diagnostics before the event timeline. Conversation
+text is never copied into trace events or JSONL. For a one-off local debug view,
+restart the server with the explicit gate and request only the matching turn:
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
+  --provider mock --image-provider mock --allow-local-trace-content
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py trace_xxx \
+  --server http://127.0.0.1:8000 --include-conversation
+```
+
+`--include-conversation` rejects non-loopback server URLs and cannot be used
+with a local trace file. The server endpoint is disabled by default, checks the
+socket peer, joins the existing `ConversationStore` by trace identity, returns
+only the current user/final-assistant pair, and clips each side to 1000 Unicode
+characters with an explicit truncation marker. Do not enable this gate on a
+shared or production process.
 
 Human-readable output should show:
 
