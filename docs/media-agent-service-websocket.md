@@ -1,6 +1,6 @@
 # Media 到 Agent WebSocket 接口文档
 
-Last updated: 2026-07-09
+Last updated: 2026-07-13
 
 本文档描述真实媒体服务与 `assistant_agent` 之间的 WebSocket 传输层协议。媒体侧协议为外部对接基准；Agent 侧负责兼容该协议，并在内部把 `chat` 文本请求转入 Gateway 和 assistant runtime。
 
@@ -230,7 +230,17 @@ Agent 兼容说明：
 }
 ```
 
-当前 Agent 将 `video` 作为传输层帧确认，不把原始视频内容送入 assistant prompt 或 provider。
+处理规则：
+
+- `videoContent` 必须是无 `0x` 前缀的 H.264 Annex-B Hex 字符串，并以三字节或四字节 NAL 起始码开头。
+- 媒体服务必须让每条消息可独立解码：每帧包含 SPS、PPS 和 I-Frame，不依赖前后消息。
+- Agent 使用本机 FFmpeg 将每条 H.264 I-Frame 解码为 JPEG，只在运行时目录保留当前 session 最近 3 帧。
+- 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
+- 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。真实 LLM 根据用户语义自主决定是否调用 `video_understanding`，工具调用仍经过 validator、executor、registry 和 Provider policy。
+- 携带视频引用的 chat turn 使用 90 秒 facade 等待预算，以覆盖视频 Provider 最长 60 秒的调用预算以及调用前后的 LLM 决策；普通 chat 仍使用 30 秒。
+- 连接关闭后，该连接持有的帧上下文和 JPEG 运行时文件会被清理。
+
+成功响应中的 `video received` 表示该帧已经通过校验、成功解码并注册到视频上下文，不再只是传输层收到。Hex、codec、NAL 起始码、大小或解码失败时返回 `videoResponse` 且 `body.code="FAIL"`；连接保持可用，失败帧不会附加到后续 chat。
 
 ### 4.5 interrupt
 
@@ -263,6 +273,7 @@ Agent 兼容说明：
 | 外层 `body` 不是 JSON 字符串 | 返回当前消息对应响应类型，`body.code=\"FAIL\"` |
 | `body` 字符串不是 JSON object | 返回当前消息对应响应类型，`body.code=\"FAIL\"` |
 | 缺少必填字段 | 返回当前消息对应响应类型，`body.code=\"FAIL\"` |
+| `videoContent` 非法、超过大小限制或无法解码 | 返回 `videoResponse`，`body.code=\"FAIL\"`；连接保持可用 |
 | 未知 `message` 类型 | 返回 `error` |
 | Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"` |
 
@@ -372,6 +383,7 @@ if __name__ == "__main__":
 
 - `/agent-service/v1` 是媒体服务兼容入口，不是新的 Agent 主循环。
 - `assistantControl` 建立媒体连接上下文，不绕过 provider/runtime policy。
-- `chat` 进入 Gateway 和 assistant runtime；`audio`、`video`、`interrupt` 当前返回传输层 ACK。
+- `chat` 进入 Gateway 和 assistant runtime；`audio`、`interrupt` 当前返回传输层 ACK。
+- `video` 在入口层完成严格校验和 H.264 I-Frame 到 JPEG 的受控解码，后续 `chat` 只把稳定 `video_id` 送入 Gateway；入口层不直接调用视频 Provider。
 - 默认 mock/local/offline 运行不会调用真实外部 Provider；真实 Provider 只在显式 profile 和本机安全配置允许时启用。
 - 不要在该接口中传输 API key、token、provider 原始响应或未脱敏敏感数据；原始音视频大 payload 不进入 prompt。
