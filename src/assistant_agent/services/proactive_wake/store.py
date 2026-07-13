@@ -222,6 +222,8 @@ class SQLiteProactiveWakeStore:
         return [WakeRule.model_validate_json(str(row["rule_json"])) for row in rows]
 
     def begin_run(self, rule: WakeRule, signal: WakeSignal) -> tuple[WakeRun, bool]:
+        if signal.owner != rule.owner:
+            raise ValueError("signal owner does not match rule owner")
         dedup_key = _dedup_key(rule.owner, rule.rule_id, signal.event_key or signal.signal_id)
         created_at = datetime.now(timezone.utc)
         with self._connect() as connection, connection:
@@ -254,8 +256,10 @@ class SQLiteProactiveWakeStore:
         return run, claimed
 
     def complete_run(self, run: WakeRun, state: WakeRuleState) -> WakeRun:
+        if state.rule_id != run.rule_id:
+            raise ValueError("state rule_id does not match run rule_id")
         with self._connect() as connection, connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE wake_runs
                 SET rule_id = ?,
@@ -270,6 +274,8 @@ class SQLiteProactiveWakeStore:
                 """,
                 (*_run_values(run)[1:], run.run_id),
             )
+            if cursor.rowcount == 0:
+                raise LookupError("wake run not found")
             connection.execute(
                 """
                 INSERT INTO wake_rule_state (rule_id, state_json, next_reconcile_at)
@@ -347,6 +353,7 @@ class SQLiteProactiveWakeStore:
 
 def _run_values(run: WakeRun) -> tuple[object, ...]:
     owner = run.owner
+    persisted_run = run.model_copy(update={"decision": None})
     return (
         run.run_id,
         run.rule_id,
@@ -354,7 +361,7 @@ def _run_values(run: WakeRun) -> tuple[object, ...]:
         owner.user_id,
         owner.project_id,
         run.status,
-        run.model_dump_json(),
+        persisted_run.model_dump_json(),
         _datetime_text(run.created_at),
         _datetime_text(run.updated_at),
     )
