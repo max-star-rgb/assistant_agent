@@ -1,4 +1,6 @@
 import asyncio
+import multiprocessing
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -7,6 +9,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
+import assistant_agent.services.proactive_wake.coordinator as coordinator_module
 from assistant_agent.schemas.proactive_wake import (
     WakeAttentionSpec,
     WakeConditionSpec,
@@ -14,6 +17,8 @@ from assistant_agent.schemas.proactive_wake import (
     WakeOwner,
     WakeProbeSpec,
     WakeRule,
+    WakeRuleState,
+    WakeRun,
     WakeSignal,
     WakeTriggerSpec,
 )
@@ -37,6 +42,7 @@ from assistant_agent.tools.registry import ToolRegistry
 
 
 NOW = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+DEFAULT_EXECUTOR_WORKERS = min(32, (os.cpu_count() or 1) + 4)
 
 
 class QueryInput(BaseModel):
@@ -100,6 +106,55 @@ class ActivityReader:
     async def is_active(self, owner: WakeOwner) -> bool:
         self.calls.append(owner)
         return self.active
+
+
+class LockStressStore:
+    """Thread-safe in-memory store isolating coordinator lock/executor behavior."""
+
+    def __init__(self) -> None:
+        self.rule = None
+        self.state = None
+        self.dedup_keys: set[str] = set()
+        self.runs: dict[str, WakeRun] = {}
+        self._lock = threading.Lock()
+
+    def save_rule(self, rule):
+        self.rule = rule
+        self.state = WakeRuleState(rule_id=rule.rule_id)
+        return rule
+
+    def get_rule(self, owner, rule_id):
+        if self.rule is not None and self.rule.owner == owner and self.rule.rule_id == rule_id:
+            return self.rule
+        return None
+
+    def begin_run(self, rule, signal):
+        dedup_key = signal.event_key or signal.signal_id
+        with self._lock:
+            claimed = dedup_key not in self.dedup_keys
+            self.dedup_keys.add(dedup_key)
+            run = WakeRun(
+                rule_id=rule.rule_id,
+                owner=rule.owner,
+                signal_id=signal.signal_id,
+                status="received" if claimed else "deduplicated",
+            )
+            self.runs[run.run_id] = run
+            return run, claimed
+
+    def get_rule_state(self, rule_id):
+        return self.state
+
+    def complete_run(self, run, state):
+        completed, _ = self.complete_outcome(run=run, state=state, notification=None)
+        return completed
+
+    def complete_outcome(self, *, run, state, notification):
+        safe_run = run.model_copy(update={"decision": None})
+        with self._lock:
+            self.state = state
+            self.runs[run.run_id] = safe_run
+        return safe_run, notification
 
 
 def make_rule(
@@ -178,6 +233,71 @@ def run_rule(coordinator, rule, signal):
     return asyncio.run(
         coordinator.run_rule(rule_id=rule.rule_id, owner=rule.owner, signal=signal)
     )
+
+
+def run_executor_saturation_scenario(task_count: int, result_queue) -> None:
+    try:
+        sequence = SequenceTool([{"event": "baseline"}])
+        probe_finished = threading.Event()
+        original_handler = sequence.tool._handler
+
+        def signal_probe_finished(input, context):
+            try:
+                return original_handler(input, context)
+            finally:
+                probe_finished.set()
+
+        sequence.tool._handler = signal_probe_finished
+        registry = ToolRegistry()
+        registry.register(sequence.tool)
+        validator = ProactiveRuleValidator(
+            registry=registry,
+            allowed_tool_names={"calendar.search_events"},
+        )
+        runner = GovernedProbeRunner(
+            registry=registry,
+            allowed_tool_names={"calendar.search_events"},
+        )
+        store = LockStressStore()
+        coordinator = ProactiveWakeCoordinator(
+            store=store,
+            rule_validator=validator,
+            probe_runner=runner,
+            now_fn=lambda: NOW,
+        )
+        rule = coordinator.save_rule(make_rule())
+
+        async def scenario():
+            tasks = [
+                asyncio.create_task(
+                    coordinator.run_rule(
+                        rule_id=rule.rule_id,
+                        owner=rule.owner,
+                        signal=make_signal(
+                            rule,
+                            signal_id=f"stress-signal-{index}",
+                            event_key="shared-stress-event",
+                        ),
+                    )
+                )
+                for index in range(task_count)
+            ]
+            while not probe_finished.is_set():
+                await asyncio.sleep(0.005)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        asyncio.run(scenario())
+        result_queue.put(
+            {
+                "call_count": sequence.call_count,
+                "max_active": sequence.max_active,
+                "registry_clean": not coordinator_module._PROCESS_RULE_LOCKS,
+            }
+        )
+    except BaseException as exc:
+        result_queue.put({"error": repr(exc)})
 
 
 def test_first_probe_establishes_baseline_without_notification(tmp_path) -> None:
@@ -722,3 +842,150 @@ def test_unexpected_pipeline_exception_terminalizes_claimed_run(
     assert store.get_rule_state(rule.rule_id).last_fingerprint is None
     assert store.list_outbox(rule.owner) == []
     assert sequence.call_count == (0 if stage == "probe" else 1)
+
+
+def test_process_lock_waiters_do_not_exhaust_default_executor() -> None:
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    task_count = DEFAULT_EXECUTOR_WORKERS + 2
+    process = context.Process(
+        target=run_executor_saturation_scenario,
+        args=(task_count, result_queue),
+    )
+    process.start()
+    process.join(timeout=30)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+        pytest.fail("same-rule waiters exhausted the default executor")
+
+    assert process.exitcode == 0
+    result = result_queue.get(timeout=5)
+    assert "error" not in result
+    assert result["call_count"] == 1
+    assert result["max_active"] == 1
+    assert result["registry_clean"] is True
+
+
+def test_state_read_failure_terminalizes_claimed_run_with_fallback_state(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "unused"}])
+    rule = coordinator.save_rule(make_rule())
+    original_get_state = store.get_rule_state
+    failed_once = False
+
+    def fail_once(rule_id):
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("state read exploded")
+        return original_get_state(rule_id)
+
+    store.get_rule_state = fail_once
+
+    with pytest.raises(RuntimeError, match="state read exploded"):
+        run_rule(coordinator, rule, make_signal(rule, signal_id="state-read-failure"))
+
+    loaded = next(
+        item for item in store.list_runs(rule.owner) if item.signal_id == "state-read-failure"
+    )
+    assert (loaded.status, loaded.reason_code) == (
+        "probe_failed",
+        "proactive_state_read_failed",
+    )
+    assert sequence.call_count == 0
+    assert original_get_state(rule.rule_id) == WakeRuleState(rule_id=rule.rule_id)
+    assert store.list_outbox(rule.owner) == []
+
+
+@pytest.mark.parametrize("terminal_failure", ["now", "store"])
+def test_terminalization_failure_preserves_original_exception(
+    tmp_path, terminal_failure
+) -> None:
+    coordinator, store, _, _ = make_harness(tmp_path, [{"event": "unused"}])
+    rule = coordinator.save_rule(make_rule())
+    original_probe_error = RuntimeError("original probe exploded")
+    coordinator.probe_runner.run = lambda rule, signal: (_ for _ in ()).throw(
+        original_probe_error
+    )
+    if terminal_failure == "now":
+        now_calls = 0
+
+        def failing_terminal_now():
+            nonlocal now_calls
+            now_calls += 1
+            if now_calls > 1:
+                raise RuntimeError("terminal clock exploded")
+            return NOW
+
+        coordinator.now_fn = failing_terminal_now
+    else:
+        original_complete = store.complete_outcome
+
+        def failing_terminal_complete(*, run, state, notification):
+            if run.status == "probe_failed":
+                raise RuntimeError("terminal store exploded")
+            return original_complete(run=run, state=state, notification=notification)
+
+        store.complete_outcome = failing_terminal_complete
+
+    with pytest.raises(RuntimeError) as raised:
+        run_rule(coordinator, rule, make_signal(rule, signal_id=f"terminal-{terminal_failure}"))
+
+    assert raised.value is original_probe_error
+    loaded = next(
+        item
+        for item in store.list_runs(rule.owner)
+        if item.signal_id == f"terminal-{terminal_failure}"
+    )
+    assert loaded.status == "probing"
+
+
+def test_cancelled_run_preserves_cancel_when_probe_finishes_with_exception(tmp_path) -> None:
+    coordinator, store, _, _ = make_harness(tmp_path, [{"event": "unused"}])
+    rule = coordinator.save_rule(make_rule())
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+
+    def blocking_failed_probe(rule, signal):
+        probe_started.set()
+        release_probe.wait(timeout=30)
+        raise RuntimeError("probe failed after cancellation")
+
+    coordinator.probe_runner.run = blocking_failed_probe
+
+    async def scenario():
+        task = asyncio.create_task(
+            coordinator.run_rule(
+                rule_id=rule.rule_id,
+                owner=rule.owner,
+                signal=make_signal(rule, signal_id="cancel-then-probe-fails"),
+            )
+        )
+        while not probe_started.is_set():
+            await asyncio.sleep(0.005)
+        task.cancel()
+        release_probe.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    loaded = next(
+        item
+        for item in store.list_runs(rule.owner)
+        if item.signal_id == "cancel-then-probe-fails"
+    )
+    assert (loaded.status, loaded.reason_code) == (
+        "probe_failed",
+        "proactive_run_cancelled",
+    )
+
+
+def test_process_rule_lock_registry_cleans_last_user(tmp_path) -> None:
+    coordinator, _, _, _ = make_harness(tmp_path, [{"event": "baseline"}])
+    rule = coordinator.save_rule(make_rule(rule_id="registry-cleanup-rule"))
+    key = coordinator_module._lock_key(rule.owner, rule.rule_id)
+
+    run_rule(coordinator, rule, make_signal(rule, signal_id="registry-cleanup"))
+
+    assert key not in coordinator_module._PROCESS_RULE_LOCKS

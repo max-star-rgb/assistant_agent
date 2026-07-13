@@ -7,6 +7,7 @@ import _thread
 import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -36,8 +37,17 @@ from assistant_agent.services.proactive_wake.probe import (
 from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
 
 _RuleLockKey = tuple[str | None, str, str | None, str]
-_PROCESS_RULE_LOCKS: dict[_RuleLockKey, _thread.LockType] = {}
+
+
+@dataclass
+class _ProcessRuleLockEntry:
+    lock: _thread.LockType = field(default_factory=threading.Lock)
+    users: int = 0
+
+
+_PROCESS_RULE_LOCKS: dict[_RuleLockKey, _ProcessRuleLockEntry] = {}
 _PROCESS_RULE_LOCKS_GUARD = threading.Lock()
+_PROCESS_RULE_LOCK_POLL_S = 0.001
 
 
 class ProactiveWakeError(RuntimeError):
@@ -93,13 +103,21 @@ class ProactiveWakeCoordinator:
         ):
             raise ProactiveWakeError(code="signal_not_matched")
 
-        lock = _process_rule_lock(_lock_key(owner, rule_id))
-        async with _hold_process_rule_lock(lock):
+        lock_key = _lock_key(owner, rule_id)
+        async with _hold_process_rule_lock(lock_key):
             run, claimed = self.store.begin_run(rule, signal)
             if not claimed:
                 return ProactiveWakeRunResult(run=run)
 
-            state = self.store.get_rule_state(rule.rule_id)
+            try:
+                state = self.store.get_rule_state(rule.rule_id)
+            except BaseException:
+                self._terminalize_failure(
+                    run=run,
+                    state=WakeRuleState(rule_id=rule.rule_id),
+                    reason_code="proactive_state_read_failed",
+                )
+                raise
             active_run = run
             failure_stage = "validation"
             try:
@@ -131,7 +149,7 @@ class ProactiveWakeCoordinator:
                 try:
                     observation = await asyncio.shield(probe_task)
                 except asyncio.CancelledError:
-                    await _await_background_task(probe_task)
+                    await _await_background_task(probe_task, suppress_exceptions=True)
                     raise
                 if not observation.success:
                     failed = probing.model_copy(
@@ -278,50 +296,68 @@ class ProactiveWakeCoordinator:
         state: WakeRuleState,
         reason_code: str,
     ) -> None:
-        failed = run.model_copy(
-            update={
-                "status": "probe_failed",
-                "reason_code": reason_code,
-                "updated_at": self.now_fn(),
-            }
-        )
-        self.store.complete_outcome(run=failed, state=state, notification=None)
+        try:
+            failed = run.model_copy(
+                update={
+                    "status": "probe_failed",
+                    "reason_code": reason_code,
+                    "updated_at": self.now_fn(),
+                }
+            )
+            self.store.complete_outcome(run=failed, state=state, notification=None)
+        except BaseException:
+            return
 
 
 def _lock_key(owner: WakeOwner, rule_id: str) -> _RuleLockKey:
     return owner.tenant_id, owner.user_id, owner.project_id, rule_id
 
 
-def _process_rule_lock(key: _RuleLockKey) -> _thread.LockType:
+def _retain_process_rule_lock(key: _RuleLockKey) -> _ProcessRuleLockEntry:
     with _PROCESS_RULE_LOCKS_GUARD:
-        return _PROCESS_RULE_LOCKS.setdefault(key, threading.Lock())
+        entry = _PROCESS_RULE_LOCKS.setdefault(key, _ProcessRuleLockEntry())
+        entry.users += 1
+        return entry
+
+
+def _release_process_rule_lock(key: _RuleLockKey, entry: _ProcessRuleLockEntry) -> None:
+    with _PROCESS_RULE_LOCKS_GUARD:
+        entry.users -= 1
+        if entry.users == 0 and _PROCESS_RULE_LOCKS.get(key) is entry:
+            del _PROCESS_RULE_LOCKS[key]
 
 
 @asynccontextmanager
-async def _hold_process_rule_lock(lock: _thread.LockType) -> AsyncIterator[None]:
-    acquire_task = asyncio.create_task(asyncio.to_thread(lock.acquire))
+async def _hold_process_rule_lock(key: _RuleLockKey) -> AsyncIterator[None]:
+    entry = _retain_process_rule_lock(key)
     acquired = False
     try:
-        try:
-            acquired = await asyncio.shield(acquire_task)
-        except asyncio.CancelledError:
-            acquired_after_cancel = await _await_background_task(acquire_task)
-            if acquired_after_cancel:
-                lock.release()
-            raise
+        while not entry.lock.acquire(blocking=False):
+            await asyncio.sleep(_PROCESS_RULE_LOCK_POLL_S)
+        acquired = True
         yield
     finally:
         if acquired:
-            lock.release()
+            entry.lock.release()
+        _release_process_rule_lock(key, entry)
 
 
-async def _await_background_task(task):
+async def _await_background_task(task, *, suppress_exceptions: bool = False):
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             continue
-    return task.result()
+        except BaseException:
+            if suppress_exceptions:
+                return None
+            raise
+    try:
+        return task.result()
+    except BaseException:
+        if suppress_exceptions:
+            return None
+        raise
 
 
 def _notification_local_date(rule: WakeRule, now: datetime) -> date:
