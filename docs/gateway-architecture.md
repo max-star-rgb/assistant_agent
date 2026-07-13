@@ -132,8 +132,21 @@ final assistant response in the media `chatResponse` shape when the media
 protocol is used. `audio` and `interrupt` are accepted as transport
 compatibility messages and acknowledged at the entry layer. `video` accepts
 independently decodable H.264 Annex-B frames, decodes them to a three-frame
-JPEG window, and attaches the stable session video reference to later chat
-turns. The entry adapter does not call the video provider directly.
+JPEG window plus a bounded local grayscale fingerprint, and attaches the stable
+session video reference to later chat turns. A per-connection observer applies
+adaptive sampling, pixel difference, SSIM, and local histogram change detection;
+selected frames enter a latest-wins background queue. Background understanding
+still runs through the governed `video_understanding` tool. The entry adapter
+does not call the video provider directly.
+
+The runtime owns a bounded semantic snapshot per opaque `video_id`. An ordinary
+`video_understanding` query uses a healthy latest snapshot with
+`source=rolling_video_memory` and performs no query-time visual Provider call.
+No snapshot, a not-ready snapshot, or a latest completed observation failure
+uses `source=recent_frame_fallback`. Continuous selected-frame work records
+`source=background_keyframe_observation`. The raw window is 3 frames, semantic
+retention is 8 keyframes, and observer concurrency is one in flight plus one
+latest pending frame.
 
 Vendor chat execution is detached from the WebSocket receive loop, so a long
 Gateway turn does not prevent later raw media frames from being validated and
@@ -304,6 +317,8 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/api/gateway_websocket.py` | FastAPI entry adapters for `/ws/gateway` Gateway frames and `/ws/realtime/media` media-service events. |
 | `src/assistant_agent/api/agent_service_websocket.py` | FastAPI compatibility adapter for the vendor `/agent-service/v1` media protocol; preserves `message` / optional `sessionId` / stringified `body` envelopes, accepts media `assistantControl` / `chat` / `audio` / `video` / `interrupt`, ingests self-contained H.264 video frames, and routes chat plus stable video references through a local `GatewayTurnFacade`. |
 | `src/assistant_agent/services/h264_video_ingestion.py` | Entry-layer H.264 validation, bounded FFmpeg I-frame decode, JPEG artifact lifecycle, and registration in the runtime-owned `VideoContextStore`; never calls an understanding provider. |
+| `src/assistant_agent/services/realtime_video_observer.py` | Per-connection local adaptive selection, retained-keyframe lifecycle, latest-wins background scheduling, and governed `video_understanding` execution. |
+| `src/assistant_agent/services/realtime_video_memory.py` | Runtime-owned bounded prompt-safe semantic video snapshots, health/failure state, and per-video isolation. |
 | `src/assistant_agent/api/` | FastAPI HTTP/WebSocket entry adapters and product API routes. |
 | `src/assistant_agent/services/gateway_turn_facade.py` | In-process sync-turn facade for request/response entries that need Gateway lifecycle semantics without a WebSocket transport. |
 | `src/assistant_agent/services/assistant_runtime_app.py` | Backend-to-runtime boundary used behind `GatewayAgentAdapter`; owns the internal runtime reference without becoming the target product entry boundary. |

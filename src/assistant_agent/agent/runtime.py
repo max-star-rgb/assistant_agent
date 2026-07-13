@@ -134,10 +134,15 @@ class AgentGraphRuntime:
             video_context_store=self.video_context_store,
             realtime_video_memory_store=self.realtime_video_memory_store,
         )
-        if registry is not None and "video_understanding" in self.registry.list():
-            video_tool = self.registry.get("video_understanding")
-            if getattr(video_tool, "memory_store", None) is None:
-                video_tool.memory_store = self.realtime_video_memory_store
+        registry_get = getattr(self.registry, "get", None)
+        if registry is not None and callable(registry_get):
+            try:
+                video_tool = registry_get("video_understanding")
+            except KeyError:
+                pass
+            else:
+                if getattr(video_tool, "memory_store", None) is None:
+                    video_tool.memory_store = self.realtime_video_memory_store
         self.intent_detector = intent_detector or IntentDetector()
         self.router = router or ToolRouter()
         self.run_history = run_history

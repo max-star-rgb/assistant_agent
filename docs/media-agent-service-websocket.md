@@ -255,13 +255,25 @@ Agent 返回 `chatResponseAck` 且 `code=0` 才表示应用层 ACK 已记录。�
 
 - `videoContent` 必须是无 `0x` 前缀的 H.264 Annex-B Hex 字符串，并以三字节或四字节 NAL 起始码开头。
 - 媒体服务必须让每条消息可独立解码：每帧包含 SPS、PPS 和 I-Frame，不依赖前后消息。
-- Agent 使用本机 FFmpeg 将每条 H.264 I-Frame 解码为 JPEG，只在运行时目录保留当前 session 最近 3 帧。
+- Agent 使用本机 FFmpeg 在一次解码中同时生成 JPEG 和 `32x18` 灰度指纹；指纹只用于本地变化检测，不进入 prompt、trace 或 Provider 请求。
+- 每个连接维护一个本地自适应观察器：先按采样频率、像素差、SSIM 和本地直方图语义差异筛选关键帧，再把选中帧交给后台串行任务。
+- 原始视频上下文只保留最近 3 帧；成功理解的语义关键帧独立保留最多 8 帧。后台队列最多包含 1 个执行中帧和 1 个待处理帧，积压时用最新候选替换旧候选。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
+- 选中关键帧的后台视觉理解复用 `video_understanding`，并经过 `ActionValidator -> ToolExecutor -> ToolRegistry`；WebSocket 入口不直接调用 Provider。默认 `local_demo` / `offline_eval` 不联网，真实连续 MLLM 只允许显式 `provider_smoke` / `pilot` 配置。
 - 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。真实 LLM 根据用户语义自主决定是否调用 `video_understanding`，工具调用仍经过 validator、executor、registry 和 Provider policy。
+- 查询时若最新已完成观察成功，`video_understanding` 直接返回滚动语义记忆，不再次调用视觉 MLLM；若记忆尚未就绪或最新观察失败，则使用最近 3 帧执行原有 Provider 回退。
 - 携带视频引用的 chat turn 使用 90 秒 facade 等待预算，以覆盖视频 Provider 最长 60 秒的调用预算以及调用前后的 LLM 决策；普通 chat 仍使用 30 秒。
-- 连接关闭后，该连接持有的帧上下文和 JPEG 运行时文件会被清理。
+- 连接关闭时先停止观察器、丢弃待处理帧并拒绝晚到结果，再移除滚动语义记忆、关键帧、原始帧上下文和 JPEG 运行时文件。
 
-成功响应中的 `video received` 表示该帧已经通过校验、成功解码并注册到视频上下文，不再只是传输层收到。Hex、codec、NAL 起始码、大小或解码失败时返回 `videoResponse` 且 `body.code="FAIL"`；连接保持可用，失败帧不会附加到后续 chat。
+成功响应中的 `video received` 表示该帧已经通过校验、成功解码、注册到视频上下文并完成本地选帧调度，不再只是传输层收到；它不表示后台视觉 MLLM 已完成。Hex、codec、NAL 起始码、大小或解码失败时返回 `videoResponse` 且 `body.code="FAIL"`；连接保持可用，失败帧不会附加到后续 chat。
+
+`video_understanding` 的结构化结果用 `source` 标明解析路径：
+
+| `source` | 含义 |
+| --- | --- |
+| `rolling_video_memory` | 最新已完成观察成功，查询直接读取滚动语义记忆，未发生查询时视觉 Provider 调用 |
+| `recent_frame_fallback` | 记忆未就绪或最新观察失败，查询使用最近原始帧调用 Provider |
+| `background_keyframe_observation` | 持续观察器对选中关键帧执行的受治理后台分析 |
 
 ### 4.5 interrupt
 

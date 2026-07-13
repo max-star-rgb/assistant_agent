@@ -20,6 +20,32 @@ ids, close code, and a close-reason category. They never include response text,
 raw media, phone numbers, credentials, or provider payloads. This JSONL file is
 local runtime evidence, not a durable cross-host delivery database.
 
+## Realtime Video Observation
+
+Realtime video observation remains visible through governed
+`video_understanding` tool records rather than a second Provider-only trace
+path. Structured tool data and contract metadata use one of these prompt-safe
+sources:
+
+- `background_keyframe_observation`: a selected keyframe was analyzed by the
+  per-connection observer through `ActionValidator` and `ToolExecutor`;
+- `rolling_video_memory`: a user query used the latest healthy semantic
+  snapshot and made no query-time visual Provider call;
+- `recent_frame_fallback`: semantic memory was absent, not ready, or latest
+  failed, so the ordinary recent-frame Provider path ran.
+
+Safe diagnostic fields are source, opaque video/output reference, snapshot
+sequence, observed timestamp, keyframe count, queue counts, status, reason code,
+provider/model name, and latency. Raw H.264, JPEG bytes, grayscale fingerprints,
+absolute keyframe paths, Provider raw payloads, phone numbers, and user-visible
+response text must not appear in trace summaries or delivery audit records.
+
+`videoResponse(code=0)` is an ingestion signal: H.264 validation, JPEG and
+fingerprint decode, context registration, and local selection scheduling
+completed. It is not evidence that background MLLM observation completed.
+Connection cleanup stops scheduling, rejects late semantic updates, then removes
+rolling snapshots and both retained and raw JPEG artifacts.
+
 ## Purpose
 
 The observability harness should answer five developer questions quickly:
