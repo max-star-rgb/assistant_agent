@@ -52,4 +52,6 @@ AGENT_SERVICE_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
     supports_text_streaming=False,
     supports_interrupt=False,
     supports_realtime_task_state=True,
+    supports_video_refs=True,
+    supports_raw_media=True,
 )

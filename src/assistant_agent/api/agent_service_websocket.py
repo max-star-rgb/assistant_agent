@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from assistant_agent.gateway import AGENT_SERVICE_ENTRY_CAPABILITIES, GatewaySessionManager
 from assistant_agent.realtime import GatewayAgentAdapter
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
 from assistant_agent.services.gateway_turn_facade import (
     GatewayTurnError,
     GatewayTurnFacade,
@@ -39,6 +41,8 @@ class AgentServiceConnectionState:
     gateway_facade: GatewayTurnFacade | None = None
     assistant_control_start: dict[str, Any] | None = None
     chats: list[dict[str, Any]] = field(default_factory=list)
+    video_ids: list[str] = field(default_factory=list)
+    video_ingestion: H264VideoIngestionService | None = None
 
 
 class AgentServiceProtocolError(ValueError):
@@ -274,12 +278,26 @@ class VideoHandler(BaseHandler):
         body: dict[str, Any],
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
-        _ = session_id
         self.required_text(body, "userNumber")
-        self.require_present(body, "videoIndex")
+        video_index = self.require_present(body, "videoIndex")
         _validate_media_contents(body=body, content_field="videoContent")
-        if not isinstance(body.get("videoConfig"), dict):
+        video_config = body.get("videoConfig")
+        if not isinstance(video_config, dict):
             raise AgentServiceProtocolError("missing videoConfig")
+        if state.video_ingestion is None:
+            state.video_ingestion = _create_video_ingestion_service()
+        contents = body["contents"]
+        for content_index, item in enumerate(contents):
+            frame = await asyncio.to_thread(
+                state.video_ingestion.ingest,
+                session_id,
+                str(video_index) if len(contents) == 1 else f"{video_index}-{content_index}",
+                _required_item_text(item, content_index, "videoContent"),
+                video_config,
+                _required_item_text(item, content_index, "time"),
+            )
+            if frame.video_id not in state.video_ids:
+                state.video_ids.append(frame.video_id)
         state.media_protocol = True
         return _response_envelope(
             message=self.response_message,
@@ -361,6 +379,9 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     except WebSocketDisconnect:
         logger.info("agent-service websocket disconnected session_id=%s", state.session_id)
     finally:
+        if state.video_ingestion is not None:
+            for video_id in state.video_ids:
+                await asyncio.to_thread(state.video_ingestion.cleanup, video_id)
         await gateway_manager.close()
 
 
@@ -477,6 +498,16 @@ def _create_agent_service_gateway_manager() -> GatewaySessionManager:
     )
 
 
+def _create_video_ingestion_service() -> H264VideoIngestionService:
+    from assistant_agent.api import routes_agent
+
+    runtime = routes_agent.get_assistant_runtime_app().runtime
+    store = getattr(runtime, "video_context_store", None)
+    if store is None:
+        raise RuntimeError("assistant runtime does not provide a video context store")
+    return H264VideoIngestionService(store=store)
+
+
 def _run_assistant_request_for_agent_service(request: UserRequest, **kwargs: Any) -> Any:
     from assistant_agent.api import routes_agent
 
@@ -500,6 +531,7 @@ async def _run_agent_service_chat_turn(
                 user_id=user_number,
                 session_id=session_id,
                 text=latest_speech,
+                video_ids=list(state.video_ids),
                 metadata=_agent_service_gateway_metadata(
                     state=state,
                     user_number=user_number,
