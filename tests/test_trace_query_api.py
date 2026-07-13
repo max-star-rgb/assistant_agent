@@ -4,6 +4,7 @@ from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.api import routes_agent
 from assistant_agent.api.app import create_app
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.assistant_run_service import ConversationTurn, InMemoryConversationStore
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
 
 
@@ -184,6 +185,63 @@ def test_trace_query_api_projects_latest_turn_latency(monkeypatch) -> None:
     assert "conversation" not in run_payload["turn_latency"]
 
 
+def test_trace_conversation_endpoint_is_hidden_when_disabled(monkeypatch) -> None:
+    runtime, conversation_store = _trace_conversation_fixture()
+    monkeypatch.delenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", raising=False)
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_default_conversation_store", lambda config=None: conversation_store)
+    client = TestClient(create_app(), client=("127.0.0.1", 50000))
+
+    response = client.get("/traces/trace_content/conversation")
+
+    assert response.status_code == 404
+
+
+def test_trace_conversation_endpoint_rejects_non_loopback_client(monkeypatch) -> None:
+    runtime, conversation_store = _trace_conversation_fixture()
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_default_conversation_store", lambda config=None: conversation_store)
+    client = TestClient(create_app(), client=("203.0.113.10", 50000))
+
+    response = client.get("/traces/trace_content/conversation")
+
+    assert response.status_code == 403
+
+
+def test_trace_conversation_endpoint_returns_matching_turn_without_identity(monkeypatch) -> None:
+    runtime, conversation_store = _trace_conversation_fixture()
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_default_conversation_store", lambda config=None: conversation_store)
+    client = TestClient(create_app(), client=("127.0.0.1", 50000))
+
+    response = client.get("/traces/trace_content/conversation")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "schema_version": "trace_conversation_view_v1",
+        "trace_id": "trace_content",
+        "user": {"text": "眼前是什么？", "chars": 6, "truncated": False},
+        "assistant": {"text": "眼前是一个杯子。", "chars": 8, "truncated": False},
+    }
+
+
+def test_trace_conversation_endpoint_returns_404_for_unknown_trace_or_content(monkeypatch) -> None:
+    runtime, conversation_store = _trace_conversation_fixture()
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_default_conversation_store", lambda config=None: conversation_store)
+    client = TestClient(create_app(), client=("localhost", 50000))
+
+    unknown_trace = client.get("/traces/trace_missing/conversation")
+    conversation_store.clear("user_content", "session_content")
+    missing_content = client.get("/traces/trace_content/conversation")
+
+    assert unknown_trace.status_code == 404
+    assert missing_content.status_code == 404
+
+
 def test_trace_query_api_returns_404_for_unknown_ids() -> None:
     client = TestClient(create_app())
 
@@ -191,3 +249,31 @@ def test_trace_query_api_returns_404_for_unknown_ids() -> None:
     assert client.get("/traces/trace_missing").status_code == 404
     assert client.get("/runs/run_missing/context").status_code == 404
     assert client.get("/traces/trace_missing/context").status_code == 404
+
+
+def _trace_conversation_fixture() -> tuple[AgentGraphRuntime, InMemoryConversationStore]:
+    trace_store = InMemoryTraceStore()
+    trace_store.append(
+        TraceEvent(
+            trace_id="trace_content",
+            run_id="run_content",
+            user_id="user_content",
+            session_id="session_content",
+            node_name="runtime",
+            event_type="observability",
+            canonical_event="run.completed",
+        )
+    )
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+    conversation_store = InMemoryConversationStore()
+    conversation_store.append(
+        "user_content",
+        "session_content",
+        ConversationTurn(
+            user_text="眼前是什么？",
+            assistant_text="眼前是一个杯子。",
+            run_id="run_content",
+            trace_id="trace_content",
+        ),
+    )
+    return runtime, conversation_store

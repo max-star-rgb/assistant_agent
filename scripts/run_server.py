@@ -39,6 +39,7 @@ from assistant_agent.services.trial_access import (
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
+LOCAL_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--access-log",
         action="store_true",
         help="Enable uvicorn per-request access logs. Disabled by default for a quieter dev console.",
+    )
+    parser.add_argument(
+        "--allow-local-trace-content",
+        action="store_true",
+        help="Allow explicit trace conversation lookup from loopback clients only.",
     )
     parser.add_argument("--env-file", default=".env", help="Env file to load before starting.")
     parser.add_argument("--no-env-file", action="store_true", help="Do not load a dotenv file before starting.")
@@ -93,6 +99,8 @@ def _prepare_environment(args: argparse.Namespace) -> dict[str, str]:
     if args.image_provider:
         _allow_real_provider_if_needed(args.image_provider)
         os.environ["MULTIMODAL_AGENT_IMAGE_PROVIDER"] = args.image_provider
+    if args.allow_local_trace_content:
+        os.environ[LOCAL_TRACE_CONTENT_ENV] = "1"
     os.environ[SERVER_TRACE_ENABLED_ENV] = "1"
     _configure_trial_user_allowlist(args)
     return loaded
@@ -150,6 +158,10 @@ def _print_runtime_summary(config: ProviderConfig, *, loaded_env_keys: list[str]
     if config.conversation_history_backend == "jsonl":
         print(f"  conversation_history_path: {config.conversation_history_path}")
     print(f"  langgraph_checkpointer_backend: {config.langgraph_checkpointer_backend}")
+    print(
+        "  local_trace_content: "
+        + ("enabled" if os.environ.get(LOCAL_TRACE_CONTENT_ENV) == "1" else "disabled")
+    )
     print(f"  offline_default: {info['offline_default']}")
     print(
         "  trial_access: "

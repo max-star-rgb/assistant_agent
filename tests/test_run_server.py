@@ -44,6 +44,7 @@ def test_run_server_parser_defaults() -> None:
     assert args.trial_user_id_file is None
     assert args.provider is None
     assert args.image_provider is None
+    assert args.allow_local_trace_content is False
 
 
 def test_run_server_parser_accepts_public_url() -> None:
@@ -96,6 +97,33 @@ def test_run_server_enables_server_trace_persistence(monkeypatch) -> None:
     assert os.environ["MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"] == "1"
 
 
+def test_run_server_local_trace_content_requires_explicit_flag(monkeypatch) -> None:
+    module = _load_module("run_server_local_trace_content_test")
+    monkeypatch.delenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", raising=False)
+
+    disabled_args = module.build_parser().parse_args(["--no-env-file"])
+    module._prepare_environment(disabled_args)
+
+    assert "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT" not in os.environ
+
+    enabled_args = module.build_parser().parse_args(
+        ["--no-env-file", "--allow-local-trace-content"]
+    )
+    module._prepare_environment(enabled_args)
+
+    assert os.environ["MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"] == "1"
+
+
+def test_run_server_preserves_explicit_local_trace_content_environment(monkeypatch) -> None:
+    module = _load_module("run_server_preserve_local_trace_content_test")
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+    args = module.build_parser().parse_args(["--no-env-file"])
+
+    module._prepare_environment(args)
+
+    assert os.environ["MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"] == "1"
+
+
 def test_create_runtime_accepts_injected_trace_store() -> None:
     trace_store = InMemoryTraceStore()
 
@@ -143,6 +171,7 @@ def test_app_lifespan_closes_gateway_before_agent_runtime(monkeypatch) -> None:
 def test_run_server_runtime_summary_prints_product_providers(monkeypatch, capsys) -> None:
     module = _load_module("run_server_runtime_summary_test")
     monkeypatch.delenv("MULTIMODAL_AGENT_TRIAL_USER_IDS", raising=False)
+    monkeypatch.delenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", raising=False)
 
     config = module.ProviderConfig(
         product_search_provider="haodanku",
@@ -161,6 +190,7 @@ def test_run_server_runtime_summary_prints_product_providers(monkeypatch, capsys
     assert "memory_backend: jsonl" in output
     assert "conversation_history_backend: jsonl" in output
     assert "langgraph_checkpointer_backend: none" in output
+    assert "local_trace_content: disabled" in output
 
 
 def test_run_server_configures_trial_user_allowlist(monkeypatch, tmp_path) -> None:
