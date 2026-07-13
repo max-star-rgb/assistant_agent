@@ -86,3 +86,12 @@ def test_product_entry_layers_depend_on_runtime_app_boundary() -> None:
     ):
         source = _source(path)
         assert "AssistantRuntimeApp" in source or "get_assistant_runtime_app" in source
+
+
+def test_realtime_video_observer_uses_tool_governance_not_provider_adapters() -> None:
+    source = _source("src/assistant_agent/services/realtime_video_observer.py")
+
+    assert "ActionValidator" in source
+    assert "ToolExecutor" in source
+    assert "assistant_agent.providers" not in source
+    assert "create_video_understanding_adapter" not in source
