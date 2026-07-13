@@ -288,7 +288,7 @@ def test_action_validator_requires_explicit_memory_media_ingest_intent() -> None
     assert validation.code == "memory_media_ingest_intent_required"
 
 
-def test_tool_catalog_exposes_media_ingest_tools_only_for_memory_ingestion_requests() -> None:
+def test_tool_catalog_exposes_qualified_media_ingest_tools_independent_of_request_text() -> None:
     specs = create_default_registry().list_specs()
 
     ingest_selection = select_prompt_tool_specs(
@@ -302,4 +302,5 @@ def test_tool_catalog_exposes_media_ingest_tools_only_for_memory_ingestion_reque
 
     assert "memory_media_ingest" in [spec.name for spec in ingest_selection.prompt_tool_specs]
     assert "memory_ingest_status" in [spec.name for spec in ingest_selection.prompt_tool_specs]
-    assert "memory_media_ingest" not in [spec.name for spec in plain_video_selection.prompt_tool_specs]
+    assert "memory_media_ingest" in [spec.name for spec in plain_video_selection.prompt_tool_specs]
+    assert "memory_ingest_status" in [spec.name for spec in plain_video_selection.prompt_tool_specs]

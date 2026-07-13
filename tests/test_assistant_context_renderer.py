@@ -84,6 +84,32 @@ def test_context_pack_contains_request_memory_conversation_observations_and_tool
     assert pack.budget.compression_reasons == []
 
 
+def test_default_context_budget_preserves_short_context_with_all_qualified_tools() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="继续按我的偏好推荐",
+        metadata={"conversation_context_text": "上一轮：预算五百以内"},
+    )
+    state = AgentState.from_request(request)
+    state.memory_context.append(_memory("用户喜欢日系极简风格。"))
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=create_default_registry().list_specs(),
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert pack.conversation_text == "上一轮：预算五百以内"
+    assert pack.memory_text == "用户喜欢日系极简风格。"
+    assert pack.budget.tool_spec_chars < pack.budget.max_chars
+    assert pack.budget.trimmed_sections == []
+    assert pack.budget.compaction_triggered is False
+    assert pack.budget.compression_reasons == []
+
+
 def test_context_pack_prefers_memory_manager_metadata_text_and_blocks() -> None:
     request = UserRequest(
         user_id="u1",
@@ -224,7 +250,13 @@ def test_context_report_v1_summarizes_sections_without_raw_payloads() -> None:
     assert report.sections["memory"].tokens is not None
     assert report.total_tokens > 0
     assert report.max_tokens == 1000
-    assert report.selected_tool_names == ["product_search", "price_compare", "memory_retrieval", "memory_save"]
+    assert report.selected_tool_names == [
+        "product_search",
+        "price_compare",
+        "memory_retrieval",
+        "memory_save",
+        "render_3d",
+    ]
     assert report.memory_item_ids == ["mem_pref_1"]
     assert "secret payload" not in payload
     assert "sk-test" not in payload
@@ -232,7 +264,7 @@ def test_context_report_v1_summarizes_sections_without_raw_payloads() -> None:
     assert "相关历史" not in payload
 
 
-def test_context_report_v1_marks_full_tool_schema_fallback() -> None:
+def test_context_report_v1_marks_identity_recall_without_fallback() -> None:
     from assistant_agent.services.context.report import build_context_report
 
     request = UserRequest(user_id="u1", session_id="s1", text="随便聊聊")
@@ -250,8 +282,9 @@ def test_context_report_v1_marks_full_tool_schema_fallback() -> None:
 
     report = build_context_report(pack, system_prompt="system", selected_tool_specs=pack.prompt_tool_specs)
 
-    assert pack.tool_catalog_summary.fallback_used is True
-    assert report.sections["tool_schema"].notes == ["fallback_full_tool_list"]
+    assert pack.tool_catalog_summary.fallback_used is False
+    assert pack.tool_catalog_summary.selection_reasons == ["recall_identity"]
+    assert report.sections["tool_schema"].notes == []
     assert report.selected_tool_names == ["product_search", "render_3d"]
 
 
@@ -1026,7 +1059,7 @@ def test_prompt_json_rendering_keeps_core_context_constraints() -> None:
     assert "tool_name 必须严格等于 ToolSpec.name" in prompt
 
 
-def test_prompt_json_rendering_uses_prompt_tool_specs_subset() -> None:
+def test_prompt_json_rendering_uses_all_qualified_prompt_tool_specs() -> None:
     request = UserRequest(user_id="u1", session_id="s1", text="帮我比价通勤耳机，找最低价")
     state = AgentState.from_request(request)
     tool_specs = [
@@ -1046,11 +1079,15 @@ def test_prompt_json_rendering_uses_prompt_tool_specs_subset() -> None:
     prompt = rendered.prompt_json or ""
 
     assert pack.tool_specs == tool_specs
-    assert [spec.name for spec in pack.prompt_tool_specs] == ["product_search", "price_compare"]
-    assert pack.tool_catalog_summary.filtered_tool_count == 1
+    assert [spec.name for spec in pack.prompt_tool_specs] == [
+        "product_search",
+        "price_compare",
+        "render_3d",
+    ]
+    assert pack.tool_catalog_summary.filtered_tool_count == 0
     assert '"name": "product_search"' in prompt
     assert '"name": "price_compare"' in prompt
-    assert '"name": "render_3d"' not in prompt
+    assert '"name": "render_3d"' in prompt
 
 
 def test_prompt_json_default_registry_exposes_memory_tools_for_llm_first_choice() -> None:
@@ -1069,11 +1106,16 @@ def test_prompt_json_default_registry_exposes_memory_tools_for_llm_first_choice(
     assert "product_search" in names
     assert "memory_retrieval" in names
     assert "memory_save" in names
-    assert "llm_first_memory_tools: memory tools exposed for semantic LLM choice" in pack.tool_catalog_summary.selection_reasons
+    assert pack.tool_catalog_summary.selection_reasons == ["recall_identity"]
 
 
-def test_native_context_renders_skill_style_capability_catalog_without_full_tool_specs() -> None:
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+def test_native_context_renders_explicit_skill_capability_catalog_without_full_tool_specs() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={"tool_visibility": {"enabled_skills": ["realtime_web_search"]}},
+    )
     state = AgentState.from_request(request)
     pack = build_assistant_context_pack(
         state=state,
@@ -1096,7 +1138,12 @@ def test_native_context_renders_skill_style_capability_catalog_without_full_tool
 
 
 def test_context_pack_and_report_include_skill_exposure_report() -> None:
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={"tool_visibility": {"enabled_skills": ["realtime_web_search"]}},
+    )
     state = AgentState.from_request(request)
     pack = build_assistant_context_pack(
         state=state,
@@ -1137,10 +1184,15 @@ description: Repo-local search guidance.
 - Open browser and scrape every page.
 """,
     )
-    request = UserRequest(user_id="u1", session_id="s1", text="latest AI news")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="latest AI news",
+        metadata={"tool_visibility": {"enabled_skills": ["realtime_web_search"]}},
+    )
     capability_selection = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=[ToolSpec(name="web_search", required_inputs=["query"])],
+        qualified_tool_specs=[ToolSpec(name="web_search", required_inputs=["query"])],
         prompt_tool_specs=[ToolSpec(name="web_search", required_inputs=["query"])],
         tool_catalog_summary=ToolCatalogSummary(
             total_tool_count=1,

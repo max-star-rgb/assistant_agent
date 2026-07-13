@@ -92,6 +92,10 @@ def test_optional_step_failed_but_graph_continues() -> None:
 
     assert state.status == "completed"
     assert [call.tool_name for call in state.tool_calls[:2]] == ["product_search", "image_generation"]
+    assert state.run_tool_set is not None
+    assert state.run_tool_set.qualified_tool_names == state.run_tool_set.exposed_tool_names
+    assert state.run_tool_set.exposed_tool_names == state.run_tool_set.executable_tool_names
+    assert state.run_tool_set.selection_reasons == ["recall_identity"]
     assert state.errors[0].details["recovery_action"] == "continue_with_partial_result"
     assert state.response is not None
     assert state.response.data["partial_success"] is True

@@ -44,6 +44,22 @@ class ActionValidator:
         tool_name = decision.tool_name
         if tool_name not in registry.list():
             return _reject("unknown_tool", f"Unknown tool: {tool_name}.")
+        run_tool_set = state.run_tool_set
+        if run_tool_set is not None and not run_tool_set.allows_execution(tool_name):
+            return _reject(
+                "tool_not_allowed_for_run",
+                f"Tool is not enabled for the current assistant turn: {tool_name}.",
+                metadata={
+                    "run_tool_set": {
+                        "schema_version": run_tool_set.schema_version,
+                        "requested_tool_name": tool_name,
+                        "executable_tool_names": list(run_tool_set.executable_tool_names),
+                        "exclusion_reasons": list(
+                            run_tool_set.excluded_reasons.get(tool_name, [])
+                        ),
+                    }
+                },
+            )
         metadata = {
             "pre_tool_call": build_pre_tool_call_summary(
                 tool_name=tool_name,

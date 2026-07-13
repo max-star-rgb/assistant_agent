@@ -230,8 +230,8 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
     assert adapter.requests[0].tools
     native_tool_names = [tool["function"]["name"] for tool in adapter.requests[0].tools]
     assert "product_search" in native_tool_names
-    assert "price_compare" not in native_tool_names
-    assert "render_3d" not in native_tool_names
+    assert "price_compare" in native_tool_names
+    assert "render_3d" in native_tool_names
     assert adapter.requests[0].tool_choice == "auto"
     assert any(message["role"] == "user" for message in adapter.requests[0].messages)
     tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
@@ -245,6 +245,29 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
     assert state.response.message == "已根据 native tool call 搜索通勤耳机。"
     assert state.request.metadata["assistant_loop_steps"][0]["safety_notes"] == ["native_tool_call"]
     assert any(step.get("observation_tool") == "product_search" for step in state.request.metadata["assistant_loop_steps"])
+
+
+def test_native_tool_call_may_choose_any_qualified_tool_without_keyword_routing() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("web_search", {"query": "通勤耳机评测", "limit": 2}),
+            final_result("已根据 web_search observation 回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(config=ProviderConfig(), chat_adapter=adapter)
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机")
+    )
+
+    first_turn_tools = [tool["function"]["name"] for tool in adapter.requests[0].tools]
+    assert "product_search" in first_turn_tools
+    assert "web_search" in first_turn_tools
+    assert [call.tool_name for call in state.tool_calls] == ["web_search"]
+    assert state.request.metadata["last_action_validator"]["code"] == "accepted"
+    assert adapter.calls == 2
+    assert state.response is not None
+    assert state.response.message == "已根据 web_search observation 回答。"
 
 
 def test_native_video_tool_call_uses_agent_service_frame_context(tmp_path: Path) -> None:

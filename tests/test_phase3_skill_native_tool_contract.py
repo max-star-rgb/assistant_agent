@@ -49,7 +49,14 @@ def test_phase3_skill_guidance_still_executes_normal_native_tool_path() -> None:
     runtime = AgentGraphRuntime(chat_adapter=adapter)
 
     state = runtime.run_state(
-        UserRequest(user_id="u1", session_id="s1", text="联网搜索 OpenAI 最新消息")
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="联网搜索 OpenAI 最新消息",
+            metadata={
+                "tool_visibility": {"enabled_skills": ["realtime_web_search"]}
+            },
+        )
     )
 
     first_request = adapter.requests[0]

@@ -110,6 +110,8 @@ def prompt_tool_specs_for_mode(
 
     if mode != PromptCompileMode.NATIVE_TOOL:
         return ()
+    if pack.run_tool_set.registered_tool_names:
+        return tuple(pack.prompt_tool_specs)
     return tuple(pack.prompt_tool_specs or pack.tool_specs)
 
 

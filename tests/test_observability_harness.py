@@ -343,11 +343,14 @@ def test_native_runtime_emits_context_report_with_selected_tool_schema() -> None
     events = trace_debug_summary(trace_store.list_by_run(state.run_id))["events"]
     report_event = next(event for event in events if event["canonical_event"] == "context.report")
     report = report_event["output_summary"]["context_report_v1"]
+    exposed_tool_names = [
+        tool["function"]["name"] for tool in adapter.requests[0].tools
+    ]
 
     assert report["sections"]["system_prompt"]["chars"] > 0
-    assert report["selected_tool_names"] == ["web_search", "memory_retrieval", "memory_save"]
-    assert report["sections"]["tool_schema"]["item_count"] == 3
-    assert "product_search" not in report["selected_tool_names"]
+    assert report["selected_tool_names"] == exposed_tool_names
+    assert report["sections"]["tool_schema"]["item_count"] == len(exposed_tool_names)
+    assert "product_search" in report["selected_tool_names"]
 
 
 def test_native_runtime_emits_memory_load_trace_without_memory_content() -> None:

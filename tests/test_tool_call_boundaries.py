@@ -7,7 +7,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import RunToolSet, ToolResult
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.realtime_task_state import (
     RealtimeTaskState,
@@ -111,6 +111,35 @@ def test_action_validator_attaches_pre_tool_call_boundary_metadata() -> None:
     assert pre["realtime_task_state"]["task_id"] == "rtask:u1:s1"
     assert pre["input_summary"]["field_count"] == 2
     assert "通勤降噪耳机" not in str(pre)
+
+
+def test_action_validator_rejects_unqualified_tool_outside_run_allowlist() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机")
+    state = AgentState.from_request(request, run_id="run-1")
+    state.run_tool_set = RunToolSet(
+        registered_tool_names=["product_search", "web_search"],
+        qualified_tool_names=["product_search"],
+        exposed_tool_names=["product_search"],
+        executable_tool_names=["product_search"],
+        excluded_reasons={"web_search": ["disabled_by_default"]},
+    )
+
+    validation = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name="web_search",
+            tool_input={"query": "通勤耳机评测"},
+        ),
+        registry=create_default_registry(),
+        request=request,
+        state=state,
+    )
+
+    assert validation.accepted is False
+    assert validation.code == "tool_not_allowed_for_run"
+    assert validation.metadata["run_tool_set"]["exclusion_reasons"] == [
+        "disabled_by_default"
+    ]
 
 
 def test_tool_executor_emits_pre_and_post_tool_call_boundaries_for_success() -> None:

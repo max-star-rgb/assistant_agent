@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.schemas.capability_output import CapabilityOutputContract
 
@@ -148,6 +148,41 @@ class ToolSpec(BaseModel):
     side_effect: ToolSideEffectPolicy = Field(default_factory=ToolSideEffectPolicy)
     execution: ToolExecutionPolicy = Field(default_factory=ToolExecutionPolicy)
     policy: ToolPolicyMetadata | None = None
+
+
+class RunToolSet(BaseModel):
+    """Prompt-safe tool inventory and execution allowlist for one assistant turn."""
+
+    schema_version: Literal["run_tool_set_v1"] = "run_tool_set_v1"
+    registered_tool_names: list[str] = Field(default_factory=list)
+    qualified_tool_names: list[str] = Field(default_factory=list)
+    exposed_tool_names: list[str] = Field(default_factory=list)
+    executable_tool_names: list[str] = Field(default_factory=list)
+    selection_reasons: list[str] = Field(default_factory=list)
+    excluded_reasons: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_tool_sets(self) -> "RunToolSet":
+        """Keep qualification, exposure, and execution within their parent sets."""
+
+        registered = set(self.registered_tool_names)
+        qualified = set(self.qualified_tool_names)
+        for field_name, names, allowed in (
+            ("qualified_tool_names", qualified, registered),
+            ("exposed_tool_names", set(self.exposed_tool_names), qualified),
+            ("executable_tool_names", set(self.executable_tool_names), qualified),
+        ):
+            unknown = sorted(names - allowed)
+            if unknown:
+                raise ValueError(
+                    f"{field_name} contains tools outside its allowed set: {unknown}"
+                )
+        return self
+
+    def allows_execution(self, tool_name: str) -> bool:
+        """Return whether the current assistant turn may execute ``tool_name``."""
+
+        return tool_name in self.executable_tool_names
 
 
 class ToolCallRecord(BaseModel):

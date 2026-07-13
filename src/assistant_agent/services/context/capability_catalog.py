@@ -51,17 +51,18 @@ _DEFAULT_CAPABILITIES: tuple[ToolCapabilityDescriptor, ...] = (
 def select_tool_capability_descriptors(
     *,
     request: UserRequest,
-    available_tool_specs: list[ToolSpec],
+    qualified_tool_specs: list[ToolSpec],
     prompt_tool_specs: list[ToolSpec],
     tool_catalog_summary: ToolCatalogSummary,
+    active_skill_ids: set[str] | None = None,
     repo_root: Path | None = None,
     skill_catalog: SkillCatalog | None = None,
 ) -> ToolCapabilityCatalogSelection:
-    """Select capability descriptors only when their governed tools are prompt-selected."""
+    """Expose capability descriptors only for explicitly active skills."""
 
-    if not available_tool_specs:
+    if not qualified_tool_specs:
         return ToolCapabilityCatalogSelection(
-            selection_reasons=["capability_catalog_skipped: no_tools_available"],
+            selection_reasons=["capability_catalog_skipped: no_tools_qualified"],
             skill_report=SkillExposureReport(),
         )
     if tool_catalog_summary.fallback_used:
@@ -71,8 +72,12 @@ def select_tool_capability_descriptors(
             skill_report=SkillExposureReport(),
         )
 
-    request_text = request.text or ""
-    available_names = {spec.name for spec in available_tool_specs}
+    active_ids = (
+        _explicit_skill_ids(request)
+        if active_skill_ids is None
+        else active_skill_ids
+    )
+    qualified_names = {spec.name for spec in qualified_tool_specs}
     prompt_names = {spec.name for spec in prompt_tool_specs}
     capabilities: list[ToolCapabilityDescriptor] = []
     catalog_descriptors, reasons, report = _candidate_capability_descriptors(
@@ -81,20 +86,31 @@ def select_tool_capability_descriptors(
     )
 
     for descriptor in catalog_descriptors:
+        if descriptor.name not in active_ids:
+            report.skipped.append(
+                SkillExposureSkip(
+                    skill_id=descriptor.name,
+                    reason="skill_not_explicitly_enabled",
+                )
+            )
+            reasons.append(
+                f"capability_catalog_skipped:{descriptor.name}:skill_not_explicitly_enabled"
+            )
+            continue
         governed_names = set(descriptor.governed_tools)
-        if not governed_names.issubset(available_names):
-            missing_names = sorted(governed_names - available_names)
+        if not governed_names.issubset(qualified_names):
+            missing_names = sorted(governed_names - qualified_names)
             report.unavailable_tool_count += len(missing_names)
             for tool_name in missing_names:
                 report.skipped.append(
                     SkillExposureSkip(
                         skill_id=descriptor.name,
-                        reason="governed_tool_unavailable",
+                        reason="governed_tool_unqualified",
                         tool_name=tool_name,
                     )
                 )
             reasons.append(
-                f"capability_catalog_skipped:{descriptor.name}:governed_tool_unavailable"
+                f"capability_catalog_skipped:{descriptor.name}:governed_tool_unqualified"
             )
             continue
         if not governed_names.intersection(prompt_names):
@@ -115,14 +131,28 @@ def select_tool_capability_descriptors(
         )
         reasons.append(f"capability_catalog_selected:{descriptor.name}")
 
-    if not capabilities and request_text.strip():
-        reasons.append("capability_catalog_skipped: no_matching_governed_tools")
+    if not capabilities:
+        reasons.append("capability_catalog_skipped: no_explicitly_active_qualified_skills")
 
     return ToolCapabilityCatalogSelection(
         capabilities=capabilities,
         selection_reasons=reasons,
         skill_report=report,
     )
+
+
+def _explicit_skill_ids(request: UserRequest) -> set[str]:
+    payload = request.metadata.get("tool_visibility")
+    if not isinstance(payload, dict):
+        return set()
+    value = payload.get("enabled_skills")
+    if not isinstance(value, list):
+        return set()
+    return {
+        item.strip()
+        for item in value
+        if isinstance(item, str) and item.strip()
+    }
 
 
 def _candidate_capability_descriptors(

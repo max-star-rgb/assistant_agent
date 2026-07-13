@@ -1,153 +1,248 @@
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.schemas.tools import (
+    RunToolSet,
+    ToolPolicyMetadata,
+    ToolSpec,
+    VisibilityPolicy,
+)
 from assistant_agent.services.context.capability_catalog import (
     select_tool_capability_descriptors,
 )
+from assistant_agent.services.context.skill_loader import load_repo_skill_descriptors
+from assistant_agent.services.context import tool_catalog
 from assistant_agent.services.context.tool_catalog import select_prompt_tool_specs
 from assistant_agent.tools.registry import create_default_registry
 
 
-def test_tool_catalog_selects_compare_tools_for_price_request() -> None:
+def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text() -> None:
     specs = create_default_registry().list_specs()
-
-    selection = select_prompt_tool_specs(
-        UserRequest(
-            user_id="u1", session_id="s1", text="帮我比价通勤耳机，找最低价和优惠"
-        ),
-        specs,
-    )
-
-    names = [spec.name for spec in selection.prompt_tool_specs]
-    assert names == [
-        "product_search",
-        "price_compare",
-        "memory_retrieval",
-        "memory_save",
-    ]
-    assert selection.summary.filtered_tool_count == len(specs) - 4
-    assert selection.summary.fallback_used is False
-
-
-def test_tool_catalog_selects_web_search_for_realtime_news_request() -> None:
-    specs = create_default_registry().list_specs()
-
-    selection = select_prompt_tool_specs(
-        UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息"),
-        specs,
-    )
-
-    names = [spec.name for spec in selection.prompt_tool_specs]
-    assert names == ["web_search", "memory_retrieval", "memory_save"]
-    assert (
-        "web_search_keyword: current/latest/news/web request"
-        in selection.summary.selection_reasons
-    )
-    assert selection.summary.fallback_used is False
-
-
-def test_tool_catalog_selects_web_search_for_english_latest_news_request() -> None:
-    specs = create_default_registry().list_specs()
-
-    selection = select_prompt_tool_specs(
-        UserRequest(user_id="u1", session_id="s1", text="latest AI news web search"),
-        specs,
-    )
-
-    assert [spec.name for spec in selection.prompt_tool_specs] == [
-        "web_search",
-        "memory_retrieval",
-        "memory_save",
+    requests = [
+        UserRequest(user_id="u1", session_id="s1", text="帮我找耳机"),
+        UserRequest(user_id="u1", session_id="s1", text="写一段文案"),
+        UserRequest(user_id="u1", session_id="s1", text="Momentum 4 值不值得入"),
     ]
 
+    selections = [select_prompt_tool_specs(request, specs) for request in requests]
 
-def test_tool_catalog_selects_web_search_for_product_topic_news_request() -> None:
-    specs = create_default_registry().list_specs()
+    expected = [spec.name for spec in specs]
+    assert [[spec.name for spec in item.qualified_tool_specs] for item in selections] == [
+        expected,
+        expected,
+        expected,
+    ]
+    assert [[spec.name for spec in item.prompt_tool_specs] for item in selections] == [
+        expected,
+        expected,
+        expected,
+    ]
+    assert all(item.run_tool_set.executable_tool_names == expected for item in selections)
+    assert all(item.summary.selection_reasons == ["recall_identity"] for item in selections)
 
-    selection = select_prompt_tool_specs(
-        UserRequest(user_id="u1", session_id="s1", text="查一下今天手机行业新闻"),
-        specs,
+
+def test_identity_recall_preserves_qualified_tool_order() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="arbitrary text")
+    specs = [ToolSpec(name="third"), ToolSpec(name="first"), ToolSpec(name="second")]
+
+    recall = getattr(tool_catalog, "recall_qualified_tool_specs", None)
+
+    assert recall is not None
+    recalled = recall(request, specs)
+
+    assert recalled == specs
+    assert recalled is not specs
+
+
+def test_qualification_keeps_all_risk_levels_visible() -> None:
+    specs = [
+        ToolSpec(name="read", policy=ToolPolicyMetadata(risk="local_read")),
+        ToolSpec(name="artifact", policy=ToolPolicyMetadata(risk="transactional")),
+        ToolSpec(name="write", policy=ToolPolicyMetadata(risk="external_write")),
+    ]
+    request = UserRequest(
+        user_id="u1", session_id="s1", text="does not classify tools"
     )
 
-    names = [spec.name for spec in selection.prompt_tool_specs]
-    assert names == ["web_search", "memory_retrieval", "memory_save"]
+    selection = select_prompt_tool_specs(request, specs)
+
+    assert selection.run_tool_set.qualified_tool_names == [
+        "read",
+        "artifact",
+        "write",
+    ]
+    assert selection.run_tool_set.exposed_tool_names == [
+        "read",
+        "artifact",
+        "write",
+    ]
+    assert selection.run_tool_set.executable_tool_names == [
+        "read",
+        "artifact",
+        "write",
+    ]
 
 
-def test_tool_catalog_does_not_route_product_search_to_web_search() -> None:
-    specs = create_default_registry().list_specs()
+def test_run_tool_set_rejects_exposed_tool_outside_qualified_set() -> None:
+    with pytest.raises(ValidationError, match="exposed_tool_names"):
+        RunToolSet(
+            registered_tool_names=["registered"],
+            qualified_tool_names=["registered"],
+            exposed_tool_names=["hidden"],
+        )
 
-    selection = select_prompt_tool_specs(
-        UserRequest(
-            user_id="u1", session_id="s1", text="搜索一下 500 元以内的白色运动鞋"
+
+def test_tool_catalog_excludes_tool_when_required_environment_is_missing(monkeypatch) -> None:
+    monkeypatch.delenv("ASSISTANT_AGENT_TEST_TOOL_KEY", raising=False)
+    spec = ToolSpec(
+        name="private.lookup",
+        policy=ToolPolicyMetadata(
+            visibility=VisibilityPolicy(
+                requires_env=["ASSISTANT_AGENT_TEST_TOOL_KEY"],
+            )
         ),
-        specs,
     )
 
-    names = [spec.name for spec in selection.prompt_tool_specs]
-    assert "product_search" in names
-    assert "web_search" not in names
-
-
-def test_tool_catalog_selects_vision_tool_for_image_understanding() -> None:
-    specs = create_default_registry().list_specs()
-
     selection = select_prompt_tool_specs(
+        UserRequest(user_id="u1", session_id="s1", text="private lookup"),
+        [spec],
+    )
+
+    assert selection.qualified_tool_specs == []
+    assert selection.prompt_tool_specs == []
+    assert selection.run_tool_set.qualified_tool_names == []
+    assert selection.run_tool_set.excluded_reasons == {
+        "private.lookup": ["missing_required_env:ASSISTANT_AGENT_TEST_TOOL_KEY"]
+    }
+
+
+def test_tool_catalog_requires_explicit_enable_for_disabled_tool() -> None:
+    spec = ToolSpec(
+        name="weather.lookup",
+        policy=ToolPolicyMetadata(
+            visibility=VisibilityPolicy(
+                toolset="personal.readonly",
+                enabled_by_default=False,
+            )
+        ),
+    )
+    hidden = select_prompt_tool_specs(
+        UserRequest(user_id="u1", session_id="s1", text="weather lookup"),
+        [spec],
+    )
+    enabled = select_prompt_tool_specs(
         UserRequest(
             user_id="u1",
             session_id="s1",
-            text="请识图并 OCR 这张图片",
-            image_ids=["img1"],
+            text="weather lookup",
+            metadata={
+                "tool_visibility": {
+                    "enabled_toolsets": ["personal.readonly"],
+                }
+            },
         ),
-        specs,
+        [spec],
     )
 
-    assert [spec.name for spec in selection.prompt_tool_specs] == [
-        "vision_understanding",
-        "memory_retrieval",
-        "memory_save",
-    ]
-    assert (
-        "image_ids_present: image understanding tool is relevant"
-        in selection.summary.selection_reasons
+    assert hidden.prompt_tool_specs == []
+    assert hidden.run_tool_set.excluded_reasons == {
+        "weather.lookup": ["disabled_by_default"]
+    }
+    assert [item.name for item in enabled.prompt_tool_specs] == ["weather.lookup"]
+    assert enabled.run_tool_set.executable_tool_names == ["weather.lookup"]
+
+
+def test_request_text_does_not_qualify_skill_only_tool(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "private_search",
+        """
+---
+name: private_search
+description: Private search guidance.
+---
+## Governed Tools
+- private.lookup
+
+## Permissions
+- tool:private.lookup
+
+## Visibility
+- tags: private-lookup
+""",
     )
-
-
-def test_tool_catalog_selects_render_tool_for_explicit_3d_request() -> None:
-    specs = create_default_registry().list_specs()
+    catalog = load_repo_skill_descriptors(tmp_path)
+    spec = ToolSpec(
+        name="private.lookup",
+        policy=ToolPolicyMetadata(
+            visibility=VisibilityPolicy(
+                enabled_by_default=False,
+                skill_only=True,
+            )
+        ),
+    )
 
     selection = select_prompt_tool_specs(
-        UserRequest(
-            user_id="u1", session_id="s1", text="根据这张图创建一个 3D 场景预览"
-        ),
-        specs,
+        UserRequest(user_id="u1", session_id="s1", text="private-lookup"),
+        [spec],
+        skill_catalog=catalog,
     )
 
-    assert [spec.name for spec in selection.prompt_tool_specs] == [
-        "render_3d",
-        "memory_retrieval",
-        "memory_save",
-    ]
-    assert selection.summary.prompt_tool_count == 3
+    assert selection.active_skill_ids == []
+    assert selection.qualified_tool_specs == []
+    assert selection.run_tool_set.excluded_reasons == {
+        "private.lookup": ["skill_activation_required"]
+    }
 
 
-def test_tool_catalog_falls_back_to_full_list_for_low_confidence_chat() -> None:
-    specs = create_default_registry().list_specs()
+def test_explicit_enabled_skill_qualifies_skill_only_tool(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "private_search",
+        """
+---
+name: private_search
+description: Private search guidance.
+---
+## Governed Tools
+- private.lookup
+
+## Permissions
+- tool:private.lookup
+""",
+    )
+    catalog = load_repo_skill_descriptors(tmp_path)
+    spec = ToolSpec(
+        name="private.lookup",
+        policy=ToolPolicyMetadata(
+            visibility=VisibilityPolicy(
+                enabled_by_default=False,
+                skill_only=True,
+            )
+        ),
+    )
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="unclassified text",
+        metadata={"tool_visibility": {"enabled_skills": ["private_search"]}},
+    )
 
     selection = select_prompt_tool_specs(
-        UserRequest(user_id="u1", session_id="s1", text="你好，随便聊两句"),
-        specs,
+        request,
+        [spec],
+        skill_catalog=catalog,
     )
 
-    assert selection.prompt_tool_specs == specs
-    assert selection.summary.prompt_tool_count == len(specs)
-    assert selection.summary.filtered_tool_count == 0
-    assert selection.summary.fallback_used is True
+    assert selection.active_skill_ids == ["private_search"]
+    assert selection.run_tool_set.qualified_tool_names == ["private.lookup"]
+    assert selection.prompt_tool_specs == [spec]
 
 
-def test_tool_catalog_exposes_memory_for_llm_first_choice_without_memory_keyword() -> (
-    None
-):
+def test_identity_recall_exposes_qualified_memory_tools_without_text_routing() -> None:
     specs = create_default_registry().list_specs()
 
     selection = select_prompt_tool_specs(
@@ -160,24 +255,24 @@ def test_tool_catalog_exposes_memory_for_llm_first_choice_without_memory_keyword
     names = [spec.name for spec in selection.prompt_tool_specs]
     assert "memory_retrieval" in names
     assert "memory_save" in names
-    assert (
-        "memory_keyword: remember/preference/history request"
-        not in selection.summary.selection_reasons
-    )
-    assert (
-        "llm_first_memory_tools: memory tools exposed for semantic LLM choice"
-        in selection.summary.selection_reasons
-    )
+    assert selection.summary.selection_reasons == ["recall_identity"]
 
 
 def test_capability_catalog_selects_realtime_web_search_descriptor() -> None:
     specs = create_default_registry().list_specs()
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={
+            "tool_visibility": {"enabled_skills": ["realtime_web_search"]}
+        },
+    )
     tool_selection = select_prompt_tool_specs(request, specs)
 
     capability_selection = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=specs,
         prompt_tool_specs=tool_selection.prompt_tool_specs,
         tool_catalog_summary=tool_selection.summary,
     )
@@ -191,12 +286,19 @@ def test_capability_catalog_selects_realtime_web_search_descriptor() -> None:
 
 def test_capability_catalog_omits_descriptor_when_governed_tool_missing() -> None:
     specs = [spec for spec in create_default_registry().list_specs() if spec.name != "web_search"]
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={
+            "tool_visibility": {"enabled_skills": ["realtime_web_search"]}
+        },
+    )
     tool_selection = select_prompt_tool_specs(request, specs)
 
     capability_selection = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=specs,
         prompt_tool_specs=tool_selection.prompt_tool_specs,
         tool_catalog_summary=tool_selection.summary,
     )
@@ -227,12 +329,17 @@ description: Repo-local search guidance.
 """,
     )
     specs = create_default_registry().list_specs()
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={"tool_visibility": {"enabled_skills": ["realtime_web_search"]}},
+    )
     tool_selection = select_prompt_tool_specs(request, specs)
 
     capability_selection = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=specs,
         prompt_tool_specs=tool_selection.prompt_tool_specs,
         tool_catalog_summary=tool_selection.summary,
         repo_root=tmp_path,
@@ -272,12 +379,17 @@ enabled: false
 """,
     )
     specs = create_default_registry().list_specs()
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={"tool_visibility": {"enabled_skills": ["realtime_web_search"]}},
+    )
     tool_selection = select_prompt_tool_specs(request, specs)
 
     capability_selection = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=specs,
         prompt_tool_specs=tool_selection.prompt_tool_specs,
         tool_catalog_summary=tool_selection.summary,
         repo_root=tmp_path,
@@ -320,12 +432,17 @@ description: Invalid local search guidance.
 """,
     )
     specs = create_default_registry().list_specs()
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={"tool_visibility": {"enabled_skills": ["realtime_web_search"]}},
+    )
     tool_selection = select_prompt_tool_specs(request, specs)
 
     capability_selection = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=specs,
         prompt_tool_specs=tool_selection.prompt_tool_specs,
         tool_catalog_summary=tool_selection.summary,
         repo_root=tmp_path,
@@ -356,12 +473,17 @@ description: This skill points at a tool that is not registered.
 - tool:missing_tool
 """,
     )
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={"tool_visibility": {"enabled_skills": ["custom_missing"]}},
+    )
     specs = [ToolSpec(name="web_search", required_inputs=["query"])]
 
     capability_selection = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=specs,
         prompt_tool_specs=specs,
         tool_catalog_summary=select_prompt_tool_specs(request, specs).summary,
         repo_root=tmp_path,
@@ -369,7 +491,7 @@ description: This skill points at a tool that is not registered.
 
     assert "custom_missing" not in [item.name for item in capability_selection.capabilities]
     assert any(
-        reason == "capability_catalog_skipped:custom_missing:governed_tool_unavailable"
+        reason == "capability_catalog_skipped:custom_missing:governed_tool_unqualified"
         for reason in capability_selection.selection_reasons
     )
 
@@ -392,18 +514,23 @@ description: Product research guidance.
 - tool:product_search
 """,
     )
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
-    available_specs = [
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={"tool_visibility": {"enabled_skills": ["product_research"]}},
+    )
+    qualified_specs = [
         ToolSpec(name="web_search", required_inputs=["query"]),
         ToolSpec(name="product_search", required_inputs=["query"]),
     ]
-    prompt_specs = [available_specs[0]]
+    prompt_specs = [qualified_specs[0]]
 
     capability_selection = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=available_specs,
+        qualified_tool_specs=qualified_specs,
         prompt_tool_specs=prompt_specs,
-        tool_catalog_summary=select_prompt_tool_specs(request, available_specs).summary,
+        tool_catalog_summary=select_prompt_tool_specs(request, qualified_specs).summary,
         repo_root=tmp_path,
     )
 

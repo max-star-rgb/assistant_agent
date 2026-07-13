@@ -11,7 +11,7 @@ from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.perception import PerceptionBundle
 from assistant_agent.schemas.planning import IntentResult, TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
-from assistant_agent.schemas.tools import ToolCallRecord, ToolResult, ToolSelection
+from assistant_agent.schemas.tools import RunToolSet, ToolCallRecord, ToolResult, ToolSelection
 from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.trace_store import new_trace_id
 
@@ -61,6 +61,7 @@ class AgentState(BaseModel):
     plan_revision_count: int = Field(default=0, ge=0)
 
     selected_tools: list[ToolSelection] = Field(default_factory=list)
+    run_tool_set: RunToolSet | None = None
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
     provider_budget: ProviderCallBudget = Field(default_factory=ProviderCallBudget)

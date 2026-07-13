@@ -31,6 +31,7 @@ from assistant_agent.services.context.policy import (
     COMPRESSION_STAGE_BUDGET_TRIMMED,
     COMPRESSION_STAGE_COMPACTED,
     COMPRESSION_STAGE_NONE,
+    CONTEXT_BUDGET_METADATA_KEY,
     CompactionPolicy,
     context_policy_from_request,
 )
@@ -58,7 +59,6 @@ def build_assistant_context_pack(
 
     active_request = request or state.request
     context_policy = context_policy_from_request(active_request)
-    budget_limit = context_policy.max_context_chars
     summaries = memory_summaries if memory_summaries is not None else [item.summary for item in state.memory_context]
     conversation_text = _conversation_context_text(active_request)
     context_summary = _context_summary(active_request)
@@ -75,13 +75,21 @@ def build_assistant_context_pack(
     active_tool_specs = tool_specs or []
     tool_catalog = select_prompt_tool_specs(active_request, active_tool_specs)
     prompt_tool_specs = tool_catalog.prompt_tool_specs
+    state.run_tool_set = tool_catalog.run_tool_set
     tool_capability_catalog = select_tool_capability_descriptors(
         request=active_request,
-        available_tool_specs=active_tool_specs,
+        qualified_tool_specs=tool_catalog.qualified_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
         tool_catalog_summary=tool_catalog.summary,
+        active_skill_ids=set(tool_catalog.active_skill_ids),
     )
     tool_capabilities = tool_capability_catalog.capabilities
+    budget_limit = _effective_context_budget_limit(
+        request=active_request,
+        base_max_chars=context_policy.max_context_chars,
+        tool_specs=prompt_tool_specs,
+        tool_capabilities=tool_capabilities,
+    )
     plan_state = build_assistant_plan_context(state)
     source_counts = _source_counts(
         request=active_request,
@@ -104,11 +112,14 @@ def build_assistant_context_pack(
         tool_capabilities=tool_capabilities,
         max_chars=budget_limit,
     )
+    compaction_budget_policy = context_policy.model_copy(
+        update={"max_context_chars": budget_limit}
+    )
     compaction_decision = CompactionPolicy().evaluate(
         request=active_request,
         budget=initial_budget,
         observations=context_observations,
-        policy=context_policy,
+        policy=compaction_budget_policy,
     )
     if compaction_decision.triggered:
         compactor = context_compactor or DeterministicContextCompactor()
@@ -160,6 +171,7 @@ def build_assistant_context_pack(
         observations=budgeted.observations,
         tool_specs=active_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
+        run_tool_set=tool_catalog.run_tool_set,
         tool_catalog_summary=tool_catalog.summary,
         tool_capabilities=tool_capabilities,
         skill_report=tool_capability_catalog.skill_report,
@@ -387,6 +399,26 @@ def _has_plan_context(plan_state: AssistantPlanContext) -> bool:
 
 def _json_chars(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _effective_context_budget_limit(
+    *,
+    request: UserRequest,
+    base_max_chars: int,
+    tool_specs: list[ToolSpec],
+    tool_capabilities: list[ToolCapabilityDescriptor],
+) -> int:
+    """Add fixed schema headroom unless the caller supplied a hard total limit."""
+
+    if CONTEXT_BUDGET_METADATA_KEY in request.metadata:
+        return base_max_chars
+    tool_schema_chars = _json_chars(
+        [prompt_tool_spec_payload(spec) for spec in tool_specs]
+    )
+    capability_schema_chars = _json_chars(
+        [descriptor.model_dump(mode="json") for descriptor in tool_capabilities]
+    )
+    return base_max_chars + tool_schema_chars + capability_schema_chars
 
 
 def _metadata_int(request: UserRequest, key: str) -> int:

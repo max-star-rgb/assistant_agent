@@ -23,7 +23,12 @@ def test_calendar_search_events_is_prompt_visible_only_through_valid_skill(
     registry = ToolRegistry()
     register_local_tools(registry, load_local_tools(["calendar_slice_tools"]).tools)
     specs = registry.list_specs()
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下我今天日历里的会议")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下我今天日历里的会议",
+        metadata={"tool_visibility": {"enabled_skills": ["calendar_assistant"]}},
+    )
     skill_catalog = load_repo_skill_descriptors(tmp_path)
 
     tool_selection = select_prompt_tool_specs(
@@ -33,7 +38,7 @@ def test_calendar_search_events_is_prompt_visible_only_through_valid_skill(
     )
     capability_selection = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=tool_selection.qualified_tool_specs,
         prompt_tool_specs=tool_selection.prompt_tool_specs,
         tool_catalog_summary=tool_selection.summary,
         skill_catalog=skill_catalog,
@@ -54,7 +59,12 @@ def test_calendar_search_events_stays_hidden_without_valid_skill(
     monkeypatch.syspath_prepend(str(tmp_path))
     registry = ToolRegistry()
     register_local_tools(registry, load_local_tools(["calendar_slice_tools"]).tools)
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下我今天日历里的会议")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下我今天日历里的会议",
+        metadata={"tool_visibility": {"enabled_skills": ["calendar_assistant"]}},
+    )
 
     disabled_catalog = load_repo_skill_descriptors(tmp_path)
     disabled_selection = select_prompt_tool_specs(

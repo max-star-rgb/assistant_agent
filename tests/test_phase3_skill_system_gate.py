@@ -31,12 +31,19 @@ enabled: true
 """,
     )
     specs = create_default_registry().list_specs()
-    request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+        metadata={
+            "tool_visibility": {"enabled_skills": ["realtime_web_search"]}
+        },
+    )
     tool_selection = select_prompt_tool_specs(request, specs)
 
     selected = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=specs,
         prompt_tool_specs=tool_selection.prompt_tool_specs,
         tool_catalog_summary=tool_selection.summary,
         repo_root=tmp_path,
@@ -51,6 +58,46 @@ enabled: true
     assert selected.skill_report.schema_version == "skill_report_v1"
     assert selected.skill_report.selected_skill_ids == ["realtime_web_search"]
     assert selected.skill_report.governed_tool_names == ["web_search"]
+
+
+def test_phase3_request_text_does_not_activate_skill_capability(
+    tmp_path: Path,
+) -> None:
+    _write_skill(
+        tmp_path,
+        "tagged_search",
+        """
+---
+name: tagged_search
+description: Search guidance activated only by explicit metadata.
+---
+## Governed Tools
+- web_search
+
+## Permissions
+- tool:web_search
+
+## Visibility
+- tags: latest-news
+""",
+    )
+    specs = create_default_registry().list_specs()
+    request = UserRequest(user_id="u1", session_id="s1", text="latest-news")
+    tool_selection = select_prompt_tool_specs(request, specs)
+
+    selected = select_tool_capability_descriptors(
+        request=request,
+        qualified_tool_specs=specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+        repo_root=tmp_path,
+    )
+
+    assert selected.capabilities == []
+    assert any(
+        item.reason == "skill_not_explicitly_enabled"
+        for item in selected.skill_report.skipped
+    )
 
 
 def test_phase3_disabled_and_missing_permission_skills_are_audited(tmp_path: Path) -> None:
@@ -111,7 +158,7 @@ description: Missing tool permission should omit the descriptor.
 
     selected = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=specs,
         prompt_tool_specs=tool_selection.prompt_tool_specs,
         tool_catalog_summary=tool_selection.summary,
         repo_root=tmp_path,
@@ -146,7 +193,7 @@ description: Unknown permission vocabulary should omit the descriptor.
 
     selected = select_tool_capability_descriptors(
         request=request,
-        available_tool_specs=specs,
+        qualified_tool_specs=specs,
         prompt_tool_specs=tool_selection.prompt_tool_specs,
         tool_catalog_summary=tool_selection.summary,
         repo_root=tmp_path,

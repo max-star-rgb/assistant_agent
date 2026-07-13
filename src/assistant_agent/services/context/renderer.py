@@ -158,6 +158,8 @@ def render_tool_capabilities(capabilities: list[ToolCapabilityDescriptor]) -> st
 
 
 def _prompt_tool_specs(pack: AssistantContextPack) -> list[ToolSpec]:
+    if pack.run_tool_set.registered_tool_names:
+        return pack.prompt_tool_specs
     return pack.prompt_tool_specs if pack.prompt_tool_specs else pack.tool_specs
 
 

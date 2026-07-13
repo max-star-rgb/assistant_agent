@@ -16,6 +16,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.context.builder import build_assistant_context_pack
+from assistant_agent.tools.registry import create_default_registry
 
 
 class CapturingChatAdapter:
@@ -157,19 +158,19 @@ def test_native_runtime_user_message_stays_context_renderer_output_without_tool_
     assert any(tool["function"]["name"] == "product_search" for tool in adapter.requests[0].tools)
 
 
-def test_native_runtime_sends_only_prompt_selected_tool_schemas() -> None:
+def test_native_runtime_sends_all_qualified_tool_schemas() -> None:
     adapter = CapturingChatAdapter()
     runtime = AgentGraphRuntime(config=ProviderConfig(), chat_adapter=adapter)
 
     runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我比价通勤耳机，找最低价"))
 
     tool_names = [tool["function"]["name"] for tool in adapter.requests[0].tools]
-    assert tool_names == ["product_search", "price_compare", "memory_retrieval", "memory_save"]
-    assert "render_3d" not in tool_names
-    assert "image_generation" not in tool_names
+    assert tool_names == create_default_registry().list()
+    assert "render_3d" in tool_names
+    assert "image_generation" in tool_names
 
 
-def test_assistant_loop_native_chat_request_sends_prompt_selected_tool_schemas() -> None:
+def test_assistant_loop_native_chat_request_sends_all_qualified_tool_schemas() -> None:
     request = UserRequest(user_id="u1", session_id="s1", text="查一下今天 AI 行业最新消息")
     state = AgentState.from_request(request)
     tool_specs = [
@@ -204,9 +205,9 @@ def test_assistant_loop_native_chat_request_sends_prompt_selected_tool_schemas()
     )
 
     tool_names = [tool["function"]["name"] for tool in chat_request.tools]
-    assert tool_names == ["web_search", "memory_retrieval", "memory_save"]
-    assert "product_search" not in tool_names
-    assert "render_3d" not in tool_names
+    assert tool_names == [spec.name for spec in tool_specs]
+    assert "product_search" in tool_names
+    assert "render_3d" in tool_names
 
 
 def test_assistant_loop_native_tool_helper_uses_system_prompt_policy() -> None:

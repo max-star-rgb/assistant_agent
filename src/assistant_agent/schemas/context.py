@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.schemas.tools import RunToolSet, ToolSpec
 
 
 class AssistantPlanContext(BaseModel):
@@ -191,6 +191,7 @@ class AssistantContextPack(BaseModel):
     observations: list[dict[str, Any]] = Field(default_factory=list)
     tool_specs: list[ToolSpec] = Field(default_factory=list)
     prompt_tool_specs: list[ToolSpec] = Field(default_factory=list)
+    run_tool_set: RunToolSet = Field(default_factory=RunToolSet)
     tool_catalog_summary: ToolCatalogSummary = Field(default_factory=ToolCatalogSummary)
     tool_capabilities: list[ToolCapabilityDescriptor] = Field(default_factory=list)
     skill_report: SkillExposureReport = Field(default_factory=SkillExposureReport)

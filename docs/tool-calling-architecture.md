@@ -6,6 +6,7 @@
 
 - 默认真实 LLM 运行时是 `AgentGraphRuntime` 内的 provider-native loop；非 mock chat adapter 不再进入 prompt-json 控制面调用。
 - 工具契约由 `ToolSpec` 表达，来源是 `ToolRegistry.list_specs()`；真实 LLM 路径把 ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
+- `select_prompt_tool_specs()` 会把 registry inventory 装配成 prompt-safe `RunToolSet`，分别记录 registered、qualified、exposed、executable 工具和排除原因。资格只由 `skill_only`、`enabled_by_default`、`requires_env`、显式 `tool_visibility` override 等结构化事实决定，不读取 `request.text` 推断用户意图；provider-native 模型只能执行本轮 `executable_tool_names` 中的工具。
 - `ToolSpec.side_effect` 表达工具副作用策略，`ToolSpec.execution` 表达稳定调度/依赖/资源事实；未知工具默认按 confirmation-sensitive 且需要串行观察处理。realtime task-state 会消费 side-effect 策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
 - 真实 LLM 只能返回自然语言 `content` 或 provider-native `tool_calls`。native tool call 会先归一化成内部 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
 - 当第一轮 native response 是 `tool_calls` 时，runtime 不把该轮模型 `content` 当作正式回答输出；它只记录为内部 preamble，并发出一条可替换的 `progress_message` 事件（例如 `product_search` -> “我查一下。”）。该事件不写入 LLM messages，也不参与第二轮回答生成。
@@ -26,6 +27,20 @@
 - 借鉴 OpenClaw 时，优先吸收权限、审批、side-effect、trace、budget、plugin 安全边界；不要提前建设 npm extension、Canvas、Node 或大插件生态，除非已有明确第三方扩展需求。
 - 新增工具能力必须先映射到现有治理链路和 `ToolSpec` 契约；无法映射的设计先进入 Backlog，不直接改 runtime。
 
+当前按五个职责层理解，但不为每层新增一套框架基类：
+
+| layer | question | current boundary |
+| --- | --- | --- |
+| 注册 | 系统有什么 | `ToolRegistry` 保存实例并通过 `ToolSpec` 暴露稳定契约 |
+| 装配 | 当前给什么 | `select_prompt_tool_specs()` 按环境、profile、显式 visibility/skill 等结构化事实生成 `RunToolSet`，不替 LLM 判断任务意图 |
+| 策略 | 什么时候能用 | `ToolPolicyMetadata` / `ToolPolicyInterpreter` 提供治理事实，`ActionValidator` 执行本轮 allowlist、确认与敏感操作语义 gate |
+| 适配 | 模型怎么看见 | `PromptCompiler` 和 `tool_spec_adapters` 只转换 exposed ToolSpec，不决定权限 |
+| 执行器 | 怎么安全落地 | `ToolExecutor` 统一身份、预算、retry、幂等、事件、trace，再调用 registry tool |
+
+这五层是职责分解，不是五套继承体系。层间优先传递 `ToolSpec`、`RunToolSet`、`AssistantDecision`、`ToolResult` 这些少量数据契约；只有出现第二种真实实现或明确替换需求时才新增 interface。这里的“低抽象”是让依赖方向和安全边界更直接：资格判断是普通纯函数，当前召回也是 identity 纯函数，风险解释集中在既有 policy/validator/executor 中。低抽象并不等于减少校验、策略或可观测性，而是避免为尚不存在的多实现提前增加 strategy、factory、protocol 或 meta-tool。
+
+系统与 LLM 的决策边界是：系统根据结构化运行事实定义“合法候选空间”，LLM 根据请求语义在候选空间内决定“是否调用、调用哪个、参数是什么”，系统再验证并安全执行。自然语言不能把未授权工具变成 qualified，也不能代替确认、身份、预算或幂等约束；反过来，系统也不再用关键词把已 qualified 的工具从 LLM 视野中删掉。
+
 ## 当前主调用链
 
 ```text
@@ -35,6 +50,10 @@ UserRequest
   -> load_memory
   -> ToolRegistry.list_specs()
   -> build_assistant_context_pack()
+       -> select_prompt_tool_specs()
+       -> qualify_tool_specs() from structured runtime facts
+       -> recall_qualified_tool_specs()  # current implementation: identity
+       -> RunToolSet(registered / qualified / exposed / executable)
   -> ChatRequest(messages=[...], tools=[...], tool_choice="auto")
   -> ChatAdapter.chat()
        ├─ content/refusal
@@ -83,7 +102,8 @@ UserRequest
 - `src/assistant_agent/agent/tool_executor.py`: 工具执行、预算、retry/recovery、event/history/trace 的统一边界。
 - `src/assistant_agent/tools/registry.py`: 工具注册、ToolSpec 生成和默认工具集合。
 - `src/assistant_agent/tools/base.py`: `ToolContext`、`BaseTool`、`MockTool` 基础契约。
-- `src/assistant_agent/schemas/tools.py`: `ToolSpec`、`ToolExecutionPolicy`、`ToolResult`、`ToolCallRecord`。
+- `src/assistant_agent/schemas/tools.py`: `ToolSpec`、`RunToolSet`、`ToolExecutionPolicy`、`ToolResult`、`ToolCallRecord`。
+- `src/assistant_agent/services/context/tool_catalog.py`: 按环境依赖、显式 skill/visibility policy 等结构化事实完成资格判断，再经 identity recall 组装本轮 `RunToolSet` 与 prompt ToolSpec；不读取请求文本做工具路由。
 - `src/assistant_agent/schemas/assistant_decision.py`: 内部 assistant decision 和 native tool call 归一化。
 - `src/assistant_agent/schemas/tool_spec_adapters.py`: ToolSpec 到 OpenAI/MCP 工具 schema 的转换。
 - `src/assistant_agent/schemas/tool_observation.py`: assistant-facing observation 摘要和脱敏。
@@ -94,6 +114,7 @@ UserRequest
 
 - 非 mock chat adapter 一律走 native loop；不再存在 `response_mode` 或 `assistant_tool_call_mode` 分支。
 - 请求向 provider 发送 `messages`、`tools` 和 `tool_choice="auto"`。
+- `ChatRequest.tools` 只发送 `RunToolSet.exposed_tool_names` 对应的 ToolSpec；治理后明确为空的工具集合不会回退到完整 registry。当前 recall 是 identity，因此每个 qualified ToolSpec 都会进入 exposed；模型即使返回猜测到的未 qualified 或不可执行工具名，也会被 `ActionValidator` 拒绝。
 - provider 返回 `content` 或 `refusal` 时，runtime 直接作为用户可见回答输出；普通 direct answer 应只有一次 chat call。
 - provider 返回 `tool_calls` 时，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再把 batch 归一化为内部 `AssistantDecision(type="tool_call")` 并进入 `ToolScheduler`。调度器会批量预检 `ActionValidator`，并通过 `ToolPolicyInterpreter` 消费 `ToolSpec.side_effect + ToolSpec.execution`；只有明确 read-only、无确认需求、`dependency_mode=independent`、无重复工具名、无资源写入、无 concurrency/resource 冲突、预算检查可并发安全的 batch 才会并发调用 `ToolExecutor.run_tool()`。其他情况保持 provider 顺序串行。无论哪种模式，observation 都按 provider call 顺序回填；超过 `max_tool_iterations` 的剩余调用会记录为预算跳过，而不是绕过治理边界。
 - 工具 observation 会作为后续 native messages 中的 `tool` role 内容回传；拿到工具结果后的第二次 LLM 调用是合理工具路径，不是隐藏控制面调用。
@@ -122,6 +143,30 @@ execution
 ```
 
 ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema` 生成，并补充 `_ACTION_USAGE` 中的使用条件和运行约束。默认约束包含 `Use only through ToolExecutor.`。
+
+`RunToolSet` 是每个 assistant turn 的 prompt-safe 装配快照：
+
+```text
+registered_tool_names
+qualified_tool_names
+exposed_tool_names
+executable_tool_names
+selection_reasons
+excluded_reasons
+```
+
+四个状态分别回答不同问题：
+
+- `registered`：当前 runtime registry 中确实存在什么工具。
+- `qualified`：哪些已注册工具满足环境依赖、默认启用、显式 tool/toolset、有效显式 skill permission 等结构化资格。
+- `exposed`：哪些 qualified ToolSpec 被发送给本轮 LLM。
+- `executable`：`ActionValidator` 接受的本轮本地执行 allowlist。
+
+集合必须满足 `qualified ⊆ registered`、`exposed ⊆ qualified`、`executable ⊆ qualified`，由 `RunToolSet` 模型校验。当前 provider-native 与 mock/offline assistant loop 都使用 identity recall，因而正常情况下 `qualified = exposed = executable`；这表示 LLM 可以自主选择任何合格工具，不表示可以绕过后续风险 gate。
+
+资格判断不读取 `request.text`，也不使用关键词、tag 或旧 intent/router 来缩小工具集合。`request.metadata.tool_visibility` 可显式提供 `enabled_tools`、`enabled_toolsets`、`enabled_skills`；`skill_only` 工具必须由带匹配 `tool:<name>` permission 的有效且显式启用 skill 激活，不能只靠自然语言或 `enabled_tools` 绕过。缺少 `requires_env`、默认禁用且未显式启用、或缺少有效 skill 激活的工具会留在 registered，但不会进入 qualified。
+
+`recall_qualified_tool_specs(request, qualified_specs)` 是为未来上下文规模问题预留的纯函数边界，当前按原顺序返回全部 qualified ToolSpec，并记录 `recall_identity`。在另行批准高召回率与漏召回恢复设计前，不引入 embedding、selector、strategy/factory/protocol 或 meta-tool，也不根据请求文本做语义召回。
 
 注意事项：
 
@@ -170,7 +215,7 @@ Runtime gate 映射：
 
 `delegate_to_agent` 是 opt-in 工具，仅在 `enable_agent_delegation=True` 且传入 `AgentCommunicationService` 时注册。它的通信路由和 A2A 边界以 `docs/agent-communication-routing.md` 为准。
 
-Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are capability metadata, not execution plugins. A skill can declare governed tools and `tool:<name>` permissions, and the context capability catalog may expose that prompt-safe descriptor only when the governed tools are available and prompt-selected. Unknown permission vocabulary is rejected before prompt rendering, and a repo-local skill id suppresses same-name built-in fallback even when the local manifest is disabled or invalid. Skill-only tools are hidden from prompt fallback unless a valid skill manifest declares the governed tool, has the matching permission, and matches the current request. Skill exposure is reported through prompt-safe `skill_report_v1`; skills do not register `run_skill`, do not call `ToolRegistry.run(...)`, and do not bypass `ActionValidator -> ToolExecutor -> ToolRegistry`.
+Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are capability metadata, not execution plugins. A skill can declare governed tools and `tool:<name>` permissions；只有 `request.metadata.tool_visibility.enabled_skills` 显式启用该 skill、manifest 有效、permission 匹配且 governed tools 已 qualified/exposed 时，context capability catalog 才暴露 prompt-safe descriptor。skill 的 tag、`when_to_use` 或请求文本不会自动激活它。Unknown permission vocabulary is rejected before prompt rendering, and a repo-local skill id suppresses same-name built-in fallback even when the local manifest is disabled or invalid. Skill exposure is reported through prompt-safe `skill_report_v1`; skills do not register `run_skill`, do not call `ToolRegistry.run(...)`, and do not bypass `ActionValidator -> ToolExecutor -> ToolRegistry`.
 
 Repo/user-local Python tools use the explicit `@tool` decorator plus `load_local_tools()` / `register_local_tools()`. They are not import-time global registrations. A local tool may declare `ToolPolicyMetadata` and `ToolExecutionPolicy`; when present, runtime risk gate, boundary summaries, scheduler metadata, trace/history summaries, and `tools simulate` consume that declaration through the same `ToolSpec -> ToolPolicyView -> ActionValidator -> ToolExecutor` path. `assistant_agent.tools.cli validate` checks declaration shape and policy requirements; `simulate` executes one explicitly loaded tool through validator/executor for local verification.
 
@@ -228,6 +273,7 @@ Provider 边界：
 - `decision.type != "tool_call"` 时不执行工具。
 - 必须有 `tool_name`，`tool_input` 必须是 JSON object。
 - `tool_name` 必须存在于当前 registry。
+- 当 `AgentState.run_tool_set` 存在时，`tool_name` 还必须属于本轮 `executable_tool_names`；未 qualified、未获本轮执行资格、依赖缺失、默认禁用或缺少显式 skill 激活的工具返回 `tool_not_allowed_for_run`，不会进入 executor。
 - `vision_understanding` 必须有 `image_ids`，`video_understanding` 必须有 `video_ref` 或 `video_ids`。
 - `image_generation` 必须有 prompt 或 product information。
 - `web_search` 必须有非空 query；`limit` 等范围由工具 Pydantic schema 校验。
@@ -241,9 +287,13 @@ Provider 边界：
 - `delegate_to_agent` 必须有 `target_agent_id` 和 text/image/video/audio payload。
 - 最后用目标工具的 Pydantic `input_schema` 做结构校验。
 
+上述 memory read/write、media ingest、render 等语义检查是执行前的敏感操作 gate，不参与 qualified/exposed 工具装配。模型可以看见合格工具并自主选择，但错误、越权或缺少明确授权的调用会在这里被拒绝。
+
 对已知工具，`ActionValidator` 会附带 prompt-safe `metadata.pre_tool_call` 摘要，包含工具名、运行时身份、副作用策略、确认需求、幂等 key 是否存在、输入规模摘要和 realtime task-state 摘要；它不包含原始 query/prompt、provider payload 或媒体内容。
 
 被拒绝的 action 不会进入 `ToolExecutor`，不会产生 `ToolCallRecord`；assistant loop 会生成 `ToolObservation(status="rejected")`，记录 `action_rejected` trace，并由 loop guard 判断是否终止。
+
+MCP `tool_run`、local tools CLI 等显式工具入口不经过 assistant prompt 装配，因此不会伪造 `RunToolSet`；它们继续使用各自入口 allowlist/config，再统一进入 `ActionValidator -> ToolExecutor`。新增模型驱动入口必须创建并传递 run-scoped tool set，不能退回只检查 registry。
 
 Phase 0 tool governance rejection tests live in `tests/test_phase0_tool_governance_contracts.py`.
 

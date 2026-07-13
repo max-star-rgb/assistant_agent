@@ -7,7 +7,7 @@ from assistant_agent.agent.system_prompt_policy import (
 )
 from assistant_agent.schemas.context import AssistantContextPack
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.schemas.tools import RunToolSet, ToolSpec
 from assistant_agent.services.context.prompt_compiler import (
     PromptCompileMode,
     PromptCompileRequest,
@@ -76,6 +76,26 @@ def test_native_tool_mode_preserves_provider_request_contract() -> None:
     assert request.temperature == 0.2
     assert request.max_tokens == 1024
     assert request.stream_callback is callback
+
+
+def test_native_tool_mode_preserves_intentionally_empty_governed_tool_set() -> None:
+    pack = _pack()
+    pack.prompt_tool_specs = []
+    pack.run_tool_set = RunToolSet(
+        registered_tool_names=["product_search", "render_3d"],
+        qualified_tool_names=[],
+        exposed_tool_names=[],
+        executable_tool_names=[],
+        excluded_reasons={
+            "product_search": ["disabled_by_default"],
+            "render_3d": ["skill_activation_required"],
+        },
+    )
+
+    result = _compile(pack, PromptCompileMode.NATIVE_TOOL)
+
+    assert result.selected_tool_specs == ()
+    assert result.chat_request.tools == []
 
 
 def test_native_final_only_keeps_tool_evidence_but_disables_tools() -> None:

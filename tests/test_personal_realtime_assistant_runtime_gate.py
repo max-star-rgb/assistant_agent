@@ -113,6 +113,9 @@ class PersonalRealtimeAssistantRuntimeGateTests(unittest.IsolatedAsyncioTestCase
                 client_ep,
                 session_id="personal-runtime-session",
                 text="查一下今天 AI 行业最新消息",
+                metadata={
+                    "tool_visibility": {"enabled_skills": ["realtime_web_search"]}
+                },
             )
         finally:
             await _close_session(client_ep, session_ep, session_task)
@@ -283,10 +286,20 @@ class _RuntimeHarness:
         raise AssertionError(f"missing adapter request for query: {query}")
 
 
-async def _run_gateway_turn(client_ep: Any, *, session_id: str, text: str) -> list[dict[str, Any]]:
+async def _run_gateway_turn(
+    client_ep: Any,
+    *,
+    session_id: str,
+    text: str,
+    metadata: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
     await client_ep.send(
-        frame(type="message.user", session_id=session_id, payload={"text": text})
+        frame(
+            type="message.user",
+            session_id=session_id,
+            payload={"text": text, "metadata": dict(metadata or {})},
+        )
     )
     async for received in client_ep:
         frames.append(received)

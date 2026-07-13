@@ -205,7 +205,7 @@ def context_report_from_trace_context_summary(context: dict[str, Any]) -> Contex
         item_count=_int_value(source_counts.get("prompt_tool_specs")) or len(selected_tool_names),
         included=bool(selected_tool_names or _int_value(source_counts.get("prompt_tool_specs"))),
         source="legacy_context_summary.tool_catalog",
-        notes=["fallback_full_tool_list"] if fallback_used else [],
+        notes=["fallback_visible_tool_list"] if fallback_used else [],
     )
     sections["tool_capability"] = ContextReportSection(
         chars=_int_value(budget.get("tool_capability_chars")),
@@ -243,6 +243,8 @@ def _selected_tool_specs(
         return list(selected_tool_specs)
     if pack.prompt_tool_specs:
         return list(pack.prompt_tool_specs)
+    if pack.run_tool_set.registered_tool_names:
+        return []
     return list(pack.tool_specs)
 
 
@@ -252,9 +254,15 @@ def _tool_schema_notes(
     explicit_selected_specs: Iterable[ToolSpec] | None,
 ) -> list[str]:
     fallback_used = pack.tool_catalog_summary.fallback_used
-    if explicit_selected_specs is None and not pack.prompt_tool_specs and pack.tool_specs and selected_specs:
+    if (
+        explicit_selected_specs is None
+        and not pack.run_tool_set.registered_tool_names
+        and not pack.prompt_tool_specs
+        and pack.tool_specs
+        and selected_specs
+    ):
         fallback_used = True
-    return ["fallback_full_tool_list"] if fallback_used else []
+    return ["fallback_visible_tool_list"] if fallback_used else []
 
 
 def _memory_item_ids(pack: AssistantContextPack) -> list[str]:
