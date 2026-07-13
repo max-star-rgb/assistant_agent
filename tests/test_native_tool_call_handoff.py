@@ -949,6 +949,12 @@ def test_native_memory_media_ingest_binds_runtime_identity_and_returns_observati
             session_id="runtime-session",
             text="把这个视频上传到记忆服务，之后可以检索",
             video_ids=["video-1"],
+            metadata={
+                "tool_confirmation": {
+                    "confirmed": True,
+                    "tool_name": "memory_media_ingest",
+                }
+            },
         )
     )
 

@@ -7,7 +7,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import RunToolSet, ToolResult
+from assistant_agent.schemas.tools import RunToolSet, ToolPolicyMetadata, ToolResult
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.realtime_task_state import (
     RealtimeTaskState,
@@ -26,6 +26,7 @@ class BoundarySuccessTool(MockTool):
     description = "Boundary success test tool."
     input_schema = BoundaryInput
     output_schema = BoundaryInput
+    policy = ToolPolicyMetadata(risk="local_read")
 
     def _run(self, input: BoundaryInput, context: ToolContext) -> ToolResult:
         return ToolResult(
