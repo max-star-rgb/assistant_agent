@@ -23,6 +23,9 @@ class VideoFrame:
     sequence: int
     timestamp_ms: int | None = None
     metadata: dict | None = None
+    fingerprint: tuple[int, ...] | None = None
+    fingerprint_width: int | None = None
+    fingerprint_height: int | None = None
 
 
 class VideoContextStore(Protocol):

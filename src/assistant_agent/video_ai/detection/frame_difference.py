@@ -67,8 +67,6 @@ def _extract_grayscale(frame: VideoFrame) -> tuple[list[float], int, int]:
         signature = frame.metadata.get("pixel_signature")
         if signature is not None:
             pixels = signature
-        elif frame.uri:
-            pixels = frame.uri.encode("utf-8")
         else:
             return [], 0, 0
 

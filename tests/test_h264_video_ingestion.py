@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,23 @@ def test_ingest_decodes_hex_registers_jpeg_and_uses_opaque_video_id(tmp_path: Pa
         "frame_rate": 25,
     }
     assert store.get_recent_frames(frame.video_id) == [frame]
+
+
+def test_ingest_registers_bounded_grayscale_fingerprint(tmp_path: Path) -> None:
+    def decoder(_data: bytes, destination: Path, _timeout_s: float):
+        destination.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+        return SimpleNamespace(fingerprint=(0, 64, 128, 255), width=2, height=2)
+
+    service = H264VideoIngestionService(
+        store=InMemoryVideoContextStore(),
+        root=tmp_path,
+        decoder=decoder,
+    )
+
+    frame = service.ingest("s1", "1", VALID_H264_HEX, {"codec": "H264"}, None)
+
+    assert frame.fingerprint == (0, 64, 128, 255)
+    assert (frame.fingerprint_width, frame.fingerprint_height) == (2, 2)
 
 
 @pytest.mark.parametrize(

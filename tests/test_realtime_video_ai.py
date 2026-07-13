@@ -1,8 +1,10 @@
+import importlib
 from pathlib import Path
 
 import pytest
 
 from assistant_agent.video_ai.app import RealtimeVideoUnderstandingApp
+from assistant_agent.video_ai.detection.frame_difference import FrameDifferenceDetector
 from assistant_agent.video_ai.detection.semantic_detector import MetadataEmbeddingModel, SemanticChangeDetector
 from assistant_agent.video_ai.detection.vision_embedding_provider import VisionEmbeddingResult
 from assistant_agent.video_ai.keyframe.selector import KeyframeSelectorConfig
@@ -19,6 +21,30 @@ def test_qwen_realtime_prompt_contains_lowercase_json_for_dashscope_response_for
     prompt = _keyframe_prompt("", [])
 
     assert "json" in prompt
+
+
+def test_uri_text_is_not_used_as_frame_pixels() -> None:
+    detector = FrameDifferenceDetector(fingerprint_size=(2, 2))
+    left = VideoFrame(frame_id="1", timestamp_seconds=0.0, uri="/a.jpg")
+    right = VideoFrame(frame_id="2", timestamp_seconds=1.0, uri="/very/different/name.jpg")
+
+    assert detector.compare(right, left).pixel_change_score == 0.0
+
+
+def test_adaptive_collector_selects_without_mllm_call() -> None:
+    module = importlib.import_module("assistant_agent.video_ai.keyframe.collector")
+    collector = module.AdaptiveKeyframeCollector(
+        semantic_detector=SemanticChangeDetector(MetadataEmbeddingModel()),
+        keyframe_config=KeyframeSelectorConfig(min_interval_seconds=0.5),
+    )
+
+    first = collector.collect(_frame("first", 0.0, 10, embedding=[1.0, 0.0]))
+    still = collector.collect(_frame("still", 0.2, 10, embedding=[1.0, 0.0]))
+
+    assert first.selected_frame is not None
+    assert first.processing.keyframe_selected is True
+    assert first.processing.qwen_called is False
+    assert still.selected_frame is None
 
 
 def test_static_room_throttles_qwen_calls_and_logs_sampling_rate() -> None:

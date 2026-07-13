@@ -6,6 +6,7 @@ import hashlib
 import re
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -20,7 +21,17 @@ DEFAULT_WINDOW_SIZE = 3
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_FRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_frames"
 
-FrameDecoder = Callable[[bytes, Path, float], None]
+
+@dataclass(frozen=True)
+class DecodedFrameData:
+    """Bounded local pixel data emitted with a decoded JPEG frame."""
+
+    fingerprint: tuple[int, ...] = ()
+    width: int = 0
+    height: int = 0
+
+
+FrameDecoder = Callable[[bytes, Path, float], DecodedFrameData | None]
 
 
 class H264VideoIngestionError(ValueError):
@@ -87,7 +98,7 @@ class H264VideoIngestionService:
             video_dir.mkdir(parents=True, exist_ok=True)
             destination = video_dir / f"frame-{sequence:06d}.jpg"
             try:
-                self._decoder(h264_bytes, destination, self.decode_timeout_s)
+                decoded = self._decoder(h264_bytes, destination, self.decode_timeout_s)
             except subprocess.TimeoutExpired as exc:
                 destination.unlink(missing_ok=True)
                 raise H264VideoIngestionError("H264 frame decode timed out") from exc
@@ -119,6 +130,9 @@ class H264VideoIngestionService:
                     "resolution": _optional_string(video_config.get("resolution")),
                     "frame_rate": video_config.get("frameRate"),
                 },
+                fingerprint=tuple(decoded.fingerprint) if decoded and decoded.fingerprint else None,
+                fingerprint_width=decoded.width if decoded and decoded.width > 0 else None,
+                fingerprint_height=decoded.height if decoded and decoded.height > 0 else None,
             )
             self.store.append_frame(frame)
             retained_uris = {
@@ -170,7 +184,13 @@ def _decode_h264_with_ffmpeg(
     timeout_s: float,
     *,
     ffmpeg_binary: str,
-) -> None:
+) -> DecodedFrameData:
+    fingerprint_width = 32
+    fingerprint_height = 18
+    filter_graph = (
+        "[0:v]split=2[full][thumb];"
+        f"[thumb]scale={fingerprint_width}:{fingerprint_height},format=gray[gray]"
+    )
     result = subprocess.run(
         [
             ffmpeg_binary,
@@ -181,6 +201,10 @@ def _decode_h264_with_ffmpeg(
             "h264",
             "-i",
             "pipe:0",
+            "-filter_complex",
+            filter_graph,
+            "-map",
+            "[full]",
             "-frames:v",
             "1",
             "-f",
@@ -189,15 +213,32 @@ def _decode_h264_with_ffmpeg(
             "mjpeg",
             "-y",
             str(destination),
+            "-map",
+            "[gray]",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "pipe:1",
         ],
         input=h264_bytes,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout_s,
         check=False,
     )
     if result.returncode != 0:
         raise H264VideoIngestionError("FFmpeg could not decode the H264 frame")
+    expected = fingerprint_width * fingerprint_height
+    if len(result.stdout) < expected:
+        raise H264VideoIngestionError("FFmpeg did not produce a complete frame fingerprint")
+    return DecodedFrameData(
+        fingerprint=tuple(result.stdout[:expected]),
+        width=fingerprint_width,
+        height=fingerprint_height,
+    )
 
 
 def _timestamp_ms(value: str | None) -> int | None:
