@@ -160,6 +160,36 @@ def test_tool_started_stream_includes_progress_and_tool_lifecycle_event() -> Non
     assert mapped[1].payload["tool_name"] == "product_search"
 
 
+def test_pending_confirmation_maps_to_confirmation_event_without_completed_progress() -> None:
+    event = AgentEvent(
+        type="tool_finished",
+        session_id="session-1",
+        run_id="run-1",
+        tool_name="calendar.create_event",
+        payload={
+            "call_id": "call-1",
+            "step_id": "step-1",
+            "post_tool_call": {
+                "status": "pending_confirmation",
+                "confirmation": {
+                    "required": True,
+                    "id": "confirm-1",
+                    "kind": "external_write",
+                },
+            },
+        },
+    )
+
+    mapped = map_agent_event_stream(event)
+
+    assert [item.type for item in mapped] == ["tool.finished", "confirmation.required"]
+    confirmation = mapped[-1]
+    assert confirmation.text == "Please confirm before I run calendar.create_event."
+    assert confirmation.payload["tool_name"] == "calendar.create_event"
+    assert confirmation.payload["confirmation_id"] == "confirm-1"
+    assert confirmation.payload["confirmation_kind"] == "external_write"
+
+
 def test_progress_message_streams_as_replaceable_run_progress_only() -> None:
     event = AgentEvent(
         type="progress_message",

@@ -642,7 +642,7 @@ class AgentGraphRuntime:
         for iteration in range(max_iterations):
             stream_buffer = (
                 _NativeRuntimeResponseBuffer(state, event_sink)
-                if iteration == 0 and event_sink is not None
+                if event_sink is not None
                 else None
             )
             stream_callback = (

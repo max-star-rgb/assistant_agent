@@ -322,6 +322,41 @@ def test_native_tool_call_emits_replaceable_progress_and_suppresses_first_call_c
     assert state.response.message == "已找到 2 个通勤耳机候选。"
 
 
+def test_native_tool_call_suppresses_preamble_on_later_tool_iteration() -> None:
+    class MultiStepStreamingAdapter(NativeToolChatAdapter):
+        def chat(self, request: ChatRequest) -> ChatResult:
+            self.requests.append(request)
+            self.calls += 1
+            if self.calls == 1:
+                return native_result("product_search", {"query": "项目会议", "limit": 2})
+            if self.calls == 2:
+                if request.stream_callback is not None:
+                    request.stream_callback("我再查一下", {"token_streaming": True})
+                result = native_result("web_search", {"query": "项目会议", "limit": 2})
+                result.response_text = "我再查一下"
+                return result
+            if request.stream_callback is not None:
+                request.stream_callback("查完了", {"token_streaming": True})
+            return final_result("查完了，明天上午十点有项目会。")
+
+    sink = ListEventSink()
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=5),
+        chat_adapter=MultiStepStreamingAdapter([]),
+    )
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="查一下明天的项目会议"),
+        event_sink=sink,
+    )
+
+    response_delta_texts = [event.text for event in sink.events if event.type == "response_delta"]
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
+    assert response_delta_texts == ["查完了"]
+    assert state.response is not None
+    assert state.response.message == "查完了，明天上午十点有项目会。"
+
+
 def test_default_runtime_uses_native_tools_for_non_mock_adapter() -> None:
     adapter = NativeToolChatAdapter(
         [

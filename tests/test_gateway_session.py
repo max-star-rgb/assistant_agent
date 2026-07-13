@@ -502,6 +502,9 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         assert frames[-1]["type"] == "run.end"
         assert frames[-1]["reason"] == "cancelled"
         assert frames[-1]["payload"]["expects_reply"] is True
+        assert frames[-1]["payload"]["supersedes"] == [
+            f"{frames[-1]['run_id']}:progress"
+        ]
         assert len(backend.requests) == 1
         assert backend.requests[0].text == "cancel realtime"
         assert backend.cancel_metadata["cancel_source"] == "gateway_cancel"

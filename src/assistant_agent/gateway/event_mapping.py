@@ -6,6 +6,7 @@ from typing import Any
 
 from assistant_agent.gateway.protocol import Frame, frame
 from assistant_agent.realtime import RealtimeAgentEvent
+from assistant_agent.realtime.delivery import apply_realtime_delivery_policy
 
 
 def realtime_event_to_frame(
@@ -24,12 +25,16 @@ def realtime_event_to_frame(
             session_id=session_id,
             turn_id=turn_id,
             run_id=run_id,
-            payload={
-                "text": "" if event.text is None else event.text,
-                "display_only": event.display_only,
-                "content_type": event.content_type or "text",
-                "realtime": payload,
-            },
+            payload=apply_realtime_delivery_policy(
+                {
+                    "text": "" if event.text is None else event.text,
+                    "display_only": event.display_only,
+                    "content_type": event.content_type or "text",
+                    "realtime": payload,
+                },
+                event_type=event_type,
+                run_id=run_id,
+            ),
         )
 
     if event_type == "run.progress":
@@ -38,7 +43,24 @@ def realtime_event_to_frame(
             session_id=session_id,
             turn_id=turn_id,
             run_id=run_id,
-            payload=_progress_payload(payload, event.text, event.content_type),
+            payload=apply_realtime_delivery_policy(
+                _progress_payload(payload, event.text, event.content_type),
+                event_type=event_type,
+                run_id=run_id,
+            ),
+        )
+
+    if event_type == "confirmation.required":
+        return frame(
+            type="confirmation.required",
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            payload=apply_realtime_delivery_policy(
+                _confirmation_payload(payload, event.text, event.content_type),
+                event_type=event_type,
+                run_id=run_id,
+            ),
         )
 
     if event_type in {"tool.started", "tool.finished", "tool.failed"}:
@@ -47,7 +69,11 @@ def realtime_event_to_frame(
             session_id=session_id,
             turn_id=turn_id,
             run_id=run_id,
-            payload=_tool_payload(event_type, payload, event.text),
+            payload=apply_realtime_delivery_policy(
+                _tool_payload(event_type, payload, event.text),
+                event_type=event_type,
+                run_id=run_id,
+            ),
         )
 
     if event_type in {"trace.decision", "trace.observation"}:
@@ -113,4 +139,18 @@ def _error_payload(payload: dict[str, Any], text: str | None) -> dict[str, Any]:
     if text is not None:
         mapped["message"] = text
     mapped.setdefault("message", "assistant_agent error")
+    return mapped
+
+
+def _confirmation_payload(
+    payload: dict[str, Any],
+    text: str | None,
+    content_type: str | None,
+) -> dict[str, Any]:
+    mapped = dict(payload)
+    if text is not None:
+        mapped["text"] = text
+        mapped.setdefault("message", text)
+    mapped["content_type"] = content_type or "text"
+    mapped["expects_reply"] = True
     return mapped

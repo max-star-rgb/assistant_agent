@@ -259,6 +259,21 @@ Gateway talks to assistant execution through `assistant_agent.realtime`:
 
 Long-running assistant turns can emit `RealtimeAgentEvent(type="run.progress", display_only=True)` for user-visible status updates such as current work, completed step, next step, blocked state, or needed user decision. The realtime adapter applies progress throttling and idle heartbeat policy before Gateway maps those updates to `event.progress` frames; entry layers decide how to display them and should not treat them as final answer content.
 
+Realtime event projection carries stable delivery semantics without moving control flow out of the assistant loop:
+
+| runtime event | Gateway frame | speech policy | persistence | replacement behavior |
+| --- | --- | --- | --- | --- |
+| `response.chunk` | `stream.chunk` | `required` | `final` | supersedes the run progress slot |
+| `run.progress` | `event.progress` | `optional` | `ephemeral` | replaceable at `<run_id>:progress` |
+| `tool.started` / `tool.finished` / `tool.failed` | `event.tool` | `never` | `ephemeral` | not replaceable |
+| `confirmation.required` | `confirmation.required` | `required` | `ephemeral` | waits for a user reply |
+
+Every `run.end` supersedes the same progress slot, including completed, failed, and cancelled runs. This lets an entry adapter remove already displayed progress after a final answer or cancellation. Progress and tool lifecycle events remain display/trace state; they are not assistant final text and must not be promoted into conversation history or long-term memory.
+
+Provider text remains provisional until the current native LLM call is known not to contain tool calls. The runtime buffers streamed text for every tool-capable iteration, discards it when that iteration returns tool calls, and flushes it only when the iteration resolves as a final answer. This commit barrier prevents tool-call preambles from becoming `stream.chunk` output while keeping streaming as an event projection rather than the assistant loop itself.
+
+The repository still does not invoke a TTS provider. `speech_policy`, `persistence`, `replaceable`, `replacement_key`, and `supersedes` are prompt-safe entry-layer facts that UI or future audio adapters can consume. Pending tool confirmation is projected as `tool.finished` followed by `confirmation.required`, not as a misleading completed progress message.
+
 This boundary lets Gateway preserve OpenClaw-compatible session/run semantics without making Gateway depend on `AgentGraphRuntime` internals, `AgentRouter` internals, worker agent contracts, or a legacy OpenClaw adapter. If multi-agent realtime behavior is needed, the realtime turn must enter the main `AgentGraphRuntime` / assistant loop first; that main runtime can then delegate through the tool-governed agent communication boundary. Do not teach worker agents Gateway frames such as `call.incoming`, `call.hangup`, or WebSocket payloads.
 
 ## Current Code Map

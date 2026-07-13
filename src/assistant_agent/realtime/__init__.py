@@ -3,6 +3,7 @@
 from assistant_agent.realtime.agent_graph_backend import AgentGraphRealtimeBackend
 from assistant_agent.realtime.audio_edge import gateway_frame_to_tts_event
 from assistant_agent.realtime.backend import RealtimeAgentBackend, RealtimeEventSink
+from assistant_agent.realtime.delivery import RealtimeEventDeliveryPolicy
 from assistant_agent.schemas.realtime_cancellation import (
     RealtimeTurnCancellationContract,
     build_realtime_turn_cancellation_metadata,
@@ -26,6 +27,7 @@ __all__ = [
     "RealtimeAgentAdapter",
     "RealtimeAgentBackend",
     "RealtimeEventSink",
+    "RealtimeEventDeliveryPolicy",
     "ProgressPolicy",
     "ProgressTracker",
     "RealtimeCancelToken",

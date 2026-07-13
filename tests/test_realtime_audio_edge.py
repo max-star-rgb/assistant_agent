@@ -12,6 +12,9 @@ def test_audio_edge_maps_gateway_response_chunk_to_tts_speak_event() -> None:
                 "text": "这是最终回答的一部分。",
                 "content_type": "text",
                 "display_only": False,
+                "speech_policy": "required",
+                "persistence": "final",
+                "supersedes": ["run-1:progress"],
             },
         }
     )
@@ -27,6 +30,9 @@ def test_audio_edge_maps_gateway_response_chunk_to_tts_speak_event() -> None:
             "content_type": "text",
             "display_only": False,
             "replaceable": False,
+            "speech_policy": "required",
+            "persistence": "final",
+            "supersedes": ["run-1:progress"],
         },
     }
 
@@ -43,6 +49,9 @@ def test_audio_edge_maps_gateway_progress_to_replaceable_tts_progress_event() ->
                 "content_type": "text",
                 "display_only": True,
                 "replaceable": True,
+                "replacement_key": "run-1:progress",
+                "speech_policy": "optional",
+                "persistence": "ephemeral",
             },
         }
     )
@@ -58,8 +67,35 @@ def test_audio_edge_maps_gateway_progress_to_replaceable_tts_progress_event() ->
             "content_type": "text",
             "display_only": True,
             "replaceable": True,
+            "replacement_key": "run-1:progress",
+            "speech_policy": "optional",
+            "persistence": "ephemeral",
+            "supersedes": [],
         },
     }
+
+
+def test_audio_edge_maps_confirmation_required_to_required_speech() -> None:
+    event = gateway_frame_to_tts_event(
+        {
+            "type": "confirmation.required",
+            "session_id": "session-1",
+            "turn_id": "turn-1",
+            "run_id": "run-1",
+            "payload": {
+                "text": "要继续创建日历事件吗？",
+                "content_type": "text",
+                "speech_policy": "required",
+                "persistence": "ephemeral",
+                "replaceable": False,
+            },
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "tts.confirmation"
+    assert event["payload"]["speech_policy"] == "required"
+    assert event["payload"]["persistence"] == "ephemeral"
 
 
 def test_audio_edge_ignores_non_text_and_control_frames() -> None:
@@ -98,6 +134,9 @@ def test_audio_edge_tts_event_contains_only_prompt_safe_text_metadata() -> None:
         "content_type": "text",
         "display_only": False,
         "replaceable": False,
+        "speech_policy": "required",
+        "persistence": "final",
+        "supersedes": [],
     }
     assert "audio" not in dumped
     assert "base64" not in dumped

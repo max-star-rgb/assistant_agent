@@ -23,6 +23,7 @@ from assistant_agent.realtime import (
     RealtimeAgentRequest,
     RealtimeAgentResult,
 )
+from assistant_agent.realtime.delivery import progress_replacement_key
 from assistant_agent.schemas.realtime_cancellation import (
     build_realtime_turn_cancellation_metadata,
     realtime_turn_cancellation_from_metadata,
@@ -301,7 +302,11 @@ class GatewaySessionService:
                         run_id=run_id,
                         reason="error",
                         error=_result_error(result),
-                        payload=_run_end_payload(result=result, expects_reply=True),
+                        payload=_run_end_payload(
+                            result=result,
+                            expects_reply=True,
+                            run_id=run_id,
+                        ),
                     )
                 )
             else:
@@ -312,7 +317,11 @@ class GatewaySessionService:
                         turn_id=turn_id,
                         run_id=run_id,
                         reason=end_reason,
-                        payload=_run_end_payload(result=result, expects_reply=expects_reply),
+                        payload=_run_end_payload(
+                            result=result,
+                            expects_reply=expects_reply,
+                            run_id=run_id,
+                        ),
                     )
                 )
         except Exception as exc:  # noqa: BLE001 - protocol boundary.
@@ -337,6 +346,7 @@ class GatewaySessionService:
                                 },
                             ),
                             expects_reply=True,
+                            run_id=run_id,
                         ),
                     )
                 )
@@ -350,7 +360,10 @@ class GatewaySessionService:
                         run_id=run_id,
                         reason="error",
                         error={"message": str(exc), "error_type": type(exc).__name__},
-                        payload={"expects_reply": True},
+                        payload={
+                            "expects_reply": True,
+                            "supersedes": [progress_replacement_key(run_id)],
+                        },
                     )
                 )
         finally:
@@ -634,8 +647,12 @@ def _run_end_payload(
     *,
     result: RealtimeAgentResult,
     expects_reply: bool,
+    run_id: str,
 ) -> dict[str, Any]:
-    payload: dict[str, Any] = {"expects_reply": expects_reply}
+    payload: dict[str, Any] = {
+        "expects_reply": expects_reply,
+        "supersedes": [progress_replacement_key(run_id)],
+    }
     if result.trace_id:
         payload["trace_id"] = result.trace_id
     if result.status == "cancelled":

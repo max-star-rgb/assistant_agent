@@ -74,6 +74,16 @@ def map_agent_event_stream(
 ) -> list[RealtimeAgentEvent]:
     """Map an AgentEvent to all realtime events that should be streamed."""
 
+    confirmation = _map_confirmation_required(event)
+    if confirmation is not None:
+        return [
+            *map_agent_event_with_final_response_chunks(
+                event,
+                max_chunk_chars=max_chunk_chars,
+            ),
+            confirmation,
+        ]
+
     events: list[RealtimeAgentEvent] = []
     progress = map_agent_progress_event(event)
     if progress is not None:
@@ -154,6 +164,38 @@ def _event_payload(event: AgentEvent) -> dict[str, Any]:
 
 def _display_only(event: AgentEvent) -> bool:
     return event.type.startswith("tool_") or event.type.startswith("agent_trace_")
+
+
+def _map_confirmation_required(event: AgentEvent) -> RealtimeAgentEvent | None:
+    if event.type not in {"tool_finished", "tool_completed"}:
+        return None
+    post_tool_call = event.payload.get("post_tool_call")
+    if not isinstance(post_tool_call, dict):
+        return None
+    confirmation = post_tool_call.get("confirmation")
+    confirmation_dict = confirmation if isinstance(confirmation, dict) else {}
+    if (
+        post_tool_call.get("status") != "pending_confirmation"
+        and confirmation_dict.get("required") is not True
+    ):
+        return None
+
+    tool_name = event.tool_name or str(post_tool_call.get("tool_name") or "the tool")
+    message = f"Please confirm before I run {tool_name}."
+    payload = {
+        "agent_event_type": event.type,
+        "tool_name": tool_name,
+        "call_id": event.payload.get("call_id") or post_tool_call.get("call_id"),
+        "step_id": event.payload.get("step_id") or post_tool_call.get("step_id"),
+        "confirmation_id": confirmation_dict.get("id"),
+        "confirmation_kind": confirmation_dict.get("kind"),
+        "message": message,
+    }
+    return RealtimeAgentEvent(
+        type="confirmation.required",
+        text=message,
+        payload={key: value for key, value in payload.items() if value is not None},
+    )
 
 
 def _progress_payload(event: AgentEvent) -> dict[str, Any]:
