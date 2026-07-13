@@ -10,11 +10,16 @@ from assistant_agent.schemas.proactive_wake import (
     WakeOwner,
     WakeProbeSpec,
     WakeRule,
+    WakeRuleState,
     WakeRun,
     WakeSignal,
     WakeTriggerSpec,
 )
-from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
+from assistant_agent.services.proactive_wake.store import (
+    SQLiteProactiveWakeStore,
+    _CREATE_SCHEMA_VERSION,
+    _SCHEMA_V1_STATEMENTS,
+)
 
 
 def make_rule(
@@ -374,12 +379,76 @@ def make_notification(rule: WakeRule, *, delivery_id: str, idempotency_key: str)
 
 def test_schema_v1_migrates_repeatably_to_exact_v2_outbox_schema(tmp_path) -> None:
     path = tmp_path / "wake.sqlite3"
-    store = SQLiteProactiveWakeStore(path)
-    with store._connect() as connection, connection:
-        connection.execute("DROP TABLE notification_attempts")
-        connection.execute("DROP TABLE notification_outbox")
+    now = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+    rule = make_rule()
+    state = WakeRuleState(
+        rule_id=rule.rule_id,
+        last_fingerprint="preserved-fingerprint",
+        last_checked_at=now,
+        next_reconcile_at=now + timedelta(hours=1),
+    )
+    signal = make_signal(rule, signal_id="preserved-signal", event_key="preserved-event")
+    run = WakeRun(
+        run_id="preserved-run",
+        rule_id=rule.rule_id,
+        owner=rule.owner,
+        signal_id=signal.signal_id,
+        status="received",
+        created_at=now,
+        updated_at=now,
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(_CREATE_SCHEMA_VERSION)
+        for statement in _SCHEMA_V1_STATEMENTS:
+            connection.execute(statement)
         connection.execute(
-            "UPDATE proactive_wake_schema_version SET version = 1 WHERE singleton = 1"
+            "INSERT INTO proactive_wake_schema_version (singleton, version) VALUES (1, 1)"
+        )
+        connection.execute(
+            """
+            INSERT INTO wake_rules (
+                rule_id, tenant_id, user_id, project_id, enabled, version,
+                rule_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                rule.rule_id,
+                rule.owner.tenant_id,
+                rule.owner.user_id,
+                rule.owner.project_id,
+                1,
+                rule.version,
+                rule.model_dump_json(),
+                now.isoformat(),
+                now.isoformat(),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO wake_rule_state VALUES (?, ?, ?)",
+            (rule.rule_id, state.model_dump_json(), state.next_reconcile_at.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO wake_signal_dedup VALUES (?, ?, ?, ?)",
+            ("preserved-dedup", signal.signal_id, rule.rule_id, now.isoformat()),
+        )
+        connection.execute(
+            """
+            INSERT INTO wake_runs (
+                run_id, rule_id, tenant_id, user_id, project_id, status,
+                run_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run.run_id,
+                run.rule_id,
+                run.owner.tenant_id,
+                run.owner.user_id,
+                run.owner.project_id,
+                run.status,
+                run.model_dump_json(),
+                now.isoformat(),
+                now.isoformat(),
+            ),
         )
 
     SQLiteProactiveWakeStore(path)
@@ -400,6 +469,9 @@ def test_schema_v1_migrates_repeatably_to_exact_v2_outbox_schema(tmp_path) -> No
         indexes = {
             row["name"] for row in connection.execute("PRAGMA index_list(notification_outbox)")
         }
+        dedup = connection.execute(
+            "SELECT dedup_key, signal_id, rule_id FROM wake_signal_dedup"
+        ).fetchall()
 
     assert outbox_columns == [
         ("delivery_id", "TEXT", 0, None, 1),
@@ -427,6 +499,12 @@ def test_schema_v1_migrates_repeatably_to_exact_v2_outbox_schema(tmp_path) -> No
     ]
     assert version == 2
     assert "idx_notification_outbox_due" in indexes
+    assert migrated.get_rule(rule.owner, rule.rule_id) == rule
+    assert migrated.get_rule_state(rule.rule_id) == state
+    assert migrated.list_runs(rule.owner) == [run]
+    assert [tuple(row) for row in dedup] == [
+        ("preserved-dedup", signal.signal_id, rule.rule_id)
+    ]
 
 
 def test_complete_outcome_is_atomic_and_idempotent_for_notification_count(tmp_path) -> None:
@@ -538,3 +616,135 @@ def test_unique_outcomes_increment_from_transaction_current_count(tmp_path) -> N
 
     assert len(store.list_outbox(rule.owner)) == 2
     assert store.get_rule_state(rule.rule_id).notification_count == 2
+
+
+def test_stale_outcome_cannot_regress_transaction_current_state(tmp_path) -> None:
+    now = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    store.save_rule(rule)
+    current = store.get_rule_state(rule.rule_id).model_copy(
+        update={
+            "last_fingerprint": "new-fingerprint",
+            "last_checked_at": now,
+            "next_reconcile_at": now + timedelta(hours=2),
+            "last_notified_at": now,
+            "last_notified_fingerprint": "new-notified-fingerprint",
+            "notification_count_date": now.date(),
+            "notification_count": 5,
+        }
+    )
+    store.save_rule_state(current)
+    run, _ = store.begin_run(rule, make_signal(rule, signal_id="stale", event_key=None))
+    stale = current.model_copy(
+        update={
+            "last_fingerprint": "old-fingerprint",
+            "last_checked_at": now - timedelta(days=1),
+            "next_reconcile_at": now + timedelta(hours=1),
+            "last_notified_at": now - timedelta(days=1),
+            "last_notified_fingerprint": "old-notified-fingerprint",
+            "notification_count_date": (now - timedelta(days=1)).date(),
+            "notification_count": 1,
+        }
+    )
+
+    store.complete_outcome(
+        run=run.model_copy(update={"status": "unchanged"}),
+        state=stale,
+        notification=None,
+    )
+
+    assert store.get_rule_state(rule.rule_id) == current
+
+
+def test_idempotency_conflict_rejects_cross_owner_rule_and_rolls_back(tmp_path) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    first_rule = make_rule(rule_id="rule-1", owner=WakeOwner(user_id="user-1"))
+    second_rule = make_rule(rule_id="rule-2", owner=WakeOwner(user_id="user-2"))
+    for rule in (first_rule, second_rule):
+        store.save_rule(rule)
+    first_run, _ = store.begin_run(
+        first_rule, make_signal(first_rule, signal_id="first", event_key=None)
+    )
+    first_notification = make_notification(
+        first_rule,
+        delivery_id="delivery-first",
+        idempotency_key="forced-conflict",
+    )
+    store.complete_outcome(
+        run=first_run.model_copy(
+            update={"status": "enqueued", "delivery_id": first_notification.delivery_id}
+        ),
+        state=store.get_rule_state(first_rule.rule_id),
+        notification=first_notification,
+    )
+    second_run, _ = store.begin_run(
+        second_rule, make_signal(second_rule, signal_id="second", event_key=None)
+    )
+    original_second_state = store.get_rule_state(second_rule.rule_id)
+    conflicting = make_notification(
+        second_rule,
+        delivery_id="delivery-second",
+        idempotency_key="forced-conflict",
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="idempotency conflict"):
+        store.complete_outcome(
+            run=second_run.model_copy(
+                update={"status": "enqueued", "delivery_id": conflicting.delivery_id}
+            ),
+            state=original_second_state.model_copy(update={"notification_count": 99}),
+            notification=conflicting,
+        )
+
+    persisted_second = next(
+        item for item in store.list_runs(second_rule.owner) if item.run_id == second_run.run_id
+    )
+    assert persisted_second == second_run
+    assert store.get_rule_state(second_rule.rule_id) == original_second_state
+    assert store.list_outbox() == [first_notification]
+
+
+@pytest.mark.parametrize(
+    "field_update",
+    [
+        {"evidence_fingerprint": "different-fingerprint"},
+        {"channel": "different-channel"},
+    ],
+    ids=["fingerprint", "channel"],
+)
+def test_idempotency_conflict_rejects_mismatched_delivery_identity(
+    tmp_path, field_update
+) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    store.save_rule(rule)
+    first_run, _ = store.begin_run(rule, make_signal(rule, signal_id="first", event_key=None))
+    first_notification = make_notification(
+        rule, delivery_id="delivery-first", idempotency_key="forced-conflict"
+    )
+    store.complete_outcome(
+        run=first_run.model_copy(
+            update={"status": "enqueued", "delivery_id": first_notification.delivery_id}
+        ),
+        state=store.get_rule_state(rule.rule_id),
+        notification=first_notification,
+    )
+    second_run, _ = store.begin_run(rule, make_signal(rule, signal_id="second", event_key=None))
+    conflicting = make_notification(
+        rule, delivery_id="delivery-second", idempotency_key="forced-conflict"
+    ).model_copy(update=field_update)
+
+    with pytest.raises(sqlite3.IntegrityError, match="idempotency conflict"):
+        store.complete_outcome(
+            run=second_run.model_copy(
+                update={"status": "enqueued", "delivery_id": conflicting.delivery_id}
+            ),
+            state=store.get_rule_state(rule.rule_id),
+            notification=conflicting,
+        )
+
+    assert next(
+        item for item in store.list_runs(rule.owner) if item.run_id == second_run.run_id
+    ) == second_run
+    assert store.list_outbox() == [first_notification]

@@ -313,27 +313,28 @@ class SQLiteProactiveWakeStore:
 
         with self._connect() as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            existing_state_row = connection.execute(
+                """
+                SELECT state_json
+                FROM wake_rule_state
+                WHERE rule_id = ?
+                """,
+                (run.rule_id,),
+            ).fetchone()
+            current_state = (
+                WakeRuleState.model_validate_json(str(existing_state_row["state_json"]))
+                if existing_state_row is not None
+                else WakeRuleState(rule_id=run.rule_id)
+            )
             actual_notification = notification
             persisted_state = state
+            notification_result = "none"
             persisted_run = (
                 run.model_copy(update={"delivery_id": notification.delivery_id})
                 if notification is not None
                 else run
             )
             if notification is not None:
-                existing_state_row = connection.execute(
-                    """
-                    SELECT state_json
-                    FROM wake_rule_state
-                    WHERE rule_id = ?
-                    """,
-                    (run.rule_id,),
-                ).fetchone()
-                current_state = (
-                    WakeRuleState.model_validate_json(str(existing_state_row["state_json"]))
-                    if existing_state_row is not None
-                    else WakeRuleState(rule_id=run.rule_id)
-                )
                 created_at = _datetime_text(run.updated_at)
                 owner = notification.owner
                 outbox_cursor = connection.execute(
@@ -362,16 +363,10 @@ class SQLiteProactiveWakeStore:
                         created_at,
                     ),
                 )
-                if outbox_cursor.rowcount > 0 and state.notification_count_date is not None:
-                    current_count = (
-                        current_state.notification_count
-                        if current_state.notification_count_date == state.notification_count_date
-                        else 0
-                    )
-                    persisted_state = state.model_copy(
-                        update={"notification_count": current_count + 1}
-                    )
-                elif outbox_cursor.rowcount == 0:
+                if outbox_cursor.rowcount > 0:
+                    notification_result = "inserted"
+                else:
+                    notification_result = "conflict"
                     existing = connection.execute(
                         """
                         SELECT envelope_json
@@ -385,17 +380,20 @@ class SQLiteProactiveWakeStore:
                     actual_notification = NotificationEnvelope.model_validate_json(
                         str(existing["envelope_json"])
                     )
+                    if not _same_notification_identity(actual_notification, notification):
+                        raise sqlite3.IntegrityError(
+                            "notification idempotency conflict identity mismatch"
+                        )
                     persisted_run = run.model_copy(
                         update={"delivery_id": actual_notification.delivery_id}
                     )
-                    persisted_state = state.model_copy(
-                        update={
-                            "last_notified_at": current_state.last_notified_at,
-                            "last_notified_fingerprint": current_state.last_notified_fingerprint,
-                            "notification_count_date": current_state.notification_count_date,
-                            "notification_count": current_state.notification_count,
-                        }
-                    )
+
+            persisted_state = _merge_rule_state(
+                current=current_state,
+                candidate=persisted_state,
+                notification_result=notification_result,
+            )
+            persisted_run = _safe_run(persisted_run)
 
             cursor = connection.execute(
                 """
@@ -515,7 +513,7 @@ class SQLiteProactiveWakeStore:
 
 def _run_values(run: WakeRun) -> tuple[object, ...]:
     owner = run.owner
-    persisted_run = run.model_copy(update={"decision": None})
+    persisted_run = _safe_run(run)
     return (
         run.run_id,
         run.rule_id,
@@ -527,6 +525,110 @@ def _run_values(run: WakeRun) -> tuple[object, ...]:
         _datetime_text(run.created_at),
         _datetime_text(run.updated_at),
     )
+
+
+def _safe_run(run: WakeRun) -> WakeRun:
+    return run.model_copy(update={"decision": None})
+
+
+def _same_notification_identity(
+    existing: NotificationEnvelope,
+    candidate: NotificationEnvelope,
+) -> bool:
+    return (
+        existing.owner == candidate.owner
+        and existing.rule_id == candidate.rule_id
+        and existing.evidence_fingerprint == candidate.evidence_fingerprint
+        and existing.channel == candidate.channel
+    )
+
+
+def _merge_rule_state(
+    *,
+    current: WakeRuleState,
+    candidate: WakeRuleState,
+    notification_result: str,
+) -> WakeRuleState:
+    if current.rule_id != candidate.rule_id:
+        raise ValueError("state rule_id does not match transaction current state")
+
+    if current.last_checked_at is not None and (
+        candidate.last_checked_at is None or candidate.last_checked_at < current.last_checked_at
+    ):
+        last_checked_at = current.last_checked_at
+        last_fingerprint = current.last_fingerprint
+    else:
+        last_checked_at = candidate.last_checked_at
+        last_fingerprint = candidate.last_fingerprint
+
+    next_reconcile_at = _later_datetime(
+        current.next_reconcile_at,
+        candidate.next_reconcile_at,
+    )
+    if notification_result == "conflict":
+        notification_fields = {
+            "last_notified_at": current.last_notified_at,
+            "last_notified_fingerprint": current.last_notified_fingerprint,
+            "notification_count_date": current.notification_count_date,
+            "notification_count": current.notification_count,
+        }
+    else:
+        if current.last_notified_at is not None and (
+            candidate.last_notified_at is None
+            or candidate.last_notified_at < current.last_notified_at
+        ):
+            last_notified_at = current.last_notified_at
+            last_notified_fingerprint = current.last_notified_fingerprint
+        else:
+            last_notified_at = candidate.last_notified_at
+            last_notified_fingerprint = candidate.last_notified_fingerprint
+
+        current_date = current.notification_count_date
+        candidate_date = candidate.notification_count_date
+        if notification_result == "inserted" and candidate_date is not None:
+            if current_date is None or candidate_date > current_date:
+                notification_count_date = candidate_date
+                notification_count = 1
+            elif candidate_date == current_date:
+                notification_count_date = current_date
+                notification_count = current.notification_count + 1
+            else:
+                notification_count_date = current_date
+                notification_count = current.notification_count
+        elif current_date is not None and (
+            candidate_date is None or candidate_date < current_date
+        ):
+            notification_count_date = current_date
+            notification_count = current.notification_count
+        elif candidate_date == current_date:
+            notification_count_date = current_date
+            notification_count = max(current.notification_count, candidate.notification_count)
+        else:
+            notification_count_date = candidate_date
+            notification_count = candidate.notification_count
+        notification_fields = {
+            "last_notified_at": last_notified_at,
+            "last_notified_fingerprint": last_notified_fingerprint,
+            "notification_count_date": notification_count_date,
+            "notification_count": notification_count,
+        }
+
+    return candidate.model_copy(
+        update={
+            "last_fingerprint": last_fingerprint,
+            "last_checked_at": last_checked_at,
+            "next_reconcile_at": next_reconcile_at,
+            **notification_fields,
+        }
+    )
+
+
+def _later_datetime(first: datetime | None, second: datetime | None) -> datetime | None:
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return max(first, second)
 
 
 def _dedup_key(owner: WakeOwner, rule_id: str, event_or_signal_id: str) -> str:

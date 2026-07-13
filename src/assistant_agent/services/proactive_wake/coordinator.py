@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import _thread
+import threading
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
-from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
 
 from assistant_agent.schemas.proactive_wake import (
     ProactiveWakeRunResult,
     WakeOwner,
     WakeRule,
+    WakeRuleState,
+    WakeRun,
     WakeSignal,
     utc_now,
 )
@@ -32,9 +36,8 @@ from assistant_agent.services.proactive_wake.probe import (
 from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
 
 _RuleLockKey = tuple[str | None, str, str | None, str]
-_PROCESS_RULE_LOCKS: WeakKeyDictionary[
-    asyncio.AbstractEventLoop, dict[_RuleLockKey, asyncio.Lock]
-] = WeakKeyDictionary()
+_PROCESS_RULE_LOCKS: dict[_RuleLockKey, _thread.LockType] = {}
+_PROCESS_RULE_LOCKS_GUARD = threading.Lock()
 
 
 class ProactiveWakeError(RuntimeError):
@@ -90,154 +93,235 @@ class ProactiveWakeCoordinator:
         ):
             raise ProactiveWakeError(code="signal_not_matched")
 
-        loop_locks = _PROCESS_RULE_LOCKS.setdefault(asyncio.get_running_loop(), {})
-        lock = loop_locks.setdefault(_lock_key(owner, rule_id), asyncio.Lock())
-        async with lock:
+        lock = _process_rule_lock(_lock_key(owner, rule_id))
+        async with _hold_process_rule_lock(lock):
             run, claimed = self.store.begin_run(rule, signal)
             if not claimed:
                 return ProactiveWakeRunResult(run=run)
 
             state = self.store.get_rule_state(rule.rule_id)
-            validation = self.rule_validator.validate(rule)
-            if not validation.accepted:
-                completed = run.model_copy(
-                    update={
-                        "status": "config_error",
-                        "reason_code": validation.code,
-                        "updated_at": self.now_fn(),
-                    }
-                )
-                persisted, _ = self.store.complete_outcome(
-                    run=completed,
-                    state=state,
-                    notification=None,
-                )
-                return ProactiveWakeRunResult(run=persisted)
-
-            probing = run.model_copy(
-                update={"status": "probing", "updated_at": self.now_fn()}
-            )
-            self.store.complete_run(probing, state)
-            probe_task = asyncio.create_task(
-                asyncio.to_thread(self.probe_runner.run, rule, signal)
-            )
+            active_run = run
+            failure_stage = "validation"
             try:
-                observation = await asyncio.shield(probe_task)
-            except asyncio.CancelledError:
-                await probe_task
-                raise
-            if not observation.success:
-                failed = probing.model_copy(
+                validation = self.rule_validator.validate(rule)
+                if not validation.accepted:
+                    completed = run.model_copy(
+                        update={
+                            "status": "config_error",
+                            "reason_code": validation.code,
+                            "updated_at": self.now_fn(),
+                        }
+                    )
+                    persisted, _ = self.store.complete_outcome(
+                        run=completed,
+                        state=state,
+                        notification=None,
+                    )
+                    return ProactiveWakeRunResult(run=persisted)
+
+                probing = run.model_copy(
+                    update={"status": "probing", "updated_at": self.now_fn()}
+                )
+                active_run = probing
+                self.store.complete_run(probing, state)
+                failure_stage = "probe"
+                probe_task = asyncio.create_task(
+                    asyncio.to_thread(self.probe_runner.run, rule, signal)
+                )
+                try:
+                    observation = await asyncio.shield(probe_task)
+                except asyncio.CancelledError:
+                    await _await_background_task(probe_task)
+                    raise
+                if not observation.success:
+                    failed = probing.model_copy(
+                        update={
+                            "status": "probe_failed",
+                            "reason_code": observation.code,
+                            "updated_at": self.now_fn(),
+                        }
+                    )
+                    persisted, _ = self.store.complete_outcome(
+                        run=failed,
+                        state=state,
+                        notification=None,
+                    )
+                    return ProactiveWakeRunResult(run=persisted)
+
+                now = self.now_fn()
+                failure_stage = "evidence"
+                evidence = build_wake_evidence(
+                    rule=rule,
+                    observation=observation,
+                    state=state,
+                    observed_at=now,
+                )
+                failure_stage = "evaluator"
+                decision = self.evaluator.evaluate(rule=rule, evidence=evidence, now=now)
+                failure_stage = "activity"
+                user_active = await self.activity_reader.is_active(owner)
+                failure_stage = "attention"
+                attention = self.attention_policy.evaluate(
+                    rule=rule,
+                    decision=decision,
+                    evidence=evidence,
+                    state=state,
+                    now=now,
+                    user_active=user_active,
+                )
+                successful_state = state.model_copy(
                     update={
-                        "status": "probe_failed",
-                        "reason_code": observation.code,
-                        "updated_at": self.now_fn(),
+                        "last_fingerprint": evidence.fingerprint,
+                        "last_checked_at": now,
+                        "next_reconcile_at": now
+                        + timedelta(seconds=rule.trigger.reconcile_interval_s),
                     }
                 )
-                persisted, _ = self.store.complete_outcome(
-                    run=failed,
+                outcome_run = probing.model_copy(
+                    update={
+                        "evidence": evidence,
+                        "decision": decision,
+                        "attention": attention,
+                        "updated_at": now,
+                    }
+                )
+                active_run = outcome_run
+
+                if decision.outcome == "silent":
+                    completed = outcome_run.model_copy(
+                        update={
+                            "status": decision.reason_code,
+                            "reason_code": decision.reason_code,
+                        }
+                    )
+                    failure_stage = "persistence"
+                    persisted, _ = self.store.complete_outcome(
+                        run=completed,
+                        state=successful_state,
+                        notification=None,
+                    )
+                    return ProactiveWakeRunResult(run=persisted)
+
+                if attention.outcome == "suppress":
+                    completed = outcome_run.model_copy(
+                        update={
+                            "status": "suppressed",
+                            "reason_code": attention.reason_code,
+                        }
+                    )
+                    failure_stage = "persistence"
+                    persisted, _ = self.store.complete_outcome(
+                        run=completed,
+                        state=successful_state,
+                        notification=None,
+                    )
+                    return ProactiveWakeRunResult(run=persisted)
+
+                failure_stage = "envelope"
+                notification = build_notification_envelope(
+                    rule=rule,
+                    evidence=evidence,
+                    decision=decision,
+                    attention=attention,
+                    now=now,
+                )
+                local_date = _notification_local_date(rule, now)
+                count = (
+                    successful_state.notification_count + 1
+                    if successful_state.notification_count_date == local_date
+                    else 1
+                )
+                notified_state = successful_state.model_copy(
+                    update={
+                        "last_notified_at": now,
+                        "last_notified_fingerprint": evidence.fingerprint,
+                        "notification_count_date": local_date,
+                        "notification_count": count,
+                    }
+                )
+                completed = outcome_run.model_copy(
+                    update={
+                        "status": "enqueued",
+                        "reason_code": attention.reason_code,
+                        "delivery_id": notification.delivery_id,
+                    }
+                )
+                failure_stage = "persistence"
+                persisted, actual_notification = self.store.complete_outcome(
+                    run=completed,
+                    state=notified_state,
+                    notification=notification,
+                )
+                return ProactiveWakeRunResult(
+                    run=persisted,
+                    notification=actual_notification,
+                )
+            except asyncio.CancelledError:
+                self._terminalize_failure(
+                    run=active_run,
                     state=state,
-                    notification=None,
+                    reason_code="proactive_run_cancelled",
                 )
-                return ProactiveWakeRunResult(run=persisted)
+                raise
+            except Exception:
+                self._terminalize_failure(
+                    run=active_run,
+                    state=state,
+                    reason_code=f"proactive_{failure_stage}_failed",
+                )
+                raise
 
-            now = self.now_fn()
-            evidence = build_wake_evidence(
-                rule=rule,
-                observation=observation,
-                state=state,
-                observed_at=now,
-            )
-            decision = self.evaluator.evaluate(rule=rule, evidence=evidence, now=now)
-            user_active = await self.activity_reader.is_active(owner)
-            attention = self.attention_policy.evaluate(
-                rule=rule,
-                decision=decision,
-                evidence=evidence,
-                state=state,
-                now=now,
-                user_active=user_active,
-            )
-            successful_state = state.model_copy(
-                update={
-                    "last_fingerprint": evidence.fingerprint,
-                    "last_checked_at": now,
-                    "next_reconcile_at": now
-                    + timedelta(seconds=rule.trigger.reconcile_interval_s),
-                }
-            )
-            outcome_run = probing.model_copy(
-                update={
-                    "evidence": evidence,
-                    "decision": decision,
-                    "attention": attention,
-                    "updated_at": now,
-                }
-            )
-
-            if decision.outcome == "silent":
-                completed = outcome_run.model_copy(
-                    update={"status": decision.reason_code, "reason_code": decision.reason_code}
-                )
-                persisted, _ = self.store.complete_outcome(
-                    run=completed,
-                    state=successful_state,
-                    notification=None,
-                )
-                return ProactiveWakeRunResult(run=persisted)
-
-            if attention.outcome == "suppress":
-                completed = outcome_run.model_copy(
-                    update={"status": "suppressed", "reason_code": attention.reason_code}
-                )
-                persisted, _ = self.store.complete_outcome(
-                    run=completed,
-                    state=successful_state,
-                    notification=None,
-                )
-                return ProactiveWakeRunResult(run=persisted)
-
-            notification = build_notification_envelope(
-                rule=rule,
-                evidence=evidence,
-                decision=decision,
-                attention=attention,
-                now=now,
-            )
-            local_date = _notification_local_date(rule, now)
-            count = (
-                successful_state.notification_count + 1
-                if successful_state.notification_count_date == local_date
-                else 1
-            )
-            notified_state = successful_state.model_copy(
-                update={
-                    "last_notified_at": now,
-                    "last_notified_fingerprint": evidence.fingerprint,
-                    "notification_count_date": local_date,
-                    "notification_count": count,
-                }
-            )
-            completed = outcome_run.model_copy(
-                update={
-                    "status": "enqueued",
-                    "reason_code": attention.reason_code,
-                    "delivery_id": notification.delivery_id,
-                }
-            )
-            persisted, actual_notification = self.store.complete_outcome(
-                run=completed,
-                state=notified_state,
-                notification=notification,
-            )
-            return ProactiveWakeRunResult(
-                run=persisted,
-                notification=actual_notification,
-            )
+    def _terminalize_failure(
+        self,
+        *,
+        run: WakeRun,
+        state: WakeRuleState,
+        reason_code: str,
+    ) -> None:
+        failed = run.model_copy(
+            update={
+                "status": "probe_failed",
+                "reason_code": reason_code,
+                "updated_at": self.now_fn(),
+            }
+        )
+        self.store.complete_outcome(run=failed, state=state, notification=None)
 
 
 def _lock_key(owner: WakeOwner, rule_id: str) -> _RuleLockKey:
     return owner.tenant_id, owner.user_id, owner.project_id, rule_id
+
+
+def _process_rule_lock(key: _RuleLockKey) -> _thread.LockType:
+    with _PROCESS_RULE_LOCKS_GUARD:
+        return _PROCESS_RULE_LOCKS.setdefault(key, threading.Lock())
+
+
+@asynccontextmanager
+async def _hold_process_rule_lock(lock: _thread.LockType) -> AsyncIterator[None]:
+    acquire_task = asyncio.create_task(asyncio.to_thread(lock.acquire))
+    acquired = False
+    try:
+        try:
+            acquired = await asyncio.shield(acquire_task)
+        except asyncio.CancelledError:
+            acquired_after_cancel = await _await_background_task(acquire_task)
+            if acquired_after_cancel:
+                lock.release()
+            raise
+        yield
+    finally:
+        if acquired:
+            lock.release()
+
+
+async def _await_background_task(task):
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
 
 
 def _notification_local_date(rule: WakeRule, now: datetime) -> date:

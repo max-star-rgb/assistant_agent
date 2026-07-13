@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from assistant_agent.schemas.proactive_wake import (
     WakeAttentionSpec,
     WakeConditionSpec,
+    WakeDecision,
     WakeOwner,
     WakeProbeSpec,
     WakeRule,
@@ -232,6 +233,8 @@ def test_changed_evidence_enqueues_exactly_one_notification(tmp_path) -> None:
     assert (result.run.status, result.run.reason_code) == ("enqueued", "allowed")
     assert len(outbox) == 1
     assert result.notification == outbox[0]
+    assert result.run.decision is None
+    assert result.notification.message
     assert outbox[0].evidence_fingerprint == state.last_fingerprint
     assert state.notification_count == 1
     assert store.get_rule(rule.owner, rule.rule_id).enabled is True
@@ -508,3 +511,214 @@ def test_cancellation_waits_for_probe_thread_before_releasing_rule_lock(tmp_path
     assert sequence.max_active == 1
     assert second.run.status == "baseline_established"
     assert store.list_outbox(rule.owner) == []
+    cancelled_run = next(
+        item for item in store.list_runs(rule.owner) if item.signal_id == "signal-1"
+    )
+    assert (cancelled_run.status, cancelled_run.reason_code) == (
+        "probe_failed",
+        "proactive_run_cancelled",
+    )
+
+
+def test_coordinator_serializes_same_rule_across_event_loops_and_threads(tmp_path) -> None:
+    payload = {"event": "same"}
+    coordinator, store, sequence, activity = make_harness(
+        tmp_path, [payload, payload], delay_s=0.1
+    )
+    other = ProactiveWakeCoordinator(
+        store=store,
+        rule_validator=coordinator.rule_validator,
+        probe_runner=coordinator.probe_runner,
+        activity_reader=activity,
+        now_fn=lambda: NOW,
+    )
+    rule = coordinator.save_rule(make_rule(notify_on_initial=True))
+    barrier = threading.Barrier(2)
+    results: list[Any] = []
+    errors: list[BaseException] = []
+
+    def invoke(target, signal_id):
+        try:
+            barrier.wait()
+            results.append(
+                asyncio.run(
+                    target.run_rule(
+                        rule_id=rule.rule_id,
+                        owner=rule.owner,
+                        signal=make_signal(rule, signal_id=signal_id),
+                    )
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=invoke, args=(coordinator, "signal-thread-1")),
+        threading.Thread(target=invoke, args=(other, "signal-thread-2")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    assert sequence.call_count == 2
+    assert sequence.max_active == 1
+    assert sorted(item.run.status for item in results) == ["enqueued", "unchanged"]
+    assert len(store.list_outbox(rule.owner)) == 1
+
+
+def test_cancelled_cross_loop_lock_waiter_does_not_leak_process_lock(tmp_path) -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+    sequence = SequenceTool([{"event": "same"}] * 3)
+    original_handler = sequence.tool._handler
+
+    def blocking_first(input, context):
+        if sequence.call_count == 0:
+            first_started.set()
+            release_first.wait(timeout=30)
+        return original_handler(input, context)
+
+    sequence.tool._handler = blocking_first
+    registry = ToolRegistry()
+    registry.register(sequence.tool)
+    validator = ProactiveRuleValidator(
+        registry=registry,
+        allowed_tool_names={"calendar.search_events"},
+    )
+    runner = GovernedProbeRunner(
+        registry=registry,
+        allowed_tool_names={"calendar.search_events"},
+    )
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    first_coordinator = ProactiveWakeCoordinator(
+        store=store,
+        rule_validator=validator,
+        probe_runner=runner,
+        now_fn=lambda: NOW,
+    )
+    waiter_coordinator = ProactiveWakeCoordinator(
+        store=store,
+        rule_validator=validator,
+        probe_runner=runner,
+        now_fn=lambda: NOW,
+    )
+    rule = first_coordinator.save_rule(make_rule())
+    first_error: list[BaseException] = []
+
+    def run_first():
+        try:
+            asyncio.run(
+                first_coordinator.run_rule(
+                    rule_id=rule.rule_id,
+                    owner=rule.owner,
+                    signal=make_signal(rule, signal_id="signal-holder"),
+                )
+            )
+        except BaseException as exc:
+            first_error.append(exc)
+
+    holder = threading.Thread(target=run_first)
+    holder.start()
+    assert first_started.wait(timeout=30)
+
+    async def cancel_waiter_then_run_third():
+        waiter = asyncio.create_task(
+            waiter_coordinator.run_rule(
+                rule_id=rule.rule_id,
+                owner=rule.owner,
+                signal=make_signal(rule, signal_id="signal-waiter"),
+            )
+        )
+        await asyncio.sleep(0.05)
+        waiter.cancel()
+        threading.Timer(0.05, release_first.set).start()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        return await asyncio.wait_for(
+            waiter_coordinator.run_rule(
+                rule_id=rule.rule_id,
+                owner=rule.owner,
+                signal=make_signal(rule, signal_id="signal-third"),
+            ),
+            timeout=30,
+        )
+
+    third = asyncio.run(cancel_waiter_then_run_third())
+    holder.join(timeout=30)
+
+    assert first_error == []
+    assert not holder.is_alive()
+    assert third.run.status == "unchanged"
+    assert all(item.signal_id != "signal-waiter" for item in store.list_runs(rule.owner))
+
+
+class RaisingActivityReader:
+    async def is_active(self, owner):
+        raise RuntimeError("activity exploded")
+
+
+class RaisingEvaluator:
+    def evaluate(self, **kwargs):
+        raise RuntimeError("evaluator exploded")
+
+
+class RaisingAttentionPolicy:
+    def evaluate(self, **kwargs):
+        raise RuntimeError("attention exploded")
+
+
+class InvalidEnvelopeEvaluator:
+    def evaluate(self, *, evidence, **kwargs):
+        return WakeDecision.model_construct(
+            outcome="notify",
+            severity="normal",
+            reason_code="forced_notify",
+            summary="Safe summary",
+            user_message=None,
+            evidence_ids=[evidence.evidence_id],
+            confidence=None,
+            expires_at=NOW + timedelta(hours=1),
+        )
+
+
+@pytest.mark.parametrize(
+    ("stage", "reason_code", "expected_exception"),
+    [
+        ("probe", "proactive_probe_failed", RuntimeError),
+        ("activity", "proactive_activity_failed", RuntimeError),
+        ("evaluator", "proactive_evaluator_failed", RuntimeError),
+        ("attention", "proactive_attention_failed", RuntimeError),
+        ("envelope", "proactive_envelope_failed", ValueError),
+    ],
+)
+def test_unexpected_pipeline_exception_terminalizes_claimed_run(
+    tmp_path, stage, reason_code, expected_exception
+) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "initial"}])
+    rule = coordinator.save_rule(make_rule(notify_on_initial=True))
+    if stage == "probe":
+        coordinator.probe_runner.run = lambda rule, signal: (_ for _ in ()).throw(
+            RuntimeError("probe exploded")
+        )
+    elif stage == "activity":
+        coordinator.activity_reader = RaisingActivityReader()
+    elif stage == "evaluator":
+        coordinator.evaluator = RaisingEvaluator()
+    elif stage == "attention":
+        coordinator.attention_policy = RaisingAttentionPolicy()
+    else:
+        coordinator.evaluator = InvalidEnvelopeEvaluator()
+
+    with pytest.raises(expected_exception):
+        run_rule(coordinator, rule, make_signal(rule, signal_id=f"signal-{stage}"))
+
+    loaded = next(
+        item for item in store.list_runs(rule.owner) if item.signal_id == f"signal-{stage}"
+    )
+    assert (loaded.status, loaded.reason_code) == ("probe_failed", reason_code)
+    assert store.get_rule_state(rule.rule_id).last_fingerprint is None
+    assert store.list_outbox(rule.owner) == []
+    assert sequence.call_count == (0 if stage == "probe" else 1)
