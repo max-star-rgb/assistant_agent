@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterator
 
 from assistant_agent.schemas.proactive_wake import (
+    NotificationEnvelope,
     WakeOwner,
     WakeRule,
     WakeRuleState,
@@ -18,7 +19,7 @@ from assistant_agent.schemas.proactive_wake import (
     WakeSignal,
 )
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _CREATE_SCHEMA_VERSION = """
 CREATE TABLE IF NOT EXISTS proactive_wake_schema_version (
@@ -27,7 +28,7 @@ CREATE TABLE IF NOT EXISTS proactive_wake_schema_version (
 )
 """
 
-_SCHEMA_STATEMENTS = (
+_SCHEMA_V1_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS wake_rules (
         rule_id TEXT PRIMARY KEY,
@@ -72,6 +73,42 @@ _SCHEMA_STATEMENTS = (
         run_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+    )
+    """,
+)
+
+_SCHEMA_V2_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS notification_outbox (
+        delivery_id TEXT PRIMARY KEY,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        tenant_id TEXT,
+        user_id TEXT NOT NULL,
+        project_id TEXT,
+        rule_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        envelope_json TEXT NOT NULL,
+        available_at TEXT NOT NULL,
+        lease_until TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_reason_code TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_notification_outbox_due
+    ON notification_outbox (status, available_at, lease_until)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS notification_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        delivery_id TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
+        outcome TEXT NOT NULL,
+        error_code TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (delivery_id) REFERENCES notification_outbox(delivery_id) ON DELETE CASCADE
     )
     """,
 )
@@ -256,9 +293,110 @@ class SQLiteProactiveWakeStore:
         return run, claimed
 
     def complete_run(self, run: WakeRun, state: WakeRuleState) -> WakeRun:
+        completed, _ = self.complete_outcome(run=run, state=state, notification=None)
+        return completed
+
+    def complete_outcome(
+        self,
+        *,
+        run: WakeRun,
+        state: WakeRuleState,
+        notification: NotificationEnvelope | None,
+    ) -> tuple[WakeRun, NotificationEnvelope | None]:
         if state.rule_id != run.rule_id:
             raise ValueError("state rule_id does not match run rule_id")
+        if notification is not None:
+            if notification.rule_id != run.rule_id:
+                raise ValueError("notification rule_id does not match run rule_id")
+            if notification.owner != run.owner:
+                raise ValueError("notification owner does not match run owner")
+
         with self._connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            actual_notification = notification
+            persisted_state = state
+            persisted_run = (
+                run.model_copy(update={"delivery_id": notification.delivery_id})
+                if notification is not None
+                else run
+            )
+            if notification is not None:
+                existing_state_row = connection.execute(
+                    """
+                    SELECT state_json
+                    FROM wake_rule_state
+                    WHERE rule_id = ?
+                    """,
+                    (run.rule_id,),
+                ).fetchone()
+                current_state = (
+                    WakeRuleState.model_validate_json(str(existing_state_row["state_json"]))
+                    if existing_state_row is not None
+                    else WakeRuleState(rule_id=run.rule_id)
+                )
+                created_at = _datetime_text(run.updated_at)
+                owner = notification.owner
+                outbox_cursor = connection.execute(
+                    """
+                    INSERT INTO notification_outbox (
+                        delivery_id, idempotency_key, tenant_id, user_id, project_id,
+                        rule_id, status, envelope_json, available_at, lease_until,
+                        attempt_count, last_reason_code, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(idempotency_key) DO NOTHING
+                    """,
+                    (
+                        notification.delivery_id,
+                        notification.idempotency_key,
+                        owner.tenant_id,
+                        owner.user_id,
+                        owner.project_id,
+                        notification.rule_id,
+                        notification.status,
+                        notification.model_dump_json(),
+                        _datetime_text(notification.deliver_after),
+                        _optional_datetime_text(notification.lease_until),
+                        notification.attempt_count,
+                        notification.last_reason_code,
+                        created_at,
+                        created_at,
+                    ),
+                )
+                if outbox_cursor.rowcount > 0 and state.notification_count_date is not None:
+                    current_count = (
+                        current_state.notification_count
+                        if current_state.notification_count_date == state.notification_count_date
+                        else 0
+                    )
+                    persisted_state = state.model_copy(
+                        update={"notification_count": current_count + 1}
+                    )
+                elif outbox_cursor.rowcount == 0:
+                    existing = connection.execute(
+                        """
+                        SELECT envelope_json
+                        FROM notification_outbox
+                        WHERE idempotency_key = ?
+                        """,
+                        (notification.idempotency_key,),
+                    ).fetchone()
+                    if existing is None:  # pragma: no cover - defensive SQLite boundary
+                        raise RuntimeError("notification idempotency conflict was not readable")
+                    actual_notification = NotificationEnvelope.model_validate_json(
+                        str(existing["envelope_json"])
+                    )
+                    persisted_run = run.model_copy(
+                        update={"delivery_id": actual_notification.delivery_id}
+                    )
+                    persisted_state = state.model_copy(
+                        update={
+                            "last_notified_at": current_state.last_notified_at,
+                            "last_notified_fingerprint": current_state.last_notified_fingerprint,
+                            "notification_count_date": current_state.notification_count_date,
+                            "notification_count": current_state.notification_count,
+                        }
+                    )
+
             cursor = connection.execute(
                 """
                 UPDATE wake_runs
@@ -272,7 +410,7 @@ class SQLiteProactiveWakeStore:
                     updated_at = ?
                 WHERE run_id = ?
                 """,
-                (*_run_values(run)[1:], run.run_id),
+                (*_run_values(persisted_run)[1:], persisted_run.run_id),
             )
             if cursor.rowcount == 0:
                 raise LookupError("wake run not found")
@@ -285,12 +423,25 @@ class SQLiteProactiveWakeStore:
                     next_reconcile_at = excluded.next_reconcile_at
                 """,
                 (
-                    state.rule_id,
-                    state.model_dump_json(),
-                    _optional_datetime_text(state.next_reconcile_at),
+                    persisted_state.rule_id,
+                    persisted_state.model_dump_json(),
+                    _optional_datetime_text(persisted_state.next_reconcile_at),
                 ),
             )
-        return run
+        return persisted_run, actual_notification
+
+    def list_outbox(self, owner: WakeOwner | None = None) -> list[NotificationEnvelope]:
+        query = "SELECT envelope_json FROM notification_outbox"
+        parameters: tuple[object, ...] = ()
+        if owner is not None:
+            query += " WHERE tenant_id IS ? AND user_id = ? AND project_id IS ?"
+            parameters = (owner.tenant_id, owner.user_id, owner.project_id)
+        query += " ORDER BY created_at, delivery_id"
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [
+            NotificationEnvelope.model_validate_json(str(row["envelope_json"])) for row in rows
+        ]
 
     def list_runs(self, owner: WakeOwner, *, limit: int = 100) -> list[WakeRun]:
         with self._connect() as connection:
@@ -334,12 +485,23 @@ class SQLiteProactiveWakeStore:
                 """
             ).fetchone()
             if row is None:
-                for statement in _SCHEMA_STATEMENTS:
+                for statement in (*_SCHEMA_V1_STATEMENTS, *_SCHEMA_V2_STATEMENTS):
                     connection.execute(statement)
                 connection.execute(
                     """
                     INSERT INTO proactive_wake_schema_version (singleton, version)
                     VALUES (1, ?)
+                    """,
+                    (_SCHEMA_VERSION,),
+                )
+            elif int(row["version"]) == 1:
+                for statement in _SCHEMA_V2_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    """
+                    UPDATE proactive_wake_schema_version
+                    SET version = ?
+                    WHERE singleton = 1
                     """,
                     (_SCHEMA_VERSION,),
                 )

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from assistant_agent.schemas.proactive_wake import (
+    NotificationEnvelope,
     WakeConditionSpec,
     WakeDecision,
     WakeOwner,
@@ -123,9 +124,12 @@ def test_schema_version_and_connection_pragmas_are_initialized(tmp_path) -> None
         "wake_rule_state",
         "wake_signal_dedup",
         "wake_runs",
+        "notification_outbox",
+        "notification_attempts",
     } <= tables
     assert "idx_wake_rules_owner" in indexes
-    assert [(row["singleton"], row["version"]) for row in version_rows] == [(1, 1)]
+    assert "idx_notification_outbox_due" in indexes
+    assert [(row["singleton"], row["version"]) for row in version_rows] == [(1, 2)]
     assert pragmas == {
         "foreign_keys": 1,
         "journal_mode": "wal",
@@ -349,3 +353,188 @@ def test_complete_run_rejects_missing_run_and_rolls_back_state(tmp_path) -> None
 
     assert store.list_runs(rule.owner) == []
     assert store.get_rule_state(rule.rule_id) == original_state
+
+
+def make_notification(rule: WakeRule, *, delivery_id: str, idempotency_key: str):
+    now = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+    return NotificationEnvelope(
+        delivery_id=delivery_id,
+        owner=rule.owner,
+        channel="mock_app",
+        destination_ref=f"user:{rule.owner.user_id}",
+        message="Calendar evidence changed.",
+        idempotency_key=idempotency_key,
+        rule_id=rule.rule_id,
+        evidence_ids=["evidence-1"],
+        evidence_fingerprint="fingerprint-new",
+        deliver_after=now,
+        expires_at=now + timedelta(hours=6),
+    )
+
+
+def test_schema_v1_migrates_repeatably_to_exact_v2_outbox_schema(tmp_path) -> None:
+    path = tmp_path / "wake.sqlite3"
+    store = SQLiteProactiveWakeStore(path)
+    with store._connect() as connection, connection:
+        connection.execute("DROP TABLE notification_attempts")
+        connection.execute("DROP TABLE notification_outbox")
+        connection.execute(
+            "UPDATE proactive_wake_schema_version SET version = 1 WHERE singleton = 1"
+        )
+
+    SQLiteProactiveWakeStore(path)
+    migrated = SQLiteProactiveWakeStore(path)
+
+    with migrated._connect() as connection:
+        outbox_columns = [
+            (row["name"], row["type"], row["notnull"], row["dflt_value"], row["pk"])
+            for row in connection.execute("PRAGMA table_info(notification_outbox)")
+        ]
+        attempts_columns = [
+            (row["name"], row["type"], row["notnull"], row["dflt_value"], row["pk"])
+            for row in connection.execute("PRAGMA table_info(notification_attempts)")
+        ]
+        version = connection.execute(
+            "SELECT version FROM proactive_wake_schema_version WHERE singleton = 1"
+        ).fetchone()[0]
+        indexes = {
+            row["name"] for row in connection.execute("PRAGMA index_list(notification_outbox)")
+        }
+
+    assert outbox_columns == [
+        ("delivery_id", "TEXT", 0, None, 1),
+        ("idempotency_key", "TEXT", 1, None, 0),
+        ("tenant_id", "TEXT", 0, None, 0),
+        ("user_id", "TEXT", 1, None, 0),
+        ("project_id", "TEXT", 0, None, 0),
+        ("rule_id", "TEXT", 1, None, 0),
+        ("status", "TEXT", 1, None, 0),
+        ("envelope_json", "TEXT", 1, None, 0),
+        ("available_at", "TEXT", 1, None, 0),
+        ("lease_until", "TEXT", 0, None, 0),
+        ("attempt_count", "INTEGER", 1, "0", 0),
+        ("last_reason_code", "TEXT", 0, None, 0),
+        ("created_at", "TEXT", 1, None, 0),
+        ("updated_at", "TEXT", 1, None, 0),
+    ]
+    assert attempts_columns == [
+        ("attempt_id", "TEXT", 0, None, 1),
+        ("delivery_id", "TEXT", 1, None, 0),
+        ("attempt_number", "INTEGER", 1, None, 0),
+        ("outcome", "TEXT", 1, None, 0),
+        ("error_code", "TEXT", 0, None, 0),
+        ("created_at", "TEXT", 1, None, 0),
+    ]
+    assert version == 2
+    assert "idx_notification_outbox_due" in indexes
+
+
+def test_complete_outcome_is_atomic_and_idempotent_for_notification_count(tmp_path) -> None:
+    now = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    store.save_rule(rule)
+    first_run, _ = store.begin_run(rule, make_signal(rule, signal_id="signal-1", event_key=None))
+    first_notification = make_notification(
+        rule, delivery_id="delivery-1", idempotency_key="same-evidence"
+    )
+    first_state = store.get_rule_state(rule.rule_id).model_copy(
+        update={
+            "last_fingerprint": "fingerprint-new",
+            "last_notified_at": now,
+            "last_notified_fingerprint": "fingerprint-new",
+            "notification_count_date": now.date(),
+            "notification_count": 1,
+        }
+    )
+    first_completed = first_run.model_copy(
+        update={"status": "enqueued", "delivery_id": first_notification.delivery_id}
+    )
+
+    stored_first, returned_first = store.complete_outcome(
+        run=first_completed,
+        state=first_state,
+        notification=first_notification,
+    )
+    second_run, _ = store.begin_run(rule, make_signal(rule, signal_id="signal-2", event_key=None))
+    duplicate = make_notification(rule, delivery_id="delivery-2", idempotency_key="same-evidence")
+    duplicate_state = store.get_rule_state(rule.rule_id).model_copy(
+        update={"notification_count": 2}
+    )
+    duplicate_completed = second_run.model_copy(
+        update={"status": "enqueued", "delivery_id": duplicate.delivery_id}
+    )
+
+    stored_duplicate, returned_duplicate = store.complete_outcome(
+        run=duplicate_completed,
+        state=duplicate_state,
+        notification=duplicate,
+    )
+
+    assert (stored_first, returned_first) == (first_completed, first_notification)
+    assert returned_duplicate == first_notification
+    assert stored_duplicate.delivery_id == first_notification.delivery_id
+    assert store.list_runs(rule.owner)[0].delivery_id == first_notification.delivery_id
+    assert store.get_rule_state(rule.rule_id).notification_count == 1
+    assert store.list_outbox() == [first_notification]
+
+
+def test_complete_outcome_missing_run_rolls_back_state_and_outbox(tmp_path) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    store.save_rule(rule)
+    original = store.get_rule_state(rule.rule_id)
+    missing = WakeRun(
+        rule_id=rule.rule_id,
+        owner=rule.owner,
+        signal_id="missing",
+        status="enqueued",
+        delivery_id="delivery-1",
+    )
+    notification = make_notification(rule, delivery_id="delivery-1", idempotency_key="key-1")
+
+    with pytest.raises(LookupError, match="wake run not found"):
+        store.complete_outcome(
+            run=missing,
+            state=original.model_copy(update={"notification_count": 1}),
+            notification=notification,
+        )
+
+    assert store.get_rule_state(rule.rule_id) == original
+    assert store.list_outbox() == []
+
+
+def test_unique_outcomes_increment_from_transaction_current_count(tmp_path) -> None:
+    now = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    store.save_rule(rule)
+    stale_state = store.get_rule_state(rule.rule_id).model_copy(
+        update={
+            "notification_count_date": now.date(),
+            "notification_count": 1,
+            "last_notified_at": now,
+            "last_notified_fingerprint": "fingerprint-new",
+        }
+    )
+
+    for index in (1, 2):
+        run, _ = store.begin_run(
+            rule,
+            make_signal(rule, signal_id=f"signal-{index}", event_key=None),
+        )
+        notification = make_notification(
+            rule,
+            delivery_id=f"delivery-{index}",
+            idempotency_key=f"unique-{index}",
+        )
+        store.complete_outcome(
+            run=run.model_copy(
+                update={"status": "enqueued", "delivery_id": notification.delivery_id}
+            ),
+            state=stale_state,
+            notification=notification,
+        )
+
+    assert len(store.list_outbox(rule.owner)) == 2
+    assert store.get_rule_state(rule.rule_id).notification_count == 2

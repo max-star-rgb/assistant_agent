@@ -46,6 +46,10 @@ from assistant_agent.services.proactive_wake.activity import (
     NullUserActivityReader,
     UserActivityReader,
 )
+from assistant_agent.services.proactive_wake.coordinator import (
+    ProactiveWakeCoordinator,
+    ProactiveWakeError,
+)
 
 __all__ = [
     "AttentionDecision",
@@ -59,6 +63,8 @@ __all__ = [
     "NotificationEnvelope",
     "NullUserActivityReader",
     "ProbeObservation",
+    "ProactiveWakeCoordinator",
+    "ProactiveWakeError",
     "ProactiveWakeRunResult",
     "ProactiveRuleValidation",
     "ProactiveRuleValidator",

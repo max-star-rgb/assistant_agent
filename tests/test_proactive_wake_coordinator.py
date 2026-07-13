@@ -1,0 +1,510 @@
+import asyncio
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import pytest
+from pydantic import BaseModel, Field
+
+from assistant_agent.schemas.proactive_wake import (
+    WakeAttentionSpec,
+    WakeConditionSpec,
+    WakeOwner,
+    WakeProbeSpec,
+    WakeRule,
+    WakeSignal,
+    WakeTriggerSpec,
+)
+from assistant_agent.schemas.tools import (
+    ApprovalPolicy,
+    ToolExecutionPolicy,
+    ToolPolicyMetadata,
+    ToolResult,
+)
+from assistant_agent.services.proactive_wake.coordinator import (
+    ProactiveWakeCoordinator,
+    ProactiveWakeError,
+)
+from assistant_agent.services.proactive_wake.probe import (
+    GovernedProbeRunner,
+    ProactiveRuleValidator,
+)
+from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
+from assistant_agent.tools.decorators import tool
+from assistant_agent.tools.registry import ToolRegistry
+
+
+NOW = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+
+
+class QueryInput(BaseModel):
+    query: str = Field(min_length=1)
+
+
+class SequenceTool:
+    def __init__(self, responses: list[dict[str, Any] | ToolResult], *, delay_s: float = 0) -> None:
+        self.responses = responses
+        self.delay_s = delay_s
+        self.call_count = 0
+        self.active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
+
+        @tool(
+            name="calendar.search_events",
+            description="Search calendar events.",
+            input_schema=QueryInput,
+            execution=ToolExecutionPolicy(
+                dependency_mode="independent",
+                resource_reads=["calendar.events"],
+                realtime_safety="safe",
+            ),
+            policy=ToolPolicyMetadata(
+                risk="external_read",
+                approval=ApprovalPolicy(mode="never"),
+            ),
+        )
+        def calendar_search_events(input, context):
+            with self._lock:
+                index = self.call_count
+                self.call_count += 1
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                if self.delay_s:
+                    time.sleep(self.delay_s)
+                response = self.responses[min(index, len(self.responses) - 1)]
+                if isinstance(response, ToolResult):
+                    return response
+                return ToolResult(
+                    tool_name="calendar.search_events",
+                    success=True,
+                    data={"provider_raw_response": "provider-private"},
+                    model_observation=response,
+                    raw_data_ref="calendar-raw://private",
+                )
+            finally:
+                with self._lock:
+                    self.active -= 1
+
+        self.tool = calendar_search_events
+
+
+class ActivityReader:
+    def __init__(self, active: bool = False) -> None:
+        self.active = active
+        self.calls: list[WakeOwner] = []
+
+    async def is_active(self, owner: WakeOwner) -> bool:
+        self.calls.append(owner)
+        return self.active
+
+
+def make_rule(
+    *,
+    rule_id: str = "rule-1",
+    owner: WakeOwner | None = None,
+    notify_on_initial: bool = False,
+) -> WakeRule:
+    return WakeRule(
+        rule_id=rule_id,
+        owner=owner
+        or WakeOwner(tenant_id="tenant-1", user_id="user-1", project_id="project-1"),
+        name="Calendar changes",
+        trigger=WakeTriggerSpec(
+            event_sources=["calendar"],
+            event_types=["calendar.changed"],
+            reconcile_interval_s=300,
+        ),
+        probe=WakeProbeSpec(
+            tool_name="calendar.search_events",
+            arguments={"query": "next two hours"},
+        ),
+        condition=WakeConditionSpec(
+            mode="changed",
+            notify_when="Calendar evidence changes",
+            notify_on_initial=notify_on_initial,
+        ),
+        attention=WakeAttentionSpec(cooldown_s=0),
+    )
+
+
+def make_signal(
+    rule: WakeRule,
+    *,
+    signal_id: str,
+    event_key: str | None = None,
+    owner: WakeOwner | None = None,
+    source: str = "calendar",
+    event_type: str = "calendar.changed",
+) -> WakeSignal:
+    return WakeSignal(
+        signal_id=signal_id,
+        kind="provider_event",
+        source=source,
+        event_type=event_type,
+        event_key=event_key,
+        owner=owner or rule.owner,
+    )
+
+
+def make_harness(tmp_path, responses, *, active: bool = False, delay_s: float = 0):
+    sequence = SequenceTool(responses, delay_s=delay_s)
+    registry = ToolRegistry()
+    registry.register(sequence.tool)
+    validator = ProactiveRuleValidator(
+        registry=registry,
+        allowed_tool_names={"calendar.search_events"},
+    )
+    runner = GovernedProbeRunner(
+        registry=registry,
+        allowed_tool_names={"calendar.search_events"},
+    )
+    activity = ActivityReader(active)
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    coordinator = ProactiveWakeCoordinator(
+        store=store,
+        rule_validator=validator,
+        probe_runner=runner,
+        activity_reader=activity,
+        now_fn=lambda: NOW,
+    )
+    return coordinator, store, sequence, activity
+
+
+def run_rule(coordinator, rule, signal):
+    return asyncio.run(
+        coordinator.run_rule(rule_id=rule.rule_id, owner=rule.owner, signal=signal)
+    )
+
+
+def test_first_probe_establishes_baseline_without_notification(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "baseline"}])
+    rule = coordinator.save_rule(make_rule())
+
+    result = run_rule(coordinator, rule, make_signal(rule, signal_id="signal-1"))
+
+    state = store.get_rule_state(rule.rule_id)
+    assert sequence.call_count == 1
+    assert (result.run.status, result.run.reason_code) == (
+        "baseline_established",
+        "baseline_established",
+    )
+    assert state.last_fingerprint
+    assert state.next_reconcile_at == NOW + timedelta(seconds=300)
+    assert store.list_outbox(rule.owner) == []
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_same_evidence_stays_silent_without_notification(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(
+        tmp_path, [{"event": "baseline"}, {"event": "baseline"}]
+    )
+    rule = coordinator.save_rule(make_rule())
+    first = run_rule(coordinator, rule, make_signal(rule, signal_id="signal-1"))
+    first_fingerprint = store.get_rule_state(rule.rule_id).last_fingerprint
+
+    second = run_rule(coordinator, rule, make_signal(rule, signal_id="signal-2"))
+
+    assert sequence.call_count == 2
+    assert first.run.status == "baseline_established"
+    assert (second.run.status, second.run.reason_code) == ("unchanged", "unchanged")
+    assert store.get_rule_state(rule.rule_id).last_fingerprint == first_fingerprint
+    assert store.list_outbox() == []
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_changed_evidence_enqueues_exactly_one_notification(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(
+        tmp_path,
+        [{"event": "baseline"}, {"event": "baseline"}, {"event": "changed"}],
+    )
+    rule = coordinator.save_rule(make_rule())
+    for index in range(2):
+        run_rule(coordinator, rule, make_signal(rule, signal_id=f"signal-{index}"))
+
+    result = run_rule(coordinator, rule, make_signal(rule, signal_id="signal-3"))
+
+    state = store.get_rule_state(rule.rule_id)
+    outbox = store.list_outbox(rule.owner)
+    assert sequence.call_count == 3
+    assert (result.run.status, result.run.reason_code) == ("enqueued", "allowed")
+    assert len(outbox) == 1
+    assert result.notification == outbox[0]
+    assert outbox[0].evidence_fingerprint == state.last_fingerprint
+    assert state.notification_count == 1
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_duplicate_event_key_skips_probe(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "baseline"}])
+    rule = coordinator.save_rule(make_rule())
+    first = make_signal(rule, signal_id="signal-1", event_key="event-1")
+    second = make_signal(rule, signal_id="signal-2", event_key="event-1")
+
+    run_rule(coordinator, rule, first)
+    result = run_rule(coordinator, rule, second)
+
+    assert sequence.call_count == 1
+    assert result.run.status == "deduplicated"
+    assert result.run.reason_code is None
+    assert store.get_rule_state(rule.rule_id).last_fingerprint
+    assert store.list_outbox() == []
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_active_realtime_run_enqueues_deferred_notification(tmp_path) -> None:
+    coordinator, store, sequence, activity = make_harness(
+        tmp_path, [{"event": "initial"}], active=True
+    )
+    rule = coordinator.save_rule(make_rule(notify_on_initial=True))
+
+    result = run_rule(coordinator, rule, make_signal(rule, signal_id="signal-1"))
+
+    outbox = store.list_outbox(rule.owner)
+    assert sequence.call_count == 1
+    assert activity.calls == [rule.owner]
+    assert (result.run.status, result.run.reason_code) == ("enqueued", "active_conversation")
+    assert len(outbox) == 1
+    assert outbox[0].deliver_after == NOW + timedelta(seconds=60)
+    assert store.get_rule_state(rule.rule_id).notification_count == 1
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_invalid_or_write_rule_becomes_config_error_without_mutating_enabled(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "initial"}])
+    rule = coordinator.save_rule(make_rule())
+    sequence.tool.execution = ToolExecutionPolicy(resource_writes=["calendar.events"])
+
+    result = run_rule(coordinator, rule, make_signal(rule, signal_id="signal-1"))
+
+    assert sequence.call_count == 0
+    assert (result.run.status, result.run.reason_code) == (
+        "config_error",
+        "proactive_tool_not_read_only",
+    )
+    assert store.get_rule_state(rule.rule_id).last_fingerprint is None
+    assert store.list_outbox() == []
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_probe_failure_keeps_previous_fingerprint_and_creates_no_notification(tmp_path) -> None:
+    failure = ToolResult(
+        tool_name="calendar.search_events",
+        success=False,
+        error="provider_auth_failed",
+        data={"raw": "private"},
+    )
+    coordinator, store, sequence, _ = make_harness(
+        tmp_path, [{"event": "baseline"}, failure]
+    )
+    rule = coordinator.save_rule(make_rule())
+    run_rule(coordinator, rule, make_signal(rule, signal_id="signal-1"))
+    previous = store.get_rule_state(rule.rule_id).last_fingerprint
+
+    result = run_rule(coordinator, rule, make_signal(rule, signal_id="signal-2"))
+
+    assert sequence.call_count == 2
+    assert (result.run.status, result.run.reason_code) == (
+        "probe_failed",
+        "provider_auth_failed",
+    )
+    assert store.get_rule_state(rule.rule_id).last_fingerprint == previous
+    assert store.list_outbox() == []
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_missing_or_cross_user_rule_does_not_probe(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "baseline"}])
+    rule = coordinator.save_rule(make_rule())
+    wrong_owner = WakeOwner(user_id="other-user")
+
+    for rule_id, owner in (("missing", rule.owner), (rule.rule_id, wrong_owner)):
+        signal = make_signal(rule, signal_id=f"signal-{rule_id}", owner=owner)
+        with pytest.raises(ProactiveWakeError) as raised:
+            asyncio.run(coordinator.run_rule(rule_id=rule_id, owner=owner, signal=signal))
+        assert raised.value.code == "rule_not_found"
+
+    assert sequence.call_count == 0
+    assert store.list_runs(rule.owner) == []
+    assert store.get_rule_state(rule.rule_id).last_fingerprint is None
+    assert store.list_outbox() == []
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_signal_owner_mismatch_does_not_probe(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "baseline"}])
+    rule = coordinator.save_rule(make_rule())
+    mismatched = make_signal(
+        rule, signal_id="signal-1", owner=WakeOwner(user_id="other-user")
+    )
+
+    with pytest.raises(ProactiveWakeError) as raised:
+        run_rule(coordinator, rule, mismatched)
+
+    assert raised.value.code == "signal_owner_mismatch"
+    assert sequence.call_count == 0
+    assert store.list_runs(rule.owner) == []
+    assert store.get_rule_state(rule.rule_id).last_fingerprint is None
+    assert store.list_outbox() == []
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+@pytest.mark.parametrize(
+    ("source", "event_type"),
+    [("mail", "calendar.changed"), ("calendar", "calendar.deleted")],
+    ids=["source", "type"],
+)
+def test_provider_event_source_or_type_mismatch_does_not_probe(
+    tmp_path, source, event_type
+) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "baseline"}])
+    rule = coordinator.save_rule(make_rule())
+    signal = make_signal(
+        rule,
+        signal_id="signal-1",
+        source=source,
+        event_type=event_type,
+    )
+
+    with pytest.raises(ProactiveWakeError) as raised:
+        run_rule(coordinator, rule, signal)
+
+    assert raised.value.code == "signal_not_matched"
+    assert sequence.call_count == 0
+    assert store.list_runs(rule.owner) == []
+    assert store.get_rule_state(rule.rule_id).last_fingerprint is None
+    assert store.list_outbox() == []
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_persisted_run_and_sqlite_file_exclude_raw_tool_payload(tmp_path) -> None:
+    secret = "raw-private-calendar-token"
+    result = ToolResult(
+        tool_name="calendar.search_events",
+        success=True,
+        data={"raw": secret},
+        model_observation={"event": "safe"},
+        raw_data_ref=f"calendar-raw://{secret}",
+    )
+    coordinator, store, sequence, _ = make_harness(tmp_path, [result])
+    rule = coordinator.save_rule(make_rule(notify_on_initial=True))
+
+    run_rule(coordinator, rule, make_signal(rule, signal_id="signal-1"))
+
+    loaded_run = store.list_runs(rule.owner)[0]
+    outbox = store.list_outbox(rule.owner)
+    assert sequence.call_count == 1
+    assert loaded_run.status == "enqueued"
+    assert loaded_run.reason_code == "allowed"
+    assert secret not in loaded_run.model_dump_json()
+    assert secret not in "".join(item.model_dump_json() for item in outbox)
+    assert secret.encode() not in store.path.read_bytes()
+    assert len(outbox) == 1
+    assert store.get_rule_state(rule.rule_id).last_fingerprint
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_concurrent_distinct_signals_for_same_rule_are_serialized(tmp_path) -> None:
+    payload = {"event": "same"}
+    coordinator, store, sequence, _ = make_harness(
+        tmp_path, [payload, payload], delay_s=0.05
+    )
+    rule = coordinator.save_rule(make_rule(notify_on_initial=True))
+    first = make_signal(rule, signal_id="signal-1")
+    second = make_signal(rule, signal_id="signal-2")
+
+    async def run_concurrently():
+        first_task = asyncio.create_task(
+            coordinator.run_rule(rule_id=rule.rule_id, owner=rule.owner, signal=first)
+        )
+        await asyncio.sleep(0)
+        second_task = asyncio.create_task(
+            coordinator.run_rule(rule_id=rule.rule_id, owner=rule.owner, signal=second)
+        )
+        return await asyncio.gather(first_task, second_task)
+
+    results = asyncio.run(run_concurrently())
+
+    state = store.get_rule_state(rule.rule_id)
+    assert sequence.call_count == 2
+    assert sequence.max_active == 1
+    assert [item.run.status for item in results] == ["enqueued", "unchanged"]
+    assert state.last_fingerprint == results[1].run.evidence.fingerprint
+    assert len(store.list_outbox(rule.owner)) == 1
+    assert state.notification_count == 1
+    assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_coordinator_instances_share_process_local_rule_lock(tmp_path) -> None:
+    payload = {"event": "same"}
+    coordinator, store, sequence, activity = make_harness(
+        tmp_path, [payload, payload], delay_s=0.05
+    )
+    other = ProactiveWakeCoordinator(
+        store=store,
+        rule_validator=coordinator.rule_validator,
+        probe_runner=coordinator.probe_runner,
+        activity_reader=activity,
+        now_fn=lambda: NOW,
+    )
+    rule = coordinator.save_rule(make_rule(notify_on_initial=True))
+
+    async def run_concurrently():
+        return await asyncio.gather(
+            coordinator.run_rule(
+                rule_id=rule.rule_id,
+                owner=rule.owner,
+                signal=make_signal(rule, signal_id="signal-1"),
+            ),
+            other.run_rule(
+                rule_id=rule.rule_id,
+                owner=rule.owner,
+                signal=make_signal(rule, signal_id="signal-2"),
+            ),
+        )
+
+    results = asyncio.run(run_concurrently())
+
+    assert sequence.call_count == 2
+    assert sequence.max_active == 1
+    assert [item.run.status for item in results] == ["enqueued", "unchanged"]
+    assert len(store.list_outbox(rule.owner)) == 1
+    assert store.get_rule_state(rule.rule_id).notification_count == 1
+
+
+def test_cancellation_waits_for_probe_thread_before_releasing_rule_lock(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(
+        tmp_path, [{"event": "first"}, {"event": "second"}], delay_s=0.1
+    )
+    rule = coordinator.save_rule(make_rule())
+
+    async def cancel_then_run_again():
+        first = asyncio.create_task(
+            coordinator.run_rule(
+                rule_id=rule.rule_id,
+                owner=rule.owner,
+                signal=make_signal(rule, signal_id="signal-1"),
+            )
+        )
+        while sequence.active == 0:
+            await asyncio.sleep(0.005)
+        first.cancel()
+        second = asyncio.create_task(
+            coordinator.run_rule(
+                rule_id=rule.rule_id,
+                owner=rule.owner,
+                signal=make_signal(rule, signal_id="signal-2"),
+            )
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        return await second
+
+    second = asyncio.run(cancel_then_run_again())
+
+    assert sequence.call_count == 2
+    assert sequence.max_active == 1
+    assert second.run.status == "baseline_established"
+    assert store.list_outbox(rule.owner) == []
