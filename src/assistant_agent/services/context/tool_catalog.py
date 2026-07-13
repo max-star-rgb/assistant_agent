@@ -93,33 +93,13 @@ def select_prompt_tool_specs(
             "llm_first_memory_tools: memory tools exposed for semantic LLM choice"
         )
 
-    for name in _skill_visible_tool_names(text, tool_specs, skill_catalog=skill_catalog):
-        _add(selected_names, name)
-        reasons.append(f"skill_visibility_keyword: {name}")
-
-    visible_specs = _prompt_visible_specs(
-        tool_specs,
-        selected_names=selected_names,
-    )
-    available_by_name = {spec.name: spec for spec in visible_specs}
+    available_by_name = {spec.name: spec for spec in tool_specs}
     prompt_specs = [
         available_by_name[name] for name in selected_names if name in available_by_name
     ]
     if not prompt_specs:
-        if not visible_specs:
-            return ToolCatalogSelection(
-                prompt_tool_specs=[],
-                summary=ToolCatalogSummary(
-                    total_tool_count=total,
-                    prompt_tool_count=0,
-                    filtered_tool_count=total,
-                    selected_tool_names=[],
-                    selection_reasons=["no_prompt_visible_tools_after_visibility_filter"],
-                    fallback_used=False,
-                ),
-            )
         return _fallback(
-            visible_specs, reason="fallback_full_tool_list: no reliable tool match"
+            tool_specs, reason="fallback_full_tool_list: no reliable tool match"
         )
 
     prompt_names = [spec.name for spec in prompt_specs]
@@ -134,84 +114,6 @@ def select_prompt_tool_specs(
             fallback_used=False,
         ),
     )
-
-
-def _skill_visible_tool_names(
-    text: str,
-    tool_specs: list[ToolSpec],
-    *,
-    skill_catalog: SkillCatalog | None,
-) -> list[str]:
-    if skill_catalog is None or not text:
-        return []
-    specs_by_name = {spec.name: spec for spec in tool_specs}
-    names: list[str] = []
-    for descriptor in skill_catalog.descriptors:
-        if not descriptor.enabled or descriptor.disable_model_invocation:
-            continue
-        if not _descriptor_matches_request(text, descriptor):
-            continue
-        for tool_name in descriptor.governed_tools:
-            spec = specs_by_name.get(tool_name)
-            if spec is None or not _is_skill_only(spec):
-                continue
-            if f"tool:{tool_name}" not in descriptor.permissions:
-                continue
-            _add(names, tool_name)
-    return names
-
-
-def _prompt_visible_specs(
-    tool_specs: list[ToolSpec],
-    *,
-    selected_names: list[str],
-) -> list[ToolSpec]:
-    selected = set(selected_names)
-    visible: list[ToolSpec] = []
-    for spec in tool_specs:
-        visibility = spec.policy.visibility if spec.policy is not None else None
-        if visibility is None:
-            visible.append(spec)
-            continue
-        if spec.name in selected:
-            visible.append(spec)
-            continue
-        if visibility.skill_only or not visibility.enabled_by_default:
-            continue
-        visible.append(spec)
-    return visible
-
-
-def _is_skill_only(spec: ToolSpec) -> bool:
-    return bool(spec.policy is not None and spec.policy.visibility.skill_only)
-
-
-def _descriptor_matches_request(text: str, descriptor: SkillDescriptor) -> bool:
-    return _contains_any(text, _descriptor_tokens(descriptor))
-
-
-def _descriptor_tokens(descriptor: SkillDescriptor) -> tuple[str, ...]:
-    values = [
-        descriptor.name,
-        descriptor.description,
-        descriptor.visibility.toolset or "",
-        *descriptor.visibility.tags,
-        *descriptor.governed_tools,
-        *descriptor.when_to_use,
-        *descriptor.safe_examples,
-    ]
-    tokens: list[str] = []
-    for value in values:
-        lowered = value.strip().lower()
-        if not lowered:
-            continue
-        tokens.append(lowered)
-        tokens.extend(
-            token
-            for token in re.split(r"[\s,，、。:;；/()\[\]]+", lowered)
-            if token
-        )
-    return tuple(dict.fromkeys(tokens))
 
 
 def _fallback(tool_specs: list[ToolSpec], *, reason: str) -> ToolCatalogSelection:
