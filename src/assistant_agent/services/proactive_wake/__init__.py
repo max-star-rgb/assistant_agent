@@ -25,6 +25,7 @@ from assistant_agent.schemas.proactive_wake import (
     WakeSignalKind,
     WakeTriggerSpec,
 )
+from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
 
 __all__ = [
     "AttentionDecision",
@@ -34,6 +35,7 @@ __all__ = [
     "NotificationEnvelope",
     "ProactiveWakeRunResult",
     "QuietHours",
+    "SQLiteProactiveWakeStore",
     "Severity",
     "WakeAttentionSpec",
     "WakeConditionMode",
