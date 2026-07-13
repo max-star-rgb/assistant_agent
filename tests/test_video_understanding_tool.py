@@ -1,5 +1,11 @@
 from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
 from assistant_agent.services.video_adapter import MockVideoUnderstandingAdapter
+from assistant_agent.services.realtime_video_memory import (
+    RealtimeVideoMemoryStore,
+    RealtimeVideoObservationDiagnostics,
+    SemanticKeyframeRecord,
+)
+from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame
 from assistant_agent.tools.registry import create_default_registry
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
@@ -71,3 +77,95 @@ def test_video_understanding_tool_does_not_call_http_or_sdk() -> None:
 
     assert result.success is True
     assert result.output_ref == "mock://video/understanding/local-only"
+
+
+def test_video_understanding_tool_traces_rolling_snapshot_diagnostics() -> None:
+    memory = RealtimeVideoMemoryStore()
+    frame = SemanticKeyframeRecord(
+        frame_id="frame-7",
+        uri="/tmp/private-frame.jpg",
+        sequence=7,
+        timestamp_ms=7000,
+    )
+    memory.record_success(
+        "video-a",
+        frame,
+        VideoUnderstandingResult(
+            summary="桌上有杯子",
+            objects=["杯子"],
+            provider="qwen",
+            model="qwen-vl-max",
+            output_ref="provider://video/rolling/7",
+        ),
+        diagnostics=RealtimeVideoObservationDiagnostics(
+            observation_latency_ms=83,
+            published_at_ms=10_000,
+        ),
+    )
+    memory.mark_pending("video-a", pending_count=1, in_flight=True)
+    tool = VideoUnderstandingTool(
+        adapter=MockVideoUnderstandingAdapter(),
+        memory_store=memory,
+        wall_clock_ms=lambda: 10_145,
+    )
+
+    result = tool.run({"video_ref": "video-a", "user_query": "眼前有什么？"})
+
+    assert result.trace_summary == {
+        "source": "rolling_video_memory",
+        "snapshot_age_ms": 145,
+        "observation_latency_ms": 83,
+        "pending_count": 1,
+        "in_flight": True,
+        "fallback_used": False,
+        "snapshot_sequence": 7,
+        "provider": "qwen",
+        "model": "qwen-vl-max",
+    }
+    assert "private-frame" not in str(result.trace_summary)
+
+
+def test_video_understanding_tool_marks_query_time_recent_frame_fallback() -> None:
+    memory = RealtimeVideoMemoryStore()
+    frame = SemanticKeyframeRecord(
+        frame_id="frame-1", uri="/tmp/private-frame.jpg", sequence=1, timestamp_ms=1000
+    )
+    memory.record_success(
+        "video-a",
+        frame,
+        VideoUnderstandingResult(
+            summary="旧状态",
+            provider="qwen",
+            model="old-model",
+            output_ref="provider://video/rolling/1",
+        ),
+        diagnostics=RealtimeVideoObservationDiagnostics(
+            observation_latency_ms=80,
+            published_at_ms=10_000,
+        ),
+    )
+    memory.record_failure(
+        "video-a",
+        frame,
+        {"code": "provider_timeout", "message": "timed out", "recoverable": True},
+    )
+    context = InMemoryVideoContextStore()
+    context.append_frame(
+        VideoFrame(video_id="video-a", frame_id="raw-1", uri="frame.jpg", sequence=1)
+    )
+    tool = VideoUnderstandingTool(
+        adapter=MockVideoUnderstandingAdapter(),
+        context_store=context,
+        memory_store=memory,
+        wall_clock_ms=lambda: 10_200,
+    )
+
+    result = tool.run({"video_ref": "video-a"})
+
+    assert result.success is True
+    assert result.trace_summary is not None
+    assert result.trace_summary["source"] == "recent_frame_fallback"
+    assert result.trace_summary["fallback_used"] is True
+    assert result.trace_summary["snapshot_age_ms"] == 200
+    assert result.trace_summary["provider"] == "mock"
+    assert result.trace_summary["model"] == "mock-video-understanding"

@@ -95,6 +95,8 @@ class VideoLatencyContext(BaseModel):
     in_flight: bool | None = None
     fallback_used: bool = False
     snapshot_sequence: int | None = Field(default=None, ge=0)
+    provider: str | None = None
+    model: str | None = None
 
 
 class TurnLatencySummary(BaseModel):
@@ -325,6 +327,8 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             in_flight=payload.get("in_flight") if isinstance(payload.get("in_flight"), bool) else None,
             fallback_used=payload.get("fallback_used") is True,
             snapshot_sequence=_safe_int(payload.get("snapshot_sequence")),
+            provider=_safe_text(payload.get("provider")),
+            model=_safe_text(payload.get("model")),
         )
     return None
 

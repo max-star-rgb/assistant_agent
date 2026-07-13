@@ -133,6 +133,8 @@ def test_analyzer_keeps_rolling_video_diagnostics_off_critical_path() -> None:
                 "in_flight": True,
                 "fallback_used": False,
                 "snapshot_sequence": 7,
+                "provider": "qwen",
+                "model": "qwen-vl-max",
                 "frame_path": "/secret/frame.jpg",
             },
         )
@@ -148,6 +150,8 @@ def test_analyzer_keeps_rolling_video_diagnostics_off_critical_path() -> None:
     assert summary.video.in_flight is True
     assert summary.video.fallback_used is False
     assert summary.video.snapshot_sequence == 7
+    assert summary.video.provider == "qwen"
+    assert summary.video.model == "qwen-vl-max"
     assert "frame_path" not in summary.model_dump_json()
     assert all(stage.name != "video_observation" for stage in summary.stages)
 

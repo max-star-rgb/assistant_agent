@@ -84,6 +84,38 @@ def test_video_memory_pending_state_does_not_invalidate_prior_success() -> None:
     assert snapshot.in_flight is True
 
 
+def test_video_memory_retains_successful_observation_diagnostics() -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+    store = module.RealtimeVideoMemoryStore()
+    frame = module.SemanticKeyframeRecord(
+        frame_id="frame-1", uri="/tmp/1.jpg", sequence=1, timestamp_ms=1000
+    )
+    diagnostics = module.RealtimeVideoObservationDiagnostics(
+        h264_decode_latency_ms=4,
+        keyframe_selection_latency_ms=2,
+        queue_wait_latency_ms=7,
+        observation_latency_ms=80,
+        published_at_ms=10_000,
+    )
+
+    store.record_success(
+        "video-a",
+        frame,
+        _result(summary="ready", objects=["cup"]),
+        diagnostics=diagnostics,
+    )
+    store.mark_pending("video-a", pending_count=1, in_flight=True)
+    store.record_failure(
+        "video-a",
+        frame,
+        {"code": "provider_timeout", "message": "timed out", "recoverable": True},
+    )
+
+    snapshot = store.snapshot("video-a")
+    assert snapshot is not None
+    assert snapshot.observation_diagnostics == diagnostics
+
+
 def test_runtime_shares_one_video_memory_store_with_default_tool() -> None:
     runtime = AgentGraphRuntime(config=ProviderConfig())
 

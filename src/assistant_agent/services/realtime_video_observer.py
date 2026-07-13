@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter_ns, time
 from typing import Any
 
 from assistant_agent.agent.action_validator import ActionValidator
@@ -17,6 +20,7 @@ from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.realtime_video_memory import (
     RealtimeVideoMemoryStore,
+    RealtimeVideoObservationDiagnostics,
     SemanticKeyframeRecord,
 )
 from assistant_agent.services.video_context import VideoFrame
@@ -28,6 +32,14 @@ from assistant_agent.video_ai.types import FrameProcessingResult, VideoFrame as 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_KEYFRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_keyframes"
 DEFAULT_CLOSE_WAIT_SECONDS = 1.0
+
+
+@dataclass(frozen=True)
+class _QueuedObservation:
+    record: SemanticKeyframeRecord
+    enqueued_ns: int
+    h264_decode_latency_ms: int | None
+    keyframe_selection_latency_ms: int
 
 
 class RealtimeVideoObserver:
@@ -44,6 +56,8 @@ class RealtimeVideoObserver:
         collector: AdaptiveKeyframeCollector | None = None,
         validator: ActionValidator | None = None,
         close_wait_seconds: float = DEFAULT_CLOSE_WAIT_SECONDS,
+        clock_ns: Callable[[], int] = perf_counter_ns,
+        wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
         if close_wait_seconds <= 0:
             raise ValueError("close_wait_seconds must be positive")
@@ -55,12 +69,14 @@ class RealtimeVideoObserver:
         self.collector = collector or AdaptiveKeyframeCollector()
         self.validator = validator or ActionValidator()
         self.close_wait_seconds = close_wait_seconds
+        self.clock_ns = clock_ns
+        self.wall_clock_ms = wall_clock_ms or (lambda: int(time() * 1000))
         self.video_id: str | None = None
         self.closed = False
-        self._queue: asyncio.Queue[SemanticKeyframeRecord] = asyncio.Queue(maxsize=1)
+        self._queue: asyncio.Queue[_QueuedObservation] = asyncio.Queue(maxsize=1)
         self._worker: asyncio.Task[None] | None = None
         self._execution_task: asyncio.Task[ToolResult] | None = None
-        self._inflight_item: SemanticKeyframeRecord | None = None
+        self._inflight_item: _QueuedObservation | None = None
         self._owned_paths: set[Path] = set()
         self._idle = asyncio.Event()
         self._idle.set()
@@ -75,17 +91,25 @@ class RealtimeVideoObserver:
         elif self.video_id != frame.video_id:
             raise ValueError("realtime video observer accepts one video id")
 
+        selection_started_ns = self.clock_ns()
         ai_frame = _to_ai_frame(frame)
         collection = await asyncio.to_thread(self.collector.collect, ai_frame)
         if collection.selected_frame is None:
             return collection.processing
 
         retained = await asyncio.to_thread(self._retain_keyframe, frame)
+        selection_finished_ns = self.clock_ns()
+        queued = _QueuedObservation(
+            record=retained,
+            enqueued_ns=selection_finished_ns,
+            h264_decode_latency_ms=_frame_latency_ms(frame, "h264_decode_latency_ms"),
+            keyframe_selection_latency_ms=_elapsed_ms(selection_started_ns, selection_finished_ns),
+        )
         if self._queue.full():
             replaced = self._queue.get_nowait()
             self._queue.task_done()
             self._delete_record(replaced)
-        self._queue.put_nowait(retained)
+        self._queue.put_nowait(queued)
         self._idle.clear()
         self._ensure_worker()
         self._update_pending_state()
@@ -112,7 +136,7 @@ class RealtimeVideoObserver:
             except TimeoutError:
                 inflight = self._inflight_item
                 if inflight is not None:
-                    path = Path(inflight.uri)
+                    path = Path(inflight.record.uri)
                     self._owned_paths.discard(path)
                     execution.add_done_callback(lambda _task, owned=path: self._delete_late_path(owned))
 
@@ -135,22 +159,42 @@ class RealtimeVideoObserver:
         while not self.closed:
             item = await self._queue.get()
             self._inflight_item = item
+            dequeued_ns = self.clock_ns()
             self._update_pending_state()
             try:
-                self._execution_task = asyncio.create_task(asyncio.to_thread(self._execute_observation, item))
+                observation_started_ns = self.clock_ns()
+                self._execution_task = asyncio.create_task(
+                    asyncio.to_thread(self._execute_observation, item.record)
+                )
                 result = await asyncio.shield(self._execution_task)
+                observation_finished_ns = self.clock_ns()
                 if self.closed:
                     self._delete_record(item)
                     continue
                 if result.success and result.data:
                     observation = VideoUnderstandingResult.model_validate(result.data)
-                    evicted = self.memory_store.record_success(item_video_id(item, self.video_id), item, observation)
+                    diagnostics = RealtimeVideoObservationDiagnostics(
+                        h264_decode_latency_ms=item.h264_decode_latency_ms,
+                        keyframe_selection_latency_ms=item.keyframe_selection_latency_ms,
+                        queue_wait_latency_ms=_elapsed_ms(item.enqueued_ns, dequeued_ns),
+                        observation_latency_ms=_elapsed_ms(
+                            observation_started_ns,
+                            observation_finished_ns,
+                        ),
+                        published_at_ms=self.wall_clock_ms(),
+                    )
+                    evicted = self.memory_store.record_success(
+                        item_video_id(item.record, self.video_id),
+                        item.record,
+                        observation,
+                        diagnostics=diagnostics,
+                    )
                     for record in evicted:
                         self._delete_record(record)
                 else:
                     self.memory_store.record_failure(
-                        item_video_id(item, self.video_id),
-                        item,
+                        item_video_id(item.record, self.video_id),
+                        item.record,
                         _result_error(result),
                     )
                     self._delete_record(item)
@@ -159,8 +203,8 @@ class RealtimeVideoObserver:
             except Exception as exc:  # noqa: BLE001 - background boundary.
                 if not self.closed:
                     self.memory_store.record_failure(
-                        item_video_id(item, self.video_id),
-                        item,
+                        item_video_id(item.record, self.video_id),
+                        item.record,
                         {
                             "code": "video_observation_failed",
                             "message": sanitize_error_message(exc),
@@ -252,7 +296,9 @@ class RealtimeVideoObserver:
             self._queue.task_done()
             self._delete_record(item)
 
-    def _delete_record(self, record: SemanticKeyframeRecord) -> None:
+    def _delete_record(self, record: SemanticKeyframeRecord | _QueuedObservation) -> None:
+        if isinstance(record, _QueuedObservation):
+            record = record.record
         path = Path(record.uri)
         path.unlink(missing_ok=True)
         self._owned_paths.discard(path)
@@ -282,6 +328,20 @@ def _to_ai_frame(frame: VideoFrame) -> AIVideoFrame:
         height=frame.fingerprint_height,
         metadata={"video_id": frame.video_id, "sequence": frame.sequence},
     )
+
+
+def _frame_latency_ms(frame: VideoFrame, key: str) -> int | None:
+    metadata = frame.metadata
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(0, int(value))
+
+
+def _elapsed_ms(start_ns: int, end_ns: int) -> int:
+    return max(0, int((end_ns - start_ns) / 1_000_000))
 
 
 def item_video_id(item: SemanticKeyframeRecord, video_id: str | None) -> str:

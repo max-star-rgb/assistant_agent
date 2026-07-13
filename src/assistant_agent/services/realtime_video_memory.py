@@ -21,6 +21,18 @@ class SemanticKeyframeRecord(BaseModel):
     timestamp_ms: int | None = None
 
 
+class RealtimeVideoObservationDiagnostics(BaseModel):
+    """Prompt-safe timing for the latest successful rolling observation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    h264_decode_latency_ms: int | None = Field(default=None, ge=0)
+    keyframe_selection_latency_ms: int | None = Field(default=None, ge=0)
+    queue_wait_latency_ms: int | None = Field(default=None, ge=0)
+    observation_latency_ms: int | None = Field(default=None, ge=0)
+    published_at_ms: int | None = Field(default=None, ge=0)
+
+
 class RealtimeVideoSnapshot(BaseModel):
     """Immutable semantic snapshot exposed to the video understanding tool."""
 
@@ -50,6 +62,7 @@ class RealtimeVideoSnapshot(BaseModel):
     last_error: dict[str, Any] | None = None
     pending_count: int = 0
     in_flight: bool = False
+    observation_diagnostics: RealtimeVideoObservationDiagnostics | None = None
 
     @property
     def healthy(self) -> bool:
@@ -74,6 +87,8 @@ class RealtimeVideoMemoryStore:
         video_id: str,
         frame: SemanticKeyframeRecord,
         result: VideoUnderstandingResult,
+        *,
+        diagnostics: RealtimeVideoObservationDiagnostics | None = None,
     ) -> list[SemanticKeyframeRecord]:
         """Apply one successful observation and return evicted keyframes."""
 
@@ -107,6 +122,7 @@ class RealtimeVideoMemoryStore:
                     "last_observation_status": "succeeded",
                     "last_error": None,
                     "in_flight": False,
+                    "observation_diagnostics": diagnostics,
                 },
                 deep=True,
             )

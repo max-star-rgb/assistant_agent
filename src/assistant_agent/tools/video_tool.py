@@ -1,5 +1,8 @@
 """Video understanding tool backed by a video adapter."""
 
+from collections.abc import Callable
+from time import time
+
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
 from assistant_agent.schemas.tools import ToolResult
@@ -25,15 +28,18 @@ class VideoUnderstandingTool(MockTool):
         context_store: VideoContextStore | None = None,
         memory_store: RealtimeVideoMemoryStore | None = None,
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
+        wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
         self.adapter = adapter or create_video_understanding_adapter()
         self.context_store = context_store
         self.memory_store = memory_store
         self.context_window_size = context_window_size
+        self.wall_clock_ms = wall_clock_ms or (lambda: int(time() * 1000))
 
     def _run(self, input: VideoUnderstandingRequest, context: ToolContext) -> ToolResult:
         video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)
         observation_mode = context.metadata.get("realtime_video_observation") is True
+        snapshot = None
         if video_ref and not observation_mode and self.memory_store is not None:
             snapshot = self.memory_store.snapshot(video_ref)
             if snapshot is not None and snapshot.healthy:
@@ -75,6 +81,12 @@ class VideoUnderstandingTool(MockTool):
             output_ref=output_ref,
             latency_ms=result.latency_ms,
             contract=contract,
+            trace_summary=self._trace_summary(
+                source=source,
+                snapshot=snapshot,
+                provider=result.provider,
+                model=result.model,
+            ),
         )
 
     def _memory_result(self, snapshot: RealtimeVideoSnapshot) -> ToolResult:
@@ -125,7 +137,42 @@ class VideoUnderstandingTool(MockTool):
             output_ref=output_ref,
             latency_ms=0,
             contract=contract,
+            trace_summary=self._trace_summary(
+                source="rolling_video_memory",
+                snapshot=snapshot,
+                provider=snapshot.provider or "rolling_video_memory",
+                model=snapshot.model,
+            ),
         )
+
+    def _trace_summary(
+        self,
+        *,
+        source: str,
+        snapshot: RealtimeVideoSnapshot | None,
+        provider: str | None,
+        model: str | None,
+    ) -> dict[str, object]:
+        diagnostics = snapshot.observation_diagnostics if snapshot is not None else None
+        published_at_ms = diagnostics.published_at_ms if diagnostics is not None else None
+        snapshot_age_ms = (
+            max(0, self.wall_clock_ms() - published_at_ms)
+            if published_at_ms is not None
+            else None
+        )
+        return {
+            "source": source,
+            "snapshot_age_ms": snapshot_age_ms,
+            "observation_latency_ms": (
+                diagnostics.observation_latency_ms if diagnostics is not None else None
+            ),
+            "pending_count": snapshot.pending_count if snapshot is not None else 0,
+            "in_flight": snapshot.in_flight if snapshot is not None else False,
+            "fallback_used": source == "recent_frame_fallback",
+            "snapshot_sequence": snapshot.last_success_sequence if snapshot is not None else None,
+            "provider": provider,
+            "model": model,
+        }
 
     def _with_context_frames(self, input: VideoUnderstandingRequest) -> VideoUnderstandingRequest:
         video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)
