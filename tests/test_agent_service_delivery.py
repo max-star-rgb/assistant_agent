@@ -26,6 +26,25 @@ def test_delivery_moves_from_accepted_to_sent_to_acked(tmp_path) -> None:
     assert "chat-private" not in path.read_text()
 
 
+def test_delivery_audit_distinguishes_gateway_and_assistant_run_ids(tmp_path) -> None:
+    path = tmp_path / "delivery.jsonl"
+    registry = AgentServiceDeliveryRegistry(JsonlAgentServiceDeliveryAudit(path))
+    delivery = registry.accept("s1", "chat-1", expects_ack=False)
+
+    sent = registry.mark_sent(
+        delivery.delivery_id,
+        gateway_run_id="gateway-run",
+        assistant_run_id="assistant-run",
+        trace_id="trace-1",
+    )
+
+    record = json.loads(path.read_text().splitlines()[-1])
+    assert sent.gateway_run_id == "gateway-run"
+    assert sent.assistant_run_id == "assistant-run"
+    assert record["gateway_run_id"] == "gateway-run"
+    assert record["assistant_run_id"] == "assistant-run"
+
+
 def test_delivery_ack_rejects_unknown_duplicate_and_mismatch(tmp_path) -> None:
     registry = AgentServiceDeliveryRegistry(JsonlAgentServiceDeliveryAudit(tmp_path / "audit.jsonl"))
     delivery = registry.accept("s1", "chat-1", expects_ack=True)

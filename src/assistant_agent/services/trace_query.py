@@ -26,6 +26,7 @@ class RunSummary(BaseModel):
     retry_count: int = 0
     event_count: int = 0
     context: dict[str, Any] = Field(default_factory=dict)
+    turn_latency: dict[str, Any] | None = None
 
 
 class TraceSummary(BaseModel):
@@ -40,6 +41,7 @@ class TraceSummary(BaseModel):
     budget_exceeded: bool = False
     retry_count: int = 0
     context: dict[str, Any] = Field(default_factory=dict)
+    turn_latency: dict[str, Any] | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -82,6 +84,7 @@ class TraceQueryService:
             retry_count=summary["retry_count"],
             event_count=len(events),
             context=_latest_context_summary(events),
+            turn_latency=_latest_turn_latency(events),
         )
 
     def trace_summary(self, trace_id: str) -> TraceSummary | None:
@@ -99,6 +102,7 @@ class TraceQueryService:
             budget_exceeded=summary["budget_exceeded"],
             retry_count=summary["retry_count"],
             context=_latest_context_summary(events),
+            turn_latency=_latest_turn_latency(events),
             events=summary["events"],
         )
 
@@ -162,6 +166,19 @@ def _latest_context_summary(events: list[TraceEvent]) -> dict[str, Any]:
     if memory_promotion:
         latest_context.update(memory_promotion)
     return latest_context
+
+
+def _latest_turn_latency(events: list[TraceEvent]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        if not isinstance(event.output_summary, dict):
+            continue
+        summary = event.output_summary.get("turn_latency")
+        if (
+            isinstance(summary, dict)
+            and summary.get("schema_version") == "agent_service_turn_latency_v1"
+        ):
+            return dict(summary)
+    return None
 
 
 def _latest_context_report(events: list[TraceEvent]) -> ContextReport:

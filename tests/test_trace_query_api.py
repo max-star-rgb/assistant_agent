@@ -146,6 +146,44 @@ def test_trace_query_api_can_query_tool_calls(monkeypatch) -> None:
     assert isinstance(payload["tool_calls"], list)
 
 
+def test_trace_query_api_projects_latest_turn_latency(monkeypatch) -> None:
+    trace_store = InMemoryTraceStore()
+    trace_store.append(
+        TraceEvent(
+            trace_id="trace_latency",
+            run_id="assistant_run_latency",
+            node_name="agent_service",
+            event_type="observability",
+            canonical_event="agent_service.turn.finished",
+            output_summary={
+                "turn_latency": {
+                    "schema_version": "agent_service_turn_latency_v1",
+                    "status": "sent",
+                    "delivery_id": "delivery_1",
+                    "session_turn": 1,
+                    "chat_index_digest": "digest_1",
+                    "gateway_run_id": "gateway_run_1",
+                    "assistant_run_id": "assistant_run_latency",
+                    "trace_id": "trace_latency",
+                    "total_ms": 123,
+                    "stages": [],
+                    "ack_status": "not_negotiated",
+                }
+            },
+        )
+    )
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    run_payload = client.get("/runs/assistant_run_latency").json()
+    trace_payload = client.get("/traces/trace_latency").json()
+
+    assert run_payload["turn_latency"]["total_ms"] == 123
+    assert trace_payload["turn_latency"]["gateway_run_id"] == "gateway_run_1"
+    assert "conversation" not in run_payload["turn_latency"]
+
+
 def test_trace_query_api_returns_404_for_unknown_ids() -> None:
     client = TestClient(create_app())
 

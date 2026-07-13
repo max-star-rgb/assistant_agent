@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from time import perf_counter_ns
 from typing import Any, ClassVar
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -15,11 +17,17 @@ from assistant_agent.realtime import GatewayAgentAdapter
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.agent_service_delivery import (
     AgentServiceDelivery,
-    AgentServiceDeliveryError,
     AgentServiceDeliveryRegistry,
+)
+from assistant_agent.services.agent_service_latency import (
+    AgentServiceTurnTiming,
+    analyze_agent_service_turn,
+    append_turn_latency_trace,
+    report_turn_latency,
 )
 from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
 from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
+from assistant_agent.services.trace_store import TraceStore, append_observability_event
 from assistant_agent.services.gateway_turn_facade import (
     GatewayTurnError,
     GatewayTurnFacade,
@@ -56,6 +64,10 @@ class AgentServiceConnectionState:
     chat_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     chat_tasks: set[asyncio.Task] = field(default_factory=set)
     delivery_registry: AgentServiceDeliveryRegistry = field(default_factory=AgentServiceDeliveryRegistry)
+    trace_store: TraceStore | None = None
+    turn_timings: dict[str, AgentServiceTurnTiming] = field(default_factory=dict)
+    session_turn_counter: int = 0
+    clock_ns: Callable[[], int] = perf_counter_ns
     client_capabilities: dict[str, bool] = field(default_factory=dict)
     closed: bool = False
 
@@ -70,6 +82,9 @@ class PreparedChat:
     latest_speech: str
     contents: list[Any]
     video_ids: list[str]
+    received_ns: int
+    accepted_ns: int | None
+    session_turn: int
 
 
 class AgentServiceProtocolError(ValueError):
@@ -193,7 +208,7 @@ class ChatHandler(BaseHandler):
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
         chat_index = self.require_present(body, "chatIndex")
-        self.required_text(body, "userNumber")
+        user_number = self.required_text(body, "userNumber")
         contents = body.get("contents")
         if not isinstance(contents, list) or not contents:
             raise AgentServiceProtocolError("missing contents")
@@ -282,7 +297,7 @@ class AudioHandler(BaseHandler):
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
         _ = session_id
-        user_number = self.required_text(body, "userNumber")
+        self.required_text(body, "userNumber")
         self.require_present(body, "audioIndex")
         _validate_media_contents(body=body, content_field="audioContent")
         if not isinstance(body.get("audioConfig"), dict):
@@ -316,6 +331,7 @@ class VideoHandler(BaseHandler):
             state.video_ingestion = _create_video_ingestion_service()
         contents = body["contents"]
         for content_index, item in enumerate(contents):
+            decode_started_ns = state.clock_ns()
             frame = await asyncio.to_thread(
                 state.video_ingestion.ingest,
                 session_id,
@@ -323,6 +339,17 @@ class VideoHandler(BaseHandler):
                 _required_item_text(item, content_index, "videoContent"),
                 video_config,
                 _required_item_text(item, content_index, "time"),
+            )
+            decode_finished_ns = state.clock_ns()
+            frame = replace(
+                frame,
+                metadata={
+                    **(frame.metadata if isinstance(frame.metadata, dict) else {}),
+                    "h264_decode_latency_ms": _elapsed_ms(
+                        decode_started_ns,
+                        decode_finished_ns,
+                    ),
+                },
             )
             if frame.video_id not in state.video_ids:
                 state.video_ids.append(frame.video_id)
@@ -370,6 +397,11 @@ class ChatResponseAckHandler(BaseHandler):
         delivery_id = self.required_text(body, "deliveryId")
         chat_index = self.require_present(body, "chatIndex")
         state.delivery_registry.ack(delivery_id, chat_index=chat_index)
+        timing = state.turn_timings.get(delivery_id)
+        if timing is not None:
+            timing.mark("ack_received", at_ns=state.clock_ns())
+            _observe_delivery_ack(state, timing)
+            state.turn_timings.pop(delivery_id, None)
         return _response_envelope(
             message=self.response_message,
             session_id=state.response_session_id,
@@ -397,6 +429,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         session_id=_optional_text(websocket.query_params.get("sessionId")),
         query_params={str(key): str(value) for key, value in websocket.query_params.items()},
         delivery_registry=_create_delivery_registry(),
+        trace_store=_get_agent_service_trace_store(),
     )
     logger.info(
         "agent-service websocket connected version=%s session_id=%s query=%s",
@@ -425,9 +458,14 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
+            received_ns = state.clock_ns()
             logger.info("agent-service websocket received session_id=%s bytes=%s", state.session_id, len(raw))
             if _inbound_message_type(raw) == "chat":
-                prepared_or_error = _prepare_chat_raw_message(raw, state=state)
+                prepared_or_error = _prepare_chat_raw_message(
+                    raw,
+                    state=state,
+                    received_ns=received_ns,
+                )
                 if isinstance(prepared_or_error, dict):
                     await _send_response(websocket, prepared_or_error, state=state)
                     continue
@@ -438,6 +476,18 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     prepared.chat_index,
                     expects_ack=expects_ack,
                 )
+                accepted_ns = state.clock_ns()
+                prepared = replace(prepared, accepted_ns=accepted_ns)
+                timing = AgentServiceTurnTiming(
+                    delivery_id=delivery.delivery_id,
+                    session_turn=prepared.session_turn,
+                    chat_index_digest=delivery.chat_index_digest,
+                    expects_ack=expects_ack,
+                    received_ns=prepared.received_ns,
+                    accepted_ns=accepted_ns,
+                )
+                timing.mark("queue_entered", at_ns=state.clock_ns())
+                state.turn_timings[delivery.delivery_id] = timing
                 if state.client_capabilities.get("chatProgress", False):
                     state.delivery_registry.mark_processing(delivery.delivery_id)
                     await _send_response(
@@ -464,6 +514,9 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     finally:
         state.closed = True
         for delivery in state.delivery_registry.pending():
+            timing = state.turn_timings.get(delivery.delivery_id)
+            if timing is not None:
+                timing.mark("disconnected", at_ns=state.clock_ns())
             state.delivery_registry.mark_disconnected(
                 delivery.delivery_id,
                 close_code=locals().get("close_code"),
@@ -473,6 +526,15 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             task.cancel()
         if state.chat_tasks:
             await asyncio.gather(*state.chat_tasks, return_exceptions=True)
+        for delivery_id, timing in list(state.turn_timings.items()):
+            if timing.trace_id and timing.assistant_run_id:
+                current = state.delivery_registry.get(delivery_id)
+                _observe_turn_terminal(
+                    state,
+                    timing,
+                    status=current.status if current is not None else "disconnected",
+                )
+            state.turn_timings.pop(delivery_id, None)
         if state.video_observer is not None:
             await state.video_observer.close()
         if state.video_ingestion is not None:
@@ -590,6 +652,7 @@ def _prepare_chat_raw_message(
     raw: str,
     *,
     state: AgentServiceConnectionState,
+    received_ns: int,
 ) -> PreparedChat | dict[str, Any]:
     handler = _HANDLERS["chat"]
     try:
@@ -617,6 +680,7 @@ def _prepare_chat_raw_message(
                 raise AgentServiceProtocolError(f"missing contents[{index}].speechContent")
         if not latest_speech:
             raise AgentServiceProtocolError("missing contents[].speechContent")
+        state.session_turn_counter += 1
         state.session_id = session_id
         state.chats.append(dict(body))
         return PreparedChat(
@@ -628,6 +692,9 @@ def _prepare_chat_raw_message(
             latest_speech=latest_speech,
             contents=contents,
             video_ids=list(state.video_ids),
+            received_ns=received_ns,
+            accepted_ns=None,
+            session_turn=state.session_turn_counter,
         )
     except Exception as exc:  # noqa: BLE001 - protocol boundary.
         return _response_envelope(
@@ -645,12 +712,16 @@ async def _run_chat_delivery(
     delivery: AgentServiceDelivery,
 ) -> None:
     progress_task: asyncio.Task | None = None
+    timing = state.turn_timings.get(delivery.delivery_id)
     if state.client_capabilities.get("chatProgress", False):
         progress_task = asyncio.create_task(
             _emit_periodic_chat_progress(websocket, state=state, prepared=prepared, delivery=delivery)
         )
     try:
         async with state.chat_run_lock:
+            if timing is not None:
+                timing.mark("queue_acquired", at_ns=state.clock_ns())
+                timing.mark("gateway_started", at_ns=state.clock_ns())
             turn = await _run_agent_service_chat_turn(
                 state=state,
                 session_id=prepared.session_id,
@@ -660,16 +731,37 @@ async def _run_chat_delivery(
                 contents=prepared.contents,
                 video_ids=prepared.video_ids,
             )
+            if timing is not None:
+                timing.mark("gateway_finished", at_ns=state.clock_ns())
+                timing.bind_turn(
+                    turn_id=turn.turn_id,
+                    gateway_run_id=turn.run_id,
+                    assistant_run_id=_assistant_run_id(state.trace_store, turn.trace_id),
+                    trace_id=turn.trace_id,
+                )
         response = _prepared_chat_response(prepared, state=state, turn=turn, delivery=delivery)
+        if timing is not None:
+            timing.mark("response_built", at_ns=state.clock_ns())
+            timing.mark("send_started", at_ns=state.clock_ns())
         await _send_response(websocket, response, state=state)
+        if timing is not None:
+            timing.mark("send_finished", at_ns=state.clock_ns())
         state.delivery_registry.mark_sent(
             delivery.delivery_id,
-            run_id=turn.run_id,
+            gateway_run_id=turn.run_id,
+            assistant_run_id=timing.assistant_run_id if timing is not None else None,
             trace_id=turn.trace_id,
         )
+        if timing is not None:
+            terminal_status = "failed" if turn.status == "error" else "sent"
+            _observe_turn_terminal(state, timing, status=terminal_status)
+            if not timing.expects_ack or terminal_status != "sent":
+                state.turn_timings.pop(delivery.delivery_id, None)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - delivery boundary.
+        if timing is not None:
+            timing.mark("failed", at_ns=state.clock_ns())
         if not state.closed:
             response = _response_envelope(
                 message="chatResponse",
@@ -677,12 +769,31 @@ async def _run_chat_delivery(
                 body={"code": FAIL_CODE, "message": str(exc)},
             )
             try:
+                if timing is not None:
+                    timing.mark("response_built", at_ns=state.clock_ns())
+                    timing.mark("send_started", at_ns=state.clock_ns())
                 await _send_response(websocket, response, state=state)
-                state.delivery_registry.mark_sent(delivery.delivery_id)
+                if timing is not None:
+                    timing.mark("send_finished", at_ns=state.clock_ns())
+                state.delivery_registry.mark_failed(
+                    delivery.delivery_id,
+                    error_code="chat_turn_failed",
+                )
+                if timing is not None:
+                    _observe_turn_terminal(state, timing, status="failed")
             except Exception:  # noqa: BLE001 - connection may already be gone.
-                state.delivery_registry.mark_disconnected(delivery.delivery_id)
+                if timing is not None:
+                    timing.mark("disconnected", at_ns=state.clock_ns())
+                disconnected = state.delivery_registry.mark_disconnected(delivery.delivery_id)
+                if timing is not None:
+                    _observe_turn_terminal(state, timing, status=disconnected.status)
         else:
-            state.delivery_registry.mark_disconnected(delivery.delivery_id)
+            if timing is not None:
+                timing.mark("disconnected", at_ns=state.clock_ns())
+            disconnected = state.delivery_registry.mark_disconnected(delivery.delivery_id)
+            if timing is not None:
+                _observe_turn_terminal(state, timing, status=disconnected.status)
+        state.turn_timings.pop(delivery.delivery_id, None)
     finally:
         if progress_task is not None:
             progress_task.cancel()
@@ -781,6 +892,92 @@ def _create_agent_service_gateway_manager() -> GatewaySessionManager:
 
 def _create_delivery_registry() -> AgentServiceDeliveryRegistry:
     return AgentServiceDeliveryRegistry()
+
+
+def _get_agent_service_trace_store() -> TraceStore | None:
+    try:
+        from assistant_agent.api import routes_agent
+
+        return getattr(routes_agent.get_assistant_runtime_app().runtime, "trace_store", None)
+    except Exception:  # noqa: BLE001 - observability must not block WebSocket setup.
+        return None
+
+
+def _assistant_run_id(trace_store: TraceStore | None, trace_id: str | None) -> str | None:
+    if trace_store is None or not trace_id:
+        return None
+    try:
+        events = trace_store.list_by_trace(trace_id)
+    except Exception:  # noqa: BLE001 - observer-only correlation.
+        return None
+    return events[0].run_id if events else None
+
+
+def _observe_turn_terminal(
+    state: AgentServiceConnectionState,
+    timing: AgentServiceTurnTiming,
+    *,
+    status: str,
+) -> None:
+    try:
+        events = (
+            state.trace_store.list_by_trace(timing.trace_id)
+            if state.trace_store is not None and timing.trace_id
+            else []
+        )
+        summary = analyze_agent_service_turn(timing, events, status=status)
+    except Exception:  # noqa: BLE001 - observability cannot change delivery.
+        return
+    try:
+        append_turn_latency_trace(state.trace_store, timing=timing, summary=summary)
+    except Exception:  # noqa: BLE001 - custom observers may fail.
+        pass
+    try:
+        report_turn_latency(summary, logger=logger)
+    except Exception:  # noqa: BLE001 - custom reporters may fail.
+        pass
+
+
+def _observe_delivery_ack(
+    state: AgentServiceConnectionState,
+    timing: AgentServiceTurnTiming,
+) -> None:
+    ack_latency_ms = _optional_elapsed_ms(
+        timing.checkpoints.get("send_finished"),
+        timing.checkpoints.get("ack_received"),
+    )
+    if state.trace_store is not None and timing.trace_id and timing.assistant_run_id:
+        try:
+            append_observability_event(
+                state.trace_store,
+                trace_id=timing.trace_id,
+                run_id=timing.assistant_run_id,
+                canonical_event="agent_service.delivery.acked",
+                node_name="agent_service",
+                status="acked",
+                latency_ms=ack_latency_ms,
+                attributes={
+                    "delivery_id": timing.delivery_id,
+                    "session_turn": timing.session_turn,
+                    "gateway_run_id": timing.gateway_run_id,
+                    "turn_id": timing.turn_id,
+                },
+            )
+        except Exception:  # noqa: BLE001 - observer-only event.
+            pass
+    try:
+        logger.info(
+            "delivery_ack status=acked trace=%s gateway_run=%s assistant_run=%s "
+            "delivery=%s session_turn=%s ack_latency=%s",
+            timing.trace_id or "none",
+            timing.gateway_run_id or "none",
+            timing.assistant_run_id or "none",
+            timing.delivery_id,
+            timing.session_turn,
+            f"{ack_latency_ms}ms" if ack_latency_ms is not None else "none",
+        )
+    except Exception:  # noqa: BLE001 - logging cannot change ACK behavior.
+        pass
 
 
 def _create_video_ingestion_service() -> H264VideoIngestionService:
@@ -912,3 +1109,13 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _elapsed_ms(start_ns: int, end_ns: int) -> int:
+    return max(0, int((end_ns - start_ns) / 1_000_000))
+
+
+def _optional_elapsed_ms(start_ns: int | None, end_ns: int | None) -> int | None:
+    if start_ns is None or end_ns is None:
+        return None
+    return _elapsed_ms(start_ns, end_ns)
