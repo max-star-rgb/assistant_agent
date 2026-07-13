@@ -9,6 +9,7 @@ from assistant_agent.video_ai.detection.semantic_detector import MetadataEmbeddi
 from assistant_agent.video_ai.detection.vision_embedding_provider import VisionEmbeddingResult
 from assistant_agent.video_ai.keyframe.selector import KeyframeSelectorConfig
 from assistant_agent.video_ai.keyframe.storage import FileKeyframeStorage, NoopKeyframeStorage
+from assistant_agent.video_ai.memory.state_manager import KeyframeMemoryRecord
 from assistant_agent.video_ai.qwen.vision_client import MockQwenVisionClient, VisionObservation, _keyframe_prompt
 from assistant_agent.video_ai.sampling.adaptive_sampler import AdaptiveSamplerConfig
 from assistant_agent.video_ai.types import VideoFrame
@@ -21,6 +22,24 @@ def test_qwen_realtime_prompt_contains_lowercase_json_for_dashscope_response_for
     prompt = _keyframe_prompt("", [])
 
     assert "json" in prompt
+
+
+def test_qwen_keyframe_prompt_does_not_include_local_image_uri(tmp_path: Path) -> None:
+    local_uri = str(tmp_path / "private-frame.jpg")
+    record = KeyframeMemoryRecord(
+        frame_id="frame-1",
+        timestamp_seconds=1.0,
+        uri=local_uri,
+        summary="红色方块",
+        scene="测试场景",
+        objects=["方块"],
+        people=[],
+    )
+
+    prompt = _keyframe_prompt("当前状态", [record])
+
+    assert local_uri not in prompt
+    assert "frame-1" in prompt
 
 
 def test_uri_text_is_not_used_as_frame_pixels() -> None:

@@ -37,7 +37,7 @@ ImageGenerationProviderName = str
 ProductSearchProviderName = Literal["mock", "local_json", "http", "haodanku"]
 PriceCompareProviderName = Literal["mock", "local", "http", "haodanku"]
 RenderProviderName = Literal["mock", "http"]
-VideoProviderName = Literal["mock", "http", "ark"]
+VideoProviderName = Literal["mock", "http", "ark", "qwen"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
 SearchProviderName = Literal["mock", "http"]
 
@@ -647,6 +647,8 @@ def _video_provider(value: str | None, *, allow_real: bool = True) -> VideoProvi
         return "http"
     if allow_real and value == "ark":
         return "ark"
+    if allow_real and value == "qwen":
+        return "qwen"
     return "mock"
 
 
@@ -666,18 +668,24 @@ def _clean_env_value(value: str) -> str:
 def _video_base_url(source: Mapping[str, str]) -> str | None:
     if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "ark":
         return source.get("ARK_VISION_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
+    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "qwen":
+        return source.get("QWEN_VISION_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
     return source.get("VIDEO_UNDERSTANDING_BASE_URL")
 
 
 def _video_api_key(source: Mapping[str, str]) -> str | None:
     if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "ark":
         return source.get("ARK_VISION_API_KEY")
+    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "qwen":
+        return source.get("QWEN_VISION_API_KEY") or source.get("DASHSCOPE_API_KEY")
     return source.get("VIDEO_UNDERSTANDING_API_KEY")
 
 
 def _video_model(source: Mapping[str, str]) -> str:
     if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "ark":
         return source.get("ARK_VISION_MODEL") or "doubao-seed-2-0-lite-260215"
+    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "qwen":
+        return source.get("QWEN_VISION_MODEL") or "qwen-vl-plus"
     return source.get("VIDEO_UNDERSTANDING_MODEL", "video-understanding")
 
 

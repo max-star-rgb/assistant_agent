@@ -258,7 +258,17 @@ class QwenVLClient:
 
 
 def _keyframe_prompt(previous_state_summary: str, history_keyframes: list[KeyframeMemoryRecord]) -> str:
-    history = [record.__dict__.copy() for record in history_keyframes]
+    history = [
+        {
+            "frame_id": record.frame_id,
+            "timestamp_seconds": record.timestamp_seconds,
+            "summary": record.summary,
+            "scene": record.scene,
+            "objects": list(record.objects),
+            "people": list(record.people),
+        }
+        for record in history_keyframes
+    ]
     return (
         f"{REALTIME_VIDEO_PROMPT}\n"
         f"上一轮状态摘要：{previous_state_summary or '无'}\n"

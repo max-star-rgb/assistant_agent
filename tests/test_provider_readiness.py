@@ -49,6 +49,39 @@ def test_provider_smoke_configured_qwen_vision_is_ready_without_calling_provider
     assert vision.real_provider_allowed is True
 
 
+def test_provider_smoke_missing_qwen_video_key_is_not_ready() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "qwen",
+        }
+    )
+
+    report = build_provider_readiness_report(config)
+    video = next(check for check in report.checks if check.capability == "video_understanding")
+
+    assert video.provider == "qwen"
+    assert video.status == "not_ready"
+    assert video.issues[0].missing == ["QWEN_VISION_API_KEY"]
+
+
+def test_provider_smoke_configured_qwen_video_is_ready_without_calling_provider() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "qwen",
+            "QWEN_VISION_API_KEY": "test-qwen-video-key",
+        }
+    )
+
+    report = build_provider_readiness_report(config)
+    video = next(check for check in report.checks if check.capability == "video_understanding")
+
+    assert video.provider == "qwen"
+    assert video.status == "ready"
+    assert video.real_provider_allowed is True
+
+
 def test_smoke_contract_marks_real_provider_disabled_under_local_demo() -> None:
     config = ProviderConfig.from_env({})
 

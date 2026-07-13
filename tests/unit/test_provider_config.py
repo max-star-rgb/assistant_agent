@@ -172,6 +172,34 @@ def test_provider_config_offline_eval_defaults_to_mock_local_providers() -> None
     assert config.video_provider == "mock"
 
 
+def test_provider_config_selects_qwen_video_from_qwen_vision_settings() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "qwen",
+            "QWEN_VISION_API_KEY": "test-qwen-video-key",
+            "QWEN_VISION_BASE_URL": "https://qwen.local/v1",
+            "QWEN_VISION_MODEL": "qwen-vl-test",
+        }
+    )
+
+    assert config.video_provider == "qwen"
+    assert config.video_understanding_api_key == "test-qwen-video-key"
+    assert config.video_understanding_base_url == "https://qwen.local/v1"
+    assert config.video_understanding_model == "qwen-vl-test"
+
+
+def test_local_demo_does_not_enable_qwen_video_from_key_only() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "qwen",
+            "QWEN_VISION_API_KEY": "test-qwen-video-key",
+        }
+    )
+
+    assert config.video_provider == "mock"
+
+
 def test_provider_smoke_does_not_enable_real_provider_from_key_only() -> None:
     config = ProviderConfig.from_env(
         {
