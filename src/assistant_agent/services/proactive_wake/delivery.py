@@ -50,6 +50,8 @@ class NotificationDeliveryWorker:
         now_fn: Callable[[], datetime] = utc_now,
         max_attempts: int = 3,
     ) -> None:
+        if max_attempts <= 0:
+            raise ValueError("max_attempts must be positive")
         self.store = store
         self.transport = transport
         self.activity_reader = activity_reader or NullUserActivityReader()
@@ -69,6 +71,15 @@ class NotificationDeliveryWorker:
                 if notification.expires_at <= item_now:
                     completed.append(
                         self.store.mark_notification_expired(
+                            notification.delivery_id,
+                            now=item_now,
+                            expected_lease_until=lease_until,
+                        )
+                    )
+                    continue
+                if notification.attempt_count >= self.max_attempts:
+                    completed.append(
+                        self.store.mark_notification_attempts_exhausted(
                             notification.delivery_id,
                             now=item_now,
                             expected_lease_until=lease_until,

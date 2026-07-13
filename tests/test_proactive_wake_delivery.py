@@ -484,6 +484,45 @@ def test_cancelled_transport_preserves_cancellation_with_started_attempt(tmp_pat
     ]
 
 
+def test_cancelled_attempt_budget_is_dead_lettered_after_restart_without_resend(
+    tmp_path,
+) -> None:
+    path = tmp_path / "wake.sqlite3"
+    store = SQLiteProactiveWakeStore(path)
+    rule = make_rule()
+    notification = enqueue(store, rule, make_notification(rule))
+    cancelled_worker = NotificationDeliveryWorker(
+        store=store,
+        transport=CancelledTransport(),
+        now_fn=lambda: NOW,
+        max_attempts=1,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        drain(cancelled_worker)
+
+    restarted_store = SQLiteProactiveWakeStore(path)
+    transport = MockProactiveNotificationTransport()
+    restarted_worker = NotificationDeliveryWorker(
+        store=restarted_store,
+        transport=transport,
+        now_fn=lambda: NOW + timedelta(seconds=30),
+        max_attempts=1,
+    )
+
+    completed = drain(restarted_worker)
+
+    assert [(item.status, item.attempt_count) for item in completed] == [
+        ("dead_letter", 1)
+    ]
+    assert completed[0].last_reason_code == "max_attempts_exhausted"
+    assert transport.sent == []
+    assert [tuple(row) for row in attempts(restarted_store, notification.delivery_id)] == [
+        (1, "abandoned", None)
+    ]
+    assert drain(restarted_worker) == []
+    assert_indexed_state_matches_json(restarted_store, notification.delivery_id)
+
+
 def test_expired_reclaimed_lease_fences_old_worker_result_and_attempt(tmp_path) -> None:
     path = tmp_path / "wake.sqlite3"
     store = SQLiteProactiveWakeStore(path)
@@ -632,3 +671,28 @@ def test_missing_and_wrong_status_transitions_are_rejected(tmp_path) -> None:
 
     assert store.list_outbox() == [notification]
     assert attempts(store, notification.delivery_id) == []
+
+
+@pytest.mark.parametrize("lease_s", [0, -1])
+def test_non_positive_lease_is_rejected_without_claim(tmp_path, lease_s) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    rule = make_rule()
+    notification = enqueue(store, rule, make_notification(rule))
+
+    with pytest.raises(ValueError, match="lease_s must be positive"):
+        store.claim_due_notifications(now=NOW, lease_s=lease_s)
+
+    assert store.list_outbox() == [notification]
+    assert attempts(store, notification.delivery_id) == []
+
+
+@pytest.mark.parametrize("max_attempts", [0, -1])
+def test_non_positive_max_attempts_is_rejected(tmp_path, max_attempts) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+
+    with pytest.raises(ValueError, match="max_attempts must be positive"):
+        NotificationDeliveryWorker(
+            store=store,
+            transport=MockProactiveNotificationTransport(),
+            max_attempts=max_attempts,
+        )
