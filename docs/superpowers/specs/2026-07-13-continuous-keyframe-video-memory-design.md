@@ -25,6 +25,10 @@ It does not add a new media wire format, persist semantic memory across process
 restarts, enable real providers in the default profile, or change the normalized
 Gateway protocol.
 
+This design also permits an explicitly selected Qwen visual provider for the
+existing frame-based `video_understanding` contract. It does not send the raw
+H.264 stream to Qwen or introduce a second video tool.
+
 ## Architecture
 
 Each `/agent-service/v1` connection owns one bounded realtime video observer.
@@ -109,6 +113,26 @@ the selected keyframe and bypasses memory resolution. The Agent cannot request
 that mode and continues to see and choose the ordinary `video_understanding`
 contract.
 
+### Qwen Video Provider
+
+`MULTIMODAL_AGENT_VIDEO_PROVIDER=qwen` selects a Qwen implementation of the
+existing `VideoUnderstandingAdapter`. It reuses `QWEN_VISION_API_KEY` (falling
+back to `DASHSCOPE_API_KEY`), `QWEN_VISION_BASE_URL`, and
+`QWEN_VISION_MODEL`; it does not add a second set of Qwen credentials.
+
+The adapter uses the official OpenAI-compatible multimodal request shape. It
+places the bounded JPEG frame references in chronological order as multiple
+`image_url` content items, converted to local Base64 Data URLs, followed by one
+text instruction requesting the stable JSON object consumed by
+`VideoUnderstandingResult`. The adapter never sends absolute local paths,
+fingerprints, raw H.264, or prior Provider payloads.
+
+Qwen output is parsed through the existing tolerant JSON-object extraction and
+mapped to the same provider-neutral result fields used by Ark. Missing
+credentials, malformed output, timeouts, and SDK errors return sanitized
+structured failures. An explicitly selected Qwen provider never silently
+falls back to Ark, Doubao, or mock.
+
 ### Rolling Video Memory
 
 A runtime-owned, thread-safe store keeps one snapshot per `video_id`. Each
@@ -183,6 +207,8 @@ the decoder seam and do not require external media or Provider calls.
 The default runtime profile remains mock/local/offline. Real continuous visual
 analysis requires `provider_smoke` or `pilot` plus explicit Provider selection
 and local credentials. Merely finding an API key does not enable the path.
+Qwen is enabled only when `MULTIMODAL_AGENT_VIDEO_PROVIDER=qwen` is explicit;
+the chat LLM may remain a different configured provider such as DeepSeek.
 
 Keyframe and queue limits are fixed conservative defaults for this slice:
 
@@ -222,8 +248,13 @@ Automated tests must prove:
 - two WebSocket sessions cannot read or overwrite each other's video memory;
 - existing autonomous native tool-call and acknowledged-delivery tests remain
   green.
+- Qwen video selection reuses the Qwen Vision model configuration and produces
+  ordered multi-image OpenAI-compatible input without exposing local paths;
+- Qwen response and failure mapping preserve the stable video result contract.
 
 A real Provider smoke is opt-in. When explicitly run, it must demonstrate at
 least one selected keyframe observation, a later visual question answered from
 `rolling_video_memory`, zero query-time visual Provider calls, and a delivered
-`chatResponse` that can reach `acked` when the media client supports it.
+`chatResponse` that can reach `acked` when the media client supports it. For a
+Qwen smoke, the successful background result must report `provider=qwen` and
+the configured Qwen model; no Ark/Doubao request is permitted.

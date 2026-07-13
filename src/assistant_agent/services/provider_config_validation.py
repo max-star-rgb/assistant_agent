@@ -177,6 +177,8 @@ def _video_missing(config: ProviderConfig) -> list[str]:
         )
     if config.video_provider == "ark":
         return _missing(("ARK_VISION_API_KEY", config.video_understanding_api_key))
+    if config.video_provider == "qwen":
+        return _missing(("QWEN_VISION_API_KEY", config.video_understanding_api_key))
     return []
 
 

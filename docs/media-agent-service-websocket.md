@@ -356,6 +356,27 @@ Client                              Agent
   --port 8089
 ```
 
+真实 Qwen 视频理解必须使用进程级显式选择；仅在 `.env` 中存在 Key 不会自动启用真实 Provider：
+
+```bash
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke \
+MULTIMODAL_AGENT_VIDEO_PROVIDER=qwen \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
+  --host 0.0.0.0 \
+  --port 8089
+```
+
+Qwen 视频适配器复用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_API_KEY`）、
+`QWEN_VISION_BASE_URL` 和 `QWEN_VISION_MODEL`。启动前应确认 chat 与
+`video_understanding` readiness 均为 `ready`，并确认解析出的
+`video_provider=qwen`；显式选择 Qwen 失败时不会静默回退到 Ark、Doubao 或 mock。
+
+真实联调只记录脱敏证据：runtime profile、chat/video provider、Qwen model、
+后台观察状态和 latency、工具结果的 `source`、用户可见最终回复、
+`chatResponse` 状态以及 WebSocket close code。不得记录 Key、Base64 图片、
+绝对路径、Provider 请求体或原始响应。`videoResponse body.code=0` 只证明帧已成功
+校验、解码、注册和调度；后台视觉理解成功还必须由 provider/model/status 证据确认。
+
 使用任意 WebSocket 客户端连接：
 
 ```text

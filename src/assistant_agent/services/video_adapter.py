@@ -154,6 +154,21 @@ def create_video_understanding_adapter(config: ProviderConfig | None = None) -> 
                 model=resolved.video_understanding_model,
             )
         )
+    if resolved.video_provider == "qwen":
+        from assistant_agent.providers.qwen_video_understanding import QwenVideoUnderstandingAdapter
+        from assistant_agent.video_ai.qwen.vision_client import QwenVLConfig
+
+        return QwenVideoUnderstandingAdapter(
+            QwenVLConfig(
+                api_key=resolved.video_understanding_api_key,
+                base_url=(
+                    resolved.video_understanding_base_url
+                    or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                ),
+                model=resolved.video_understanding_model,
+                timeout_seconds=resolved.video_understanding_timeout_seconds,
+            )
+        )
     if resolved.video_provider == "http":
         return HttpVideoUnderstandingAdapter(
             base_url=resolved.video_understanding_base_url,

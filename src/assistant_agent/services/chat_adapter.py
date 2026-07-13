@@ -23,6 +23,7 @@ from assistant_agent.schemas.assistant_decision import NativeToolCall, openai_to
 from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator, LLMProviderError, LLMToolCallDelta
 from assistant_agent.schemas.provider_specs import CHAT_PROVIDER_SPECS, ProviderCapabilities
 from assistant_agent.services.provider_errors import ProviderAdapterError, build_provider_error
+from assistant_agent.services.provider_http import without_unsupported_socks_proxy_env
 
 
 ChatProviderName = Literal["mock", "openai", "qwen", "deepseek", "local"]
@@ -215,7 +216,8 @@ class OpenAICompatibleChatAdapter:
         self.capabilities = chat_capabilities_for_provider(provider)
         self._client = client
         if self._client is None and async_client is None:
-            self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
+            with without_unsupported_socks_proxy_env():
+                self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
         self._async_client = async_client
 
     def chat(self, request: ChatRequest) -> ChatResult:
@@ -261,22 +263,24 @@ class OpenAICompatibleChatAdapter:
 
     def _sdk_client(self) -> Any:
         if self._client is None:
-            self._client = OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self.timeout_seconds,
-            )
+            with without_unsupported_socks_proxy_env():
+                self._client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout=self.timeout_seconds,
+                )
         return self._client
 
     def _async_sdk_client(self) -> Any:
         if self._async_client is None:
             from openai import AsyncOpenAI
 
-            self._async_client = AsyncOpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self.timeout_seconds,
-            )
+            with without_unsupported_socks_proxy_env():
+                self._async_client = AsyncOpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout=self.timeout_seconds,
+                )
         return self._async_client
 
     async def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:

@@ -5,6 +5,7 @@ from assistant_agent.services.video_adapter import (
     create_video_understanding_adapter,
 )
 from assistant_agent.providers.ark_video_understanding import ArkVideoUnderstandingAdapter
+from assistant_agent.providers.qwen_video_understanding import QwenVideoUnderstandingAdapter
 from assistant_agent.tools.registry import create_default_registry
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
@@ -32,6 +33,19 @@ def test_create_video_adapter_returns_ark_adapter_when_selected() -> None:
     )
 
     assert isinstance(adapter, ArkVideoUnderstandingAdapter)
+
+
+def test_create_video_adapter_returns_qwen_adapter_when_selected() -> None:
+    adapter = create_video_understanding_adapter(
+        ProviderConfig(
+            video_provider="qwen",
+            video_understanding_api_key="qwen-video-key",
+            video_understanding_base_url="https://qwen.local/v1",
+            video_understanding_model="qwen-vl-test",
+        )
+    )
+
+    assert isinstance(adapter, QwenVideoUnderstandingAdapter)
 
 
 def test_provider_config_reads_video_provider_environment() -> None:
@@ -110,6 +124,22 @@ def test_default_registry_uses_selected_ark_video_adapter() -> None:
 
     assert isinstance(tool, VideoUnderstandingTool)
     assert isinstance(tool.adapter, ArkVideoUnderstandingAdapter)
+
+
+def test_default_registry_uses_selected_qwen_video_adapter() -> None:
+    registry = create_default_registry(
+        ProviderConfig(
+            video_provider="qwen",
+            video_understanding_api_key="qwen-video-key",
+            video_understanding_base_url="https://qwen.local/v1",
+            video_understanding_model="qwen-vl-test",
+        )
+    )
+    tool = registry.get("video_understanding")
+
+    assert isinstance(tool, VideoUnderstandingTool)
+    assert isinstance(tool.adapter, QwenVideoUnderstandingAdapter)
+    assert not isinstance(tool.adapter, MockVideoUnderstandingAdapter)
 
 
 def test_default_registry_uses_ark_video_adapter_from_env_config() -> None:
