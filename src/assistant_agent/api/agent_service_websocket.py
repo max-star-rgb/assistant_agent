@@ -51,6 +51,7 @@ class AgentServiceConnectionState:
     video_ids: list[str] = field(default_factory=list)
     video_ingestion: H264VideoIngestionService | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    chat_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     chat_tasks: set[asyncio.Task] = field(default_factory=set)
     delivery_registry: AgentServiceDeliveryRegistry = field(default_factory=AgentServiceDeliveryRegistry)
     client_capabilities: dict[str, bool] = field(default_factory=dict)
@@ -639,15 +640,16 @@ async def _run_chat_delivery(
             _emit_periodic_chat_progress(websocket, state=state, prepared=prepared, delivery=delivery)
         )
     try:
-        turn = await _run_agent_service_chat_turn(
-            state=state,
-            session_id=prepared.session_id,
-            user_number=prepared.user_number,
-            chat_index=prepared.chat_index,
-            latest_speech=prepared.latest_speech,
-            contents=prepared.contents,
-            video_ids=prepared.video_ids,
-        )
+        async with state.chat_run_lock:
+            turn = await _run_agent_service_chat_turn(
+                state=state,
+                session_id=prepared.session_id,
+                user_number=prepared.user_number,
+                chat_index=prepared.chat_index,
+                latest_speech=prepared.latest_speech,
+                contents=prepared.contents,
+                video_ids=prepared.video_ids,
+            )
         response = _prepared_chat_response(prepared, state=state, turn=turn, delivery=delivery)
         await _send_response(websocket, response, state=state)
         state.delivery_registry.mark_sent(
