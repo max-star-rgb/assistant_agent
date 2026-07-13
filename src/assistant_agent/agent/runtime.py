@@ -206,6 +206,21 @@ class AgentGraphRuntime:
         )
         if self.run_history is not None:
             self.run_history.record_start(state.run_id, state.user_id, state.session_id)
+        conversation_prepare_latency_ms = request.metadata.get("conversation_prepare_latency_ms")
+        if (
+            isinstance(conversation_prepare_latency_ms, int)
+            and not isinstance(conversation_prepare_latency_ms, bool)
+            and conversation_prepare_latency_ms >= 0
+        ):
+            self._append_observability_event(
+                state,
+                canonical_event="conversation.prepare.finished",
+                status="succeeded",
+                latency_ms=conversation_prepare_latency_ms,
+                attributes={
+                    "conversation_turn_index": request.metadata.get("conversation_turn_index"),
+                },
+            )
         self._append_observability_event(
             state,
             canonical_event="run.started",
@@ -448,17 +463,20 @@ class AgentGraphRuntime:
         specs_by_name = {spec.name: spec for spec in self.registry.list_specs()}
         for call_index, call in enumerate(tool_calls):
             decision = native_tool_call_to_assistant_decision(call)
+            validation_started_at = perf_counter()
             validation = ActionValidator().validate(
                 decision=decision,
                 registry=self.registry,
                 request=request,
                 state=state,
             )
+            validation_latency_ms = int((perf_counter() - validation_started_at) * 1000)
             scheduled_calls.append(
                 build_scheduled_tool_call(
                     call_index=call_index,
                     decision=decision,
                     validation=validation,
+                    validation_latency_ms=validation_latency_ms,
                     native_call_id=call.id,
                     tool_spec=specs_by_name.get(decision.tool_name or ""),
                 )
@@ -536,6 +554,7 @@ class AgentGraphRuntime:
                 node_name="native_runtime",
                 status="accepted",
                 tool_name=decision.tool_name,
+                latency_ms=scheduled_call.validation_latency_ms,
                 attributes={
                     **validation.model_dump(mode="json"),
                     "batch_index": scheduled_call.call_index + 1,
@@ -783,12 +802,17 @@ class AgentGraphRuntime:
                             "safety_notes": decision.safety_notes,
                         },
                     )
+                    validation_started_at = perf_counter()
                     validation = ActionValidator().validate(
                         decision=decision,
                         registry=self.registry,
                         request=request,
                         state=state,
                     )
+                    validation_latency_ms = int((perf_counter() - validation_started_at) * 1000)
+                    scheduled_call = scheduled_by_index.get(call_index)
+                    if scheduled_call is not None:
+                        validation_latency_ms += scheduled_call.validation_latency_ms
                     state.request.metadata["last_action_validator"] = validation.model_dump(mode="json")
                     self._append_observability_event(
                         state,
@@ -796,6 +820,7 @@ class AgentGraphRuntime:
                         node_name="native_runtime",
                         status="accepted" if validation.accepted else "rejected",
                         tool_name=decision.tool_name,
+                        latency_ms=validation_latency_ms,
                         attributes={
                             **validation.model_dump(mode="json"),
                             "batch_index": call_index + 1,
@@ -1106,6 +1131,7 @@ class AgentGraphRuntime:
         result: Any,
         observations: list[dict[str, Any]],
     ) -> None:
+        response_started_at = perf_counter()
         errors = [error.model_dump(mode="json") for error in result.errors]
         if not result.success:
             first_error = result.errors[0] if result.errors else None
@@ -1142,6 +1168,7 @@ class AgentGraphRuntime:
                 node_name="native_runtime",
                 state=state,
                 source="native_runtime",
+                latency_ms=int((perf_counter() - response_started_at) * 1000),
             )
             return
         else:
@@ -1198,6 +1225,7 @@ class AgentGraphRuntime:
             node_name="native_runtime",
             state=state,
             source="native_runtime",
+            latency_ms=int((perf_counter() - response_started_at) * 1000),
         )
 
     def _set_native_runtime_max_iteration_response(

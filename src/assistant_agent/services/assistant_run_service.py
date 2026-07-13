@@ -8,6 +8,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Protocol
 
 from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
@@ -468,6 +469,7 @@ def run_assistant_request(
     resolved_store = conversation_store or get_default_conversation_store(runtime_config)
     resolved_task_store = realtime_task_state_store or get_default_realtime_task_state_store()
     _preload_demo_video_context(request, resolved_runtime)
+    conversation_prepare_started_at = perf_counter()
     resolved_request = _prepare_conversation_request(
         request,
         conversation_store=resolved_store,
@@ -476,6 +478,17 @@ def run_assistant_request(
     resolved_request = prepare_realtime_task_state_request(
         resolved_request,
         store=resolved_task_store,
+    )
+    resolved_request = resolved_request.model_copy(
+        update={
+            "metadata": {
+                **resolved_request.metadata,
+                "conversation_prepare_latency_ms": int(
+                    (perf_counter() - conversation_prepare_started_at) * 1000
+                ),
+            }
+        },
+        deep=True,
     )
     runtime_sink = _RealtimeTaskStateTrackingEventSink(
         inner=sink,

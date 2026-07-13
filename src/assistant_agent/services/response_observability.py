@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from assistant_agent.agent.state import AgentState
 from assistant_agent.services.trace_store import TraceStore, append_observability_event
 
@@ -15,6 +13,7 @@ def append_response_final_event(
     node_name: str,
     state: AgentState,
     source: str,
+    latency_ms: int | None = None,
 ) -> None:
     """Append a prompt-safe final response trace event when a response exists."""
 
@@ -33,6 +32,7 @@ def append_response_final_event(
         canonical_event="response.final",
         node_name=node_name,
         status=_response_status(state.status),
+        latency_ms=latency_ms,
         attributes={
             "source": source,
             "message_present": bool(message),
