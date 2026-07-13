@@ -134,7 +134,12 @@ class AgentServiceDeliveryRegistry:
 
     def pending(self) -> list[AgentServiceDelivery]:
         with self._lock:
-            return [item for item in self._deliveries.values() if item.status not in {"acked", "failed"}]
+            return [
+                item
+                for item in self._deliveries.values()
+                if item.status not in {"acked", "failed"}
+                and not (item.status == "sent" and not item.expects_ack)
+            ]
 
     def _required(self, delivery_id: str) -> AgentServiceDelivery:
         delivery = self.get(delivery_id)

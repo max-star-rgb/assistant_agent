@@ -13,6 +13,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from assistant_agent.gateway import AGENT_SERVICE_ENTRY_CAPABILITIES, GatewaySessionManager
 from assistant_agent.realtime import GatewayAgentAdapter
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.agent_service_delivery import (
+    AgentServiceDelivery,
+    AgentServiceDeliveryError,
+    AgentServiceDeliveryRegistry,
+)
 from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
 from assistant_agent.services.gateway_turn_facade import (
     GatewayTurnError,
@@ -28,6 +33,7 @@ SUCCESS_CODE = "OK"
 FAIL_CODE = "FAIL"
 POLICY_VIOLATION_CLOSE_CODE = 1008
 VIDEO_TURN_TIMEOUT_SECONDS = 90.0
+CHAT_PROGRESS_INTERVAL_SECONDS = 15.0
 
 
 @dataclass
@@ -44,6 +50,23 @@ class AgentServiceConnectionState:
     chats: list[dict[str, Any]] = field(default_factory=list)
     video_ids: list[str] = field(default_factory=list)
     video_ingestion: H264VideoIngestionService | None = None
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    chat_tasks: set[asyncio.Task] = field(default_factory=set)
+    delivery_registry: AgentServiceDeliveryRegistry = field(default_factory=AgentServiceDeliveryRegistry)
+    client_capabilities: dict[str, bool] = field(default_factory=dict)
+    closed: bool = False
+
+
+@dataclass(frozen=True)
+class PreparedChat:
+    session_id: str
+    response_session_id: str | None
+    body: dict[str, Any]
+    chat_index: Any
+    user_number: str
+    latest_speech: str
+    contents: list[Any]
+    video_ids: list[str]
 
 
 class AgentServiceProtocolError(ValueError):
@@ -147,6 +170,7 @@ class AssistantControlHandler(BaseHandler):
             raise AgentServiceProtocolError("callType must be AUDIO or VIDEO")
         state.media_protocol = True
         state.assistant_control_start = dict(body)
+        state.client_capabilities = _delivery_capabilities(body.get("clientCapabilities"))
         return _response_envelope(
             message=self.response_message,
             session_id=state.response_session_id,
@@ -328,6 +352,22 @@ class InterruptHandler(BaseHandler):
         )
 
 
+class ChatResponseAckHandler(BaseHandler):
+    message_type = "chatResponseAck"
+    response_message = "chatResponseAck"
+
+    async def handle(self, *, session_id: str, body: dict[str, Any], state: AgentServiceConnectionState) -> dict[str, Any]:
+        _ = session_id
+        delivery_id = self.required_text(body, "deliveryId")
+        chat_index = self.require_present(body, "chatIndex")
+        state.delivery_registry.ack(delivery_id, chat_index=chat_index)
+        return _response_envelope(
+            message=self.response_message,
+            session_id=state.response_session_id,
+            body={"code": 0, "message": "acknowledged", "deliveryId": delivery_id},
+        )
+
+
 _HANDLERS: dict[str, BaseHandler] = {
     AssistantControlStartHandler.message_type: AssistantControlStartHandler(),
     AssistantControlHandler.message_type: AssistantControlHandler(),
@@ -335,6 +375,7 @@ _HANDLERS: dict[str, BaseHandler] = {
     AudioHandler.message_type: AudioHandler(),
     VideoHandler.message_type: VideoHandler(),
     InterruptHandler.message_type: InterruptHandler(),
+    ChatResponseAckHandler.message_type: ChatResponseAckHandler(),
 }
 
 
@@ -346,6 +387,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     state = AgentServiceConnectionState(
         session_id=_optional_text(websocket.query_params.get("sessionId")),
         query_params={str(key): str(value) for key, value in websocket.query_params.items()},
+        delivery_registry=_create_delivery_registry(),
     )
     logger.info(
         "agent-service websocket connected version=%s session_id=%s query=%s",
@@ -359,7 +401,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             session_id=state.session_id,
             message=f"unsupported agent service version: {version}",
         )
-        await _send_response(websocket, response)
+        await _send_response(websocket, response, state=state)
         await websocket.close(code=POLICY_VIOLATION_CLOSE_CODE)
         logger.info(
             "agent-service websocket rejected unsupported version=%s session_id=%s",
@@ -375,11 +417,53 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         while True:
             raw = await websocket.receive_text()
             logger.info("agent-service websocket received session_id=%s bytes=%s", state.session_id, len(raw))
+            if _inbound_message_type(raw) == "chat":
+                prepared_or_error = _prepare_chat_raw_message(raw, state=state)
+                if isinstance(prepared_or_error, dict):
+                    await _send_response(websocket, prepared_or_error, state=state)
+                    continue
+                prepared = prepared_or_error
+                expects_ack = state.client_capabilities.get("chatResponseAck", False)
+                delivery = state.delivery_registry.accept(
+                    prepared.session_id,
+                    prepared.chat_index,
+                    expects_ack=expects_ack,
+                )
+                if state.client_capabilities.get("chatProgress", False):
+                    state.delivery_registry.mark_processing(delivery.delivery_id)
+                    await _send_response(
+                        websocket,
+                        _chat_progress_response(prepared, delivery),
+                        state=state,
+                    )
+                task = asyncio.create_task(
+                    _run_chat_delivery(websocket, state=state, prepared=prepared, delivery=delivery)
+                )
+                state.chat_tasks.add(task)
+                task.add_done_callback(state.chat_tasks.discard)
+                continue
             response = await _handle_raw_message(raw, state=state)
-            await _send_response(websocket, response)
-    except WebSocketDisconnect:
-        logger.info("agent-service websocket disconnected session_id=%s", state.session_id)
+            await _send_response(websocket, response, state=state)
+    except WebSocketDisconnect as exc:
+        logger.info(
+            "agent-service websocket disconnected session_id=%s code=%s reason_present=%s",
+            state.session_id,
+            exc.code,
+            bool(exc.reason),
+        )
+        close_code, close_reason = exc.code, exc.reason
     finally:
+        state.closed = True
+        for delivery in state.delivery_registry.pending():
+            state.delivery_registry.mark_disconnected(
+                delivery.delivery_id,
+                close_code=locals().get("close_code"),
+                close_reason=locals().get("close_reason"),
+            )
+        for task in list(state.chat_tasks):
+            task.cancel()
+        if state.chat_tasks:
+            await asyncio.gather(*state.chat_tasks, return_exceptions=True)
         if state.video_ingestion is not None:
             for video_id in state.video_ids:
                 await asyncio.to_thread(state.video_ingestion.cleanup, video_id)
@@ -462,6 +546,8 @@ def _session_id_from_body(message_type: str, body: dict[str, Any]) -> str | None
         return _optional_text(body.get("userNumber"))
     if message_type == "interrupt":
         return _optional_text(body.get("number"))
+    if message_type == "chatResponseAck":
+        return None
     return None
 
 
@@ -481,6 +567,188 @@ def _validate_media_contents(*, body: dict[str, Any], content_field: str) -> Non
         _required_item_text(item, index, "time")
 
 
+def _inbound_message_type(raw: str) -> str | None:
+    try:
+        envelope = _parse_envelope(raw)
+        return _required_envelope_text(envelope, "message")
+    except AgentServiceProtocolError:
+        return None
+
+
+def _prepare_chat_raw_message(
+    raw: str,
+    *,
+    state: AgentServiceConnectionState,
+) -> PreparedChat | dict[str, Any]:
+    handler = _HANDLERS["chat"]
+    try:
+        envelope = _parse_envelope(raw)
+        body = handler.parse_body(envelope)
+        response_session_id = _response_session_id_from_envelope(envelope, state)
+        session_id = _session_id_from_envelope(envelope, state) or _session_id_from_body("chat", body)
+        if session_id is None:
+            raise AgentServiceProtocolError("missing sessionId")
+        chat_index = handler.require_present(body, "chatIndex")
+        user_number = handler.required_text(body, "userNumber")
+        contents = body.get("contents")
+        if not isinstance(contents, list) or not contents:
+            raise AgentServiceProtocolError("missing contents")
+        latest_speech = ""
+        for index, item in enumerate(contents):
+            if not isinstance(item, dict):
+                raise AgentServiceProtocolError(f"contents[{index}] must be an object")
+            _required_item_text(item, index, "speakerNumber")
+            _required_item_text(item, index, "time")
+            speech = _optional_text(item.get("speechContent"))
+            if speech:
+                latest_speech = speech
+            elif not _optional_text(item.get("imageContent")):
+                raise AgentServiceProtocolError(f"missing contents[{index}].speechContent")
+        if not latest_speech:
+            raise AgentServiceProtocolError("missing contents[].speechContent")
+        state.session_id = session_id
+        state.chats.append(dict(body))
+        return PreparedChat(
+            session_id=session_id,
+            response_session_id=response_session_id,
+            body=body,
+            chat_index=chat_index,
+            user_number=user_number,
+            latest_speech=latest_speech,
+            contents=contents,
+            video_ids=list(state.video_ids),
+        )
+    except Exception as exc:  # noqa: BLE001 - protocol boundary.
+        return _response_envelope(
+            message="chatResponse",
+            session_id=state.response_session_id,
+            body={"code": FAIL_CODE, "message": str(exc)},
+        )
+
+
+async def _run_chat_delivery(
+    websocket: WebSocket,
+    *,
+    state: AgentServiceConnectionState,
+    prepared: PreparedChat,
+    delivery: AgentServiceDelivery,
+) -> None:
+    progress_task: asyncio.Task | None = None
+    if state.client_capabilities.get("chatProgress", False):
+        progress_task = asyncio.create_task(
+            _emit_periodic_chat_progress(websocket, state=state, prepared=prepared, delivery=delivery)
+        )
+    try:
+        turn = await _run_agent_service_chat_turn(
+            state=state,
+            session_id=prepared.session_id,
+            user_number=prepared.user_number,
+            chat_index=prepared.chat_index,
+            latest_speech=prepared.latest_speech,
+            contents=prepared.contents,
+            video_ids=prepared.video_ids,
+        )
+        response = _prepared_chat_response(prepared, state=state, turn=turn, delivery=delivery)
+        await _send_response(websocket, response, state=state)
+        state.delivery_registry.mark_sent(
+            delivery.delivery_id,
+            run_id=turn.run_id,
+            trace_id=turn.trace_id,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - delivery boundary.
+        if not state.closed:
+            response = _response_envelope(
+                message="chatResponse",
+                session_id=prepared.response_session_id,
+                body={"code": FAIL_CODE, "message": str(exc)},
+            )
+            try:
+                await _send_response(websocket, response, state=state)
+                state.delivery_registry.mark_sent(delivery.delivery_id)
+            except Exception:  # noqa: BLE001 - connection may already be gone.
+                state.delivery_registry.mark_disconnected(delivery.delivery_id)
+        else:
+            state.delivery_registry.mark_disconnected(delivery.delivery_id)
+    finally:
+        if progress_task is not None:
+            progress_task.cancel()
+            await asyncio.gather(progress_task, return_exceptions=True)
+
+
+async def _emit_periodic_chat_progress(
+    websocket: WebSocket,
+    *,
+    state: AgentServiceConnectionState,
+    prepared: PreparedChat,
+    delivery: AgentServiceDelivery,
+) -> None:
+    while True:
+        await asyncio.sleep(CHAT_PROGRESS_INTERVAL_SECONDS)
+        await _send_response(websocket, _chat_progress_response(prepared, delivery), state=state)
+
+
+def _chat_progress_response(prepared: PreparedChat, delivery: AgentServiceDelivery) -> dict[str, Any]:
+    return _response_envelope(
+        message="chatProgress",
+        session_id=prepared.response_session_id,
+        body={
+            "chatIndex": prepared.chat_index,
+            "deliveryId": delivery.delivery_id,
+            "status": "PROCESSING",
+        },
+    )
+
+
+def _prepared_chat_response(
+    prepared: PreparedChat,
+    *,
+    state: AgentServiceConnectionState,
+    turn: Any,
+    delivery: AgentServiceDelivery,
+) -> dict[str, Any]:
+    if turn.status == "error":
+        return _response_envelope(
+            message="chatResponse",
+            session_id=prepared.response_session_id,
+            body={"code": FAIL_CODE, "message": turn.payload.get("message") or turn.reason or "Gateway run failed"},
+        )
+    if state.media_protocol or "stream" in prepared.body or prepared.response_session_id is None:
+        state.media_protocol = True
+        body = {
+            "message": {
+                "chatIndex": prepared.chat_index,
+                "content": {"intentResult": {"description": turn.response_text, "status": "SUCCESS"}},
+            },
+            "display_only": False,
+        }
+        if delivery.expects_ack:
+            body["deliveryId"] = delivery.delivery_id
+        return _response_envelope(
+            message="chatResponse",
+            session_id=prepared.response_session_id,
+            body=body,
+        )
+    return _response_envelope(
+        message="chatResponse",
+        session_id=prepared.response_session_id,
+        body={
+            "number": prepared.user_number,
+            "message": {"chatIndex": prepared.chat_index, "content": turn.response_text},
+        },
+    )
+
+
+def _delivery_capabilities(value: Any) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        name: value.get(name) is True
+        for name in ("chatProgress", "chatResponseAck")
+    }
+
+
 def _required_item_text(item: dict[str, Any], index: int, field_name: str) -> str:
     value = item.get(field_name)
     text = str(value).strip() if value is not None else ""
@@ -497,6 +765,10 @@ def _create_agent_service_gateway_manager() -> GatewaySessionManager:
         ),
         start_reaper=False,
     )
+
+
+def _create_delivery_registry() -> AgentServiceDeliveryRegistry:
+    return AgentServiceDeliveryRegistry()
 
 
 def _create_video_ingestion_service() -> H264VideoIngestionService:
@@ -523,6 +795,7 @@ async def _run_agent_service_chat_turn(
     chat_index: Any,
     latest_speech: str,
     contents: list[Any],
+    video_ids: list[str] | None = None,
 ):
     if state.gateway_facade is None:
         raise RuntimeError("agent-service Gateway facade is not initialized")
@@ -532,8 +805,8 @@ async def _run_agent_service_chat_turn(
                 user_id=user_number,
                 session_id=session_id,
                 text=latest_speech,
-                video_ids=list(state.video_ids),
-                timeout_s=VIDEO_TURN_TIMEOUT_SECONDS if state.video_ids else 30.0,
+                video_ids=list(state.video_ids if video_ids is None else video_ids),
+                timeout_s=VIDEO_TURN_TIMEOUT_SECONDS if (state.video_ids if video_ids is None else video_ids) else 30.0,
                 metadata=_agent_service_gateway_metadata(
                     state=state,
                     user_number=user_number,
@@ -568,10 +841,23 @@ def _agent_service_gateway_metadata(
     }
 
 
-async def _send_response(websocket: WebSocket, response: dict[str, Any]) -> None:
+async def _send_response(
+    websocket: WebSocket,
+    response: dict[str, Any],
+    *,
+    state: AgentServiceConnectionState,
+) -> None:
     raw = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
-    logger.info("agent-service websocket sending raw=%s", raw)
-    await websocket.send_text(raw)
+    async with state.send_lock:
+        if state.closed:
+            raise WebSocketDisconnect(code=1001, reason="connection closed")
+        await websocket.send_text(raw)
+    logger.info(
+        "agent-service websocket sent message=%s bytes=%s session_id=%s",
+        response.get("message"),
+        len(raw),
+        state.session_id,
+    )
 
 
 def _response_envelope(

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +16,10 @@ from assistant_agent.api import agent_service_websocket as agent_service_ws
 from assistant_agent.api.app import create_app
 from assistant_agent.schemas.requests import AgentResponse
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame
+from assistant_agent.services.agent_service_delivery import (
+    AgentServiceDeliveryRegistry,
+    JsonlAgentServiceDeliveryAudit,
+)
 
 
 class RecordingRuntime:
@@ -207,7 +213,126 @@ def test_agent_service_video_context_reaches_following_chat(monkeypatch, tmp_pat
     capabilities = runtime.requests[0].metadata["runtime"]["entry_capabilities"]
     assert capabilities["supports_video_refs"] is True
     assert capabilities["supports_raw_media"] is True
+    deadline = time.monotonic() + 1
+    while not ingestion.cleaned and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert ingestion.cleaned == ["agent-service-video-test"]
+
+
+def test_agent_service_video_ack_continues_while_chat_is_running(monkeypatch, tmp_path: Path) -> None:
+    started = Event()
+    release = Event()
+
+    class BlockingRuntime(RecordingRuntime):
+        def run_state(self, request):
+            started.set()
+            assert release.wait(timeout=3)
+            return super().run_state(request)
+
+    runtime = BlockingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+
+    class VideoIngestion:
+        def __init__(self):
+            self.sequence = 0
+
+        def ingest(self, *_args):
+            self.sequence += 1
+            return VideoFrame(
+                video_id="agent-service-video-concurrent",
+                frame_id=f"frame-{self.sequence}",
+                uri=str(tmp_path / f"frame-{self.sequence}.jpg"),
+                sequence=self.sequence,
+            )
+
+        def cleanup(self, _video_id):
+            return None
+
+    monkeypatch.setattr(agent_service_ws, "_create_video_ingestion_service", VideoIngestion)
+    client = TestClient(create_app())
+
+    def video(index: str) -> dict:
+        return _media_envelope(
+            "video",
+            {
+                "userNumber": "10086",
+                "videoIndex": index,
+                "contents": [{"speakerNumber": "10086", "videoContent": "0000000165aa", "time": "2026-07-13T08:30:00Z"}],
+                "videoConfig": {"codec": "H264"},
+            },
+        )
+
+    with client.websocket_connect("/agent-service/v1") as websocket:
+        websocket.send_json(video("1"))
+        assert _body(websocket.receive_json())["code"] == 0
+        websocket.send_json(
+            _media_envelope(
+                "chat",
+                {
+                    "chatIndex": "blocking-chat",
+                    "userNumber": "10086",
+                    "contents": [{"speakerNumber": "10086", "speechContent": "识别画面", "time": "2026-07-13T08:30:01Z"}],
+                },
+            )
+        )
+        assert started.wait(timeout=2)
+        websocket.send_json(video("2"))
+        during_chat = websocket.receive_json()
+        release.set()
+        final = websocket.receive_json()
+
+    assert during_chat["message"] == "videoResponse"
+    assert _body(during_chat) == {"code": 0, "message": "video received"}
+    assert final["message"] == "chatResponse"
+
+
+def test_agent_service_negotiates_progress_and_acknowledges_final_delivery(monkeypatch, tmp_path: Path) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    audit_path = tmp_path / "delivery.jsonl"
+    registry = AgentServiceDeliveryRegistry(JsonlAgentServiceDeliveryAudit(audit_path))
+    monkeypatch.setattr(agent_service_ws, "_create_delivery_registry", lambda: registry)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/agent-service/v1") as websocket:
+        websocket.send_json(
+            _media_envelope(
+                "assistantControl",
+                {
+                    "number": "10086",
+                    "callType": "VIDEO",
+                    "clientCapabilities": {"chatProgress": True, "chatResponseAck": True},
+                },
+            )
+        )
+        websocket.receive_json()
+        websocket.send_json(
+            _media_envelope(
+                "chat",
+                {
+                    "chatIndex": "chat-ack-1",
+                    "userNumber": "10086",
+                    "contents": [{"speakerNumber": "10086", "speechContent": "你好", "time": "2026-07-13T08:30:01Z"}],
+                },
+            )
+        )
+        progress = websocket.receive_json()
+        final = websocket.receive_json()
+        delivery_id = _body(final)["deliveryId"]
+        websocket.send_json(
+            _media_envelope(
+                "chatResponseAck",
+                {"deliveryId": delivery_id, "chatIndex": "chat-ack-1"},
+            )
+        )
+        ack = websocket.receive_json()
+
+    assert progress["message"] == "chatProgress"
+    assert _body(progress)["status"] == "PROCESSING"
+    assert _body(progress)["deliveryId"] == delivery_id
+    assert final["message"] == "chatResponse"
+    assert _body(ack) == {"code": 0, "message": "acknowledged", "deliveryId": delivery_id}
+    assert registry.get(delivery_id).status == "acked"
 
 
 def test_agent_service_video_chat_allows_provider_timeout_budget() -> None:
