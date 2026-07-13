@@ -6,9 +6,10 @@ import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
+from uuid import uuid4
 
 from assistant_agent.schemas.proactive_wake import (
     NotificationEnvelope,
@@ -441,6 +442,149 @@ class SQLiteProactiveWakeStore:
             NotificationEnvelope.model_validate_json(str(row["envelope_json"])) for row in rows
         ]
 
+    def claim_due_notifications(
+        self,
+        *,
+        now: datetime,
+        lease_s: int = 30,
+        limit: int = 20,
+    ) -> list[NotificationEnvelope]:
+        lease_until = now + timedelta(seconds=max(0, lease_s))
+        with self._connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT delivery_id, envelope_json
+                FROM notification_outbox
+                WHERE (
+                        status IN ('queued', 'retry_wait')
+                        AND available_at <= ?
+                    )
+                   OR (
+                        status = 'leased'
+                        AND lease_until IS NOT NULL
+                        AND lease_until <= ?
+                    )
+                ORDER BY available_at, delivery_id
+                LIMIT ?
+                """,
+                (_datetime_text(now), _datetime_text(now), max(0, limit)),
+            ).fetchall()
+            claimed = []
+            for row in rows:
+                notification = NotificationEnvelope.model_validate_json(
+                    str(row["envelope_json"])
+                ).model_copy(
+                    update={"status": "leased", "lease_until": lease_until}
+                )
+                _update_outbox_notification(connection, notification, now=now)
+                claimed.append(notification)
+        return claimed
+
+    def mark_notification_sent(
+        self,
+        delivery_id: str,
+        *,
+        provider_message_id: str | None,
+        now: datetime,
+    ) -> NotificationEnvelope:
+        with self._connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = _leased_notification(connection, delivery_id)
+            notification = current.model_copy(
+                update={
+                    "status": "sent",
+                    "attempt_count": current.attempt_count + 1,
+                    "lease_until": None,
+                    "provider_message_id": provider_message_id,
+                    "last_reason_code": None,
+                }
+            )
+            _update_outbox_notification(connection, notification, now=now)
+            _record_notification_attempt(
+                connection,
+                notification,
+                outcome="accepted",
+                error_code=None,
+                now=now,
+            )
+        return notification
+
+    def defer_notification(
+        self,
+        delivery_id: str,
+        *,
+        available_at: datetime,
+        reason_code: str,
+        now: datetime,
+    ) -> NotificationEnvelope:
+        with self._connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = _leased_notification(connection, delivery_id)
+            notification = current.model_copy(
+                update={
+                    "status": "retry_wait",
+                    "deliver_after": available_at,
+                    "lease_until": None,
+                    "last_reason_code": reason_code,
+                }
+            )
+            _update_outbox_notification(connection, notification, now=now)
+        return notification
+
+    def mark_notification_failed(
+        self,
+        delivery_id: str,
+        *,
+        error_code: str,
+        retry_at: datetime | None,
+        now: datetime,
+        max_attempts: int,
+    ) -> NotificationEnvelope:
+        with self._connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = _leased_notification(connection, delivery_id)
+            attempt_count = current.attempt_count + 1
+            exhausted = attempt_count >= max_attempts or retry_at is None
+            notification = current.model_copy(
+                update={
+                    "status": "dead_letter" if exhausted else "retry_wait",
+                    "deliver_after": current.deliver_after if exhausted else retry_at,
+                    "attempt_count": attempt_count,
+                    "lease_until": None,
+                    "provider_message_id": None,
+                    "last_reason_code": error_code,
+                }
+            )
+            _update_outbox_notification(connection, notification, now=now)
+            _record_notification_attempt(
+                connection,
+                notification,
+                outcome="rejected",
+                error_code=error_code,
+                now=now,
+            )
+        return notification
+
+    def mark_notification_expired(
+        self,
+        delivery_id: str,
+        *,
+        now: datetime,
+    ) -> NotificationEnvelope:
+        with self._connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = _leased_notification(connection, delivery_id)
+            notification = current.model_copy(
+                update={
+                    "status": "expired",
+                    "lease_until": None,
+                    "last_reason_code": "notification_expired",
+                }
+            )
+            _update_outbox_notification(connection, notification, now=now)
+        return notification
+
     def list_runs(self, owner: WakeOwner, *, limit: int = 100) -> list[WakeRun]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -524,6 +668,81 @@ def _run_values(run: WakeRun) -> tuple[object, ...]:
         persisted_run.model_dump_json(),
         _datetime_text(run.created_at),
         _datetime_text(run.updated_at),
+    )
+
+
+def _leased_notification(
+    connection: sqlite3.Connection,
+    delivery_id: str,
+) -> NotificationEnvelope:
+    row = connection.execute(
+        """
+        SELECT status, envelope_json
+        FROM notification_outbox
+        WHERE delivery_id = ?
+        """,
+        (delivery_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError("notification not found")
+    if row["status"] != "leased":
+        raise RuntimeError("notification is not leased")
+    return NotificationEnvelope.model_validate_json(str(row["envelope_json"]))
+
+
+def _update_outbox_notification(
+    connection: sqlite3.Connection,
+    notification: NotificationEnvelope,
+    *,
+    now: datetime,
+) -> None:
+    connection.execute(
+        """
+        UPDATE notification_outbox
+        SET status = ?,
+            envelope_json = ?,
+            available_at = ?,
+            lease_until = ?,
+            attempt_count = ?,
+            last_reason_code = ?,
+            updated_at = ?
+        WHERE delivery_id = ?
+        """,
+        (
+            notification.status,
+            notification.model_dump_json(),
+            _datetime_text(notification.deliver_after),
+            _optional_datetime_text(notification.lease_until),
+            notification.attempt_count,
+            notification.last_reason_code,
+            _datetime_text(now),
+            notification.delivery_id,
+        ),
+    )
+
+
+def _record_notification_attempt(
+    connection: sqlite3.Connection,
+    notification: NotificationEnvelope,
+    *,
+    outcome: str,
+    error_code: str | None,
+    now: datetime,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO notification_attempts (
+            attempt_id, delivery_id, attempt_number, outcome, error_code, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"wake_attempt_{uuid4().hex}",
+            notification.delivery_id,
+            notification.attempt_count,
+            outcome,
+            error_code,
+            _datetime_text(now),
+        ),
     )
 
 

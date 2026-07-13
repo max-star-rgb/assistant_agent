@@ -50,6 +50,11 @@ from assistant_agent.services.proactive_wake.coordinator import (
     ProactiveWakeCoordinator,
     ProactiveWakeError,
 )
+from assistant_agent.services.proactive_wake.delivery import (
+    MockProactiveNotificationTransport,
+    NotificationDeliveryWorker,
+    ProactiveNotificationTransport,
+)
 
 __all__ = [
     "AttentionDecision",
@@ -60,11 +65,14 @@ __all__ = [
     "DeterministicWakeEvaluator",
     "GovernedProbeRunner",
     "GatewayUserActivityReader",
+    "MockProactiveNotificationTransport",
     "NotificationEnvelope",
+    "NotificationDeliveryWorker",
     "NullUserActivityReader",
     "ProbeObservation",
     "ProactiveWakeCoordinator",
     "ProactiveWakeError",
+    "ProactiveNotificationTransport",
     "ProactiveWakeRunResult",
     "ProactiveRuleValidation",
     "ProactiveRuleValidator",
