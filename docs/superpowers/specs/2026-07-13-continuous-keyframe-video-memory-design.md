@@ -58,8 +58,10 @@ It does not synthesize visual answers or call a Provider adapter directly.
 
 The existing `AdaptiveFrameSampler`, `FrameDifferenceDetector`,
 `SSIMChangeDetector`, `SemanticKeyframeSelector`, and local histogram embedding
-remain the selection primitives. JPEG artifacts must be decoded into actual
-pixel data for fingerprints; URI text must not be treated as image content.
+remain the selection primitives. The existing FFmpeg H.264 decode produces both
+the JPEG artifact and a fixed low-resolution grayscale fingerprint in one
+bounded subprocess call. URI text must not be treated as image content, and the
+fingerprint must not be promoted into prompts or traces.
 
 Selection has three bounded stages:
 
@@ -91,17 +93,21 @@ no network calls.
 
 Selected-keyframe analysis remains behind the tool governance boundary. The
 observer submits an internal structured keyframe-observation request through
-`ActionValidator`, `ToolExecutor`, and `ToolRegistry`; the registry-owned tool
-is the only component allowed to reach the configured visual/video Provider
-adapter.
+`ActionValidator`, `ToolExecutor`, and `ToolRegistry`; the registry-owned
+`video_understanding` tool is the only component allowed to reach the
+configured visual/video Provider adapter.
 
 The internal observation result must use the stable structured capability
 contract and is mapped into rolling memory only after successful validation and
 execution. Provider errors are sanitized and stored as status metadata, not as
 raw responses.
 
-The internal observation capability is not advertised as a second user-facing
-tool choice. The Agent continues to see and choose `video_understanding`.
+There is no second user-facing tool. The observer uses the same
+`video_understanding` tool with an internal observation-mode marker injected by
+`ToolContext`, not by tool input. Observation mode forces Provider analysis of
+the selected keyframe and bypasses memory resolution. The Agent cannot request
+that mode and continues to see and choose the ordinary `video_understanding`
+contract.
 
 ### Rolling Video Memory
 
@@ -170,8 +176,9 @@ must be discarded after close and must not recreate deleted session state.
 
 ## Configuration And Safety
 
-No new dependency is introduced. Image decoding uses an image library already
-present in the project environment and has a deterministic test seam.
+No new dependency is introduced. The already-required `/usr/bin/ffmpeg`
+process produces the JPEG and local grayscale fingerprint together. Tests use
+the decoder seam and do not require external media or Provider calls.
 
 The default runtime profile remains mock/local/offline. Real continuous visual
 analysis requires `provider_smoke` or `pilot` plus explicit Provider selection
@@ -220,4 +227,3 @@ A real Provider smoke is opt-in. When explicitly run, it must demonstrate at
 least one selected keyframe observation, a later visual question answered from
 `rolling_video_memory`, zero query-time visual Provider calls, and a delivered
 `chatResponse` that can reach `acked` when the media client supports it.
-
