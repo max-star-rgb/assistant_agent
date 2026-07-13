@@ -36,12 +36,19 @@ from assistant_agent.services.proactive_wake.probe import (
     ProactiveRuleValidation,
     ProactiveRuleValidator,
 )
+from assistant_agent.services.proactive_wake.policy import (
+    AttentionPolicy,
+    DeterministicWakeEvaluator,
+    build_notification_envelope,
+)
 
 __all__ = [
     "AttentionDecision",
     "AttentionOutcome",
+    "AttentionPolicy",
     "DeliveryResult",
     "DeliveryStatus",
+    "DeterministicWakeEvaluator",
     "GovernedProbeRunner",
     "NotificationEnvelope",
     "ProbeObservation",
@@ -67,5 +74,6 @@ __all__ = [
     "WakeSignalKind",
     "WakeTriggerSpec",
     "build_wake_evidence",
+    "build_notification_envelope",
     "evidence_fingerprint",
 ]
