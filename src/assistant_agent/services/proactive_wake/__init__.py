@@ -26,14 +26,28 @@ from assistant_agent.schemas.proactive_wake import (
     WakeTriggerSpec,
 )
 from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
+from assistant_agent.services.proactive_wake.change_detector import (
+    build_wake_evidence,
+    evidence_fingerprint,
+)
+from assistant_agent.services.proactive_wake.probe import (
+    GovernedProbeRunner,
+    ProbeObservation,
+    ProactiveRuleValidation,
+    ProactiveRuleValidator,
+)
 
 __all__ = [
     "AttentionDecision",
     "AttentionOutcome",
     "DeliveryResult",
     "DeliveryStatus",
+    "GovernedProbeRunner",
     "NotificationEnvelope",
+    "ProbeObservation",
     "ProactiveWakeRunResult",
+    "ProactiveRuleValidation",
+    "ProactiveRuleValidator",
     "QuietHours",
     "SQLiteProactiveWakeStore",
     "Severity",
@@ -52,4 +66,6 @@ __all__ = [
     "WakeSignal",
     "WakeSignalKind",
     "WakeTriggerSpec",
+    "build_wake_evidence",
+    "evidence_fingerprint",
 ]
