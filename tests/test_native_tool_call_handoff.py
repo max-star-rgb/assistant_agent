@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 from threading import Lock
 
 from pydantic import BaseModel
@@ -10,6 +11,7 @@ from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryQuery
+from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolExecutionPolicy, ToolResult, ToolSpec
 from assistant_agent.services.chat_adapter import ChatProviderError, ChatRequest, ChatResult, ProviderChatCapabilities
@@ -18,10 +20,11 @@ from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaIngestionResult,
     MemoryMediaTaskStatusResult,
 )
+from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
-from assistant_agent.tools.registry import ToolRegistry
+from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
 class NativeToolChatAdapter:
@@ -241,6 +244,73 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
     assert state.response.message == "已根据 native tool call 搜索通勤耳机。"
     assert state.request.metadata["assistant_loop_steps"][0]["safety_notes"] == ["native_tool_call"]
     assert any(step.get("observation_tool") == "product_search" for step in state.request.metadata["assistant_loop_steps"])
+
+
+def test_native_video_tool_call_uses_agent_service_frame_context(tmp_path: Path) -> None:
+    video_id = "agent-service-video-test"
+    store = InMemoryVideoContextStore(window_size=3)
+    frame_paths: list[str] = []
+    for index in range(1, 4):
+        path = tmp_path / f"frame-{index}.jpg"
+        path.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+        frame_paths.append(str(path))
+        store.append_frame(
+            VideoFrame(
+                video_id=video_id,
+                frame_id=f"frame-{index}",
+                uri=str(path),
+                sequence=index,
+            )
+        )
+
+    captured: dict[str, VideoUnderstandingRequest] = {}
+
+    class CapturingVideoAdapter:
+        def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+            captured["request"] = request
+            return VideoUnderstandingResult(
+                summary="画面中有一个白色水杯。",
+                objects=["白色水杯"],
+                confidence=0.96,
+                provider="capturing-video",
+                model="video-test",
+                output_ref="provider://video/capturing-video/test",
+            )
+
+    registry = create_default_registry(video_context_store=store)
+    registry.get("video_understanding").adapter = CapturingVideoAdapter()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "video_understanding",
+                {"video_ids": [video_id], "user_query": "识别眼前物体"},
+            ),
+            final_result("眼前是一个白色水杯。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        video_context_store=store,
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="10086",
+            session_id="10086",
+            text="识别眼前物体",
+            video_ids=[video_id],
+        )
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["video_understanding"]
+    assert state.tool_calls[0].status == "succeeded"
+    assert captured["request"].video_ref == video_id
+    assert captured["request"].frame_refs == frame_paths
+    tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
+    assert "画面中有一个白色水杯" in tool_messages[0]["content"]
+    assert state.response is not None
+    assert state.response.message == "眼前是一个白色水杯。"
 
 
 def test_native_web_search_tool_call_runs_through_validator_executor_and_observation() -> None:
