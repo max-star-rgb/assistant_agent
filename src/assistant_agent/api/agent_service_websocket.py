@@ -19,6 +19,7 @@ from assistant_agent.services.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
 )
 from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
+from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.services.gateway_turn_facade import (
     GatewayTurnError,
     GatewayTurnFacade,
@@ -50,6 +51,7 @@ class AgentServiceConnectionState:
     chats: list[dict[str, Any]] = field(default_factory=list)
     video_ids: list[str] = field(default_factory=list)
     video_ingestion: H264VideoIngestionService | None = None
+    video_observer: RealtimeVideoObserver | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     chat_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     chat_tasks: set[asyncio.Task] = field(default_factory=set)
@@ -191,7 +193,7 @@ class ChatHandler(BaseHandler):
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
         chat_index = self.require_present(body, "chatIndex")
-        user_number = self.required_text(body, "userNumber")
+        self.required_text(body, "userNumber")
         contents = body.get("contents")
         if not isinstance(contents, list) or not contents:
             raise AgentServiceProtocolError("missing contents")
@@ -280,7 +282,7 @@ class AudioHandler(BaseHandler):
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
         _ = session_id
-        self.required_text(body, "userNumber")
+        user_number = self.required_text(body, "userNumber")
         self.require_present(body, "audioIndex")
         _validate_media_contents(body=body, content_field="audioContent")
         if not isinstance(body.get("audioConfig"), dict):
@@ -304,7 +306,7 @@ class VideoHandler(BaseHandler):
         body: dict[str, Any],
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
-        self.required_text(body, "userNumber")
+        user_number = self.required_text(body, "userNumber")
         video_index = self.require_present(body, "videoIndex")
         _validate_media_contents(body=body, content_field="videoContent")
         video_config = body.get("videoConfig")
@@ -324,6 +326,12 @@ class VideoHandler(BaseHandler):
             )
             if frame.video_id not in state.video_ids:
                 state.video_ids.append(frame.video_id)
+            if state.video_observer is None:
+                state.video_observer = _create_realtime_video_observer(
+                    user_id=user_number,
+                    session_id=session_id,
+                )
+            await state.video_observer.submit(frame)
         state.media_protocol = True
         return _response_envelope(
             message=self.response_message,
@@ -465,6 +473,8 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             task.cancel()
         if state.chat_tasks:
             await asyncio.gather(*state.chat_tasks, return_exceptions=True)
+        if state.video_observer is not None:
+            await state.video_observer.close()
         if state.video_ingestion is not None:
             for video_id in state.video_ids:
                 await asyncio.to_thread(state.video_ingestion.cleanup, video_id)
@@ -781,6 +791,18 @@ def _create_video_ingestion_service() -> H264VideoIngestionService:
     if store is None:
         raise RuntimeError("assistant runtime does not provide a video context store")
     return H264VideoIngestionService(store=store)
+
+
+def _create_realtime_video_observer(*, user_id: str, session_id: str) -> RealtimeVideoObserver:
+    from assistant_agent.api import routes_agent
+
+    runtime = routes_agent.get_assistant_runtime_app().runtime
+    return RealtimeVideoObserver(
+        user_id=user_id,
+        session_id=session_id,
+        registry=runtime.registry,
+        memory_store=runtime.realtime_video_memory_store,
+    )
 
 
 def _run_assistant_request_for_agent_service(request: UserRequest, **kwargs: Any) -> Any:

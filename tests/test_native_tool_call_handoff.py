@@ -21,6 +21,7 @@ from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaTaskStatusResult,
 )
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame
+from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore, SemanticKeyframeRecord
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
@@ -309,6 +310,69 @@ def test_native_video_tool_call_uses_agent_service_frame_context(tmp_path: Path)
     assert captured["request"].frame_refs == frame_paths
     tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
     assert "画面中有一个白色水杯" in tool_messages[0]["content"]
+    assert state.response is not None
+    assert state.response.message == "眼前是一个白色水杯。"
+
+
+def test_native_video_tool_call_uses_rolling_memory_without_query_provider(tmp_path: Path) -> None:
+    video_id = "agent-service-video-memory-test"
+    frames = InMemoryVideoContextStore(window_size=3)
+    memory = RealtimeVideoMemoryStore()
+    keyframe_path = tmp_path / "frame-1.jpg"
+    keyframe_path.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+    memory.record_success(
+        video_id,
+        SemanticKeyframeRecord(
+            frame_id="frame-1",
+            uri=str(keyframe_path),
+            sequence=1,
+            timestamp_ms=1000,
+        ),
+        VideoUnderstandingResult(
+            summary="桌上有一个白色水杯。",
+            objects=["白色水杯"],
+            provider="background-test",
+            output_ref="provider://video/background-test/frame-1",
+        ),
+    )
+
+    class FailingIfCalledVideoAdapter:
+        def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+            raise AssertionError(f"query-time provider called for {request.video_ref}")
+
+    registry = create_default_registry(
+        video_context_store=frames,
+        realtime_video_memory_store=memory,
+    )
+    registry.get("video_understanding").adapter = FailingIfCalledVideoAdapter()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "video_understanding",
+                {"video_ids": [video_id], "user_query": "识别眼前物体"},
+            ),
+            final_result("眼前是一个白色水杯。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        video_context_store=frames,
+        realtime_video_memory_store=memory,
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="10086",
+            session_id="10086",
+            text="识别眼前物体",
+            video_ids=[video_id],
+        )
+    )
+
+    result = next(item for item in state.tool_results if item.tool_name == "video_understanding")
+    assert result.data["source"] == "rolling_video_memory"
+    assert result.data["objects"] == ["白色水杯"]
     assert state.response is not None
     assert state.response.message == "眼前是一个白色水杯。"
 

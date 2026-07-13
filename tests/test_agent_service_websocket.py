@@ -34,6 +34,14 @@ class RecordingRuntime:
         return state
 
 
+class NoopVideoObserver:
+    async def submit(self, _frame: VideoFrame) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
 def test_agent_service_start_ack_accepts_media_envelope() -> None:
     client = TestClient(create_app())
 
@@ -165,6 +173,11 @@ def test_agent_service_video_context_reaches_following_chat(monkeypatch, tmp_pat
 
     ingestion = FakeVideoIngestion()
     monkeypatch.setattr(agent_service_ws, "_create_video_ingestion_service", lambda: ingestion)
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_create_realtime_video_observer",
+        lambda **_kwargs: NoopVideoObserver(),
+    )
     client = TestClient(create_app())
 
     with client.websocket_connect("/agent-service/v1") as websocket:
@@ -219,6 +232,87 @@ def test_agent_service_video_context_reaches_following_chat(monkeypatch, tmp_pat
     assert ingestion.cleaned == ["agent-service-video-test"]
 
 
+def test_video_observation_does_not_block_later_media_ack(monkeypatch, tmp_path: Path) -> None:
+    class FakeBackgroundObserver:
+        def __init__(self) -> None:
+            self.submitted: list[int] = []
+            self.closed = False
+
+        async def submit(self, frame: VideoFrame):
+            self.submitted.append(frame.sequence)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeIngestion:
+        def ingest(self, *_args):
+            path = tmp_path / "frame-1.jpg"
+            path.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+            return VideoFrame(
+                video_id="agent-service-video-test",
+                frame_id="frame-1",
+                uri=str(path),
+                sequence=1,
+            )
+
+        def cleanup(self, _video_id: str) -> None:
+            return None
+
+    observer = FakeBackgroundObserver()
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_create_realtime_video_observer",
+        lambda **_kwargs: observer,
+    )
+    monkeypatch.setattr(agent_service_ws, "_create_video_ingestion_service", FakeIngestion)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/agent-service/v1") as websocket:
+        websocket.send_json(
+            _media_envelope(
+                "video",
+                {
+                    "userNumber": "10086",
+                    "videoIndex": "1",
+                    "contents": [
+                        {
+                            "speakerNumber": "10086",
+                            "videoContent": "0000000165aa",
+                            "time": "2026-07-13T08:30:00Z",
+                        }
+                    ],
+                    "videoConfig": {"codec": "H264"},
+                },
+            )
+        )
+        video_response = websocket.receive_json()
+        websocket.send_json(
+            _media_envelope(
+                "audio",
+                {
+                    "userNumber": "10086",
+                    "audioIndex": "1",
+                    "contents": [
+                        {
+                            "speakerNumber": "10086",
+                            "audioContent": "00",
+                            "time": "2026-07-13T08:30:01Z",
+                        }
+                    ],
+                    "audioConfig": {"codec": "PCM"},
+                },
+            )
+        )
+        audio_response = websocket.receive_json()
+
+    assert video_response["message"] == "videoResponse"
+    assert audio_response["message"] == "audioResponse"
+    assert _body(video_response)["code"] == 0
+    assert _body(audio_response)["code"] == 0
+    assert observer.submitted == [1]
+    assert observer.closed is True
+
+
 def test_agent_service_video_ack_continues_while_chat_is_running(monkeypatch, tmp_path: Path) -> None:
     started = Event()
     release = Event()
@@ -249,6 +343,11 @@ def test_agent_service_video_ack_continues_while_chat_is_running(monkeypatch, tm
             return None
 
     monkeypatch.setattr(agent_service_ws, "_create_video_ingestion_service", VideoIngestion)
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_create_realtime_video_observer",
+        lambda **_kwargs: NoopVideoObserver(),
+    )
     client = TestClient(create_app())
 
     def video(index: str) -> dict:
@@ -455,6 +554,11 @@ def test_agent_service_accepts_media_audio_video_and_interrupt_protocol(monkeypa
         agent_service_ws,
         "_create_video_ingestion_service",
         lambda: AcceptingVideoIngestion(),
+    )
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_create_realtime_video_observer",
+        lambda **_kwargs: NoopVideoObserver(),
     )
     client = TestClient(create_app())
 
