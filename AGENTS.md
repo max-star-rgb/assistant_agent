@@ -41,6 +41,7 @@ User / CLI / API / Web UI
 - Provider adapter 负责真实或 mock 能力接入；默认 profile 必须是 mock/local/offline。
 - Memory 行为归 `MemoryManager`、`memory/` 或 `services/memory_*`；memory tools 只做 `ToolContext` 身份绑定、输入适配、调用服务和包装 `ToolResult`。
 - Memory 采用内置 local core 与可选外部 Memory Service core 的双核边界；两者都必须经过同一套 identity、read/write policy、manager/store、audit/snapshot/export 治理链路。
+- `memory_backend=framework` 是显式启用的本地 sidecar lifecycle-owner 模式；Hindsight/Mem0 只能通过 `MemoryManager -> FrameworkMemoryStore -> MemoryEngineAdapter` 接入，主环境不安装框架依赖，框架不得注册 Agent runtime 或绕过工具治理。
 - 多 agent / A2A 行为走 `assistant_agent.agent_routing`、AgentRouter、agent communication service、directory、transport adapter 和工具治理边界。
 - CLI、Web UI、App、HTTP、WebSocket、realtime call adapter 属于入口层；Gateway 是入口层之后的标准化消息、session/run 生命周期、cancel/interrupt、reconnect/hangup 和 stream frame 控制边界。
 - `assistant_agent.realtime` / `GatewayAgentAdapter` 是 Gateway 到当前主运行时的薄适配层，不承担主大脑职责。

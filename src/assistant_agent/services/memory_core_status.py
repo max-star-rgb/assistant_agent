@@ -6,6 +6,7 @@ from typing import Any
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.remote import HybridMemoryStore, RemoteServiceMemoryStore
+from assistant_agent.memory.framework.store import FrameworkMemoryStore
 from assistant_agent.schemas.memory_core import MemoryCoreStatus
 
 
@@ -29,7 +30,9 @@ def build_memory_core_status(
         config=config,
         memory_store=memory_store,
     )
-    remote_query_enabled = mode == "dual_core" and external_configured and isinstance(memory_store, HybridMemoryStore)
+    remote_query_enabled = (
+        mode == "dual_core" and external_configured and isinstance(memory_store, HybridMemoryStore)
+    ) or (mode == "framework" and external_configured)
     remote_query_degraded = bool(error_codes)
     remote_status = _remote_status(
         mode=mode,
@@ -44,9 +47,13 @@ def build_memory_core_status(
         active_store=active_store,
         local_core=local_backend if mode in {"local_only", "dual_core"} else None,
         local_store=local_store,
-        external_core="memory_server" if mode in {"dual_core", "remote_service"} else None,
+        external_core=(
+            memory_store.adapter.name
+            if mode == "framework" and isinstance(memory_store, FrameworkMemoryStore)
+            else "memory_server" if mode in {"dual_core", "remote_service"} else None
+        ),
         external_core_configured=external_configured,
-        external_lifecycle_owner=mode == "remote_service",
+        external_lifecycle_owner=mode in {"remote_service", "framework"},
         remote_query_enabled=remote_query_enabled,
         remote_query_degraded=remote_query_degraded,
         remote_status=remote_status,
@@ -71,6 +78,8 @@ def update_memory_core_status_errors(
 
 
 def _mode(*, backend: str, memory_store: Any) -> str:
+    if backend == "framework" or isinstance(memory_store, FrameworkMemoryStore):
+        return "framework"
     if backend in {"dual_core", "hybrid_remote"} or isinstance(memory_store, HybridMemoryStore):
         return "dual_core"
     if backend == "remote_service" or isinstance(memory_store, RemoteServiceMemoryStore):
@@ -79,6 +88,8 @@ def _mode(*, backend: str, memory_store: Any) -> str:
 
 
 def _backend_from_store(memory_store: Any) -> str:
+    if isinstance(memory_store, FrameworkMemoryStore):
+        return "framework"
     if isinstance(memory_store, HybridMemoryStore):
         return "dual_core"
     if isinstance(memory_store, RemoteServiceMemoryStore):
@@ -92,6 +103,11 @@ def _backend_from_store(memory_store: Any) -> str:
 
 
 def _local_backend_from_store(memory_store: Any) -> str:
+    if isinstance(memory_store, FrameworkMemoryStore):
+        fallback = memory_store.read_fallback
+        if fallback is None:
+            return "memory"
+        memory_store = fallback
     local_store = getattr(memory_store, "local_store", memory_store)
     name = type(local_store).__name__
     if name == "JsonlMemoryStore":
@@ -102,6 +118,8 @@ def _local_backend_from_store(memory_store: Any) -> str:
 
 
 def _local_store_name(memory_store: Any) -> str | None:
+    if isinstance(memory_store, FrameworkMemoryStore):
+        return type(memory_store.read_fallback).__name__ if memory_store.read_fallback is not None else None
     local_store = getattr(memory_store, "local_store", memory_store)
     if isinstance(memory_store, RemoteServiceMemoryStore):
         return None
@@ -121,6 +139,13 @@ def _external_configured(
         )
     if mode == "remote_service":
         return isinstance(memory_store, RemoteServiceMemoryStore) and backend == "remote_service"
+    if mode == "framework":
+        return (
+            isinstance(memory_store, FrameworkMemoryStore)
+            and backend == "framework"
+            and config is not None
+            and bool(config.memory_framework_base_url)
+        )
     return False
 
 
@@ -135,7 +160,7 @@ def _remote_status(
         return "not_applicable"
     if not external_configured:
         return "not_configured"
-    if mode == "remote_service":
+    if mode in {"remote_service", "framework"}:
         return "lifecycle_owner"
     if remote_query_degraded:
         return "degraded"
@@ -152,7 +177,7 @@ def _safe_error_codes(errors: list[dict[str, Any]] | None) -> list[str]:
         code = error.get("code") if isinstance(error, dict) else None
         if (
             isinstance(code, str)
-            and code.startswith(("memory_server_", "memory_remote_service_"))
+            and code.startswith(("memory_server_", "memory_remote_service_", "memory_framework_"))
             and code not in codes
         ):
             codes.append(code)

@@ -330,11 +330,15 @@ def _save_with_manager(
         return _memory_save_rejected_result(tool_name, str(exc))
     if isinstance(item, MemorySaveCandidateResult):
         return _candidate_recorded_result(tool_name, item)
+    framework_queued = item.content.get("_framework_retain_status") == "queued"
+    result_status = "queued" if framework_queued else "saved"
+    written = not framework_queued
     display_item = item.model_copy(update={"summary": "已保存用户偏好。"})
     data = {
         **display_item.model_dump(mode="json"),
-        "status": "saved",
-        "written": True,
+        "status": result_status,
+        "written": written,
+        "durable_outbox": framework_queued,
         "source_intent": input.source_intent or "user_explicit",
         "source_reason": input.source_reason,
         "future_use": input.future_use,
@@ -343,17 +347,34 @@ def _save_with_manager(
     output_ref = f"local://memory/{item.memory_id}"
     contract = build_capability_output_contract(
         capability="memory_save",
-        status="succeeded",
+        status="partial" if framework_queued else "succeeded",
         output_ref=output_ref,
         data={
-            "status": "saved",
-            "written": True,
+            "status": result_status,
+            "written": written,
+            "durable_outbox": framework_queued,
             "memory_id": item.memory_id,
             "summary": display_item.summary,
             "memory_type": item.memory_type,
             "source_intent": input.source_intent or "user_explicit",
         },
-        metadata={"provider": "local", "source": "memory_manager", "written": True},
+        errors=(
+            [
+                {
+                    "code": "memory_framework_retain_queued",
+                    "message": "memory framework unavailable; approved write queued for retry",
+                    "recoverable": True,
+                }
+            ]
+            if framework_queued
+            else []
+        ),
+        metadata={
+            "provider": "local",
+            "source": "memory_manager",
+            "written": written,
+            "durable_outbox": framework_queued,
+        },
     )
     return ToolResult(
         tool_name=tool_name,

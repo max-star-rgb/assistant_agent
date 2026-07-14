@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.memory.context_builder import MemoryContextBlock, MemoryContextBuilder, MemoryLayer
+from assistant_agent.memory.context_builder import MemoryContextBlock, MemoryContextBuilder
 from assistant_agent.memory.conflict_resolver import MemoryConflictResolver
 from assistant_agent.memory.facts import (
     fact_content,
@@ -636,6 +636,7 @@ class MemoryManager:
             )
             raise
         self._upsert_user_profile(saved)
+        framework_queued = saved.content.get("_framework_retain_status") == "queued"
         self.record_audit_event(
             "memory_explicit_saved",
             user_id=saved.user_id,
@@ -643,10 +644,11 @@ class MemoryManager:
             project_id=saved.project_id,
             session_id=saved.session_id,
             memory_id=saved.memory_id,
-            summary="explicit memory saved",
+            summary=("explicit memory queued for framework retry" if framework_queued else "explicit memory saved"),
             counts={
                 "attempted": 1,
-                "written": 1,
+                "written": 0 if framework_queued else 1,
+                "pending_retry": 1 if framework_queued else 0,
                 "rejected": 0,
                 "superseded": len(_supersedes_memory_ids(saved)),
             },
@@ -658,6 +660,7 @@ class MemoryManager:
                 "ttl_days": decision.ttl_days,
                 "preference_key": _preference_conflict_key(saved),
                 "supersedes_memory_ids": _supersedes_memory_ids(saved),
+                "framework_retain_status": "queued" if framework_queued else "completed",
                 **source_metadata,
             },
         )
@@ -719,6 +722,22 @@ class MemoryManager:
 
     def delete_for_identity(self, identity: RequestIdentity, memory_id: str) -> bool:
         item = self.get_for_identity(identity, memory_id)
+        if item is None and bool(getattr(self.store, "framework_managed_algorithms", False)):
+            delete_for_identity = getattr(self.store, "delete_for_identity", None)
+            deleted = bool(delete_for_identity(identity, memory_id)) if callable(delete_for_identity) else False
+            if deleted:
+                self.record_audit_event(
+                    "memory_deleted",
+                    user_id=identity.user_id,
+                    tenant_id=identity.tenant_id,
+                    project_id=identity.project_id,
+                    session_id=identity.session_id,
+                    memory_id=memory_id,
+                    summary="pending framework memory deleted",
+                    counts={"memory_items": 0, "pending_retry": 1},
+                    metadata={"mode": "framework", "pending_retain_cancelled": True},
+                )
+            return deleted
         if item is None:
             return False
         deleted = self.store.delete(identity.user_id, memory_id)
@@ -1197,6 +1216,25 @@ class MemoryManager:
         if not error_codes:
             return
         active_store = type(self.store).__name__
+        if active_store == "FrameworkMemoryStore":
+            self.record_audit_event(
+                "memory_framework_degraded",
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=identity.session_id,
+                outcome="failed",
+                summary="memory framework recall degraded",
+                counts={"attempted": 1, "failed": 1, "fallback_results": result.total},
+                metadata={
+                    "operation": "recall",
+                    "mode": "framework",
+                    "active_store": active_store,
+                    "error_code": error_codes[0],
+                    "recoverable": True,
+                },
+            )
+            return
         if active_store == "RemoteServiceMemoryStore":
             self.record_audit_event(
                 "memory_remote_lifecycle_failed",
@@ -1399,6 +1437,8 @@ class MemoryManager:
         return deleted
 
     def _merge_or_save(self, item: MemoryItem) -> MemoryItem:
+        if bool(getattr(self.store, "framework_managed_algorithms", False)):
+            return self.store.save(item)
         conflict = self.conflict_resolver.resolve(item, self.store.list_by_user(item.user_id))
         if conflict.action == "merge":
             existing = self.store.get(item.user_id, conflict.matching_memory_ids[0])
@@ -1496,6 +1536,8 @@ class MemoryManager:
         return None
 
     def _upsert_user_profile(self, item: MemoryItem) -> MemoryItem | None:
+        if bool(getattr(self.store, "framework_managed_algorithms", False)):
+            return None
         if item.source == "user_profile" or item.memory_type not in {"preference", "product", "task"}:
             return None
         if item.tenant_id is not None or item.project_id is not None or memory_scope_for_item(item) == "project":
@@ -1570,7 +1612,7 @@ def _remote_error_codes(errors: list[dict[str, Any]]) -> list[str]:
     codes: list[str] = []
     for error in errors:
         code = str(error.get("code") or "").strip()
-        if not code.startswith(("memory_server_", "memory_remote_service_")):
+        if not code.startswith(("memory_server_", "memory_remote_service_", "memory_framework_")):
             continue
         if code not in codes:
             codes.append(code)
