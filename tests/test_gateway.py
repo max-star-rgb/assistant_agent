@@ -9,7 +9,9 @@ from assistant_agent.gateway import (
     CALL_INCOMING,
     CALL_READY,
     GatewayBridge,
+    GatewayQueuePolicy,
     GatewaySessionManager,
+    GatewaySessionService,
     InMemoryDuplex,
     frame,
 )
@@ -34,6 +36,110 @@ async def _read_until(client_ep, frame_type: str, *, timeout_s: float = 3.0):
 
 
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_custom_service_factory_uses_manager_admission_controller(self) -> None:
+        class BlockingBackend:
+            def __init__(self) -> None:
+                self.release = asyncio.Event()
+                self.active = 0
+                self.max_seen = 0
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.active += 1
+                self.max_seen = max(self.max_seen, self.active)
+                try:
+                    await self.release.wait()
+                    return RealtimeAgentResult(status="completed", run_id=request.run_id)
+                finally:
+                    self.active -= 1
+
+        backend = BlockingBackend()
+
+        def service_factory(user_id, config):
+            return GatewaySessionService(
+                user_id=user_id,
+                backend=backend,
+                config=config,
+            )
+
+        manager = GatewaySessionManager(
+            service_factory=service_factory,
+            queue_policy=GatewayQueuePolicy(
+                max_active_runs=1,
+                max_queued_turns_global=4,
+            ),
+            start_reaper=False,
+        )
+        first = await manager.acquire(user_id="custom-u1")
+        second = await manager.acquire(user_id="custom-u2")
+
+        try:
+            await first.endpoint.send(
+                frame(type="message.user", session_id="custom-s1", payload={"text": "one"})
+            )
+            await _read_until(first.endpoint, "run.started")
+            await second.endpoint.send(
+                frame(type="message.user", session_id="custom-s2", payload={"text": "two"})
+            )
+            queued = await _read_until(second.endpoint, "run.queued", timeout_s=0.2)
+
+            assert queued["payload"]["reason"] == "global_capacity"
+            assert backend.max_seen == 1
+        finally:
+            backend.release.set()
+            await manager.close()
+
+    async def test_manager_shares_one_admission_controller_across_users(self) -> None:
+        class BlockingBackend:
+            def __init__(self) -> None:
+                self.release = asyncio.Event()
+                self.active = 0
+                self.max_seen = 0
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.active += 1
+                self.max_seen = max(self.max_seen, self.active)
+                try:
+                    await self.release.wait()
+                    return RealtimeAgentResult(status="completed", run_id=request.run_id)
+                finally:
+                    self.active -= 1
+
+        backend = BlockingBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            queue_policy=GatewayQueuePolicy(
+                max_active_runs=1,
+                max_queued_turns_global=4,
+            ),
+            start_reaper=False,
+        )
+        first = await manager.acquire(user_id="u1")
+        second = await manager.acquire(user_id="u2")
+
+        try:
+            await first.endpoint.send(
+                frame(type="message.user", session_id="s1", payload={"text": "one"})
+            )
+            first_started = await _read_until(first.endpoint, "run.started")
+            await second.endpoint.send(
+                frame(type="message.user", session_id="s2", payload={"text": "two"})
+            )
+            second_queued = await _read_until(second.endpoint, "run.queued")
+
+            assert first_started["session_id"] == "s1"
+            assert second_queued["payload"]["reason"] == "global_capacity"
+            assert backend.max_seen == 1
+
+            backend.release.set()
+            second_started = await _read_until(second.endpoint, "run.started")
+            second_end = await _read_until(second.endpoint, "run.end")
+            assert second_started["session_id"] == "s2"
+            assert second_end["reason"] == "completed"
+            assert backend.max_seen == 1
+        finally:
+            backend.release.set()
+            await manager.close()
+
     async def test_call_incoming_creates_managed_session_and_ready(self) -> None:
         class RecordingBackend:
             def __init__(self) -> None:

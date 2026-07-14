@@ -697,6 +697,7 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
                                 payload={"text": "second"},
                             )
                         )
+                    elif received["type"] == "run.queued":
                         backend.release_first.set()
                     elif received["type"] == "run.started":
                         second_run = received["run_id"]
@@ -710,13 +711,19 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
 
         assert [received["type"] for received in frames] == [
             "run.started",
+            "run.queued",
             "run.end",
             "run.started",
             "stream.chunk",
             "run.end",
         ]
-        assert frames[1]["run_id"] == first_run
-        assert frames[1]["reason"] == "completed"
+        queued = frames[1]
+        assert queued["payload"]["reason"] == "session_busy"
+        assert queued["payload"]["queue_depth"] == 1
+        assert queued["run_id"] is not None
+        assert queued["turn_id"] is not None
+        assert frames[2]["run_id"] == first_run
+        assert frames[2]["reason"] == "completed"
         assert frames[-1]["run_id"] == second_run
         assert frames[-1]["reason"] == "completed"
         assert first_run != second_run

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,7 +15,14 @@ from assistant_agent.gateway.observability import (
     GatewayLifecycleSink,
     emit_gateway_lifecycle_event,
 )
-from assistant_agent.gateway.protocol import Frame, frame
+from assistant_agent.gateway.protocol import RUN_QUEUED, Frame, frame
+from assistant_agent.gateway.queueing import (
+    GatewayQueuePolicy,
+    GatewayRunAdmissionController,
+    QueueOverflowError,
+    QueuedTurn,
+    RunPermit,
+)
 from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
 from assistant_agent.realtime import (
     GatewayAgentAdapter,
@@ -37,13 +45,8 @@ class ActiveRun:
     turn_id: str
     cancel: "CancelToken"
     task: "asyncio.Task[None]"
+    permit: RunPermit
     deadline_task: "asyncio.Task[None] | None" = None
-
-
-@dataclass
-class PendingUserMessage:
-    endpoint: Endpoint
-    frame: Frame
 
 
 class CancelToken:
@@ -103,15 +106,24 @@ class GatewaySessionService:
         backend_factory: Callable[[], RealtimeAgentBackend] | None = None,
         config: Mapping[str, Any] | None = None,
         lifecycle_sink: GatewayLifecycleSink | None = None,
+        queue_policy: GatewayQueuePolicy | None = None,
+        admission_controller: GatewayRunAdmissionController | None = None,
     ) -> None:
         self._user_id = user_id
         self._backend = backend
         self._backend_factory = backend_factory
         self._config: dict[str, Any] = dict(config or {})
         self._lifecycle_sink = lifecycle_sink
+        self._queue_policy = queue_policy or GatewayQueuePolicy()
+        self._admission = admission_controller or GatewayRunAdmissionController(
+            self._queue_policy
+        )
+        self._owns_admission = admission_controller is None
         self._active_by_session: dict[str, ActiveRun] = {}
-        self._pending_by_session: dict[str, list[PendingUserMessage]] = {}
+        self._current_by_session: dict[str, QueuedTurn] = {}
+        self._pending_by_session: dict[str, deque[QueuedTurn]] = {}
         self._history_by_session: dict[str, list[str]] = {}
+        self._turns_by_run_id: dict[str, QueuedTurn] = {}
         self._lock = asyncio.Lock()
 
     @property
@@ -120,6 +132,18 @@ class GatewaySessionService:
 
     def update_config(self, values: Mapping[str, Any]) -> None:
         self._config.update({str(key): value for key, value in values.items()})
+
+    def bind_queueing(
+        self,
+        *,
+        queue_policy: GatewayQueuePolicy,
+        admission_controller: GatewayRunAdmissionController,
+    ) -> None:
+        if self._current_by_session or self._active_by_session:
+            raise RuntimeError("cannot rebind queueing after session work has started")
+        self._queue_policy = queue_policy
+        self._admission = admission_controller
+        self._owns_admission = False
 
     def _emit_lifecycle(
         self,
@@ -158,93 +182,185 @@ class GatewaySessionService:
                 )
 
     async def _handle_user_message(self, ep: Endpoint, f: Frame) -> None:
-        session_id = f.get("session_id")
+        raw_session_id = f.get("session_id")
         payload = _payload_dict(f)
         user_text = str(payload.get("text", ""))
         user_id = str(f.get("user_id") or self._user_id)
 
-        if not session_id:
+        if not raw_session_id:
             await ep.send(frame(type="error", error={"code": "missing_session_id"}))
             return
-
-        interrupt_requested = _message_requests_interrupt(payload, self._config)
-        async with self._lock:
-            has_active_run = session_id in self._active_by_session
-            if has_active_run and not interrupt_requested:
-                pending = self._pending_by_session.setdefault(session_id, [])
-                pending.append(PendingUserMessage(endpoint=ep, frame=dict(f)))
-                self._emit_lifecycle(
-                    "gateway.run.queued",
-                    session_id=session_id,
-                    payload={"queue_depth": len(pending)},
-                )
-                return
-
-        if interrupt_requested:
-            await self._interrupt_if_needed(session_id=session_id)
-
-        await self._start_user_message(
-            ep=ep,
-            session_id=session_id,
-            payload=payload,
-            user_text=user_text,
-            user_id=user_id,
-            runtime_interrupt=interrupt_requested and has_active_run,
-        )
-
-    async def _start_user_message(
-        self,
-        *,
-        ep: Endpoint,
-        session_id: str,
-        payload: dict[str, Any],
-        user_text: str,
-        user_id: str,
-        runtime_interrupt: bool = False,
-    ) -> None:
+        session_id = str(raw_session_id)
         turn_id = str(payload.get("turn_id") or uuid.uuid4())
         run_id = str(payload.get("run_id") or uuid.uuid4())
-
-        async with self._lock:
-            hist = self._history_by_session.setdefault(session_id, [])
-            hist.append(user_text)
-            history_snapshot = list(hist)
-
-        cancel = CancelToken()
-        registered = asyncio.Event()
-        deadline_ms = _run_timeout_ms(payload, self._config)
-
-        async def _runner() -> None:
-            await registered.wait()
-            await self._run_backend_turn(
-                ep=ep,
+        now = time.monotonic()
+        turn = QueuedTurn(
+            user_id=user_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            endpoint=ep,
+            payload=payload,
+            user_text=user_text,
+            accepted_at_monotonic=now,
+            accepted_at_unix_ms=int(time.time() * 1000),
+            queue_deadline_monotonic=(
+                now + self._queue_policy.queue_wait_timeout_ms / 1000
+            ),
+            client_message_id=_optional_string(payload.get("client_message_id")),
+            payload_fingerprint="",
+        )
+        try:
+            turn.reservation = await self._admission.reserve(
+                user_id=user_id,
                 session_id=session_id,
                 turn_id=turn_id,
                 run_id=run_id,
-                user_id=user_id,
-                user_text=user_text,
-                history=history_snapshot,
-                payload=payload,
-                runtime_interrupt=runtime_interrupt,
-                cancel=cancel,
             )
+        except QueueOverflowError as exc:
+            await self._send_queue_error(turn, scope=exc.scope, limit=exc.limit)
+            return
 
-        task = asyncio.create_task(_runner())
-        deadline_task = self._start_deadline_monitor(
-            session_id=session_id,
-            run_id=run_id,
-            cancel=cancel,
-            deadline_ms=deadline_ms,
-        )
+        interrupt_requested = _message_requests_interrupt(payload, self._config)
+        queued = False
         async with self._lock:
-            self._active_by_session[session_id] = ActiveRun(
-                run_id=run_id,
-                turn_id=turn_id,
-                cancel=cancel,
-                task=task,
-                deadline_task=deadline_task,
+            current = self._current_by_session.get(session_id)
+            self._turns_by_run_id[run_id] = turn
+            if current is not None:
+                turn.runtime_interrupt = bool(
+                    interrupt_requested or self._queue_policy.mode == "interrupt"
+                )
+                turn.state = "session_queued"
+                turn.queue_reason = "session_busy"
+                pending = self._pending_by_session.setdefault(session_id, deque())
+                if turn.runtime_interrupt:
+                    pending.appendleft(turn)
+                else:
+                    pending.append(turn)
+                queued = True
+            else:
+                self._current_by_session[session_id] = turn
+
+        if queued:
+            await self._send_queued(turn)
+            if turn.runtime_interrupt:
+                await self._interrupt_if_needed(session_id=session_id)
+            return
+        self._schedule_dispatch(turn)
+
+    async def _send_queued(self, turn: QueuedTurn) -> None:
+        snapshot = await self._admission.snapshot()
+        async with self._lock:
+            session_depth = len(self._pending_by_session.get(turn.session_id, ()))
+        await turn.endpoint.send(
+            frame(
+                type=RUN_QUEUED,
+                session_id=turn.session_id,
+                turn_id=turn.turn_id,
+                run_id=turn.run_id,
+                payload={
+                    "reason": turn.queue_reason,
+                    "queue_depth": session_depth,
+                    "global_queue_depth": snapshot.queued_turns,
+                    "queued_at_ms": turn.accepted_at_unix_ms,
+                },
             )
-        registered.set()
+        )
+        self._emit_lifecycle(
+            "gateway.run.queued",
+            session_id=turn.session_id,
+            run_id=turn.run_id,
+            turn_id=turn.turn_id,
+            payload={
+                "queue_reason": turn.queue_reason,
+                "queue_depth": session_depth,
+                "session_queue_depth": session_depth,
+                "global_queue_depth": snapshot.queued_turns,
+            },
+        )
+
+    async def _send_queue_error(
+        self,
+        turn: QueuedTurn,
+        *,
+        scope: str,
+        limit: int,
+        code: str = "queue_overflow",
+    ) -> None:
+        await turn.endpoint.send(
+            frame(
+                type="error",
+                session_id=turn.session_id,
+                turn_id=turn.turn_id,
+                run_id=turn.run_id,
+                error={"code": code, "scope": scope, "limit": limit},
+            )
+        )
+
+    def _schedule_dispatch(self, turn: QueuedTurn) -> None:
+        task = asyncio.create_task(
+            self._dispatch_turn(turn),
+            name=f"gateway-dispatch-{turn.run_id}",
+        )
+        turn.dispatch_task = task
+        _consume_background_task(task)
+
+    async def _dispatch_turn(self, turn: QueuedTurn) -> None:
+        if turn.reservation is None:
+            raise RuntimeError("accepted turn is missing queue reservation")
+        ticket = await self._admission.request_permit(turn.reservation)
+        turn.admission_ticket = ticket
+        if not ticket.ready.done():
+            turn.state = "admission_queued"
+            turn.queue_reason = "global_capacity"
+            await self._send_queued(turn)
+        permit = await ticket.ready
+
+        current_task = asyncio.current_task()
+        assert current_task is not None
+        release_unused_permit = False
+        async with self._lock:
+            if (
+                self._current_by_session.get(turn.session_id) is not turn
+                or turn.state == "terminal"
+            ):
+                release_unused_permit = True
+            else:
+                turn.state = "running"
+                history = self._history_by_session.setdefault(turn.session_id, [])
+                history.append(turn.user_text)
+                history_snapshot = list(history)
+                cancel = CancelToken()
+                deadline_ms = _run_timeout_ms(turn.payload, self._config)
+                deadline_task = self._start_deadline_monitor(
+                    session_id=turn.session_id,
+                    run_id=turn.run_id,
+                    cancel=cancel,
+                    deadline_ms=deadline_ms,
+                )
+                self._active_by_session[turn.session_id] = ActiveRun(
+                    run_id=turn.run_id,
+                    turn_id=turn.turn_id,
+                    cancel=cancel,
+                    task=current_task,
+                    permit=permit,
+                    deadline_task=deadline_task,
+                )
+        if release_unused_permit:
+            await self._admission.release_permit(permit)
+            return
+        await self._run_backend_turn(
+            ep=turn.endpoint,
+            session_id=turn.session_id,
+            turn_id=turn.turn_id,
+            run_id=turn.run_id,
+            user_id=turn.user_id,
+            user_text=turn.user_text,
+            history=history_snapshot,
+            payload=turn.payload,
+            runtime_interrupt=turn.runtime_interrupt,
+            cancel=cancel,
+        )
 
     async def _run_backend_turn(
         self,
@@ -368,20 +484,30 @@ class GatewaySessionService:
                 )
         finally:
             deadline_task: asyncio.Task[None] | None = None
-            pending: PendingUserMessage | None = None
+            next_turn: QueuedTurn | None = None
+            permit: RunPermit | None = None
             async with self._lock:
                 cur = self._active_by_session.get(session_id)
                 if cur and cur.run_id == run_id:
                     deadline_task = cur.deadline_task
+                    permit = cur.permit
                     self._active_by_session.pop(session_id, None)
-                    queued = self._pending_by_session.get(session_id)
-                    if queued:
-                        pending = queued.pop(0)
-                        if not queued:
+                current = self._current_by_session.get(session_id)
+                if current is not None and current.run_id == run_id:
+                    current.state = "terminal"
+                    self._current_by_session.pop(session_id, None)
+                    self._turns_by_run_id.pop(run_id, None)
+                    pending = self._pending_by_session.get(session_id)
+                    if pending:
+                        next_turn = pending.popleft()
+                        self._current_by_session[session_id] = next_turn
+                        if not pending:
                             self._pending_by_session.pop(session_id, None)
             if deadline_task is not None:
                 deadline_task.cancel()
                 await asyncio.gather(deadline_task, return_exceptions=True)
+            if permit is not None:
+                await self._admission.release_permit(permit)
             self._emit_lifecycle(
                 _terminal_lifecycle_event_type(end_reason),
                 session_id=session_id,
@@ -389,8 +515,8 @@ class GatewaySessionService:
                 turn_id=turn_id,
                 payload={"reason": end_reason, "expects_reply": expects_reply},
             )
-            if pending is not None:
-                await self._handle_user_message(pending.endpoint, pending.frame)
+            if next_turn is not None:
+                self._schedule_dispatch(next_turn)
 
     async def _run_backend(
         self,
@@ -822,6 +948,8 @@ class GatewaySessionManager:
         service_factory: Callable[[str, Mapping[str, Any]], GatewaySessionService] | None = None,
         start_reaper: bool = True,
         lifecycle_sink: GatewayLifecycleSink | None = None,
+        queue_policy: GatewayQueuePolicy | None = None,
+        admission_controller: GatewayRunAdmissionController | None = None,
     ) -> None:
         self.max_sessions = max_sessions
         self.idle_timeout_s = idle_timeout_s
@@ -830,6 +958,11 @@ class GatewaySessionManager:
         self.backend_factory = backend_factory
         self.service_factory = service_factory
         self.lifecycle_sink = lifecycle_sink
+        self.queue_policy = queue_policy or GatewayQueuePolicy()
+        self.admission_controller = admission_controller or GatewayRunAdmissionController(
+            self.queue_policy
+        )
+        self._owns_admission_controller = admission_controller is None
         self._entries: dict[str, _GatewaySessionEntry] = {}
         self._deferred_config: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
@@ -1007,6 +1140,8 @@ class GatewaySessionManager:
             user_ids = list(self._entries)
         for user_id in user_ids:
             await self.destroy(user_id)
+        if self._owns_admission_controller:
+            await self.admission_controller.close()
 
     def session_config(self, user_id: str) -> dict[str, Any] | None:
         entry = self._entries.get(user_id)
@@ -1025,6 +1160,13 @@ class GatewaySessionManager:
                 backend_factory=self.backend_factory,
                 config=config,
                 lifecycle_sink=self.lifecycle_sink,
+                queue_policy=self.queue_policy,
+                admission_controller=self.admission_controller,
+            )
+        if self.service_factory is not None:
+            service.bind_queueing(
+                queue_policy=self.queue_policy,
+                admission_controller=self.admission_controller,
             )
         return _GatewaySessionEntry(
             user_id=user_id,
