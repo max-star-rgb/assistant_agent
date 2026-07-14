@@ -135,6 +135,144 @@ class CapturingChatAdapter:
 
 
 class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lifecycle_admission_precedes_started_with_bounded_payload(self) -> None:
+        class ImmediateBackend:
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                return RealtimeAgentResult(status="completed", run_id=request.run_id)
+
+        events = []
+        session = GatewaySessionService(
+            backend=ImmediateBackend(),
+            lifecycle_sink=events.append,
+        )
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="admission-lifecycle",
+                    payload={"text": "secret text", "turn_id": "t1", "run_id": "r1"},
+                )
+            )
+            await _read_run_end(client_ep, "r1")
+        finally:
+            await _close_session(client_ep, session_ep, session_task)
+
+        run_events = [event for event in events if event.run_id == "r1"]
+        assert [event.type for event in run_events] == [
+            "gateway.run.admitted",
+            "gateway.run.started",
+            "gateway.run.completed",
+        ]
+        admitted = run_events[0]
+        assert set(admitted.payload) == {
+            "queue_wait_ms",
+            "active_runs",
+            "max_active_runs",
+            "global_queue_depth",
+        }
+        assert admitted.payload["queue_wait_ms"] >= 0
+        assert admitted.payload["active_runs"] <= admitted.payload["max_active_runs"]
+        assert "secret text" not in str(admitted.payload)
+
+    async def test_lifecycle_records_queue_rejection_without_user_content(self) -> None:
+        backend = _BlockingFirstBackend()
+        events = []
+        session = GatewaySessionService(
+            backend=backend,
+            queue_policy=GatewayQueuePolicy(max_pending_per_session=1),
+            lifecycle_sink=events.append,
+        )
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="rejection-lifecycle",
+                    payload={"text": "first", "turn_id": "t1", "run_id": "r1"},
+                )
+            )
+            await _read_frame_type(client_ep, "run.started")
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="rejection-lifecycle",
+                    payload={"text": "second", "turn_id": "t2", "run_id": "r2"},
+                )
+            )
+            await _read_frame_type(client_ep, "run.queued")
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="rejection-lifecycle",
+                    payload={"text": "private third", "turn_id": "t3", "run_id": "r3"},
+                )
+            )
+            await _read_error_code(client_ep, "queue_overflow")
+
+            rejected = next(
+                event
+                for event in events
+                if event.type == "gateway.run.queue_rejected" and event.run_id == "r3"
+            )
+            assert rejected.payload == {
+                "reason": "queue_overflow",
+                "scope": "session",
+                "limit": 1,
+            }
+            assert "private third" not in str(rejected.payload)
+        finally:
+            backend.release_first.set()
+            await _close_session(client_ep, session_ep, session_task)
+
+    async def test_lifecycle_records_queue_expiry_before_cancelled(self) -> None:
+        backend = _BlockingFirstBackend()
+        events = []
+        session = GatewaySessionService(
+            backend=backend,
+            queue_policy=GatewayQueuePolicy(queue_wait_timeout_ms=30),
+            lifecycle_sink=events.append,
+        )
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="expiry-lifecycle",
+                    payload={"text": "first", "turn_id": "t1", "run_id": "r1"},
+                )
+            )
+            await _read_frame_type(client_ep, "run.started")
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="expiry-lifecycle",
+                    payload={"text": "expires", "turn_id": "t2", "run_id": "r2"},
+                )
+            )
+            await _read_frame_type(client_ep, "run.queued")
+            await _read_run_end(client_ep, "r2")
+        finally:
+            backend.release_first.set()
+            await _close_session(client_ep, session_ep, session_task)
+
+        queued_events = [event for event in events if event.run_id == "r2"]
+        assert [event.type for event in queued_events] == [
+            "gateway.run.queued",
+            "gateway.run.queue_expired",
+            "gateway.run.cancelled",
+        ]
+        expired = queued_events[1]
+        assert expired.payload["reason"] == "queue_wait_timeout"
+        assert expired.payload["queue_wait_ms"] >= 0
+        assert "expires" not in str(expired.payload)
+
     async def test_duplicate_queued_message_executes_once(self) -> None:
         backend = _BlockingFirstBackend()
         session = GatewaySessionService(backend=backend)
@@ -1133,13 +1271,15 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
 
         event_types = [event.type for event in events]
         assert event_types == [
+            "gateway.run.admitted",
             "gateway.run.started",
             "gateway.run.queued",
             "gateway.run.completed",
+            "gateway.run.admitted",
             "gateway.run.started",
             "gateway.run.completed",
         ]
-        queued = events[1]
+        queued = events[2]
         assert queued.session_id == "lifecycle-queue"
         assert queued.payload["queue_depth"] == 1
 
@@ -1182,11 +1322,12 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
 
         event_types = [event.type for event in events]
         assert event_types == [
+            "gateway.run.admitted",
             "gateway.run.started",
             "gateway.run.cancel_requested",
             "gateway.run.cancelled",
         ]
-        cancel_requested = events[1]
+        cancel_requested = events[2]
         assert cancel_requested.session_id == "lifecycle-cancel"
         assert cancel_requested.payload["source"] == "gateway_cancel"
 

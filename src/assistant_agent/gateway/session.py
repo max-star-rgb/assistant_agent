@@ -431,6 +431,13 @@ class GatewaySessionService:
                 error={"code": code, "scope": scope, "limit": limit},
             )
         )
+        self._emit_lifecycle(
+            "gateway.run.queue_rejected",
+            session_id=turn.session_id,
+            run_id=turn.run_id,
+            turn_id=turn.turn_id,
+            payload={"reason": code, "scope": scope, "limit": limit},
+        )
 
     def _set_turn_state(self, turn: QueuedTurn, state: str) -> None:
         turn.state = state
@@ -510,6 +517,24 @@ class GatewaySessionService:
             and not dispatch_task.done()
         ):
             dispatch_task.cancel()
+
+        if source == "queue_timeout":
+            self._emit_lifecycle(
+                "gateway.run.queue_expired",
+                session_id=turn.session_id,
+                run_id=turn.run_id,
+                turn_id=turn.turn_id,
+                payload={
+                    "reason": "queue_wait_timeout",
+                    "queue_wait_ms": max(
+                        0,
+                        int(
+                            (time.monotonic() - turn.accepted_at_monotonic)
+                            * 1000
+                        ),
+                    ),
+                },
+            )
 
         if emit_cancel_requested:
             self._emit_lifecycle(
@@ -613,6 +638,24 @@ class GatewaySessionService:
         if release_unused_permit:
             await self._admission.release_permit(permit)
             return
+        snapshot = await self._admission.snapshot()
+        self._emit_lifecycle(
+            "gateway.run.admitted",
+            session_id=turn.session_id,
+            run_id=turn.run_id,
+            turn_id=turn.turn_id,
+            payload={
+                "queue_wait_ms": max(
+                    0,
+                    int(
+                        (time.monotonic() - turn.accepted_at_monotonic) * 1000
+                    ),
+                ),
+                "active_runs": snapshot.active_runs,
+                "max_active_runs": snapshot.max_active_runs,
+                "global_queue_depth": snapshot.queued_turns,
+            },
+        )
         await self._run_backend_turn(
             ep=turn.endpoint,
             session_id=turn.session_id,
