@@ -1,8 +1,11 @@
 """FastAPI application factory."""
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Event
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -15,8 +18,10 @@ from assistant_agent.api.gateway_websocket import router as gateway_websocket_ro
 from assistant_agent.api.routes_a2a import router as a2a_router
 from assistant_agent.api.routes_agent import router as agent_router
 from assistant_agent.api.routes_tasks import router as tasks_router
+from assistant_agent.api import routes_agent
 from assistant_agent.schemas.api import PROTOCOL_VERSION, api_error
 from assistant_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
+from assistant_agent.services.durable_tasks.worker import DurableTaskWorker
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 
@@ -58,11 +63,69 @@ def create_app() -> FastAPI:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    _ = app
+    await start_durable_task_worker(app)
     try:
         yield
     finally:
+        await shutdown_durable_task_worker(app)
         await shutdown_gateway_runtime()
+
+
+def get_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
+    worker = getattr(app.state, "durable_task_worker", None)
+    return worker if isinstance(worker, DurableTaskWorker) else None
+
+
+async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
+    """Bind the app to the shared runtime service and optionally start one worker."""
+
+    runtime = routes_agent.get_agent_runtime()
+    service = getattr(runtime, "durable_task_service", None)
+    config = getattr(runtime, "config", None)
+    app.state.agent_runtime = runtime
+    app.state.durable_task_service = service
+    app.state.durable_task_worker = None
+    app.state.durable_task_stop_event = None
+    app.state.durable_task_worker_task = None
+    app.state.durable_task_store_closed = False
+    if service is None or config is None or not config.durable_task_worker_enabled:
+        return None
+    stop_event = Event()
+    worker = DurableTaskWorker(
+        service=service,
+        runtime=runtime,
+        worker_id=f"api-worker-{os.getpid()}-{id(app)}",
+        poll_seconds=config.durable_task_poll_seconds,
+    )
+    app.state.durable_task_worker = worker
+    app.state.durable_task_stop_event = stop_event
+    app.state.durable_task_worker_task = asyncio.create_task(
+        asyncio.to_thread(worker.run, stop_event)
+    )
+    return worker
+
+
+async def shutdown_durable_task_worker(app: FastAPI) -> None:
+    """Stop the cooperative worker, close its runtime-owned store, and release runtime."""
+
+    stop_event = getattr(app.state, "durable_task_stop_event", None)
+    worker_task = getattr(app.state, "durable_task_worker_task", None)
+    if stop_event is not None:
+        stop_event.set()
+    if worker_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(worker_task), timeout=5.0)
+        except asyncio.TimeoutError:
+            worker_task.cancel()
+    service = getattr(app.state, "durable_task_service", None)
+    if service is not None and not getattr(app.state, "durable_task_store_closed", False):
+        close = getattr(service.store, "close", None)
+        if callable(close):
+            close()
+        app.state.durable_task_store_closed = True
+    runtime: Any = getattr(app.state, "agent_runtime", None)
+    if runtime is not None:
+        routes_agent.release_agent_runtime(runtime)
 
 
 def load_repo_env_file(path: Path | None = None, *, override: bool = False) -> dict[str, str]:

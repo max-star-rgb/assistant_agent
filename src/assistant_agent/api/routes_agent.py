@@ -100,6 +100,14 @@ def get_agent_runtime() -> Any:
     return _RUNTIME
 
 
+def release_agent_runtime(runtime: Any) -> None:
+    """Release the process-global runtime only when it matches the lifespan owner."""
+
+    global _RUNTIME
+    if _RUNTIME is runtime:
+        _RUNTIME = None
+
+
 def get_assistant_runtime_app() -> AssistantRuntimeApp:
     return AssistantRuntimeApp(runtime_factory=get_agent_runtime)
 
