@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 REALTIME_TURN_ARBITRATION_SCHEMA_VERSION = "realtime_turn_arbitration_v1"
@@ -43,6 +43,10 @@ _DISPOSITIONS = {
 }
 _REVISE_TYPES = {"add_constraint", "replace_constraint", "confirm", "clarify"}
 _REASON_CODE_PATTERN = re.compile(r"[^a-z0-9_]+")
+_TASK_STATE_CONSTRAINT_LIMIT = 6
+_TASK_STATE_CONSTRAINT_CHARS = 320
+_TASK_STATE_PENDING_TEXT_CHARS = 128
+_TASK_STATE_TTS_STATES = {"idle", "speaking", "interrupted", "superseded"}
 
 
 class RealtimeTurnArbitrationRequest(BaseModel):
@@ -73,6 +77,75 @@ class RealtimeTurnArbitrationDecision(BaseModel):
     expected_run_id: str = Field(min_length=1, max_length=256)
     latency_ms: int = Field(default=0, ge=0)
     fallback_reason: str | None = Field(default=None, max_length=96)
+
+    @model_validator(mode="after")
+    def validate_disposition_revision_pair(self) -> RealtimeTurnArbitrationDecision:
+        """Reject contradictory decisions at every construction boundary."""
+
+        if self.disposition == "REVISE_ACTIVE":
+            if self.revision_type not in _REVISE_TYPES:
+                raise ValueError("revision_type is invalid for REVISE_ACTIVE")
+        elif self.disposition == "REPLACE_ACTIVE":
+            if self.revision_type != "change_goal":
+                raise ValueError("revision_type must be change_goal for REPLACE_ACTIVE")
+        elif self.disposition == "CANCEL_ONLY":
+            if self.revision_type != "cancel_goal":
+                raise ValueError("revision_type must be cancel_goal for CANCEL_ONLY")
+        elif self.revision_type is not None:
+            raise ValueError(f"revision_type must be omitted for {self.disposition}")
+        return self
+
+
+def prompt_safe_arbitration_task_state(raw: Mapping[str, Any] | Any) -> dict[str, Any]:
+    """Project task state to the small, bounded semantic-control contract."""
+
+    task_state = raw if isinstance(raw, Mapping) else {}
+    constraints_value = task_state.get("constraints")
+    constraints = []
+    if isinstance(constraints_value, list):
+        constraints = [
+            _clip_string(value, max_chars=_TASK_STATE_CONSTRAINT_CHARS)
+            for value in constraints_value[-_TASK_STATE_CONSTRAINT_LIMIT:]
+            if isinstance(value, str) and value.strip()
+        ]
+
+    pending_tool_value = task_state.get("pending_tool")
+    pending_tool: dict[str, Any] | None = None
+    if isinstance(pending_tool_value, Mapping):
+        pending_tool = {}
+        for key in ("tool_name", "status", "current_step"):
+            value = pending_tool_value.get(key)
+            if isinstance(value, str) and value.strip():
+                pending_tool[key] = _clip_string(
+                    value,
+                    max_chars=_TASK_STATE_PENDING_TEXT_CHARS,
+                )
+        requires_confirmation = pending_tool_value.get("requires_confirmation")
+        if isinstance(requires_confirmation, bool):
+            pending_tool["requires_confirmation"] = requires_confirmation
+        if not pending_tool:
+            pending_tool = None
+
+    tts_state = str(task_state.get("tts_state") or "idle").strip().lower()
+    if tts_state not in _TASK_STATE_TTS_STATES:
+        tts_state = "idle"
+    committed_side_effect_count = task_state.get("committed_side_effect_count", 0)
+    if isinstance(committed_side_effect_count, bool) or not isinstance(
+        committed_side_effect_count,
+        int,
+    ):
+        committed_side_effect_count = 0
+
+    return {
+        "objective": _clip_string(task_state.get("objective"), max_chars=1200),
+        "constraints": constraints,
+        "pending_tool": pending_tool,
+        "tts_state": tts_state,
+        "committed_side_effect_count": min(
+            1_000_000,
+            max(0, committed_side_effect_count),
+        ),
+    }
 
 
 def uncertain_arbitration_decision(
@@ -202,3 +275,10 @@ def _reason_code(value: Any) -> str:
 
 def _fallback_reason(value: Any) -> str:
     return _reason_code(value)
+
+
+def _clip_string(value: Any, *, max_chars: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    return text if len(text) <= max_chars else text[:max_chars]

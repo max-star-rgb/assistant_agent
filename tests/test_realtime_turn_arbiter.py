@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
+from pydantic import ValidationError
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.turn_arbitration import (
@@ -82,6 +84,19 @@ def test_normalize_arbitration_decision_enforces_revision_matrix() -> None:
     assert decision.fallback_reason is None
 
 
+def test_decision_model_rejects_invalid_disposition_revision_pair() -> None:
+    with pytest.raises(ValidationError, match="revision_type is invalid for REVISE_ACTIVE"):
+        RealtimeTurnArbitrationDecision(
+            decision_id="decision-invalid-matrix",
+            source="semantic_llm",
+            disposition="REVISE_ACTIVE",
+            revision_type="cancel_goal",
+            confidence=0.99,
+            reason_code="untrusted_metadata",
+            expected_run_id="run-1",
+        )
+
+
 class _ScriptedChatAdapter:
     provider = "scripted"
 
@@ -121,6 +136,50 @@ def test_chat_adapter_arbiter_requests_bounded_json_without_tools() -> None:
     assert chat_request.max_tokens == 256
     assert "查询北京周末天气" in chat_request.user_query
     assert len(chat_request.user_query) < 6000
+
+
+def test_chat_adapter_arbiter_keeps_large_input_as_bounded_valid_json() -> None:
+    adapter = _ScriptedChatAdapter(
+        ChatResult(
+            response_text=(
+                '{"disposition":"FOLLOWUP","revision_type":null,'
+                '"confidence":0.95,"reason_code":"new_task"}'
+            ),
+            provider="scripted",
+            model="arbiter-test",
+        )
+    )
+    request = _request().model_copy(
+        update={
+            "task_state": {
+                "objective": "目标" * 2_000,
+                "constraints": ["约束" * 1_000 for _ in range(30)],
+                "pending_tool": {
+                    "tool_name": "search" * 500,
+                    "status": "working" * 500,
+                    "untrusted_arguments": "secret" * 2_000,
+                },
+                "reusable_artifacts": [{"raw": "private" * 2_000}],
+                "committed_side_effect_count": 10**10_000,
+            }
+        }
+    )
+    arbiter = ChatAdapterRealtimeTurnArbiter(adapter, min_confidence=0.80)
+
+    decision = asyncio.run(arbiter.arbitrate(request))
+
+    assert decision.disposition == "FOLLOWUP"
+    prompt_payload = json.loads(adapter.requests[0].user_query)
+    assert len(adapter.requests[0].user_query) < 6000
+    assert set(prompt_payload["active_task"]) == {
+        "objective",
+        "constraints",
+        "pending_tool",
+        "tts_state",
+        "committed_side_effect_count",
+    }
+    assert "untrusted_arguments" not in prompt_payload["active_task"]["pending_tool"]
+    assert prompt_payload["active_task"]["committed_side_effect_count"] == 1_000_000
 
 
 def test_chat_adapter_arbiter_accepts_fenced_json() -> None:

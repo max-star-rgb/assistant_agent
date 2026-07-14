@@ -13,6 +13,7 @@ from assistant_agent.schemas.realtime_turn_arbitration import (
     RealtimeTurnArbitrationDecision,
     RealtimeTurnArbitrationRequest,
     normalize_arbitration_decision,
+    prompt_safe_arbitration_task_state,
     uncertain_arbitration_decision,
 )
 from assistant_agent.services.chat_adapter import (
@@ -135,10 +136,9 @@ def _arbitration_prompt(request: RealtimeTurnArbitrationRequest) -> str:
     payload = {
         "utterance": request.utterance,
         "language": request.language,
-        "active_task": request.task_state,
+        "active_task": prompt_safe_arbitration_task_state(request.task_state),
     }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-    return encoded[:5600]
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def _extract_json_object(text: str) -> Mapping[str, Any]:
