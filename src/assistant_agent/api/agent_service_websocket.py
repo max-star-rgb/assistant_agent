@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from time import perf_counter_ns
 from typing import Any, ClassVar
 
+from anyio import CancelScope
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from assistant_agent.gateway import AGENT_SERVICE_ENTRY_CAPABILITIES, GatewaySessionManager
@@ -455,7 +456,6 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     gateway_manager = _create_agent_service_gateway_manager()
     state.gateway_manager = gateway_manager
     state.gateway_facade = GatewayTurnFacade(manager=gateway_manager)
-    normal_disconnect = False
     close_code: int | None = None
     close_reason: str | None = None
     try:
@@ -507,7 +507,6 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             response = await _handle_raw_message(raw, state=state)
             await _send_response(websocket, response, state=state)
     except WebSocketDisconnect as exc:
-        normal_disconnect = True
         logger.info(
             "agent-service websocket disconnected session_id=%s code=%s reason_present=%s",
             state.session_id,
@@ -516,22 +515,30 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         )
         close_code, close_reason = exc.code, exc.reason
     finally:
-        cleanup_task = asyncio.create_task(
-            _cleanup_agent_service_connection(
-                state,
-                gateway_manager=gateway_manager,
-                close_code=close_code,
-                close_reason=close_reason,
-            )
+        await _close_agent_service_connection(
+            state=state,
+            gateway_manager=gateway_manager,
+            close_code=close_code,
+            close_reason=close_reason,
         )
-        try:
-            await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError:
-            if not normal_disconnect:
-                cleanup_task.cancel()
-                await asyncio.gather(cleanup_task, return_exceptions=True)
-                raise
-            await asyncio.gather(cleanup_task, return_exceptions=True)
+
+
+async def _close_agent_service_connection(
+    *,
+    state: AgentServiceConnectionState,
+    gateway_manager: GatewaySessionManager,
+    close_code: int | None,
+    close_reason: str | None,
+) -> None:
+    """Finish owned connection resources even inside a cancelled ASGI scope."""
+
+    with CancelScope(shield=True):
+        await _cleanup_agent_service_connection(
+            state,
+            gateway_manager=gateway_manager,
+            close_code=close_code,
+            close_reason=close_reason,
+        )
 
 
 async def _cleanup_agent_service_connection(

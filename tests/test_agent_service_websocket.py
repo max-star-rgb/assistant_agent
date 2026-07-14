@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Event
 
 import pytest
+from anyio import CancelScope
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -46,6 +47,62 @@ class NoopVideoObserver:
 
     async def close(self) -> None:
         return None
+
+
+def test_agent_service_connection_cleanup_is_shielded_from_outer_cancel() -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+
+        async def pending_chat() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append("chat_cancelled")
+
+        class Observer:
+            async def close(self) -> None:
+                await asyncio.sleep(0)
+                events.append("observer_closed")
+
+        class Ingestion:
+            def cleanup(self, video_id: str) -> None:
+                assert video_id == "video-1"
+                events.append("video_cleaned")
+
+        class Manager:
+            async def close(self) -> None:
+                await asyncio.sleep(0)
+                events.append("gateway_closed")
+
+        chat_task = asyncio.create_task(pending_chat())
+        await asyncio.sleep(0)
+        state = agent_service_ws.AgentServiceConnectionState(
+            session_id="s1",
+            query_params={},
+            video_ids=["video-1"],
+            video_ingestion=Ingestion(),
+            video_observer=Observer(),
+            chat_tasks={chat_task},
+        )
+        manager = Manager()
+        with CancelScope() as outer:
+            outer.cancel()
+            await agent_service_ws._close_agent_service_connection(
+                state=state,
+                gateway_manager=manager,
+                close_code=1000,
+                close_reason=None,
+            )
+
+        assert events == [
+            "chat_cancelled",
+            "observer_closed",
+            "video_cleaned",
+            "gateway_closed",
+        ]
+        assert state.closed is True
+
+    asyncio.run(scenario())
 
 
 def test_agent_service_start_ack_accepts_media_envelope() -> None:
