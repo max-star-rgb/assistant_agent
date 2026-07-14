@@ -70,6 +70,7 @@ def tool_specs_to_mcp_tools(specs: Iterable[ToolSpec]) -> list[dict[str, Any]]:
 
 def _with_required(schema: dict[str, Any], required_inputs: list[str]) -> dict[str, Any]:
     normalized = dict(schema)
+    normalized.pop("fields", None)
     required = sorted({str(item) for item in [*schema.get("required", []), *required_inputs] if item})
     normalized["required"] = required
     normalized.setdefault("additionalProperties", False)

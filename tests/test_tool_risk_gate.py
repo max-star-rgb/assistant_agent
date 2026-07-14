@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.durable_tasks import TrustedTaskBinding
 from assistant_agent.schemas.tools import (
     ApprovalPolicy,
     ExecutionPolicy,
@@ -138,6 +139,38 @@ def test_compensatable_tool_duplicate_idempotency_key_suppresses_second_executio
     post = finished.payload["post_tool_call"]
     assert post["status"] == "duplicate_suppressed"
     assert post["idempotency"]["duplicate_suppressed"] is True
+
+
+def test_durable_worker_binding_injects_trusted_step_idempotency_key() -> None:
+    tool = RecordingTool("image_generation")
+    registry = ToolRegistry()
+    registry.register(tool)
+    ledger = InMemoryToolIdempotencyLedger()
+    binding = TrustedTaskBinding(
+        task_id="task-1",
+        task_version=1,
+        plan_version=1,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        ready_step_ids=["step-1"],
+        step_idempotency_keys={"step-1": "durable:task-1:step-1"},
+    )
+    executor = ToolExecutor(
+        registry=registry,
+        idempotency_ledger=ledger,
+        context_metadata={"durable_task_binding": binding},
+    )
+
+    first = executor.run_tool(
+        _realtime_state(run_id="run-1"), "step-1", tool.name, {"prompt": "海报"}
+    )
+    second = executor.run_tool(
+        _realtime_state(run_id="run-2"), "step-1", tool.name, {"prompt": "海报"}
+    )
+
+    assert first.success is True
+    assert second.data["idempotency"]["duplicate_suppressed"] is True
+    assert tool.calls == 1
 
 
 def test_compensatable_tool_generates_default_idempotency_key_for_same_run_step() -> None:

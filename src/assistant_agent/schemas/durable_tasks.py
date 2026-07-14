@@ -171,6 +171,7 @@ class TrustedTaskBinding(BaseModel):
     lease_owner: str
     lease_token: str
     ready_step_ids: list[str]
+    step_idempotency_keys: dict[str, str] = Field(default_factory=dict)
     verified_confirmation_id: str | None = None
 
 

@@ -32,9 +32,11 @@ from assistant_agent.services.realtime_video_memory import RealtimeVideoMemorySt
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 from assistant_agent.tools.vision_tool import VisionUnderstandingTool
 from assistant_agent.tools.web_search_tool import WebSearchTool
+from assistant_agent.tools.task_plan_tool import TaskPlanSubmitTool
 
 if TYPE_CHECKING:
     from assistant_agent.services.agent_communication import AgentCommunicationService
+    from assistant_agent.services.durable_tasks.service import DurableTaskService
 
 
 class ToolRegistry:
@@ -101,20 +103,57 @@ def _schema_to_dict(schema_type, *, tool_name: str | None = None):
     """Convert a Pydantic model to a safe schema description."""
     try:
         schema = schema_type.model_json_schema()
-        properties = schema.get("properties", {})
-        required = set(schema.get("required", []))
-        fields = {}
-        for field_name, field_info in properties.items():
+        definitions = schema.get("$defs", {})
+        normalized = _inline_local_schema_refs(schema, definitions)
+        normalized.pop("$defs", None)
+        properties = normalized.get("properties", {})
+        required = list(normalized.get("required", []))
+        for field_name in list(properties):
             if _hide_runtime_identity_field(tool_name, field_name):
-                continue
-            fields[field_name] = {
+                properties.pop(field_name, None)
+                required = [item for item in required if item != field_name]
+        normalized["properties"] = properties
+        normalized["required"] = required
+        normalized["fields"] = {
+            field_name: {
                 "type": field_info.get("type", "string"),
                 "description": field_info.get("description", ""),
                 "required": field_name in required,
             }
-        return {"fields": fields}
+            for field_name, field_info in properties.items()
+        }
+        return _close_object_schemas(normalized)
     except Exception:
         return {"fields": {}}
+
+
+def _inline_local_schema_refs(value: Any, definitions: dict[str, Any]) -> Any:
+    if isinstance(value, list):
+        return [_inline_local_schema_refs(item, definitions) for item in value]
+    if not isinstance(value, dict):
+        return value
+    reference = value.get("$ref")
+    if isinstance(reference, str) and reference.startswith("#/$defs/"):
+        name = reference.removeprefix("#/$defs/")
+        target = definitions.get(name, {})
+        merged = {**target, **{key: item for key, item in value.items() if key != "$ref"}}
+        return _inline_local_schema_refs(merged, definitions)
+    return {
+        key: _inline_local_schema_refs(item, definitions)
+        for key, item in value.items()
+        if key != "$defs"
+    }
+
+
+def _close_object_schemas(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_close_object_schemas(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    normalized = {key: _close_object_schemas(item) for key, item in value.items()}
+    if normalized.get("type") == "object" or "properties" in normalized:
+        normalized["additionalProperties"] = False
+    return normalized
 
 
 def _hide_runtime_identity_field(tool_name: str | None, field_name: str) -> bool:
@@ -474,6 +513,33 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "do_not_reuse",
         },
     },
+    "task_plan_submit": {
+        "when_to_use": [
+            "The request explicitly requires durable execution.",
+            "A complex task must survive the current request or client connection.",
+        ],
+        "when_not_to_use": [
+            "A simple request can be answered or completed in the foreground.",
+            "The request explicitly selects foreground execution.",
+        ],
+        "runtime_constraints": [
+            "Must be the only provider-native tool call in its batch.",
+            "Task identity and revision binding come only from ToolContext.",
+            "Use only through ToolExecutor.",
+        ],
+        "side_effect": {
+            "level": "committed",
+            "requires_confirmation": False,
+            "description": "Creates or revises a local durable task record.",
+        },
+        "execution": {
+            "dependency_mode": "terminal",
+            "resource_writes": ["durable_task"],
+            "realtime_safety": "needs_progress",
+            "artifact_reuse": "do_not_reuse",
+            "progress_message": "我先把任务整理成可恢复的执行计划。",
+        },
+    },
 }
 
 
@@ -484,6 +550,7 @@ def create_default_registry(
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
     enable_agent_delegation: bool = False,
     agent_communication_service: AgentCommunicationService | None = None,
+    durable_task_service: DurableTaskService | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     memory_media_service = create_memory_media_ingestion_service(config)
@@ -510,4 +577,8 @@ def create_default_registry(
         if agent_communication_service is None:
             raise ValueError("agent_communication_service is required when agent delegation is enabled")
         registry.register(AgentDelegationTool(agent_communication_service))
+    if config is not None and config.durable_tasks_enabled:
+        if durable_task_service is None:
+            raise ValueError("durable_task_service is required when durable tasks are enabled")
+        registry.register(TaskPlanSubmitTool(durable_task_service))
     return registry

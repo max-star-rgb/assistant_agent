@@ -14,6 +14,7 @@ from assistant_agent.agent.recovery import RecoveryPolicy, classify_error
 from assistant_agent.schemas.api import api_error
 from assistant_agent.schemas.capability_output import build_capability_output_contract, contract_summary
 from assistant_agent.schemas.events import AgentEvent
+from assistant_agent.schemas.durable_tasks import TrustedTaskBinding
 from assistant_agent.schemas.planning import TaskStep
 from assistant_agent.schemas.realtime_cancellation import build_realtime_turn_cancellation_metadata
 from assistant_agent.schemas.tools import ToolResult
@@ -83,6 +84,11 @@ class ToolExecutor:
             state=state,
         )
         tool_input = _bind_runtime_identity(tool_name, tool_input, state)
+        tool_input = _bind_durable_idempotency(
+            tool_input,
+            step_id=step_id,
+            context_metadata=self.context_metadata,
+        )
         policy_view = ToolPolicyInterpreter().view_for_spec(self.registry.get_spec(tool_name))
         risk_decision = evaluate_tool_risk(
             tool_name=tool_name,
@@ -1016,6 +1022,24 @@ def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: Ag
         "user_id": state.user_id,
         "session_id": state.session_id,
     }
+
+
+def _bind_durable_idempotency(
+    tool_input: dict[str, Any],
+    *,
+    step_id: str,
+    context_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Inject worker-issued idempotency keys from trusted runtime metadata."""
+
+    raw_binding = context_metadata.get("durable_task_binding")
+    if raw_binding is None:
+        return tool_input
+    binding = TrustedTaskBinding.model_validate(raw_binding)
+    idempotency_key = binding.step_idempotency_keys.get(step_id)
+    if not idempotency_key:
+        return tool_input
+    return {**tool_input, "idempotency_key": idempotency_key}
 
 
 def _record_provider_budget_call(
