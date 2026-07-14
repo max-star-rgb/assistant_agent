@@ -28,6 +28,7 @@ MemoryAuditEventType = Literal[
 MemoryAuditEventOutcome = Literal["succeeded", "skipped", "rejected", "failed"]
 MemoryProfileRepairAction = Literal["none", "create", "update", "delete"]
 MemoryConfirmationStatus = Literal["pending", "confirmed", "rejected", "expired"]
+MemoryConfirmationKind = Literal["write_policy", "fact_conflict"]
 
 
 class MemoryAuditItem(BaseModel):
@@ -183,6 +184,9 @@ class MemoryPendingConfirmation(BaseModel):
     project_id: str | None = None
     session_id: str | None = None
     memory_id: str | None = None
+    confirmation_kind: MemoryConfirmationKind = "write_policy"
+    fact_key: str | None = None
+    conflict_memory_ids: list[str] = Field(default_factory=list)
     status: MemoryConfirmationStatus = "pending"
     memory_type: MemoryType
     scope: str | None = None

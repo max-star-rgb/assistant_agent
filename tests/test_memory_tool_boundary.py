@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from assistant_agent.memory.manager import MemoryManager
+from assistant_agent.schemas.memory_intelligence import MemoryFact
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.tools.base import ToolContext
@@ -45,6 +46,36 @@ def test_memory_save_tool_returns_confirmation_required_result() -> None:
     assert result.data["requires_confirmation"] is True
     assert result.data["confirmation_id"].startswith("memory_confirmation_")
     assert manager.list_by_user("u1") == []
+
+
+def test_memory_save_tool_surfaces_fact_conflict_confirmation_kind() -> None:
+    manager = MemoryManager(InMemoryStore())
+    fact_a = MemoryFact(
+        fact_key="user:employment:company",
+        subject="user",
+        predicate="employment.company",
+        value="A",
+        provenance="user_explicit",
+        conflict_policy="confirm",
+        observed_at=NOW,
+    )
+    fact_b = fact_a.model_copy(update={"value": "B"})
+    tool = MemorySaveTool()
+    context = ToolContext(user_id="u1", session_id="s1", metadata={"memory_manager": manager})
+    first = tool.run(
+        {"content": {"summary": "用户在 A 公司工作", "fact": fact_a.model_dump(mode="json")}},
+        context,
+    )
+
+    result = tool.run(
+        {"content": {"summary": "用户现在在 B 公司工作", "fact": fact_b.model_dump(mode="json")}},
+        context,
+    )
+
+    assert first.success is True
+    assert result.success is False
+    assert result.data["confirmation_kind"] == "fact_conflict"
+    assert result.data["fact_key"] == "user:employment:company"
 
 
 def test_memory_retrieval_tool_does_not_expose_superseded_debug_query() -> None:
