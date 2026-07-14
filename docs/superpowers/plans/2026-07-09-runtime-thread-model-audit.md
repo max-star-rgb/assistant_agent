@@ -45,7 +45,7 @@ business logic.
 
 ## Deliverables
 
-- `docs/runtime-thread-model-audit.md`
+- `docs/runtime-event-stream-architecture.md` (current consolidated authority)
 - Phase 5 section in `docs/runtime-event-stream-architecture.md`
 
 ## Validation

@@ -46,7 +46,7 @@ Expected: fail because `assistant_agent.schemas.llm_events` does not exist.
 - [x] **Step 3: Implement schema and accumulator**
 
 Implement the minimum contract from
-`docs/provider-event-boundary-architecture.md`.
+`docs/runtime-event-stream-architecture.md` (current consolidated authority).
 
 - [x] **Step 4: Run tests to verify they pass**
 

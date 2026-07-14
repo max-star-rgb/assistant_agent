@@ -1,0 +1,4 @@
+interface:
+  display_name: "Assistant Agent Documentation Sync"
+  short_description: "Governed documentation sync for assistant_agent"
+  default_prompt: "Use $assistant-agent-documentation-sync to reconcile assistant_agent documentation with current repository evidence."

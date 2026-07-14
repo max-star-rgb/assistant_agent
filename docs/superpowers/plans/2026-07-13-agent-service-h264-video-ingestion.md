@@ -15,7 +15,7 @@
 - Do not persist raw H.264 payloads or log complete Hex/JPEG/provider responses.
 - Keep decoded artifacts bounded to the most recent three frames per session video id.
 - Keep provider defaults mock/local/offline; real Ark calls remain explicit `provider_smoke` validation only.
-- Preserve all existing user changes and the untracked `docs/media_agent_videoh264_guide.md` file.
+- Preserve all existing user changes and the then-untracked media-side H.264 guide (that guide was subsequently retired by the repository documentation-sync pass).
 
 ---
 
@@ -389,4 +389,4 @@ git commit -m "Document agent service video ingestion"
 
 Run: `git status --short && git log --oneline -6 && git diff HEAD~5..HEAD --stat`
 
-Expected: only the user-owned `docs/media_agent_videoh264_guide.md` remains untracked; all implementation commits are present and verification results are recorded for the final report.
+Expected at the time: only the user-owned media-side H.264 guide remains untracked; all implementation commits are present and verification results are recorded for the final report. The guide was subsequently retired by the repository documentation-sync pass.

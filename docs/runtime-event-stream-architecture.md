@@ -1,450 +1,253 @@
 # Runtime Event Stream Architecture
 
-Last updated: 2026-07-09
+Last updated: 2026-07-14
 
-This document defines the target direction for evolving `assistant_agent` runtime events from a synchronous callback side channel into an async event stream interface. It is intentionally incremental. The current Python runtime, Gateway, tool governance, memory service, provider adapters, and realtime contracts remain authoritative.
+This document is the current authority for provider and assistant runtime
+streaming in `assistant_agent`. It defines the event contracts, stream/result
+separation, thread bridge, cancellation limits, compatibility boundaries, and
+source ownership that are implemented today. Gateway session and wire-frame
+lifecycle remain authoritative in `docs/gateway-architecture.md`.
 
-## Current State
+## Scope And Invariants
 
-The current execution path for Gateway-normalized traffic is:
-
-```text
-GatewaySessionService
-  -> AgentGraphRealtimeBackend
-  -> asyncio.to_thread(run_assistant_request)
-  -> AgentGraphRuntime.run_state()
-  -> EventSink.emit(AgentEvent)
-  -> AgentEvent -> RealtimeAgentEvent -> Gateway frame
-```
-
-The repository already has the important runtime pieces:
-
-- `assistant_agent.schemas.events.AgentEvent` for internal runtime events.
-- `assistant_agent.services.event_sink.EventSink` for synchronous event delivery.
-- `assistant_agent.realtime.RealtimeAgentEvent` for the Gateway backend boundary.
-- `assistant_agent.realtime.event_mapping` for `AgentEvent` to `RealtimeAgentEvent` conversion.
-- `assistant_agent.gateway.session.CancelToken`, backed by `asyncio.Event`, for Gateway cancellation.
-- `AgentGraphRealtimeBackend`, which is the thin bridge between Gateway and the existing assistant runtime.
-
-The current event system is useful, but it is still an observer-style side channel. Runtime callers register or pass an `EventSink`, and the runtime pushes events into it while the final result is returned separately through `run_state()`, `run()`, or `run_assistant_request()`.
-
-## Problem
-
-The existing observer model makes streaming work, but it keeps event delivery separate from the runtime output protocol.
-
-This creates several long-term issues:
-
-- Consumers need callback-style registration instead of `async for` consumption.
-- Streaming and final-result handling are easy to couple incorrectly.
-- Backpressure and lifecycle ownership are unclear at async boundaries.
-- Exceptions and terminal state need custom bridges when sync runtime execution is called from async Gateway code.
-- The realtime backend currently bridges sync events back into the event loop with thread coordination.
-
-The next architectural step is not to redesign events. The next step is to expose existing `AgentEvent` records as a first-class async stream while preserving final result contracts.
-
-## Goals
-
-- Add an async stream facade over the existing runtime event system.
-- Reuse the existing `AgentEvent` schema and event names.
-- Preserve `AgentGraphRuntime.run_state()` and `AgentGraphRuntime.run()` behavior.
-- Preserve `run_assistant_request()` and `AssistantRunArtifacts` behavior.
-- Preserve `RealtimeAgentRequest`, `RealtimeAgentEvent`, `RealtimeAgentResult`, `RealtimeAgentBackend`, and `RealtimeCancelToken`.
-- Preserve Gateway wire frame names and lifecycle semantics.
-- Keep all tool calls behind `ActionValidator -> ToolExecutor -> ToolRegistry`.
-- Keep memory behavior behind `MemoryManager`, memory services, and memory tools.
-- Keep provider-specific chunks out of runtime consumers.
-
-## Non-Goals
-
-- Do not replace `AgentGraphRuntime` with a second agent loop.
-- Do not introduce a third event schema for runtime events.
-- Do not rename current `AgentEvent` types in the first phase.
-- Do not migrate all tools, memory stores, or provider adapters to async in the first phase.
-- Do not change Gateway frame names or public Gateway behavior.
-- Do not move planning, tool choice, memory policy, provider policy, or agent routing into Gateway.
-- Do not make TTS, UI, or transport-specific concepts part of `AgentEvent`.
-
-## Event Versus Result
-
-Runtime event streams and final results are separate concepts.
-
-An event describes what happened during a run:
+The streaming stack has four distinct contracts:
 
 ```text
-task_started
-graph_node_started
-response_delta
-tool_started
-tool_finished
-final_response
-task_cancelled
-task_failed
+vendor provider chunks
+  -> provider adapter -> LLMEvent
+  -> runtime mapping and lifecycle -> AgentEvent
+  -> AgentRunStream / shared assistant service stream
+  -> RealtimeAgentEvent
+  -> Gateway frame
 ```
 
-A result describes the terminal outcome of the run:
+- `LLMEvent` is provider-neutral and internal to the chat/provider boundary.
+- `AgentEvent` describes assistant runtime progress and lifecycle.
+- `RealtimeAgentEvent` is the thin realtime backend boundary.
+- Gateway frames describe session, run, delivery, cancel, interrupt, and
+  transport lifecycle.
+- Vendor chunks, SDK objects, prompts, credentials, and raw provider responses
+  do not cross the provider adapter boundary.
+- Gateway, UI, TTS, and public API consumers do not consume `LLMEvent`.
+- Provider streaming never bypasses tool governance. Final native tool calls
+  still enter `ActionValidator -> ToolExecutor -> ToolRegistry`.
 
-```text
-AgentState
-AssistantRunArtifacts
-RealtimeAgentResult
-```
+## Provider Stream Boundary
 
-The stream interface must not force callers to reconstruct all terminal metadata from events. Callers that need final status, trace id, output refs, conversation-history effects, realtime task-state effects, or Gateway `expects_reply` behavior must still have an explicit result path.
+`AsyncStreamingChatAdapter.stream_chat()` is an optional additive interface.
+Implementations normalize vendor chunks into these `LLMEvent` variants:
 
-## Phase 1 Target
+| event | purpose | terminal |
+| --- | --- | --- |
+| `token_delta` | prompt-safe response text progress | no |
+| `tool_call_delta` | accumulated native tool-call name and arguments | no |
+| `completed` | finish reason, usage, and stream completion | yes |
+| `error` | prompt-safe provider failure | yes |
 
-Phase 1 adds a runtime-level async stream facade only:
+`LLMEventAccumulator` reconstructs response text, tool calls, finish reason,
+usage, provider, and model into the existing terminal `ChatResult` contract.
+Tool-call argument deltas are not exposed as user-visible response events.
+Provider errors become structured `ChatResult.errors`; cancellation exceptions
+remain cancellation signals rather than provider errors.
+
+Native provider-stream consumption is selective and opt-in through
+`ProviderConfig.native_provider_streaming`. When enabled and the adapter exposes
+`stream_chat()`, `ProviderStreamingTurnRunner` consumes the async stream for one
+runtime turn. Visible token deltas pass through the existing stream callback and
+`llm_event_mapping` to become `AgentEvent(type="response_delta")`. When the flag
+is disabled or the adapter is sync-only, the runtime continues to call
+`ChatAdapter.chat()`.
+
+The compatibility contracts remain supported:
+
+- `ChatAdapter.chat(request) -> ChatResult` remains valid.
+- `ChatRequest.stream_callback(text, payload)` remains valid.
+- OpenAI-compatible synchronous parsing still accumulates the same final
+  `ChatResult` while adapting internal token events to the callback.
+- Runtime callback sites normalize deltas through `stream_delta_to_agent_event`
+  so provider metadata and runtime-owned `source` values stay consistent.
+
+## Runtime Stream And Result
+
+Events report what happened during a run; results report its terminal outcome.
+They are intentionally separate:
+
+| stream level | yielded events | terminal result |
+| --- | --- | --- |
+| provider turn | `LLMEvent` | `ChatResult` |
+| graph runtime | `AgentEvent` | `AgentState` |
+| shared assistant service | `AgentEvent` | `AssistantRunArtifacts` |
+| realtime backend | `RealtimeAgentEvent` | `RealtimeAgentResult` |
+
+Callers must not reconstruct terminal state from events. Terminal results own
+status, errors, output refs, trace ids, conversation-history effects, realtime
+task-state effects, and other metadata that is not guaranteed to appear in the
+stream.
+
+`AgentGraphRuntime.run_stream()` returns
+`AgentRunStream[AgentState]`:
 
 ```python
 stream = runtime.run_stream(request, cancel_token=cancel_token)
-
 async for event in stream:
     consume(event)
-
 state = await stream.result()
 ```
 
-The stream yields existing `AgentEvent` objects. The terminal result remains `AgentState`.
+`run_assistant_request_stream()` returns
+`AgentRunStream[AssistantRunArtifacts]` and preserves the shared service as the
+owner of provider/config resolution, runtime construction, conversation
+history, realtime task state, context preparation, trace, and final artifacts.
+`AgentRunStream.wait()` is an alias for `result()`.
 
-Internally, Phase 1 may still call the existing synchronous `run_state()` implementation in a worker thread. A thread-safe event sink bridges `EventSink.emit()` into the owning event loop:
+The optional compatibility `EventSink` is forwarded deterministically while
+the same events are yielded. At service level, streamed events are also present
+in `AssistantRunArtifacts.events`. A worker exception is re-raised after
+already-enqueued events drain and is also re-raised by `result()`.
 
-```text
-AgentGraphRuntime.run_state()
-  -> EventSink.emit(AgentEvent)
-  -> loop.call_soon_threadsafe(queue.put_nowait, item)
-  -> AgentRunStream.__anext__()
-  -> AgentEvent
-```
+## Thread Model And Ordering
 
-This is an async facade, not a native async runtime. The facade changes the consumer interface without changing the internal execution model.
-
-## Phase 1 Interfaces
-
-The first implementation should introduce a small runtime stream module:
-
-```text
-src/assistant_agent/agent/event_stream.py
-```
-
-Expected public objects:
-
-```python
-class AgentRunStream:
-    def __aiter__(self) -> AgentRunStream: ...
-    async def __anext__(self) -> AgentEvent: ...
-    async def result(self) -> AgentState: ...
-    async def wait(self) -> AgentState: ...
-
-
-class AsyncQueueEventSink:
-    def emit(self, event: AgentEvent) -> None: ...
-```
-
-`AgentGraphRuntime` then exposes:
-
-```python
-def run_stream(
-    self,
-    request: UserRequest,
-    *,
-    event_sink: EventSink | None = None,
-    cancel_token: Any | None = None,
-) -> AgentRunStream:
-    ...
-```
-
-## Phase 1 Implemented Interfaces
-
-`AgentGraphRuntime.run_stream(request, *, event_sink=None, cancel_token=None)`
-returns `AgentRunStream[AgentState]`.
-
-`AgentRunStream` supports async iteration over `AgentEvent` and
-`await stream.result()` for the terminal `AgentState`.
-
-The optional `event_sink` remains useful for compatibility observers. The stream sink should forward to that sink after enqueuing or before enqueuing, as long as order is deterministic and sink failures cannot leave the stream hanging.
-
-## Threading Model
-
-`asyncio.Queue` is not thread-safe. If the synchronous runtime runs in `asyncio.to_thread()`, `EventSink.emit()` may be called from a worker thread.
-
-The bridge must schedule queue writes on the owning event loop:
-
-```python
-loop.call_soon_threadsafe(queue.put_nowait, item)
-```
-
-The worker thread must never call `asyncio.Queue.put_nowait()` directly.
-
-The bridge must also publish terminal completion through the event loop. The async iterator should finish only after:
-
-- all previously emitted events are available to the consumer, and
-- the worker has stored either a final `AgentState` or an exception.
-
-## Error And Cancellation Semantics
-
-Phase 1 reuses the existing cancellation path:
-
-- Gateway owns `CancelToken`.
-- `AgentGraphRuntime.run_state()` receives the cancel token.
-- Runtime graph nodes and `ToolExecutor` continue checking cancellation through existing helpers.
-- Cancellation still produces `task_cancelled` where the current runtime already emits it.
-
-The stream facade should not invent new interrupt semantics.
-
-If the worker raises an unexpected exception before producing an `AgentState`, `AgentRunStream.result()` should re-raise that exception. The async iterator may also re-raise after queued events are drained. Tests should lock this behavior before implementation.
-
-## Phase 2 Service-Level Stream Facade
-
-Phase 2 adds `run_assistant_request_stream()` on top of the shared assistant run
-service:
-
-```python
-stream = run_assistant_request_stream(request, ...)
-
-async for event in stream:
-    consume(event)
-
-artifacts = await stream.result()
-```
-
-The stream yields existing `AgentEvent` objects. The terminal result remains
-`AssistantRunArtifacts`.
-
-This phase deliberately keeps `run_assistant_request()` as the synchronous
-source of truth because it owns more than raw runtime execution:
-
-- env and provider config resolution
-- runtime creation
-- conversation history preparation
-- realtime task-state request preparation
-- realtime task-state event reduction
-- demo video context preload
-- final conversation turn recording
-- `AssistantRunArtifacts`
-
-Internally, Phase 2 still runs the existing service function in a worker thread
-and bridges `EventSink.emit()` into an async iterator. This is a service-level
-async facade, not a native async runtime. It changes the consumer boundary while
-preserving the current run service behavior and final-result contract.
-
-`AgentGraphRealtimeBackend` should migrate to the service-level stream facade,
-not directly around `run_assistant_request()` to construct `AgentGraphRuntime`
-itself.
-
-## Phase 2 Implemented Interfaces
-
-`run_assistant_request_stream(request, **kwargs)` accepts the same operational
-inputs as `run_assistant_request()` and returns
-`AgentRunStream[AssistantRunArtifacts]`.
-
-The facade forwards events to an optional compatibility `event_sink` while also
-recording them for `AssistantRunArtifacts.events`. This keeps callback-style
-observers working during migration and lets new consumers use:
-
-```python
-stream = run_assistant_request_stream(request, event_sink=legacy_sink)
-
-async for event in stream:
-    consume(event)
-
-artifacts = await stream.result()
-```
-
-## Phase 3 Realtime Backend Migration
-
-Phase 3 moves `AgentGraphRealtimeBackend` from this shape:
-
-```text
-asyncio.to_thread(run_assistant_request)
-  + _RealtimeForwardingEventSink.emit()
-  + asyncio.run_coroutine_threadsafe(...)
-```
-
-to this shape:
-
-```text
-run_assistant_request_stream()
-  -> async for AgentEvent
-  -> map AgentEvent to RealtimeAgentEvent
-  -> await event_sink(RealtimeAgentEvent)
-  -> await stream.result()
-  -> RealtimeAgentResult
-```
-
-The backend now consumes `run_assistant_request_stream()` by default. Existing
-sync `run_request=` injection remains supported through a compatibility stream
-wrapper so API adapters and focused tests can keep passing a synchronous run
-function during migration.
-
-This migration preserves:
-
-- progress throttling and heartbeat policy
-- final response chunking behavior
-- duplicate `response_delta` suppression
-- cancel metadata and best-effort cancel status
-- trace id propagation
-- `expects_reply`
-- stale event suppression after Gateway cancel or interrupt
-
-## Phase 4 Cancellation Propagation
-
-Phase 4 tightens cooperative cancellation without changing Gateway wire frames
-or rewriting runtime internals.
-
-The cancellation model remains:
-
-```text
-Gateway CancelToken / event-like token
-  -> run_assistant_request_stream(..., cancel_token=...)
-  -> AgentGraphRuntime.run_state(..., cancel_token=...)
-  -> raise_if_cancelled()
-  -> ToolExecutor / runtime node checks
-```
-
-Implemented Phase 4 changes:
-
-- `raise_if_cancelled()` now recognizes event-like tokens with `is_set()`, so
-  raw `asyncio.Event` style cancel tokens are treated as cancelled when set.
-- `ToolExecutor` retry backoff no longer sleeps as one uninterruptible block.
-  It sleeps in short chunks and checks the cancel token between chunks.
-
-This phase does not forcefully terminate blocking external SDK calls,
-subprocesses, or provider requests that do not cooperate. Those remain thread
-or adapter-level migration candidates and should be handled only where evidence
-shows a real bottleneck.
-
-## Phase 5 Thread Model Assessment
-
-Phase 5 audits the current thread and blocking model instead of removing thread
-bridges.
-
-The current production thread bridge is narrow:
+The core runtime and shared assistant service remain synchronous sources of
+truth. Their async stream facades are deliberately narrow:
 
 ```text
 async consumer
   -> run_stream() / run_assistant_request_stream()
-  -> asyncio.to_thread(sync runtime/service)
-  -> EventSink.emit(AgentEvent)
+  -> asyncio.to_thread(sync runtime or service)
+  -> EventSink.emit(AgentEvent) in worker thread
   -> AsyncQueueEventSink
-  -> async iterator
+  -> AgentRunStream in owning event loop
 ```
 
-This remains an async facade, not a fully async-native runtime. That is still
-the correct boundary for this stage because the synchronous runtime and shared
-assistant service own final state, artifacts, history, trace, realtime task
-state, memory policy, tool governance, and provider setup.
+`asyncio.Queue` is not thread-safe. Worker threads must never call its methods
+directly. `AgentRunStream.emit()` schedules queue insertion with
+`loop.call_soon_threadsafe()`, and terminal result/exception publication uses
+the same loop scheduling boundary. This preserves the order of prior event
+callbacks before the terminal sentinel.
 
-The audit conclusion is selective async:
+The realtime backend normally consumes the shared service stream with
+`async for`. Its injected synchronous `run_request=` hook is retained only as a
+compatibility wrapper and uses the same worker-thread stream bridge. New
+production integrations should prefer the stream interface.
 
-- Keep the current `asyncio.to_thread()` bridges while the sync runtime remains
-  the source of truth.
-- Keep blocking tools, local memory work, artifact handling, and sync-only
-  provider SDKs behind governed sync boundaries.
-- Prefer async-native work first on high-value streaming and connection paths,
-  especially provider chat streaming.
-- Do not convert tools or memory to async just to remove threads.
+Async migration remains selective:
 
-The detailed inventory and migration rules live in
-`docs/runtime-thread-model-audit.md`.
+- keep Gateway, WebSocket, realtime delivery, and supported provider streams
+  async-native;
+- keep sync-only SDKs, governed tools, local memory, filesystem/artifact work,
+  and subprocess-backed operations behind sync/thread boundaries unless
+  measured concurrency or latency justifies a focused migration;
+- do not duplicate business logic merely to remove `asyncio.to_thread()`.
 
-## Phase 6 Provider Event Boundary
+`ProviderStreamingTurnRunner` bridges an async provider stream into the current
+synchronous runtime turn. It uses an event loop directly when called from a
+normal worker thread and isolates the coroutine in a helper thread if the
+caller already owns a running loop. This is a compatibility bridge, not a
+second agent runtime.
 
-Phase 6 defines the provider-side event contract before adding more async-native
-provider code.
+## Realtime And Gateway Mapping
 
-The current chat provider stream is callback-shaped:
+`AgentGraphRealtimeBackend` consumes the shared assistant stream, maps each
+`AgentEvent` through `assistant_agent.realtime.event_mapping`, and awaits the
+realtime event sink. Mapping may produce progress, response chunks, final
+response, tool/trace display events, confirmation events, or errors. Final
+response chunking and duplicate streamed-delta suppression remain realtime
+adapter policy.
+
+Gateway then maps `RealtimeAgentEvent` records to normalized frames, including
+`response.chunk -> stream.chunk` and `run.progress -> event.progress`, while
+owning run/session lifecycle, reconnect, cancel, interrupt, stale-output
+suppression, and transport behavior. Changes to those wire semantics belong in
+`docs/gateway-architecture.md`, not here.
+
+## Cancellation And Failure Semantics
+
+Cancellation is cooperative:
 
 ```text
-provider chunk
-  -> ChatRequest.stream_callback(text, payload)
-  -> AgentEvent(type="response_delta")
+Gateway/event-like cancel token
+  -> run_assistant_request_stream(..., cancel_token=...)
+  -> AgentGraphRuntime.run_state(..., cancel_token=...)
+  -> raise_if_cancelled()
+  -> runtime nodes and ToolExecutor checks
 ```
 
-The target provider boundary is event-shaped:
+The runtime recognizes tokens with `is_cancelled()`, event-like `is_set()`, or
+a boolean `cancelled` attribute. Governed retry backoff checks cancellation in
+short intervals. A cancellation handled by the runtime yields its existing
+`task_cancelled` event and cancelled terminal state; the stream facade does not
+invent a second cancellation protocol.
 
-```text
-provider chunk
-  -> LLMEvent
-  -> ChatResult accumulator
-  -> optional AgentEvent(type="response_delta") mapping
-```
+There is no safe force-kill guarantee for arbitrary blocking work:
 
-`LLMEvent` is not a Gateway frame and does not replace `AgentEvent`. It is an
-internal provider-boundary event for token deltas, tool-call deltas, completion
-metadata, and provider errors. Runtime code still decides which provider events
-become user-visible `AgentEvent` records.
+- `asyncio.to_thread()` cannot terminate a worker thread;
+- a blocking SDK, tool, subprocess, or filesystem call may continue until it
+  returns, reaches its timeout, or performs a cooperative check;
+- closing/cancelling a provider stream is adapter-specific and must preserve
+  provider error and resource-cleanup behavior.
 
-Phase 6 keeps `ChatAdapter.chat()`, `ChatResult`, and
-`ChatRequest.stream_callback` compatible. The first implementation step should
-add the schema and accumulator, then route the OpenAI-compatible stream parser
-through `LLMEvent` internally while preserving legacy callback output.
+Timeouts, bounded calls, adapter cleanup, structured errors, and cooperative
+checks are the supported controls. Do not claim hard preemption without a
+separate process or an upstream API that actually provides it.
 
-The detailed contract lives in `docs/provider-event-boundary-architecture.md`.
+## Source Ownership
 
-## Provider Event Direction
+| source | responsibility |
+| --- | --- |
+| `src/assistant_agent/schemas/llm_events.py` | `LLMEvent`, provider error/tool delta schemas, accumulator |
+| `src/assistant_agent/services/chat_adapter.py` | sync chat compatibility, async provider adapters, vendor chunk normalization and cleanup |
+| `src/assistant_agent/agent/provider_streaming.py` | runtime-local async provider stream consumption into `ChatResult` |
+| `src/assistant_agent/agent/llm_event_mapping.py` | visible token delta to `AgentEvent(response_delta)` mapping |
+| `src/assistant_agent/schemas/events.py` | runtime `AgentEvent` contract |
+| `src/assistant_agent/agent/event_stream.py` | `AgentRunStream` and thread-safe queue sink |
+| `src/assistant_agent/agent/runtime.py` | graph lifecycle, provider-path selection, `run_state`/`run`/`run_stream` |
+| `src/assistant_agent/services/assistant_run_service.py` | shared sync and streaming run service, `AssistantRunArtifacts` |
+| `src/assistant_agent/realtime/agent_graph_backend.py` | assistant stream consumption and realtime terminal result |
+| `src/assistant_agent/realtime/event_mapping.py` | `AgentEvent` to `RealtimeAgentEvent` mapping |
+| `src/assistant_agent/gateway/event_mapping.py` | realtime event to Gateway frame mapping |
 
-Provider-native streaming should eventually move from provider callbacks:
+Adjacent authorities remain authoritative for their domains:
 
-```text
-provider chunk -> stream_callback(text, payload)
-```
+- `docs/gateway-architecture.md`: Gateway frames and lifecycle.
+- `docs/tool-calling-architecture.md`: tool validation/execution governance.
+- `docs/observability-harness.md`: trace events, persistence, and redaction.
+- `docs/CONTEXT_ENGINEERING_STATUS.md`: prompt/context assembly and budgets.
 
-toward provider-neutral events:
+## Update Rules
 
-```text
-provider chunk -> LLMEvent -> AgentEvent -> async stream
-```
+Update this document in the same change when any of the following changes:
 
-That is not Phase 1. Provider adapter boundaries should continue hiding OpenAI, Anthropic, DeepSeek, Codex, or other vendor-specific chunks from the runtime consumer.
+- an `LLMEvent`, `AgentEvent`, or `AgentRunStream` contract;
+- provider stream selection, accumulation, callback compatibility, or cleanup;
+- stream/result ownership or terminal exception behavior;
+- worker-thread/event-loop ordering or queue bridging;
+- cancellation guarantees or blocking-call limitations;
+- source ownership or realtime mapping before the Gateway frame boundary.
 
-## Selective Async Direction
+Update the Gateway authority instead when frame names, session/run lifecycle,
+cancel/interrupt delivery, reconnect, or WebSocket behavior changes. Historical
+files under `docs/superpowers/specs/` and `docs/superpowers/plans/` are
+development records, not current architecture authority.
 
-The long-term goal is selective async, not async everywhere.
+## Offline Validation
 
-Good candidates for native async:
-
-- HTTP provider clients that support async streaming
-- WebSocket transports
-- realtime Gateway and media-entry adapters
-- TTS or UI consumers that naturally consume text deltas
-
-Good candidates to keep behind thread or sync boundaries:
-
-- blocking SDKs
-- subprocess-backed tools
-- local filesystem work
-- legacy libraries without reliable async APIs
-- short CPU-light local transforms
-
-## Acceptance Criteria
-
-Phase 1 is complete only when:
-
-- `AgentGraphRuntime.run_stream()` exists and returns an async-iterable stream handle.
-- `async for event in runtime.run_stream(request)` yields existing `AgentEvent` records in runtime order.
-- `await stream.result()` returns the same terminal `AgentState` that `run_state()` would return.
-- `run()` and `run_state()` behavior is unchanged.
-- `response_delta` and `final_response` are not duplicated beyond current runtime behavior.
-- pre-run cancellation yields the same cancelled state and `task_cancelled` event behavior as `run_state()`.
-- worker-thread event delivery uses `loop.call_soon_threadsafe`.
-- no Gateway wire frame, realtime type, tool, memory, or provider schema changes are required.
-
-## Validation
-
-For Phase 1 runtime facade work:
+Runtime, provider, and shared service stream contracts:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_runtime_stream.py tests/test_agent_events.py tests/test_agent_runtime_cancellation.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_agent_runtime_stream.py tests/test_async_chat_stream.py \
+  tests/test_llm_events.py tests/test_runtime_provider_streaming.py \
+  tests/test_shared_assistant_run_service.py -q
 ```
 
-Before migrating the realtime backend:
+When realtime mapping or backend consumption changes:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_realtime_agent_backend.py tests/test_realtime_event_mapping.py tests/test_realtime_backend_types.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/test_realtime_agent_backend.py tests/test_realtime_event_mapping.py -q
 ```
 
-Before changing Gateway-facing behavior:
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway.py tests/test_gateway_session.py tests/test_gateway_api.py -q
-```
+When Gateway-facing behavior changes, also run the Gateway suites named in
+`docs/gateway-architecture.md`. All default validation remains mock/local/
+offline; real provider streaming requires an explicit `provider_smoke` or
+`pilot` profile and local untracked credentials.

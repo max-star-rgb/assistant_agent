@@ -6,12 +6,14 @@
 
 - Coding-agent rules and repository boundaries: [AGENTS.md](AGENTS.md)
 - Gateway and realtime lifecycle: `docs/gateway-architecture.md`
+- Runtime and provider event streaming: `docs/runtime-event-stream-architecture.md`
 - Tool calling governance: `docs/tool-calling-architecture.md`
 - Observability and trace harness: `docs/observability-harness.md`
 - Memory service architecture: `docs/memory-service-architecture.md`
 - Context engineering status: `docs/CONTEXT_ENGINEERING_STATUS.md`
 - Durable structured execution is documented across the Gateway, tool-calling, and context authority documents above; its task API is under `/tasks/{task_id}` and is disabled by default.
 - Multi-agent routing: `docs/agent-communication-routing.md`
+- Media-Agent WebSocket contract: `docs/media-agent-service-websocket.md`
 
 External Memory Server contract/reference material:
 
@@ -22,6 +24,12 @@ Memory operation runbooks:
 
 - `docs/development/memory-dual-core-operator-runbook.md`
 - `docs/development/memory-sqlite-operator-runbook.md`
+- `docs/development/memory-framework-bakeoff-runbook.md`
+
+Pilot and realtime operation runbooks:
+
+- `docs/development/agent-pilot-operator-runbook.md`
+- `docs/development/realtime-runtime-operator-runbook.md`
 
 Walkthroughs for project-owner explanations:
 

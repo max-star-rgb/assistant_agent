@@ -13,12 +13,14 @@
 | scope | entry |
 | --- | --- |
 | Gateway、realtime frame、session/run/cancel/interrupt、WebSocket bridge、旧 `runTime` 参考边界 | `.codex/skills/assistant-runtime-reference`；`docs/gateway-architecture.md` |
+| runtime/provider streaming、`LLMEvent`、`AgentEvent`、`AgentRunStream`、stream/result、线程桥接 | `.codex/skills/assistant-agent-runtime-streaming`；`docs/runtime-event-stream-architecture.md` |
 | tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、MCP `tool_run`、工具 observation/retry/budget | `.codex/skills/assistant-agent-tool-calling`；`docs/tool-calling-architecture.md` |
 | 记忆服务、MemoryManager、memory store/retrieval/write policy、memory API、user profile、audit、retention | `.codex/skills/assistant-agent-memory-service`；`docs/memory-service-architecture.md` |
 | context engineering、prompt/context rendering、conversation history、memory context、tool observation compaction、context budget | `.codex/skills/assistant-agent-context-engineering`；`docs/CONTEXT_ENGINEERING_STATUS.md` |
 | 多 agent、`assistant_agent.agent_routing`、AgentRouter、AgentDirectory、A2A/JSON-RPC、`delegate_to_agent`、pilot readiness | `.codex/skills/assistant-agent-collaboration`；`docs/agent-communication-routing.md` |
 | trace、运行监控、ReAct 关键节点观测、redaction | `docs/observability-harness.md` |
 | 面试训练、题库、回答点评、标准答案、面试文档更新 | `.codex/skills/assistant-agent-interview-trainer`；`docs/interview/README.md` |
+| 用户显式请求的全仓文档同步、漂移审计、权威对齐或失效文档清理 | `.codex/skills/assistant-agent-documentation-sync`；不得因普通代码变更隐式触发 |
 
 `docs/development/**` 只保留仍有现实用途的操作 runbook 或用户明确点名的执行材料，不作为默认设计权威。不要把旧 roadmap 或阶段计划当作当前架构。
 
@@ -96,6 +98,8 @@ User / CLI / API / Web UI
 | --- | --- |
 | `src/assistant_agent/api/`, `gateway/`, `realtime/` | FastAPI/API、Gateway lifecycle、Gateway 到 assistant runtime 的薄 adapter |
 | `src/assistant_agent/agent/`, `services/` | LangGraph runtime、assistant loop、context、trace、session、agent communication、provider 管理 |
+| `src/assistant_agent/services/improvement/`, `proactive_wake/` | 离线人工评审改进候选；显式规则驱动的本地 proactive wake、SQLite outbox 与投递 |
+| `src/assistant_agent/services/realtime_task_state.py`, `realtime_video_*`, `video_context.py`, `agent_service_latency.py` | realtime task/call 状态、视频观察上下文与 turn latency 诊断；只保存 prompt-safe 状态/引用/统计 |
 | `src/assistant_agent/tools/`, `memory/`, `providers/`, `eval/` | Tool registry/工具实现、记忆服务、provider adapter、离线评测 |
 | `tests/`, `scripts/` | pytest 测试、本地验证、服务、demo、eval、smoke 脚本 |
 | `docs/` | 当前权威文档、走读文档、API/runbook、面试资料 |
@@ -121,7 +125,7 @@ User / CLI / API / Web UI
 ## 7. 文档与工作模式
 
 - `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`README.md` 是人类轻导航入口。
-- 当前架构权威文档是 `docs/gateway-architecture.md`、`docs/tool-calling-architecture.md`、`docs/observability-harness.md`、`docs/memory-service-architecture.md`、`docs/CONTEXT_ENGINEERING_STATUS.md` 和 `docs/agent-communication-routing.md`。
+- 当前架构权威文档是 `docs/gateway-architecture.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`、`docs/observability-harness.md`、`docs/memory-service-architecture.md`、`docs/CONTEXT_ENGINEERING_STATUS.md` 和 `docs/agent-communication-routing.md`。
 - 走读文档只解释已沉淀机制，不替代权威文档；`docs/interview/**` 只用于面试训练；新增文档必须有明确长期用途。
 - 开始任务时说明“我将处理 / 我会先阅读 / 计划”；执行中先读相关代码和文档，保持 scope 小而明确。
 - 手工新建或修改文件默认使用 `apply_patch`；搜索优先用 `rg` / `rg --files`。

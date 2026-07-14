@@ -1,14 +1,9 @@
 # 记忆模块新手走读
 
-最后更新：2026-06-30
+最后更新：2026-07-14
 
-注：  1.当前 audit 不是独立事件总线，而是集中在 MemoryManager 边界记录。
-  这样做的原因是：MemoryManager 是当前读、写、删、确认、清理、修复的统一入口，新手能直接看到每个动作对应的审计记录。
-  这会让 MemoryManager 承担一部分 audit 责任，但在当前 Memory Kernel 阶段是有意的简单实现。
-  后续只有在需要多 audit 后端、异步事件或全局 observability 接入时，才需要抽成 MemoryAuditRecorder / AuditSink。
-    2.候选记忆变为长期记忆待开发：引入第二个LLM判断
-    3.memory提供摘要，llm在信息不足时需要调用工具根据 `memory_id`、`session_id`、`artifact_refs` 或 `output_ref` 
-    查询ConversationStore / ToolHistoryStore / ArtifactStore。
+当前 audit 仍集中在 `MemoryManager` 边界记录；候选是否成为长期记忆由现有
+`source_intent`、`MemoryWritePolicy` 和确认流治理，不存在“候选自动升级”的第二条捷径。
 
 Agent，就是“能理解用户请求、选择工具、调用工具并回答的助手程序”。
 
@@ -176,6 +171,41 @@ repair，就是“修复不一致”：比如用户画像和源记忆不一致�
 - `MemoryAuditService.export_for_identity(...)`
 - `MemoryAuditService.sweep_expired_for_identity(...)`
 - `MemoryManager.rebuild_user_profile_for_identity(...)`
+
+### typed fact、status 和 conflict 是什么？
+
+typed fact，可以理解成“有固定标签和来源的事实卡片”。除了事实内容，它还记录
+`fact_key`、来源、观察时间、版本和冲突策略。status 表示卡片当前是否可用：
+`active` 会参与正常召回，`superseded` 已被新事实替代，`disputed` 等待冲突确认，
+`retracted` 已撤回。
+
+同一个 `fact_key` 出现不同值时，`MemoryConflictResolver` 先按 `replace`、`coexist`
+或 `confirm` 给出确定性决定，再由 `MemoryManager` 修改存储。需要确认的冲突不会把
+任一值偷偷当成真相；只有 active fact 才会进入普通 context 和 `user_profile` 投影。
+
+对应代码位置：
+
+- `src/assistant_agent/schemas/memory_intelligence.py`
+- `src/assistant_agent/memory/facts.py`
+- `src/assistant_agent/memory/conflict_resolver.py`
+- `tests/test_memory_fact_status.py`
+- `tests/test_memory_manager_fact_conflicts.py`
+
+### SQLite FTS 和 framework mode 分别是什么？
+
+SQLite FTS5 是“快速找候选的目录”。它根据本地文本和中文片段找出可能相关的行，
+但 `memory_items` 才是长期记忆真相；候选仍要经过身份、状态、过期、相关性和读取策略
+过滤。索引损坏时可以重建，不能反过来把索引内容当权威数据。
+
+`memory_backend=framework` 是显式 opt-in 的另一种生命周期 owner：Hindsight 或 Mem0
+运行在隔离 sidecar，项目仍掌握身份、读写策略、确认、prompt safety、治理 ledger/outbox
+和工具边界。框架不可用时只允许空结果或显式配置的只读 v2 fallback，不能悄悄把失败
+写进本地 v2。选择框架前必须用固定 bake-off gate 比较；没有合格赢家时继续推荐 v2。
+
+运维入口：
+
+- `docs/development/memory-sqlite-operator-runbook.md`
+- `docs/development/memory-framework-bakeoff-runbook.md`
 
 ## 按用户视角走一遍完整流程
 
@@ -399,6 +429,9 @@ snapshot，就是“现场快照”：它把当前 session、conversation、memo
 - 清理过期记忆。
 - 重建 user_profile。
 - 查看 audit、metrics 和 snapshot。
+- 用 typed facts 表达来源、状态和同槽位冲突。
+- 用 SQLite FTS5 产生候选，同时保持 canonical row 为真相。
+- 显式启用 framework lifecycle owner，并通过 ledger/outbox 和 bake-off gate 治理。
 
 这些能力服务的是“可控长期记忆”，不是“自动无限记住一切”。
 

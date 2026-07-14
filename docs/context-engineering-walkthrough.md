@@ -1,6 +1,6 @@
 # 上下文工程走读
 
-最后更新：2026-06-29
+最后更新：2026-07-14
 
 这份文档面向项目负责人。它解释当前上下文工程服务如何工作、为什么存在、和记忆服务的边界在哪里。它不是历史阶段计划；当前状态入口仍是 `docs/CONTEXT_ENGINEERING_STATUS.md`。
 
@@ -16,6 +16,8 @@
 - 计划模式状态。
 - 已执行工具的观察结果。
 - 当前可用工具的 ToolSpec。
+- 默认关闭、owner-bound 的 `SOUL.md` persona。
+- realtime task/call state、realtime video observation 和 trusted durable task snapshot。
 - 字符预算、可选 token 报告、压缩原因和追踪/调试摘要。
 
 它不负责：
@@ -68,6 +70,10 @@ UserRequest
 | 工具观察裁剪器 | `src/assistant_agent/services/context/compaction.py` | 工具结果进入 prompt 前裁剪 raw payload、base64、长命令输出和大列表。 |
 | 渲染器 | `src/assistant_agent/services/context/renderer.py` | 把上下文包渲染成原生工具调用的 user message、final-only prompt，或历史 prompt-json 测试文本。 |
 | 助手循环接入点 | `src/assistant_agent/agent/assistant_loop_nodes.py` | 调用上下文构建器，把渲染后的上下文交给助手，并写追踪上下文摘要。 |
+| Owner context source | `src/assistant_agent/services/context/soul_source.py` | 默认关闭；只为显式绑定 owner 加载并校验 `SOUL.md`。 |
+| Realtime task state | `src/assistant_agent/services/realtime_task_state.py` | 保存当前目标、revision、可复用产物、副作用和通话展示状态的 prompt-safe 快照。 |
+| Realtime video context | `src/assistant_agent/services/realtime_video_memory.py`、`video_context.py` | 把后台观察投影成有状态、有时效、受预算控制的被动外部证据。 |
+| Durable task context | `src/assistant_agent/services/durable_tasks/` | 仅从受信 worker resume 注入持久任务计划、ready steps、产物引用和剩余预算。 |
 
 ## AssistantContextPack
 
@@ -88,6 +94,9 @@ UserRequest
 | `prompt_tool_specs` | 上下文工具目录 | 进入 prompt 的工具子集。 |
 | `budget` | 上下文构建器 | 字符预算、可选 token 报告、压缩阶段和原因。 |
 | `source_counts` | 上下文构建器 | 调试用来源计数。 |
+
+`owner_persona`、`realtime_task_state`、`realtime_video_context` 和
+`durable_task_state` 也各自有独立 section 与预算/调试计数，不会冒充 conversation 或 memory。
 
 如果你只看一个对象，就看 `AssistantContextPack`。
 
@@ -170,6 +179,17 @@ UserRequest
 - 原始 provider/file/media payload、base64/data URI、raw HTML/body 不进入 prompt 副本。
 
 原始观察结果不被修改。
+
+### 6. 四类容易漏看的运行时上下文
+
+- Owner `SOUL.md` 默认关闭，只能由进程配置固定 root 和 owner user。合法内容影响表达方式，
+  不能修改工具、identity、memory policy 或 runtime profile；非法更新可回退进程内 last-known-good。
+- Realtime task state 只在显式 realtime mode/capability 下生成，记录 objective、interrupt revision、
+  reusable artifacts、side effects、pending tool 和 TTS/display 状态，不保存 raw audio/transcript/provider payload。
+- Realtime video context 由后台 observer 的共享 memory 投影，带 `ready/refreshing/pending/stale/failed`
+  等状态和 age；它是被动观察数据，问候或闲聊不应主动提及。
+- Durable task context 只信任 worker 注入并通过 Pydantic 校验的 snapshot。普通请求传入同名 metadata
+  会被移除；它是当前任务执行状态，不是 session summary、长期 memory 或新的用户授权。
 
 ## 什么时候会压缩
 
@@ -377,6 +397,18 @@ trace/API 只暴露已脱敏摘要，不暴露：
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_write_policy.py tests/test_memory_manager.py tests/test_memory_tool_boundary.py -q
 ```
 
+### 怀疑 owner/realtime/durable context 缺失或过期
+
+先看 `/runs/{run_id}/context` 或 `/traces/{trace_id}/context` 中对应 section 的 chars、source、
+trimmed 和 issue code，再查 request 是否显式启用 realtime、video snapshot 的状态/age，以及 worker
+resume 是否为 trusted。不要通过打印原始 persona、视频或任务 payload 排错。
+
+相关测试：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_context_sources.py tests/test_soul_context_source.py tests/test_realtime_task_state.py tests/test_realtime_video_memory.py tests/test_video_context.py tests/test_durable_task_context.py -q
+```
+
 ## 常见误解
 
 ### 误解 1：摘要就是记忆
@@ -387,9 +419,11 @@ trace/API 只暴露已脱敏摘要，不暴露：
 
 不是。压缩触发由 `CompactionPolicy` 决定。`LLMCompactor` 只在显式 provider profile 下负责语义摘要内容。
 
-### 误解 3：token 预算已经控制上下文
+### 误解 3：token 预算已经统一控制全部上下文
 
-还没有。token-aware 当前是报告层。默认裁剪和压缩仍使用字符预算。
+还没有。全局裁剪和压缩仍以字符预算为主。Recent transcript 与 memory context 有各自的
+token-aware 选择边界；owner、realtime video 与 durable task 可进入本地 token 估算/报告，
+而 realtime task state 仍以字符记账为主。这些都不等于统一的 section 级 token 强制预算。
 
 ### 误解 4：MemoryManager 负责 prompt 渲染
 
@@ -410,6 +444,10 @@ trace/API 只暴露已脱敏摘要，不暴露：
 7. `src/assistant_agent/agent/assistant_loop_nodes.py`
 8. `src/assistant_agent/services/assistant_run_service.py`
 9. `src/assistant_agent/memory/manager.py`
+10. `src/assistant_agent/services/context/soul_source.py`
+11. `src/assistant_agent/services/realtime_task_state.py`
+12. `src/assistant_agent/services/realtime_video_memory.py`
+13. `src/assistant_agent/services/durable_tasks/worker.py`
 
 如果你只想理解架构，不用一开始读阶段计划。
 

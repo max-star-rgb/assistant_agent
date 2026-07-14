@@ -10,6 +10,8 @@ Future memory architecture changes should be reflected in this document first.
 Operational dual-core configuration examples live in
 `docs/development/memory-dual-core-operator-runbook.md`; operational SQLite
 procedures remain in `docs/development/memory-sqlite-operator-runbook.md`.
+The explicit Hindsight/Mem0 sidecar comparison and selection procedure lives in
+`docs/development/memory-framework-bakeoff-runbook.md`.
 
 ## Scope
 
@@ -578,7 +580,9 @@ Explicit preference memories may carry a deterministic `content["preference_key"
 
 ## Framework Reuse Boundary
 
-No third-party memory framework is a runtime dependency of the local core. Frameworks such as LangMem, Mem0, Graphiti, or Letta may be evaluated later for extraction, adapter, or eval ideas, but they must not become fact authority, bypass `RequestIdentity`/read-write policy/audit, or replace the built-in SQLite/JSONL lifecycle implicitly. Any adoption requires a separate proposal, offline comparison against the same eval cases, an adapter that emits proposals behind the existing contracts, explicit dependency approval, and a rollback path. Memory Intelligence v2 adds no package and performs no network call.
+No third-party memory framework is a runtime dependency of the built-in local core. The implemented `framework` mode is a separate, explicit lifecycle-owner path: Hindsight or Mem0 runs in an isolated pinned sidecar and is reached only through `MemoryManager -> FrameworkMemoryStore -> MemoryEngineAdapter`. Project identity, read/write policy, confirmation, prompt safety, governance ledger/outbox, audit, context budget, tool governance, and rollback remain owned by `assistant_agent`; the framework must not become Agent runtime authority or silently replace SQLite/JSONL.
+
+Selection is evidence-gated rather than implied by adapter availability. Run the fixed offline/provider-smoke comparison in `docs/development/memory-framework-bakeoff-runbook.md`; until a measured report passes every hard gate and names a winner, built-in Memory Intelligence v2 remains the recommendation and framework mode remains opt-in. Other frameworks still require a separate adapter proposal, dependency approval, the same governed eval cases, and a rollback path. The local v2 typed-fact/conflict/FTS implementation itself adds no framework package and performs no network call.
 
 ## API And Audit
 
@@ -645,7 +649,7 @@ metadata, not a counter and not a remote health probe.
 - Keep the built-in local memory core usable as a first-class service path; do not make normal local/offline memory depend on external Memory Server availability.
 - Keep default behavior mock/local/offline. A memory backend must not become a network provider merely because credentials exist.
 - When memory context rendering, conversation context, context budget, or prompt injection handling changes, also read `docs/CONTEXT_ENGINEERING_STATUS.md`.
-- Update this file, `AGENTS.md`, and any affected tests when the architecture changes. `README.md` remains a temporary placeholder until the project stabilizes.
+- Update this file, `AGENTS.md`, relevant specialty skills, and affected tests when the architecture changes. Keep `README.md` as concise human navigation.
 
 ## Validation
 
@@ -658,6 +662,7 @@ Focused validation for memory changes:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_tool_boundary.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_retrieval_eval.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_fact_contract.py tests/test_memory_conflict_resolver.py tests/test_memory_manager_fact_conflicts.py tests/test_memory_fact_status.py tests/test_memory_retrieval_ranking.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_framework_adapters.py tests/test_framework_memory_store.py tests/test_memory_framework_config.py tests/test_memory_framework_bakeoff.py tests/test_memory_framework_bakeoff_cli.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory_quality
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_dual_core.py --offline-only

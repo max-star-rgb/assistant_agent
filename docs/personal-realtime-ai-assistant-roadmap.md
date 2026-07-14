@@ -1,7 +1,7 @@
 # Personal Realtime AI Assistant Architecture Roadmap
 
 > 本文档定义 `assistant_agent` 未来 1 到 3 年作为 Personal Realtime AI Assistant 的演进路线。
-> 它不是单个功能计划，也不替代 Gateway、Tool、Memory、Context、Observability 等权威架构文档。
+> 它不是单个功能计划，也不替代 Gateway、Runtime Streaming、Tool、Memory、Context、Observability 等权威架构文档。
 
 ## 文档定位
 
@@ -36,7 +36,7 @@
 未来 3 到 6 个月只允许增加三类核心能力：
 
 - Realtime Core：让电话式实时交互编排可靠，不建设语音技术平台。
-- Memory Intelligence v1：让助理开始认识用户，但只做 candidate memory -> judge -> profile memory -> recall 的窄闭环。
+- Memory Intelligence：v1 窄闭环和 local v2 typed facts/conflict/FTS 已落地；后续只按离线 eval 证据扩展。
 - Skill System v1：让能力模块化，但只做 manifest、permission、tool mapping、enable/disable 和 audit。
 
 任何新增架构边界必须先回答三问：
@@ -74,25 +74,28 @@
 - Context Engineering：已有 `AssistantContextPack`、session summary、memory context 注入、tool observation compaction、context report。
 - Observability：已有 run、tool、LLM、context、gateway、memory 事件模型、trace store、redaction 规则。
 - Multi-agent routing：已有 `assistant_agent.agent_routing`、`AgentRouter`、`AgentDirectory`、A2A/JSON-RPC adapter、`delegate_to_agent` opt-in 方向。
+- Runtime streaming：已有 `LLMEvent -> AgentEvent -> AgentRunStream`、stream/result 分离和 async/thread bridge 权威边界。
+- Local Memory Intelligence v2：已有 typed facts/status、确定性 conflict resolver、active projection、SQLite FTS5 候选检索和离线质量 gate。
+- Realtime context 与执行切片：已有 realtime task/call state、video context、durable task snapshot、semantic interrupt arbitration、deterministic proactive wake 和离线 Improvement Lab 的窄边界实现。
 
 ### 部分完成
 
 - 实时语音：Gateway/media frame 和 realtime adapter 方向正确，但核心仍偏 turn-based text runtime；ASR、TTS、VAD、barge-in、低延迟流式闭环还不完整。
 - 长生命周期运行：session/run lifecycle 有，但 `GatewaySessionService` 等仍偏进程内状态，缺少 durable run/session store 和跨进程恢复。
-- 记忆智能：policy、profile、分层模型有，但 retrieval 仍偏 deterministic/keyword/local；缺少 embedding、冲突解决、时间线建模、长期偏好演化。
+- 记忆智能：local v2 已覆盖冲突治理和 FTS 候选检索；embedding、时间线建模和长期偏好演化仍需真实 eval 证据。
 - Skill 生态：已有 capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` loader，但还不是完整用户级 Skill System。
 - 多入口接入：CLI/API/Web/Gateway facade 都有基础，但部分入口仍可绕过 Gateway 直接进入 `AssistantRuntimeApp`。
 - 多 agent：协议和本地 opt-in 路径有，但还不是生产级 agent fabric。
-- 学习闭环：trace/eval 基础有，但近期只应停留在 debug 和 redacted replay；完整 trajectory collection -> replay -> eval -> skill/memory improvement 属于远期闭环。
+- 学习闭环：已有离线、非变更型 Improvement Lab，可从脱敏 trajectory 与结构化失败生成待人工评审候选；自动修改和完整训练闭环仍属远期。
 
 ### 缺失
 
 以下是长期缺口，不代表近期实施范围。
 
 - 生产级 Realtime Core：流式 ASR、TTS、VAD、turn-taking、barge-in、jitter/latency budget、音频引用生命周期。
-- Durable personal runtime：长期任务、后台 job、计划任务、跨进程恢复、确认/撤销 ledger。
+- Durable personal runtime：已有 SQLite durable structured task 的窄切片；通用后台 job、计划任务、跨入口 run/session 恢复和统一确认/撤销 ledger 仍是长期缺口。
 - 用户级 Skill System：权限、测试、版本、来源、回滚、用户授权。Marketplace 不属于近期目标。
-- Memory Intelligence：candidate memory、promotion、profile 冲突、记忆质量评估，远期才演进为完整 Memory Brain。
+- Memory Brain 扩展：跨长期时间线、经 eval 证明需要的 embedding/semantic recall、偏好演化和更完整质量反馈；现有 candidate/promotion、typed conflict 与离线质量 eval 不再列为缺失。
 - Personal OS control plane：设备、通知、身份、权限、后台任务、长期审计。当前只记录为远期方向。
 - 产品级 consent UX：高风险工具确认、可撤销动作、敏感数据最小化。
 
@@ -132,7 +135,7 @@ scheduler 仍然延期；本切片不代表这些后续能力已经实现，也�
 
 ### Context Service
 
-应保留为 Agent Brain 的上下文编译层。它承担 history、summary、memory context、tool observation compaction、budget report。未来应增强 token-aware 和 realtime task-state，而不是把上下文拼接散落到各入口。
+应保留为 Agent Brain 的上下文编译层。它承担 history、summary、memory context、tool observation compaction、budget report，并已覆盖 token-aware recent/memory 边界与 realtime/durable task-state；未来增强应基于实际预算失败，而不是把上下文拼接散落到各入口。
 
 ### Observability
 
@@ -143,10 +146,10 @@ scheduler 仍然延期；本切片不代表这些后续能力已经实现，也�
 - `AssistantRuntimeApp` 仍是多个产品入口的直接边界；长期应让 CLI、API、Web、IM、Phone 统一收敛到 Gateway ingress。
 - `GatewaySessionService` 当前偏进程内 session/run 管理；长生命周期需要 durable store、恢复、幂等和跨进程 run ownership。
 - `AgentGraphRealtimeBackend` 用 thread 包住 turn-based runtime，适合过渡，不适合作为低延迟全双工语音核心。
-- `AgentGraphRuntime._run_native_runtime` 当前每轮主要执行第一个 native tool call；未来复杂任务需要更强的 tool scheduling、并发策略和 streaming observation。
-- `ToolExecutor` 的风险 gate、idempotency、确认链路目前仍偏本地进程；未来个人助理需要持久 confirmation ledger，但 Phase 0 不实现。
-- `MemoryManager` 当前还不是 Memory Intelligence：缺少 candidate promotion、冲突处理、质量评估和长期画像演化。embedding/vector 只能在本地 eval 证明 keyword 不够后再引入。
-- Context budget 当前主要是 char-budget/report；长期多模态实时上下文需要强 token 预算和分层裁剪策略。
+- Native runtime 已支持一轮串行多 tool call；更复杂的并发 scheduling、跨工具依赖和流式 observation 消费仍需独立证据。
+- Realtime risk gate 和 durable task 已有本地/SQLite 幂等与确认切片；跨所有入口的统一持久 confirmation/compensation ledger 仍未完成。
+- `MemoryManager` 已具备 candidate/promotion governance、typed conflict、active projection 和离线质量 eval；长期画像演化及 embedding/vector 仍只能在本地 eval 证明 keyword/FTS 不够后引入。
+- Context 全局控制仍主要是 char budget；recent transcript/memory 已有 token-aware 选择，owner、realtime video、durable task 可做 token 估算/报告，realtime task state 仍以字符记账为主。长期目标是基于 provider 失败证据统一分层预算。
 - `agent_routing` 当前默认禁用是正确的，但未来若没有 durable delegation trace 和 child memory isolation，会阻碍多 agent 扩展。
 - Skill loader 现在更像上下文能力目录，不是完整运行时 skill package；需要避免和 Codex repo skill 概念混淆。
 
@@ -194,7 +197,7 @@ flowchart TD
 
 ### Memory Intelligence / Future Memory Brain
 
-负责人格连续性和长期记忆。近期 v1 不做复杂 Memory Brain，只做 `candidate memory -> LLM/rule judge -> profile memory -> recall` 的窄闭环，并覆盖确认、拒写、profile supersede 和 eval。不要提前引入 episodic memory、semantic memory、procedural memory 等分类体系；远期再按真实使用证据扩展语义合并、遗忘、审计和导出。
+负责人格连续性和长期记忆。v1 的 `candidate memory -> judge -> profile memory -> recall` 窄闭环已经落地，并覆盖确认、拒写、profile supersede 和 eval；local v2 又增加 typed facts/status、确定性 conflict governance 和 SQLite FTS5 候选检索。后续仍不提前建设复杂 Memory Brain，只按真实使用证据扩展语义合并、时间线和遗忘。
 
 ### Tool System
 
@@ -285,17 +288,13 @@ flowchart TD
 - Context injection。
 - Trace。
 
-需要新增：
+当前落地的窄闭环：
 
-- candidate memory。
-- LLM/rule judge。
-- profile memory。
-- recall report。
-- memory promotion。
-- profile supersede。
-- memory eval。
-- 记忆确认 UX。
-- 记忆质量报告。
+- candidate/promotion governance、profile memory、recall report 和 confirmation。
+- profile supersede、typed fact/status/conflict 与 active projection。
+- SQLite FTS5 候选检索和 deterministic memory quality eval。
+
+后续只在 gate 暴露真实缺口时扩展长期时间线、偏好演化或语义检索。
 
 不应该做：
 
@@ -469,13 +468,11 @@ Phase 0 以两周为上限；Phase 1 打通第一个 realtime loop 后，Phase 2
 - 覆盖偏好保存、偏好召回、冲突覆盖、隐私拒写、跨 session continuity。
 - 建立可重复运行的 memory regression cases。
 
-### 第 8 周：Memory Intelligence v1
+### 第 8 周：Memory Intelligence v1（已完成的原始里程碑）
 
-- 打通 candidate memory -> judge -> profile memory -> recall。
-- 增强 profile supersede。
-- 增加 memory confidence。
-- 增加 explicit confirmation。
-- 输出 retrieval report。
+- 已打通 candidate memory -> judge/policy -> profile memory -> recall。
+- 已覆盖 profile supersede、confidence/provenance、explicit confirmation 和 retrieval report。
+- 后续 local v2 已补 typed conflict、active-state projection、SQLite FTS5 和离线质量 gate。
 
 ### 第 9 周：个人连续性场景
 
@@ -629,6 +626,7 @@ git diff --check -- AGENTS.md docs src tests scripts
 ## 与现有权威文档的关系
 
 - Gateway 细节以 `docs/gateway-architecture.md` 为准。
+- Runtime/provider streaming 细节以 `docs/runtime-event-stream-architecture.md` 为准。
 - Tool calling 细节以 `docs/tool-calling-architecture.md` 为准。
 - Memory 细节以 `docs/memory-service-architecture.md` 为准。
 - Context engineering 细节以 `docs/CONTEXT_ENGINEERING_STATUS.md` 为准。

@@ -23,6 +23,10 @@ Use this skill as the execution wrapper for context-engineering work in the `ass
 Inspect these areas as relevant:
 
 - `src/assistant_agent/services/`: context services, trace/session behavior and runtime context assembly.
+- `src/assistant_agent/services/context/sources.py` and `soul_source.py`: default-off, owner-bound editable `SOUL.md` context and last-known-good handling.
+- `src/assistant_agent/services/realtime_task_state.py`: prompt-safe realtime task/call state, revisions, reusable artifacts and side-effect records.
+- `src/assistant_agent/services/realtime_video_memory.py`, `realtime_video_observer.py`, and `video_context.py`: bounded realtime video observation memory, projection and diagnostics.
+- `src/assistant_agent/services/durable_tasks/` and `schemas/durable_tasks.py`: trusted worker resume snapshot and durable task execution state consumed by context.
 - `src/assistant_agent/agent/`: assistant loop, message flow, prompt rendering and tool observation integration.
 - `src/assistant_agent/memory/`: memory context interfaces and retrieval outputs when context uses memory.
 - `src/assistant_agent/tools/`: observation shape and tool-result compaction inputs.
@@ -44,6 +48,8 @@ Choose the smallest validation that covers the change:
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest <targeted tests>
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_context_sources.py tests/test_soul_context_source.py tests/test_assistant_context_renderer.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_realtime_task_state.py tests/test_realtime_video_memory.py tests/test_realtime_video_observer.py tests/test_video_context.py tests/test_durable_task_context.py
 git diff --check -- AGENTS.md docs/CONTEXT_ENGINEERING_STATUS.md src tests .codex/skills
 ```
 

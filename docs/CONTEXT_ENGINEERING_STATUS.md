@@ -215,6 +215,10 @@ Last updated: 2026-07-14
 - `src/assistant_agent/services/context/sources.py`
 - `src/assistant_agent/services/context/soul_source.py`
 - `src/assistant_agent/services/realtime_task_state.py`
+- `src/assistant_agent/services/realtime_video_memory.py`
+- `src/assistant_agent/services/realtime_video_observer.py`
+- `src/assistant_agent/services/video_context.py`
+- `src/assistant_agent/services/durable_tasks/`
 - `src/assistant_agent/services/agent_delegation_context.py`
 - `src/assistant_agent/schemas/context.py`
 - `src/assistant_agent/services/assistant_run_service.py`
@@ -233,6 +237,10 @@ Last updated: 2026-07-14
 - `tests/test_conversation_context_compaction.py`
 - `tests/test_assistant_context_renderer.py`
 - `tests/test_realtime_task_state.py`
+- `tests/test_realtime_video_memory.py`
+- `tests/test_realtime_video_observer.py`
+- `tests/test_video_context.py`
+- `tests/test_durable_task_context.py`
 - `tests/test_shared_assistant_run_service.py`
 - `tests/test_memory_manager.py`
 - `tests/test_memory_context_builder.py`
