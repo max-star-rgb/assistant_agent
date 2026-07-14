@@ -210,11 +210,14 @@ async def shutdown_gateway_runtime() -> None:
 
     global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_LOOP_ID
     manager = _GATEWAY_SESSION_MANAGER
+    facade = _GATEWAY_TURN_FACADE
     _GATEWAY_SESSION_MANAGER = None
     _GATEWAY_BRIDGE = None
     _GATEWAY_TURN_FACADE = None
     _GATEWAY_RUNTIME_LOOP_ID = None
     _clear_gateway_http_responses()
+    if facade is not None:
+        await facade.close()
     if manager is not None:
         await manager.close()
 
@@ -224,19 +227,27 @@ def reset_gateway_runtime_for_tests() -> None:
 
     global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_LOOP_ID
     manager = _GATEWAY_SESSION_MANAGER
+    facade = _GATEWAY_TURN_FACADE
     _GATEWAY_SESSION_MANAGER = None
     _GATEWAY_BRIDGE = None
     _GATEWAY_TURN_FACADE = None
     _GATEWAY_RUNTIME_LOOP_ID = None
     _clear_gateway_http_responses()
-    if manager is None:
+    if manager is None and facade is None:
         return
+
+    async def close_runtime() -> None:
+        if facade is not None:
+            await facade.close()
+        if manager is not None:
+            await manager.close()
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        asyncio.run(manager.close())
+        asyncio.run(close_runtime())
         return
-    loop.create_task(manager.close())
+    loop.create_task(close_runtime())
 
 
 def _clear_gateway_http_responses() -> None:

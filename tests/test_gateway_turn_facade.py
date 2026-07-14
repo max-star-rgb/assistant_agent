@@ -33,6 +33,32 @@ class RecordingRealtimeBackend:
 
 
 class GatewayTurnFacadeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_stops_dispatcher_reader(self) -> None:
+        backend = RecordingRealtimeBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            start_reaper=False,
+        )
+        facade = GatewayTurnFacade(manager=manager)
+
+        try:
+            await facade.run_turn(
+                GatewayTurnRequest(
+                    user_id="user-1",
+                    session_id="session-1",
+                    text="hello",
+                    timeout_s=1,
+                )
+            )
+            readers = [dispatcher._reader for dispatcher in facade._dispatchers.values()]
+
+            await facade.close()
+
+            assert readers
+            assert all(reader.done() for reader in readers)
+        finally:
+            await manager.close()
+
     async def test_queue_rejection_raises_gateway_error_without_timeout(self) -> None:
         class BlockingBackend:
             def __init__(self) -> None:

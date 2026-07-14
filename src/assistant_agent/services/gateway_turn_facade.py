@@ -44,6 +44,11 @@ class _GatewayTurnDispatcher:
         async with self._lock:
             self._inboxes.pop(run_id, None)
 
+    async def close(self) -> None:
+        if not self._reader.done():
+            self._reader.cancel()
+        await asyncio.gather(self._reader, return_exceptions=True)
+
     async def _read_loop(self) -> None:
         try:
             async for received in self.endpoint:
@@ -108,6 +113,18 @@ class GatewayTurnFacade:
             dispatcher = _GatewayTurnDispatcher(endpoint)
             self._dispatchers[user_id] = dispatcher
             return dispatcher
+
+    async def close(self) -> None:
+        """Stop facade-owned endpoint readers without closing manager sessions."""
+
+        async with self._dispatcher_lock:
+            dispatchers = list(self._dispatchers.values())
+            self._dispatchers.clear()
+        if dispatchers:
+            await asyncio.gather(
+                *(dispatcher.close() for dispatcher in dispatchers),
+                return_exceptions=True,
+            )
 
     async def run_turn(self, request: GatewayTurnRequest) -> GatewayTurnResult:
         if not request.user_id:

@@ -455,6 +455,9 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     gateway_manager = _create_agent_service_gateway_manager()
     state.gateway_manager = gateway_manager
     state.gateway_facade = GatewayTurnFacade(manager=gateway_manager)
+    normal_disconnect = False
+    close_code: int | None = None
+    close_reason: str | None = None
     try:
         while True:
             raw = await websocket.receive_text()
@@ -504,6 +507,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             response = await _handle_raw_message(raw, state=state)
             await _send_response(websocket, response, state=state)
     except WebSocketDisconnect as exc:
+        normal_disconnect = True
         logger.info(
             "agent-service websocket disconnected session_id=%s code=%s reason_present=%s",
             state.session_id,
@@ -512,35 +516,62 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         )
         close_code, close_reason = exc.code, exc.reason
     finally:
-        state.closed = True
-        for delivery in state.delivery_registry.pending():
-            timing = state.turn_timings.get(delivery.delivery_id)
-            if timing is not None:
-                timing.mark("disconnected", at_ns=state.clock_ns())
-            state.delivery_registry.mark_disconnected(
-                delivery.delivery_id,
-                close_code=locals().get("close_code"),
-                close_reason=locals().get("close_reason"),
+        cleanup_task = asyncio.create_task(
+            _cleanup_agent_service_connection(
+                state,
+                gateway_manager=gateway_manager,
+                close_code=close_code,
+                close_reason=close_reason,
             )
-        for task in list(state.chat_tasks):
-            task.cancel()
-        if state.chat_tasks:
-            await asyncio.gather(*state.chat_tasks, return_exceptions=True)
-        for delivery_id, timing in list(state.turn_timings.items()):
-            if timing.trace_id and timing.assistant_run_id:
-                current = state.delivery_registry.get(delivery_id)
-                _observe_turn_terminal(
-                    state,
-                    timing,
-                    status=current.status if current is not None else "disconnected",
-                )
-            state.turn_timings.pop(delivery_id, None)
-        if state.video_observer is not None:
-            await state.video_observer.close()
-        if state.video_ingestion is not None:
-            for video_id in state.video_ids:
-                await asyncio.to_thread(state.video_ingestion.cleanup, video_id)
-        await gateway_manager.close()
+        )
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            if not normal_disconnect:
+                cleanup_task.cancel()
+                await asyncio.gather(cleanup_task, return_exceptions=True)
+                raise
+            await asyncio.gather(cleanup_task, return_exceptions=True)
+
+
+async def _cleanup_agent_service_connection(
+    state: AgentServiceConnectionState,
+    *,
+    gateway_manager: GatewaySessionManager,
+    close_code: int | None,
+    close_reason: str | None,
+) -> None:
+    state.closed = True
+    for delivery in state.delivery_registry.pending():
+        timing = state.turn_timings.get(delivery.delivery_id)
+        if timing is not None:
+            timing.mark("disconnected", at_ns=state.clock_ns())
+        state.delivery_registry.mark_disconnected(
+            delivery.delivery_id,
+            close_code=close_code,
+            close_reason=close_reason,
+        )
+    for task in list(state.chat_tasks):
+        task.cancel()
+    if state.chat_tasks:
+        await asyncio.gather(*state.chat_tasks, return_exceptions=True)
+    for delivery_id, timing in list(state.turn_timings.items()):
+        if timing.trace_id and timing.assistant_run_id:
+            current = state.delivery_registry.get(delivery_id)
+            _observe_turn_terminal(
+                state,
+                timing,
+                status=current.status if current is not None else "disconnected",
+            )
+        state.turn_timings.pop(delivery_id, None)
+    if state.video_observer is not None:
+        await state.video_observer.close()
+    if state.video_ingestion is not None:
+        for video_id in state.video_ids:
+            await asyncio.to_thread(state.video_ingestion.cleanup, video_id)
+    if state.gateway_facade is not None:
+        await state.gateway_facade.close()
+    await gateway_manager.close()
 
 
 async def _handle_raw_message(
