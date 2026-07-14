@@ -503,7 +503,7 @@ def test_native_tool_call_suppresses_preamble_on_later_tool_iteration() -> None:
     )
 
     state = runtime.run_state(
-        UserRequest(user_id="u1", session_id="s1", text="查一下明天的项目会议"),
+        UserRequest(user_id="u1", session_id="s1", text="项目会议工具链测试"),
         event_sink=sink,
     )
 
@@ -1141,7 +1141,7 @@ def test_native_runtime_executes_multiple_tool_calls_serially_in_provider_order(
         chat_adapter=adapter,
     )
 
-    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较价格"))
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"))
 
     assert adapter.calls == 2
     assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
@@ -1299,7 +1299,7 @@ def test_native_runtime_multi_tool_batch_respects_single_remaining_tool_budget()
         chat_adapter=adapter,
     )
 
-    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较价格"))
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"))
 
     assert adapter.calls == 2
     assert [call.tool_name for call in state.tool_calls] == ["product_search"]
@@ -1329,7 +1329,7 @@ def test_native_runtime_multi_tool_batch_triggers_final_only_when_last_call_cons
         chat_adapter=adapter,
     )
 
-    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较价格"))
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"))
 
     assert adapter.calls == 2
     assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]

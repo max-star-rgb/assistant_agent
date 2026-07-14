@@ -5,7 +5,7 @@
 ## 新对话快速交接
 
 - 默认真实 LLM 运行时是 `AgentGraphRuntime` 内的 provider-native loop；非 mock chat adapter 不再进入 prompt-json 控制面调用。
-- 工具契约由 `ToolSpec` 表达，来源是 `ToolRegistry.list_specs()`；真实 LLM 路径把 ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
+- 工具声明契约由 `ToolSpec` 表达，inventory 来源是 `ToolRegistry.list_specs()`；执行边界通过 `ToolRegistry.get_spec()` 读取同一路径生成的单工具契约，并由 `ToolPolicyInterpreter` 编译成只读 `ToolPolicyView`。真实 LLM 路径把 exposed ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
 - `select_prompt_tool_specs()` 会把 registry inventory 装配成 prompt-safe `RunToolSet`，分别记录 registered、qualified、exposed、executable 工具和排除原因。资格只由 `skill_only`、`enabled_by_default`、`requires_env`、显式 `tool_visibility` override 等结构化事实决定，不读取 `request.text` 推断用户意图；provider-native 模型只能执行本轮 `executable_tool_names` 中的工具。
 - `ToolSpec.side_effect` 表达工具副作用策略，`ToolSpec.execution` 表达稳定调度/依赖/资源事实；未知工具默认按 confirmation-sensitive 且需要串行观察处理。realtime task-state 会消费 side-effect 策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
 - 真实 LLM 只能返回自然语言 `content` 或 provider-native `tool_calls`。native tool call 会先归一化成内部 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
@@ -128,7 +128,7 @@ UserRequest
 
 ## ToolSpec 契约
 
-`ToolSpec` 是唯一工具契约视图：
+`ToolSpec` 是唯一工具声明契约：
 
 ```text
 name
@@ -143,6 +143,15 @@ execution
 ```
 
 ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema` 生成，并补充 `_ACTION_USAGE` 中的使用条件和运行约束。默认约束包含 `Use only through ToolExecutor.`。
+
+`ToolPolicyView` 是唯一运行时解释结果。`ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 spec builder，scheduler、risk gate、boundary summary 和 executor 不再各自降级或重新猜测 rich policy。它统一包含：
+
+- risk、side-effect、approval、confirmation owner 和 idempotency requirement；
+- dependency、resource、realtime safety、artifact reuse 和 progress message；
+- rich policy 的 timeout、retry count、idempotency、observation limit 和 data redaction；
+- realtime 声明中的 `mode`、`interruptible` 和 `commit_boundary`。
+
+`interruptible` 和 `commit_boundary` 当前只是统一声明事实，不据此推断动态动作是否已经提交；完整 realtime commit/cancel outcome protocol 仍是独立后续设计。
 
 `RunToolSet` 是每个 assistant turn 的 prompt-safe 装配快照：
 
@@ -192,9 +201,11 @@ Runtime gate 映射：
 
 - `auto`: `local_read`、`external_read` 或无副作用工具，直接执行，不需要幂等 ledger。
 - `soft_gate`: `compensatable` 工具，执行前解析或生成幂等 key；同一 user/session/tool/key 已提交时返回 safe duplicate-suppressed result，不再次调用 registry。
-- `hard_gate`: `pending_confirmation`、`committed` 或未分类工具。realtime/Gateway 上下文中的未分类工具会返回 pending-confirmation result，不执行实际工具；`memory` / `memory_save` 继续交给 memory service 自己的确认边界处理。
+- `hard_gate`: `pending_confirmation`、`committed` 或未分类工具。普通聊天、HTTP、CLI/MCP 显式调用和 realtime/Gateway 使用同一基础 approval 规则；未分类工具都返回 pending-confirmation result，不执行实际工具。`memory` / `memory_save` 继续交给 memory service 自己的确认边界处理。
 - 显式确认后的外部写工具可通过 request metadata `tool_confirmation.confirmed=true` 和匹配的 `tool_name` 放行；若工具声明 `execution.idempotency=required`，确认后仍必须提供 `idempotency_key`，成功提交会写入幂等 ledger，重复提交返回 duplicate-suppressed result。
 - `block`: 预留给后续策略禁止类工具，本阶段没有默认工具映射到 block。
+
+`approval.mode=never` 不增加 runtime confirmation；`approval.mode=always` 与未分类工具不能再因为入口缺少 realtime/source metadata 而绕过确认。确认事实只读取 runtime 绑定的 request metadata，模型参数中的 `confirmed` 不构成授权。
 
 当前限制：risk gate 和 idempotency ledger 是 process-local runtime guard；完整用户确认 UX、持久化 ledger、跨进程恢复和 irreversible external action provider 仍未接入。
 
@@ -305,11 +316,13 @@ Phase 0 tool governance rejection tests live in `tests/test_phase0_tool_governan
 - 检查 run-scoped cancel token；取消时跳过工具执行或停止 retry，并把 run 交回 runtime 标记为 `cancelled`。
 - 创建 `ToolCallRecord` 并更新 `AgentState.status`。
 - 发出带 `pre_tool_call` 摘要的 `tool_started` 事件；risk gate、幂等重复、预算阻断都进入同一生命周期，但不一定会调用 registry。
-- 在 provider budget 和 registry 之前应用 runtime risk gate：read-only 自动放行，compensatable 使用 idempotency ledger，realtime 未分类 hard-gate 工具返回 pending confirmation。
+- 在 provider budget 和 registry 之前应用 runtime risk gate：read-only 自动放行，compensatable 使用 idempotency ledger，所有入口下的未分类 hard-gate 工具返回 pending confirmation。
 - 在真正执行前调用 `ProviderCallBudget.check_before_call()`。
 - 发出带 `post_tool_call` 摘要的 `tool_finished` / `tool_failed` 事件，覆盖成功、失败、取消、pending confirmation、duplicate suppression 和预算阻断。
 - 写入 `ToolHistoryStore` 的 started/succeeded/failed 记录。
-- 通过 `ProviderExecutionPolicy.retry` 对 retryable provider 错误重试。
+- 对 retryable provider 错误做安全重试：rich policy 的上限是 `min(tool.retry_count, global.max_retries)`；legacy read-only 工具保留全局 retry；非幂等 mutation 不自动重放，带当前幂等 key 的 required-idempotency mutation 才可重试。
+- 当 rich policy 声明 `timeout_s` 时，把 `tool_execution.timeout_s` 和 process-local `deadline_monotonic_s` 传入 `ToolContext.metadata`。这是 cooperative deadline 传播，不是同步线程强杀；trace 会区分 `not_reported` 与 adapter 明确返回的 `deadline_enforced=true`。
+- mutating 工具最终返回 `provider_timeout` 时，结果会标记 `status=unknown_after_timeout` 和未知副作用状态，不能把 timeout 误述成“确定没有提交”。
 - 把 registry/tool 异常转为失败 `ToolResult`，不让异常穿透给 Agent。
 - `AgentRunCancelled` 是例外：它是运行时控制信号，会穿透 graph node 并由 `AgentGraphRuntime` 收口。
 - 记录 provider budget call record。
@@ -320,7 +333,7 @@ Phase 0 tool governance rejection tests live in `tests/test_phase0_tool_governan
 
 只有 `ToolExecutor._run_once()` 可以直接调用 `registry.run(...)`。新增入口、API、MCP、graph node 或 service 不应直接调用 registry。
 
-`ToolContext` 携带 `run_id/user_id/session_id`、运行时 metadata，以及可选的 `cancel_token`。工具若有自然轮询点，可以调用 `context.is_cancelled()` 提前返回；不要求现有同步工具在本阶段改成 async。
+`ToolContext` 携带 `run_id/user_id/session_id`、运行时 metadata，以及可选的 `cancel_token`。工具若有自然轮询点，可以调用 `context.is_cancelled()` 提前返回；adapter 可以消费 `tool_execution` deadline；不要求现有同步工具在本阶段改成 async，也不伪装强制取消。
 
 ## ToolResult 和 observation
 
@@ -361,6 +374,9 @@ contract
 - `web_search` 会保留 `title`、`url`、`snippet`、`published_at`、`source`，成功 observation 摘要首条结果和总数。
 - 商品搜索/比价会保留 title、price、currency、URL、url_status 等后续回答和 price_compare 必需字段。
 - context builder 会压缩大 observation、截断命令输出、移除 raw provider payload、base64、secret-like 内容。
+
+- rich policy 的 `max_result_chars` 在 `ToolResult -> ToolObservation` 边界生效；限制由 registry ToolSpec 提供，工具结果不能自行放宽。超限 observation 保留 status、summary、error/output reference，并记录 `truncated=true` 与 `original_chars`，不会截断原始审计引用。
+- `DataPolicy.redact_in_trace=true` 时，history、trace 和 pre/post lifecycle event 只保存字段名、规模、状态、引用和工具明确提供的 trace-safe summary；未标记为已脱敏的 audit payload 不保存原始值。该字段不是新的用户权限或 DLP 系统。
 
 ## Loop Guard 和计划状态
 

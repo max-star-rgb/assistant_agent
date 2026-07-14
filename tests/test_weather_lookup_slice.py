@@ -80,8 +80,13 @@ def test_weather_lookup_slice_runs_realtime_safe_local_tool_through_executor(
     assert started.payload["pre_tool_call"]["risk_gate"]["level"] == "auto"
     assert started.payload["pre_tool_call"]["side_effect"]["level"] == "external_read"
     assert finished.payload["post_tool_call"]["side_effect"]["level"] == "external_read"
-    assert history_record.output_summary["summary"] == "Weather lookup succeeded."
-    assert history_record.audit_payload == {"provider": "mock_weather", "redacted": True}
+    assert history_record.output_summary["redacted"] is True
+    assert history_record.output_summary["trace_field_names"] == [
+        "provider",
+        "summary",
+    ]
+    assert history_record.audit_payload["redacted"] is True
+    assert "mock-weather://raw/shanghai" not in str(history_record.audit_payload)
     assert history_record.raw_data_ref == "mock-weather://raw/shanghai"
     assert "mock-weather://raw/shanghai" not in str(history_record.output_summary)
 

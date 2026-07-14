@@ -120,10 +120,17 @@ def test_calendar_search_events_result_redacts_trace_and_preserves_model_view(
     assert observation.structured_output["events"][0]["title"] == "Product sync"
     assert "raw-private-calendar-token" not in str(observation)
     assert "calendar-raw://events/today" not in str(observation)
-    assert finished.payload["post_tool_call"]["observation_summary"]["summary"] == "Calendar search returned 1 event."
+    observation_summary = finished.payload["post_tool_call"]["observation_summary"]
+    assert observation_summary["redacted"] is True
+    assert observation_summary["trace_field_names"] == ["event_count", "summary"]
     assert "raw-private-calendar-token" not in str(finished.payload["post_tool_call"])
-    assert history_record.output_summary["summary"] == "Calendar search returned 1 event."
-    assert history_record.audit_payload == {"provider": "mock_calendar", "redacted": True}
+    assert history_record.output_summary["redacted"] is True
+    assert history_record.output_summary["trace_field_names"] == [
+        "event_count",
+        "summary",
+    ]
+    assert history_record.audit_payload["redacted"] is True
+    assert "raw-private-calendar-token" not in str(history_record.audit_payload)
     assert history_record.raw_data_ref == "calendar-raw://events/today"
 
 
