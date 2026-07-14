@@ -10,7 +10,15 @@ from assistant_agent.api import gateway_runtime
 from assistant_agent.api import routes_agent
 from assistant_agent.api.app import create_app
 from assistant_agent.api.auth import AUTH_HEADER_ENABLED_ENV, AUTH_USER_ID_HEADER
-from assistant_agent.gateway import GatewayBridge, GatewayQueuePolicy, GatewaySessionManager
+from assistant_agent.gateway import (
+    AGENT_SERVICE_ENTRY_CAPABILITIES,
+    GATEWAY_WEBSOCKET_CAPABILITIES,
+    REALTIME_MEDIA_ENTRY_CAPABILITIES,
+    GatewayBridge,
+    GatewayQueuePolicy,
+    GatewaySessionManager,
+    GatewayTurnArbitrationPolicy,
+)
 from assistant_agent.realtime import RealtimeAgentEvent, RealtimeAgentResult
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.gateway_turn_facade import GatewayTurnRequest
@@ -219,7 +227,14 @@ def test_realtime_media_websocket_injects_entry_capabilities() -> None:
         "supports_video_refs": True,
         "supports_raw_media": False,
         "supports_tts_edge_events": True,
+        "supports_semantic_interrupt": True,
     }
+
+
+def test_only_realtime_media_entry_declares_semantic_interrupt_capability() -> None:
+    assert REALTIME_MEDIA_ENTRY_CAPABILITIES.supports_semantic_interrupt is True
+    assert GATEWAY_WEBSOCKET_CAPABILITIES.supports_semantic_interrupt is False
+    assert AGENT_SERVICE_ENTRY_CAPABILITIES.supports_semantic_interrupt is False
 
 
 def test_realtime_media_websocket_completed_run_hangup_does_not_cancel_inactive_run() -> None:
@@ -578,6 +593,62 @@ def test_create_gateway_session_manager_reads_queue_policy_env() -> None:
         dedupe_ttl_s=45.0,
         dedupe_max_entries_per_user=20,
     )
+
+
+def test_create_gateway_session_manager_reads_semantic_interrupt_policy_env() -> None:
+    manager = gateway_runtime.create_gateway_session_manager(
+        env={
+            "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_ENABLED": "true",
+            "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_TIMEOUT_MS": "750",
+            "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_MAX_CONCURRENCY": "3",
+            "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_MIN_CONFIDENCE": "0.85",
+        },
+        start_reaper=False,
+    )
+
+    assert manager.turn_arbitration_controller.policy == GatewayTurnArbitrationPolicy(
+        enabled=True,
+        timeout_ms=750,
+        max_concurrency=3,
+        min_confidence=0.85,
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        (
+            "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_TIMEOUT_MS",
+            "0",
+            "must be a positive integer",
+        ),
+        (
+            "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_MAX_CONCURRENCY",
+            "-1",
+            "must be a positive integer",
+        ),
+        (
+            "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_MIN_CONFIDENCE",
+            "nan",
+            "must be finite and between 0 and 1",
+        ),
+        (
+            "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_MIN_CONFIDENCE",
+            "1.1",
+            "must be finite and between 0 and 1",
+        ),
+    ],
+)
+def test_create_gateway_session_manager_rejects_invalid_semantic_interrupt_env(
+    name: str,
+    value: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        gateway_runtime.create_gateway_session_manager(
+            env={name: value},
+            start_reaper=False,
+        )
 
 
 def test_create_gateway_session_manager_rejects_non_positive_queue_policy_env() -> None:

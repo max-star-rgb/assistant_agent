@@ -178,6 +178,14 @@ class GatewaySessionService:
         )
         self._identity_records_by_run_id.clear()
 
+    def bind_turn_arbitration(
+        self,
+        controller: GatewayTurnArbitrationController,
+    ) -> None:
+        if self._current_by_session or self._active_by_session:
+            raise RuntimeError("cannot bind turn arbitration after session work has started")
+        self._turn_arbitration = controller
+
     def _emit_lifecycle(
         self,
         event_type: str,
@@ -1641,6 +1649,7 @@ class GatewaySessionManager:
         lifecycle_sink: GatewayLifecycleSink | None = None,
         queue_policy: GatewayQueuePolicy | None = None,
         admission_controller: GatewayRunAdmissionController | None = None,
+        turn_arbitration_controller: GatewayTurnArbitrationController | None = None,
     ) -> None:
         self.max_sessions = max_sessions
         self.idle_timeout_s = idle_timeout_s
@@ -1654,6 +1663,9 @@ class GatewaySessionManager:
             self.queue_policy
         )
         self._owns_admission_controller = admission_controller is None
+        self.turn_arbitration_controller = (
+            turn_arbitration_controller or GatewayTurnArbitrationController()
+        )
         self._entries: dict[str, _GatewaySessionEntry] = {}
         self._deferred_config: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
@@ -1856,12 +1868,14 @@ class GatewaySessionManager:
                 lifecycle_sink=self.lifecycle_sink,
                 queue_policy=self.queue_policy,
                 admission_controller=self.admission_controller,
+                turn_arbitration_controller=self.turn_arbitration_controller,
             )
         if self.service_factory is not None:
             service.bind_queueing(
                 queue_policy=self.queue_policy,
                 admission_controller=self.admission_controller,
             )
+            service.bind_turn_arbitration(self.turn_arbitration_controller)
         return _GatewaySessionEntry(
             user_id=user_id,
             service=service,

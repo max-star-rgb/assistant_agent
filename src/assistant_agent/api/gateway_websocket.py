@@ -70,7 +70,9 @@ MEDIA_CONFIG_STRING_KEYS = frozenset(
         "call_id",
     }
 )
-MEDIA_CONFIG_BOOL_KEYS = frozenset({"identity_bound", "barge_in_enabled"})
+MEDIA_CONFIG_BOOL_KEYS = frozenset(
+    {"identity_bound", "barge_in_enabled", "semantic_interrupt_enabled"}
+)
 MEDIA_CONFIG_INT_KEYS = frozenset(
     {"run_timeout_ms", "idle_timeout_ms", "response_timeout_ms", "timeout_ms"}
 )

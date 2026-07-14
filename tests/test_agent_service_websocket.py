@@ -144,6 +144,7 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
         "supports_video_refs": True,
         "supports_raw_media": True,
         "supports_tts_edge_events": False,
+        "supports_semantic_interrupt": False,
     }
 
 
