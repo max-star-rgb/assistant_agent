@@ -112,6 +112,10 @@ class QueuedTurn:
     admission_ticket: AdmissionTicket | None = None
     timeout_task: asyncio.Task[None] | None = None
     dispatch_task: asyncio.Task[None] | None = None
+    arbitration_pending: bool = False
+    arbitration_decision_id: str | None = None
+    arbitration_expected_run_id: str | None = None
+    arbitration_task: asyncio.Task[None] | None = None
 
 
 class QueueOverflowError(RuntimeError):
