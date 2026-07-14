@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-10
+Last updated: 2026-07-14
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes.
 
@@ -9,6 +9,8 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - Gateway is not a product entrypoint. CLI, Web UI, app, HTTP, WebSocket, and realtime call adapters are entry layers.
 - Entry adapters may be implemented outside Python when product, transport, SDK, or deployment constraints make that preferable, but they must preserve Gateway as the authoritative lifecycle boundary and communicate through normalized Gateway frames or documented HTTP schemas.
 - Gateway owns normalized message, session, run, cancel, interrupt, reconnect, hangup, and stream-frame semantics between entry layers and the assistant realtime backend.
+- Every accepted `message.user` receives stable Gateway-owned `turn_id` and `run_id` values at ingress. A queued turn is a cancellable lifecycle object, not an anonymous pending payload.
+- Ordinary same-session turns use bounded FIFO followup queues. Session heads compete through one process-local admission controller, which bounds total queued turns and active backend runs without allowing same-session backend overlap.
 - `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default adapter is `GatewayAgentAdapter`, a semantic alias of the compatibility class name `AgentGraphRealtimeBackend`.
 - The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
@@ -168,7 +170,7 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - For cancelled turns, include prompt-safe cancel metadata in `run.end.payload.cancel` (`source`, optional `reason`, `phase`, `best_effort`, and `deadline_ms` when applicable). If Gateway ends the turn before a backend trace is available, include `run.end.payload.trace.status=not_available` with reason `cancelled_before_backend_result` instead of inventing a trace id.
 - Convert realtime backend events into Gateway wire frames.
 - Convert backend failures into protocol-level `run.end` or `error` frames.
-- Queue ordinary same-session user messages behind the active run; cancel active runs on explicit `run.cancel`, disconnect, deadline expiry, or explicit same-session interrupt.
+- Queue ordinary same-session user messages behind the active run; apply per-session and process-wide limits; cancel either queued or active runs on explicit `run.cancel`, disconnect, deadline expiry, explicit same-session interrupt, or queue-wait expiry.
 - Cancel active runs immediately on `call.hangup` / media `session.end`, then return `call.hangup_ack`.
 - Treat cancel/interrupt as a first-class realtime turn outcome. After cancel, old run output is not speakable or user-visible; late backend/tool results may be retained only as trace or stale artifacts.
 - Manage per-user session reuse, reconnect, hangup grace, idle eviction, and live session config.
@@ -182,6 +184,59 @@ the active run, preserve session continuity, and start the next turn. It should
 not own semantic task revision such as merging the old goal with new
 constraints, deciding whether intermediate artifacts are reusable, or resolving
 committed side effects.
+
+## Queue and Admission Contract
+
+Gateway QueuePolicy v1 separates two constraints:
+
+```text
+message.user -> per-session FIFO -> process-wide admission -> backend run
+                 one head only       bounded/fair FIFO        active permit
+```
+
+- Default mode is `followup`. Explicit interrupt remains a control operation,
+  but the replacement turn does not start its backend until the cancelled
+  backend has actually exited and released its permit.
+- Default limits are 8 pending turns per session, 64 accepted queued turns
+  process-wide, 4 active backend runs, and 120 seconds of total queue wait.
+  Overflow rejects the newest message; Gateway never silently drops or merges
+  an accepted user message.
+- Queue time starts at ingress and includes both same-session waiting and global
+  capacity waiting. It does not consume the backend run deadline and queued
+  text is appended to session history only after admission.
+- `run.cancel` can target a queued `run_id`. Queue timeout and pre-run cancel
+  end with `run.end(reason=cancelled)` plus prompt-safe cancellation metadata
+  with `phase=before_llm`; neither path calls the backend.
+- `run.queued` reports `reason=session_busy|global_capacity`, queue depth, global
+  queue depth, and the ingress timestamp. `queue_overflow`, `identity_conflict`,
+  and `duplicate_message` are structured `error` codes.
+- Retry identity is scoped to a user/session and may use `client_message_id`,
+  `turn_id`, or `run_id`. Equal replays are acknowledged as duplicates; reuse
+  with a different payload is rejected. The index is bounded by TTL and entry
+  count and stores only fingerprints and identifiers.
+- Lifecycle observation records `gateway.run.queued`,
+  `gateway.run.admitted`, `gateway.run.queue_rejected`, and
+  `gateway.run.queue_expired` in addition to existing run events. Payloads are
+  bounded metrics/reasons and never include user text.
+
+The policy is configured at process startup with strict positive values:
+
+| environment variable | default |
+| --- | ---: |
+| `MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS` | `4` |
+| `MULTIMODAL_AGENT_GATEWAY_MAX_PENDING_PER_SESSION` | `8` |
+| `MULTIMODAL_AGENT_GATEWAY_MAX_QUEUED_TURNS` | `64` |
+| `MULTIMODAL_AGENT_GATEWAY_QUEUE_WAIT_TIMEOUT_MS` | `120000` |
+| `MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S` | `300` |
+| `MULTIMODAL_AGENT_GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER` | `1024` |
+
+All queue, dedupe, and admission state is process-local and in memory. It does
+not provide restart recovery, cross-worker consistency, durable tasks, message
+collection/summarization, or live prompt steering. The retained
+[design](superpowers/specs/2026-07-13-gateway-queue-admission-design.md) and
+[implementation plan](superpowers/plans/2026-07-13-gateway-queue-admission.md)
+record the reviewed rationale and execution evidence; this document remains the
+current architecture authority.
 
 Realtime turn cancellation metadata is normalized through
 `RealtimeTurnCancellationContract`:
@@ -305,6 +360,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/gateway/protocol.py` | Gateway wire frame helpers, call/config constants, and supported modalities. |
 | `src/assistant_agent/gateway/capabilities.py` | Prompt-safe entry adapter capability declarations used in Gateway metadata. |
 | `src/assistant_agent/gateway/observability.py` | Controlled fail-open Gateway lifecycle event model and sink helper. |
+| `src/assistant_agent/gateway/queueing.py` | Bounded queue policy, process-local fair run admission, stable queued-turn records, and TTL/LRU retry identity index. |
 | `src/assistant_agent/gateway/transport.py` | Transport-agnostic endpoint primitives for in-process tests and embedding. |
 | `src/assistant_agent/gateway/ws.py` | JSON text WebSocket adapter that presents a WebSocket as a Gateway endpoint. |
 | `src/assistant_agent/gateway/bridge.py` | External-client-to-session bridge: call lifecycle, frame forwarding, stale bridge eviction, disconnect cancellation, and modality gate. |

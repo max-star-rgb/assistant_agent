@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 from threading import Event
 
+import pytest
 from fastapi.testclient import TestClient
 
 from assistant_agent.api import gateway_runtime
 from assistant_agent.api import routes_agent
 from assistant_agent.api.app import create_app
 from assistant_agent.api.auth import AUTH_HEADER_ENABLED_ENV, AUTH_USER_ID_HEADER
-from assistant_agent.gateway import GatewayBridge, GatewaySessionManager
+from assistant_agent.gateway import GatewayBridge, GatewayQueuePolicy, GatewaySessionManager
 from assistant_agent.realtime import RealtimeAgentEvent, RealtimeAgentResult
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.gateway_turn_facade import GatewayTurnRequest
@@ -554,6 +555,54 @@ def test_gateway_http_runtime_captures_agent_run_response(monkeypatch) -> None:
     assert response.run_id == "run_capture_1"
     assert response.response_text == "captured response"
     assert gateway_runtime.pop_gateway_http_response(capture_id) is None
+
+
+def test_create_gateway_session_manager_reads_queue_policy_env() -> None:
+    manager = gateway_runtime.create_gateway_session_manager(
+        env={
+            "MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS": "2",
+            "MULTIMODAL_AGENT_GATEWAY_MAX_PENDING_PER_SESSION": "3",
+            "MULTIMODAL_AGENT_GATEWAY_MAX_QUEUED_TURNS": "7",
+            "MULTIMODAL_AGENT_GATEWAY_QUEUE_WAIT_TIMEOUT_MS": "9000",
+            "MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S": "45",
+            "MULTIMODAL_AGENT_GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER": "20",
+        },
+        start_reaper=False,
+    )
+
+    assert manager.queue_policy == GatewayQueuePolicy(
+        max_active_runs=2,
+        max_pending_per_session=3,
+        max_queued_turns_global=7,
+        queue_wait_timeout_ms=9000,
+        dedupe_ttl_s=45.0,
+        dedupe_max_entries_per_user=20,
+    )
+
+
+def test_create_gateway_session_manager_rejects_non_positive_queue_policy_env() -> None:
+    with pytest.raises(
+        ValueError,
+        match="MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS must be a positive integer",
+    ):
+        gateway_runtime.create_gateway_session_manager(
+            env={"MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS": "0"},
+            start_reaper=False,
+        )
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_create_gateway_session_manager_rejects_non_finite_dedupe_ttl_env(
+    value: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S must be finite and positive",
+    ):
+        gateway_runtime.create_gateway_session_manager(
+            env={"MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S": value},
+            start_reaper=False,
+        )
 
 
 def _install_gateway_backend(backend) -> None:

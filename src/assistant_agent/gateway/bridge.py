@@ -156,7 +156,16 @@ class GatewayBridge:
             endpoint = runtime_ep_ref["endpoint"]
             if not cancel_event.is_set() and endpoint is not None and (run_id or sid):
                 await endpoint.send(
-                    frame(type="run.cancel", run_id=run_id, session_id=sid, user_id=user_id)
+                    frame(
+                        type="run.cancel",
+                        run_id=run_id,
+                        session_id=sid,
+                        user_id=user_id,
+                        payload={
+                            "source": "gateway_disconnect",
+                            "reason": "client_disconnected",
+                        },
+                    )
                 )
         finally:
             t1.cancel()
@@ -230,7 +239,8 @@ class GatewayBridge:
             ):
                 endpoint = await ensure_runtime_endpoint(_optional_string(uid), None)
             cancel_requested = endpoint is not None and run_id is not None
-            if cancel_requested:
+            session_cancel_requested = endpoint is not None and session_id is not None
+            if cancel_requested or session_cancel_requested:
                 await endpoint.send(
                     frame(
                         type="run.cancel",

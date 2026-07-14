@@ -13,6 +13,7 @@ CALL_READY = "call.ready"
 CALL_HANGUP = "call.hangup"
 CALL_HANGUP_ACK = "call.hangup_ack"
 CONFIG_UPDATE = "config.update"
+RUN_QUEUED = "run.queued"
 
 
 class Frame(TypedDict, total=False):

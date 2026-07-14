@@ -1,0 +1,341 @@
+from __future__ import annotations
+
+import asyncio
+import unittest
+
+from assistant_agent.gateway.queueing import (
+    GatewayQueuePolicy,
+    GatewayRunAdmissionController,
+    GatewayTurnIdentityIndex,
+    IdentityConflictError,
+    QueueOverflowError,
+    gateway_payload_fingerprint,
+)
+
+
+class GatewayQueuePolicyTests(unittest.TestCase):
+    def test_defaults_are_bounded(self) -> None:
+        policy = GatewayQueuePolicy()
+
+        assert policy.mode == "followup"
+        assert policy.max_pending_per_session == 8
+        assert policy.max_queued_turns_global == 64
+        assert policy.max_active_runs == 4
+        assert policy.queue_wait_timeout_ms == 120_000
+        assert policy.dedupe_ttl_s == 300.0
+        assert policy.dedupe_max_entries_per_user == 1024
+        assert policy.overflow_policy == "reject_newest"
+
+    def test_non_positive_limits_are_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "max_active_runs must be a positive integer",
+        ):
+            GatewayQueuePolicy(max_active_runs=0)
+
+    def test_integer_limits_reject_non_integer_values(self) -> None:
+        for value in (True, 1.5, "2"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "max_active_runs must be a positive integer",
+                ):
+                    GatewayQueuePolicy(max_active_runs=value)  # type: ignore[arg-type]
+
+    def test_dedupe_ttl_rejects_non_finite_values(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "dedupe_ttl_s must be finite and positive",
+                ):
+                    GatewayQueuePolicy(dedupe_ttl_s=value)
+
+    def test_unknown_mode_and_overflow_policy_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "mode must be followup or interrupt"):
+            GatewayQueuePolicy(mode="collect")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "overflow_policy must be reject_newest"):
+            GatewayQueuePolicy(overflow_policy="drop_oldest")  # type: ignore[arg-type]
+
+
+class GatewayRunAdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fifo_waiters_respect_active_cap(self) -> None:
+        controller = GatewayRunAdmissionController(
+            GatewayQueuePolicy(max_active_runs=1, max_queued_turns_global=4)
+        )
+        first = await controller.reserve(
+            user_id="u1",
+            session_id="s1",
+            turn_id="t1",
+            run_id="r1",
+        )
+        second = await controller.reserve(
+            user_id="u2",
+            session_id="s2",
+            turn_id="t2",
+            run_id="r2",
+        )
+
+        first_ticket = await controller.request_permit(first)
+        second_ticket = await controller.request_permit(second)
+
+        first_permit = await asyncio.wait_for(first_ticket.ready, timeout=0.2)
+        assert second_ticket.ready.done() is False
+        assert (await controller.snapshot()).active_runs == 1
+
+        await controller.release_permit(first_permit)
+        second_permit = await asyncio.wait_for(second_ticket.ready, timeout=0.2)
+        assert second_permit.run_id == "r2"
+        await controller.release_permit(second_permit)
+        assert (await controller.snapshot()).active_runs == 0
+
+    async def test_global_queue_overflow_rejects_newest(self) -> None:
+        controller = GatewayRunAdmissionController(
+            GatewayQueuePolicy(max_active_runs=1, max_queued_turns_global=1)
+        )
+        await controller.reserve(
+            user_id="u1",
+            session_id="s1",
+            turn_id="t1",
+            run_id="r1",
+        )
+
+        with self.assertRaises(QueueOverflowError) as raised:
+            await controller.reserve(
+                user_id="u2",
+                session_id="s2",
+                turn_id="t2",
+                run_id="r2",
+            )
+
+        assert raised.exception.scope == "global"
+        assert (await controller.snapshot()).queued_turns == 1
+
+    async def test_cancel_waiting_ticket_releases_reservation(self) -> None:
+        controller = GatewayRunAdmissionController(
+            GatewayQueuePolicy(max_active_runs=1, max_queued_turns_global=3)
+        )
+        first = await controller.reserve(
+            user_id="u1",
+            session_id="s1",
+            turn_id="t1",
+            run_id="r1",
+        )
+        second = await controller.reserve(
+            user_id="u2",
+            session_id="s2",
+            turn_id="t2",
+            run_id="r2",
+        )
+        first_ticket = await controller.request_permit(first)
+        second_ticket = await controller.request_permit(second)
+        first_permit = await first_ticket.ready
+
+        assert await controller.cancel_ticket(second_ticket) is True
+        assert await controller.cancel_ticket(second_ticket) is False
+        assert (await controller.snapshot()).queued_turns == 0
+        await controller.release_permit(first_permit)
+    async def test_release_permit_is_idempotent(self) -> None:
+        controller = GatewayRunAdmissionController(GatewayQueuePolicy(max_active_runs=1))
+        reservation = await controller.reserve(
+            user_id="u1",
+            session_id="s1",
+            turn_id="t1",
+            run_id="r1",
+        )
+        ticket = await controller.request_permit(reservation)
+        permit = await ticket.ready
+
+        assert await controller.release_permit(permit) is True
+        assert await controller.release_permit(permit) is False
+        assert await controller.release_reservation(reservation) is False
+
+    async def test_cancelled_ready_future_does_not_leak_a_permit(self) -> None:
+        controller = GatewayRunAdmissionController(
+            GatewayQueuePolicy(max_active_runs=1, max_queued_turns_global=3)
+        )
+        first = await controller.reserve(
+            user_id="u1",
+            session_id="s1",
+            turn_id="t1",
+            run_id="r1",
+        )
+        second = await controller.reserve(
+            user_id="u2",
+            session_id="s2",
+            turn_id="t2",
+            run_id="r2",
+        )
+        first_ticket = await controller.request_permit(first)
+        second_ticket = await controller.request_permit(second)
+        first_permit = await first_ticket.ready
+        second_ticket.ready.cancel()
+
+        await controller.release_permit(first_permit)
+
+        snapshot = await controller.snapshot()
+        assert snapshot.active_runs == 0
+        assert snapshot.queued_turns == 0
+        assert snapshot.waiting_turns == 0
+
+    async def test_close_cancels_waiters_and_rejects_new_reservations(self) -> None:
+        controller = GatewayRunAdmissionController(
+            GatewayQueuePolicy(max_active_runs=1, max_queued_turns_global=3)
+        )
+        first = await controller.reserve(
+            user_id="u1",
+            session_id="s1",
+            turn_id="t1",
+            run_id="r1",
+        )
+        second = await controller.reserve(
+            user_id="u2",
+            session_id="s2",
+            turn_id="t2",
+            run_id="r2",
+        )
+        await controller.reserve(
+            user_id="u3",
+            session_id="s3",
+            turn_id="t3",
+            run_id="r3",
+        )
+        first_permit = await (await controller.request_permit(first)).ready
+        second_ticket = await controller.request_permit(second)
+
+        await controller.close()
+
+        assert second_ticket.ready.cancelled() is True
+        assert (await controller.snapshot()).waiting_turns == 0
+        assert (await controller.snapshot()).queued_turns == 0
+        with self.assertRaisesRegex(RuntimeError, "admission controller is closed"):
+            await controller.reserve(
+                user_id="u3",
+                session_id="s3",
+                turn_id="t3",
+                run_id="r3",
+            )
+        await controller.release_permit(first_permit)
+
+
+class GatewayTurnIdentityIndexTests(unittest.TestCase):
+    def test_duplicate_returns_canonical_record(self) -> None:
+        index = GatewayTurnIdentityIndex(ttl_s=300, max_entries=4)
+        index.remember(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+            state="session_queued",
+        )
+
+        duplicate = index.check(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+        )
+
+        assert duplicate is not None
+        assert duplicate.run_id == "r1"
+        assert duplicate.state == "session_queued"
+
+    def test_reused_identity_with_different_payload_conflicts(self) -> None:
+        index = GatewayTurnIdentityIndex(ttl_s=300, max_entries=4)
+        index.remember(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+            state="session_queued",
+        )
+
+        with self.assertRaises(IdentityConflictError):
+            index.check(
+                session_id="s1",
+                client_message_id="m1",
+                turn_id="t1",
+                run_id="r1",
+                payload_fingerprint="hash-two",
+            )
+
+    def test_identifiers_cannot_resolve_to_different_records(self) -> None:
+        index = GatewayTurnIdentityIndex(ttl_s=300, max_entries=4)
+        index.remember(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+            state="running",
+        )
+        index.remember(
+            session_id="s1",
+            client_message_id="m2",
+            turn_id="t2",
+            run_id="r2",
+            payload_fingerprint="hash-two",
+            state="running",
+        )
+
+        with self.assertRaisesRegex(IdentityConflictError, "different records"):
+            index.check(
+                session_id="s1",
+                client_message_id="m1",
+                turn_id="t2",
+                run_id="r2",
+                payload_fingerprint="hash-two",
+            )
+
+    def test_max_entries_evicts_the_oldest_record(self) -> None:
+        index = GatewayTurnIdentityIndex(ttl_s=300, max_entries=1)
+        index.remember(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+            state="terminal",
+        )
+        index.remember(
+            session_id="s1",
+            client_message_id="m2",
+            turn_id="t2",
+            run_id="r2",
+            payload_fingerprint="hash-two",
+            state="running",
+        )
+
+        assert (
+            index.check(
+                session_id="s1",
+                client_message_id="m1",
+                turn_id="t1",
+                run_id="r1",
+                payload_fingerprint="hash-one",
+            )
+            is None
+        )
+        assert (
+            index.check(
+                session_id="s1",
+                client_message_id="m2",
+                turn_id="t2",
+                run_id="r2",
+                payload_fingerprint="hash-two",
+            )
+            is not None
+        )
+
+    def test_payload_fingerprint_is_stable_for_mapping_order(self) -> None:
+        first = gateway_payload_fingerprint(
+            {"text": "hello", "metadata": {"b": 2, "a": 1}}
+        )
+        second = gateway_payload_fingerprint(
+            {"metadata": {"a": 1, "b": 2}, "text": "hello"}
+        )
+
+        assert first == second

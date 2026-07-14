@@ -20,6 +20,48 @@ class GatewayTurnTimeout(GatewayTurnError):
     """Raised when a Gateway turn does not finish before the caller timeout."""
 
 
+class _GatewayTurnDispatcher:
+    """Sole endpoint reader that routes frames to facade-owned run inboxes."""
+
+    def __init__(self, endpoint) -> None:
+        self.endpoint = endpoint
+        self._inboxes: dict[str, asyncio.Queue[Frame | None]] = {}
+        self._lock = asyncio.Lock()
+        self._reader = asyncio.create_task(
+            self._read_loop(),
+            name="gateway-turn-dispatcher",
+        )
+
+    async def register(self, run_id: str) -> asyncio.Queue[Frame | None]:
+        async with self._lock:
+            if run_id in self._inboxes:
+                raise GatewayTurnError(f"duplicate facade run id: {run_id}")
+            inbox: asyncio.Queue[Frame | None] = asyncio.Queue()
+            self._inboxes[run_id] = inbox
+            return inbox
+
+    async def unregister(self, run_id: str) -> None:
+        async with self._lock:
+            self._inboxes.pop(run_id, None)
+
+    async def _read_loop(self) -> None:
+        try:
+            async for received in self.endpoint:
+                run_id = received.get("run_id")
+                if not isinstance(run_id, str):
+                    continue
+                async with self._lock:
+                    inbox = self._inboxes.get(run_id)
+                if inbox is not None:
+                    await inbox.put(dict(received))
+        finally:
+            async with self._lock:
+                inboxes = list(self._inboxes.values())
+                self._inboxes.clear()
+            for inbox in inboxes:
+                await inbox.put(None)
+
+
 @dataclass(frozen=True)
 class GatewayTurnRequest:
     """Input for one Gateway-normalized user turn."""
@@ -55,6 +97,17 @@ class GatewayTurnFacade:
 
     def __init__(self, *, manager: GatewaySessionManager) -> None:
         self._manager = manager
+        self._dispatchers: dict[str, _GatewayTurnDispatcher] = {}
+        self._dispatcher_lock = asyncio.Lock()
+
+    async def _dispatcher_for(self, user_id: str, endpoint) -> _GatewayTurnDispatcher:
+        async with self._dispatcher_lock:
+            current = self._dispatchers.get(user_id)
+            if current is not None and current.endpoint is endpoint:
+                return current
+            dispatcher = _GatewayTurnDispatcher(endpoint)
+            self._dispatchers[user_id] = dispatcher
+            return dispatcher
 
     async def run_turn(self, request: GatewayTurnRequest) -> GatewayTurnResult:
         if not request.user_id:
@@ -70,24 +123,31 @@ class GatewayTurnFacade:
         )
         turn_id = str(uuid.uuid4())
         run_id = str(uuid.uuid4())
-        await handle.endpoint.send(
-            frame(
-                type="message.user",
-                session_id=request.session_id,
-                user_id=request.user_id,
-                payload=_message_payload(request, turn_id=turn_id, run_id=run_id),
+        dispatcher = await self._dispatcher_for(request.user_id, handle.endpoint)
+        inbox = await dispatcher.register(run_id)
+        try:
+            await handle.endpoint.send(
+                frame(
+                    type="message.user",
+                    session_id=request.session_id,
+                    user_id=request.user_id,
+                    payload=_message_payload(request, turn_id=turn_id, run_id=run_id),
+                )
             )
-        )
-        return await self._collect_turn(
-            handle.endpoint,
-            session_id=request.session_id,
-            turn_id=turn_id,
-            run_id=run_id,
-            timeout_s=request.timeout_s,
-        )
+            return await self._collect_turn(
+                inbox,
+                handle.endpoint,
+                session_id=request.session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                timeout_s=request.timeout_s,
+            )
+        finally:
+            await dispatcher.unregister(run_id)
 
     async def _collect_turn(
         self,
+        inbox: asyncio.Queue[Frame | None],
         endpoint,
         *,
         session_id: str,
@@ -99,25 +159,41 @@ class GatewayTurnFacade:
         chunks: list[str] = []
 
         async def _read_until_terminal() -> GatewayTurnResult:
-            async for received in endpoint:
-                if not _matches_turn(
-                    received,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    run_id=run_id,
-                ):
-                    continue
+            while True:
+                received = await inbox.get()
+                if received is None:
+                    raise GatewayTurnError("Gateway endpoint closed before run.end")
                 frames.append(received)
+                if received.get("type") == "error":
+                    error = received.get("error")
+                    code = error.get("code") if isinstance(error, Mapping) else None
+                    raise GatewayTurnError(
+                        f"Gateway turn rejected: {code or 'unknown_error'}"
+                    )
                 if received.get("type") == "stream.chunk":
                     chunks.append(_chunk_text(received))
                     continue
                 if received.get("type") == "run.end":
                     return _turn_result(frames=frames, terminal=received, chunks=chunks)
-            raise GatewayTurnError("Gateway endpoint closed before run.end")
 
         try:
             return await asyncio.wait_for(_read_until_terminal(), timeout=timeout_s)
         except TimeoutError as exc:
+            try:
+                await endpoint.send(
+                    frame(
+                        type="run.cancel",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        run_id=run_id,
+                        payload={
+                            "source": "gateway_cancel",
+                            "reason": "facade_timeout",
+                        },
+                    )
+                )
+            except Exception:
+                pass
             raise GatewayTurnTimeout(
                 f"Gateway turn timed out after {timeout_s:.3g}s before run.end"
             ) from exc
@@ -143,22 +219,6 @@ def _message_payload(
     if request.metadata:
         payload["metadata"] = dict(request.metadata)
     return payload
-
-
-def _matches_turn(
-    received: Mapping[str, Any],
-    *,
-    session_id: str,
-    turn_id: str,
-    run_id: str,
-) -> bool:
-    if received.get("session_id") != session_id:
-        return False
-    if received.get("turn_id") not in {None, turn_id}:
-        return False
-    if received.get("run_id") not in {None, run_id}:
-        return False
-    return True
 
 
 def _chunk_text(received: Mapping[str, Any]) -> str:
