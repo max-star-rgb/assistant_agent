@@ -10,7 +10,7 @@ from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.services.api_identity import AuthContext
 from assistant_agent.services.durable_tasks.service import DurableTaskService
-from assistant_agent.services.durable_tasks.store import InMemoryTaskStore
+from assistant_agent.services.durable_tasks.store import InMemoryTaskStore, TaskVersionConflict
 from assistant_agent.tools.registry import create_default_registry
 
 
@@ -88,6 +88,7 @@ def test_task_confirmation_endpoint_resumes_bound_step(monkeypatch) -> None:
             step_id="step_1",
             tool_name="product_search",
             tool_input_digest="digest-1",
+            confirmation_summary='Approve product_search with final arguments: {"query":"headphones"}',
             confirmation_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         ),
     )
@@ -103,6 +104,7 @@ def test_task_confirmation_endpoint_resumes_bound_step(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["task"]["status"] == "queued"
+    assert "headphones" in response.json()["confirmations"][0]["summary"]
 
     invalid = client.post(
         f"/tasks/{task.task.task_id}/confirmations",
@@ -127,6 +129,24 @@ def test_task_api_returns_stable_disabled_and_validation_errors(monkeypatch) -> 
     assert disabled.json()["detail"]["code"] == "DURABLE_TASKS_DISABLED"
     assert invalid_input.status_code == 422
     assert forged_identity.status_code == 422
+
+
+def test_task_api_maps_optimistic_write_conflict_to_409(monkeypatch) -> None:
+    client, service = _client(monkeypatch)
+    task = _submit(service)
+
+    def conflict(*_args, **_kwargs):
+        raise TaskVersionConflict(task.task.task_id)
+
+    monkeypatch.setattr(service.store, "save", conflict)
+    response = client.post(
+        f"/tasks/{task.task.task_id}/cancel",
+        json={"reason": "race"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "TASK_CONFLICT"
+    assert service.task_cancel_token(task.task.task_id).is_set() is False
 
 
 def _client(monkeypatch, *, service="new", user_id: str = "u1"):

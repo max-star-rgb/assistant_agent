@@ -21,12 +21,6 @@ class PlanValidator:
         self.max_steps = max_steps
 
     def validate(self, plan: TaskPlan, registry: ToolRegistry) -> PlanValidationResult:
-        if plan.requires_followup:
-            return PlanValidationResult(
-                accepted=True,
-                code="followup_required",
-                message="Plan requests user follow-up before execution.",
-            )
         if not plan.steps:
             return _reject("empty_plan", "Plan must include at least one step.")
         if len(plan.steps) > self.max_steps:
@@ -56,6 +50,13 @@ class PlanValidator:
 
         if not any(step.tool_name for step in plan.steps):
             return _reject("no_executable_steps", "Plan must include at least one executable tool step.")
+
+        if plan.requires_followup:
+            return PlanValidationResult(
+                accepted=True,
+                code="followup_required",
+                message="Plan requests user follow-up before execution.",
+            )
 
         return PlanValidationResult(accepted=True, code="accepted", message="Plan accepted.")
 

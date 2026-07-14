@@ -420,12 +420,21 @@ class ToolExecutor:
             )
             return result
 
+        before_tool_execution = self.context_metadata.get("_before_tool_execution")
+        if callable(before_tool_execution):
+            before_tool_execution()
         try:
             context_metadata = {
-                **self.context_metadata,
+                **{
+                    key: value
+                    for key, value in self.context_metadata.items()
+                    if key != "_before_tool_execution"
+                },
                 "request_text": state.request.text or "",
                 "request_metadata": dict(state.request.metadata),
             }
+            if risk_decision.idempotency_key is not None:
+                context_metadata["idempotency_key"] = risk_decision.idempotency_key
             if policy_view.timeout_s is not None:
                 context_metadata["tool_execution"] = {
                     "timeout_s": policy_view.timeout_s,

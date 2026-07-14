@@ -7,6 +7,7 @@ import hmac
 import json
 import secrets
 from datetime import datetime, timezone
+from threading import Event, RLock
 
 from assistant_agent.agent.plan_validator import PlanValidator
 from assistant_agent.schemas.durable_tasks import (
@@ -60,13 +61,23 @@ class DurableTaskService:
         registry: ToolRegistry,
         max_plan_steps: int = 8,
         max_plan_revisions: int = 2,
+        max_tool_calls: int = 32,
+        max_model_calls: int = 40,
+        max_step_attempts: int = 3,
+        max_task_seconds: int = 3600,
         lease_seconds: int = 30,
     ) -> None:
         self.store = store
         self.registry = registry
         self.plan_validator = PlanValidator(max_steps=max_plan_steps)
         self.max_plan_revisions = max_plan_revisions
+        self.max_tool_calls = max_tool_calls
+        self.max_model_calls = max_model_calls
+        self.max_step_attempts = max_step_attempts
+        self.max_task_seconds = max_task_seconds
         self.lease_seconds = lease_seconds
+        self._cancel_events: dict[str, Event] = {}
+        self._cancel_events_lock = RLock()
 
     def submit_plan(
         self,
@@ -86,6 +97,12 @@ class DurableTaskService:
             ingress_run_id=ingress_run_id,
             objective=plan.goal,
             status="waiting_input" if plan.requires_followup else "queued",
+            remaining_budget={
+                "tool_calls": self.max_tool_calls,
+                "model_calls": self.max_model_calls,
+                "plan_revisions": self.max_plan_revisions,
+                "deadline_epoch_s": now.timestamp() + self.max_task_seconds,
+            },
             created_at=now,
             updated_at=now,
         )
@@ -131,12 +148,24 @@ class DurableTaskService:
             for run in bundle.step_runs
             if run.plan_version == previous.plan_version and run.status == "succeeded"
         }
+        previous_steps = {step.step_id: step for step in previous.plan.steps}
         inherited = [
             step.step_id
             for step in plan.steps
             if step.step_id in completed
             and completed[step.step_id].tool_name == step.tool_name
+            and previous.plan.goal == plan.goal
+            and previous_steps.get(step.step_id) == step
         ]
+        invalidated_confirmations = [
+            item
+            for item in bundle.confirmations
+            if item.plan_version == previous.plan_version
+            and item.status in {"pending", "approved"}
+        ]
+        for confirmation in invalidated_confirmations:
+            confirmation.status = "rejected"
+            confirmation.decided_at = utc_now()
         next_version = bundle.task.current_plan_version + 1
         plan_version = TaskPlanVersion(
             task_id=bundle.task.task_id,
@@ -146,6 +175,9 @@ class DurableTaskService:
             inherited_step_ids=inherited,
             replaced_step_ids=[
                 step.step_id for step in previous.plan.steps if step.step_id not in inherited
+            ],
+            invalidated_confirmation_ids=[
+                item.confirmation_id for item in invalidated_confirmations
             ],
         )
         bundle.plans.append(plan_version)
@@ -159,6 +191,10 @@ class DurableTaskService:
         bundle.step_runs.extend(new_runs)
         bundle.task.current_plan_version = next_version
         bundle.task.objective = plan.goal
+        bundle.task.remaining_budget["plan_revisions"] = max(
+            0,
+            int(bundle.task.remaining_budget.get("plan_revisions", 0)) - 1,
+        )
         bundle.task.status = "waiting_input" if plan.requires_followup else "running"
         self._refresh_ready_steps(bundle)
         return self.store.save(
@@ -206,14 +242,25 @@ class DurableTaskService:
             raise TaskConflict("terminal task cannot be cancelled")
         bundle.task.status = "cancelled"
         bundle.task.terminal_at = utc_now()
+        bundle.task.lease_owner = None
+        bundle.task.lease_token = None
+        bundle.task.lease_expires_at = None
         for run in self._current_step_runs(bundle):
             if run.status not in {"succeeded", "skipped"}:
                 run.status = "cancelled"
-        return self.store.save(
+        saved = self.store.save(
             bundle,
             expected_version=bundle.task.version,
             events=[self._event(bundle, "task.cancelled", "cancelled", {"reason": reason})],
         )
+        self.task_cancel_token(task_id).set()
+        return saved
+
+    def task_cancel_token(self, task_id: str) -> Event:
+        """Return the process-local cooperative token for an active task."""
+
+        with self._cancel_events_lock:
+            return self._cancel_events.setdefault(task_id, Event())
 
     def provide_input(
         self,
@@ -260,6 +307,24 @@ class DurableTaskService:
             return bundle
         if confirmation.expires_at <= utc_now():
             confirmation.status = "expired"
+            confirmation.decided_at = utc_now()
+            run = self._step_run(bundle, confirmation.step_id)
+            if run is not None:
+                run.status = "failed"
+                run.error_code = "confirmation_expired"
+            bundle.task.status = "replanning"
+            self.store.save(
+                bundle,
+                expected_version=bundle.task.version,
+                events=[
+                    self._event(
+                        bundle,
+                        "confirmation.expired",
+                        bundle.task.status,
+                        {"confirmation_id": confirmation.confirmation_id},
+                    )
+                ],
+            )
             raise TaskConflict("confirmation expired")
         expected_digest = _confirmation_digest(
             task_id=confirmation.task_id,
@@ -300,11 +365,143 @@ class DurableTaskService:
         worker_id: str,
         now: datetime | None = None,
     ) -> DurableTaskLease | None:
-        return self.store.claim_next(
-            worker_id=worker_id,
-            now=now or datetime.now(timezone.utc),
-            lease_seconds=self.lease_seconds,
+        claimed_at = now or datetime.now(timezone.utc)
+        while True:
+            lease = self.store.claim_next(
+                worker_id=worker_id,
+                now=claimed_at,
+                lease_seconds=self.lease_seconds,
+            )
+            if lease is None:
+                return None
+            bundle = self._lease_bundle(lease)
+            interrupted = next(
+                (run for run in self._current_step_runs(bundle) if run.status == "running"),
+                None,
+            )
+            if interrupted is None:
+                admitted = self._admit_quantum(lease, bundle, claimed_at)
+                if admitted is not None:
+                    return admitted
+                continue
+            if interrupted.side_effect_level in {"none", "local_read", "external_read"}:
+                if interrupted.attempt >= self.max_step_attempts:
+                    self.checkpoint(
+                        lease,
+                        TaskCheckpoint(
+                            kind="failed",
+                            step_id=interrupted.step_id,
+                            error_code="durable_step_attempts_exhausted",
+                            error_message="Read-only step retry budget exhausted after crash recovery.",
+                        ),
+                    )
+                    continue
+                interrupted.status = "ready"
+                recovered = self.store.save(
+                    bundle,
+                    expected_version=lease.task_version,
+                    events=[
+                        self._event(
+                            bundle,
+                            "step.retry_scheduled",
+                            bundle.task.status,
+                            {"step_id": interrupted.step_id, "attempt": interrupted.attempt},
+                        )
+                    ],
+                )
+                recovered_lease = lease.model_copy(
+                    update={"task_version": recovered.task.version}
+                )
+                admitted = self._admit_quantum(recovered_lease, recovered, claimed_at)
+                if admitted is not None:
+                    return admitted
+                continue
+            self.checkpoint(
+                lease,
+                TaskCheckpoint(
+                    kind="outcome_unknown",
+                    step_id=interrupted.step_id,
+                    summary="Worker lease expired after a possible external side effect.",
+                    error_code="mutating_outcome_unknown",
+                    error_message="External commit state requires reconciliation.",
+                ),
+            )
+
+    def _admit_quantum(
+        self,
+        lease: DurableTaskLease,
+        bundle: DurableTaskBundle,
+        now: datetime,
+    ) -> DurableTaskLease | None:
+        remaining = int(bundle.task.remaining_budget.get("model_calls", 0))
+        deadline = float(bundle.task.remaining_budget.get("deadline_epoch_s", 0))
+        if remaining <= 0 or (deadline > 0 and now.timestamp() >= deadline):
+            self.checkpoint(
+                lease,
+                TaskCheckpoint(
+                    kind="failed",
+                    error_code="durable_task_budget_exhausted",
+                    error_message="Durable task model-call or time budget exhausted.",
+                ),
+            )
+            return None
+        bundle.task.remaining_budget["model_calls"] = remaining - 1
+        saved = self.store.save(
+            bundle,
+            expected_version=lease.task_version,
+            events=[
+                self._event(
+                    bundle,
+                    "task.quantum_admitted",
+                    bundle.task.status,
+                    {"remaining_model_calls": remaining - 1},
+                )
+            ],
         )
+        return lease.model_copy(update={"task_version": saved.task.version})
+
+    def begin_attempt(
+        self,
+        *,
+        binding: TrustedTaskBinding,
+        step_id: str,
+        tool_name: str,
+        tool_input_digest: str,
+    ) -> TrustedTaskBinding:
+        """Persist the external-call boundary before ToolExecutor can run."""
+
+        bundle = self._bound_bundle(binding)
+        if bundle.task.status != "running":
+            raise TaskConflict("task is no longer executable")
+        run = self._step_run(bundle, step_id)
+        if (
+            run is None
+            or run.status != "ready"
+            or step_id not in binding.ready_step_ids
+            or run.tool_name != tool_name
+        ):
+            raise TaskTransitionRejected("step is not ready for this tool attempt")
+        remaining = int(bundle.task.remaining_budget.get("tool_calls", 0))
+        if remaining <= 0 or run.attempt >= self.max_step_attempts:
+            raise TaskTransitionRejected("durable tool-call budget exhausted")
+        run.status = "running"
+        run.attempt += 1
+        run.started_at = utc_now()
+        run.tool_input_digest = tool_input_digest
+        bundle.task.remaining_budget["tool_calls"] = remaining - 1
+        saved = self.store.save(
+            bundle,
+            expected_version=binding.task_version,
+            events=[
+                self._event(
+                    bundle,
+                    "step.started",
+                    bundle.task.status,
+                    {"step_id": step_id, "attempt": run.attempt},
+                )
+            ],
+        )
+        return binding.model_copy(update={"task_version": saved.task.version})
 
     def snapshot_for_lease(self, lease: DurableTaskLease) -> DurableTaskSnapshot:
         bundle = self._lease_bundle(lease)
@@ -390,6 +587,8 @@ class DurableTaskService:
                     input_digest=transition.tool_input_digest,
                     expires_at=transition.confirmation_expires_at,
                 ),
+                summary=transition.confirmation_summary
+                or f"Approve {transition.tool_name} for durable step {run.step_id}.",
                 expires_at=transition.confirmation_expires_at,
             )
             bundle.confirmations.append(confirmation)
@@ -420,6 +619,14 @@ class DurableTaskService:
             event_type = "task.completed"
         elif transition.kind in {"failed", "cancelled", "outcome_unknown"}:
             bundle.task.status = transition.kind
+            if run is not None:
+                run.status = transition.kind
+                run.error_code = transition.error_code
+                run.error_message = transition.error_message
+                run.finished_at = utc_now()
+            bundle.task.lease_owner = None
+            bundle.task.lease_token = None
+            bundle.task.lease_expires_at = None
             if transition.kind in {"failed", "cancelled"}:
                 bundle.task.terminal_at = utc_now()
             event_type = f"task.{transition.kind}"
@@ -494,8 +701,7 @@ class DurableTaskService:
     def _plan_step(self, bundle: DurableTaskBundle, step_id: str) -> TaskStep:
         return next(step for step in self._current_plan(bundle).plan.steps if step.step_id == step_id)
 
-    @staticmethod
-    def _new_step_runs(task_id: str, plan_version: TaskPlanVersion) -> list[TaskStepRun]:
+    def _new_step_runs(self, task_id: str, plan_version: TaskPlanVersion) -> list[TaskStepRun]:
         return [
             TaskStepRun(
                 task_id=task_id,
@@ -509,6 +715,11 @@ class DurableTaskService:
                     step.tool_name,
                 ),
                 tool_name=step.tool_name,
+                side_effect_level=(
+                    self.registry.get_spec(step.tool_name).side_effect.level
+                    if step.tool_name
+                    else "none"
+                ),
             )
             for step in plan_version.plan.steps
         ]

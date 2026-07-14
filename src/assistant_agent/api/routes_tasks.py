@@ -25,6 +25,7 @@ from assistant_agent.services.durable_tasks.service import (
     TaskNotFound,
     TaskTransitionRejected,
 )
+from assistant_agent.services.durable_tasks.store import TaskStoreError
 
 
 router = APIRouter(prefix="/tasks", tags=["durable-tasks"])
@@ -91,7 +92,7 @@ def get_task(
 ) -> DurableTaskResponse:
     try:
         return _task_response(service.get_task(identity=identity, task_id=task_id))
-    except DurableTaskError as exc:
+    except (DurableTaskError, TaskStoreError) as exc:
         raise _map_task_error(exc) from exc
 
 
@@ -110,7 +111,7 @@ def get_task_events(
             after=after,
             limit=limit,
         )
-    except DurableTaskError as exc:
+    except (DurableTaskError, TaskStoreError) as exc:
         raise _map_task_error(exc) from exc
     payload = [event.model_dump(mode="json") for event in events]
     return DurableTaskEventsResponse(
@@ -137,7 +138,7 @@ def confirm_task(
         return _task_response(bundle)
     except TaskNotFound as exc:
         raise _http_error(409, "TASK_CONFIRMATION_INVALID", "Task confirmation is invalid.") from exc
-    except DurableTaskError as exc:
+    except (DurableTaskError, TaskStoreError) as exc:
         raise _map_task_error(exc) from exc
 
 
@@ -152,7 +153,7 @@ def provide_task_input(
         return _task_response(
             service.provide_input(identity=identity, task_id=task_id, text=body.text)
         )
-    except DurableTaskError as exc:
+    except (DurableTaskError, TaskStoreError) as exc:
         raise _map_task_error(exc) from exc
 
 
@@ -167,7 +168,7 @@ def cancel_task(
         return _task_response(
             service.cancel(identity=identity, task_id=task_id, reason=body.reason)
         )
-    except DurableTaskError as exc:
+    except (DurableTaskError, TaskStoreError) as exc:
         raise _map_task_error(exc) from exc
 
 
@@ -215,6 +216,7 @@ def _task_response(bundle: Any) -> DurableTaskResponse:
                 "step_id": item.step_id,
                 "tool_name": item.tool_name,
                 "status": item.status,
+                "summary": item.summary,
                 "expires_at": item.expires_at,
                 "decided_at": item.decided_at,
             }
@@ -224,7 +226,7 @@ def _task_response(bundle: Any) -> DurableTaskResponse:
     )
 
 
-def _map_task_error(exc: DurableTaskError) -> HTTPException:
+def _map_task_error(exc: Exception) -> HTTPException:
     if isinstance(exc, (TaskNotFound, TaskAccessDenied)):
         return _http_error(404, "TASK_NOT_FOUND", "Task not found.")
     if isinstance(exc, TaskTransitionRejected):

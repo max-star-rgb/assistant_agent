@@ -112,6 +112,9 @@ def test_worker_requires_confirmation_then_resumes_with_bound_approval() -> None
     assert waiting.task.status == "waiting_confirmation"
     assert tool.calls == 0
     confirmation = waiting.confirmations[-1]
+    assert "通知团队" in confirmation.summary
+    assert waiting.step_runs[0].attempt == 0
+    assert waiting.task.remaining_budget["tool_calls"] == 32
 
     service.confirm(
         identity=RequestIdentity.for_user(user_id="u1", session_id="s1"),
@@ -125,6 +128,103 @@ def test_worker_requires_confirmation_then_resumes_with_bound_approval() -> None
     assert adapter.calls == 2
     assert tool.calls == 1
     assert resumed.step_runs[0].status == "succeeded"
+    assert resumed.step_runs[0].attempt == 1
+    assert resumed.task.remaining_budget["tool_calls"] == 31
+
+
+def test_approved_nonfirst_ready_step_uses_its_own_confirmation_binding() -> None:
+    registry = ToolRegistry()
+    search = RecordingTool("product_search")
+    notification = RecordingTool("custom_notification")
+    registry.register(search)
+    registry.register(notification)
+    service = DurableTaskService(store=InMemoryTaskStore(), registry=registry)
+    adapter = ScriptedAdapter(
+        [
+            _native("custom_notification", {"query": "通知团队"}),
+            _native("custom_notification", {"query": "通知团队"}),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        config=ProviderConfig(durable_tasks_enabled=True),
+        chat_adapter=adapter,
+        durable_task_service=service,
+    )
+    worker = DurableTaskWorker(
+        service=service,
+        runtime=runtime,
+        worker_id="worker-test",
+        poll_seconds=0.01,
+    )
+    bundle = service.submit_plan(
+        identity=RequestIdentity.for_user(user_id="u1", session_id="s1"),
+        ingress_run_id="run-multi-ready",
+        plan=TaskPlan(
+            goal="搜索并通知",
+            steps=[
+                TaskStep(step_id="step_search", action="搜索", tool_name="product_search"),
+                TaskStep(step_id="step_notify", action="通知", tool_name="custom_notification"),
+            ],
+        ),
+        revision_reason="initial",
+    )
+
+    worker.run_once()
+    waiting = service.store.load(bundle.task.task_id)
+    assert waiting.confirmations[0].step_id == "step_notify"
+    service.confirm(
+        identity=RequestIdentity.for_user(user_id="u1", session_id="s1"),
+        task_id=bundle.task.task_id,
+        confirmation_id=waiting.confirmations[0].confirmation_id,
+        approved=True,
+    )
+    worker.run_once()
+
+    stored = service.store.load(bundle.task.task_id)
+    notify_run = next(run for run in stored.step_runs if run.step_id == "step_notify")
+    assert notification.calls == 1
+    assert search.calls == 0
+    assert notify_run.status == "succeeded"
+
+
+def test_cancel_racing_after_model_decision_prevents_tool_start() -> None:
+    registry = ToolRegistry()
+    tool = RecordingTool("product_search")
+    registry.register(tool)
+    service = DurableTaskService(store=InMemoryTaskStore(), registry=registry)
+    bundle_holder = {}
+
+    class CancellingAdapter(ScriptedAdapter):
+        def chat(self, request: ChatRequest) -> ChatResult:
+            service.cancel(
+                identity=RequestIdentity.for_user(user_id="u1", session_id="s1"),
+                task_id=bundle_holder["task_id"],
+                reason="race",
+            )
+            return super().chat(request)
+
+    adapter = CancellingAdapter([_native("product_search", {"query": "耳机"})])
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        config=ProviderConfig(durable_tasks_enabled=True),
+        chat_adapter=adapter,
+        durable_task_service=service,
+    )
+    worker = DurableTaskWorker(
+        service=service,
+        runtime=runtime,
+        worker_id="worker-test",
+        poll_seconds=0.01,
+    )
+    bundle = _submit(service, tool_name="product_search")
+    bundle_holder["task_id"] = bundle.task.task_id
+
+    assert worker.run_once() is True
+
+    stored = service.store.load(bundle.task.task_id)
+    assert stored.task.status == "cancelled"
+    assert tool.calls == 0
 
 
 def test_worker_rejects_changed_input_after_confirmation() -> None:
@@ -271,7 +371,7 @@ def test_expired_lease_retries_read_only_step_after_pre_checkpoint_crash() -> No
     assert stored.step_runs[0].status == "succeeded"
 
 
-def test_expired_lease_suppresses_duplicate_compensatable_side_effect() -> None:
+def test_expired_mutating_attempt_stops_at_outcome_unknown_after_crash() -> None:
     worker, service, tool, _ = _worker(
         [
             _native("image_generation", {"prompt": "耳机海报"}),
@@ -283,11 +383,29 @@ def test_expired_lease_suppresses_duplicate_compensatable_side_effect() -> None:
     now = datetime.now(timezone.utc)
     _run_without_checkpoint(worker, service, now)
 
-    assert worker.run_once(now=now + timedelta(seconds=31)) is True
+    assert worker.run_once(now=now + timedelta(seconds=31)) is False
 
     stored = service.store.load(bundle.task.task_id)
     assert tool.calls == 1
-    assert stored.step_runs[0].status == "succeeded"
+    assert stored.step_runs[0].attempt == 1
+    assert stored.step_runs[0].status == "outcome_unknown"
+    assert stored.task.status == "outcome_unknown"
+
+
+def test_attempt_is_committed_before_tool_result_checkpoint() -> None:
+    worker, service, tool, _ = _worker(
+        [_native("product_search", {"query": "耳机"})]
+    )
+    bundle = _submit(service, tool_name="product_search")
+    now = datetime.now(timezone.utc)
+
+    _run_without_checkpoint(worker, service, now)
+
+    stored = service.store.load(bundle.task.task_id)
+    assert tool.calls == 1
+    assert stored.step_runs[0].status == "running"
+    assert stored.step_runs[0].attempt == 1
+    assert stored.task.remaining_budget["tool_calls"] == 31
 
 
 def test_mutating_timeout_checkpoints_outcome_unknown_without_retry() -> None:

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 class TaskQuantumResult:
     checkpoint: TaskCheckpoint
     state: AgentState
+    binding: TrustedTaskBinding | None = None
 
 
 class DurableTaskWorker:
@@ -53,23 +54,57 @@ class DurableTaskWorker:
         binding = _binding_for_lease(lease, bundle, snapshot.ready_step_ids)
         request = _resume_request(bundle.task.user_id, bundle.task.session_id, snapshot, binding)
         try:
-            result = self.runtime.run_task_quantum(request, binding=binding)
+            result = self.runtime.run_task_quantum(
+                request,
+                binding=binding,
+                cancel_token=self.service.task_cancel_token(lease.task_id),
+            )
             if result.checkpoint.kind == "plan_revised":
                 stored = self.service.store.load(lease.task_id)
                 if stored is not None:
                     _release_if_still_owned(self.service, lease, stored)
                 return True
-            stored = self.service.checkpoint(lease, result.checkpoint)
+            checkpoint_lease = lease
+            if result.binding is not None:
+                checkpoint_lease = lease.model_copy(
+                    update={"task_version": result.binding.task_version}
+                )
+            stored = self.service.checkpoint(checkpoint_lease, result.checkpoint)
         except TaskConflict:
             return True
         except Exception as exc:
+            current = self.service.store.load(lease.task_id)
+            if current is not None and (
+                current.task.lease_owner == lease.worker_id
+                and current.task.lease_token == lease.lease_token
+            ):
+                lease = lease.model_copy(update={"task_version": current.task.version})
+            running = next(
+                (
+                    run
+                    for run in (current.step_runs if current is not None else [])
+                    if run.plan_version == current.task.current_plan_version
+                    and run.status == "running"
+                ),
+                None,
+            )
+            uncertain = running is not None and running.side_effect_level not in {
+                "none",
+                "local_read",
+                "external_read",
+            }
             try:
                 stored = self.service.checkpoint(
                     lease,
                     TaskCheckpoint(
-                        kind="failed",
+                        kind="outcome_unknown" if uncertain else "failed",
+                        step_id=running.step_id if running is not None else None,
                         summary="Durable task quantum failed.",
-                        error_code="durable_quantum_failed",
+                        error_code=(
+                            "mutating_outcome_unknown"
+                            if uncertain
+                            else "durable_quantum_failed"
+                        ),
                         error_message=str(exc),
                     ),
                 )
@@ -94,7 +129,9 @@ def _binding_for_lease(lease: DurableTaskLease, bundle: Any, ready_step_ids: lis
         (
             item
             for item in reversed(bundle.confirmations)
-            if item.status == "approved" and item.step_id in ready_step_ids
+            if item.status == "approved"
+            and item.plan_version == bundle.task.current_plan_version
+            and item.step_id in ready_step_ids
         ),
         None,
     )
@@ -111,6 +148,7 @@ def _binding_for_lease(lease: DurableTaskLease, bundle: Any, ready_step_ids: lis
             if run.step_id in ready_step_ids
         },
         verified_confirmation_id=approved.confirmation_id if approved is not None else None,
+        verified_confirmation_step_id=approved.step_id if approved is not None else None,
         verified_confirmation_tool_name=approved.tool_name if approved is not None else None,
         verified_confirmation_input_digest=approved.input_digest if approved is not None else None,
     )
@@ -134,12 +172,9 @@ def _resume_request(
         "conversation_history_disabled": True,
     }
     if binding.verified_confirmation_id:
-        step = next(
-            item for item in snapshot.plan.steps if item.step_id in snapshot.ready_step_ids
-        )
         metadata["tool_confirmation"] = {
             "confirmed": True,
-            "tool_name": step.tool_name,
+            "tool_name": binding.verified_confirmation_tool_name,
             "confirmation_id": binding.verified_confirmation_id,
         }
         metadata["durable_confirmation"] = {

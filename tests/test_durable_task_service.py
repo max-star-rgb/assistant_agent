@@ -117,8 +117,8 @@ def test_revision_inherits_completed_step_and_is_bounded(service) -> None:
     )
 
     assert revised.task.current_plan_version == 2
-    assert revised.plans[-1].inherited_step_ids == ["step_1"]
-    assert {run.step_id: run.status for run in revised.step_runs if run.plan_version == 2}["step_1"] == "succeeded"
+    assert revised.plans[-1].inherited_step_ids == []
+    assert {run.step_id: run.status for run in revised.step_runs if run.plan_version == 2}["step_1"] == "ready"
     with pytest.raises(TaskConflict, match="revision limit"):
         service.revise_plan(
             binding=_binding_from(revised),
@@ -153,6 +153,7 @@ def test_confirmation_is_identity_and_input_bound(service) -> None:
             step_id="step_1",
             tool_name="search",
             tool_input_digest="input-abc",
+            confirmation_summary='Approve search with final arguments: {"query":"docs"}',
             confirmation_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         ),
     )
@@ -175,6 +176,91 @@ def test_confirmation_is_identity_and_input_bound(service) -> None:
     assert approved.task.status == "queued"
     assert approved.confirmations[0].status == "approved"
     assert approved.confirmations[0].decided_by_user_id == "u1"
+
+
+def test_expired_confirmation_is_persisted_and_replans(service) -> None:
+    bundle = _submit(service)
+    lease = service.claim_next(worker_id="worker_1")
+    waiting = service.checkpoint(
+        lease,
+        TaskCheckpoint(
+            kind="waiting_confirmation",
+            step_id="step_1",
+            tool_name="search",
+            tool_input_digest="expired-input",
+            confirmation_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            confirmation_summary="Approve expired search.",
+        ),
+    )
+
+    with pytest.raises(TaskConflict, match="expired"):
+        service.confirm(
+            identity=_identity(),
+            task_id=bundle.task.task_id,
+            confirmation_id=waiting.confirmations[0].confirmation_id,
+            approved=True,
+        )
+
+    stored = service.store.load(bundle.task.task_id)
+    assert stored.confirmations[0].status == "expired"
+    assert stored.task.status == "replanning"
+
+
+def test_plan_revision_invalidates_prior_approval(service) -> None:
+    bundle = _submit(service)
+    lease = service.claim_next(worker_id="worker_1")
+    waiting = service.checkpoint(
+        lease,
+        TaskCheckpoint(
+            kind="waiting_confirmation",
+            step_id="step_1",
+            tool_name="search",
+            tool_input_digest="approved-input",
+            confirmation_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            confirmation_summary="Approve search.",
+        ),
+    )
+    approved = service.confirm(
+        identity=_identity(),
+        task_id=bundle.task.task_id,
+        confirmation_id=waiting.confirmations[0].confirmation_id,
+        approved=True,
+    )
+    revised_lease = service.claim_next(worker_id="worker_1")
+    revised = service.revise_plan(
+        binding=TrustedTaskBinding(
+            task_id=approved.task.task_id,
+            task_version=revised_lease.task_version,
+            plan_version=approved.task.current_plan_version,
+            lease_owner=revised_lease.worker_id,
+            lease_token=revised_lease.lease_token,
+            ready_step_ids=["step_1"],
+        ),
+        plan=_plan(goal="changed goal"),
+        revision_reason="changed semantics",
+    )
+
+    assert revised.confirmations[0].status == "rejected"
+    assert revised.plans[-1].invalidated_confirmation_ids == [
+        waiting.confirmations[0].confirmation_id
+    ]
+
+
+def test_followup_plan_still_rejects_unknown_tool(service) -> None:
+    plan = TaskPlan(
+        goal="unsafe followup",
+        steps=[TaskStep(step_id="step_1", action="later", tool_name="missing")],
+        requires_followup=True,
+        followup_question="Which input?",
+    )
+
+    with pytest.raises(TaskTransitionRejected, match="unknown tool"):
+        service.submit_plan(
+            identity=_identity(),
+            ingress_run_id="run-followup",
+            plan=plan,
+            revision_reason="initial",
+        )
 
 
 def test_provide_input_only_resumes_waiting_task(service) -> None:

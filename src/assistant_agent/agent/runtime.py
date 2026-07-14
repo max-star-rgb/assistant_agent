@@ -611,6 +611,36 @@ class AgentGraphRuntime:
                     ),
                     state,
                 )
+            active_binding = binding
+            if call.name != "task_plan_submit":
+                if self.durable_task_service is None or decision.step_id is None:
+                    return TaskQuantumResult(
+                        TaskCheckpoint(
+                            kind="failed",
+                            error_code="durable_task_service_unavailable",
+                        ),
+                        state,
+                    )
+                active_binding_holder = {"value": binding}
+
+                def begin_external_attempt() -> None:
+                    started_binding = self.durable_task_service.begin_attempt(
+                        binding=binding,
+                        step_id=decision.step_id or "",
+                        tool_name=decision.tool_name or "",
+                        tool_input_digest=_durable_tool_input_digest(
+                            decision.tool_input or {}
+                        ),
+                    )
+                    active_binding_holder["value"] = started_binding
+                    request.metadata["durable_task_binding"] = started_binding.model_dump(
+                        mode="json"
+                    )
+                    tool_executor.context_metadata["durable_task_binding"] = started_binding
+
+                tool_executor.context_metadata["_before_tool_execution"] = (
+                    begin_external_attempt
+                )
             tool_result = tool_executor.run_tool(
                 state,
                 decision.step_id or "plan_revision",
@@ -620,6 +650,8 @@ class AgentGraphRuntime:
                 trace_id=state.trace_id,
                 node_name="durable_task_quantum",
             )
+            if call.name != "task_plan_submit":
+                active_binding = active_binding_holder["value"]
             if tool_result.tool_name == "task_plan_submit" and tool_result.success:
                 return TaskQuantumResult(
                     TaskCheckpoint(kind="plan_revised", summary="Plan revised."),
@@ -634,8 +666,13 @@ class AgentGraphRuntime:
                         tool_name=decision.tool_name,
                         tool_input_digest=_durable_tool_input_digest(decision.tool_input or {}),
                         confirmation_expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+                        confirmation_summary=_durable_confirmation_summary(
+                            decision.tool_name or "tool",
+                            decision.tool_input or {},
+                        ),
                     ),
                     state,
+                    active_binding,
                 )
             if (tool_result.data or {}).get("side_effect_state") == "unknown":
                 return TaskQuantumResult(
@@ -647,6 +684,7 @@ class AgentGraphRuntime:
                         error_message=tool_result.error,
                     ),
                     state,
+                    active_binding,
                 )
             if tool_result.success:
                 return TaskQuantumResult(
@@ -657,6 +695,7 @@ class AgentGraphRuntime:
                         summary=_durable_tool_result_summary(tool_result),
                     ),
                     state,
+                    active_binding,
                 )
             return TaskQuantumResult(
                 TaskCheckpoint(
@@ -666,6 +705,7 @@ class AgentGraphRuntime:
                     error_message=tool_result.error or "Tool execution failed.",
                 ),
                 state,
+                active_binding,
             )
         except AgentRunCancelled as exc:
             state.cancel(exc.message, source=exc.source, details=exc.details)
@@ -1998,6 +2038,32 @@ def _durable_tool_input_digest(tool_input: dict[str, Any]) -> str:
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _durable_confirmation_summary(tool_name: str, tool_input: dict[str, Any]) -> str:
+    """Render bounded final arguments while redacting credential-shaped values."""
+
+    sensitive = {"api_key", "authorization", "cookie", "password", "secret", "token"}
+
+    def scrub(value: Any, key: str = "") -> Any:
+        if any(marker in key.lower() for marker in sensitive):
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {str(item_key): scrub(item, str(item_key)) for item_key, item in value.items()}
+        if isinstance(value, list):
+            return [scrub(item) for item in value[:20]]
+        if isinstance(value, str):
+            return value[:240]
+        return value
+
+    arguments = json.dumps(
+        scrub(tool_input),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return f"Approve {tool_name} with final arguments: {arguments}"[:1000]
 
 
 def _durable_tool_result_summary(result: ToolResult) -> str:

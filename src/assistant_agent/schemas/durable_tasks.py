@@ -81,6 +81,7 @@ class TaskStepRun(BaseModel):
     attempt: int = Field(default=0, ge=0)
     idempotency_key: str = Field(min_length=1)
     tool_name: str | None = None
+    side_effect_level: str = "pending_confirmation"
     tool_input_digest: str | None = None
     output_ref: str | None = None
     summary: str = ""
@@ -107,6 +108,7 @@ class TaskConfirmation(BaseModel):
     tool_name: str = Field(min_length=1)
     input_digest: str = Field(min_length=1)
     binding_digest: str = Field(min_length=1)
+    summary: str = Field(min_length=1, max_length=1_000)
     status: Literal["pending", "approved", "rejected", "expired"] = "pending"
     expires_at: datetime
     decided_by_user_id: str | None = None
@@ -173,6 +175,7 @@ class TrustedTaskBinding(BaseModel):
     ready_step_ids: list[str]
     step_idempotency_keys: dict[str, str] = Field(default_factory=dict)
     verified_confirmation_id: str | None = None
+    verified_confirmation_step_id: str | None = None
     verified_confirmation_tool_name: str | None = None
     verified_confirmation_input_digest: str | None = None
 
@@ -205,3 +208,4 @@ class TaskCheckpoint(BaseModel):
     tool_name: str | None = None
     tool_input_digest: str | None = None
     confirmation_expires_at: datetime | None = None
+    confirmation_summary: str | None = Field(default=None, max_length=1_000)

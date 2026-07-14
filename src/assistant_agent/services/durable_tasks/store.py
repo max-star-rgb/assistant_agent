@@ -180,4 +180,3 @@ def _assign_event_cursors(
         event.model_copy(update={"task_id": task_id, "cursor": start + index}, deep=True)
         for index, event in enumerate(events)
     ]
-

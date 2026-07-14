@@ -39,9 +39,11 @@ class RecordingTool(MockTool):
     def __init__(self, name: str) -> None:
         self.name = name
         self.calls = 0
+        self.last_context: ToolContext | None = None
 
     def _run(self, input: RiskGateInput, context: ToolContext) -> ToolResult:
         self.calls += 1
+        self.last_context = context
         return ToolResult(
             tool_name=self.name,
             success=True,
@@ -171,6 +173,7 @@ def test_durable_worker_binding_injects_trusted_step_idempotency_key() -> None:
     assert first.success is True
     assert second.data["idempotency"]["duplicate_suppressed"] is True
     assert tool.calls == 1
+    assert tool.last_context.metadata["idempotency_key"] == "durable:task-1:step-1"
 
 
 def test_compensatable_tool_generates_default_idempotency_key_for_same_run_step() -> None:

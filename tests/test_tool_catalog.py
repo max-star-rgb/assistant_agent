@@ -57,6 +57,30 @@ def test_identity_recall_preserves_qualified_tool_order() -> None:
     assert recalled is not specs
 
 
+def test_trusted_durable_resume_exposes_only_ready_tools_and_plan_revision() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="resume",
+        metadata={
+            "_trusted_durable_execution": True,
+            "ready_tool_names": ["product_search"],
+        },
+    )
+    specs = [
+        ToolSpec(name="web_search"),
+        ToolSpec(name="task_plan_submit"),
+        ToolSpec(name="product_search"),
+    ]
+
+    selection = select_prompt_tool_specs(request, specs)
+
+    assert selection.run_tool_set.exposed_tool_names == [
+        "task_plan_submit",
+        "product_search",
+    ]
+
+
 def test_qualification_keeps_all_risk_levels_visible() -> None:
     specs = [
         ToolSpec(name="read", policy=ToolPolicyMetadata(risk="local_read")),

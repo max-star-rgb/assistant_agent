@@ -23,6 +23,9 @@ class ToolContext(BaseModel):
         checker = getattr(self.cancel_token, "is_cancelled", None)
         if callable(checker):
             return bool(checker())
+        is_set = getattr(self.cancel_token, "is_set", None)
+        if callable(is_set):
+            return bool(is_set())
         cancelled = getattr(self.cancel_token, "cancelled", None)
         return bool(cancelled) if isinstance(cancelled, bool) else False
 
