@@ -44,6 +44,7 @@ Last updated: 2026-07-13
 - Tool observation compaction 会在 prompt 副本中移除 raw provider/file/media payload、inline media data URI 和过大的命令输出；原始 observation 不被修改。
 - Cross-agent delegation now has a separate child-context boundary in `AgentCommunicationService`: child runs receive explicit `context_refs`, child budget metadata, and redacted audit summaries, not parent history, `memory_context_*`, raw provider payloads, secrets, or raw tool results.
 - Trace/API 已暴露 versioned context debug summary，包括 context budget、source counts、tool catalog summary、observation compaction summary 和 memory promotion counters。
+- 离线 Improvement Lab 可把脱敏 trajectory 与显式结构化 eval/test 失败转换为 evidence，确定性聚类后生成 skill/runtime/code 人工评审候选；它不进入 `AgentGraphRuntime`，不放宽 context/trace redaction，也不自动修改 skill、runtime 或代码。
 - `/runs/{run_id}/context` 与 `/traces/{trace_id}/context` 返回最新 `context_report_v1`；旧 trace 若只有 `context.budget/source_counts/tool_catalog`，会降级生成兼容 report。
 - Context build now also emits canonical `context.build.started` and
   `context.build.finished` trace events with redacted budget, source-count,
@@ -201,6 +202,9 @@ Last updated: 2026-07-13
 - `src/assistant_agent/services/assistant_run_service.py`
 - `src/assistant_agent/services/chat_adapter.py`
 - `src/assistant_agent/services/provider_errors.py`
+- `src/assistant_agent/services/improvement/`
+- `src/assistant_agent/schemas/improvement.py`
+- `scripts/run_improvement_lab.py`
 - `src/assistant_agent/memory/context_builder.py`
 - `src/assistant_agent/memory/manager.py`
 - `src/assistant_agent/memory/retrieval.py`
@@ -219,6 +223,10 @@ Last updated: 2026-07-13
 - `tests/test_trace_query_api.py`
 - `tests/test_context_sources.py`
 - `tests/test_soul_context_source.py`
+- `tests/test_improvement_evidence.py`
+- `tests/test_improvement_detector.py`
+- `tests/test_improvement_proposer.py`
+- `tests/test_improvement_evaluator.py`
 
 Current small regression coverage includes budget trimming order, product observation field preservation, prompt data-boundary labels, empty-query memory browsing, conversation compaction, trace context summaries, and run-summary context reporting.
 
