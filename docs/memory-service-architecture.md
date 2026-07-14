@@ -1,6 +1,6 @@
 # Memory Service Architecture
 
-Last updated: 2026-07-08
+Last updated: 2026-07-14
 
 This document is the current canonical entry for memory service architecture. Update it whenever `MemoryManager`, memory stores, retrieval, write policy, user profile behavior, memory tools, memory APIs, or memory context boundaries change.
 
@@ -22,6 +22,8 @@ The memory service is local-first long-term memory for the agent. It covers:
 - Saving safe completed-run summaries where allowed.
 - Maintaining a compact `user_profile` memory derived from explicit memories.
 - Exposing audit, audit-event, metrics, export, retention sweep, delete, and snapshot views through service/API boundaries.
+- Representing durable user facts with typed provenance, lifecycle state, conflict policy, and revision metadata.
+- Resolving same-slot fact conflicts deterministically before profile projection or context injection.
 
 Conversation history is related but separate. Session conversation context, including session-scoped `context_summary`, is owned by conversation/session services and is combined with memory only in context packs and memory snapshots. `context_summary` is not a long-term memory item.
 
@@ -31,6 +33,8 @@ The memory architecture has two cores behind the same governed runtime contract:
 
 - Built-in local core: `InMemoryStore`, `JsonlMemoryStore`, or `SQLiteMemoryStore`. This core is a real memory service boundary for local/offline runs, tests, demos, and deployments that do not need an external service.
 - External Memory Service core: opt-in network-backed memory capability exposed through adapters. It can augment local retrieval or own the full memory lifecycle, depending on backend mode.
+
+The current Memory Intelligence v2 implementation is deliberately local-core focused. Its typed facts, conflict resolver, active-state projection, SQLite FTS5 candidate search, and offline eval gates do not require or modify the external core. External adapters retain their existing boundary but are not part of this phase's acceptance criteria.
 
 Both cores must stay behind `MemoryManager`, `MemoryStore`, `MemoryReadPolicy`, `MemoryWritePolicy`, identity binding, prompt-safe conversion, and audit/snapshot/export boundaries. Agent nodes, prompt builders, tools, and API routes must not special-case a concrete local store or external provider.
 
@@ -136,6 +140,8 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/assistant_agent/memory/remote.py` | Opt-in external Memory Server adapters. Converts remote query responses into safe `MemoryItem` / `MemorySearchResult` objects, provides query/health plus media upload/task-status client methods, exposes `HybridMemoryStore` for `dual_core`/legacy `hybrid_remote` where only `search(...)` uses the remote service, and exposes `RemoteServiceMemoryStore` plus `HttpRemoteMemoryServiceAdapter` for an explicit full-lifecycle external service adapter. |
 | `src/assistant_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
 | `src/assistant_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
+| `src/assistant_agent/memory/facts.py` | Typed fact envelope parsing, legacy preference compatibility, active-state lookup, and supersede helpers. |
+| `src/assistant_agent/memory/conflict_resolver.py` | Pure deterministic same-slot conflict decisions; it does not mutate stores. |
 | `src/assistant_agent/memory/write_policy.py` | Safe memory item construction, TTL defaults, raw payload restrictions, explicit memory typing. |
 | `src/assistant_agent/memory/quality_eval.py` | Offline write-quality eval helpers over `MemoryWritePolicy`. Produces deterministic policy feedback metrics for write/reject/confirmation behavior without training, network calls, or policy mutation. |
 | `src/assistant_agent/memory/profile.py` | Compact `user_profile` memory derived from explicit preference/product/task memories. |
@@ -146,6 +152,7 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/assistant_agent/services/memory_audit.py` | User-scoped list/get/export/retention-sweep/delete/audit/event/metrics/confirmation service over `MemoryManager`. |
 | `src/assistant_agent/services/memory_snapshot.py` | Read-only snapshot combining memory context, session records, conversation history, audit, and storage boundary info. |
 | `src/assistant_agent/schemas/memory.py` | Public memory contracts and payload safety validation. |
+| `src/assistant_agent/schemas/memory_intelligence.py` | Typed local fact, provenance, status, conflict-policy, and conflict-decision contracts. |
 | `src/assistant_agent/schemas/memory_audit.py` | API-facing audit/export/retention/delete/list/event/metrics/confirmation models. |
 | `src/assistant_agent/schemas/memory_snapshot.py` | API-facing memory boundary snapshot models. |
 
@@ -315,9 +322,11 @@ runtime identity must override remote-supplied identity, and unsafe
 raw/base64/provider payloads must be rejected or dropped before prompt
 injection or trace summaries.
 
-Standard `MemoryStore` backends implement the confirmation workflow methods: `save_confirmation(...)`, `get_confirmation(...)`, `list_confirmations(...)`, and `delete_confirmation(...)`. InMemory keeps confirmation state in process memory. JSONL stores redacted pending/resolved confirmations in a sidecar file next to the memory JSONL file, for example `long_term_memories.confirmations.jsonl`. SQLite stores them in schema v3 `memory_confirmations`.
+Standard `MemoryStore` backends implement the confirmation workflow methods: `save_confirmation(...)`, `get_confirmation(...)`, `list_confirmations(...)`, and `delete_confirmation(...)`. InMemory keeps confirmation state in process memory. JSONL stores redacted pending/resolved confirmations in a sidecar file next to the memory JSONL file, for example `long_term_memories.confirmations.jsonl`. SQLite stores them in `memory_confirmations`, introduced in schema v3.
 
-`SQLiteMemoryStore` also exposes local operator helpers for `backup_to(...)`, `restore_backup(...)`, `integrity_check()`, and `rebuild_indexes()`. These helpers cover `memory_items`, `memory_audit_events`, and `memory_confirmations`. Operational steps and rollback guidance live in `docs/development/memory-sqlite-operator-runbook.md`.
+SQLite schema v4 adds the local FTS5 `memory_items_fts` candidate index. Save, update, soft delete, hard delete, session delete, user clear, migration backfill, and index rebuild keep it synchronized in the same database transaction as the canonical `memory_items` row. FTS content is an index, not durable truth; `memory_items` remains authoritative. The index stores deterministic local text fragments, including bounded Chinese 2-4 character n-grams, and candidate queries are constrained by user and memory type before normal service filtering.
+
+`SQLiteMemoryStore` also exposes local operator helpers for `backup_to(...)`, `restore_backup(...)`, `integrity_check()`, and `rebuild_indexes()`. These helpers cover `memory_items`, `memory_audit_events`, `memory_confirmations`, and reconstruction of `memory_items_fts`. Operational steps and rollback guidance live in `docs/development/memory-sqlite-operator-runbook.md`.
 
 SQLite durability defaults remain production-oriented: normal runtime uses `synchronous=NORMAL`, a long `busy_timeout`, and WAL for newly created databases. Focused tests may pass explicit, validated pragmas such as `journal_mode="MEMORY"` and `synchronous="OFF"` to avoid slow filesystem fsyncs; those fast settings are test-only and must not become the runtime default.
 
@@ -328,6 +337,19 @@ Core models:
 - `MemoryItem`: one retrievable memory item with `user_id`, optional `session_id`, `memory_type`, safe `content`, `summary`, tags, artifact refs, timestamps, TTL, relevance, reason, and sensitivity.
 - `MemoryQuery`: user-scoped query options, including `session_id`, text query, capability, memory types, tags, `top_k`, `max_context_chars`, `since`, and `include_expired`.
 - `MemorySearchResult`: structured search output with items, query used, total, ranking reason, context text, and errors.
+- `MemoryFact`: versioned fact envelope stored under `MemoryItem.content["fact"]`.
+- `MemoryConflictDecision`: pure action result produced before store mutation.
+
+The canonical v1 fact envelope contains:
+
+| field group | fields |
+| --- | --- |
+| identity | `schema_version`, normalized `fact_key`, `subject`, `predicate`, `value` |
+| lifecycle | `status` (`active`, `superseded`, `disputed`, `retracted`), `revision` |
+| provenance | `provenance` (`user_explicit`, `user_confirmed`, `tool_verified`, `assistant_inferred`, `imported`), `observed_at`, optional validity interval and `confidence` |
+| conflict | `conflict_policy` (`replace`, `coexist`, `confirm`), supersede links, optional `conflict_reason` |
+
+Typed facts extend `MemoryItem`; they do not create a second persistence model. Supported legacy `preference_key`, `style`, `budget`, `fact_key`, and supersede fields are mapped into the typed view on read so existing local data stays usable. New behavior must not require a destructive migration of legacy JSONL or SQLite rows.
 
 `MemoryItem` validation rejects unsafe payload keys such as API keys, tokens, raw media, base64 payloads, and raw provider responses. It also rejects inline media data URIs and sanitizes summaries, reasons, tags, and string content.
 
@@ -393,6 +415,7 @@ Retrieval is deterministic and local:
 - Automatic runtime retrieval first passes `MemoryReadPolicy`; ordinary first-pass writing, advice, generation, search, and recommendations do not auto-inject long-term memory. The exception is the narrow personal style/preference customization path described above, which supports Personal Assistant continuity without opening generic retrieval.
 - Explicit retrieval tools are allowed only when the current user request has historical-memory intent; a non-empty query alone is not sufficient.
 - Non-empty query uses `KeywordMemoryRetriever`.
+- Stores may implement the optional candidate-search protocol. SQLite uses FTS5 to return a bounded user/type-scoped candidate set; stores without it continue to use the deterministic scan path.
 - Chinese query segments are expanded into short phrase fragments for local recall.
 - A concrete entity/topic miss returns no memories.
 - Recent-memory fallback is allowed only for explicit contextual follow-ups such as "继续", "上次", "刚才", "之前", "这个", "那个", "同款", or similar markers.
@@ -403,10 +426,10 @@ Filters apply after candidate selection:
 - `user_id` isolation is mandatory.
 - Optional `session_id`, `memory_types`, `tags`, `since`, and expiration filters apply.
 - Expired memories are excluded unless `include_expired=True`.
-- Superseded memories, identified by `content["superseded_by_memory_id"]`, are excluded from active retrieval and context injection by default. Debug/read-only callers may set `MemoryQuery.include_superseded=True`; the current public debug route is the memory snapshot API. Agent-callable memory tools do not expose this flag.
+- Only `active` facts are eligible for normal retrieval and context injection. `superseded` facts may be included only by debug/read-only callers using `MemoryQuery.include_superseded=True`; `disputed` and `retracted` facts remain excluded. Legacy `content["superseded_by_memory_id"]` maps to `superseded`. The current public debug route is the memory snapshot API, and Agent-callable memory tools do not expose this flag.
 - Active recall writes `memory_recall_report` metadata with counts and ids only. Raw query text is represented by coarse `query_kind` plus `query_hash`; the report must not contain the query itself or memory summaries/content.
 
-Ranking combines relevance, capability/type priority, artifact-ref signal, and recency. Capability-specific priorities currently exist for image generation, product search, render 3D, and direct chat.
+Candidate search never bypasses identity, scope, expiration, lifecycle, sensitivity, or read-policy filtering. Final ranking combines local text relevance, exact structured fact match, capability/type priority, artifact-ref signal, and recency. Exact normalized `fact_key`, predicate, or value matches receive a deterministic boost; artifact references remain a tie-breaker. Capability-specific priorities currently exist for image generation, product search, render 3D, and direct chat. Ranking metadata uses backend-neutral wording because the same final ranking applies to scan and FTS candidates.
 
 ## Retrieval Eval
 
@@ -414,10 +437,10 @@ Memory retrieval quality is measured before adding embedding or vector dependenc
 
 Current local eval boundary:
 
-- `src/assistant_agent/memory/retrieval_eval.py` runs deterministic `InMemoryStore + MemoryManager` retrieval and context-injection cases.
+- `src/assistant_agent/memory/retrieval_eval.py` runs deterministic `InMemoryStore` and temporary `SQLiteMemoryStore` cases through the same `MemoryManager` retrieval and context-injection boundary.
 - `scripts/run_evals.py --suite memory` includes the retrieval eval cases from `tests/evals/eval_cases.json`.
-- Metrics include Recall@k, MRR, false-positive rate, correct-empty rate, cross-user leakage rate, sensitive/expired injection rate, and token budget compliance.
-- Initial coverage includes black-bag recall, color preference recall, task/product resume, budget preference, unrelated empty recall, cross-user isolation, expired exclusion, sensitive non-injection, token budget compliance, and superseded-preference exclusion from active profile/context.
+- Metrics include Recall@k, MRR, false-positive rate, correct-empty rate, cross-user leakage rate, sensitive/expired injection rate, and token budget compliance, with an additional `by_backend` split for memory and SQLite cases.
+- Coverage includes black-bag recall, Chinese phrase recall, color/budget preference recall, task/product resume, unrelated empty recall, cross-user isolation, expired exclusion, sensitive non-injection, token budget compliance, superseded/disputed/retracted exclusion, conflict confirmation, and explicitly coexisting same-slot facts.
 - Phase 2 Memory Intelligence v1 gate tests live in `tests/test_phase2_memory_intelligence_gate.py`; they verify candidate audit-only behavior, explicit profile memory, deterministic supersede, active recall, confirmation-before-write, and local memory eval metrics without vector or external memory dependencies.
 
 ## Write Quality Eval
@@ -454,13 +477,16 @@ Explicit saves:
 - Return a `MemoryWriteDecision` with `allowed`, `destination`, `reason`, `require_user_confirmation`, `sensitivity`, `ttl_days`, and `redacted_payload`.
 - If `allowed=True`, the durable `MemoryItem` is built through `build_explicit_memory_item(...)` and still passes `MemoryItem` payload validation before storage.
 - If `require_user_confirmation=True`, the write creates a `MemoryPendingConfirmation` with only redacted summary and safe content preview. Standard stores persist or retain these confirmations through the `MemoryStore` confirmation methods: SQLite uses `memory_confirmations`, JSONL uses the confirmation sidecar, and InMemory keeps process-local state. No durable memory item is stored until the user confirms it through the confirmation API/service path.
-- Confirming a pending explicit memory re-runs the normal explicit-memory builder on the redacted payload, stores the resulting item, and records both `memory_explicit_saved` and `memory_confirmation_decided` audit events.
+- Confirming a pending explicit memory re-runs the normal explicit-memory builder on the redacted payload and records both `memory_explicit_saved` and `memory_confirmation_decided` audit events. For a `fact_conflict` confirmation, `MemoryManager` also recomputes the current conflict decision against durable state and marks the candidate fact provenance as `user_confirmed` before the governed mutation. This prevents a stale pending decision from overwriting facts added after the confirmation was created.
 - Rejecting a pending explicit memory records `memory_confirmation_decided` and does not write a memory item.
 - Require non-empty text or summary.
 - Infer memory type from explicit text/content. Stable preferences become `preference`; product-like content becomes `product`; otherwise default is `task`.
 - Do not save raw user text unless `MemoryWritePolicy.auto_save_raw_user_text=True`.
 - Reject API keys, tokens, bearer credentials, raw provider payloads, and base64/raw media even when the user explicitly asks to remember them.
 - Merge duplicates by normalized summary and memory type.
+- Parse a structured candidate fact when `content["fact"]` or supported legacy fact fields are present, then run `MemoryConflictResolver` against identity-visible active facts in the same governance scope.
+- Use deterministic actions: append when no slot exists, merge equal values, coexist only when explicitly declared, supersede for safe preference replacement or a user-confirmed resolution, and otherwise create a conflict confirmation without mutating durable fact state.
+- Never trust a generic model-declared `replace` as sufficient authority. Automatic replacement is limited to typed preference predicates; other differing values require confirmation unless the confirmation service marks the candidate `user_confirmed`.
 - Update compact `user_profile` for explicit `preference`, `product`, and `task` items.
 
 Run-summary saves:
@@ -516,9 +542,15 @@ Its content stores:
 
 This keeps profile retrieval compatible with the existing store/search/delete contract while avoiding a separate profile storage path.
 
+The profile is a rebuildable projection, not fact authority. Only active, identity-visible, unexpired source facts contribute. Superseded, disputed, and retracted facts do not enter the active profile or normal context. Multiple active values with the same `fact_key` are reported as unresolved conflicts unless every participating fact explicitly declares `coexist`.
+
 Explicit preference memories may carry a deterministic `content["preference_key"]`, such as `style` or `budget`. When a new explicit preference uses the same key and governance scope as an older active preference with a different summary, `MemoryManager` marks the older memory with `content["superseded_by_memory_id"]` and marks the newer memory with `content["supersedes_memory_ids"]`. This is a deterministic conflict/supersedes chain, not semantic inference. The first-pass rules only use explicit `preference_key`, known structured fields such as `style` and `budget`, and a small budget-summary fallback.
 
-`MemoryManager.rebuild_user_profile_for_identity(...)` can check or repair the compact profile from current source memories. Source memories are identity-visible, unexpired, unscoped `preference`, `product`, and `task` items; tenant/project-scoped items are excluded until scoped profile storage is designed. Superseded source memories are excluded from the active profile and reported through `superseded_source_memory_ids` and `profile_conflicts`. The repair result reports missing, stale, orphaned, unresolved-conflict, and out-of-sync profile state. Repair can create, update, delete, or no-op the `user_profile` item and records a prompt-safe `memory_profile_repaired` audit event when invoked through the repair path.
+`MemoryManager.rebuild_user_profile_for_identity(...)` can check or repair the compact profile from current source memories. Source memories are identity-visible, unexpired, unscoped `preference`, `product`, and `task` items; tenant/project-scoped items are excluded until scoped profile storage is designed. Non-active source memories are excluded from the active profile and reported through lifecycle ids and `profile_conflicts`. Conflict reports include stable `fact_key` and disputed item ids. The repair result reports missing, stale, orphaned, unresolved-conflict, and out-of-sync profile state. Repair can create, update, delete, or no-op the `user_profile` item and records a prompt-safe `memory_profile_repaired` audit event when invoked through the repair path.
+
+## Framework Reuse Boundary
+
+No third-party memory framework is a runtime dependency of the local core. Frameworks such as LangMem, Mem0, Graphiti, or Letta may be evaluated later for extraction, adapter, or eval ideas, but they must not become fact authority, bypass `RequestIdentity`/read-write policy/audit, or replace the built-in SQLite/JSONL lifecycle implicitly. Any adoption requires a separate proposal, offline comparison against the same eval cases, an adapter that emits proposals behind the existing contracts, explicit dependency approval, and a rollback path. Memory Intelligence v2 adds no package and performs no network call.
 
 ## API And Audit
 
@@ -559,7 +591,8 @@ bounded in-process event list. SQLite schema v2 persists events in
 `memory_audit_events`, with common filter fields split into columns and the full
 redacted event saved as JSON payload, so events survive runtime restarts for the
 local SQLite backend. SQLite schema v3 persists redacted pending/resolved
-confirmations in `memory_confirmations`; JSONL persists the same confirmation
+confirmations in `memory_confirmations`, and schema v4 adds the rebuildable FTS5
+candidate index; JSONL persists the same confirmation
 payload shape in its sidecar file. Production-grade external metrics export,
 backup packaging, and full rollback/rebuild runbooks remain future work. Event
 metadata must stay redacted and must not include remote URLs, raw exception
@@ -596,6 +629,7 @@ Focused validation for memory changes:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_audit_api.py tests/test_memory_snapshot_api.py tests/test_memory_runtime_integration.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_tool_boundary.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_retrieval_eval.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_fact_contract.py tests/test_memory_conflict_resolver.py tests/test_memory_manager_fact_conflicts.py tests/test_memory_fact_status.py tests/test_memory_retrieval_ranking.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory_quality
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_dual_core.py --offline-only
