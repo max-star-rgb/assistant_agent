@@ -993,6 +993,81 @@ def test_agent_service_stream_true_with_no_token_delta_sends_one_terminal_packet
     assert _body(packets[0])["deliveryId"] == delivery.delivery_id
 
 
+def test_agent_service_stream_error_after_delta_sends_failure_terminal_packet(
+    tmp_path: Path,
+) -> None:
+    class ErrorAfterDeltaFacade:
+        async def run_turn(self, request, *, on_stream_chunk=None):
+            assert request.config["response_streaming"] is True
+            assert on_stream_chunk is not None
+            await on_stream_chunk(
+                "partial secret",
+                {
+                    "type": "stream.chunk",
+                    "payload": {
+                        "text": "partial secret",
+                        "realtime": {"token_streaming": True},
+                    },
+                },
+            )
+            return _error_turn(response_text="partial secret must not repeat")
+
+    packets, delivery = asyncio.run(
+        _run_prepared_chat_delivery(
+            tmp_path=tmp_path,
+            facade=ErrorAfterDeltaFacade(),
+            stream=True,
+        )
+    )
+
+    assert len(packets) == 2
+    assert _body(packets[0])["final"] is False
+    terminal = _body(packets[-1])
+    assert terminal["code"] == "FAIL"
+    assert terminal["sequence"] == 2
+    assert terminal["final"] is True
+    assert terminal["deliveryId"] == delivery.delivery_id
+    assert "partial secret" not in json.dumps(terminal)
+
+
+def test_agent_service_stream_exception_after_delta_sends_failure_terminal_packet(
+    tmp_path: Path,
+) -> None:
+    class ExceptionAfterDeltaFacade:
+        async def run_turn(self, request, *, on_stream_chunk=None):
+            assert request.config["response_streaming"] is True
+            assert on_stream_chunk is not None
+            await on_stream_chunk(
+                "partial secret",
+                {
+                    "type": "stream.chunk",
+                    "payload": {
+                        "text": "partial secret",
+                        "realtime": {"token_streaming": True},
+                    },
+                },
+            )
+            raise RuntimeError("delivery exploded")
+
+    packets, delivery = asyncio.run(
+        _run_prepared_chat_delivery(
+            tmp_path=tmp_path,
+            facade=ExceptionAfterDeltaFacade(),
+            stream=True,
+        )
+    )
+
+    assert len(packets) == 2
+    assert _body(packets[0])["final"] is False
+    terminal = _body(packets[-1])
+    assert terminal["code"] == "FAIL"
+    assert terminal["sequence"] == 2
+    assert terminal["final"] is True
+    assert terminal["deliveryId"] == delivery.delivery_id
+    assert "partial secret" not in json.dumps(terminal)
+    assert "delivery exploded" not in json.dumps(terminal)
+
+
 def test_agent_service_video_chat_allows_provider_timeout_budget() -> None:
     captured = {}
 
@@ -1635,6 +1710,19 @@ def _completed_turn(response_text: str):
         reason = "completed"
         run_id = "gateway_run_stream"
         turn_id = "turn_stream"
+        trace_id = None
+
+    Turn.response_text = response_text
+    return Turn()
+
+
+def _error_turn(*, response_text: str):
+    class Turn:
+        status = "error"
+        payload = {"message": "provider unavailable"}
+        reason = "error"
+        run_id = "gateway_run_stream_error"
+        turn_id = "turn_stream_error"
         trace_id = None
 
     Turn.response_text = response_text

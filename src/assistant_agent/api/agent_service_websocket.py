@@ -798,12 +798,13 @@ async def _run_chat_delivery(
         nonlocal sequence
         if not _is_provider_token_delta(chunk_frame):
             return
-        sequence += 1
+        next_sequence = sequence + 1
         await _send_response(
             websocket,
-            _streaming_chat_response(prepared, delta=delta, sequence=sequence),
+            _streaming_chat_response(prepared, delta=delta, sequence=next_sequence),
             state=state,
         )
+        sequence = next_sequence
 
     timing = state.turn_timings.get(delivery.delivery_id)
     if state.client_capabilities.get("chatProgress", False):
@@ -864,10 +865,11 @@ async def _run_chat_delivery(
         if timing is not None:
             timing.mark("failed", at_ns=state.clock_ns())
         if not state.closed:
-            response = _response_envelope(
-                message="chatResponse",
-                session_id=prepared.response_session_id,
-                body={"code": FAIL_CODE, "message": str(exc)},
+            response = _failure_chat_response(
+                prepared,
+                delivery=delivery,
+                message=str(exc),
+                sequence=sequence + 1 if sequence else None,
             )
             try:
                 if timing is not None:
@@ -934,10 +936,11 @@ def _prepared_chat_response(
     sequence: int,
 ) -> dict[str, Any]:
     if turn.status == "error":
-        return _response_envelope(
-            message="chatResponse",
-            session_id=prepared.response_session_id,
-            body={"code": FAIL_CODE, "message": turn.payload.get("message") or turn.reason or "Gateway run failed"},
+        return _failure_chat_response(
+            prepared,
+            delivery=delivery,
+            message=turn.payload.get("message") or turn.reason or "Gateway run failed",
+            sequence=sequence if sequence > 1 else None,
         )
     if state.media_protocol or "stream" in prepared.body or prepared.response_session_id is None:
         state.media_protocol = True
@@ -1103,6 +1106,26 @@ def _create_realtime_video_observer(*, user_id: str, session_id: str) -> Realtim
         session_id=session_id,
         registry=runtime.registry,
         memory_store=runtime.realtime_video_memory_store,
+    )
+
+
+def _failure_chat_response(
+    prepared: PreparedChat,
+    *,
+    delivery: AgentServiceDelivery,
+    message: str,
+    sequence: int | None,
+) -> dict[str, Any]:
+    safe_message = "Gateway run failed" if sequence is not None else message
+    body: dict[str, Any] = {"code": FAIL_CODE, "message": safe_message}
+    if sequence is not None:
+        body.update({"sequence": sequence, "final": True})
+        if delivery.expects_ack:
+            body["deliveryId"] = delivery.delivery_id
+    return _response_envelope(
+        message="chatResponse",
+        session_id=prepared.response_session_id,
+        body=body,
     )
 
 
