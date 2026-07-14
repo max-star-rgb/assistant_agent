@@ -98,6 +98,24 @@ class AgentRunResponse(BaseModel):
     errors: list[ApiError] = Field(default_factory=list)
 
 
+class DurableTaskResponse(BaseModel):
+    """Prompt- and API-safe durable task projection."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    task: dict[str, Any]
+    plan: dict[str, Any]
+    steps: list[dict[str, Any]] = Field(default_factory=list)
+    confirmations: list[dict[str, Any]] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DurableTaskEventsResponse(BaseModel):
+    protocol_version: str = PROTOCOL_VERSION
+    task_id: str
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    next_cursor: int = Field(default=0, ge=0)
+
+
 def api_error_from_agent_error(error: AgentError) -> ApiError:
     """Convert internal AgentError to stable external ApiError."""
 
