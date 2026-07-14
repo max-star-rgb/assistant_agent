@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from assistant_agent.config import ProviderConfig
+from assistant_agent.gateway.turn_arbitration import (
+    GatewayTurnArbitrationController,
+    GatewayTurnArbitrationPolicy,
+)
 from assistant_agent.runtime_profile import get_runtime_profile
 from assistant_agent.schemas.realtime_turn_arbitration import (
+    RealtimeTurnArbitrationDecision,
     RealtimeTurnArbitrationRequest,
     normalize_arbitration_decision,
 )
@@ -213,3 +220,107 @@ def test_arbiter_factory_enables_non_mock_adapter_in_pilot() -> None:
     )
 
     assert isinstance(arbiter, ChatAdapterRealtimeTurnArbiter)
+
+
+class _BlockingArbiter:
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+
+    async def arbitrate(
+        self,
+        request: RealtimeTurnArbitrationRequest,
+    ) -> RealtimeTurnArbitrationDecision:
+        await self.release.wait()
+        self.finished.set()
+        return normalize_arbitration_decision(
+            {
+                "disposition": "FOLLOWUP",
+                "confidence": 0.99,
+                "reason_code": "new_task",
+            },
+            request=request,
+            min_confidence=0.0,
+            source="semantic_llm",
+        )
+
+
+def test_arbitration_controller_retains_slot_until_timed_out_call_finishes() -> None:
+    async def scenario() -> None:
+        arbiter = _BlockingArbiter()
+        controller = GatewayTurnArbitrationController(
+            policy=GatewayTurnArbitrationPolicy(
+                enabled=True,
+                timeout_ms=10,
+                max_concurrency=1,
+                min_confidence=0.80,
+            ),
+            arbiter=arbiter,
+        )
+
+        first = await controller.decide(_request())
+        second = await controller.decide(
+            _request().model_copy(update={"decision_id": "decision-2", "run_id": "run-3"})
+        )
+
+        assert first.status == "timeout"
+        assert first.decision.fallback_reason == "arbitration_timeout"
+        assert second.status == "saturated"
+        assert second.decision.fallback_reason == "control_plane_saturated"
+
+        arbiter.release.set()
+        await arbiter.finished.wait()
+        await asyncio.sleep(0)
+
+        third = await controller.decide(
+            _request().model_copy(update={"decision_id": "decision-3", "run_id": "run-4"})
+        )
+        assert third.status == "completed"
+        assert third.decision.disposition == "FOLLOWUP"
+
+    asyncio.run(scenario())
+
+
+def test_arbitration_controller_is_authoritative_confidence_gate() -> None:
+    class LowConfidenceArbiter:
+        async def arbitrate(self, request):
+            return RealtimeTurnArbitrationDecision(
+                decision_id=request.decision_id,
+                source="semantic_llm",
+                disposition="REVISE_ACTIVE",
+                revision_type="add_constraint",
+                confidence=0.60,
+                reason_code="maybe_revision",
+                expected_run_id=request.expected_run_id,
+            )
+
+    async def scenario() -> None:
+        controller = GatewayTurnArbitrationController(
+            policy=GatewayTurnArbitrationPolicy(
+                enabled=True,
+                min_confidence=0.80,
+            ),
+            arbiter=LowConfidenceArbiter(),
+        )
+
+        outcome = await controller.decide(_request())
+
+        assert outcome.status == "completed"
+        assert outcome.decision.disposition == "UNCERTAIN"
+        assert outcome.decision.fallback_reason == "low_confidence"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"timeout_ms": 0}, "timeout_ms must be a positive integer"),
+        ({"max_concurrency": 0}, "max_concurrency must be a positive integer"),
+        ({"min_confidence": float("nan")}, "min_confidence must be finite and between 0 and 1"),
+        ({"min_confidence": 1.1}, "min_confidence must be finite and between 0 and 1"),
+    ],
+)
+def test_arbitration_policy_rejects_invalid_limits(kwargs, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        GatewayTurnArbitrationPolicy(**kwargs)
