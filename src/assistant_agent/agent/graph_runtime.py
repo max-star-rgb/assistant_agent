@@ -32,6 +32,7 @@ RUNTIME_STATE_KEYS = frozenset(
         "tool_executor",
         "chat_adapter",
         "context_compactor",
+        "context_projector",
         "memory_manager",
         "trace_store",
         "event_sink",
@@ -49,6 +50,7 @@ class GraphRuntimeContext:
     chat_adapter: ChatAdapter
     memory_manager: MemoryManager
     context_compactor: ContextCompactor | None = None
+    context_projector: Callable[[Any], None] | None = None
     intent_detector: IntentDetector | None = None
     router: ToolRouter | None = None
     trace_store: TraceStore | None = None
@@ -103,6 +105,8 @@ def _with_runtime_context(graph_state: GraphStateT, runtime_context: GraphRuntim
     enriched_state["chat_adapter"] = runtime_context.chat_adapter
     if runtime_context.context_compactor is not None:
         enriched_state["context_compactor"] = runtime_context.context_compactor
+    if runtime_context.context_projector is not None:
+        enriched_state["context_projector"] = runtime_context.context_projector
     enriched_state["memory_manager"] = runtime_context.memory_manager
     if runtime_context.trace_store is not None:
         enriched_state["trace_store"] = runtime_context.trace_store

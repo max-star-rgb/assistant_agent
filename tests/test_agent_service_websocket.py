@@ -18,6 +18,12 @@ from assistant_agent.api import routes_agent
 from assistant_agent.api import agent_service_websocket as agent_service_ws
 from assistant_agent.api.app import create_app
 from assistant_agent.schemas.requests import AgentResponse
+from assistant_agent.schemas.perception import VideoUnderstandingResult
+from assistant_agent.services.realtime_video_memory import (
+    RealtimeVideoMemoryStore,
+    RealtimeVideoObservationDiagnostics,
+    SemanticKeyframeRecord,
+)
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame
 from assistant_agent.services.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
@@ -197,6 +203,14 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
     assert request.metadata["runtime"]["history"] == ["你好"]
     assert request.metadata["transport"] == "agent_service_websocket"
     assert request.metadata["agent_service"]["chat_index"] == 2
+    assert request.metadata["system_prompt_profile"] == "realtime_phone"
+    assert request.metadata["channel"] == "realtime_phone"
+    assert request.metadata["runtime"]["session_config"] == {
+        "system_prompt_profile": "realtime_phone",
+        "channel": "realtime_phone",
+        "entry_profile": "agent_service",
+        "response_streaming": False,
+    }
     assert request.metadata["runtime"]["entry_capabilities"] == {
         "supports_text_streaming": False,
         "supports_interrupt": False,
@@ -264,6 +278,14 @@ def test_agent_service_chat_appends_correlated_turn_latency_trace(
     assert "10086" not in dumped
     assert "private-chat-index" not in dumped
     assert any(record.getMessage().startswith("turn_latency status=sent") for record in caplog.records)
+    info_lines = [record.getMessage() for record in caplog.records]
+    assert not any("websocket received" in line for line in info_lines)
+    assert not any("websocket sent" in line for line in info_lines)
+    closed = [line for line in info_lines if line.startswith("agent-service websocket closed")]
+    assert len(closed) == 1
+    assert "messages_received=1" in closed[0]
+    assert "messages_sent=1" in closed[0]
+    assert "video_packets=0" in closed[0]
 
 
 def test_blocked_trace_persistence_does_not_delay_chat_response(monkeypatch) -> None:
@@ -901,6 +923,275 @@ def test_agent_service_video_chat_allows_provider_timeout_budget() -> None:
     )
 
     assert captured["request"].timeout_s == 90.0
+
+
+def test_visual_chat_waits_for_existing_background_snapshot_and_uses_trusted_profile() -> None:
+    captured = {}
+
+    class Observer:
+        def __init__(self) -> None:
+            self.wait_calls = 0
+            self.memory_store = RealtimeVideoMemoryStore()
+            self.memory_store.mark_pending(
+                "agent-service-video-test",
+                pending_count=1,
+                in_flight=True,
+            )
+
+        async def wait_for_first_terminal_snapshot(self) -> None:
+            self.wait_calls += 1
+            self.memory_store.record_failure(
+                "agent-service-video-test",
+                SemanticKeyframeRecord(frame_id="f1", uri="/tmp/f1.jpg", sequence=1),
+                {"code": "failed"},
+            )
+            self.memory_store.mark_pending(
+                "agent-service-video-test",
+                pending_count=0,
+                in_flight=False,
+            )
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    observer = Observer()
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=["agent-service-video-test"],
+        video_observer=observer,
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-visual",
+            latest_speech="眼前是什么？",
+            contents=[{"speechContent": "眼前是什么？"}],
+        )
+    )
+
+    request = captured["request"]
+    assert observer.wait_calls == 1
+    assert request.metadata["realtime_video_waited_for_initial_snapshot"] is True
+    assert request.config == {
+        "system_prompt_profile": "realtime_phone",
+        "channel": "realtime_phone",
+        "entry_profile": "agent_service",
+        "response_streaming": False,
+    }
+
+
+def test_greeting_does_not_wait_for_pending_video_snapshot() -> None:
+    captured = {}
+
+    class Observer:
+        async def wait_idle(self) -> None:
+            raise AssertionError("greeting must not wait for video")
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=["agent-service-video-test"],
+        video_observer=Observer(),
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-greeting",
+            latest_speech="你好",
+            contents=[{"speechContent": "你好"}],
+        )
+    )
+
+    assert "realtime_video_waited_for_initial_snapshot" not in captured["request"].metadata
+
+
+def test_visual_chat_timeout_forwards_pending_state_without_second_observation(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class Observer:
+        def __init__(self) -> None:
+            self.wait_calls = 0
+            self.memory_store = RealtimeVideoMemoryStore()
+            self.memory_store.mark_pending(
+                "agent-service-video-test",
+                pending_count=1,
+                in_flight=True,
+            )
+
+        async def wait_for_first_terminal_snapshot(self) -> None:
+            self.wait_calls += 1
+            await asyncio.Event().wait()
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    monkeypatch.setattr(agent_service_ws, "INITIAL_VIDEO_CONTEXT_WAIT_SECONDS", 0.01)
+    observer = Observer()
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=["agent-service-video-test"],
+        video_observer=observer,
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-timeout",
+            latest_speech="摄像头里看到什么？",
+            contents=[{"speechContent": "摄像头里看到什么？"}],
+        )
+    )
+
+    assert observer.wait_calls == 1
+    request = captured["request"]
+    assert request.metadata["realtime_video_waited_for_initial_snapshot"] is True
+    assert request.metadata["realtime_video_initial_snapshot_ready"] is False
+
+
+def test_visual_chat_does_not_wait_when_ready_snapshot_is_refreshing() -> None:
+    captured = {}
+    memory_store = RealtimeVideoMemoryStore()
+    memory_store.record_success(
+        "agent-service-video-test",
+        SemanticKeyframeRecord(
+            frame_id="frame-1",
+            uri="/tmp/frame-1.jpg",
+            sequence=1,
+            timestamp_ms=1_000,
+        ),
+        VideoUnderstandingResult(
+            summary="ready scene",
+            provider="qwen",
+            model="qwen-test",
+            output_ref="provider://video/ready",
+        ),
+        diagnostics=RealtimeVideoObservationDiagnostics(published_at_ms=1_000),
+    )
+    memory_store.mark_pending(
+        "agent-service-video-test",
+        pending_count=1,
+        in_flight=True,
+    )
+
+    class Observer:
+        def __init__(self) -> None:
+            self.memory_store = memory_store
+
+        async def wait_for_first_terminal_snapshot(self) -> None:
+            raise AssertionError("refreshing snapshot already has usable visual context")
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=["agent-service-video-test"],
+        video_observer=Observer(),
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-refreshing",
+            latest_speech="眼前是什么？",
+            contents=[{"speechContent": "眼前是什么？"}],
+        )
+    )
+
+    assert "realtime_video_waited_for_initial_snapshot" not in captured["request"].metadata
+
+
+def test_video_handler_rotates_observer_before_selecting_a_new_video_id(monkeypatch) -> None:
+    class Ingestion:
+        def ingest(self, *_args):
+            return VideoFrame(
+                video_id="video-new",
+                frame_id="frame-new",
+                uri="/tmp/frame-new.jpg",
+                sequence=1,
+            )
+
+    class Observer:
+        def __init__(self, video_id: str | None = None) -> None:
+            self.video_id = video_id
+            self.closed = False
+            self.submitted: list[str] = []
+
+        async def close(self) -> None:
+            self.closed = True
+
+        async def submit(self, frame: VideoFrame) -> None:
+            self.video_id = frame.video_id
+            self.submitted.append(frame.video_id)
+
+    old_observer = Observer("video-old")
+    new_observer = Observer()
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_create_realtime_video_observer",
+        lambda **_kwargs: new_observer,
+    )
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        video_ids=["video-old"],
+        video_ingestion=Ingestion(),
+        video_observer=old_observer,
+    )
+
+    asyncio.run(
+        agent_service_ws.VideoHandler().handle(
+            session_id="s1",
+            body={
+                "userNumber": "10086",
+                "videoIndex": "2",
+                "videoConfig": {"codec": "H264"},
+                "contents": [
+                    {
+                        "videoContent": "00",
+                        "time": "now",
+                        "speakerNumber": "10086",
+                    }
+                ],
+            },
+            state=state,
+        )
+    )
+
+    assert old_observer.closed is True
+    assert state.video_observer is new_observer
+    assert new_observer.submitted == ["video-new"]
+    assert state.video_ids[-1] == "video-new"
 
 
 def test_agent_service_accepts_media_control_and_chat_protocol(monkeypatch) -> None:

@@ -12,6 +12,7 @@ from assistant_agent.schemas.context import (
     ContextPolicy,
     ContextSection,
     ContextSummary,
+    RealtimeVideoContext,
     ToolCapabilityDescriptor,
 )
 from assistant_agent.schemas.durable_tasks import DurableTaskSnapshot
@@ -73,6 +74,7 @@ def build_assistant_context_pack(
     )
     memory_blocks = _metadata_dict_list(active_request, "memory_context_blocks")
     realtime_task_state = _metadata_dict(active_request, REALTIME_TASK_STATE_METADATA_KEY)
+    realtime_video_context = _realtime_video_context(active_request)
     durable_task_state, durable_task_state_trimmed = _durable_task_context(active_request)
     active_observations = observations or []
     context_observations = compact_observations_for_context(active_observations)
@@ -105,6 +107,7 @@ def build_assistant_context_pack(
         conversation_text=conversation_text,
         memory_text=text,
         realtime_task_state=realtime_task_state,
+        realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=context_observations,
@@ -126,6 +129,7 @@ def build_assistant_context_pack(
         memory_summaries=summaries,
         memory_blocks=memory_blocks,
         realtime_task_state=realtime_task_state,
+        realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
         observations=active_observations,
         tool_specs=active_tool_specs,
@@ -139,6 +143,7 @@ def build_assistant_context_pack(
         conversation_text=conversation_text,
         memory_text=text,
         realtime_task_state=realtime_task_state,
+        realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=context_observations,
@@ -178,6 +183,7 @@ def build_assistant_context_pack(
         conversation_text=conversation_text,
         memory_text=text,
         realtime_task_state=realtime_task_state,
+        realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
         observations=context_observations,
         plan_state=plan_state,
@@ -207,6 +213,7 @@ def build_assistant_context_pack(
         conversation_text=budgeted.conversation_text,
         memory_text=budgeted.memory_text,
         realtime_task_state=realtime_task_state,
+        realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=budgeted.observations,
@@ -237,6 +244,7 @@ def build_assistant_context_pack(
         memory_text=budgeted.memory_text,
         memory_blocks=memory_blocks,
         realtime_task_state=realtime_task_state,
+        realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=budgeted.observations,
@@ -313,6 +321,19 @@ def _metadata_dict(request: UserRequest, key: str) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, dict) else None
 
 
+def _realtime_video_context(request: UserRequest) -> RealtimeVideoContext | None:
+    if request.metadata.get("realtime_video_context_trusted") is not True:
+        return None
+    value = request.metadata.get("realtime_video_context")
+    if not isinstance(value, dict):
+        return None
+    try:
+        context = RealtimeVideoContext.model_validate(value)
+    except (TypeError, ValueError):
+        return None
+    return None if context.status == "unavailable" else context
+
+
 def _durable_task_context(request: UserRequest) -> tuple[dict[str, Any] | None, bool]:
     """Validate and whitelist the worker-owned snapshot before prompt exposure."""
 
@@ -381,6 +402,7 @@ def _source_counts(
     memory_summaries: list[str],
     memory_blocks: list[dict[str, Any]],
     realtime_task_state: dict[str, Any] | None,
+    realtime_video_context: RealtimeVideoContext | None,
     durable_task_state: dict[str, Any] | None,
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
@@ -398,6 +420,7 @@ def _source_counts(
         "memory_items": len(memory_summaries),
         "memory_blocks": len(memory_blocks),
         "realtime_task_state": 1 if realtime_task_state is not None else 0,
+        "realtime_video_context": 1 if realtime_video_context is not None else 0,
         "durable_task_state": 1 if durable_task_state is not None else 0,
         "artifact_refs": len(artifact_refs) if isinstance(artifact_refs, list) else 0,
         "observations": len(observations),
@@ -415,6 +438,7 @@ def _budget_report(
     conversation_text: str,
     memory_text: str,
     realtime_task_state: dict[str, Any] | None,
+    realtime_video_context: RealtimeVideoContext | None,
     durable_task_state: dict[str, Any] | None,
     plan_state: AssistantPlanContext,
     observations: list[dict[str, Any]],
@@ -433,6 +457,11 @@ def _budget_report(
     conversation_chars = len(conversation_text)
     memory_chars = len(memory_text)
     realtime_task_state_chars = _json_chars(realtime_task_state) if realtime_task_state else 0
+    realtime_video_context_chars = (
+        _json_chars(realtime_video_context.model_dump(mode="json"))
+        if realtime_video_context is not None
+        else 0
+    )
     durable_task_state_chars = _json_chars(durable_task_state) if durable_task_state else 0
     plan_chars = _json_chars(plan_state.model_dump(mode="json")) if _has_plan_context(plan_state) else 0
     observations_chars = _json_chars(observations)
@@ -446,6 +475,7 @@ def _budget_report(
         + conversation_chars
         + memory_chars
         + realtime_task_state_chars
+        + realtime_video_context_chars
         + durable_task_state_chars
         + plan_chars
         + observations_chars
@@ -463,6 +493,11 @@ def _budget_report(
                 "conversation": conversation_text,
                 "memory": memory_text,
                 "realtime_task_state": realtime_task_state or {},
+                "realtime_video_context": (
+                    realtime_video_context.model_dump(mode="json")
+                    if realtime_video_context is not None
+                    else {}
+                ),
                 "durable_task_state": durable_task_state or {},
                 "plan": plan_state.model_dump(mode="json") if _has_plan_context(plan_state) else {},
                 "observations": observations,
@@ -485,6 +520,7 @@ def _budget_report(
         conversation_chars=conversation_chars,
         memory_chars=memory_chars,
         realtime_task_state_chars=realtime_task_state_chars,
+        realtime_video_context_chars=realtime_video_context_chars,
         durable_task_state_chars=durable_task_state_chars,
         plan_chars=plan_chars,
         observations_chars=observations_chars,
@@ -633,6 +669,7 @@ def _enforce_context_budget(
     conversation_text: str,
     memory_text: str,
     realtime_task_state: dict[str, Any] | None,
+    realtime_video_context: RealtimeVideoContext | None,
     durable_task_state: dict[str, Any] | None,
     observations: list[dict[str, Any]],
     plan_state: AssistantPlanContext,
@@ -645,6 +682,7 @@ def _enforce_context_budget(
         conversation_text=conversation_text,
         memory_text=memory_text,
         realtime_task_state=realtime_task_state,
+        realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=observations,
@@ -664,6 +702,7 @@ def _enforce_context_budget(
     fixed_chars = (
         budget.request_chars
         + budget.realtime_task_state_chars
+        + budget.realtime_video_context_chars
         + budget.durable_task_state_chars
         + budget.plan_chars
         + budget.tool_spec_chars
@@ -703,6 +742,7 @@ def _enforce_context_budget(
         conversation_text=budgeted_conversation_text,
         memory_text=budgeted_memory_text,
         realtime_task_state=realtime_task_state,
+        realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=budgeted_observations,

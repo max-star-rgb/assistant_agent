@@ -85,6 +85,7 @@ class AssistantLoopState(TypedDict):
     tool_executor: NotRequired[ToolExecutor]
     chat_adapter: NotRequired[ChatAdapter]
     context_compactor: NotRequired[Any]
+    context_projector: NotRequired[Any]
     memory_manager: NotRequired[Any]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
@@ -189,6 +190,7 @@ def _build_decision_context(
     max_iterations: int,
     is_mock: bool,
 ) -> AssistantDecisionContext:
+    _project_request_context(graph_state, request)
     try:
         tool_specs = _list_tool_specs(graph_state["tool_executor"].registry)
     except Exception as exc:
@@ -319,6 +321,7 @@ def _decide_with_llm(
             iteration=context.iterations,
             max_iterations=context.max_iterations,
             context_compactor=graph_state.get("context_compactor"),
+            context_projector=graph_state.get("context_projector"),
         )
         return decision, context
     if context.iterations >= context.max_iterations and decision.type == "tool_call":
@@ -384,6 +387,7 @@ def _rebuild_context_after_provider_overflow(
     graph_state: AssistantLoopState,
     context: AssistantDecisionContext,
 ) -> AssistantDecisionContext:
+    _project_request_context(graph_state, context.request)
     pack = build_traced_assistant_context_pack(
         trace_store=graph_state.get("trace_store"),
         trace_id=graph_state.get("trace_id"),
@@ -408,6 +412,12 @@ def _rebuild_context_after_provider_overflow(
         max_iterations=context.max_iterations,
         is_mock=context.is_mock,
     )
+
+
+def _project_request_context(graph_state: AssistantLoopState, request: UserRequest) -> None:
+    projector = graph_state.get("context_projector")
+    if callable(projector):
+        projector(request)
 
 
 def _provider_context_overflow_final_answer(result: ChatResult) -> AssistantDecision:
@@ -779,9 +789,12 @@ def _request_final_answer_after_tool_limit(
     iteration: int,
     max_iterations: int,
     context_compactor: Any | None = None,
+    context_projector: Any | None = None,
 ) -> AssistantDecision:
     """Ask the real assistant to summarize instead of issuing another tool call at the limit."""
 
+    if callable(context_projector):
+        context_projector(request)
     context_pack = build_assistant_context_pack(
         state=state,
         request=request,

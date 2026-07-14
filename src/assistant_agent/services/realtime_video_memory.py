@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from assistant_agent.schemas.context import RealtimeVideoContext, RealtimeVideoContextStatus
 from assistant_agent.schemas.perception import VideoUnderstandingResult
 
 
@@ -183,3 +184,59 @@ def _bounded_unique(values: list[str], limit: int) -> list[str]:
         if normalized and normalized not in retained:
             retained.append(normalized)
     return retained[-limit:]
+
+
+def project_realtime_video_context(
+    snapshot: RealtimeVideoSnapshot | None,
+    *,
+    now_ms: int,
+) -> RealtimeVideoContext:
+    """Project internal rolling state without paths, raw errors, or media data."""
+
+    if snapshot is None:
+        return RealtimeVideoContext()
+    has_success = snapshot.last_success_sequence is not None
+    pending = snapshot.in_flight or snapshot.pending_count > 0
+    if has_success and pending:
+        status: RealtimeVideoContextStatus = "refreshing"
+    elif has_success and snapshot.last_observation_status == "failed":
+        status = "stale"
+    elif has_success:
+        status = "ready"
+    elif pending:
+        status = "pending"
+    elif snapshot.last_observation_status == "failed":
+        status = "failed"
+    else:
+        status = "unavailable"
+    diagnostics = snapshot.observation_diagnostics
+    published_at_ms = diagnostics.published_at_ms if diagnostics is not None else None
+    error_code = snapshot.last_error.get("code") if isinstance(snapshot.last_error, dict) else None
+    return RealtimeVideoContext(
+        status=status,
+        summary=_clip_text(snapshot.current_state, 400),
+        objects=_clip_items(snapshot.objects, limit=4),
+        people=_clip_items(snapshot.people, limit=2),
+        actions=_clip_items(snapshot.actions, limit=3),
+        events=_clip_items(snapshot.events, limit=3),
+        scene=_clip_text(snapshot.scene or "", 100) or None,
+        snapshot_sequence=snapshot.last_success_sequence,
+        snapshot_age_ms=max(0, now_ms - published_at_ms) if published_at_ms is not None else None,
+        observation_latency_ms=(diagnostics.observation_latency_ms if diagnostics is not None else None),
+        provider=_clip_text(snapshot.provider or "", 80) or None,
+        model=_clip_text(snapshot.model or "", 120) or None,
+        pending_count=snapshot.pending_count,
+        in_flight=snapshot.in_flight,
+        error_code=_clip_text(str(error_code), 80) if error_code else None,
+    )
+
+
+def _clip_items(values: list[str], *, limit: int) -> list[str]:
+    return [_clip_text(value, 60) for value in values[:limit] if _clip_text(value, 60)]
+
+
+def _clip_text(value: str, max_chars: int) -> str:
+    normalized = str(value).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3].rstrip() + "..."

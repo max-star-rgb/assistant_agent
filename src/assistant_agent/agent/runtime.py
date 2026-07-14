@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
 
 from assistant_agent.agent.action_validator import ActionValidator
@@ -67,6 +67,7 @@ from assistant_agent.services.context.prompt_compiler import (
     PromptCompiler,
 )
 from assistant_agent.services.context.report import build_context_report
+from assistant_agent.services.realtime_video_memory import project_realtime_video_context
 from assistant_agent.services.context.soul_source import (
     SOUL_COMPILED_MAX_CHARS,
     SOUL_SOURCE_ID,
@@ -307,6 +308,7 @@ class AgentGraphRuntime:
             tool_executor=tool_executor,
             chat_adapter=self.chat_adapter,
             context_compactor=self.context_compactor,
+            context_projector=self._refresh_realtime_video_context,
             memory_manager=self.memory_manager,
             trace_store=self.trace_store,
             event_sink=run_event_sink,
@@ -971,13 +973,17 @@ class AgentGraphRuntime:
         for iteration in range(max_iterations):
             stream_buffer = (
                 _NativeRuntimeResponseBuffer(state, event_sink)
-                if event_sink is not None
+                if event_sink is not None and _response_streaming_enabled(request)
                 else None
             )
             stream_callback = (
                 stream_buffer.emit_delta
                 if stream_buffer is not None
-                else _native_runtime_stream_callback(state, event_sink)
+                else (
+                    _native_runtime_stream_callback(state, event_sink)
+                    if _response_streaming_enabled(request)
+                    else None
+                )
             )
             chat_request = self._native_runtime_chat_request(
                 request,
@@ -1221,6 +1227,7 @@ class AgentGraphRuntime:
         iteration: int,
         max_iterations: int,
     ) -> ChatRequest | None:
+        self._refresh_realtime_video_context(request)
         profile = _system_prompt_profile_from_request(request)
         tool_specs = [] if profile == SystemPromptProfile.FINAL_ONLY else _native_runtime_tool_specs(self.registry, state)
         if tool_specs is None:
@@ -1266,6 +1273,19 @@ class AgentGraphRuntime:
         )
         return compilation.chat_request
 
+    def _refresh_realtime_video_context(self, request: UserRequest) -> None:
+        """Refresh the passive rolling snapshot immediately before context build."""
+
+        if not _is_agent_service_request(request) or not request.video_ids:
+            request.metadata.pop("realtime_video_context", None)
+            request.metadata.pop("realtime_video_context_trusted", None)
+            return
+        video_id = request.video_ids[-1]
+        snapshot = self.realtime_video_memory_store.snapshot(video_id)
+        context = project_realtime_video_context(snapshot, now_ms=int(time() * 1000))
+        request.metadata["realtime_video_context"] = context.model_dump(mode="json")
+        request.metadata["realtime_video_context_trusted"] = True
+
     def _request_native_final_answer_after_tool_limit(
         self,
         request: UserRequest,
@@ -1277,7 +1297,11 @@ class AgentGraphRuntime:
         iteration: int,
         max_iterations: int,
     ) -> bool:
-        stream_callback = _native_runtime_stream_callback(state, event_sink)
+        stream_callback = (
+            _native_runtime_stream_callback(state, event_sink)
+            if _response_streaming_enabled(request)
+            else None
+        )
         chat_request = self._native_runtime_final_only_chat_request(
             request,
             state=state,
@@ -1344,6 +1368,7 @@ class AgentGraphRuntime:
         iteration: int,
         max_iterations: int,
     ) -> ChatRequest:
+        self._refresh_realtime_video_context(request)
         context_pack = build_traced_assistant_context_pack(
             trace_store=self.trace_store,
             trace_id=state.trace_id,
@@ -2296,3 +2321,25 @@ def _native_runtime_stream_callback(state: AgentState, event_sink: EventSink | N
         event_sink.emit(event)
 
     return emit_delta
+
+
+def _is_agent_service_request(request: UserRequest) -> bool:
+    if request.metadata.get("transport") != "agent_service_websocket":
+        return False
+    gateway = request.metadata.get("gateway")
+    session_config = gateway.get("session_config") if isinstance(gateway, dict) else None
+    return bool(
+        isinstance(session_config, dict)
+        and session_config.get("entry_profile") == "agent_service"
+    )
+
+
+def _response_streaming_enabled(request: UserRequest) -> bool:
+    if not _is_agent_service_request(request):
+        return True
+    gateway = request.metadata.get("gateway")
+    session_config = gateway.get("session_config") if isinstance(gateway, dict) else None
+    return not (
+        isinstance(session_config, dict)
+        and session_config.get("response_streaming") is False
+    )

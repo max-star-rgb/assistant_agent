@@ -124,6 +124,35 @@ def context_trace_summary(pack: AssistantContextPack) -> dict[str, Any]:
         "memory_promotion_candidates": _metadata_int(pack.request.metadata, "memory_promotion_candidates"),
         "memory_promotion_written": _metadata_int(pack.request.metadata, "memory_promotion_written"),
         "memory_tool_selection": _memory_tool_selection_trace(pack.request.metadata),
+        "realtime_video": _realtime_video_trace(pack),
+    }
+
+
+def _realtime_video_trace(pack: AssistantContextPack) -> dict[str, Any]:
+    context = pack.realtime_video_context
+    if context is None:
+        return {
+            "present": False,
+            "status": "unavailable",
+            "waited_for_initial_snapshot": pack.request.metadata.get(
+                "realtime_video_waited_for_initial_snapshot"
+            )
+            is True,
+        }
+    return {
+        "present": True,
+        "status": context.status,
+        "snapshot_age_ms": context.snapshot_age_ms,
+        "snapshot_sequence": context.snapshot_sequence,
+        "observation_latency_ms": context.observation_latency_ms,
+        "provider": context.provider,
+        "model": context.model,
+        "pending_count": context.pending_count,
+        "in_flight": context.in_flight,
+        "waited_for_initial_snapshot": pack.request.metadata.get(
+            "realtime_video_waited_for_initial_snapshot"
+        )
+        is True,
     }
 
 

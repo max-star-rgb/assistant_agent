@@ -36,6 +36,8 @@ from assistant_agent.services.context.renderer import (
     render_prompt_json_context,
 )
 from assistant_agent.services.context.report import build_context_report
+from assistant_agent.services.context.observability import context_trace_summary
+from assistant_agent.services.realtime_video_memory import RealtimeVideoContext
 from assistant_agent.tools.registry import create_default_registry
 
 
@@ -57,6 +59,94 @@ class _SummaryTurn:
         self.assistant_text = assistant_text
         self.run_id = run_id
         self.trace_id = trace_id
+
+
+def test_realtime_video_context_is_rendered_budgeted_and_reported_separately() -> None:
+    video = RealtimeVideoContext(
+        status="refreshing",
+        summary="A person is holding a red cup.",
+        objects=["red cup"],
+        people=["one person"],
+        actions=["holding"],
+        events=["cup lifted"],
+        scene="desk",
+        snapshot_sequence=7,
+        snapshot_age_ms=145,
+        observation_latency_ms=83,
+        provider="qwen",
+        model="qwen-vl-max",
+        pending_count=1,
+        in_flight=True,
+    )
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="眼前是什么？",
+        metadata={
+            "realtime_video_context": video.model_dump(mode="json"),
+            "realtime_video_context_trusted": True,
+        },
+    )
+    pack = build_assistant_context_pack(
+        state=AgentState.from_request(request),
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    message = render_native_tool_context(pack).native_user_message or ""
+    report = build_context_report(pack)
+    trace = context_trace_summary(pack)
+    assert pack.realtime_video_context == video
+    assert "被动外部观察数据" in message
+    assert "A person is holding a red cup." in message
+    assert "问候和闲聊不得主动提及" in message
+    assert pack.budget.realtime_video_context_chars > 0
+    assert report.sections["realtime_video_context"].included is True
+    assert report.sections["realtime_video_context"].source == "RealtimeVideoMemoryStore"
+    assert trace["realtime_video"] == {
+        "present": True,
+        "status": "refreshing",
+        "snapshot_age_ms": 145,
+        "snapshot_sequence": 7,
+        "observation_latency_ms": 83,
+        "provider": "qwen",
+        "model": "qwen-vl-max",
+        "pending_count": 1,
+        "in_flight": True,
+        "waited_for_initial_snapshot": False,
+    }
+    assert "A person is holding a red cup." not in json.dumps(trace, ensure_ascii=False)
+
+
+def test_unavailable_video_projection_is_diagnostic_only_not_prompt_material() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="你好",
+        metadata={
+            "realtime_video_context": RealtimeVideoContext(
+                status="unavailable"
+            ).model_dump(mode="json"),
+            "realtime_video_context_trusted": True,
+        },
+    )
+    pack = build_assistant_context_pack(
+        state=AgentState.from_request(request),
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert pack.realtime_video_context is None
+    assert build_context_report(pack).sections["realtime_video_context"].included is False
+    assert context_trace_summary(pack)["realtime_video"] == {
+        "present": False,
+        "status": "unavailable",
+        "waited_for_initial_snapshot": False,
+    }
 
 
 def test_context_pack_contains_request_memory_conversation_observations_and_tools() -> None:
@@ -242,9 +332,10 @@ def test_context_report_v1_summarizes_sections_without_raw_payloads() -> None:
         "request",
         "session_summary",
         "recent_transcript",
-        "memory",
-        "realtime_task_state",
-        "durable_task_state",
+            "memory",
+            "realtime_task_state",
+            "realtime_video_context",
+            "durable_task_state",
         "plan_state",
         "tool_observations",
         "tool_schema",

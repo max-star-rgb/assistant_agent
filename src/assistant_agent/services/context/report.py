@@ -25,6 +25,7 @@ CONTEXT_REPORT_SECTION_NAMES = (
     "recent_transcript",
     "memory",
     "realtime_task_state",
+    "realtime_video_context",
     "durable_task_state",
     "plan_state",
     "tool_observations",
@@ -89,6 +90,17 @@ def build_context_report(
         item_count=len(pack.realtime_task_state) if isinstance(pack.realtime_task_state, dict) else 0,
         included=pack.realtime_task_state is not None,
         source="request.metadata.realtime_task_state",
+    )
+    sections["realtime_video_context"] = ContextReportSection(
+        chars=(
+            _json_chars(pack.realtime_video_context.model_dump(mode="json"))
+            if pack.realtime_video_context is not None
+            else 0
+        ),
+        tokens=_positive_or_none(pack.budget.realtime_video_context_tokens),
+        item_count=1 if pack.realtime_video_context is not None else 0,
+        included=pack.realtime_video_context is not None,
+        source="RealtimeVideoMemoryStore",
     )
     sections["durable_task_state"] = ContextReportSection(
         chars=_json_chars(pack.durable_task_state) if pack.durable_task_state else 0,
@@ -247,6 +259,13 @@ def context_report_from_trace_context_summary(context: dict[str, Any]) -> Contex
         chars=_int_value(budget.get("realtime_task_state_chars")),
         item_count=_int_value(source_counts.get("realtime_task_state")),
         included=_int_value(source_counts.get("realtime_task_state")) > 0,
+        source="legacy_context_summary.budget",
+    )
+    sections["realtime_video_context"] = ContextReportSection(
+        chars=_int_value(budget.get("realtime_video_context_chars")),
+        tokens=_positive_or_none(_int_value(budget.get("realtime_video_context_tokens"))),
+        item_count=_int_value(source_counts.get("realtime_video_context")),
+        included=_int_value(source_counts.get("realtime_video_context")) > 0,
         source="legacy_context_summary.budget",
     )
     sections["durable_task_state"] = ContextReportSection(

@@ -5,6 +5,7 @@ import importlib
 from assistant_agent.schemas.perception import VideoUnderstandingResult
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
+from assistant_agent.services.realtime_video_memory import project_realtime_video_context
 
 
 def _result(*, summary: str, objects: list[str]) -> VideoUnderstandingResult:
@@ -121,3 +122,112 @@ def test_runtime_shares_one_video_memory_store_with_default_tool() -> None:
 
     tool = runtime.registry.get("video_understanding")
     assert runtime.realtime_video_memory_store is tool.memory_store
+
+
+def test_realtime_video_context_projects_ready_refreshing_and_failed_states() -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+    store = module.RealtimeVideoMemoryStore()
+    frame = module.SemanticKeyframeRecord(
+        frame_id="frame-3", uri="/private/frame.jpg", sequence=3, timestamp_ms=3000
+    )
+    diagnostics = module.RealtimeVideoObservationDiagnostics(
+        observation_latency_ms=81,
+        published_at_ms=10_000,
+    )
+    store.record_success(
+        "video-a",
+        frame,
+        VideoUnderstandingResult(
+            summary="A person lifts a red cup.",
+            objects=["red cup"],
+            people=["one person"],
+            actions=["lifting a cup"],
+            events=["cup lifted"],
+            scene="desk",
+            provider="qwen",
+            model="qwen-vl-max",
+            output_ref="provider://video/test/result",
+        ),
+        diagnostics=diagnostics,
+    )
+
+    ready = project_realtime_video_context(store.snapshot("video-a"), now_ms=10_120)
+    assert ready.status == "ready"
+    assert ready.summary == "A person lifts a red cup."
+    assert ready.snapshot_sequence == 3
+    assert ready.snapshot_age_ms == 120
+    assert ready.observation_latency_ms == 81
+
+    store.mark_pending("video-a", pending_count=1, in_flight=True)
+    refreshing = project_realtime_video_context(store.snapshot("video-a"), now_ms=10_140)
+    assert refreshing.status == "refreshing"
+    assert refreshing.pending_count == 1
+    assert refreshing.in_flight is True
+
+    failed_store = module.RealtimeVideoMemoryStore()
+    failed_store.record_failure(
+        "video-b",
+        frame,
+        {"code": "provider_timeout", "message": "secret provider detail", "recoverable": True},
+    )
+    failed = project_realtime_video_context(failed_store.snapshot("video-b"), now_ms=10_200)
+    assert failed.status == "failed"
+    assert failed.summary == ""
+    assert failed.error_code == "provider_timeout"
+    assert "secret provider detail" not in failed.model_dump_json()
+    assert "/private/frame.jpg" not in ready.model_dump_json()
+
+
+def test_realtime_video_context_distinguishes_pending_stale_and_unavailable() -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+    pending_store = module.RealtimeVideoMemoryStore()
+    pending_store.mark_pending("video-a", pending_count=1, in_flight=False)
+    pending = project_realtime_video_context(pending_store.snapshot("video-a"), now_ms=50_000)
+    assert pending.status == "pending"
+
+    frame = module.SemanticKeyframeRecord(
+        frame_id="frame-1", uri="/tmp/frame.jpg", sequence=1, timestamp_ms=1000
+    )
+    stale_store = module.RealtimeVideoMemoryStore()
+    stale_store.record_success(
+        "video-a",
+        frame,
+        _result(summary="old scene", objects=["cup"]),
+        diagnostics=module.RealtimeVideoObservationDiagnostics(published_at_ms=1_000),
+    )
+    stale_store.record_failure(
+        "video-a",
+        frame,
+        {"code": "provider_timeout", "message": "timed out", "recoverable": True},
+    )
+    stale = project_realtime_video_context(stale_store.snapshot("video-a"), now_ms=2_000)
+    assert stale.status == "stale"
+    assert stale.summary == "old scene"
+    assert project_realtime_video_context(None, now_ms=2_000).status == "unavailable"
+
+
+def test_realtime_video_context_projection_is_bounded_to_two_thousand_chars() -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+    store = module.RealtimeVideoMemoryStore(max_events=50)
+    frame = module.SemanticKeyframeRecord(
+        frame_id="frame-1", uri="/tmp/frame.jpg", sequence=1, timestamp_ms=1000
+    )
+    store.record_success(
+        "video-a",
+        frame,
+        VideoUnderstandingResult(
+            summary="场景" * 1000,
+            objects=[f"object-{index}-" + "x" * 200 for index in range(30)],
+            people=[f"person-{index}-" + "x" * 200 for index in range(20)],
+            actions=[f"action-{index}-" + "x" * 200 for index in range(30)],
+            events=[f"event-{index}-" + "x" * 200 for index in range(30)],
+            scene="scene" * 200,
+            provider="qwen",
+            model="qwen-vl-max",
+            output_ref="provider://video/result",
+        ),
+    )
+
+    context = project_realtime_video_context(store.snapshot("video-a"), now_ms=2_000)
+
+    assert len(context.model_dump_json()) <= 2_000

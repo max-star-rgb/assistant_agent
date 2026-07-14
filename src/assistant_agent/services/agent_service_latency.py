@@ -89,6 +89,7 @@ class VideoLatencyContext(BaseModel):
     """Latest rolling-video state consumed by this turn."""
 
     source: str | None = None
+    snapshot_status: str | None = None
     snapshot_age_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
     pending_count: int | None = Field(default=None, ge=0)
@@ -97,6 +98,7 @@ class VideoLatencyContext(BaseModel):
     snapshot_sequence: int | None = Field(default=None, ge=0)
     provider: str | None = None
     model: str | None = None
+    waited_for_initial_snapshot: bool = False
 
 
 class TurnLatencySummary(BaseModel):
@@ -315,6 +317,25 @@ def _latest_latency(events: list[TraceEvent], canonical_event: str) -> int | Non
 
 
 def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
+    for event in reversed(events):
+        if event.canonical_event != "context.build.finished":
+            continue
+        context = event.output_summary.get("context")
+        video = context.get("realtime_video") if isinstance(context, dict) else None
+        if not isinstance(video, dict) or video.get("present") is not True:
+            continue
+        return VideoLatencyContext(
+            source="realtime_video_context",
+            snapshot_status=_safe_text(video.get("status")),
+            snapshot_age_ms=_safe_int(video.get("snapshot_age_ms")),
+            observation_latency_ms=_safe_int(video.get("observation_latency_ms")),
+            pending_count=_safe_int(video.get("pending_count")),
+            in_flight=video.get("in_flight") if isinstance(video.get("in_flight"), bool) else None,
+            snapshot_sequence=_safe_int(video.get("snapshot_sequence")),
+            provider=_safe_text(video.get("provider")),
+            model=_safe_text(video.get("model")),
+            waited_for_initial_snapshot=video.get("waited_for_initial_snapshot") is True,
+        )
     for event in reversed(events):
         if event.canonical_event not in _TOOL_TERMINAL_EVENTS or event.tool_name != "video_understanding":
             continue

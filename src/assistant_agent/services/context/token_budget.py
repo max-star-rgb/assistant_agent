@@ -33,6 +33,7 @@ class TokenBudgetEstimate(BaseModel):
     request_tokens: int = Field(default=0, ge=0)
     conversation_tokens: int = Field(default=0, ge=0)
     memory_tokens: int = Field(default=0, ge=0)
+    realtime_video_context_tokens: int = Field(default=0, ge=0)
     durable_task_state_tokens: int = Field(default=0, ge=0)
     plan_tokens: int = Field(default=0, ge=0)
     observations_tokens: int = Field(default=0, ge=0)

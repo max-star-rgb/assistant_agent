@@ -156,6 +156,45 @@ def test_analyzer_keeps_rolling_video_diagnostics_off_critical_path() -> None:
     assert all(stage.name != "video_observation" for stage in summary.stages)
 
 
+def test_analyzer_prefers_video_context_consumed_by_llm_over_front_tool_projection() -> None:
+    events = [
+        _event(
+            "context.build.finished",
+            latency_ms=2,
+            output_summary={
+                "context": {
+                    "realtime_video": {
+                        "present": True,
+                        "status": "ready",
+                        "snapshot_age_ms": 90,
+                        "snapshot_sequence": 9,
+                        "observation_latency_ms": 70,
+                        "pending_count": 0,
+                        "in_flight": False,
+                        "provider": "qwen",
+                        "model": "qwen-vl-max",
+                        "summary": "must not escape",
+                    }
+                }
+            },
+        ),
+        _event(
+            "tool.finished",
+            latency_ms=8,
+            tool_name="video_understanding",
+            output_summary={"source": "front_tool", "snapshot_sequence": 2},
+        ),
+    ]
+
+    summary = analyze_agent_service_turn(_sent_timing(total_ms=30), events, status="sent")
+
+    assert summary.video is not None
+    assert summary.video.source == "realtime_video_context"
+    assert summary.video.snapshot_sequence == 9
+    assert summary.video.snapshot_age_ms == 90
+    assert "must not escape" not in summary.model_dump_json()
+
+
 def test_negotiated_ack_is_separate_from_primary_turn_latency() -> None:
     timing = _sent_timing(total_ms=100, expects_ack=True)
     timing.mark("ack_received", at_ns=1_125_000_000)

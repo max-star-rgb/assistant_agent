@@ -18,7 +18,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - Durable structured tasks are a separate post-acceptance lifecycle owned by `DurableTaskService` and its worker. Gateway owns only the ingress turn that accepts and returns the task handle; it does not keep the durable task as an active Gateway run.
 - Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and local CLI `--scenario` through demo flows enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
-- The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, and treats raw `audio` / `interrupt` frames as entry-layer ACK traffic. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; later `chat` turns carry the resulting `video_id` through Gateway so the LLM can autonomously choose the governed `video_understanding` tool.
+- The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, and treats raw `audio` / `interrupt` frames as entry-layer ACK traffic. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer updates rolling semantics and later `chat` turns inject that snapshot into the first foreground LLM context without exposing the video tool to that LLM.
 - The old browser Web Chat console, `/demo/console`, `/static/index.html`, `scripts/run_client.py`, and legacy `/ws/agent/{session_id}` event stream are removed from the product app. Do not reintroduce ordinary chat entrypoints before the realtime assistant runtime is stable.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
 
@@ -129,7 +129,11 @@ are not product entrypoint precedent.
 
 Vendor `/agent-service/v1` also uses a local Gateway manager and facade per
 connection, but keeps the vendor `message` / optional `sessionId` / stringified
-`body` envelope. `assistantControl` validates and records media control state,
+`body` envelope. Its Gateway session uses the trusted `realtime_phone` profile
+and a fixed foreground tool set: `web_search`, `product_search`,
+`price_compare`, `memory_retrieval`, and `memory_save`. This qualification is
+derived from trusted session config, never user text. `assistantControl`
+validates and records media control state,
 and the legacy `assistantControlStart` handshake remains accepted for older
 clients. `chat` maps the latest `speechContent` to a Gateway turn and wraps the
 final assistant response in the media `chatResponse` shape when the media
@@ -140,23 +144,31 @@ JPEG window plus a bounded local grayscale fingerprint, and attaches the stable
 session video reference to later chat turns. A per-connection observer applies
 adaptive sampling, pixel difference, SSIM, and local histogram change detection;
 selected frames enter a latest-wins background queue. Background understanding
-still runs through the governed `video_understanding` tool. The entry adapter
-does not call the video provider directly.
+still runs through `ActionValidator -> ToolExecutor -> video_understanding`, but
+`video_understanding` is not exposed to the foreground Agent-Service model.
+The entry adapter does not call the video provider directly.
 
-The runtime owns a bounded semantic snapshot per opaque `video_id`. An ordinary
-`video_understanding` query uses a healthy latest snapshot with
-`source=rolling_video_memory` and performs no query-time visual Provider call.
-No snapshot, a not-ready snapshot, or a latest completed observation failure
-uses `source=recent_frame_fallback`. Continuous selected-frame work records
-`source=background_keyframe_observation`. The raw window is 3 frames, semantic
-retention is 8 keyframes, and observer concurrency is one in flight plus one
-latest pending frame.
+The runtime owns a bounded semantic snapshot per opaque `video_id`. Immediately
+before every Agent-Service model context build it projects the latest snapshot
+into the independent `realtime_video_context` section. Thus the first DeepSeek
+decision can use completed Qwen observations without a foreground tool round
+trip. A narrow current-camera reference may wait up to 1.5 seconds for the
+already-running first observation; timeout injects `pending` state and never
+starts a second Qwen call. Ordinary non-Agent-Service video/API requests retain
+the explicit `video_understanding` tool and `recent_frame_fallback` behavior.
+The raw window is 3 frames, semantic retention is 8 keyframes, and observer
+concurrency is one in flight plus one latest pending frame.
 
 Vendor chat execution is detached from the WebSocket receive loop, so a long
 Gateway turn does not prevent later raw media frames from being validated and
 acknowledged. Optional `clientCapabilities` negotiate prompt-free
 `chatProgress` and application-level `chatResponseAck`. Clients that do not
 negotiate these extensions retain the legacy single-final-response behavior.
+Agent-Service provider token streaming is disabled internally; Gateway still
+produces the terminal response events needed to assemble the unchanged final
+`chatResponse`. Per-packet receive/send logs are DEBUG. Connection open/close,
+turn latency, ACK, and failures remain INFO/WARNING, with one close INFO carrying
+message/video/byte/failure counters.
 
 ## Gateway Responsibilities
 

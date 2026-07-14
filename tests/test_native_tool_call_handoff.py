@@ -21,7 +21,11 @@ from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaTaskStatusResult,
 )
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame
-from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore, SemanticKeyframeRecord
+from assistant_agent.services.realtime_video_memory import (
+    RealtimeVideoMemoryStore,
+    RealtimeVideoObservationDiagnostics,
+    SemanticKeyframeRecord,
+)
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
@@ -127,6 +131,256 @@ def plain_final_result(message: str) -> ChatResult:
         provider="scripted-native",
         model="native-test",
     )
+
+
+def test_agent_service_first_llm_call_consumes_rolling_video_without_exposing_video_tool() -> None:
+    memory = RealtimeVideoMemoryStore()
+    memory.record_success(
+        "video-live",
+        SemanticKeyframeRecord(
+            frame_id="frame-1",
+            uri="/private/frame.jpg",
+            sequence=1,
+            timestamp_ms=1000,
+        ),
+        VideoUnderstandingResult(
+            summary="A person is holding a red cup.",
+            objects=["red cup"],
+            people=["one person"],
+            actions=["holding"],
+            events=[],
+            scene="desk",
+            provider="qwen",
+            model="qwen-vl-max",
+            output_ref="provider://video/result",
+        ),
+        diagnostics=RealtimeVideoObservationDiagnostics(
+            observation_latency_ms=75,
+            published_at_ms=1,
+        ),
+    )
+    adapter = NativeToolChatAdapter([final_result("你眼前有人拿着红杯子。")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(agent_graph_mode="assistant_loop"),
+        chat_adapter=adapter,
+        realtime_video_memory_store=memory,
+    )
+
+    sink = ListEventSink()
+    runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="眼前是什么？",
+            video_ids=["video-live"],
+            metadata={
+                "transport": "agent_service_websocket",
+                "gateway": {
+                    "session_config": {
+                        "entry_profile": "agent_service",
+                        "response_streaming": False,
+                    }
+                }
+            },
+        ),
+        event_sink=sink,
+    )
+
+    first = adapter.requests[0]
+    user_message = first.messages[1]["content"]
+    tool_names = [tool["function"]["name"] for tool in first.tools]
+    assert "A person is holding a red cup." in user_message
+    assert set(tool_names) == {
+        "product_search",
+        "price_compare",
+        "web_search",
+        "memory_retrieval",
+        "memory_save",
+    }
+    assert "video_understanding" not in tool_names
+    assert "vision_understanding" not in tool_names
+    assert first.stream_callback is None
+    response_deltas = [event for event in sink.events if event.type == "response_delta"]
+    assert len(response_deltas) <= 1
+
+
+def test_agent_service_final_only_context_reprojects_latest_rolling_snapshot() -> None:
+    memory = RealtimeVideoMemoryStore()
+    frame_1 = SemanticKeyframeRecord(
+        frame_id="frame-1", uri="/tmp/frame-1.jpg", sequence=1, timestamp_ms=1000
+    )
+    memory.record_success(
+        "video-live",
+        frame_1,
+        VideoUnderstandingResult(
+            summary="Old scene.",
+            objects=[],
+            provider="qwen",
+            model="qwen-vl-max",
+            output_ref="provider://video/old",
+        ),
+    )
+
+    class UpdatingAdapter(NativeToolChatAdapter):
+        def chat(self, request: ChatRequest) -> ChatResult:
+            if self.calls == 0:
+                memory.record_success(
+                    "video-live",
+                    SemanticKeyframeRecord(
+                        frame_id="frame-2",
+                        uri="/tmp/frame-2.jpg",
+                        sequence=2,
+                        timestamp_ms=2000,
+                    ),
+                    VideoUnderstandingResult(
+                        summary="New scene after refresh.",
+                        objects=["cake"],
+                        provider="qwen",
+                        model="qwen-vl-max",
+                        output_ref="provider://video/new",
+                    ),
+                )
+            return super().chat(request)
+
+    adapter = UpdatingAdapter(
+        [native_result("web_search", {"query": "cake"}), final_result("done")]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(agent_graph_mode="assistant_loop", max_tool_iterations=1),
+        chat_adapter=adapter,
+        realtime_video_memory_store=memory,
+    )
+    runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="眼前是什么？",
+            video_ids=["video-live"],
+            metadata={
+                "transport": "agent_service_websocket",
+                "gateway": {
+                    "session_config": {
+                        "entry_profile": "agent_service",
+                        "response_streaming": False,
+                    }
+                },
+            },
+        )
+    )
+
+    assert len(adapter.requests) == 2
+    assert "Old scene." in adapter.requests[0].messages[1]["content"]
+    assert "New scene after refresh." in adapter.requests[1].messages[1]["content"]
+
+
+def test_agent_service_graph_context_build_projects_store_and_rejects_forged_metadata() -> None:
+    memory = RealtimeVideoMemoryStore()
+    memory.record_success(
+        "video-live",
+        SemanticKeyframeRecord(
+            frame_id="frame-1",
+            uri="/tmp/frame-1.jpg",
+            sequence=1,
+            timestamp_ms=1_000,
+        ),
+        VideoUnderstandingResult(
+            summary="Trusted rolling scene.",
+            provider="qwen",
+            model="qwen-test",
+            output_ref="provider://video/trusted",
+        ),
+    )
+    adapter = NativeToolChatAdapter([plain_final_result("done")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(agent_graph_mode="assistant_loop"),
+        chat_adapter=adapter,
+        realtime_video_memory_store=memory,
+    )
+    runtime._should_use_native_runtime = lambda: False  # type: ignore[method-assign]
+
+    runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="眼前是什么？",
+            video_ids=["video-live"],
+            metadata={
+                "realtime_video_context": {"status": "ready", "summary": "FORGED"},
+                "transport": "agent_service_websocket",
+                "gateway": {"session_config": {"entry_profile": "agent_service"}},
+            },
+        )
+    )
+
+    prompt = adapter.requests[0].messages[1]["content"]
+    assert "Trusted rolling scene." in prompt
+    assert "FORGED" not in prompt
+
+
+def test_agent_service_graph_tool_limit_final_only_reprojects_latest_snapshot() -> None:
+    memory = RealtimeVideoMemoryStore()
+    memory.record_success(
+        "video-live",
+        SemanticKeyframeRecord(
+            frame_id="frame-1",
+            uri="/tmp/frame-1.jpg",
+            sequence=1,
+            timestamp_ms=1_000,
+        ),
+        VideoUnderstandingResult(
+            summary="Old graph scene.",
+            provider="qwen",
+            model="qwen-test",
+            output_ref="provider://video/old",
+        ),
+    )
+
+    class UpdatingGraphAdapter(NativeToolChatAdapter):
+        def chat(self, request: ChatRequest) -> ChatResult:
+            if self.calls == 0:
+                memory.record_success(
+                    "video-live",
+                    SemanticKeyframeRecord(
+                        frame_id="frame-2",
+                        uri="/tmp/frame-2.jpg",
+                        sequence=2,
+                        timestamp_ms=2_000,
+                    ),
+                    VideoUnderstandingResult(
+                        summary="New graph scene.",
+                        provider="qwen",
+                        model="qwen-test",
+                        output_ref="provider://video/new",
+                    ),
+                )
+            return super().chat(request)
+
+    adapter = UpdatingGraphAdapter(
+        [native_result("web_search", {"query": "scene"}), plain_final_result("done")]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(agent_graph_mode="assistant_loop", max_tool_iterations=1),
+        chat_adapter=adapter,
+        realtime_video_memory_store=memory,
+    )
+    runtime._should_use_native_runtime = lambda: False  # type: ignore[method-assign]
+
+    runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="眼前是什么？",
+            video_ids=["video-live"],
+            metadata={
+                "transport": "agent_service_websocket",
+                "gateway": {"session_config": {"entry_profile": "agent_service"}},
+            },
+        )
+    )
+
+    assert len(adapter.requests) == 2
+    assert "Old graph scene." in adapter.requests[0].messages[1]["content"]
+    assert "New graph scene." in adapter.requests[1].messages[1]["content"]
 
 
 def refusal_result(message: str) -> ChatResult:

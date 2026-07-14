@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import RunToolSet, ToolSpec
@@ -44,6 +44,38 @@ ContextSourceType = Literal[
     "tool_registry",
 ]
 ContextIdentityScope = Literal["runtime", "local_owner", "user", "project", "tenant"]
+
+
+RealtimeVideoContextStatus = Literal[
+    "ready",
+    "refreshing",
+    "pending",
+    "stale",
+    "failed",
+    "unavailable",
+]
+
+
+class RealtimeVideoContext(BaseModel):
+    """Bounded provider-facing projection of one rolling video snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: RealtimeVideoContextStatus = "unavailable"
+    summary: str = ""
+    objects: list[str] = Field(default_factory=list)
+    people: list[str] = Field(default_factory=list)
+    actions: list[str] = Field(default_factory=list)
+    events: list[str] = Field(default_factory=list)
+    scene: str | None = None
+    snapshot_sequence: int | None = Field(default=None, ge=0)
+    snapshot_age_ms: int | None = Field(default=None, ge=0)
+    observation_latency_ms: int | None = Field(default=None, ge=0)
+    provider: str | None = None
+    model: str | None = None
+    pending_count: int = Field(default=0, ge=0)
+    in_flight: bool = False
+    error_code: str | None = None
 
 
 class ContextSection(BaseModel):
@@ -117,6 +149,7 @@ class ContextBudgetReport(BaseModel):
     conversation_chars: int = Field(default=0, ge=0)
     memory_chars: int = Field(default=0, ge=0)
     realtime_task_state_chars: int = Field(default=0, ge=0)
+    realtime_video_context_chars: int = Field(default=0, ge=0)
     durable_task_state_chars: int = Field(default=0, ge=0)
     plan_chars: int = Field(default=0, ge=0)
     observations_chars: int = Field(default=0, ge=0)
@@ -135,6 +168,7 @@ class ContextBudgetReport(BaseModel):
     request_tokens: int = Field(default=0, ge=0)
     conversation_tokens: int = Field(default=0, ge=0)
     memory_tokens: int = Field(default=0, ge=0)
+    realtime_video_context_tokens: int = Field(default=0, ge=0)
     durable_task_state_tokens: int = Field(default=0, ge=0)
     plan_tokens: int = Field(default=0, ge=0)
     observations_tokens: int = Field(default=0, ge=0)
@@ -284,6 +318,7 @@ class AssistantContextPack(BaseModel):
     memory_text: str = ""
     memory_blocks: list[dict[str, Any]] = Field(default_factory=list)
     realtime_task_state: dict[str, Any] | None = None
+    realtime_video_context: RealtimeVideoContext | None = None
     durable_task_state: dict[str, Any] | None = None
     plan_state: AssistantPlanContext = Field(default_factory=AssistantPlanContext)
     observations: list[dict[str, Any]] = Field(default_factory=list)

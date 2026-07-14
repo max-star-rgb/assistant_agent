@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from time import perf_counter_ns
+from time import perf_counter_ns, time
 from typing import Any, ClassVar
 
 from anyio import CancelScope
@@ -28,6 +29,7 @@ from assistant_agent.services.agent_service_latency import (
 )
 from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
 from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
+from assistant_agent.services.realtime_video_memory import project_realtime_video_context
 from assistant_agent.services.trace_store import TraceStore, append_observability_event
 from assistant_agent.services.gateway_turn_facade import (
     GatewayTurnError,
@@ -44,6 +46,13 @@ FAIL_CODE = "FAIL"
 POLICY_VIOLATION_CLOSE_CODE = 1008
 VIDEO_TURN_TIMEOUT_SECONDS = 90.0
 CHAT_PROGRESS_INTERVAL_SECONDS = 15.0
+INITIAL_VIDEO_CONTEXT_WAIT_SECONDS = 1.5
+_REALTIME_VISUAL_REFERENCE = re.compile(
+    r"(?:眼前|画面|摄像头|镜头|看到什么|看见什么|这是什么|那个是什么|"
+    r"in\s+front\s+of\s+(?:me|the\s+camera)|on\s+(?:screen|camera)|"
+    r"what\s+(?:do\s+you\s+see|is\s+this|is\s+that))",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -70,6 +79,12 @@ class AgentServiceConnectionState:
     session_turn_counter: int = 0
     clock_ns: Callable[[], int] = perf_counter_ns
     client_capabilities: dict[str, bool] = field(default_factory=dict)
+    received_message_count: int = 0
+    sent_message_count: int = 0
+    video_packet_count: int = 0
+    received_bytes: int = 0
+    sent_bytes: int = 0
+    failure_count: int = 0
     closed: bool = False
 
 
@@ -352,14 +367,23 @@ class VideoHandler(BaseHandler):
                     ),
                 },
             )
-            if frame.video_id not in state.video_ids:
-                state.video_ids.append(frame.video_id)
             if state.video_observer is None:
                 state.video_observer = _create_realtime_video_observer(
                     user_id=user_number,
                     session_id=session_id,
                 )
+            current_video_id = getattr(state.video_observer, "video_id", None)
+            if current_video_id is None and state.video_ids:
+                current_video_id = state.video_ids[-1]
+            if current_video_id is not None and current_video_id != frame.video_id:
+                await state.video_observer.close()
+                state.video_observer = _create_realtime_video_observer(
+                    user_id=user_number,
+                    session_id=session_id,
+                )
             await state.video_observer.submit(frame)
+            if frame.video_id not in state.video_ids:
+                state.video_ids.append(frame.video_id)
         state.media_protocol = True
         return _response_envelope(
             message=self.response_message,
@@ -462,8 +486,13 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         while True:
             raw = await websocket.receive_text()
             received_ns = state.clock_ns()
-            logger.info("agent-service websocket received session_id=%s bytes=%s", state.session_id, len(raw))
-            if _inbound_message_type(raw) == "chat":
+            inbound_message = _inbound_message_type(raw)
+            state.received_message_count += 1
+            state.received_bytes += len(raw.encode("utf-8"))
+            if inbound_message == "video":
+                state.video_packet_count += 1
+            logger.debug("agent-service websocket received session_id=%s bytes=%s", state.session_id, len(raw))
+            if inbound_message == "chat":
                 prepared_or_error = _prepare_chat_raw_message(
                     raw,
                     state=state,
@@ -507,19 +536,30 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             response = await _handle_raw_message(raw, state=state)
             await _send_response(websocket, response, state=state)
     except WebSocketDisconnect as exc:
-        logger.info(
-            "agent-service websocket disconnected session_id=%s code=%s reason_present=%s",
-            state.session_id,
-            exc.code,
-            bool(exc.reason),
-        )
         close_code, close_reason = exc.code, exc.reason
+    except Exception:
+        state.failure_count += 1
+        raise
     finally:
         await _close_agent_service_connection(
             state=state,
             gateway_manager=gateway_manager,
             close_code=close_code,
             close_reason=close_reason,
+        )
+        logger.info(
+            "agent-service websocket closed session_id=%s code=%s reason_present=%s "
+            "messages_received=%s messages_sent=%s video_packets=%s bytes_received=%s "
+            "bytes_sent=%s failures=%s",
+            state.session_id,
+            close_code,
+            bool(close_reason),
+            state.received_message_count,
+            state.sent_message_count,
+            state.video_packet_count,
+            state.received_bytes,
+            state.sent_bytes,
+            state.failure_count,
         )
 
 
@@ -1058,24 +1098,84 @@ async def _run_agent_service_chat_turn(
 ):
     if state.gateway_facade is None:
         raise RuntimeError("agent-service Gateway facade is not initialized")
+    active_video_ids = list(state.video_ids if video_ids is None else video_ids)
+    waited_for_initial_snapshot = False
+    initial_snapshot_ready = False
+    wait_for_first_snapshot = getattr(
+        state.video_observer,
+        "wait_for_first_terminal_snapshot",
+        None,
+    )
+    current_video_context = _active_realtime_video_context(
+        state=state,
+        video_ids=active_video_ids,
+    )
+    if (
+        active_video_ids
+        and current_video_context is not None
+        and current_video_context.status == "pending"
+        and callable(wait_for_first_snapshot)
+        and _explicit_realtime_visual_reference(latest_speech)
+    ):
+        waited_for_initial_snapshot = True
+        try:
+            await asyncio.wait_for(
+                wait_for_first_snapshot(),
+                timeout=INITIAL_VIDEO_CONTEXT_WAIT_SECONDS,
+            )
+            refreshed_context = _active_realtime_video_context(
+                state=state,
+                video_ids=active_video_ids,
+            )
+            initial_snapshot_ready = bool(
+                refreshed_context is not None
+                and refreshed_context.snapshot_sequence is not None
+            )
+        except TimeoutError:
+            initial_snapshot_ready = False
     try:
         return await state.gateway_facade.run_turn(
             GatewayTurnRequest(
                 user_id=user_number,
                 session_id=session_id,
                 text=latest_speech,
-                video_ids=list(state.video_ids if video_ids is None else video_ids),
-                timeout_s=VIDEO_TURN_TIMEOUT_SECONDS if (state.video_ids if video_ids is None else video_ids) else 30.0,
+                video_ids=active_video_ids,
+                timeout_s=VIDEO_TURN_TIMEOUT_SECONDS if active_video_ids else 30.0,
                 metadata=_agent_service_gateway_metadata(
                     state=state,
                     user_number=user_number,
                     chat_index=chat_index,
                     content_count=len(contents),
+                    waited_for_initial_snapshot=waited_for_initial_snapshot,
+                    initial_snapshot_ready=initial_snapshot_ready,
                 ),
+                config={
+                    "system_prompt_profile": "realtime_phone",
+                    "channel": "realtime_phone",
+                    "entry_profile": "agent_service",
+                    "response_streaming": False,
+                },
             )
         )
     except (GatewayTurnTimeout, GatewayTurnError) as exc:
         raise AgentServiceProtocolError(str(exc)) from exc
+
+
+def _active_realtime_video_context(
+    *,
+    state: AgentServiceConnectionState,
+    video_ids: list[str],
+):
+    if not video_ids or state.video_observer is None:
+        return None
+    memory_store = getattr(state.video_observer, "memory_store", None)
+    snapshot = getattr(memory_store, "snapshot", None)
+    if not callable(snapshot):
+        return None
+    return project_realtime_video_context(
+        snapshot(video_ids[-1]),
+        now_ms=int(time() * 1000),
+    )
 
 
 def _agent_service_gateway_metadata(
@@ -1084,8 +1184,10 @@ def _agent_service_gateway_metadata(
     user_number: str,
     chat_index: Any,
     content_count: int,
+    waited_for_initial_snapshot: bool = False,
+    initial_snapshot_ready: bool = False,
 ) -> dict[str, Any]:
-    return {
+    metadata = {
         "transport": "agent_service_websocket",
         "agent_service": {
             "chat_index": chat_index,
@@ -1098,6 +1200,16 @@ def _agent_service_gateway_metadata(
             "entry_capabilities": AGENT_SERVICE_ENTRY_CAPABILITIES.to_metadata(),
         },
     }
+    if waited_for_initial_snapshot:
+        metadata["realtime_video_waited_for_initial_snapshot"] = True
+        metadata["realtime_video_initial_snapshot_ready"] = initial_snapshot_ready
+    return metadata
+
+
+def _explicit_realtime_visual_reference(text: str) -> bool:
+    """Recognize only narrow current-camera references; never select tools."""
+
+    return bool(_REALTIME_VISUAL_REFERENCE.search(text or ""))
 
 
 async def _send_response(
@@ -1111,12 +1223,29 @@ async def _send_response(
         if state.closed:
             raise WebSocketDisconnect(code=1001, reason="connection closed")
         await websocket.send_text(raw)
-    logger.info(
+    state.sent_message_count += 1
+    state.sent_bytes += len(raw.encode("utf-8"))
+    if _response_is_failure(response):
+        state.failure_count += 1
+    logger.debug(
         "agent-service websocket sent message=%s bytes=%s session_id=%s",
         response.get("message"),
         len(raw),
         state.session_id,
     )
+
+
+def _response_is_failure(response: dict[str, Any]) -> bool:
+    if response.get("message") == "error":
+        return True
+    raw_body = response.get("body")
+    if not isinstance(raw_body, str):
+        return False
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return True
+    return isinstance(body, dict) and body.get("code") in {FAIL_CODE, "FAIL", -1}
 
 
 def _response_envelope(

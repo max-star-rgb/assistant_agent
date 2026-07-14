@@ -67,15 +67,19 @@ not a delivery authority.
 
 ## Realtime Video Observation
 
-Realtime video observation remains visible through governed
-`video_understanding` tool records rather than a second Provider-only trace
-path. Structured tool data and contract metadata use one of these prompt-safe
-sources:
+Realtime video observation remains visible through the governed background
+`video_understanding` execution and the redacted context projection consumed by
+the foreground model. These are distinct boundaries: Qwen still runs behind
+`ActionValidator` and `ToolExecutor`, while the Agent-Service DeepSeek tool
+catalog does not expose `video_understanding`. Structured diagnostics use these
+prompt-safe sources:
 
 - `background_keyframe_observation`: a selected keyframe was analyzed by the
   per-connection observer through `ActionValidator` and `ToolExecutor`;
-- `rolling_video_memory`: a user query used the latest healthy semantic
-  snapshot and made no query-time visual Provider call;
+- `realtime_video_context`: the foreground model consumed the latest rolling
+  snapshot on its first context build, with no query-time visual Provider call;
+- `rolling_video_memory`: a non-Agent-Service explicit tool query reused the
+  latest healthy semantic snapshot;
 - `recent_frame_fallback`: semantic memory was absent, not ready, or latest
   failed, so the ordinary recent-frame Provider path ran.
 
@@ -95,9 +99,18 @@ H.264 decode, keyframe selection, observer queue wait, Provider observation,
 and snapshot publication run before or outside the chat critical path. The turn
 summary projects only the latest semantic snapshot actually consumed by that
 turn: source, snapshot age/sequence, observation latency, queue state, and
-Provider/model. If `recent_frame_fallback` performs a query-time Provider call,
+Provider/model and whether the entry waited for the first snapshot. The latency
+projection prefers `context.build.finished.realtime_video`; only non-realtime
+foreground tool calls fall back to tool-result projection. If
+`recent_frame_fallback` performs a query-time Provider call,
 that work is inside `tool_execute[video_understanding]` and can become the turn
 bottleneck.
+
+`context.build.finished` reports only presence, state, snapshot age/sequence,
+observation latency, provider/model, queue state, and initial-wait flag. It must
+not contain the Qwen summary, raw conversation, frame path, Base64, or media
+payload. Agent-Service packet-level received/sent lines are DEBUG; disconnect
+emits one aggregate INFO with message/video/byte/failure counters.
 
 ## Purpose
 

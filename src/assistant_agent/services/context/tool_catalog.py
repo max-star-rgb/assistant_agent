@@ -18,6 +18,13 @@ from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 
 
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
+_AGENT_SERVICE_TOOL_NAMES = {
+    "web_search",
+    "product_search",
+    "price_compare",
+    "memory_retrieval",
+    "memory_save",
+}
 
 
 @dataclass(frozen=True)
@@ -108,7 +115,11 @@ def qualify_tool_specs(
     )
     qualified_specs: list[ToolSpec] = []
     excluded_reasons: dict[str, list[str]] = {}
+    agent_service_profile = _trusted_agent_service_profile(request)
     for spec in tool_specs:
+        if agent_service_profile and spec.name not in _AGENT_SERVICE_TOOL_NAMES:
+            excluded_reasons[spec.name] = ["entry_profile_not_exposed"]
+            continue
         policy = ToolPolicyInterpreter().view_for_spec(spec)
         missing_env = [name for name in policy.requires_env if not os.environ.get(name)]
         if missing_env:
@@ -132,6 +143,17 @@ def qualify_tool_specs(
         qualified_tool_specs=qualified_specs,
         active_skill_ids=active_skill_ids,
         excluded_reasons=excluded_reasons,
+    )
+
+
+def _trusted_agent_service_profile(request: UserRequest) -> bool:
+    if request.metadata.get("transport") != "agent_service_websocket":
+        return False
+    gateway = request.metadata.get("gateway")
+    session_config = gateway.get("session_config") if isinstance(gateway, dict) else None
+    return bool(
+        isinstance(session_config, dict)
+        and session_config.get("entry_profile") == "agent_service"
     )
 
 

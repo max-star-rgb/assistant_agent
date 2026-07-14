@@ -80,6 +80,7 @@ class RealtimeVideoObserver:
         self._owned_paths: set[Path] = set()
         self._idle = asyncio.Event()
         self._idle.set()
+        self._first_terminal_snapshot = asyncio.Event()
 
     async def submit(self, frame: VideoFrame) -> FrameProcessingResult:
         """Run local selection and enqueue a selected frame for background analysis."""
@@ -98,6 +99,9 @@ class RealtimeVideoObserver:
             return collection.processing
 
         retained = await asyncio.to_thread(self._retain_keyframe, frame)
+        snapshot = self.memory_store.snapshot(frame.video_id)
+        if snapshot is None or snapshot.last_success_sequence is None:
+            self._first_terminal_snapshot.clear()
         selection_finished_ns = self.clock_ns()
         queued = _QueuedObservation(
             record=retained,
@@ -120,6 +124,11 @@ class RealtimeVideoObserver:
 
         await self._queue.join()
         await self._idle.wait()
+
+    async def wait_for_first_terminal_snapshot(self) -> None:
+        """Wait for the pending first observation, not later queued refreshes."""
+
+        await self._first_terminal_snapshot.wait()
 
     async def close(self) -> None:
         """Stop work, reject late results, and remove owned semantic artifacts."""
@@ -217,6 +226,7 @@ class RealtimeVideoObserver:
                 self._inflight_item = None
                 self._queue.task_done()
                 self._update_pending_state()
+                self._first_terminal_snapshot.set()
                 if self._queue.empty():
                     self._idle.set()
 
