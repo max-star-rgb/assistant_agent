@@ -609,6 +609,7 @@ evidence_unsafe_field
 evidence_target_unresolved
 opportunity_insufficient_evidence
 target_snapshot_unavailable
+proposal_target_snapshot_unsafe
 proposal_provider_unavailable
 proposal_provider_failed
 proposal_schema_invalid

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import _thread
+import math
 import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -51,6 +52,7 @@ class _ProcessRuleLockEntry:
 _PROCESS_RULE_LOCKS: dict[_RuleLockKey, _ProcessRuleLockEntry] = {}
 _PROCESS_RULE_LOCKS_GUARD = threading.Lock()
 _PROCESS_RULE_LOCK_POLL_S = 0.001
+_DEFAULT_PROBE_CANCEL_GRACE_S = 1.0
 
 
 class ProactiveWakeError(RuntimeError):
@@ -73,7 +75,15 @@ class ProactiveWakeCoordinator:
         attention_policy: AttentionPolicy | None = None,
         activity_reader: UserActivityReader | None = None,
         now_fn: Callable[[], datetime] = utc_now,
+        probe_cancel_grace_s: float = _DEFAULT_PROBE_CANCEL_GRACE_S,
     ) -> None:
+        if (
+            isinstance(probe_cancel_grace_s, bool)
+            or not isinstance(probe_cancel_grace_s, (int, float))
+            or not math.isfinite(probe_cancel_grace_s)
+            or probe_cancel_grace_s <= 0
+        ):
+            raise ValueError("probe_cancel_grace_s must be a positive finite number")
         self.store = store
         self.rule_validator = rule_validator
         self.probe_runner = probe_runner
@@ -81,6 +91,7 @@ class ProactiveWakeCoordinator:
         self.attention_policy = attention_policy or AttentionPolicy()
         self.activity_reader = activity_reader or NullUserActivityReader()
         self.now_fn = now_fn
+        self.probe_cancel_grace_s = float(probe_cancel_grace_s)
 
     def save_rule(self, rule: WakeRule) -> WakeRule:
         validation = self.rule_validator.validate(rule)
@@ -155,7 +166,11 @@ class ProactiveWakeCoordinator:
                 try:
                     observation = await asyncio.shield(probe_task)
                 except asyncio.CancelledError:
-                    await _await_background_task(probe_task, suppress_exceptions=True)
+                    await _await_background_task(
+                        probe_task,
+                        suppress_exceptions=True,
+                        timeout_s=self.probe_cancel_grace_s,
+                    )
                     raise
                 if not observation.success:
                     failed = probing.model_copy(
@@ -348,22 +363,46 @@ async def _hold_process_rule_lock(key: _RuleLockKey) -> AsyncIterator[None]:
         _release_process_rule_lock(key, entry)
 
 
-async def _await_background_task(task, *, suppress_exceptions: bool = False):
+async def _await_background_task(
+    task: asyncio.Task,
+    *,
+    suppress_exceptions: bool = False,
+    timeout_s: float | None = None,
+) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = None if timeout_s is None else loop.time() + timeout_s
     while not task.done():
+        remaining = None if deadline is None else deadline - loop.time()
+        if remaining is not None and remaining <= 0:
+            task.add_done_callback(_consume_background_task_result)
+            if suppress_exceptions:
+                return False
+            raise asyncio.TimeoutError
         try:
-            await asyncio.shield(task)
+            done, _ = await asyncio.wait({task}, timeout=remaining)
         except asyncio.CancelledError:
             continue
-        except BaseException:
+        if not done:
+            task.add_done_callback(_consume_background_task_result)
             if suppress_exceptions:
-                return None
-            raise
+                return False
+            raise asyncio.TimeoutError
     try:
-        return task.result()
+        task.result()
     except BaseException:
         if suppress_exceptions:
-            return None
+            return True
         raise
+    return True
+
+
+def _consume_background_task_result(task: asyncio.Task) -> None:
+    """Fence late probe results so they cannot re-enter coordinator state handling."""
+
+    try:
+        task.result()
+    except BaseException:
+        return
 
 
 def _notification_local_date(rule: WakeRule, now: datetime) -> date:

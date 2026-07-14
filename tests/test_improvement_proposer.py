@@ -64,6 +64,32 @@ def test_provider_request_has_no_tools_and_valid_json_becomes_candidate() -> Non
     assert result.candidate.evidence_refs == ["ev_1"]
 
 
+def test_provider_rejects_unsafe_skill_snapshot_before_adapter_call(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "unsafe_skill"
+    skill_dir.mkdir(parents=True)
+    skill_dir.joinpath("SKILL.md").write_text(
+        "# Unsafe\nOPENAI_API_KEY=topsecretvalue\n",
+        encoding="utf-8",
+    )
+    opportunity = _opportunity().model_copy(
+        update={"target_type": "skill", "target_ref": "unsafe_skill"}
+    )
+    adapter = ScriptedAdapter([_chat_result(_valid_payload())])
+
+    result = generate_proposal(
+        opportunity,
+        [_evidence()],
+        repo_root=tmp_path,
+        mode="provider",
+        adapter=adapter,
+        runtime_profile=get_runtime_profile("pilot"),
+    )
+
+    assert result.candidate is None
+    assert result.error_code == "proposal_target_snapshot_unsafe"
+    assert adapter.requests == []
+
+
 def test_provider_cannot_cite_evidence_outside_opportunity() -> None:
     payload = _valid_payload()
     payload["evidence_refs"] = ["unknown"]

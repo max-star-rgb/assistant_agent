@@ -35,6 +35,10 @@ class ProposalResult(BaseModel):
     repair_attempted: bool = False
 
 
+class _UnsafeTargetSnapshotError(ValueError):
+    """Raised before provider invocation when a target snapshot is not prompt-safe."""
+
+
 class _ProposalPayload(BaseModel):
     evidence_refs: list[str] = Field(min_length=1)
     root_cause_hypothesis: str = Field(min_length=1)
@@ -119,7 +123,13 @@ def generate_proposal(
             error_code="proposal_evidence_unsafe",
             error_summary="Proposal evidence failed prompt-safety validation.",
         )
-    request = _proposal_request(opportunity, referenced, Path(repo_root))
+    try:
+        request = _proposal_request(opportunity, referenced, Path(repo_root))
+    except _UnsafeTargetSnapshotError:
+        return ProposalResult(
+            error_code="proposal_target_snapshot_unsafe",
+            error_summary="Proposal target snapshot failed prompt-safety validation.",
+        )
     try:
         first = adapter.chat(request)
     except Exception:
@@ -189,6 +199,8 @@ def _proposal_request(
             target_snapshot = skill_path.read_text(encoding="utf-8")[:15_000]
         except (OSError, ImprovementTargetPathError):
             target_snapshot = ""
+    if target_snapshot and validate_prompt_safe_payload(target_snapshot):
+        raise _UnsafeTargetSnapshotError
     prompt_payload = {
         "opportunity": opportunity.model_dump(mode="json"),
         "evidence": [item.model_dump(mode="json") for item in evidence],

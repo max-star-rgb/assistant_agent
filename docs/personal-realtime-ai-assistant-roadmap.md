@@ -103,6 +103,11 @@ Phase 1 纵向切片：显式结构化规则触发 allowlist 内的只读探针�
 baseline，检测后续变化，写入 SQLite outbox，并通过 mock transport 完成
 本地投递验证。该路径不使用 LLM 选择工具。
 
+取消中的同步只读探针最多等待一秒完成清理；超过宽限期后 run 以取消状态
+结束并释放规则锁，迟到的探针结果被丢弃，不能重新进入状态或通知链路。
+Python 无法强制终止不协作的工作线程，因此 Phase 1 的 allowlist 仍只应包含
+具备自身超时或协作取消能力的本地适配器。
+
 Semantic wake、真实 event ingest、真实 notification transport 和 generic
 scheduler 仍然延期；本切片不代表这些后续能力已经实现，也不扩展为后台
 自主进程或 Personal OS scheduler。

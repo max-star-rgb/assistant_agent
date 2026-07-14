@@ -707,6 +707,55 @@ def test_cancellation_waits_for_probe_thread_before_releasing_rule_lock(tmp_path
     )
 
 
+def test_cancellation_bounds_wait_for_non_cooperative_probe(tmp_path) -> None:
+    coordinator, store, _, _ = make_harness(tmp_path, [{"event": "late"}])
+    rule = coordinator.save_rule(make_rule())
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    original_run = coordinator.probe_runner.run
+
+    def blocking_probe(rule, signal):
+        probe_started.set()
+        release_probe.wait(timeout=1)
+        return original_run(rule, signal)
+
+    coordinator.probe_runner.run = blocking_probe
+    coordinator.probe_cancel_grace_s = 0.02
+
+    async def cancel_non_cooperative_probe() -> bool:
+        task = asyncio.create_task(
+            coordinator.run_rule(
+                rule_id=rule.rule_id,
+                owner=rule.owner,
+                signal=make_signal(rule, signal_id="bounded-cancel"),
+            )
+        )
+        while not probe_started.is_set():
+            await asyncio.sleep(0.005)
+        release_timer = threading.Timer(1.0, release_probe.set)
+        release_timer.start()
+        try:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return release_probe.is_set()
+        finally:
+            release_timer.cancel()
+            release_probe.set()
+            release_timer.join(timeout=1)
+
+    probe_was_released_before_cancel_returned = asyncio.run(cancel_non_cooperative_probe())
+
+    assert probe_was_released_before_cancel_returned is False
+    cancelled_run = next(
+        item for item in store.list_runs(rule.owner) if item.signal_id == "bounded-cancel"
+    )
+    assert (cancelled_run.status, cancelled_run.reason_code) == (
+        "probe_failed",
+        "proactive_run_cancelled",
+    )
+
+
 def test_coordinator_serializes_same_rule_across_event_loops_and_threads(tmp_path) -> None:
     payload = {"event": "same"}
     coordinator, store, sequence, activity = make_harness(
