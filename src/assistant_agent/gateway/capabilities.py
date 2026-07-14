@@ -18,6 +18,7 @@ class EntryAdapterCapabilities:
     supports_video_refs: bool = False
     supports_raw_media: bool = False
     supports_tts_edge_events: bool = False
+    supports_semantic_interrupt: bool = False
 
     def to_metadata(self) -> dict[str, bool]:
         return {
@@ -30,6 +31,7 @@ class EntryAdapterCapabilities:
             "supports_video_refs": self.supports_video_refs,
             "supports_raw_media": self.supports_raw_media,
             "supports_tts_edge_events": self.supports_tts_edge_events,
+            "supports_semantic_interrupt": self.supports_semantic_interrupt,
         }
 
 
@@ -46,6 +48,7 @@ REALTIME_MEDIA_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
     supports_image_refs=True,
     supports_video_refs=True,
     supports_tts_edge_events=True,
+    supports_semantic_interrupt=True,
 )
 
 AGENT_SERVICE_ENTRY_CAPABILITIES = EntryAdapterCapabilities(

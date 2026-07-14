@@ -11,10 +11,20 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from assistant_agent.gateway import GatewayBridge, GatewayQueuePolicy, GatewaySessionManager
+from assistant_agent.gateway import (
+    GatewayBridge,
+    GatewayQueuePolicy,
+    GatewaySessionManager,
+    GatewayTurnArbitrationController,
+    GatewayTurnArbitrationPolicy,
+)
 from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
 from assistant_agent.schemas.api import AgentRunResponse
 from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade
+from assistant_agent.services.realtime_turn_arbiter import (
+    RealtimeTurnArbiter,
+    create_realtime_turn_arbiter,
+)
 
 _GATEWAY_SESSION_MANAGER: GatewaySessionManager | None = None
 _GATEWAY_BRIDGE: GatewayBridge | None = None
@@ -35,6 +45,18 @@ GATEWAY_QUEUE_WAIT_TIMEOUT_MS_ENV = "MULTIMODAL_AGENT_GATEWAY_QUEUE_WAIT_TIMEOUT
 GATEWAY_DEDUPE_TTL_S_ENV = "MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S"
 GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER_ENV = (
     "MULTIMODAL_AGENT_GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER"
+)
+REALTIME_SEMANTIC_INTERRUPT_ENABLED_ENV = (
+    "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_ENABLED"
+)
+REALTIME_SEMANTIC_INTERRUPT_TIMEOUT_MS_ENV = (
+    "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_TIMEOUT_MS"
+)
+REALTIME_SEMANTIC_INTERRUPT_MAX_CONCURRENCY_ENV = (
+    "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_MAX_CONCURRENCY"
+)
+REALTIME_SEMANTIC_INTERRUPT_MIN_CONFIDENCE_ENV = (
+    "MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_MIN_CONFIDENCE"
 )
 GATEWAY_HTTP_RESPONSE_CAPTURE_ID = "http_response_capture_id"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -87,6 +109,7 @@ def create_gateway_session_manager(
     *,
     env: Mapping[str, str] | None = None,
     backend_factory: Callable[[], RealtimeAgentBackend] | None = None,
+    turn_arbitration_controller: GatewayTurnArbitrationController | None = None,
     start_reaper: bool | None = None,
 ) -> GatewaySessionManager:
     """Create a GatewaySessionManager from safe local defaults and env overrides."""
@@ -126,6 +149,36 @@ def create_gateway_session_manager(
             default=defaults.dedupe_max_entries_per_user,
         ),
     )
+    arbitration_policy = GatewayTurnArbitrationPolicy(
+        enabled=_bool_env(
+            source,
+            REALTIME_SEMANTIC_INTERRUPT_ENABLED_ENV,
+            default=False,
+        ),
+        timeout_ms=_positive_int_env(
+            source,
+            REALTIME_SEMANTIC_INTERRUPT_TIMEOUT_MS_ENV,
+            default=1000,
+        ),
+        max_concurrency=_positive_int_env(
+            source,
+            REALTIME_SEMANTIC_INTERRUPT_MAX_CONCURRENCY_ENV,
+            default=2,
+        ),
+        min_confidence=_unit_interval_env(
+            source,
+            REALTIME_SEMANTIC_INTERRUPT_MIN_CONFIDENCE_ENV,
+            default=0.80,
+        ),
+    )
+    resolved_turn_arbitration_controller = turn_arbitration_controller
+    if resolved_turn_arbitration_controller is None:
+        resolved_turn_arbitration_controller = GatewayTurnArbitrationController(
+            policy=arbitration_policy,
+            arbiter_factory=lambda: _default_realtime_turn_arbiter(
+                min_confidence=arbitration_policy.min_confidence,
+            ),
+        )
     return GatewaySessionManager(
         max_sessions=_int_env(source, GATEWAY_MAX_SESSIONS_ENV, default=20),
         idle_timeout_s=_float_env(source, GATEWAY_IDLE_TIMEOUT_S_ENV, default=300.0),
@@ -133,6 +186,7 @@ def create_gateway_session_manager(
         reaper_interval_s=_float_env(source, GATEWAY_REAPER_INTERVAL_S_ENV, default=30.0),
         backend_factory=resolved_backend_factory,
         queue_policy=queue_policy,
+        turn_arbitration_controller=resolved_turn_arbitration_controller,
         start_reaper=_bool_env(source, GATEWAY_START_REAPER_ENV, default=True)
         if start_reaper is None
         else start_reaper,
@@ -141,6 +195,17 @@ def create_gateway_session_manager(
 
 def _default_gateway_backend_factory() -> RealtimeAgentBackend:
     return GatewayAgentAdapter(run_request=_run_assistant_request_with_http_runtime)
+
+
+def _default_realtime_turn_arbiter(*, min_confidence: float) -> RealtimeTurnArbiter:
+    from assistant_agent.api.routes_agent import get_assistant_runtime_app
+
+    runtime = get_assistant_runtime_app().runtime
+    return create_realtime_turn_arbiter(
+        runtime.config,
+        runtime.chat_adapter,
+        min_confidence=min_confidence,
+    )
 
 
 def _run_assistant_request_with_http_runtime(request: Any, **kwargs: Any) -> Any:
@@ -302,6 +367,19 @@ def _positive_float_env(env: Mapping[str, str], name: str, *, default: float) ->
         raise ValueError(f"{name} must be finite and positive") from exc
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be finite and positive")
+    return value
+
+
+def _unit_interval_env(env: Mapping[str, str], name: str, *, default: float) -> float:
+    raw = str(env.get(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be finite and between 0 and 1") from exc
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must be finite and between 0 and 1")
     return value
 
 
