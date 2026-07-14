@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -39,10 +40,16 @@ class GatewayQueuePolicy:
             "queue_wait_timeout_ms",
             "dedupe_max_entries_per_user",
         ):
-            if int(getattr(self, name)) <= 0:
-                raise ValueError(f"{name} must be positive")
-        if self.dedupe_ttl_s <= 0:
-            raise ValueError("dedupe_ttl_s must be positive")
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if (
+            isinstance(self.dedupe_ttl_s, bool)
+            or not isinstance(self.dedupe_ttl_s, (int, float))
+            or not math.isfinite(self.dedupe_ttl_s)
+            or self.dedupe_ttl_s <= 0
+        ):
+            raise ValueError("dedupe_ttl_s must be finite and positive")
         if self.overflow_policy != "reject_newest":
             raise ValueError("overflow_policy must be reject_newest")
 

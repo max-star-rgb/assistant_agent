@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import uuid
 from collections.abc import Callable, Mapping
@@ -287,9 +288,9 @@ def _positive_float_env(env: Mapping[str, str], name: str, *, default: float) ->
     try:
         value = float(raw)
     except ValueError as exc:
-        raise ValueError(f"{name} must be positive") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be positive")
+        raise ValueError(f"{name} must be finite and positive") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be finite and positive")
     return value
 
 

@@ -591,6 +591,20 @@ def test_create_gateway_session_manager_rejects_non_positive_queue_policy_env() 
         )
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_create_gateway_session_manager_rejects_non_finite_dedupe_ttl_env(
+    value: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S must be finite and positive",
+    ):
+        gateway_runtime.create_gateway_session_manager(
+            env={"MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S": value},
+            start_reaper=False,
+        )
+
+
 def _install_gateway_backend(backend) -> None:
     manager = GatewaySessionManager(backend_factory=lambda: backend, start_reaper=False)
     gateway_runtime.set_gateway_runtime_for_tests(

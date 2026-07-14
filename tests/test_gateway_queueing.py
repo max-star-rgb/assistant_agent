@@ -27,8 +27,29 @@ class GatewayQueuePolicyTests(unittest.TestCase):
         assert policy.overflow_policy == "reject_newest"
 
     def test_non_positive_limits_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "max_active_runs must be positive"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "max_active_runs must be a positive integer",
+        ):
             GatewayQueuePolicy(max_active_runs=0)
+
+    def test_integer_limits_reject_non_integer_values(self) -> None:
+        for value in (True, 1.5, "2"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "max_active_runs must be a positive integer",
+                ):
+                    GatewayQueuePolicy(max_active_runs=value)  # type: ignore[arg-type]
+
+    def test_dedupe_ttl_rejects_non_finite_values(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "dedupe_ttl_s must be finite and positive",
+                ):
+                    GatewayQueuePolicy(dedupe_ttl_s=value)
 
     def test_unknown_mode_and_overflow_policy_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "mode must be followup or interrupt"):
