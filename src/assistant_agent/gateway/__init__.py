@@ -38,6 +38,11 @@ from assistant_agent.gateway.session import (
     GatewaySessionService,
 )
 from assistant_agent.gateway.transport import Closed, Endpoint, InMemoryDuplex
+from assistant_agent.gateway.turn_arbitration import (
+    GatewayTurnArbitrationController,
+    GatewayTurnArbitrationOutcome,
+    GatewayTurnArbitrationPolicy,
+)
 from assistant_agent.gateway.ws import WsEndpoint, dumps_frame, loads_frame
 
 __all__ = [
@@ -65,6 +70,9 @@ __all__ = [
     "GatewaySessionHandle",
     "GatewaySessionManager",
     "GatewaySessionService",
+    "GatewayTurnArbitrationController",
+    "GatewayTurnArbitrationOutcome",
+    "GatewayTurnArbitrationPolicy",
     "InMemoryDuplex",
     "REALTIME_MEDIA_ENTRY_CAPABILITIES",
     "QueueOverflowError",
