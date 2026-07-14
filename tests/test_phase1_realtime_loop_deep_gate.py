@@ -27,6 +27,12 @@ async def _assert_no_frame(client_ep, *, timeout_s: float = 0.08) -> None:
     raise AssertionError(f"unexpected frame after terminal realtime gate: {received}")
 
 
+async def _read_one_frame(client_ep):
+    async for received in client_ep:
+        return received
+    raise AssertionError("endpoint closed before the next Gateway frame")
+
+
 class Phase1RealtimeLoopDeepGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_queued_turn_waits_for_active_run_and_preserves_ordered_history(self) -> None:
         class QueueBackend:
@@ -60,7 +66,10 @@ class Phase1RealtimeLoopDeepGateTests(unittest.IsolatedAsyncioTestCase):
                     await client_ep.send(
                         frame(type="message.user", session_id="phase1-queue", payload={"text": "second"})
                     )
-                    await _assert_no_frame(client_ep)
+                    queued = await asyncio.wait_for(_read_one_frame(client_ep), timeout=1.0)
+                    frames.append(queued)
+                    assert queued["type"] == "run.queued"
+                    assert queued["payload"]["reason"] == "session_busy"
                     backend.release_first.set()
                 elif received["type"] == "run.started":
                     second_run_id = received["run_id"]
@@ -78,6 +87,7 @@ class Phase1RealtimeLoopDeepGateTests(unittest.IsolatedAsyncioTestCase):
 
         assert [item["type"] for item in frames] == [
             "run.started",
+            "run.queued",
             "run.end",
             "run.started",
             "stream.chunk",
@@ -148,8 +158,12 @@ class Phase1RealtimeLoopDeepGateTests(unittest.IsolatedAsyncioTestCase):
         assert run_end["payload"]["cancel"] == {
             "source": "gateway_cancel",
             "reason": "user_requested_stop",
-            "phase": "gateway_output_gate",
+            "phase": "final_streaming",
             "best_effort": True,
+            "cancelled_by": "run.cancel",
+            "stale_outputs": True,
+            "can_reuse_tool_result": False,
+            "speakable": False,
         }
 
     async def test_cancel_suppresses_late_stream_chunks(self) -> None:
