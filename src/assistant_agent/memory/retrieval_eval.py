@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.memory.manager import MemoryManager
+from assistant_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
+from assistant_agent.memory.sqlite_store import SQLiteMemoryStore
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, MemoryScope, MemorySensitivity, MemoryType
@@ -70,6 +73,7 @@ class MemoryRetrievalEvalCase(BaseModel):
     """A deterministic offline memory retrieval and injection eval case."""
 
     id: str
+    backend: Literal["memory", "sqlite"] = "memory"
     query: str
     user_id: str = "u1"
     tenant_id: str | None = None
@@ -87,6 +91,7 @@ class MemoryRetrievalEvalCase(BaseModel):
     expected_injected_ids: list[str] | None = None
     expected_profile_source_memory_ids: list[str] | None = None
     expected_profile_conflict_count: int | None = None
+    expected_confirmation_count: int = Field(default=0, ge=0)
     expected_empty: bool = False
     forbidden_memory_ids: list[str] = Field(default_factory=list)
     forbidden_injected_ids: list[str] = Field(default_factory=list)
@@ -97,6 +102,7 @@ class MemoryRetrievalEvalResult(BaseModel):
     """Result and metrics for one memory retrieval eval case."""
 
     id: str
+    backend: Literal["memory", "sqlite"] = "memory"
     passed: bool
     query: str
     expected_memory_ids: list[str]
@@ -106,6 +112,7 @@ class MemoryRetrievalEvalResult(BaseModel):
     expected_profile_source_memory_ids: list[str] | None = None
     profile_source_memory_ids: list[str] = Field(default_factory=list)
     profile_conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    confirmation_count: int = Field(default=0, ge=0)
     missing_expected_ids: list[str] = Field(default_factory=list)
     forbidden_retrieved_ids: list[str] = Field(default_factory=list)
     forbidden_injected_ids: list[str] = Field(default_factory=list)
@@ -128,10 +135,20 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
     """Evaluate one memory retrieval/injection case without external services."""
 
     case = MemoryRetrievalEvalCase.model_validate(payload)
-    store = InMemoryStore()
+    temporary_directory: TemporaryDirectory[str] | None = None
+    if case.backend == "sqlite":
+        temporary_directory = TemporaryDirectory(prefix="assistant-agent-memory-eval-")
+        store = SQLiteMemoryStore(
+            Path(temporary_directory.name) / "memory.sqlite3",
+            synchronous="OFF",
+            busy_timeout_ms=1000,
+        )
+    else:
+        store = InMemoryStore()
     manager = MemoryManager(store)
     for fixture in case.fixtures:
         store.save(fixture.to_memory_item())
+    confirmation_count = 0
     for explicit_save in case.explicit_saves:
         save_identity = RequestIdentity.for_user(
             tenant_id=explicit_save.tenant_id or case.tenant_id,
@@ -140,15 +157,18 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
             session_id=explicit_save.session_id or case.session_id,
             allowed_scopes=case.allowed_scopes,
         )
-        manager.save_explicit_for_identity(
-            save_identity,
-            text=explicit_save.text,
-            content=explicit_save.content,
-            memory_id=explicit_save.memory_id,
-            scope=explicit_save.scope,
-            session_id=explicit_save.session_id or case.session_id,
-            created_at=explicit_save.created_at,
-        )
+        try:
+            manager.save_explicit_for_identity(
+                save_identity,
+                text=explicit_save.text,
+                content=explicit_save.content,
+                memory_id=explicit_save.memory_id,
+                scope=explicit_save.scope,
+                session_id=explicit_save.session_id or case.session_id,
+                created_at=explicit_save.created_at,
+            )
+        except MemoryConfirmationRequired:
+            confirmation_count += 1
 
     identity = RequestIdentity.for_user(
         tenant_id=case.tenant_id,
@@ -227,6 +247,7 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
         and not forbidden_profile_source
         and not missing_profile_expected
         and profile_conflict_count_ok
+        and confirmation_count == case.expected_confirmation_count
         and not expected_injected_missing
         and not sensitive_injected
         and not expired_injected
@@ -235,6 +256,7 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
 
     return MemoryRetrievalEvalResult(
         id=case.id,
+        backend=case.backend,
         passed=passed,
         query=case.query,
         expected_memory_ids=expected_ids,
@@ -244,6 +266,7 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
         expected_profile_source_memory_ids=case.expected_profile_source_memory_ids,
         profile_source_memory_ids=profile_source_ids,
         profile_conflicts=profile_status.profile_conflicts,
+        confirmation_count=confirmation_count,
         missing_expected_ids=[*missing_expected, *expected_injected_missing, *missing_profile_expected],
         forbidden_retrieved_ids=forbidden_retrieved,
         forbidden_injected_ids=forbidden_injected,
@@ -266,6 +289,17 @@ def evaluate_memory_retrieval_case(payload: dict[str, Any]) -> MemoryRetrievalEv
 def summarize_memory_retrieval_eval(results: list[MemoryRetrievalEvalResult]) -> dict[str, Any]:
     """Return aggregate memory retrieval eval metrics."""
 
+    summary = _memory_retrieval_metrics(results)
+    summary["by_backend"] = {
+        backend: _memory_retrieval_metrics(
+            [result for result in results if result.backend == backend]
+        )
+        for backend in sorted({result.backend for result in results})
+    }
+    return summary
+
+
+def _memory_retrieval_metrics(results: list[MemoryRetrievalEvalResult]) -> dict[str, Any]:
     total = len(results)
     empty_results = [result for result in results if result.expected_empty]
     return {

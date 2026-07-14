@@ -13,6 +13,9 @@ def test_memory_eval_suite_contains_required_cases() -> None:
         "memory_task_resume_001",
         "memory_user_isolation_001",
         "memory_delete_user_scoped_001",
+        "memory_retrieval_sqlite_chinese_phrase_001",
+        "memory_retrieval_fact_conflict_pending_001",
+        "memory_retrieval_coexist_facts_001",
     }.issubset(case_ids)
 
 

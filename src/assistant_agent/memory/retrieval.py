@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from assistant_agent.memory.facts import memory_fact_status
+from assistant_agent.memory.facts import fact_from_item, memory_fact_status
 from assistant_agent.memory.retriever import KeywordMemoryRetriever
 from assistant_agent.memory.store import MemoryStore
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, memory_item_matches_query_scope
@@ -91,7 +91,7 @@ class MemoryRetrievalStrategy:
                 now = datetime.now(tz=item.expires_at.tzinfo or timezone.utc)
                 if item.expires_at < now:
                     continue
-            filtered.append(item)
+            filtered.append(_with_local_relevance(item, query.query))
 
         deduped = _dedupe(filtered)
         deduped.sort(
@@ -135,6 +135,32 @@ def _type_priority(item: MemoryItem, capability: str | None) -> int:
 
 def _artifact_score(item: MemoryItem) -> float:
     return 0.1 if item.artifact_refs else 0.0
+
+
+def _with_local_relevance(item: MemoryItem, query: str) -> MemoryItem:
+    base = item.relevance if item.relevance is not None else 0.0
+    fact_boost = _structured_fact_match_score(item, query)
+    if item.relevance is None and fact_boost == 0.0:
+        return item
+    relevance = min(1.0, max(0.0, base * 0.8 + fact_boost))
+    return item.model_copy(update={"relevance": relevance})
+
+
+def _structured_fact_match_score(item: MemoryItem, query: str) -> float:
+    fact = fact_from_item(item)
+    normalized_query = _normalize_match_text(query)
+    if fact is None or not normalized_query:
+        return 0.0
+    candidates = (fact.fact_key, fact.predicate, fact.value)
+    return 0.2 if any(_normalize_match_text(value) == normalized_query for value in candidates) else 0.0
+
+
+def _normalize_match_text(value: str) -> str:
+    return "".join(
+        character
+        for character in value.strip().lower()
+        if character.isalnum() or "\u4e00" <= character <= "\u9fff"
+    )
 
 
 def _dedupe(items: list[MemoryItem]) -> list[MemoryItem]:

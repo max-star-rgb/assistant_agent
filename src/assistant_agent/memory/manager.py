@@ -1650,7 +1650,11 @@ def _profile_conflict_groups(items: list[MemoryItem]) -> list[dict[str, Any]]:
             for item in active_items
             if (fact := fact_from_item(item)) is not None
         }
-        unresolved = len(active_values) > 1 or bool(disputed_items)
+        active_facts = [fact for item in active_items if (fact := fact_from_item(item)) is not None]
+        coexist_values = bool(active_facts) and all(
+            fact.conflict_policy == "coexist" for fact in active_facts
+        )
+        unresolved = (len(active_values) > 1 and not coexist_values) or bool(disputed_items)
         if not superseded_items and not disputed_items and not unresolved:
             continue
         latest_active = max(

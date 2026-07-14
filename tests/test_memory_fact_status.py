@@ -133,3 +133,38 @@ def test_profile_status_reports_unresolved_typed_fact_conflict() -> None:
         }
     ]
     assert "profile_unresolved_conflicts" in status.issues
+
+
+def test_profile_status_does_not_treat_declared_coexist_values_as_conflict() -> None:
+    store = InMemoryStore()
+    for memory_id, value in (("city_shanghai", "上海"), ("city_hangzhou", "杭州")):
+        fact = MemoryFact(
+            fact_key="user:travel:city",
+            subject="user",
+            predicate="travel.city",
+            value=value,
+            provenance="user_explicit",
+            conflict_policy="coexist",
+            observed_at=NOW,
+        )
+        store.save(
+            MemoryItem(
+                memory_id=memory_id,
+                user_id="u1",
+                session_id="s1",
+                memory_type="task",
+                summary=f"用户常去{value}",
+                content={"fact": fact.model_dump(mode="json")},
+                source="explicit_user_request",
+                created_at=NOW,
+            )
+        )
+    manager = MemoryManager(store)
+
+    status = manager.rebuild_user_profile_for_identity(
+        RequestIdentity.for_user(user_id="u1", session_id="s1"),
+        dry_run=True,
+    )
+
+    assert status.profile_conflicts == []
+    assert "profile_unresolved_conflicts" not in status.issues

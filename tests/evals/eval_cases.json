@@ -1670,6 +1670,170 @@
     }
   },
   {
+    "id": "memory_retrieval_sqlite_chinese_phrase_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_sqlite_chinese_phrase",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "backend": "sqlite",
+      "query": "深色极简",
+      "expected_memory_ids": [
+        "sqlite_dark_style"
+      ],
+      "fixtures": [
+        {
+          "memory_id": "sqlite_dark_style",
+          "memory_type": "preference",
+          "summary": "用户偏好深色极简海报。",
+          "created_at": "2026-07-14T00:00:00+00:00"
+        },
+        {
+          "memory_id": "sqlite_light_style",
+          "memory_type": "preference",
+          "summary": "用户偏好浅色日系海报。",
+          "created_at": "2026-07-13T00:00:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_fact_conflict_pending_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_fact_conflict_pending",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "query": "公司",
+      "expected_memory_ids": [
+        "company_a"
+      ],
+      "forbidden_memory_ids": [
+        "company_b"
+      ],
+      "expected_confirmation_count": 1,
+      "explicit_saves": [
+        {
+          "memory_id": "company_a",
+          "text": "记住我在 A 公司工作",
+          "content": {
+            "summary": "用户在 A 公司工作",
+            "fact": {
+              "schema_version": 1,
+              "fact_key": "user:employment:company",
+              "subject": "user",
+              "predicate": "employment.company",
+              "value": "A",
+              "status": "active",
+              "provenance": "user_explicit",
+              "conflict_policy": "confirm",
+              "observed_at": "2026-07-14T00:00:00+00:00",
+              "confidence": 1.0,
+              "revision": 1,
+              "supersedes_memory_ids": []
+            }
+          },
+          "created_at": "2026-07-14T00:00:00+00:00"
+        },
+        {
+          "memory_id": "company_b",
+          "text": "记住我现在在 B 公司工作",
+          "content": {
+            "summary": "用户现在在 B 公司工作",
+            "fact": {
+              "schema_version": 1,
+              "fact_key": "user:employment:company",
+              "subject": "user",
+              "predicate": "employment.company",
+              "value": "B",
+              "status": "active",
+              "provenance": "user_explicit",
+              "conflict_policy": "confirm",
+              "observed_at": "2026-07-14T00:01:00+00:00",
+              "confidence": 1.0,
+              "revision": 1,
+              "supersedes_memory_ids": []
+            }
+          },
+          "created_at": "2026-07-14T00:01:00+00:00"
+        }
+      ]
+    }
+  },
+  {
+    "id": "memory_retrieval_coexist_facts_001",
+    "category": "memory_retrieval_eval",
+    "suite": "memory",
+    "scenario_id": "memory_retrieval_coexist_facts",
+    "memory_scenario": "retrieval_eval",
+    "expected_intent": "memory_retrieval_eval",
+    "expected_tools": [],
+    "memory_retrieval_eval": {
+      "backend": "sqlite",
+      "query": "常去城市",
+      "expected_memory_ids": [
+        "user_profile",
+        "city_shanghai",
+        "city_hangzhou"
+      ],
+      "expected_profile_source_memory_ids": [
+        "city_shanghai",
+        "city_hangzhou"
+      ],
+      "expected_profile_conflict_count": 0,
+      "explicit_saves": [
+        {
+          "memory_id": "city_shanghai",
+          "text": "记住我常去上海城市出差",
+          "content": {
+            "summary": "用户常去城市上海出差",
+            "fact": {
+              "schema_version": 1,
+              "fact_key": "user:travel:city",
+              "subject": "user",
+              "predicate": "travel.city",
+              "value": "上海",
+              "status": "active",
+              "provenance": "user_explicit",
+              "conflict_policy": "coexist",
+              "observed_at": "2026-07-14T00:00:00+00:00",
+              "confidence": 1.0,
+              "revision": 1,
+              "supersedes_memory_ids": []
+            }
+          },
+          "created_at": "2026-07-14T00:00:00+00:00"
+        },
+        {
+          "memory_id": "city_hangzhou",
+          "text": "记住我也常去杭州城市出差",
+          "content": {
+            "summary": "用户常去城市杭州出差",
+            "fact": {
+              "schema_version": 1,
+              "fact_key": "user:travel:city",
+              "subject": "user",
+              "predicate": "travel.city",
+              "value": "杭州",
+              "status": "active",
+              "provenance": "user_explicit",
+              "conflict_policy": "coexist",
+              "observed_at": "2026-07-14T00:01:00+00:00",
+              "confidence": 1.0,
+              "revision": 1,
+              "supersedes_memory_ids": []
+            }
+          },
+          "created_at": "2026-07-14T00:01:00+00:00"
+        }
+      ]
+    }
+  },
+  {
     "id": "memory_user_isolation_001",
     "category": "memory",
     "suite": "memory",

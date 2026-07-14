@@ -144,7 +144,7 @@ class SQLiteMemoryStore:
             items=items,
             query_used=query,
             total=len(items),
-            ranking_reason="keyword_match_type_priority_recency",
+            ranking_reason="local_text_match_type_priority_recency",
             memory_context=format_memory_context(items, max_chars=query.max_context_chars),
         )
 

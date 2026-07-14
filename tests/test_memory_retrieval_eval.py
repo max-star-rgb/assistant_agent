@@ -41,6 +41,70 @@ def test_memory_retrieval_eval_reports_recall_and_token_budget() -> None:
     assert result.rejected_reasons == ["m2:memory_context_token_budget_exceeded"]
 
 
+def test_memory_retrieval_eval_runs_against_sqlite_backend() -> None:
+    result = evaluate_memory_retrieval_case(
+        {
+            "id": "sqlite_phrase",
+            "backend": "sqlite",
+            "query": "深色极简",
+            "expected_memory_ids": ["m1"],
+            "fixtures": [
+                {
+                    "memory_id": "m1",
+                    "memory_type": "preference",
+                    "summary": "用户偏好深色极简海报。",
+                }
+            ],
+        }
+    )
+
+    assert result.passed is True
+    assert result.backend == "sqlite"
+    assert result.retrieved_memory_ids == ["m1"]
+
+
+def test_memory_retrieval_eval_counts_pending_fact_conflict() -> None:
+    fact_base = {
+        "schema_version": 1,
+        "fact_key": "user:employment:company",
+        "subject": "user",
+        "predicate": "employment.company",
+        "status": "active",
+        "provenance": "user_explicit",
+        "conflict_policy": "confirm",
+        "observed_at": "2026-07-14T00:00:00+00:00",
+        "confidence": 1.0,
+        "revision": 1,
+        "supersedes_memory_ids": [],
+    }
+    result = evaluate_memory_retrieval_case(
+        {
+            "id": "fact_conflict_pending",
+            "query": "公司",
+            "expected_memory_ids": ["company_a"],
+            "expected_confirmation_count": 1,
+            "explicit_saves": [
+                {
+                    "memory_id": "company_a",
+                    "text": "记住我在 A 公司工作",
+                    "content": {"summary": "用户在 A 公司工作", "fact": {**fact_base, "value": "A"}},
+                    "created_at": "2026-07-14T00:00:00+00:00",
+                },
+                {
+                    "memory_id": "company_b",
+                    "text": "记住我现在在 B 公司工作",
+                    "content": {"summary": "用户现在在 B 公司工作", "fact": {**fact_base, "value": "B"}},
+                    "created_at": "2026-07-14T00:01:00+00:00",
+                },
+            ],
+        }
+    )
+
+    assert result.passed is True
+    assert result.confirmation_count == 1
+    assert "company_b" not in result.retrieved_memory_ids
+
+
 def test_memory_retrieval_eval_summary_tracks_empty_and_safety_rates() -> None:
     hit = evaluate_memory_retrieval_case(
         {
@@ -81,6 +145,7 @@ def test_memory_retrieval_eval_summary_tracks_empty_and_safety_rates() -> None:
     assert summary["correct_empty_rate"] == 1.0
     assert summary["sensitive_injection_rate"] == 0.0
     assert summary["token_budget_compliance"] == 1.0
+    assert summary["by_backend"]["memory"]["total"] == 2
 
 
 def test_memory_retrieval_eval_excludes_superseded_profile_sources() -> None:
