@@ -14,7 +14,6 @@
 - Keep `src/assistant_agent/tools/memory_tool.py` thin; conflict, merge, TTL, profile, and retrieval behavior belongs under `memory/` and `MemoryManager`.
 - All durable writes must continue through `MemoryWritePolicy`, `MemoryManager`, identity binding, confirmation, and audit boundaries.
 - LLM output may propose a typed fact or mutation, but it must never apply a mutation directly.
-- Never trust model-supplied `conflict_policy="replace"` as authority. Automatic replacement is limited to legacy preferences and locally allowed preference predicates; other generic fact conflicts require confirmation. `coexist` is non-destructive and may be honored directly.
 - Preserve legacy `preference_key`, `superseded_by_memory_id`, and `supersedes_memory_ids` fields for stored-data and API compatibility.
 - Default tests and evals must remain mock/local/offline. Do not add a provider call.
 - Do not install LangMem, Mem0, Graphiti, a vector database, an embedding model, or any other dependency in this plan.
