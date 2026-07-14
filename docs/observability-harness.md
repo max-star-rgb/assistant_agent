@@ -394,6 +394,15 @@ review only when the replay case is redacted and the target regression suite has
 passed. The report never permits automatic production policy, memory, skill,
 prompt, routing, tool, or provider changes.
 
+The offline Improvement Lab builds on this diagnostic boundary without changing
+it. `scripts/run_improvement_lab.py` accepts explicit run/trace IDs and
+structured prompt-safe eval/test failure reports, converts them into versioned
+evidence, detects recurring opportunities deterministically, and produces
+evaluated skill/runtime/code proposals for human review. It does not run from
+`AgentGraphRuntime`, expose an assistant tool or API route, or permit production
+mutation. Semantic skill proposals require structured eval evidence; sparse
+trajectory timelines remain suitable only for operational failure signals.
+
 ## Redaction Rules
 
 Trace and monitoring records must not include:
@@ -490,6 +499,24 @@ Regression tests should enforce these invariants:
   improvement reaches manual review.
 - Do not implement RL, automatic self-modification, private-data training, or
   production policy updates.
+
+### Offline Improvement Lab
+
+- Reuse only redacted `TrajectoryReplayCase` data and explicit structured
+  eval/test failure records.
+- Keep opportunity eligibility and confidence deterministic.
+- Keep proposal generation tool-free and profile-gated; default to a local
+  deterministic scaffold.
+- Evaluate candidates independently with architecture, evidence, scope, skill
+  permission and fixed test-suite gates.
+- Treat the evidence window as 30 days by default and report its UTC cutoff;
+  normalize offset-free structured timestamps to UTC.
+- Force explicitly requested allowlisted suites into a sanitized `offline_eval`
+  environment. A failed suite blocks review readiness before persistence.
+- Keep stable proposal candidates separate from run-scoped immutable evaluation
+  and validation records so later runs cannot hide a changed result.
+- Persist only local JSONL review artifacts and Markdown reports under `.data/`.
+- Never apply a candidate, modify a target, create a branch, or deploy a change.
 
 ## Update Rules
 

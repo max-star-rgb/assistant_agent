@@ -469,6 +469,29 @@ Memory Server media ingestion uses separate tools:
 
 MCP server 不直接依赖 provider SDK，不直接访问 OpenAI/DashScope/httpx/requests。错误 envelope 会脱敏。新增外部入口必须遵守同样边界：先归一成内部 request/decision，再走 validator/executor。
 
+## Improvement Lab 边界
+
+`scripts/run_improvement_lab.py` 是显式离线工程工具，不是 assistant tool、
+MCP wrapper、API route 或 `AgentGraphRuntime` node。它只读取脱敏 trace 和
+结构化 eval/test 失败，生成供人工审阅的 skill/runtime/code 改进候选。
+
+- proposal provider 的 `ChatRequest.tools` 固定为空，不能调用或执行工具；
+- 默认 `deterministic` 模式不调用真实 provider；`provider` 模式仍要求
+  `provider_smoke` 或 `pilot` profile 和显式 CLI 选择；
+- runtime/code 候选不包含 patch；skill diff 由本地代码从验证后的候选内容
+  确定性生成；
+- skill 候选不能扩展 governed tools 或 `tool:<name>` permissions；
+- 建议测试只能选择本地 allowlist suite ID，不能提供任意 shell command；
+- 显式执行 allowlist suite 时强制使用清理后的 `offline_eval` 环境；失败结果在
+  持久化前把当前 run 的 candidate evaluation 标记为不可评审；
+- candidate proposal 使用稳定 ID 追加保存，每次 run 的 evaluation/validation
+  使用独立不可变记录，不能因 candidate 去重而保留过期评估；
+- evidence、provider proposal 和 skill replacement 在进入报告或 registry 前拒绝
+  secret assignment、仓库外/软链接 skill 目标和直接 provider/shell 执行指令；
+- registry、报告和人工 accepted/rejected 决策都不会调用
+  `ToolRegistry.run(...)`、修改目标文件或绕过 validator/executor；
+- 未来若要应用候选、创建 PR 或灰度发布，必须另行设计治理和回滚边界。
+
 ## 新增或修改工具清单
 
 新增工具时按这个顺序做：
