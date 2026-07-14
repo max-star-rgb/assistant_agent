@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -55,13 +56,13 @@ class CalendarSearchInput(BaseModel):
 class OfflineCalendarSequence:
     """One in-process read-only calendar tool with two deterministic results."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, invocation_namespace: str) -> None:
         self.call_count = 0
         self._observations = [
             {
                 "events": [
                     {
-                        "event_id": "demo-meeting",
+                        "event_id": f"demo-meeting:{invocation_namespace}",
                         "starts_at": "2026-07-14T10:00:00+00:00",
                         "title": "Project check-in",
                     }
@@ -70,7 +71,7 @@ class OfflineCalendarSequence:
             {
                 "events": [
                     {
-                        "event_id": "demo-meeting",
+                        "event_id": f"demo-meeting:{invocation_namespace}",
                         "starts_at": "2026-07-14T11:00:00+00:00",
                         "title": "Project check-in",
                     }
@@ -119,7 +120,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def _run_demo(db_path: Path) -> dict[str, Any]:
-    calendar = OfflineCalendarSequence()
+    invocation_namespace = uuid4().hex
+    calendar = OfflineCalendarSequence(invocation_namespace=invocation_namespace)
     registry = ToolRegistry()
     registry.register(calendar.tool)
     allowed_tools = {CALENDAR_TOOL_NAME}
@@ -142,7 +144,7 @@ async def _run_demo(db_path: Path) -> dict[str, Any]:
     )
     rule = coordinator.save_rule(
         WakeRule(
-            rule_id="proactive-wake-offline-demo",
+            rule_id=f"proactive-wake-offline-demo:{invocation_namespace}",
             owner=WakeOwner(user_id="offline-demo-user"),
             name="Offline calendar change demo",
             trigger=WakeTriggerSpec(
@@ -168,26 +170,26 @@ async def _run_demo(db_path: Path) -> dict[str, Any]:
         rule_id=rule.rule_id,
         owner=rule.owner,
         signal=WakeSignal(
-            signal_id="offline-demo-baseline",
+            signal_id=f"offline-demo-baseline:{invocation_namespace}",
             kind="manual",
             source="offline_demo",
             event_type="manual.baseline",
             occurred_at=DEMO_NOW,
             owner=rule.owner,
-            event_key="offline-demo-baseline",
+            event_key=f"offline-demo-baseline:{invocation_namespace}",
         ),
     )
     changed = await coordinator.run_rule(
         rule_id=rule.rule_id,
         owner=rule.owner,
         signal=WakeSignal(
-            signal_id="offline-demo-change",
+            signal_id=f"offline-demo-change:{invocation_namespace}",
             kind="manual",
             source="offline_demo",
             event_type="manual.change",
             occurred_at=DEMO_NOW,
             owner=rule.owner,
-            event_key="offline-demo-change",
+            event_key=f"offline-demo-change:{invocation_namespace}",
         ),
     )
 
