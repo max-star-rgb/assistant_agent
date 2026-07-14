@@ -9,6 +9,11 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.tool_observation import observation_from_tool_result
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.realtime_turn_arbitration import (
+    REALTIME_TURN_ARBITRATION_METADATA_KEY,
+    RealtimeTurnArbitrationDecision,
+    RealtimeTurnRevisionType,
+)
 from assistant_agent.schemas.tools import ToolResult, ToolSideEffectLevel, ToolSideEffectPolicy
 from assistant_agent.services.context.compaction import compact_observation_for_context
 from assistant_agent.tools.registry import tool_execution_policy, tool_side_effect_policy
@@ -261,6 +266,64 @@ def prepare_realtime_task_state_request(
     metadata[REALTIME_TASK_STATE_TEXT_METADATA_KEY] = format_realtime_task_state_snapshot(snapshot)
     metadata["realtime_task_state_enabled"] = True
     return request.model_copy(update={"metadata": metadata}, deep=True)
+
+
+def apply_cancel_only_arbitration_to_task_state(
+    *,
+    user_id: str,
+    session_id: str,
+    turn_id: str,
+    run_id: str,
+    user_text: str,
+    decision: RealtimeTurnArbitrationDecision,
+    store: RealtimeTaskStateStore | None = None,
+) -> RealtimeTaskState:
+    """Record a semantic cancel that intentionally starts no business run."""
+
+    resolved_store = store or get_default_realtime_task_state_store()
+    state = resolved_store.get(user_id, session_id)
+    now = _utc_now()
+    if state is None:
+        state = RealtimeTaskState(
+            task_id=_task_id(user_id, session_id),
+            user_id=user_id,
+            session_id=session_id,
+            objective=_clip_text(user_text),
+            created_at=now,
+            updated_at=now,
+        )
+    text = _clip_text(user_text)
+    strategy = _select_continuation_strategy(state)
+    state.updated_at = now
+    state.latest_user_text = text
+    state.latest_turn_id = turn_id
+    state.latest_run_id = run_id
+    state.source_turn_ids = _append_unique_limited(state.source_turn_ids, turn_id)
+    state.source_run_ids = _append_unique_limited(state.source_run_ids, run_id)
+    state.status = "cancelled"
+    state.continuation_strategy = strategy
+    state.pending_tool = None
+    state.tts_state = "interrupted"
+    state.barge_in_source = "transcript"
+    state.revisions.append(
+        IntentRevision(
+            revision_id=f"rev_{len(state.revisions) + 1}",
+            task_id=state.task_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            user_text=text,
+            revision_type="cancel_goal",
+            strategy=strategy,
+            created_at=now,
+            metadata={
+                "source": decision.source,
+                "decision_id": decision.decision_id,
+                "disposition": decision.disposition,
+            },
+        )
+    )
+    resolved_store.save(state)
+    return state.model_copy(deep=True)
 
 
 def record_realtime_task_state_run_artifacts(
@@ -580,13 +643,21 @@ def _updated_state_for_request(
         state.source_run_ids = _append_unique_limited(state.source_run_ids, run_id)
 
     if interrupt and text:
-        if _interrupt_invalidates_artifacts(text):
+        arbitration = _semantic_arbitration_decision(metadata)
+        revision_type = _revision_type_for_interrupt(arbitration)
+        if revision_type == "change_goal" or _interrupt_invalidates_artifacts(text):
             state.artifacts = [_stale_artifact(artifact) for artifact in state.artifacts]
         strategy = _select_continuation_strategy(state)
         state.continuation_strategy = strategy
         state.tts_state = "interrupted"
         state.barge_in_source = _barge_in_source_from_request(request)
-        state.constraints = _append_unique_limited(state.constraints, text)
+        if revision_type == "add_constraint":
+            state.constraints = _append_unique_limited(state.constraints, text)
+        elif revision_type == "replace_constraint":
+            state.constraints = [text]
+        elif revision_type == "change_goal":
+            state.objective = text
+            state.constraints = []
         state.revisions.append(
             IntentRevision(
                 revision_id=f"rev_{len(state.revisions) + 1}",
@@ -594,16 +665,54 @@ def _updated_state_for_request(
                 turn_id=turn_id,
                 run_id=run_id,
                 user_text=text,
-                revision_type="add_constraint",
+                revision_type=revision_type,
                 strategy=strategy,
                 created_at=now,
-                metadata={"source": "realtime_interrupt"},
+                metadata=_revision_metadata(arbitration),
             )
         )
     elif not interrupt:
         state.continuation_strategy = None
 
     return state
+
+
+def _semantic_arbitration_decision(
+    metadata: dict[str, Any],
+) -> RealtimeTurnArbitrationDecision | None:
+    payload = metadata.get(REALTIME_TURN_ARBITRATION_METADATA_KEY)
+    if not isinstance(payload, dict):
+        return None
+    try:
+        decision = RealtimeTurnArbitrationDecision.model_validate(payload)
+    except (TypeError, ValueError):
+        return None
+    if decision.source != "semantic_llm":
+        return None
+    if decision.disposition not in {"REVISE_ACTIVE", "REPLACE_ACTIVE"}:
+        return None
+    return decision
+
+
+def _revision_type_for_interrupt(
+    decision: RealtimeTurnArbitrationDecision | None,
+) -> RealtimeTurnRevisionType:
+    if decision is None or decision.revision_type is None:
+        return "add_constraint"
+    return decision.revision_type
+
+
+def _revision_metadata(
+    decision: RealtimeTurnArbitrationDecision | None,
+) -> dict[str, Any]:
+    if decision is None:
+        return {"source": "realtime_interrupt"}
+    return {
+        "source": decision.source,
+        "decision_id": decision.decision_id,
+        "disposition": decision.disposition,
+        "reason_code": decision.reason_code,
+    }
 
 
 def _tool_artifacts_from_state(state: Any, *, task_state: RealtimeTaskState) -> list[TaskArtifact]:
