@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -13,7 +14,11 @@ from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearch
 from assistant_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+
+_ASCII_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_CHINESE_SEGMENT_RE = re.compile(r"[\u4e00-\u9fff]+")
 
 
 class SQLiteMemoryStore:
@@ -82,7 +87,54 @@ class SQLiteMemoryStore:
                     item.expires_at.isoformat() if item.expires_at else None,
                 ),
             )
+            _replace_fts_item(connection, item)
         return item
+
+    def search_candidates(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        limit: int,
+        memory_types: set[str] | None = None,
+    ) -> list[MemoryItem]:
+        """Search the local FTS5 candidate index without applying final policy filters."""
+
+        tokens = _search_tokens(query)
+        if not tokens:
+            return []
+        resolved_limit = max(1, min(int(limit), 200))
+        match_query = " OR ".join(f'"{token}"' for token in tokens)
+        clauses = [
+            "memory_items_fts MATCH ?",
+            "memory_items_fts.user_id = ?",
+            "memory_items.deleted_at IS NULL",
+        ]
+        params: list[object] = [match_query, user_id]
+        if memory_types:
+            resolved_types = sorted(str(memory_type) for memory_type in memory_types)
+            placeholders = ", ".join("?" for _ in resolved_types)
+            clauses.append(f"memory_items_fts.memory_type IN ({placeholders})")
+            params.extend(resolved_types)
+        params.append(resolved_limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT memory_items.payload, bm25(memory_items_fts) AS text_rank
+                FROM memory_items_fts
+                JOIN memory_items
+                  ON memory_items.user_id = memory_items_fts.user_id
+                 AND memory_items.memory_id = memory_items_fts.memory_id
+                WHERE {" AND ".join(clauses)}
+                ORDER BY text_rank ASC, memory_items.created_at DESC, memory_items.memory_id ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            self._item_from_row(row).model_copy(update={"relevance": 1.0 / (index + 1)})
+            for index, row in enumerate(rows)
+        ]
 
     def search(self, query: MemoryQuery) -> MemorySearchResult:
         from assistant_agent.memory.retrieval import MemoryRetrievalStrategy, format_memory_context
@@ -118,6 +170,7 @@ class SQLiteMemoryStore:
                 """,
                 (user_id, memory_id),
             )
+            _delete_fts_item(connection, user_id=user_id, memory_id=memory_id)
             return cursor.rowcount > 0
 
     def hard_delete(self, user_id: str, memory_id: str) -> bool:
@@ -129,6 +182,7 @@ class SQLiteMemoryStore:
                 """,
                 (user_id, memory_id),
             )
+            _delete_fts_item(connection, user_id=user_id, memory_id=memory_id)
             return cursor.rowcount > 0
 
     def delete_by_session(self, user_id: str, session_id: str) -> int:
@@ -148,6 +202,8 @@ class SQLiteMemoryStore:
                 """,
                 [(user_id, item.memory_id) for item in items],
             )
+            for item in items:
+                _delete_fts_item(connection, user_id=user_id, memory_id=item.memory_id)
             return cursor.rowcount
 
     def list_by_user(self, user_id: str) -> list[MemoryItem]:
@@ -173,6 +229,7 @@ class SQLiteMemoryStore:
                 """,
                 (user_id,),
             )
+            connection.execute("DELETE FROM memory_items_fts WHERE user_id = ?", (user_id,))
 
     def save_audit_event(self, event: MemoryAuditEvent) -> MemoryAuditEvent:
         """Persist a prompt-safe memory audit event."""
@@ -483,6 +540,8 @@ class SQLiteMemoryStore:
             _ensure_memory_schema(connection)
             _ensure_audit_schema(connection)
             _ensure_confirmation_schema(connection)
+            _ensure_fts_schema(connection)
+            _rebuild_fts_index(connection)
 
     def _initialize(self, *, new_database: bool) -> None:
         with self._connect() as connection:
@@ -491,6 +550,7 @@ class SQLiteMemoryStore:
                 _ensure_memory_schema(connection)
                 _ensure_audit_schema(connection)
                 _ensure_confirmation_schema(connection)
+                _ensure_fts_schema(connection)
                 connection.execute(
                     "INSERT INTO memory_schema_version(version) VALUES (?)",
                     (SCHEMA_VERSION,),
@@ -502,6 +562,7 @@ class SQLiteMemoryStore:
                 _ensure_memory_schema(connection)
                 _ensure_audit_schema(connection)
                 _ensure_confirmation_schema(connection)
+                _ensure_fts_schema(connection)
                 connection.execute(
                     "INSERT INTO memory_schema_version(version) VALUES (?)",
                     (SCHEMA_VERSION,),
@@ -522,9 +583,12 @@ class SQLiteMemoryStore:
             if current_version < SCHEMA_VERSION:
                 self._migrate(connection, current_version)
 
-    def _migrate(self, connection: sqlite3.Connection, _current_version: int) -> None:
+    def _migrate(self, connection: sqlite3.Connection, current_version: int) -> None:
         _ensure_audit_schema(connection)
         _ensure_confirmation_schema(connection)
+        if current_version < 4:
+            _ensure_fts_schema(connection)
+            _rebuild_fts_index(connection)
         connection.execute("UPDATE memory_schema_version SET version = ?", (SCHEMA_VERSION,))
 
     @contextmanager
@@ -594,6 +658,93 @@ def _ensure_memory_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_items_user_content_hash ON memory_items(user_id, content_hash)"
     )
+
+
+def _ensure_fts_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
+            user_id UNINDEXED,
+            memory_id UNINDEXED,
+            memory_type UNINDEXED,
+            summary,
+            search_text,
+            tokenize = 'unicode61'
+        )
+        """
+    )
+
+
+def _replace_fts_item(connection: sqlite3.Connection, item: MemoryItem) -> None:
+    _delete_fts_item(connection, user_id=item.user_id, memory_id=item.memory_id)
+    connection.execute(
+        """
+        INSERT INTO memory_items_fts(user_id, memory_id, memory_type, summary, search_text)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            item.user_id,
+            item.memory_id,
+            item.memory_type,
+            item.summary,
+            _memory_search_text(item),
+        ),
+    )
+
+
+def _delete_fts_item(connection: sqlite3.Connection, *, user_id: str, memory_id: str) -> None:
+    connection.execute(
+        "DELETE FROM memory_items_fts WHERE user_id = ? AND memory_id = ?",
+        (user_id, memory_id),
+    )
+
+
+def _rebuild_fts_index(connection: sqlite3.Connection) -> None:
+    _ensure_fts_schema(connection)
+    connection.execute("DELETE FROM memory_items_fts")
+    rows = connection.execute(
+        "SELECT payload FROM memory_items WHERE deleted_at IS NULL ORDER BY user_id, memory_id"
+    ).fetchall()
+    for row in rows:
+        _replace_fts_item(connection, MemoryItem.model_validate_json(str(row["payload"])))
+
+
+def _memory_search_text(item: MemoryItem) -> str:
+    parts = [
+        item.summary,
+        " ".join(item.tags),
+        " ".join(item.artifact_refs),
+        _flatten_search_values(item.content),
+    ]
+    source = " ".join(part for part in parts if part).lower()
+    return " ".join(_search_tokens(source))
+
+
+def _flatten_search_values(value: object) -> str:
+    if isinstance(value, dict):
+        return " ".join(
+            f"{key} {_flatten_search_values(nested)}"
+            for key, nested in value.items()
+        )
+    if isinstance(value, list):
+        return " ".join(_flatten_search_values(nested) for nested in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _search_tokens(value: str) -> list[str]:
+    normalized = value.strip().lower()
+    if not normalized:
+        return []
+    tokens = set(_ASCII_TOKEN_RE.findall(normalized))
+    for segment in _CHINESE_SEGMENT_RE.findall(normalized):
+        tokens.add(segment)
+        max_size = min(4, len(segment))
+        for size in range(2, max_size + 1):
+            for index in range(0, len(segment) - size + 1):
+                tokens.add(segment[index : index + size])
+    return sorted(token for token in tokens if token)[:256]
 
 
 _SQLITE_INDEX_NAMES = (
