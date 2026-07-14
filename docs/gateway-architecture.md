@@ -11,6 +11,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - Gateway owns normalized message, session, run, cancel, interrupt, reconnect, hangup, and stream-frame semantics between entry layers and the assistant realtime backend.
 - Every accepted `message.user` receives stable Gateway-owned `turn_id` and `run_id` values at ingress. A queued turn is a cancellable lifecycle object, not an anonymous pending payload.
 - Ordinary same-session turns use bounded FIFO followup queues. Session heads compete through one process-local admission controller, which bounds total queued turns and active backend runs without allowing same-session backend overlap.
+- Realtime media may opt into a separate bounded semantic-interrupt control plane. Explicit media control still interrupts immediately; implicit utterances are classified in parallel while the active backend continues, and only a matching `expected_run_id` decision may change Gateway lifecycle.
 - `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default adapter is `GatewayAgentAdapter`, a semantic alias of the compatibility class name `AgentGraphRealtimeBackend`.
 - The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
@@ -183,7 +184,9 @@ Gateway interrupt remains a lifecycle/control concept. It should cancel or gate
 the active run, preserve session continuity, and start the next turn. It should
 not own semantic task revision such as merging the old goal with new
 constraints, deciding whether intermediate artifacts are reusable, or resolving
-committed side effects.
+committed side effects. The optional `RealtimeTurnArbiter` is a separate semantic
+classifier; Gateway validates and applies its structured disposition but does
+not move business planning or tool decisions into the entry layer.
 
 ## Queue and Admission Contract
 
@@ -237,6 +240,108 @@ collection/summarization, or live prompt steering. The retained
 [implementation plan](superpowers/plans/2026-07-13-gateway-queue-admission.md)
 record the reviewed rationale and execution evidence; this document remains the
 current architecture authority.
+
+## Realtime Semantic Interrupt Arbitration
+
+Realtime calls distinguish two interrupt sources:
+
+- `explicit_control`: a user button, Media Relay control, `interrupt=true`,
+  `control=interrupt|barge_in|cancel_previous`, `run.cancel`, or hangup. Gateway
+  applies these signals immediately and never waits for an LLM.
+- `semantic_llm`: an ordinary final transcript whose meaning may cancel, revise,
+  or replace the active task. A separate `RealtimeTurnArbiter` classifies this
+  relation without starting a second business runtime.
+
+Semantic arbitration is eligible only when all of the following hold:
+
+1. the process feature flag is enabled;
+2. the trusted entry capability is `supports_semantic_interrupt=true`;
+3. the session has an active backend run;
+4. the new turn is not already an explicit interrupt;
+5. the trusted session config has not set `semantic_interrupt_enabled=false`.
+
+Only `REALTIME_MEDIA_ENTRY_CAPABILITIES` declares this capability. Generic
+`/ws/gateway`, HTTP/CLI turns, and the agent-service compatibility entry do not.
+
+The control-plane flow is:
+
+```text
+ordinary realtime transcript while run R1 is active
+    |
+    |-- accepted as queued turn R2; no backend permit consumed
+    |-- Media Relay may already pause or duck TTS
+    `-- bounded RealtimeTurnArbitrationController
+            |
+            v
+       RealtimeTurnArbiter(task-state snapshot, new utterance)
+            |
+            v
+       validated disposition + expected_run_id=R1
+            |
+            v
+       Gateway compare-and-apply
+            |-- FOLLOWUP / UNCERTAIN -> keep FIFO; R1 continues
+            |-- ACK_NOOP             -> complete R2 without backend; R1 continues
+            |-- CANCEL_ONLY          -> cancel R1; complete R2 without backend
+            `-- REVISE / REPLACE     -> cancel R1; start R2 only after R1 exits
+```
+
+The normalized dispositions are:
+
+| disposition | active run | accepted new turn |
+| --- | --- | --- |
+| `FOLLOWUP` | continue | remain in FIFO |
+| `UNCERTAIN` | continue | conservative FIFO fallback |
+| `ACK_NOOP` | continue | `run.end(completed)`, no backend |
+| `CANCEL_ONLY` | cancel | `run.end(completed)`, no backend |
+| `REVISE_ACTIVE` | cancel | move to replacement head with a validated revision |
+| `REPLACE_ACTIVE` | cancel | move to replacement head with `change_goal` |
+
+Low confidence, timeout, Provider error, invalid JSON, control-plane saturation,
+or a stale `expected_run_id` never cancels the current run. A still-accepted
+stale turn becomes an ordinary followup; a cancelled/expired turn discards the
+late decision. Timed-out synchronous Provider work retains its bounded control
+slot until the underlying call actually returns, preventing hidden background
+thread accumulation.
+
+The arbiter receives only the new utterance and a bounded projection containing
+the active objective, recent constraints, pending-tool status, TTS state, and
+committed-side-effect count. It has no tools, long-term memory, agent routing,
+artifact details, raw tool results, media bytes, or Provider payloads. Lifecycle
+events record decision ids, disposition, confidence bucket, reason code, latency
+and match/fallback facts, never utterance or prompt text.
+
+`REVISE_ACTIVE` and `REPLACE_ACTIVE` do not inject text into the currently
+executing `AgentGraphRuntime`. The current runtime receives only cooperative
+cancellation. The replacement run receives normalized arbitration metadata and
+the existing realtime task-state snapshot. `change_goal` clears old constraints
+and stales old artifacts while retaining side-effect records; cancellation
+cannot roll back committed external effects.
+
+Media Relay owns immediate audio experience. It may pause or duck TTS when the
+user speaks and later resume or supersede output based on the decision. The
+Python Gateway owns text/run visibility after cancellation but does not pretend
+to control a TTS provider that is outside this repository.
+
+The process policy is configured with strict values:
+
+| environment variable | default |
+| --- | ---: |
+| `MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_ENABLED` | `false` |
+| `MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_TIMEOUT_MS` | `1000` |
+| `MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_MAX_CONCURRENCY` | `2` |
+| `MULTIMODAL_AGENT_REALTIME_SEMANTIC_INTERRUPT_MIN_CONFIDENCE` | `0.80` |
+
+Default mock/local/offline profiles use a deterministic `UNCERTAIN` fallback.
+An actual LLM arbitration call additionally requires `provider_smoke` or
+`pilot` and a non-mock, configured chat adapter; the presence of an API key does
+not enable it. The control-plane call can share Provider resources with the
+business runtime, so zero indirect resource contention is a metric target, not
+an assumed guarantee.
+
+Live prompt steering remains out of scope. Supporting in-place active-run goal
+changes would require a separate runtime mailbox, safe checkpoints, context
+revision ordering, tool commit barriers and output versioning.
 
 Realtime turn cancellation metadata is normalized through
 `RealtimeTurnCancellationContract`:
