@@ -207,7 +207,7 @@ Runtime gate 映射：
 
 `approval.mode=never` 不增加 runtime confirmation；`approval.mode=always` 与未分类工具不能再因为入口缺少 realtime/source metadata 而绕过确认。确认事实只读取 runtime 绑定的 request metadata，模型参数中的 `confirmed` 不构成授权。
 
-当前限制：risk gate 和 idempotency ledger 是 process-local runtime guard；完整用户确认 UX、持久化 ledger、跨进程恢复和 irreversible external action provider 仍未接入。
+当前限制：通用 foreground/realtime risk gate 和 idempotency ledger 仍是 process-local runtime guard。durable task 路径已有 SQLite task/confirmation/lease 恢复，但幂等 ledger 仍未跨进程持久化；通用不可逆 external action provider 和统一确认产品 UX 仍未接入。
 
 ## 当前默认工具
 
@@ -393,7 +393,48 @@ assistant loop 有本地保护，不依赖模型自律：
 - `enter_plan_mode` 的 `TaskPlan` 先经 `PlanValidator` 校验 step 数量、唯一 step_id、依赖、未知工具和环。
 - active plan mode 下，tool call 必须匹配计划步骤和依赖。
 - 工具失败后 plan mode 可进入 `replanning`。
-- 真实非 mock runtime 不再要求 LLM 输出 `enter_plan_mode` / `exit_plan_mode` JSON；`execution_strategy=plan_and_solve` 会被接受为请求元数据，但仍走 native content/tool_calls 主循环。
+- 真实非 mock runtime 不再要求 LLM 输出 `enter_plan_mode` / `exit_plan_mode` JSON；功能开关关闭时，`execution_strategy=plan_and_solve` 仍只是兼容提示并走原有 native content/tool_calls 主循环。启用 durable tasks 后，未显式设置 `task_execution_mode` 的 `plan_and_solve` 请求会兼容映射为 `durable`；显式 `auto` / `foreground` 始终优先。
+
+## Durable structured task execution
+
+持久化任务是 provider-native tool calling 的可选执行模式，不是第二套 planner/controller。默认关闭：
+
+| variable | default |
+| --- | --- |
+| `MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED` | `false` |
+| `MULTIMODAL_AGENT_DURABLE_TASK_PATH` | `.local/tasks/durable_tasks.sqlite3` |
+| `MULTIMODAL_AGENT_DURABLE_TASK_WORKER_ENABLED` | `false` |
+| `MULTIMODAL_AGENT_DURABLE_TASK_LEASE_SECONDS` | `30` |
+| `MULTIMODAL_AGENT_DURABLE_TASK_POLL_SECONDS` | `1.0` |
+
+启用后的入口链路：
+
+```text
+UserRequest(task_execution_mode=durable)
+  -> provider-native task_plan_submit (必须是该 batch 唯一调用)
+  -> ActionValidator -> ToolExecutor -> ToolRegistry
+  -> DurableTaskService -> SQLiteTaskStore
+  -> terminal acceptance response: data.task + task:// output_ref
+
+DurableTaskWorker
+  -> claim lease
+  -> validated DurableTaskSnapshot + TrustedTaskBinding
+  -> AgentGraphRuntime.run_task_quantum()  # 最多一个动作
+  -> ActionValidator -> ToolExecutor -> ToolRegistry
+  -> TaskCheckpoint -> release lease
+```
+
+- `task_plan_submit` 只在开关开启且 runtime 绑定同一个 `DurableTaskService` 时注册；`foreground` 不向模型暴露该工具。显式 durable 但开关关闭会在调用 LLM 前返回 `durable_tasks_disabled`。
+- ingress durable 请求在计划提交前不能直接执行业务工具。worker resume 只能执行 binding 中的 ready step，且 tool name 必须与当前 plan version 匹配。
+- worker 一次只推进一个 quantum。成功工具结果先 checkpoint，再释放租约；所有必需步骤完成后，另一个无 ready step 的 quantum 才能把自然语言 final content 映射为 `completed`。仍有必需步骤时声称完成会被拒绝并进入 `replanning`。
+- step idempotency key 由任务服务生成并通过 trusted binding 注入工具输入和 `ToolContext.metadata.idempotency_key`，模型参数不能覆盖。每次外部调用前先持久化 `running` attempt；SQLite lease 过期后只自动重试 canonical read-only step，任何潜在写入都进入 `outcome_unknown`，不依赖 process-local ledger 猜测跨进程提交状态。
+- confirmation checkpoint 绑定 task、plan version、step、tool、规范化 input digest 和过期时间，并向 API 暴露经过裁剪/secret-key redaction 的最终参数摘要。恢复时 validator 重新计算摘要；工具或参数变化会返回 `durable_confirmation_binding_mismatch`，不能消费旧批准；过期确认会持久化为 `expired` 并进入 replanning。
+- `task_plan_submit` 修订只作用于当前 lease 绑定的任务；只有 goal 与完整 step contract（action、tool、dependency、input refs、required inputs、optional、reason）均未变化的成功 step 才可继承，新 plan version 会失效旧确认边界。
+- task aggregate 本地递减 model-call、tool-call、step-attempt、plan-revision 和 wall-clock deadline 预算；每个 quantum 内仍复用既有 provider budget。首版不提供跨任务的统一货币额度核算。
+- trusted resume 的 provider tool catalog 只暴露当前 ready tool 与 `task_plan_submit`；即使模型输出越界调用，`ActionValidator` 仍以 binding 做最终执行 gate。
+- durable worker 保留正常 `MemoryReadPolicy`，但不执行 completed-run 自动长期记忆写入，也不注入普通 conversation history。
+
+第一版非目标：分布式调度、跨进程 exactly-once、跨进程持久化 idempotency ledger、任意 DAG 并行执行、外部通知推送、把 durable task 注册为 Gateway active run，以及绕过 provider adapter/profile 去调用真实外部能力。
 
 ## Memory tool 特殊规则
 

@@ -14,6 +14,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default adapter is `GatewayAgentAdapter`, a semantic alias of the compatibility class name `AgentGraphRealtimeBackend`.
 - The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
+- Durable structured tasks are a separate post-acceptance lifecycle owned by `DurableTaskService` and its worker. Gateway owns only the ingress turn that accepts and returns the task handle; it does not keep the durable task as an active Gateway run.
 - Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and local CLI `--scenario` through demo flows enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
 - The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, and treats raw `audio` / `interrupt` frames as entry-layer ACK traffic. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; later `chat` turns carry the resulting `video_id` through Gateway so the LLM can autonomously choose the governed `video_understanding` tool.
@@ -230,13 +231,41 @@ The policy is configured at process startup with strict positive values:
 | `MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S` | `300` |
 | `MULTIMODAL_AGENT_GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER` | `1024` |
 
-All queue, dedupe, and admission state is process-local and in memory. It does
-not provide restart recovery, cross-worker consistency, durable tasks, message
+All Gateway queue, dedupe, and admission state is process-local and in memory. It does
+not provide restart recovery, cross-worker consistency, durable-task storage, message
 collection/summarization, or live prompt steering. The retained
 [design](superpowers/specs/2026-07-13-gateway-queue-admission-design.md) and
 [implementation plan](superpowers/plans/2026-07-13-gateway-queue-admission.md)
 record the reviewed rationale and execution evidence; this document remains the
 current architecture authority.
+
+## Gateway and durable task separation
+
+When `MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED=true`, an `/agent/run` or other Gateway-backed ingress turn may ask the native model to submit `task_plan_submit`. A successful submission is terminal for that Gateway turn:
+
+```text
+Gateway message.user
+  -> one normal Gateway run
+  -> AgentGraphRuntime
+  -> task_plan_submit
+  -> response data.task{submission_status, task_id, task_status, progress_url}
+  -> Gateway run.end(completed)
+
+later, outside Gateway run lifecycle:
+DurableTaskWorker -> lease -> one quantum -> checkpoint
+```
+
+The durable `task_id` is not a Gateway `run_id`, is not inserted into the Gateway active-run map, and does not reuse the in-memory Gateway followup queue. Progress and control use the identity-scoped HTTP API:
+
+- `GET /tasks/{task_id}`
+- `GET /tasks/{task_id}/events?after=<cursor>&limit=<n>`
+- `POST /tasks/{task_id}/confirmations`
+- `POST /tasks/{task_id}/input`
+- `POST /tasks/{task_id}/cancel`
+
+The API derives identity from the authenticated context (or explicit local/offline query identity), never from write-body `user_id`. Public projections omit lease tokens, confirmation/input digests, binding digests and step idempotency keys; pending confirmations include a bounded, credential-key-redacted summary of the final tool arguments so approval is not blind. FastAPI lifespan reuses the runtime-owned service, optionally starts one cooperative worker, stops it before Gateway shutdown, and closes the SQLite store once.
+
+SQLite tasks survive app restart and expired leases can be reclaimed, but this is not a distributed queue or exactly-once protocol. A step attempt is committed before the external call; expired read-only attempts may retry within budget, while possible writes with uncertain commit state stop at `outcome_unknown` for operator/user resolution. API cancellation also raises a process-local cooperative task token; cross-process cancellation is outside the single-host first-version boundary.
 
 Realtime turn cancellation metadata is normalized through
 `RealtimeTurnCancellationContract`:

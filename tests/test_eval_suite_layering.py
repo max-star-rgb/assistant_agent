@@ -14,6 +14,7 @@ EXPECTED_SUITES = {
     "memory_quality",
     "packaging",
     "plan_mode",
+    "durable_tasks",
 }
 
 
@@ -45,6 +46,7 @@ def test_eval_cases_can_be_filtered_by_suite() -> None:
     memory_quality_cases = filter_cases_by_suite(cases, "memory_quality")
     packaging_cases = filter_cases_by_suite(cases, "packaging")
     plan_mode_cases = filter_cases_by_suite(cases, "plan_mode")
+    durable_task_cases = filter_cases_by_suite(cases, "durable_tasks")
 
     assert routing_cases
     assert e2e_cases
@@ -53,6 +55,7 @@ def test_eval_cases_can_be_filtered_by_suite() -> None:
     assert memory_quality_cases
     assert packaging_cases
     assert plan_mode_cases
+    assert durable_task_cases
     assert all(case["suite"] == "routing" for case in routing_cases)
     assert all(case["suite"] == "e2e" for case in e2e_cases)
     assert all(case["suite"] == "provider_safety" for case in provider_safety_cases)
@@ -60,6 +63,7 @@ def test_eval_cases_can_be_filtered_by_suite() -> None:
     assert all(case["suite"] == "memory_quality" for case in memory_quality_cases)
     assert all(case["suite"] == "packaging" for case in packaging_cases)
     assert all(case["suite"] == "plan_mode" for case in plan_mode_cases)
+    assert all(case["suite"] == "durable_tasks" for case in durable_task_cases)
 
 
 def test_e2e_eval_cases_reference_demo_scenario_matrix() -> None:
@@ -130,3 +134,28 @@ def test_plan_mode_eval_detail_exposes_native_runtime_checks() -> None:
     assert detail["plan_mode_checks"]["plan_revision_match"] is True
     assert detail["actual_tools"] == ["price_compare", "image_generation"]
     assert detail["error_codes"] == []
+
+
+def test_durable_task_eval_suite_runs_offline_native_control_flow() -> None:
+    cases = filter_cases_by_suite(load_cases(Path("tests/evals/eval_cases.json")), "durable_tasks")
+
+    summary = run_evals(cases)
+
+    assert summary["total"] == 8
+    assert summary["failed"] == 0
+    assert summary["suites"]["durable_tasks"]["passed"] == 8
+
+
+def test_durable_task_eval_detail_reports_governance_and_redaction() -> None:
+    cases = filter_cases_by_suite(load_cases(Path("tests/evals/eval_cases.json")), "durable_tasks")
+    case = next(item for item in cases if item["id"] == "durable_waiting_confirmation_001")
+
+    detail = evaluate_case(case)
+
+    assert detail["passed"] is True
+    assert detail["task_status"] == "waiting_confirmation"
+    assert detail["plan_version"] == 1
+    assert detail["chat_calls"] == 1
+    assert detail["actual_tools"] == ["custom_notification"]
+    assert detail["raw_payload_safe"] is True
+    assert detail["durable_task_checks"]["tool_governance_evidence"] is True

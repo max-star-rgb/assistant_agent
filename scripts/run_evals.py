@@ -10,6 +10,8 @@ from argparse import ArgumentParser
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -37,11 +39,21 @@ from assistant_agent.schemas.capabilities import canonical_intent
 from assistant_agent.schemas.intent_router import IntentRouterRequest
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.durable_tasks import TaskCheckpoint
+from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.schemas.planning import TaskPlan, TaskStep
+from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult, ProviderChatCapabilities
 from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_errors import build_provider_error
 from assistant_agent.services.provider_policy import RetryPolicy
 from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.services.durable_tasks.service import DurableTaskService
+from assistant_agent.services.durable_tasks.store import InMemoryTaskStore
+from assistant_agent.services.durable_tasks.worker import _binding_for_lease, _resume_request
+from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.registry import create_default_registry
+from assistant_agent.api.routes_tasks import _task_response
 from assistant_agent.mcp.server import OfflineMCPServer
 
 
@@ -79,6 +91,25 @@ class ScriptedPlanModeChatAdapter:
             output = self.outputs[min(self.calls, len(self.outputs) - 1)]
         self.calls += 1
         return output
+
+
+class _EvalProbeInput(BaseModel):
+    text: str
+
+
+class _EvalProbeTool(MockTool):
+    name = "custom_notification"
+    description = "Offline durable-task confirmation probe."
+    input_schema = _EvalProbeInput
+    output_schema = _EvalProbeInput
+
+    def _run(self, input: _EvalProbeInput, context: ToolContext) -> ToolResult:
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data={"summary": input.text},
+            output_ref="mock://custom-notification/1",
+        )
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[dict[str, Any]]:
@@ -130,16 +161,19 @@ def request_from_case(case: dict[str, Any]) -> UserRequest:
     if video_ids is None and inputs.get("has_video"):
         video_ids = [f"{case['id']}_video"]
 
-    return UserRequest(
-        user_id=case.get("user_id", "u1"),
-        session_id=case.get("session_id", "s1"),
-        text=case.get("text") or case.get("user_query"),
-        image_ids=image_ids or [],
-        video_ids=video_ids or [],
-        audio_id=case.get("audio_id"),
-        metadata=dict(case.get("metadata", {})),
-        execution_strategy=case.get("execution_strategy", "react"),
-    )
+    payload = {
+        "user_id": case.get("user_id", "u1"),
+        "session_id": case.get("session_id", "s1"),
+        "text": case.get("text") or case.get("user_query"),
+        "image_ids": image_ids or [],
+        "video_ids": video_ids or [],
+        "audio_id": case.get("audio_id"),
+        "metadata": dict(case.get("metadata", {})),
+        "execution_strategy": case.get("execution_strategy", "react"),
+    }
+    if "task_execution_mode" in case:
+        payload["task_execution_mode"] = case["task_execution_mode"]
+    return UserRequest(**payload)
 
 
 def expected_capability(case: dict[str, Any]) -> str | None:
@@ -148,6 +182,8 @@ def expected_capability(case: dict[str, Any]) -> str | None:
 
 
 def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
+    if case.get("suite") == "durable_tasks":
+        return evaluate_durable_task_case(case, router_mode=router_mode)
     if case.get("suite") == "plan_mode":
         return evaluate_plan_mode_case(case, router_mode=router_mode)
     if case.get("suite") == "provider_safety":
@@ -244,6 +280,154 @@ def evaluate_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, 
         "missing_slots": missing_slots,
         "media_requirement_errors": media_requirement_errors,
     }
+
+
+def evaluate_durable_task_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
+    """Evaluate durable-task control flow through the offline native runtime."""
+
+    scenario = str(case.get("durable_scenario") or "")
+    registry = create_default_registry()
+    if scenario == "waiting_confirmation":
+        registry.register(_EvalProbeTool())
+    service = DurableTaskService(store=InMemoryTaskStore(), registry=registry)
+    adapter = ScriptedPlanModeChatAdapter(_durable_chat_outputs(case))
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        config=ProviderConfig(durable_tasks_enabled=True),
+        chat_adapter=adapter,
+        durable_task_service=service,
+    )
+    state = None
+    bundle = None
+
+    if scenario in {"simple_auto_direct", "auto_complex_submission", "explicit_submission", "mixed_batch"}:
+        state = runtime.run_state(request_from_case(case))
+        task_data = (state.response.data or {}).get("task") if state.response else None
+        task_id = task_data.get("task_id") if isinstance(task_data, dict) else None
+        bundle = service.store.load(task_id) if isinstance(task_id, str) else None
+    else:
+        tool_name = "custom_notification" if scenario == "waiting_confirmation" else "product_search"
+        bundle = _submit_durable_eval_task(service, tool_name=tool_name)
+        if scenario == "final_completion":
+            lease = service.claim_next(worker_id="eval-worker")
+            stored = service.checkpoint(
+                lease,
+                TaskCheckpoint(
+                    kind="tool_succeeded",
+                    step_id="step_1",
+                    summary="precompleted step",
+                    output_ref="mock://precompleted/1",
+                ),
+            )
+            service.store.release(lease, expected_version=stored.task.version)
+        lease = service.claim_next(worker_id="eval-worker")
+        snapshot = service.snapshot_for_lease(lease)
+        leased = service.store.load(lease.task_id)
+        binding = _binding_for_lease(lease, leased, snapshot.ready_step_ids)
+        request = _resume_request(leased.task.user_id, leased.task.session_id, snapshot, binding)
+        quantum = runtime.run_task_quantum(request, binding=binding)
+        state = quantum.state
+        checkpoint_lease = lease
+        if quantum.binding is not None:
+            checkpoint_lease = lease.model_copy(
+                update={"task_version": quantum.binding.task_version}
+            )
+        bundle = service.checkpoint(checkpoint_lease, quantum.checkpoint)
+
+    actual_tools = [call.tool_name for call in state.tool_calls] if state is not None else []
+    error_codes = [
+        run.error_code
+        for run in (bundle.step_runs if bundle is not None else [])
+        if run.error_code
+    ]
+    if state is not None:
+        error_codes.extend(
+            str(error.details.get("code"))
+            for error in state.errors
+            if error.details.get("code")
+        )
+    task_status = bundle.task.status if bundle is not None else None
+    plan_version = bundle.task.current_plan_version if bundle is not None else None
+    public_payload = (
+        _task_response(bundle).model_dump_json()
+        if bundle is not None
+        else (state.response.model_dump_json() if state is not None and state.response else "")
+    )
+    raw_payload_safe = not any(
+        marker in public_payload
+        for marker in ("lease_token", "binding_digest", "idempotency_key", "raw_provider_payload")
+    )
+    expected_tools = case.get("expected_tools", [])
+    expected_status = case.get("expected_task_status")
+    expected_plan_version = case.get("expected_plan_version")
+    expected_errors = case.get("expected_error_codes", [])
+    must_not_call = case.get("must_not_call", [])
+    unexpected_tools = [name for name in actual_tools if name in must_not_call]
+    tool_match = tools_contain_expected(actual_tools, expected_tools)
+    status_match = expected_status is None or task_status == expected_status
+    plan_match = expected_plan_version is None or plan_version == expected_plan_version
+    chat_calls_match = case.get("expected_chat_calls") in {None, adapter.calls}
+    errors_match = all(code in error_codes for code in expected_errors)
+    governance_evidence = (
+        tool_match
+        and not unexpected_tools
+        and raw_payload_safe
+        and errors_match
+    )
+    passed = status_match and plan_match and chat_calls_match and governance_evidence
+    return {
+        "id": case["id"],
+        "router_mode": router_mode,
+        "suite": case.get("suite"),
+        "category": case.get("category"),
+        "scenario_id": case.get("scenario_id"),
+        "passed": passed,
+        "intent_match": True,
+        "capability_match": True,
+        "tool_selection_match": tool_match,
+        "ordered_tool_match": tool_match,
+        "unexpected_tool_called": bool(unexpected_tools),
+        "media_requirement_error": False,
+        "followup_expected": False,
+        "followup_match": True,
+        "response_contains_match": True,
+        "expected_intent": case.get("expected_intent"),
+        "actual_intent": case.get("expected_intent"),
+        "expected_capability": case.get("expected_capability"),
+        "actual_capability": case.get("expected_capability"),
+        "expected_tools": expected_tools,
+        "actual_tools": actual_tools,
+        "expected_response_contains": [],
+        "must_not_call": must_not_call,
+        "unexpected_tools": unexpected_tools,
+        "must_not_require": [],
+        "missing_slots": [],
+        "media_requirement_errors": [],
+        "task_status": task_status,
+        "plan_version": plan_version,
+        "chat_calls": adapter.calls,
+        "error_codes": error_codes,
+        "raw_payload_safe": raw_payload_safe,
+        "durable_task_checks": {
+            "status_match": status_match,
+            "plan_version_match": plan_match,
+            "chat_calls_match": chat_calls_match,
+            "error_codes_match": errors_match,
+            "tool_governance_evidence": governance_evidence,
+        },
+    }
+
+
+def _submit_durable_eval_task(service: DurableTaskService, *, tool_name: str):
+    return service.submit_plan(
+        identity=RequestIdentity.for_user(user_id="u1", session_id="s1"),
+        ingress_run_id="eval-ingress",
+        plan=TaskPlan(
+            goal="offline durable eval task",
+            steps=[TaskStep(step_id="step_1", action="execute", tool_name=tool_name)],
+        ),
+        revision_reason="initial",
+    )
 
 
 def evaluate_plan_mode_case(case: dict[str, Any], router_mode: str = "rule") -> dict[str, Any]:
@@ -682,6 +866,39 @@ def _plan_mode_chat_outputs(case: dict[str, Any]) -> list[ChatResult]:
                 message_kind="final_answer",
             )
         )
+    return rendered
+
+
+def _durable_chat_outputs(case: dict[str, Any]) -> list[ChatResult]:
+    outputs = case.get("scripted_chat_outputs", [])
+    rendered: list[ChatResult] = []
+    for index, output in enumerate(outputs, start=1):
+        if isinstance(output, dict) and output.get("type") == "tool_batch":
+            calls = output.get("calls") if isinstance(output.get("calls"), list) else []
+            rendered.append(
+                ChatResult(
+                    response_text="",
+                    tool_calls=[
+                        NativeToolCall(
+                            id=f"durable_eval_{index}_{call_index}",
+                            name=str(call.get("tool_name") or ""),
+                            arguments=(
+                                call.get("tool_input")
+                                if isinstance(call.get("tool_input"), dict)
+                                else {}
+                            ),
+                        )
+                        for call_index, call in enumerate(calls, start=1)
+                        if isinstance(call, dict)
+                    ],
+                    provider="scripted-native",
+                    model="durable-task-eval",
+                    finish_reason="tool_calls",
+                    message_kind="tool_call",
+                )
+            )
+            continue
+        rendered.extend(_plan_mode_chat_outputs({"scripted_chat_outputs": [output]}))
     return rendered
 
 

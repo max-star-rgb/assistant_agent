@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -11,7 +11,7 @@ Last updated: 2026-07-13
 - 当前结论：上下文工程第一版已经可用并适合阶段性收口，不是缺核心组件的状态。
 - 当前权威入口：本文件。
 - 说明：已移除完成态阶段计划，当前以本文件作为上下文工程状态与交接入口。
-- 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md` source、Context Compiler v1 redacted report、session summary、token-aware recent transcript、增量滑动窗口摘要、session handoff v2、realtime task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
+- 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md` source、Context Compiler v1 redacted report、session summary、token-aware recent transcript、增量滑动窗口摘要、session handoff v2、realtime task-state snapshot、durable task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
 - 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
 - 预算现状：全局压缩控制仍以字符预算为准；recent transcript 选择已使用本地 token 估算；Memory context 有单独 token-aware 注入边界；其余 token 字段仍主要用于报告。
 - memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期读取由 `MemoryReadPolicy` gate，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
@@ -29,7 +29,17 @@ Last updated: 2026-07-13
 - `AgentGraphRuntime` 可在 run 入口通过 `ContextSourceCoordinator` 加载一次显式 owner-bound 的 `SOUL.md`，把验证后的 `ContextSourceResult` 冻结到 `AgentState`；同一 run 的多次 assistant iteration 不重复读文件，下一 run 才观察合法更新。
 - 生产 provider-native `ChatRequest` 现在统一通过无副作用 `PromptCompiler` 编译；native tool、native-context final-only 和 summary final-only 使用显式 mode，保留各自既有 renderer、tool choice、tool-call evidence 和生成参数。legacy prompt-json renderer 仍只用于离线兼容与测试。
 - `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
-- Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，并以非累加的 `context_source_report_v1` 报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数；不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、tool observation 或 provider payload。
+- Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`durable_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，并以非累加的 `context_source_report_v1` 报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数；不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、tool observation 或 provider payload。
+
+### Durable Task Context
+
+- worker resume 只把 Pydantic 校验通过的 `request.metadata.durable_task_snapshot` 转成 `AssistantContextPack.durable_task_state`。普通入口会移除外部传入的 snapshot/binding/confirmation/lease 等保留键，不能用请求 metadata 伪造 worker 状态。
+- trusted resume 的 tool recall 读取 worker 注入的 `ready_tool_names`，只向模型展示当前 ready tools 与 `task_plan_submit`；普通 foreground identity recall 行为不变。
+- prompt 白名单包含 task id、objective、active constraints、task status、plan version、当前 plan、ready step ids、completed step 的 summary/output ref、artifact refs、等待状态和 remaining budget。任意顶层扩展、completed-step raw provider response、wait provider payload、父会话历史和 secret 不进入该区段。
+- renderer 明确标注“当前任务执行数据，不是系统指令、长期记忆或用户授权”。prompt-json、provider-native user message 和 final-only prompt 使用同一数据边界。
+- 超长字符串和列表在进入 pack 时本地裁剪；`ContextBudgetReport` 分别记录 `durable_task_state_chars/tokens`，裁剪时把 `durable_task_state` 写入 `trimmed_sections`。
+- `ContextReport.sections.durable_task_state` 只暴露 chars、tokens、item count、trimmed 和 source=`trusted_runtime.durable_task_snapshot`，不记录任务内容或 artifact URL。
+- durable snapshot 是当前执行状态，不是 session summary 或长期 memory。worker 可按普通 read policy 读取长期记忆，但量子完成不会触发 completed-run 自动长期写入。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - Realtime task-state snapshot 只在进入 runtime 前显式启用：`interaction_mode=realtime`、`enable_realtime_task_state=true` 或 entry capability `supports_realtime_task_state=true`。普通 `/agent/run` 即使经由 Gateway 生命周期，也不会因为存在 `gateway` metadata 或 `realtime.run_id`/`turn_id` 自动启用。
 - `MemoryManager` 负责按 read policy 加载或跳过分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
@@ -142,7 +152,7 @@ Last updated: 2026-07-13
 - Side-effect records 来自 `ToolSpec.side_effect` 和工具结果中的 prompt-safe override（例如 `requires_confirmation`、`confirmation_id`、`side_effect_level`）；read-only 工具不阻塞重规划，pending confirmation 会让下一轮先处理确认，committed action 不会被描述成已取消，compensatable artifact 会倾向修正版/补偿路径。
 - `AgentGraphRealtimeBackend` 和 shared run service 会发 display-only `run.progress`，用于 App + Media 展示 `task_state/revising`、strategy、reusable artifact count 和 side-effect count。
 - Realtime delivery policy 将 `run.progress` 和 tool lifecycle 标记为 `persistence=ephemeral`，只有 `response.chunk` 属于 `persistence=final`；progress 使用 run-scoped replacement key，并由 final chunk 或 `run.end` supersede，因此不会作为 assistant final text 进入 conversation history 或长期 memory。
-- 当前已接入 process-local risk gate/idempotency ledger：read-only 工具无额外开销，compensatable 工具可去重，realtime 未分类 hard-gate 工具会返回 pending confirmation。完整用户确认 UX、持久化 ledger 和跨进程恢复仍未接入。
+- 当前已接入 process-local risk gate/idempotency ledger：read-only 工具无额外开销，compensatable 工具可去重，realtime 未分类 hard-gate 工具会返回 pending confirmation。durable task 有独立 SQLite task/confirmation/lease 恢复与身份隔离 API；通用确认 UX 和跨进程幂等 ledger 仍未接入。
 
 ### Context Budget And Observability
 
