@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.memory.facts import is_active_memory_fact
 from assistant_agent.schemas.memory import MemoryItem
 
 
@@ -41,6 +42,8 @@ class UserProfileMemory(BaseModel):
         """Merge a semantic memory into the profile and return whether it changed."""
 
         changed = False
+        if not is_active_memory_fact(item):
+            return False
         entry = item.summary.strip()
         if not entry:
             return False

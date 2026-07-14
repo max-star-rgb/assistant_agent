@@ -452,6 +452,13 @@ def build_explicit_memory_item(
         "output_ref",
         "consent",
         "confirmation_id",
+        "fact",
+        "fact_key",
+        "fact_value",
+        "subject",
+        "predicate",
+        "conflict_policy",
+        "confidence",
     ):
         value = payload.get(key)
         if value:

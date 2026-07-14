@@ -23,6 +23,15 @@ class KeywordMemoryRetriever:
         limit: int = 10,
         memory_types: set[str] | None = None,
     ) -> list[MemoryItem]:
+        candidate_search = getattr(self.store, "search_candidates", None)
+        if callable(candidate_search):
+            return candidate_search(
+                user_id=user_id,
+                query=query,
+                limit=limit,
+                memory_types=memory_types,
+            )
+
         keywords = self._keywords(query)
         if not keywords:
             return []

@@ -8,6 +8,14 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from assistant_agent.memory.context_builder import MemoryContextBlock, MemoryContextBuilder, MemoryLayer
+from assistant_agent.memory.conflict_resolver import MemoryConflictResolver
+from assistant_agent.memory.facts import (
+    fact_content,
+    fact_from_item,
+    is_active_memory_fact,
+    mark_fact_superseded,
+    memory_fact_status,
+)
 from assistant_agent.memory.profile import USER_PROFILE_MEMORY_ID, UserProfileMemory
 from assistant_agent.memory.read_policy import (
     MemoryReadDecision,
@@ -44,6 +52,7 @@ from assistant_agent.schemas.memory_audit import (
     MemoryProfileRepairAction,
     MemoryProfileRepairResult,
 )
+from assistant_agent.schemas.memory_intelligence import MemoryConflictDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 
@@ -69,6 +78,13 @@ _SAFE_EXPLICIT_CONTENT_KEYS = {
     "product_id",
     "item",
     "output_ref",
+    "fact",
+    "fact_key",
+    "fact_value",
+    "subject",
+    "predicate",
+    "conflict_policy",
+    "confidence",
 }
 
 
@@ -99,6 +115,15 @@ class MemoryConfirmationRequired(ValueError):
     def __init__(self, confirmation: MemoryPendingConfirmation) -> None:
         super().__init__(confirmation.reason)
         self.confirmation = confirmation
+
+
+class _MemoryFactConflictRequired(ValueError):
+    """Internal signal carrying a pure conflict decision to the save boundary."""
+
+    def __init__(self, item: MemoryItem, decision: MemoryConflictDecision) -> None:
+        super().__init__(decision.reason)
+        self.item = item
+        self.decision = decision
 
 
 class MemorySaveCandidateResult(BaseModel):
@@ -144,6 +169,7 @@ class MemoryManager:
         self.default_max_context_chars = default_max_context_chars
         self.default_max_context_tokens = default_max_context_tokens
         self.context_builder = context_builder or MemoryContextBuilder()
+        self.conflict_resolver = MemoryConflictResolver()
         self.max_audit_events = max(1, max_audit_events)
         self.default_confirmation_ttl_seconds = max(60, default_confirmation_ttl_seconds)
         self._audit_events: list[MemoryAuditEvent] = []
@@ -565,6 +591,30 @@ class MemoryManager:
             )
         try:
             saved = self._merge_or_save(item)
+        except _MemoryFactConflictRequired as exc:
+            confirmation = self._create_conflict_confirmation(
+                item=exc.item,
+                content=content or {},
+                write_decision=decision,
+                conflict_decision=exc.decision,
+            )
+            self.record_audit_event(
+                "memory_confirmation_created",
+                user_id=user_id,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                session_id=session_id,
+                memory_id=exc.item.memory_id,
+                summary="structured memory conflict confirmation required",
+                counts={"attempted": 1, "pending": 1, "written": 0, "conflicts": 1},
+                metadata={
+                    "confirmation_id": confirmation.confirmation_id,
+                    "confirmation_kind": confirmation.confirmation_kind,
+                    **_conflict_audit_metadata(exc.decision),
+                    **source_metadata,
+                },
+            )
+            raise MemoryConfirmationRequired(confirmation) from None
         except MemoryServiceOperationError as exc:
             self._record_remote_lifecycle_failure(
                 user_id=user_id,
@@ -849,6 +899,37 @@ class MemoryManager:
             "consent": "explicit_confirmation",
             "confirmation_id": confirmation.confirmation_id,
         }
+        if confirmation.confirmation_kind == "fact_conflict":
+            raw_fact = content.get("fact")
+            if not isinstance(raw_fact, dict):
+                raise ValueError("memory conflict confirmation is missing structured fact")
+            fact = fact_from_item(
+                MemoryItem(
+                    memory_id=confirmation.memory_id or "pending_memory",
+                    user_id=identity.user_id,
+                    tenant_id=confirmation.tenant_id,
+                    project_id=confirmation.project_id,
+                    session_id=confirmation.session_id,
+                    memory_type=confirmation.memory_type,
+                    scope=_confirmation_scope(confirmation),
+                    summary=confirmation.summary,
+                    content={"fact": raw_fact},
+                    source="explicit_user_request",
+                    created_at=created_at or datetime.now(timezone.utc),
+                )
+            )
+            if fact is None:
+                raise ValueError("memory conflict confirmation fact is invalid")
+            content["fact"] = fact.model_copy(
+                update={
+                    "provenance": "user_confirmed",
+                    "conflict_policy": "replace",
+                    "status": "active",
+                    "supersedes_memory_ids": [],
+                    "superseded_by_memory_id": None,
+                    "conflict_reason": None,
+                }
+            ).model_dump(mode="json")
         item = build_explicit_memory_item(
             memory_id=confirmation.memory_id or f"explicit_memory_{uuid4().hex}",
             user_id=identity.user_id,
@@ -1253,6 +1334,43 @@ class MemoryManager:
         )
         return self._save_confirmation(confirmation)
 
+    def _create_conflict_confirmation(
+        self,
+        *,
+        item: MemoryItem,
+        content: dict[str, Any],
+        write_decision: Any,
+        conflict_decision: MemoryConflictDecision,
+    ) -> MemoryPendingConfirmation:
+        now = item.created_at
+        confirmation = MemoryPendingConfirmation(
+            confirmation_id=f"memory_confirmation_{uuid4().hex}",
+            user_id=item.user_id,
+            tenant_id=item.tenant_id,
+            project_id=item.project_id,
+            session_id=item.session_id,
+            memory_id=item.memory_id,
+            confirmation_kind="fact_conflict",
+            fact_key=conflict_decision.fact_key,
+            conflict_memory_ids=conflict_decision.matching_memory_ids,
+            status="pending",
+            memory_type=item.memory_type,
+            scope=memory_scope_for_item(item),
+            destination=str(write_decision.destination),
+            sensitivity=str(write_decision.sensitivity),
+            reason=sanitize_error_message(conflict_decision.reason),
+            summary=item.summary,
+            redacted_payload={
+                "summary": item.summary,
+                "memory_type": item.memory_type,
+                "destination": str(write_decision.destination),
+            },
+            content_preview=_safe_explicit_content_preview(content, summary=item.summary),
+            created_at=now,
+            expires_at=now + timedelta(seconds=self.default_confirmation_ttl_seconds),
+        )
+        return self._save_confirmation(confirmation)
+
     def _save_confirmation(self, confirmation: MemoryPendingConfirmation) -> MemoryPendingConfirmation:
         self._pending_confirmations[confirmation.confirmation_id] = confirmation
         save_confirmation = getattr(self.store, "save_confirmation", None)
@@ -1281,9 +1399,26 @@ class MemoryManager:
         return deleted
 
     def _merge_or_save(self, item: MemoryItem) -> MemoryItem:
+        conflict = self.conflict_resolver.resolve(item, self.store.list_by_user(item.user_id))
+        if conflict.action == "merge":
+            existing = self.store.get(item.user_id, conflict.matching_memory_ids[0])
+            if existing is not None:
+                return self._merge_items(existing, item)
+        if conflict.action == "supersede":
+            return self._save_with_supersedes(item, conflict)
+        if conflict.action == "confirm":
+            raise _MemoryFactConflictRequired(item, conflict)
+        if fact_from_item(item) is not None:
+            return self.store.save(item)
+
         duplicate = self._find_duplicate(item)
         if duplicate is None:
-            return self.store.save(self._apply_supersedes_chain(item))
+            return self.store.save(item)
+
+        return self._merge_items(duplicate, item)
+
+    def _merge_items(self, duplicate: MemoryItem, item: MemoryItem) -> MemoryItem:
+        """Merge one repeated observation into the canonical item."""
 
         observation_count = _observation_count(duplicate) + 1
         merged = duplicate.model_copy(
@@ -1302,55 +1437,48 @@ class MemoryManager:
         )
         return self.store.save(merged)
 
-    def _apply_supersedes_chain(self, item: MemoryItem) -> MemoryItem:
-        preference_key = _preference_conflict_key(item)
-        if not preference_key:
-            return item
-
-        superseded_ids: list[str] = []
-        for existing in self.store.list_by_user(item.user_id):
-            if not _is_supersedable_preference(existing, item, preference_key):
+    def _save_with_supersedes(
+        self,
+        item: MemoryItem,
+        decision: MemoryConflictDecision,
+    ) -> MemoryItem:
+        for memory_id in decision.superseded_memory_ids:
+            existing = self.store.get(item.user_id, memory_id)
+            if existing is None:
                 continue
-            superseded_ids.append(existing.memory_id)
             self.store.save(
-                existing.model_copy(
-                    update={
-                        "content": {
-                            **existing.content,
-                            "preference_key": preference_key,
-                            "conflict_key": preference_key,
-                            "superseded_by_memory_id": item.memory_id,
-                            "superseded_at": item.created_at.isoformat(),
-                            "conflict_reason": "newer_explicit_preference_for_same_key",
-                        },
-                        "updated_at": item.created_at,
-                    }
+                mark_fact_superseded(
+                    existing,
+                    by_memory_id=item.memory_id,
+                    at=item.created_at,
+                    reason=decision.reason,
                 )
             )
 
-        if not superseded_ids:
-            return item.model_copy(
-                update={
-                    "content": {
-                        **item.content,
-                        "preference_key": preference_key,
-                        "conflict_key": preference_key,
-                    }
-                }
-            )
-
-        return item.model_copy(
+        fact = fact_from_item(item)
+        if fact is None:
+            return self.store.save(item)
+        superseded_ids = sorted(set(decision.superseded_memory_ids))
+        updated_fact = fact.model_copy(
             update={
-                "content": {
-                    **item.content,
-                    "preference_key": preference_key,
-                    "conflict_key": preference_key,
-                    "supersedes_memory_id": superseded_ids[0],
-                    "supersedes_memory_ids": superseded_ids,
-                    "conflict_reason": "newer_explicit_preference_for_same_key",
-                }
+                "status": "active",
+                "supersedes_memory_ids": superseded_ids,
+                "superseded_by_memory_id": None,
+                "conflict_reason": decision.reason,
             }
         )
+        content = {
+            **item.content,
+            **fact_content(updated_fact),
+            "supersedes_memory_id": superseded_ids[0] if superseded_ids else None,
+            "supersedes_memory_ids": superseded_ids,
+            "conflict_reason": decision.reason,
+        }
+        if updated_fact.predicate.startswith("preference."):
+            preference_key = updated_fact.predicate.removeprefix("preference.")
+            content["preference_key"] = preference_key
+            content["conflict_key"] = preference_key
+        return self.store.save(item.model_copy(update={"content": content}))
 
     def _find_duplicate(self, item: MemoryItem) -> MemoryItem | None:
         item_key = _dedupe_key(item)
@@ -1494,40 +1622,58 @@ def _profile_all_source_items(items: list[MemoryItem]) -> list[MemoryItem]:
 
 
 def _profile_source_items(items: list[MemoryItem]) -> list[MemoryItem]:
-    return [item for item in _profile_all_source_items(items) if not _is_superseded(item)]
+    return [item for item in _profile_all_source_items(items) if is_active_memory_fact(item)]
 
 
 def _profile_superseded_source_ids(items: list[MemoryItem]) -> list[str]:
-    return [item.memory_id for item in _profile_all_source_items(items) if _is_superseded(item)]
+    return sorted(
+        item.memory_id
+        for item in _profile_all_source_items(items)
+        if memory_fact_status(item) == "superseded"
+    )
 
 
 def _profile_conflict_groups(items: list[MemoryItem]) -> list[dict[str, Any]]:
     grouped: dict[str, list[MemoryItem]] = {}
     for item in _profile_all_source_items(items):
-        if item.memory_type != "preference":
-            continue
-        preference_key = _preference_conflict_key(item)
-        if preference_key:
-            grouped.setdefault(preference_key, []).append(item)
+        fact = fact_from_item(item)
+        if fact is not None:
+            grouped.setdefault(fact.fact_key, []).append(item)
 
     conflicts: list[dict[str, Any]] = []
-    for preference_key, group_items in sorted(grouped.items()):
-        active_items = [item for item in group_items if not _is_superseded(item)]
-        superseded_items = [item for item in group_items if _is_superseded(item)]
-        active_summaries = {_normalize_for_dedupe(item.summary) for item in active_items}
-        unresolved = len(active_summaries) > 1
-        if not superseded_items and not unresolved:
-            continue
-        latest_active = max(active_items, key=lambda item: item.created_at, default=None)
-        conflicts.append(
-            {
-                "preference_key": preference_key,
-                "active_memory_id": latest_active.memory_id if latest_active else None,
-                "active_memory_ids": [item.memory_id for item in active_items],
-                "superseded_memory_ids": [item.memory_id for item in superseded_items],
-                "unresolved": unresolved,
-            }
+    for fact_key, group_items in sorted(grouped.items()):
+        active_items = [item for item in group_items if memory_fact_status(item) == "active"]
+        superseded_items = [item for item in group_items if memory_fact_status(item) == "superseded"]
+        disputed_items = [item for item in group_items if memory_fact_status(item) == "disputed"]
+        active_values = {
+            _normalize_for_dedupe(fact.value)
+            for item in active_items
+            if (fact := fact_from_item(item)) is not None
+        }
+        active_facts = [fact for item in active_items if (fact := fact_from_item(item)) is not None]
+        coexist_values = bool(active_facts) and all(
+            fact.conflict_policy == "coexist" for fact in active_facts
         )
+        unresolved = (len(active_values) > 1 and not coexist_values) or bool(disputed_items)
+        if not superseded_items and not disputed_items and not unresolved:
+            continue
+        latest_active = max(
+            active_items,
+            key=lambda item: (item.created_at, item.memory_id),
+            default=None,
+        )
+        sample_fact = fact_from_item(group_items[0])
+        payload: dict[str, Any] = {
+            "fact_key": fact_key,
+            "active_memory_id": latest_active.memory_id if latest_active else None,
+            "active_memory_ids": sorted(item.memory_id for item in active_items),
+            "superseded_memory_ids": sorted(item.memory_id for item in superseded_items),
+            "disputed_memory_ids": sorted(item.memory_id for item in disputed_items),
+            "unresolved": unresolved,
+        }
+        if sample_fact is not None and sample_fact.predicate.startswith("preference."):
+            payload["preference_key"] = sample_fact.predicate.removeprefix("preference.")
+        conflicts.append(payload)
     return conflicts
 
 
@@ -1582,20 +1728,7 @@ def _is_profile_source_candidate(item: MemoryItem) -> bool:
 
 
 def _is_superseded(item: MemoryItem) -> bool:
-    return bool(str(item.content.get("superseded_by_memory_id") or "").strip())
-
-
-def _is_supersedable_preference(existing: MemoryItem, item: MemoryItem, preference_key: str) -> bool:
-    return (
-        existing.memory_id != item.memory_id
-        and existing.source != "user_profile"
-        and existing.memory_type == "preference"
-        and not _is_superseded(existing)
-        and not _is_expired(existing)
-        and _same_governance_scope(existing, item)
-        and _preference_conflict_key(existing) == preference_key
-        and _normalize_for_dedupe(existing.summary) != _normalize_for_dedupe(item.summary)
-    )
+    return memory_fact_status(item) == "superseded"
 
 
 def _preference_conflict_key(item: MemoryItem) -> str | None:
@@ -1883,6 +2016,16 @@ def _audit_counts(counts: dict[str, int]) -> dict[str, int]:
 def _audit_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     sanitized = sanitize_error_detail(metadata)
     return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _conflict_audit_metadata(decision: MemoryConflictDecision) -> dict[str, Any]:
+    return {
+        "conflict_action": decision.action,
+        "conflict_reason": decision.reason,
+        "fact_key": decision.fact_key,
+        "matching_memory_ids": decision.matching_memory_ids[:50],
+        "superseded_memory_ids": decision.superseded_memory_ids[:50],
+    }
 
 
 def _dedupe_key(item: MemoryItem) -> str:

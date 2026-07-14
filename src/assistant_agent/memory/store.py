@@ -1,7 +1,7 @@
 """Local memory store implementations."""
 
 from collections import defaultdict
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
 from assistant_agent.schemas.memory_audit import MemoryPendingConfirmation
@@ -55,6 +55,21 @@ class MemoryStore(Protocol):
         """Delete one memory confirmation for a user."""
 
 
+@runtime_checkable
+class MemoryCandidateSearchStore(Protocol):
+    """Optional local text-candidate search implemented by capable stores."""
+
+    def search_candidates(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        limit: int,
+        memory_types: set[str] | None = None,
+    ) -> list[MemoryItem]:
+        """Return user-isolated candidates ordered by local text relevance."""
+
+
 class InMemoryStore:
     """In-memory memory store isolated by user_id."""
 
@@ -74,7 +89,7 @@ class InMemoryStore:
             items=items,
             query_used=query,
             total=len(items),
-            ranking_reason="keyword_match_type_priority_recency",
+            ranking_reason="local_text_match_type_priority_recency",
             memory_context=format_memory_context(items, max_chars=query.max_context_chars),
         )
 

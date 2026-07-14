@@ -373,6 +373,8 @@ def _memory_confirmation_required_result(tool_name: str, exc: MemoryConfirmation
         "requires_confirmation": True,
         "confirmation_id": confirmation.confirmation_id,
         "confirmation_status": confirmation.status,
+        "confirmation_kind": confirmation.confirmation_kind,
+        "fact_key": confirmation.fact_key,
         "summary": confirmation.summary,
         "reason": confirmation.reason,
         "expires_at": confirmation.expires_at.isoformat() if confirmation.expires_at else None,

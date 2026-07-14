@@ -9,7 +9,7 @@ import pytest
 from assistant_agent.memory.jsonl_store import JsonlMemoryStore
 from assistant_agent.memory.manager import MemoryConfirmationRequired, MemoryManager
 from assistant_agent.memory.sqlite_store import SCHEMA_VERSION, SQLiteMemoryStore as BaseSQLiteMemoryStore
-from assistant_agent.memory.store import InMemoryStore, MemoryStore
+from assistant_agent.memory.store import InMemoryStore, MemoryCandidateSearchStore, MemoryStore
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
 from assistant_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
@@ -165,11 +165,24 @@ def test_sqlite_store_delete_by_session_and_clear_user(tmp_path) -> None:
 
     assert store.delete_by_session("u1", "s1") == 2
     assert store.list_by_user("u1") == []
+    assert store.search_candidates(user_id="u1", query="运动鞋", limit=10) == []
     assert [item.memory_id for item in store.list_by_user("u2")] == ["m3"]
+    assert [item.memory_id for item in store.search_candidates(
+        user_id="u2", query="运动鞋", limit=10
+    )] == ["m3"]
+    with _sqlite_connection(store.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_items_fts WHERE user_id = ?", ("u1",)
+        ).fetchone()[0] == 0
 
     store.clear_user("u2")
 
     assert store.list_by_user("u2") == []
+    assert store.search_candidates(user_id="u2", query="运动鞋", limit=10) == []
+    with _sqlite_connection(store.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_items_fts WHERE user_id = ?", ("u2",)
+        ).fetchone()[0] == 0
 
 
 def test_sqlite_store_rejects_newer_schema_version(tmp_path) -> None:
@@ -237,6 +250,97 @@ def test_sqlite_store_migrates_v2_database_to_confirmations(tmp_path) -> None:
 
     assert version == SCHEMA_VERSION
     assert count == 1
+
+
+def test_sqlite_store_migrates_v3_database_and_backfills_fts(tmp_path) -> None:
+    path = tmp_path / "memories.sqlite3"
+    seed = SQLiteMemoryStore(path)
+    seed.save(make_memory("legacy_fts", summary="用户喜欢深色极简海报"))
+    with _sqlite_connection(path) as connection:
+        connection.execute("UPDATE memory_schema_version SET version = 3")
+        connection.execute("DROP TABLE IF EXISTS memory_items_fts")
+
+    migrated = SQLiteMemoryStore(path)
+    results = migrated.search_candidates(
+        user_id="u1",
+        query="深色极简",
+        limit=10,
+        memory_types={"product"},
+    )
+    with _sqlite_connection(path) as connection:
+        version = connection.execute("SELECT version FROM memory_schema_version LIMIT 1").fetchone()[0]
+
+    assert SCHEMA_VERSION == 4
+    assert version == 4
+    assert [item.memory_id for item in results] == ["legacy_fts"]
+
+
+def test_sqlite_fts_tracks_save_update_soft_delete_restore_and_hard_delete(tmp_path) -> None:
+    store = SQLiteMemoryStore(tmp_path / "memories.sqlite3")
+    assert isinstance(store, MemoryCandidateSearchStore)
+    store.save(make_memory("m1", summary="用户喜欢深色极简海报"))
+
+    assert [item.memory_id for item in store.search_candidates(
+        user_id="u1", query="深色极简", limit=10, memory_types={"product"}
+    )] == ["m1"]
+
+    store.save(make_memory("m1", summary="用户喜欢浅色日系海报"))
+    assert store.search_candidates(user_id="u1", query="深色极简", limit=10) == []
+    assert [item.memory_id for item in store.search_candidates(
+        user_id="u1", query="浅色日系", limit=10
+    )] == ["m1"]
+
+    assert store.delete("u1", "m1") is True
+    assert store.search_candidates(user_id="u1", query="浅色日系", limit=10) == []
+
+    store.save(make_memory("m1", summary="用户喜欢浅色日系海报"))
+    assert [item.memory_id for item in store.search_candidates(
+        user_id="u1", query="浅色日系", limit=10
+    )] == ["m1"]
+    assert store.hard_delete("u1", "m1") is True
+    assert store.search_candidates(user_id="u1", query="浅色日系", limit=10) == []
+
+
+def test_sqlite_fts_isolates_user_and_memory_type(tmp_path) -> None:
+    store = SQLiteMemoryStore(tmp_path / "memories.sqlite3")
+    store.save(make_memory("u1_product", user_id="u1", summary="用户关注深色极简海报"))
+    store.save(make_memory("u2_product", user_id="u2", summary="另一个用户关注深色极简海报"))
+    store.save(
+        MemoryItem(
+            memory_id="u1_task",
+            user_id="u1",
+            session_id="s1",
+            memory_type="task",
+            summary="整理深色极简海报任务",
+            created_at=NOW,
+        )
+    )
+
+    results = store.search_candidates(
+        user_id="u1",
+        query="深色极简海报",
+        limit=10,
+        memory_types={"product"},
+    )
+
+    assert [item.memory_id for item in results] == ["u1_product"]
+    assert results[0].relevance is not None
+
+
+def test_sqlite_rebuild_indexes_backfills_missing_fts_rows(tmp_path) -> None:
+    path = tmp_path / "memories.sqlite3"
+    store = SQLiteMemoryStore(path)
+    store.save(make_memory("m1", summary="用户喜欢深色极简海报"))
+    with _sqlite_connection(path) as connection:
+        connection.execute("DELETE FROM memory_items_fts")
+
+    assert store.search_candidates(user_id="u1", query="深色极简", limit=10) == []
+
+    store.rebuild_indexes()
+
+    assert [item.memory_id for item in store.search_candidates(
+        user_id="u1", query="深色极简", limit=10
+    )] == ["m1"]
 
 
 def test_sqlite_store_soft_delete_hides_and_save_restores_item(tmp_path) -> None:

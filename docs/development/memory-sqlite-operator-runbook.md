@@ -17,6 +17,7 @@ SQLite memory backup and restore covers:
 - `memory_items`
 - `memory_audit_events`
 - `memory_confirmations`
+- `memory_items_fts` and its SQLite-managed FTS5 shadow tables
 - `memory_schema_version`
 - SQLite indexes for memory retrieval, audit-event queries, and confirmation queues
 
@@ -90,7 +91,8 @@ print(backup)
 PY
 ```
 
-The backup uses SQLite's backup API and includes durable memories, audit events, and pending/resolved memory confirmations.
+The backup uses SQLite's backup API and includes durable memories, the local
+FTS5 candidate index, audit events, and pending/resolved memory confirmations.
 
 If the backup path already exists, the operation fails unless `overwrite=True` is passed. Avoid overwriting backups during incident response.
 
@@ -145,6 +147,7 @@ path = Path(".local/memory/long_term_memories.sqlite3")
 store = SQLiteMemoryStore(path)
 store.rebuild_indexes()
 print(store.integrity_check())
+print(store.search_candidates(user_id="local-user", query="偏好", limit=5))
 PY
 ```
 
@@ -170,7 +173,16 @@ If migration fails:
 3. Run `integrity_check()`.
 4. Run focused memory validation.
 
-The current store rejects newer schema versions before mutating them. Older v0/v1 stores migrate through schema v2, which adds `memory_audit_events`; v3 adds `memory_confirmations` for durable pending/resolved memory confirmation state.
+The current store rejects newer schema versions before mutating them. Older
+v0/v1 stores migrate through schema v2, which adds `memory_audit_events`; v3
+adds `memory_confirmations` for durable pending/resolved memory confirmation
+state; v4 adds and backfills the local `memory_items_fts` FTS5 candidate index.
+
+The v4 migration does not rewrite `memory_items.payload`. It creates the FTS5
+table and rebuilds it from non-deleted, validated memory payloads in the same
+SQLite transaction before advancing `memory_schema_version`. Rollback requires
+restoring the pre-migration backup; older application versions reject a v4
+database as newer than supported.
 
 ## Corruption Response
 
@@ -205,5 +217,7 @@ $PY scripts/run_evals.py
 
 - Backup files are local files. Move/copy them according to the deployment's data policy.
 - Restore should be done while writers are stopped.
+- FTS5 is a local candidate index only. Identity, scope, status, expiry,
+  sensitivity, ranking, and context-budget policy still run above the store.
 - This runbook does not provide encryption, remote retention, or multi-tenant production backup policy.
 - SQLite backup contains redacted memory payloads, audit events, and memory confirmations, but it is still user data and should be handled as sensitive local data.
