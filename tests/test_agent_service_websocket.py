@@ -896,6 +896,103 @@ def test_agent_service_negotiates_progress_and_acknowledges_final_delivery(monke
     assert registry.get(delivery_id).status == "acked"
 
 
+def test_agent_service_stream_true_sends_incremental_then_terminal_packets(tmp_path: Path) -> None:
+    class StreamingFacade:
+        async def run_turn(self, request, *, on_stream_chunk=None):
+            assert request.config["response_streaming"] is True
+            assert on_stream_chunk is not None
+            for delta in ("你", "好"):
+                await on_stream_chunk(
+                    delta,
+                    {
+                        "type": "stream.chunk",
+                        "payload": {
+                            "text": delta,
+                            "realtime": {"token_streaming": True},
+                        },
+                    },
+                )
+            return _completed_turn("你好")
+
+    packets, delivery = asyncio.run(
+        _run_prepared_chat_delivery(
+            tmp_path=tmp_path,
+            facade=StreamingFacade(),
+            stream=True,
+        )
+    )
+
+    assert [
+        _body(item)["message"]["content"]["intentResult"]["description"]
+        for item in packets
+    ] == ["你", "好", "你好"]
+    assert [
+        _body(item)["message"]["content"]["intentResult"]["status"]
+        for item in packets
+    ] == ["PROCESSING", "PROCESSING", "SUCCESS"]
+    assert [_body(item)["final"] for item in packets] == [False, False, True]
+    assert [_body(item)["sequence"] for item in packets] == [1, 2, 3]
+    assert "deliveryId" not in _body(packets[0])
+    assert _body(packets[-1])["deliveryId"] == delivery.delivery_id
+
+
+def test_agent_service_stream_false_sends_one_terminal_packet(tmp_path: Path) -> None:
+    class NonStreamingFacade:
+        async def run_turn(self, request):
+            assert request.config["response_streaming"] is False
+            return _completed_turn("你好")
+
+    packets, delivery = asyncio.run(
+        _run_prepared_chat_delivery(
+            tmp_path=tmp_path,
+            facade=NonStreamingFacade(),
+            stream=False,
+        )
+    )
+
+    assert len(packets) == 1
+    assert _body(packets[0])["final"] is True
+    assert _body(packets[0])["sequence"] == 1
+    assert _body(packets[0])["deliveryId"] == delivery.delivery_id
+
+
+def test_agent_service_stream_true_with_no_token_delta_sends_one_terminal_packet(
+    tmp_path: Path,
+) -> None:
+    class CompatibilityChunkFacade:
+        async def run_turn(self, request, *, on_stream_chunk=None):
+            assert request.config["response_streaming"] is True
+            assert on_stream_chunk is not None
+            for delta in ("你", "好"):
+                await on_stream_chunk(
+                    delta,
+                    {
+                        "type": "stream.chunk",
+                        "payload": {
+                            "text": delta,
+                            "realtime": {
+                                "chunking_strategy": "bounded_final_text",
+                                "token_streaming": False,
+                            },
+                        },
+                    },
+                )
+            return _completed_turn("你好")
+
+    packets, delivery = asyncio.run(
+        _run_prepared_chat_delivery(
+            tmp_path=tmp_path,
+            facade=CompatibilityChunkFacade(),
+            stream=True,
+        )
+    )
+
+    assert len(packets) == 1
+    assert _body(packets[0])["final"] is True
+    assert _body(packets[0])["sequence"] == 1
+    assert _body(packets[0])["deliveryId"] == delivery.delivery_id
+
+
 def test_agent_service_video_chat_allows_provider_timeout_budget() -> None:
     captured = {}
 
@@ -1258,6 +1355,8 @@ def test_agent_service_accepts_media_control_and_chat_protocol(monkeypatch) -> N
             },
         },
         "display_only": False,
+        "sequence": 1,
+        "final": True,
     }
     assert len(runtime.requests) == 1
     request = runtime.requests[0]
@@ -1527,3 +1626,65 @@ def _media_envelope(message: str, body: dict) -> dict:
 
 def _body(response: dict) -> dict:
     return json.loads(response["body"])
+
+
+def _completed_turn(response_text: str):
+    class Turn:
+        status = "completed"
+        payload = {}
+        reason = "completed"
+        run_id = "gateway_run_stream"
+        turn_id = "turn_stream"
+        trace_id = None
+
+    Turn.response_text = response_text
+    return Turn()
+
+
+async def _run_prepared_chat_delivery(
+    *,
+    tmp_path: Path,
+    facade,
+    stream: bool,
+) -> tuple[list[dict], object]:
+    class RecordingWebSocket:
+        def __init__(self) -> None:
+            self.packets: list[dict] = []
+
+        async def send_text(self, raw: str) -> None:
+            self.packets.append(json.loads(raw))
+
+    registry = AgentServiceDeliveryRegistry(
+        JsonlAgentServiceDeliveryAudit(tmp_path / "delivery.jsonl")
+    )
+    delivery = registry.accept("s1", "chat-stream", expects_ack=True)
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        response_session_id="s1",
+        media_protocol=True,
+        gateway_facade=facade,
+        delivery_registry=registry,
+    )
+    prepared = agent_service_ws.PreparedChat(
+        session_id="s1",
+        response_session_id="s1",
+        body={"stream": stream},
+        chat_index="chat-stream",
+        user_number="10086",
+        latest_speech="hello",
+        contents=[{"speechContent": "hello"}],
+        video_ids=[],
+        received_ns=state.clock_ns(),
+        accepted_ns=state.clock_ns(),
+        session_turn=1,
+    )
+    websocket = RecordingWebSocket()
+
+    await agent_service_ws._run_chat_delivery(
+        websocket,
+        state=state,
+        prepared=prepared,
+        delivery=delivery,
+    )
+    return websocket.packets, delivery

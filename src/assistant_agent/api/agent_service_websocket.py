@@ -32,6 +32,7 @@ from assistant_agent.services.realtime_video_observer import RealtimeVideoObserv
 from assistant_agent.services.realtime_video_memory import project_realtime_video_context
 from assistant_agent.services.trace_store import TraceStore, append_observability_event
 from assistant_agent.services.gateway_turn_facade import (
+    GatewayStreamChunkConsumer,
     GatewayTurnError,
     GatewayTurnFacade,
     GatewayTurnRequest,
@@ -790,6 +791,20 @@ async def _run_chat_delivery(
     delivery: AgentServiceDelivery,
 ) -> None:
     progress_task: asyncio.Task | None = None
+    sequence = 0
+    prepared_stream_requested = prepared.body.get("stream") is True
+
+    async def send_delta(delta: str, chunk_frame: dict[str, Any]) -> None:
+        nonlocal sequence
+        if not _is_provider_token_delta(chunk_frame):
+            return
+        sequence += 1
+        await _send_response(
+            websocket,
+            _streaming_chat_response(prepared, delta=delta, sequence=sequence),
+            state=state,
+        )
+
     timing = state.turn_timings.get(delivery.delivery_id)
     if state.client_capabilities.get("chatProgress", False):
         progress_task = asyncio.create_task(
@@ -808,6 +823,8 @@ async def _run_chat_delivery(
                 latest_speech=prepared.latest_speech,
                 contents=prepared.contents,
                 video_ids=prepared.video_ids,
+                stream_requested=prepared_stream_requested,
+                on_stream_chunk=send_delta if prepared_stream_requested else None,
             )
             if timing is not None:
                 timing.mark("gateway_finished", at_ns=state.clock_ns())
@@ -817,7 +834,13 @@ async def _run_chat_delivery(
                     assistant_run_id=_assistant_run_id(state.trace_store, turn.trace_id),
                     trace_id=turn.trace_id,
                 )
-        response = _prepared_chat_response(prepared, state=state, turn=turn, delivery=delivery)
+        response = _prepared_chat_response(
+            prepared,
+            state=state,
+            turn=turn,
+            delivery=delivery,
+            sequence=sequence + 1,
+        )
         if timing is not None:
             timing.mark("response_built", at_ns=state.clock_ns())
             timing.mark("send_started", at_ns=state.clock_ns())
@@ -908,6 +931,7 @@ def _prepared_chat_response(
     state: AgentServiceConnectionState,
     turn: Any,
     delivery: AgentServiceDelivery,
+    sequence: int,
 ) -> dict[str, Any]:
     if turn.status == "error":
         return _response_envelope(
@@ -923,6 +947,8 @@ def _prepared_chat_response(
                 "content": {"intentResult": {"description": turn.response_text, "status": "SUCCESS"}},
             },
             "display_only": False,
+            "sequence": sequence,
+            "final": True,
         }
         if delivery.expects_ack:
             body["deliveryId"] = delivery.delivery_id
@@ -1080,6 +1106,36 @@ def _create_realtime_video_observer(*, user_id: str, session_id: str) -> Realtim
     )
 
 
+def _streaming_chat_response(
+    prepared: PreparedChat,
+    *,
+    delta: str,
+    sequence: int,
+) -> dict[str, Any]:
+    intent = {"description": delta, "status": "PROCESSING"}
+    return _response_envelope(
+        message="chatResponse",
+        session_id=prepared.response_session_id,
+        body={
+            "message": {
+                "chatIndex": prepared.chat_index,
+                "content": {"intentResult": intent},
+            },
+            "display_only": False,
+            "sequence": sequence,
+            "final": False,
+        },
+    )
+
+
+def _is_provider_token_delta(chunk_frame: dict[str, Any]) -> bool:
+    payload = chunk_frame.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    realtime = payload.get("realtime")
+    return isinstance(realtime, dict) and realtime.get("token_streaming") is True
+
+
 def _run_assistant_request_for_agent_service(request: UserRequest, **kwargs: Any) -> Any:
     from assistant_agent.api import routes_agent
 
@@ -1095,6 +1151,8 @@ async def _run_agent_service_chat_turn(
     latest_speech: str,
     contents: list[Any],
     video_ids: list[str] | None = None,
+    stream_requested: bool = False,
+    on_stream_chunk: GatewayStreamChunkConsumer | None = None,
 ):
     if state.gateway_facade is None:
         raise RuntimeError("agent-service Gateway facade is not initialized")
@@ -1134,28 +1192,32 @@ async def _run_agent_service_chat_turn(
         except TimeoutError:
             initial_snapshot_ready = False
     try:
+        request = GatewayTurnRequest(
+            user_id=user_number,
+            session_id=session_id,
+            text=latest_speech,
+            video_ids=active_video_ids,
+            timeout_s=VIDEO_TURN_TIMEOUT_SECONDS if active_video_ids else 30.0,
+            metadata=_agent_service_gateway_metadata(
+                state=state,
+                user_number=user_number,
+                chat_index=chat_index,
+                content_count=len(contents),
+                waited_for_initial_snapshot=waited_for_initial_snapshot,
+                initial_snapshot_ready=initial_snapshot_ready,
+            ),
+            config={
+                "system_prompt_profile": "realtime_phone",
+                "channel": "realtime_phone",
+                "entry_profile": "agent_service",
+                "response_streaming": stream_requested,
+            },
+        )
+        if on_stream_chunk is None:
+            return await state.gateway_facade.run_turn(request)
         return await state.gateway_facade.run_turn(
-            GatewayTurnRequest(
-                user_id=user_number,
-                session_id=session_id,
-                text=latest_speech,
-                video_ids=active_video_ids,
-                timeout_s=VIDEO_TURN_TIMEOUT_SECONDS if active_video_ids else 30.0,
-                metadata=_agent_service_gateway_metadata(
-                    state=state,
-                    user_number=user_number,
-                    chat_index=chat_index,
-                    content_count=len(contents),
-                    waited_for_initial_snapshot=waited_for_initial_snapshot,
-                    initial_snapshot_ready=initial_snapshot_ready,
-                ),
-                config={
-                    "system_prompt_profile": "realtime_phone",
-                    "channel": "realtime_phone",
-                    "entry_profile": "agent_service",
-                    "response_streaming": False,
-                },
-            )
+            request,
+            on_stream_chunk=on_stream_chunk,
         )
     except (GatewayTurnTimeout, GatewayTurnError) as exc:
         raise AgentServiceProtocolError(str(exc)) from exc

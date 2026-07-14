@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from assistant_agent.gateway.protocol import Frame, frame
 from assistant_agent.gateway.session import GatewaySessionManager
+
+GatewayStreamChunkConsumer = Callable[[str, Frame], Awaitable[None]]
 
 
 class GatewayTurnError(RuntimeError):
@@ -126,7 +128,12 @@ class GatewayTurnFacade:
                 return_exceptions=True,
             )
 
-    async def run_turn(self, request: GatewayTurnRequest) -> GatewayTurnResult:
+    async def run_turn(
+        self,
+        request: GatewayTurnRequest,
+        *,
+        on_stream_chunk: GatewayStreamChunkConsumer | None = None,
+    ) -> GatewayTurnResult:
         if not request.user_id:
             raise ValueError("GatewayTurnRequest.user_id is required")
         if not request.session_id:
@@ -158,6 +165,7 @@ class GatewayTurnFacade:
                 turn_id=turn_id,
                 run_id=run_id,
                 timeout_s=request.timeout_s,
+                on_stream_chunk=on_stream_chunk,
             )
         finally:
             await dispatcher.unregister(run_id)
@@ -171,6 +179,7 @@ class GatewayTurnFacade:
         turn_id: str,
         run_id: str,
         timeout_s: float,
+        on_stream_chunk: GatewayStreamChunkConsumer | None,
     ) -> GatewayTurnResult:
         frames: list[Frame] = []
         chunks: list[str] = []
@@ -188,7 +197,10 @@ class GatewayTurnFacade:
                         f"Gateway turn rejected: {code or 'unknown_error'}"
                     )
                 if received.get("type") == "stream.chunk":
-                    chunks.append(_chunk_text(received))
+                    chunk = _chunk_text(received)
+                    chunks.append(chunk)
+                    if chunk and on_stream_chunk is not None:
+                        await on_stream_chunk(chunk, dict(received))
                     continue
                 if received.get("type") == "run.end":
                     return _turn_result(frames=frames, terminal=received, chunks=chunks)

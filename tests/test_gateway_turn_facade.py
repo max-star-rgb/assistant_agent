@@ -32,6 +32,10 @@ class RecordingRealtimeBackend:
         )
 
 
+async def _append_async(items: list[str], value: str) -> None:
+    items.append(value)
+
+
 class GatewayTurnFacadeTests(unittest.IsolatedAsyncioTestCase):
     async def test_close_stops_dispatcher_reader(self) -> None:
         backend = RecordingRealtimeBackend()
@@ -247,6 +251,38 @@ class GatewayTurnFacadeTests(unittest.IsolatedAsyncioTestCase):
         assert backend.requests[0].text == "hello"
         assert backend.requests[0].metadata["gateway"]["history"] == ["hello"]
         assert backend.requests[0].metadata["gateway"]["session_config"] == {"tone": "concise"}
+
+    async def test_run_turn_calls_stream_chunk_callback_before_returning(self) -> None:
+        class StreamingBackend:
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                assert event_sink is not None
+                await event_sink(RealtimeAgentEvent(type="response.chunk", text="你"))
+                await event_sink(RealtimeAgentEvent(type="response.chunk", text="好"))
+                return RealtimeAgentResult(
+                    status="completed",
+                    run_id=request.run_id,
+                    response_text="你好",
+                )
+
+        manager = GatewaySessionManager(backend_factory=StreamingBackend, start_reaper=False)
+        facade = GatewayTurnFacade(manager=manager)
+        seen: list[str] = []
+
+        try:
+            result = await facade.run_turn(
+                GatewayTurnRequest(
+                    user_id="user-1",
+                    session_id="session-stream",
+                    text="hello",
+                    timeout_s=1,
+                ),
+                on_stream_chunk=lambda text, _frame: _append_async(seen, text),
+            )
+        finally:
+            await manager.close()
+
+        assert seen == ["你", "好"]
+        assert result.response_text == "你好"
 
     async def test_run_turn_returns_gateway_error_terminal_result(self) -> None:
         class ErrorBackend:
