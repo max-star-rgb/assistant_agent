@@ -96,6 +96,17 @@
 - Personal OS control plane：设备、通知、身份、权限、后台任务、长期审计。当前只记录为远期方向。
 - 产品级 consent UX：高风险工具确认、可撤销动作、敏感数据最小化。
 
+### Deterministic Proactive Wake Phase 1（窄本地切片）
+
+当前已实现的主动唤醒能力只是一条 deterministic、offline、local 的
+Phase 1 纵向切片：显式结构化规则触发 allowlist 内的只读探针，建立静默
+baseline，检测后续变化，写入 SQLite outbox，并通过 mock transport 完成
+本地投递验证。该路径不使用 LLM 选择工具。
+
+Semantic wake、真实 event ingest、真实 notification transport 和 generic
+scheduler 仍然延期；本切片不代表这些后续能力已经实现，也不扩展为后台
+自主进程或 Personal OS scheduler。
+
 ## 应保留的架构资产
 
 ### AgentGraphRuntime

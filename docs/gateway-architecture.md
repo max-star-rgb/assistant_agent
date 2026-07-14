@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-10
+Last updated: 2026-07-14
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes.
 
@@ -202,6 +202,14 @@ contract while retaining legacy `cancel_source`, `cancel_reason`, `cancel_phase`
 and `deadline_ms` fields for compatibility.
 
 Realtime task state, deterministic fallback behavior, tool-wait boundaries, and interrupt/cancel handling are part of the current Gateway lifecycle contract when implemented. Keep current behavior in this document and in tests, not in archived phase plans.
+
+### Proactive delivery activity snapshot
+
+`GatewaySessionService.has_active_run()` and
+`GatewaySessionManager.has_active_run(user_id)` expose read-only snapshots for
+proactive delivery deferral. These queries inspect existing session/run state;
+they do not create or touch sessions, and proactive work cannot use them to
+interrupt an active run.
 
 ## Entry Layer Responsibilities
 
