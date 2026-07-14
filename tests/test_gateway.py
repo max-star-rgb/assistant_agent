@@ -36,6 +36,188 @@ async def _read_until(client_ep, frame_type: str, *, timeout_s: float = 3.0):
 
 
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_client_disconnect_uses_disconnect_cancel_metadata(self) -> None:
+        class CancellableBackend:
+            def __init__(self) -> None:
+                self.cancel_metadata = None
+                self.cancel_seen = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                await cancel_token.cancelled()
+                self.cancel_metadata = cancel_token.cancel_metadata
+                self.cancel_seen.set()
+                return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+
+        backend = CancellableBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            start_reaper=False,
+        )
+        bridge = GatewayBridge(session_manager=manager)
+        client_ep, bridge_ep = InMemoryDuplex.create_pair()
+        bridge_task = asyncio.create_task(
+            bridge.bridge(client_id="disconnect-client", client_ep=bridge_ep)
+        )
+
+        try:
+            await client_ep.send(
+                frame(type=CALL_INCOMING, user_id="disconnect-user", session_id="disconnect-s")
+            )
+            await _read_until(client_ep, CALL_READY)
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    user_id="disconnect-user",
+                    session_id="disconnect-s",
+                    payload={"text": "wait"},
+                )
+            )
+            await _read_until(client_ep, "run.started")
+
+            await client_ep.close()
+            await asyncio.wait_for(bridge_task, timeout=1.0)
+            await asyncio.wait_for(backend.cancel_seen.wait(), timeout=1.0)
+
+            assert backend.cancel_metadata["cancel_source"] == "gateway_disconnect"
+            assert backend.cancel_metadata["cancel_reason"] == "client_disconnected"
+        finally:
+            await bridge_ep.close()
+            if not bridge_task.done():
+                bridge_task.cancel()
+                await asyncio.gather(bridge_task, return_exceptions=True)
+            await manager.close()
+
+    async def test_destroy_cancels_active_and_releases_all_queue_capacity(self) -> None:
+        class CancellableBackend:
+            def __init__(self) -> None:
+                self.cancel_seen = asyncio.Event()
+                self.force_release = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                while not cancel_token.is_cancelled() and not self.force_release.is_set():
+                    await asyncio.sleep(0)
+                if cancel_token.is_cancelled():
+                    self.cancel_seen.set()
+                    return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+                return RealtimeAgentResult(status="completed", run_id=request.run_id)
+
+        backend = CancellableBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            queue_policy=GatewayQueuePolicy(
+                max_active_runs=1,
+                max_queued_turns_global=4,
+            ),
+            start_reaper=False,
+        )
+        handle = await manager.acquire(user_id="destroy-user")
+
+        try:
+            await handle.endpoint.send(
+                frame(
+                    type="message.user",
+                    session_id="destroy-session",
+                    payload={"text": "first", "turn_id": "t1", "run_id": "r1"},
+                )
+            )
+            await _read_until(handle.endpoint, "run.started")
+            await handle.endpoint.send(
+                frame(
+                    type="message.user",
+                    session_id="destroy-session",
+                    payload={"text": "second", "turn_id": "t2", "run_id": "r2"},
+                )
+            )
+            await _read_until(handle.endpoint, "run.queued")
+
+            before = await manager.admission_controller.snapshot()
+            assert before.active_runs == 1
+            assert before.queued_turns == 1
+
+            assert await manager.destroy("destroy-user") is True
+
+            await asyncio.wait_for(backend.cancel_seen.wait(), timeout=1.0)
+            after = await manager.admission_controller.snapshot()
+            assert after.active_runs == 0
+            assert after.queued_turns == 0
+        finally:
+            backend.force_release.set()
+            await manager.close()
+
+    async def test_hangup_cancels_global_waiter_without_active_run_id(self) -> None:
+        class HoldingBackend:
+            def __init__(self) -> None:
+                self.release = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                await self.release.wait()
+                return RealtimeAgentResult(status="completed", run_id=request.run_id)
+
+        backend = HoldingBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            queue_policy=GatewayQueuePolicy(
+                max_active_runs=1,
+                max_queued_turns_global=4,
+            ),
+            start_reaper=False,
+        )
+        holder = await manager.acquire(user_id="holder")
+        await holder.endpoint.send(
+            frame(type="message.user", session_id="holder-s", payload={"text": "hold"})
+        )
+        await _read_until(holder.endpoint, "run.started")
+
+        bridge = GatewayBridge(session_manager=manager)
+        client_ep, bridge_ep = InMemoryDuplex.create_pair()
+        bridge_task = asyncio.create_task(
+            bridge.bridge(client_id="waiting-client", client_ep=bridge_ep)
+        )
+
+        try:
+            await client_ep.send(
+                frame(type=CALL_INCOMING, user_id="waiting-user", session_id="waiting-s")
+            )
+            await _read_until(client_ep, CALL_READY)
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    user_id="waiting-user",
+                    session_id="waiting-s",
+                    payload={"text": "queued", "turn_id": "t2", "run_id": "r2"},
+                )
+            )
+            queued = await _read_until(client_ep, "run.queued")
+            assert queued["payload"]["reason"] == "global_capacity"
+
+            await client_ep.send(
+                frame(type=CALL_HANGUP, user_id="waiting-user", session_id="waiting-s")
+            )
+
+            async def _read_hangup_and_terminal():
+                ack = None
+                terminal = None
+                async for received in client_ep:
+                    if received["type"] == CALL_HANGUP_ACK:
+                        ack = received
+                    elif received["type"] == "run.end" and received.get("run_id") == "r2":
+                        terminal = received
+                    if ack is not None and terminal is not None:
+                        return ack, terminal
+                raise AssertionError("endpoint closed before hangup cleanup completed")
+
+            ack, terminal = await asyncio.wait_for(
+                _read_hangup_and_terminal(),
+                timeout=1.0,
+            )
+            assert ack["payload"]["cancelled_active_run"] is False
+            assert terminal["reason"] == "cancelled"
+            assert terminal["payload"]["cancel"]["phase"] == "before_llm"
+        finally:
+            backend.release.set()
+            await _close_bridge(client_ep, bridge_ep, bridge_task)
+            await manager.close()
+
     async def test_custom_service_factory_uses_manager_admission_controller(self) -> None:
         class BlockingBackend:
             def __init__(self) -> None:

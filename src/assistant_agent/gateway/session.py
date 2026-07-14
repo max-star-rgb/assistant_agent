@@ -125,6 +125,7 @@ class GatewaySessionService:
         self._history_by_session: dict[str, list[str]] = {}
         self._turns_by_run_id: dict[str, QueuedTurn] = {}
         self._lock = asyncio.Lock()
+        self._closed = False
 
     @property
     def config(self) -> dict[str, Any]:
@@ -165,21 +166,65 @@ class GatewaySessionService:
         )
 
     async def serve(self, ep: Endpoint) -> None:
-        async for f in ep:
-            frame_type = f.get("type")
-            if frame_type == "message.user":
-                await self._handle_user_message(ep, f)
-            elif frame_type == "run.cancel":
-                await self._handle_cancel(ep, f)
-            elif frame_type == "ping":
-                await ep.send(frame(type="pong"))
-            else:
-                await ep.send(
-                    frame(
-                        type="error",
-                        error={"code": "unknown_frame", "message": f"unknown type: {frame_type}"},
+        try:
+            async for f in ep:
+                frame_type = f.get("type")
+                if frame_type == "message.user":
+                    await self._handle_user_message(ep, f)
+                elif frame_type == "run.cancel":
+                    await self._handle_cancel(ep, f)
+                elif frame_type == "ping":
+                    await ep.send(frame(type="pong"))
+                else:
+                    await ep.send(
+                        frame(
+                            type="error",
+                            error={
+                                "code": "unknown_frame",
+                                "message": f"unknown type: {frame_type}",
+                            },
+                        )
                     )
-                )
+        finally:
+            await self.close()
+
+    async def close(self, *, source: str = "gateway_disconnect") -> None:
+        async with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            queued = [
+                turn
+                for turn in self._turns_by_run_id.values()
+                if turn.state not in {"running", "terminal"}
+            ]
+            active = list(self._active_by_session.values())
+
+        if queued:
+            await asyncio.gather(
+                *(
+                    self._cancel_queued_turn(
+                        turn,
+                        source=source,
+                        reason="session_closed",
+                    )
+                    for turn in queued
+                ),
+                return_exceptions=True,
+            )
+
+        for run in active:
+            run.cancel.cancel(source=source, reason="session_closed")
+
+        tasks = [run.task for run in active if not run.task.done()]
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=0.05)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        if self._owns_admission:
+            await self._admission.close()
 
     async def _handle_user_message(self, ep: Endpoint, f: Frame) -> None:
         raw_session_id = f.get("session_id")
@@ -221,6 +266,12 @@ class GatewaySessionService:
             await self._send_queue_error(turn, scope=exc.scope, limit=exc.limit)
             return
 
+        turn.timeout_task = asyncio.create_task(
+            self._expire_queued_turn(turn),
+            name=f"gateway-queue-timeout-{turn.run_id}",
+        )
+        _consume_background_task(turn.timeout_task)
+
         interrupt_requested = _message_requests_interrupt(payload, self._config)
         queued = False
         async with self._lock:
@@ -243,8 +294,17 @@ class GatewaySessionService:
 
         if queued:
             await self._send_queued(turn)
-            if turn.runtime_interrupt:
-                await self._interrupt_if_needed(session_id=session_id)
+            if turn.runtime_interrupt and current is not None:
+                cancelled_before_run = await self._cancel_queued_turn(
+                    current,
+                    source="gateway_interrupt",
+                    reason="interrupted_by_new_turn",
+                )
+                if not cancelled_before_run:
+                    await self._interrupt_if_needed(
+                        session_id=session_id,
+                        expected_run_id=current.run_id,
+                    )
             return
         self._schedule_dispatch(turn)
 
@@ -297,6 +357,126 @@ class GatewaySessionService:
             )
         )
 
+    async def _expire_queued_turn(self, turn: QueuedTurn) -> None:
+        await asyncio.sleep(
+            max(0.0, turn.queue_deadline_monotonic - time.monotonic())
+        )
+        await self._cancel_queued_turn(
+            turn,
+            source="queue_timeout",
+            reason="queue_wait_timeout",
+            emit_cancel_requested=False,
+        )
+
+    def _cancel_queue_timeout(self, turn: QueuedTurn) -> None:
+        task = turn.timeout_task
+        turn.timeout_task = None
+        if (
+            task is not None
+            and task is not asyncio.current_task()
+            and not task.done()
+        ):
+            task.cancel()
+
+    async def _cancel_queued_turn(
+        self,
+        turn: QueuedTurn,
+        *,
+        source: str,
+        reason: str | None,
+        emit_cancel_requested: bool = True,
+    ) -> bool:
+        promote: QueuedTurn | None = None
+        async with self._lock:
+            if turn.state in {"running", "terminal"}:
+                return False
+            current = self._current_by_session.get(turn.session_id)
+            if current is turn:
+                self._current_by_session.pop(turn.session_id, None)
+                pending = self._pending_by_session.get(turn.session_id)
+                if pending:
+                    promote = pending.popleft()
+                    self._current_by_session[turn.session_id] = promote
+                    if not pending:
+                        self._pending_by_session.pop(turn.session_id, None)
+            else:
+                pending = self._pending_by_session.get(turn.session_id)
+                if pending is not None:
+                    kept = deque(item for item in pending if item is not turn)
+                    if kept:
+                        self._pending_by_session[turn.session_id] = kept
+                    else:
+                        self._pending_by_session.pop(turn.session_id, None)
+            turn.state = "terminal"
+            self._turns_by_run_id.pop(turn.run_id, None)
+            ticket = turn.admission_ticket
+            reservation = turn.reservation
+            dispatch_task = turn.dispatch_task
+
+        self._cancel_queue_timeout(turn)
+        ticket_granted = bool(ticket is not None and ticket.granted)
+        if ticket is not None and not ticket_granted:
+            await self._admission.cancel_ticket(ticket)
+            ticket_granted = ticket.granted
+        elif ticket is None and reservation is not None:
+            await self._admission.release_reservation(reservation)
+        if (
+            not ticket_granted
+            and dispatch_task is not None
+            and dispatch_task is not asyncio.current_task()
+            and not dispatch_task.done()
+        ):
+            dispatch_task.cancel()
+
+        if emit_cancel_requested:
+            self._emit_lifecycle(
+                "gateway.run.cancel_requested",
+                session_id=turn.session_id,
+                run_id=turn.run_id,
+                turn_id=turn.turn_id,
+                payload={"source": source, "reason": reason},
+            )
+
+        result = RealtimeAgentResult(
+            status="cancelled",
+            run_id=turn.run_id,
+            expects_reply=True,
+            metadata=build_realtime_turn_cancellation_metadata(
+                {"cancel_source": source, "cancel_reason": reason},
+                phase="before_llm",
+            ),
+        )
+        try:
+            await turn.endpoint.send(
+                frame(
+                    type="run.end",
+                    session_id=turn.session_id,
+                    turn_id=turn.turn_id,
+                    run_id=turn.run_id,
+                    reason="cancelled",
+                    payload=_run_end_payload(
+                        result=result,
+                        expects_reply=True,
+                        run_id=turn.run_id,
+                    ),
+                )
+            )
+        finally:
+            self._emit_lifecycle(
+                "gateway.run.cancelled",
+                session_id=turn.session_id,
+                run_id=turn.run_id,
+                turn_id=turn.turn_id,
+                payload={
+                    "reason": "cancelled",
+                    "source": source,
+                    "phase": "before_llm",
+                },
+            )
+            if promote is not None and not self._closed:
+                self._schedule_dispatch(promote)
+        return True
+
     def _schedule_dispatch(self, turn: QueuedTurn) -> None:
         task = asyncio.create_task(
             self._dispatch_turn(turn),
@@ -315,6 +495,7 @@ class GatewaySessionService:
             turn.queue_reason = "global_capacity"
             await self._send_queued(turn)
         permit = await ticket.ready
+        self._cancel_queue_timeout(turn)
 
         current_task = asyncio.current_task()
         assert current_task is not None
@@ -515,7 +696,7 @@ class GatewaySessionService:
                 turn_id=turn_id,
                 payload={"reason": end_reason, "expects_reply": expects_reply},
             )
-            if next_turn is not None:
+            if next_turn is not None and not self._closed:
                 self._schedule_dispatch(next_turn)
 
     async def _run_backend(
@@ -554,15 +735,21 @@ class GatewaySessionService:
             while True:
                 if cancel.is_cancelled():
                     _discard_queued_frames(queue)
-                    _consume_background_task(task)
-                    return _cancelled_realtime_result(request=request, cancel=cancel)
+                    return await _finish_cancelled_backend(
+                        task=task,
+                        request=request,
+                        cancel=cancel,
+                    )
 
                 while not queue.empty():
                     outbound = queue.get_nowait()
                     if cancel.is_cancelled():
                         _discard_queued_frames(queue)
-                        _consume_background_task(task)
-                        return _cancelled_realtime_result(request=request, cancel=cancel)
+                        return await _finish_cancelled_backend(
+                            task=task,
+                            request=request,
+                            cancel=cancel,
+                        )
                     await ep.send(outbound)
 
                 if task.done():
@@ -578,8 +765,11 @@ class GatewaySessionService:
 
                 if cancel_wait in done or cancel.is_cancelled():
                     _discard_queued_frames(queue)
-                    _consume_background_task(task)
-                    return _cancelled_realtime_result(request=request, cancel=cancel)
+                    return await _finish_cancelled_backend(
+                        task=task,
+                        request=request,
+                        cancel=cancel,
+                    )
 
                 if queue_wait in done:
                     outbound = queue_wait.result()
@@ -594,11 +784,18 @@ class GatewaySessionService:
                 pending.append(queue_wait)
             await asyncio.gather(*pending, return_exceptions=True)
 
-    async def _interrupt_if_needed(self, *, session_id: str) -> None:
+    async def _interrupt_if_needed(
+        self,
+        *,
+        session_id: str,
+        expected_run_id: str | None = None,
+    ) -> None:
         interrupted: ActiveRun | None = None
         async with self._lock:
             cur = self._active_by_session.get(session_id)
-            if not cur:
+            if not cur or (
+                expected_run_id is not None and cur.run_id != expected_run_id
+            ):
                 return
             cur.cancel.cancel(source="gateway_interrupt")
             interrupted = cur
@@ -623,9 +820,42 @@ class GatewaySessionService:
         cancelled_run_id: str | None = None
         cancelled_turn_id: str | None = None
 
+        queued_targets: list[QueuedTurn] = []
         async with self._lock:
             if session_id and cancel_source in {"gateway_disconnect", "gateway_hangup"}:
-                self._pending_by_session.pop(str(session_id), None)
+                queued_targets = [
+                    turn
+                    for turn in self._turns_by_run_id.values()
+                    if turn.session_id == str(session_id)
+                    and turn.state not in {"running", "terminal"}
+                ]
+            elif run_id:
+                turn = self._turns_by_run_id.get(str(run_id))
+                if (
+                    turn is not None
+                    and turn.state not in {"running", "terminal"}
+                    and (session_id is None or turn.session_id == str(session_id))
+                ):
+                    queued_targets = [turn]
+
+        queued_cancelled = False
+        for turn in queued_targets:
+            queued_cancelled = (
+                await self._cancel_queued_turn(
+                    turn,
+                    source=cancel_source,
+                    reason=cancel_reason,
+                )
+                or queued_cancelled
+            )
+
+        if queued_cancelled and cancel_source not in {
+            "gateway_disconnect",
+            "gateway_hangup",
+        }:
+            return
+
+        async with self._lock:
             if session_id:
                 cur = self._active_by_session.get(session_id)
                 if cur and (run_id is None or cur.run_id == run_id):
@@ -655,6 +885,9 @@ class GatewaySessionService:
                 turn_id=cancelled_turn_id,
                 payload=cancel_payload,
             )
+            return
+
+        if queued_cancelled:
             return
 
         await ep.send(
@@ -767,6 +1000,19 @@ def _cancelled_realtime_result(
             "best_effort": True,
         },
     )
+
+
+async def _finish_cancelled_backend(
+    *,
+    task: asyncio.Task[RealtimeAgentResult],
+    request: RealtimeAgentRequest,
+    cancel: CancelToken,
+) -> RealtimeAgentResult:
+    try:
+        await task
+    except Exception:
+        pass
+    return _cancelled_realtime_result(request=request, cancel=cancel)
 
 
 def _run_end_payload(
@@ -1085,7 +1331,10 @@ class GatewaySessionManager:
             entry = self._entries.pop(user_id, None)
         if entry is None:
             return False
+        await entry.service.close(source="gateway_disconnect")
         entry.stop()
+        if entry.task is not None:
+            await asyncio.gather(entry.task, return_exceptions=True)
         await entry.gateway_ep.close()
         await entry.session_ep.close()
         self._emit_lifecycle(
