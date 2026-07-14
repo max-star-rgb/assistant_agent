@@ -1,6 +1,11 @@
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.schemas.realtime_turn_arbitration import (
+    REALTIME_TURN_ARBITRATION_METADATA_KEY,
+    RealtimeTurnArbitrationRequest,
+    normalize_arbitration_decision,
+)
 from assistant_agent.schemas.tools import ToolExecutionPolicy, ToolResult
 from assistant_agent.services.assistant_run_service import (
     InMemoryConversationStore,
@@ -13,6 +18,9 @@ from assistant_agent.services.realtime_task_state import (
     REALTIME_TASK_STATE_METADATA_KEY,
     InMemoryRealtimeTaskStateStore,
     RealtimeTaskState,
+    SideEffectRecord,
+    TaskArtifact,
+    apply_cancel_only_arbitration_to_task_state,
     format_realtime_task_state_snapshot,
     prepare_realtime_task_state_request,
     reduce_realtime_task_state_event,
@@ -167,6 +175,151 @@ def test_realtime_task_state_interrupt_creates_intent_revision() -> None:
     assert snapshot["latest_revision"]["strategy"] == "restart"
     assert snapshot["latest_revision"]["revision_type"] == "add_constraint"
     assert snapshot["revision_count"] == 1
+
+
+def test_semantic_revision_replaces_constraint_instead_of_appending() -> None:
+    store = InMemoryRealtimeTaskStateStore()
+    prepare_realtime_task_state_request(
+        _realtime_request("帮我挑选通勤耳机", run_id="run-1", turn_id="turn-1"),
+        store=store,
+    )
+    prepare_realtime_task_state_request(
+        _realtime_request("预算 500 元以内", run_id="run-2", turn_id="turn-2", control="interrupt"),
+        store=store,
+    )
+
+    prepared = prepare_realtime_task_state_request(
+        _semantic_interrupt_request(
+            "预算改成 1000 元以内",
+            run_id="run-3",
+            turn_id="turn-3",
+            disposition="REVISE_ACTIVE",
+            revision_type="replace_constraint",
+        ),
+        store=store,
+    )
+
+    snapshot = prepared.metadata[REALTIME_TASK_STATE_METADATA_KEY]
+    assert snapshot["objective"] == "帮我挑选通勤耳机"
+    assert snapshot["constraints"] == ["预算改成 1000 元以内"]
+    assert snapshot["latest_revision"]["revision_type"] == "replace_constraint"
+    assert snapshot["latest_revision"]["metadata"]["source"] == "semantic_llm"
+
+
+def test_semantic_replace_changes_goal_stales_artifacts_and_preserves_side_effects() -> None:
+    store = InMemoryRealtimeTaskStateStore()
+    original = RealtimeTaskState(
+        task_id="rtask:u1:s1",
+        user_id="u1",
+        session_id="s1",
+        objective="查询北京周末天气",
+        constraints=["只看室外活动"],
+        artifacts=[
+            TaskArtifact(
+                artifact_id="artifact-weather",
+                task_id="rtask:u1:s1",
+                run_id="run-1",
+                kind="observation",
+                reuse_policy="reusable",
+                summary="北京周末天气摘要",
+            )
+        ],
+        side_effects=[
+            SideEffectRecord(
+                record_id="effect-reminder",
+                task_id="rtask:u1:s1",
+                run_id="run-1",
+                tool_name="calendar_create_event",
+                effect_level="committed",
+                summary="已创建天气提醒",
+            )
+        ],
+    )
+    store.save(original)
+
+    prepared = prepare_realtime_task_state_request(
+        _semantic_interrupt_request(
+            "改为设置明天上午九点的会议提醒",
+            run_id="run-2",
+            turn_id="turn-2",
+            disposition="REPLACE_ACTIVE",
+            revision_type="change_goal",
+        ),
+        store=store,
+    )
+
+    updated = store.get("u1", "s1")
+    assert updated is not None
+    assert updated.objective == "改为设置明天上午九点的会议提醒"
+    assert updated.constraints == []
+    assert updated.revisions[-1].revision_type == "change_goal"
+    assert all(artifact.reuse_policy == "stale" for artifact in updated.artifacts)
+    assert updated.side_effects == original.side_effects
+    assert prepared.metadata[REALTIME_TASK_STATE_METADATA_KEY]["committed_side_effect_count"] == 1
+
+
+def test_semantic_confirm_records_revision_without_turning_text_into_constraint() -> None:
+    store = InMemoryRealtimeTaskStateStore()
+    prepare_realtime_task_state_request(
+        _realtime_request("帮我找三款耳机", run_id="run-1", turn_id="turn-1"),
+        store=store,
+    )
+
+    prepared = prepare_realtime_task_state_request(
+        _semantic_interrupt_request(
+            "对，就按这个方向继续",
+            run_id="run-2",
+            turn_id="turn-2",
+            disposition="REVISE_ACTIVE",
+            revision_type="confirm",
+        ),
+        store=store,
+    )
+
+    snapshot = prepared.metadata[REALTIME_TASK_STATE_METADATA_KEY]
+    assert snapshot["constraints"] == []
+    assert snapshot["latest_revision"]["revision_type"] == "confirm"
+
+
+def test_cancel_only_arbitration_marks_task_cancelled_without_dropping_side_effects() -> None:
+    store = InMemoryRealtimeTaskStateStore()
+    original = RealtimeTaskState(
+        task_id="rtask:u1:s1",
+        user_id="u1",
+        session_id="s1",
+        objective="查询北京天气",
+        side_effects=[
+            SideEffectRecord(
+                record_id="effect-1",
+                task_id="rtask:u1:s1",
+                run_id="run-1",
+                tool_name="calendar_create_event",
+                effect_level="committed",
+                summary="已创建天气提醒",
+            )
+        ],
+    )
+    store.save(original)
+    request, decision = _arbitration(
+        disposition="CANCEL_ONLY",
+        revision_type="cancel_goal",
+    )
+
+    cancelled = apply_cancel_only_arbitration_to_task_state(
+        user_id="u1",
+        session_id="s1",
+        turn_id="turn-2",
+        run_id="run-2",
+        user_text="先别查了",
+        decision=decision,
+        store=store,
+    )
+
+    assert cancelled.status == "cancelled"
+    assert cancelled.tts_state == "interrupted"
+    assert cancelled.revisions[-1].revision_type == "cancel_goal"
+    assert cancelled.revisions[-1].metadata["decision_id"] == request.decision_id
+    assert cancelled.side_effects == original.side_effects
 
 
 def test_realtime_task_state_records_speech_turn_and_barge_in_source_on_interrupt() -> None:
@@ -1231,3 +1384,60 @@ def _realtime_request(
     if control:
         metadata["control"] = control
     return UserRequest(user_id="u1", session_id="s1", text=text, metadata=metadata)
+
+
+def _arbitration(*, disposition: str, revision_type: str | None):
+    request = RealtimeTurnArbitrationRequest(
+        decision_id="decision-task-state",
+        user_id="u1",
+        session_id="s1",
+        turn_id="turn-2",
+        run_id="run-2",
+        expected_run_id="run-1",
+        utterance="semantic revision",
+        task_state={},
+    )
+    decision = normalize_arbitration_decision(
+        {
+            "disposition": disposition,
+            "revision_type": revision_type,
+            "confidence": 0.99,
+            "reason_code": "task_state_test",
+        },
+        request=request,
+        min_confidence=0.80,
+        source="semantic_llm",
+    )
+    return request, decision
+
+
+def _semantic_interrupt_request(
+    text: str,
+    *,
+    run_id: str,
+    turn_id: str,
+    disposition: str,
+    revision_type: str | None,
+) -> UserRequest:
+    _, decision = _arbitration(
+        disposition=disposition,
+        revision_type=revision_type,
+    )
+    decision = decision.model_copy(
+        update={
+            "decision_id": f"decision-{turn_id}",
+            "expected_run_id": "run-1",
+        }
+    )
+    return UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text=text,
+        metadata={
+            "source": "realtime_media_websocket",
+            "interaction_mode": "realtime",
+            "control": "interrupt",
+            "realtime": {"run_id": run_id, "turn_id": turn_id},
+            REALTIME_TURN_ARBITRATION_METADATA_KEY: decision.model_dump(mode="json"),
+        },
+    )
