@@ -34,6 +34,7 @@ from assistant_agent.services.context.renderer import (
     render_final_only_context,
     render_native_tool_context,
     render_prompt_json_context,
+    render_request_context,
 )
 from assistant_agent.services.context.report import build_context_report
 from assistant_agent.services.context.observability import context_trace_summary
@@ -59,6 +60,33 @@ class _SummaryTurn:
         self.assistant_text = assistant_text
         self.run_id = run_id
         self.trace_id = trace_id
+
+
+def test_render_request_context_uses_live_camera_only_for_trusted_agent_service_entry() -> None:
+    trusted_request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="眼前是什么？",
+        video_ids=["agent-service-video"],
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+
+    rendered = render_request_context(trusted_request)
+
+    assert "附带视频 ID" not in rendered
+    assert "agent-service-video" not in rendered
+    assert "当前通话的实时镜头" in rendered
+
+    upload_request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="分析这个视频",
+        video_ids=["uploaded-video"],
+    )
+    assert "附带视频 ID：['uploaded-video']" in render_request_context(upload_request)
 
 
 def test_realtime_video_context_is_rendered_budgeted_and_reported_separately() -> None:
