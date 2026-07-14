@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from anyio import CancelScope
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from assistant_agent.gateway import AGENT_SERVICE_ENTRY_CAPABILITIES, GatewaySessionManager
@@ -462,12 +463,30 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         )
         close_code, close_reason = exc.code, exc.reason
     finally:
+        await _close_agent_service_connection(
+            state=state,
+            gateway_manager=gateway_manager,
+            close_code=locals().get("close_code"),
+            close_reason=locals().get("close_reason"),
+        )
+
+
+async def _close_agent_service_connection(
+    *,
+    state: AgentServiceConnectionState,
+    gateway_manager: GatewaySessionManager,
+    close_code: int | None,
+    close_reason: str | None,
+) -> None:
+    """Finish owned connection resources even inside a cancelled ASGI scope."""
+
+    with CancelScope(shield=True):
         state.closed = True
         for delivery in state.delivery_registry.pending():
             state.delivery_registry.mark_disconnected(
                 delivery.delivery_id,
-                close_code=locals().get("close_code"),
-                close_reason=locals().get("close_reason"),
+                close_code=close_code,
+                close_reason=close_reason,
             )
         for task in list(state.chat_tasks):
             task.cancel()
