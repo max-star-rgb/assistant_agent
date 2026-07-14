@@ -187,6 +187,12 @@ class GatewaySessionService:
             raise RuntimeError("cannot bind turn arbitration after session work has started")
         self._turn_arbitration = controller
 
+    async def has_active_run(self) -> bool:
+        """Return whether this user service currently owns any active run."""
+
+        async with self._lock:
+            return bool(self._active_by_session)
+
     def _emit_lifecycle(
         self,
         event_type: str,
@@ -1826,6 +1832,15 @@ class GatewaySessionManager:
 
     def has_active_session(self, user_id: str) -> bool:
         return user_id in self._entries
+
+    async def has_active_run(self, user_id: str) -> bool:
+        """Return active-run state without creating or touching a session."""
+
+        async with self._lock:
+            entry = self._entries.get(user_id)
+        if entry is None:
+            return False
+        return await entry.service.has_active_run()
 
     def _emit_lifecycle(
         self,

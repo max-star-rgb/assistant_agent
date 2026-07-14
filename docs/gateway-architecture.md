@@ -392,6 +392,14 @@ and `deadline_ms` fields for compatibility.
 
 Realtime task state, deterministic fallback behavior, tool-wait boundaries, and interrupt/cancel handling are part of the current Gateway lifecycle contract when implemented. Keep current behavior in this document and in tests, not in archived phase plans.
 
+### Proactive delivery activity snapshot
+
+`GatewaySessionService.has_active_run()` and
+`GatewaySessionManager.has_active_run(user_id)` expose read-only snapshots for
+proactive delivery deferral. These queries inspect existing session/run state;
+they do not create or touch sessions, and proactive work cannot use them to
+interrupt an active run.
+
 ## Entry Layer Responsibilities
 
 Entry adapters own product and transport concerns before a request reaches Gateway or the shared assistant run service:

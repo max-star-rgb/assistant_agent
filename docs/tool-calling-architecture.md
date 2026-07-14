@@ -93,6 +93,15 @@ UserRequest
   -> save_memory
 ```
 
+## Deterministic Proactive Wake Phase 1 probes
+
+Phase 1 proactive probes come only from an explicit structured rule and an
+explicit tool-name allowlist. An eligible probe is read-only, requires no
+approval, declares no resource writes, and still passes
+`ToolPolicyInterpreter -> ActionValidator -> ToolExecutor -> ToolRegistry`
+before the tool runs. The deterministic coordinator selects the tool named by
+the validated rule; no LLM chooses a proactive probe tool in this phase.
+
 相关源码：
 
 - `src/assistant_agent/agent/runtime.py`: 组装 registry、memory manager、chat adapter、tool executor、trace store，并承载真实非 mock provider 的 native content/tool_calls 主循环。
