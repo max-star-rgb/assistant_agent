@@ -49,6 +49,7 @@ from assistant_agent.schemas.realtime_turn_arbitration import (
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.realtime_task_state import (
     RealtimeTaskStateStore,
+    apply_cancel_only_arbitration_to_task_state,
     get_default_realtime_task_state_store,
     snapshot_from_task_state,
 )
@@ -505,6 +506,7 @@ class GatewaySessionService:
     ) -> None:
         schedule_turn: QueuedTurn | None = None
         cancel_run: ActiveRun | None = None
+        complete_control_turn = False
         expected_run_matched = False
         stale = False
         normalized_disposition = decision.disposition
@@ -530,7 +532,18 @@ class GatewaySessionService:
                 normalized_disposition = "FOLLOWUP"
                 stale = True
 
-            if normalized_disposition in {"REVISE_ACTIVE", "REPLACE_ACTIVE"}:
+            if normalized_disposition == "CANCEL_ONLY":
+                if active is not None:
+                    active.cancel.cancel(
+                        source="gateway_interrupt",
+                        reason="semantic_cancel_only",
+                        metadata={"decision_id": decision.decision_id},
+                    )
+                    cancel_run = active
+                complete_control_turn = True
+            elif normalized_disposition == "ACK_NOOP":
+                complete_control_turn = True
+            elif normalized_disposition in {"REVISE_ACTIVE", "REPLACE_ACTIVE"}:
                 turn.runtime_interrupt = True
                 _attach_arbitration_metadata(turn, decision)
                 pending = self._pending_by_session.get(turn.session_id)
@@ -548,7 +561,7 @@ class GatewaySessionService:
 
             current = self._current_by_session.get(turn.session_id)
             if (
-                normalized_disposition in {"FOLLOWUP", "UNCERTAIN", "ACK_NOOP"}
+                normalized_disposition in {"FOLLOWUP", "UNCERTAIN"}
                 and current is turn
                 and active is None
                 and turn.dispatch_task is None
@@ -585,6 +598,19 @@ class GatewaySessionService:
                     "decision_id": decision.decision_id,
                 },
             )
+        if complete_control_turn:
+            if normalized_disposition == "CANCEL_ONLY":
+                apply_cancel_only_arbitration_to_task_state(
+                    user_id=turn.user_id,
+                    session_id=turn.session_id,
+                    turn_id=turn.turn_id,
+                    run_id=turn.run_id,
+                    user_text=turn.user_text,
+                    decision=decision,
+                    store=self._realtime_task_state_store,
+                )
+            await self._complete_arbitrated_control_turn(turn, decision=decision)
+            return
         if schedule_turn is not None and not self._closed:
             self._schedule_dispatch(schedule_turn)
 
@@ -792,6 +818,83 @@ class GatewaySessionService:
             )
             if promote is not None and not self._closed:
                 self._schedule_dispatch(promote)
+        return True
+
+    async def _complete_arbitrated_control_turn(
+        self,
+        turn: QueuedTurn,
+        *,
+        decision: RealtimeTurnArbitrationDecision,
+    ) -> bool:
+        promote: QueuedTurn | None = None
+        async with self._lock:
+            if turn.state in {"running", "terminal"}:
+                return False
+            current = self._current_by_session.get(turn.session_id)
+            if current is turn:
+                self._current_by_session.pop(turn.session_id, None)
+                promote = self._promote_next_locked(turn.session_id)
+            else:
+                pending = self._pending_by_session.get(turn.session_id)
+                if pending is not None:
+                    kept = deque(item for item in pending if item is not turn)
+                    if kept:
+                        self._pending_by_session[turn.session_id] = kept
+                    else:
+                        self._pending_by_session.pop(turn.session_id, None)
+            self._set_turn_state(turn, "terminal")
+            self._turns_by_run_id.pop(turn.run_id, None)
+            ticket = turn.admission_ticket
+            reservation = turn.reservation
+            dispatch_task = turn.dispatch_task
+            turn.arbitration_pending = False
+            turn.arbitration_task = None
+
+        self._cancel_queue_timeout(turn)
+        if ticket is not None and not ticket.granted:
+            await self._admission.cancel_ticket(ticket)
+        elif ticket is None and reservation is not None:
+            await self._admission.release_reservation(reservation)
+        elif ticket is not None and ticket.granted:
+            permit = await ticket.ready
+            await self._admission.release_permit(permit)
+        if (
+            dispatch_task is not None
+            and dispatch_task is not asyncio.current_task()
+            and not dispatch_task.done()
+        ):
+            dispatch_task.cancel()
+
+        payload = {
+            "expects_reply": False,
+            "supersedes": [progress_replacement_key(turn.run_id)],
+            "handled_by": "turn_arbiter",
+            "arbitration": _prompt_safe_arbitration_summary(decision),
+        }
+        await turn.endpoint.send(
+            frame(
+                type="run.end",
+                session_id=turn.session_id,
+                turn_id=turn.turn_id,
+                run_id=turn.run_id,
+                reason="completed",
+                payload=payload,
+            )
+        )
+        self._emit_lifecycle(
+            "gateway.run.completed",
+            session_id=turn.session_id,
+            run_id=turn.run_id,
+            turn_id=turn.turn_id,
+            payload={
+                "reason": "completed",
+                "expects_reply": False,
+                "handled_by": "turn_arbiter",
+                "disposition": decision.disposition,
+            },
+        )
+        if promote is not None and not self._closed:
+            self._schedule_dispatch(promote)
         return True
 
     def _promote_next_locked(self, session_id: str) -> QueuedTurn | None:
@@ -1902,6 +2005,26 @@ def _arbitration_lifecycle_payload(
         "controller_status": controller_status,
         "expected_run_matched": expected_run_matched,
     }
+    if decision.fallback_reason:
+        payload["fallback_reason"] = decision.fallback_reason
+    return payload
+
+
+def _prompt_safe_arbitration_summary(
+    decision: RealtimeTurnArbitrationDecision,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "schema_version": decision.schema_version,
+        "decision_id": decision.decision_id,
+        "source": decision.source,
+        "disposition": decision.disposition,
+        "confidence_bucket": _confidence_bucket(decision.confidence),
+        "reason_code": decision.reason_code,
+        "expected_run_id": decision.expected_run_id,
+        "latency_ms": decision.latency_ms,
+    }
+    if decision.revision_type:
+        payload["revision_type"] = decision.revision_type
     if decision.fallback_reason:
         payload["fallback_reason"] = decision.fallback_reason
     return payload
