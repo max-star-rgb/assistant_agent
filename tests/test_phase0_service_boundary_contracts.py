@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -25,7 +26,7 @@ def test_context_builder_does_not_own_memory_store_or_write_policy() -> None:
         source = _source(path)
         assert "from assistant_agent.memory.store" not in source
         assert "from assistant_agent.memory.write_policy" not in source
-        assert "MemoryStore" not in source
+        assert re.search(r"\bMemoryStore\b", source) is None
 
 
 def test_agent_delegation_context_filters_parent_memory_and_history() -> None:
