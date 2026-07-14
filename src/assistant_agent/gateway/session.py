@@ -45,6 +45,7 @@ from assistant_agent.schemas.realtime_turn_arbitration import (
     REALTIME_TURN_ARBITRATION_METADATA_KEY,
     RealtimeTurnArbitrationDecision,
     RealtimeTurnArbitrationRequest,
+    prompt_safe_arbitration_task_state,
 )
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.realtime_task_state import (
@@ -429,6 +430,8 @@ class GatewaySessionService:
         metadata = payload.get("metadata")
         if not isinstance(metadata, Mapping):
             return False
+        if _trusted_entry_source(metadata) != "realtime_media_websocket":
+            return False
         gateway = metadata.get("gateway")
         if not isinstance(gateway, Mapping):
             return False
@@ -485,7 +488,7 @@ class GatewaySessionService:
         expected_run_id: str,
     ) -> RealtimeTurnArbitrationRequest:
         task_state = self._realtime_task_state_store.get(turn.user_id, turn.session_id)
-        task_snapshot = (
+        task_snapshot = prompt_safe_arbitration_task_state(
             snapshot_from_task_state(task_state).model_dump(mode="json")
             if task_state is not None
             else {}
@@ -514,6 +517,7 @@ class GatewaySessionService:
     ) -> None:
         schedule_turn: QueuedTurn | None = None
         cancel_run: ActiveRun | None = None
+        cancel_reason: str | None = None
         complete_control_turn = False
         expected_run_matched = False
         stale = False
@@ -548,6 +552,7 @@ class GatewaySessionService:
                         metadata={"decision_id": decision.decision_id},
                     )
                     cancel_run = active
+                    cancel_reason = "semantic_cancel_only"
                 complete_control_turn = True
             elif normalized_disposition == "ACK_NOOP":
                 complete_control_turn = True
@@ -566,6 +571,7 @@ class GatewaySessionService:
                         metadata={"decision_id": decision.decision_id},
                     )
                     cancel_run = active
+                    cancel_reason = "semantic_interrupt"
 
             current = self._current_by_session.get(turn.session_id)
             if (
@@ -602,7 +608,7 @@ class GatewaySessionService:
                 turn_id=cancel_run.turn_id,
                 payload={
                     "source": "gateway_interrupt",
-                    "reason": "semantic_interrupt",
+                    "reason": cancel_reason,
                     "decision_id": decision.decision_id,
                 },
             )

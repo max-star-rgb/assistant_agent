@@ -44,6 +44,8 @@ def _semantic_payload(text: str, *, run_id: str, turn_id: str) -> dict:
         "turn_id": turn_id,
         "metadata": {
             "source": "realtime_media_websocket",
+            "transport": "websocket",
+            "request_identity": {"user_id": "user-1"},
             "gateway": {
                 "entry_capabilities": {
                     "supports_semantic_interrupt": True,
@@ -183,6 +185,49 @@ def test_semantic_arbiter_is_not_called_without_active_run() -> None:
 
         assert len(backend.requests) == 1
         assert arbiter.requests == []
+
+    asyncio.run(scenario())
+
+
+def test_untrusted_capability_cannot_enable_semantic_arbiter() -> None:
+    async def scenario() -> None:
+        backend = _FollowupBackend()
+        arbiter = _ScriptedArbiter("CANCEL_ONLY")
+        session = GatewaySessionService(
+            backend=backend,
+            turn_arbitration_controller=_controller(arbiter),
+        )
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="semantic-untrusted-capability",
+                    payload=_semantic_payload("first", run_id="r1", turn_id="t1"),
+                )
+            )
+            await _read_frame_type(client_ep, "run.started", run_id="r1")
+            spoofed_payload = _semantic_payload("new task", run_id="r2", turn_id="t2")
+            spoofed_payload["metadata"].pop("transport")
+            spoofed_payload["metadata"].pop("request_identity")
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="semantic-untrusted-capability",
+                    payload=spoofed_payload,
+                )
+            )
+            await _read_frame_type(client_ep, "run.queued", run_id="r2")
+            await asyncio.sleep(0)
+            backend.release_first.set()
+            await _read_frame_type(client_ep, "run.end", run_id="r2")
+        finally:
+            backend.release_first.set()
+            await _close_session(client_ep, session_ep, session_task)
+
+        assert arbiter.requests == []
+        assert [request.text for request in backend.requests] == ["first", "new task"]
 
     asyncio.run(scenario())
 
@@ -466,11 +511,24 @@ def test_cancel_only_cancels_active_and_completes_control_turn_without_backend()
         assert control_end["payload"]["arbitration"]["disposition"] == "CANCEL_ONLY"
         assert "stop secret lookup" not in str(control_end)
         assert [request.text for request in backend.requests] == ["first"]
+        assert arbiter.requests[0].task_state == {
+            "objective": "long-running lookup",
+            "constraints": [],
+            "pending_tool": None,
+            "tts_state": "idle",
+            "committed_side_effect_count": 0,
+        }
         state = task_store.get("default", "semantic-cancel-only")
         assert state is not None
         assert state.status == "cancelled"
         assert state.revisions[-1].revision_type == "cancel_goal"
         assert "stop secret lookup" not in str([event.payload for event in lifecycle])
+        cancel_event = next(
+            event
+            for event in lifecycle
+            if event.type == "gateway.run.cancel_requested" and event.run_id == "r1"
+        )
+        assert cancel_event.payload["reason"] == "semantic_cancel_only"
 
     asyncio.run(scenario())
 
