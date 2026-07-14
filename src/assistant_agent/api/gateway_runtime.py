@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from assistant_agent.gateway import GatewayBridge, GatewaySessionManager
+from assistant_agent.gateway import GatewayBridge, GatewayQueuePolicy, GatewaySessionManager
 from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
 from assistant_agent.schemas.api import AgentRunResponse
 from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade
@@ -27,6 +27,14 @@ GATEWAY_IDLE_TIMEOUT_S_ENV = "MULTIMODAL_AGENT_GATEWAY_IDLE_TIMEOUT_S"
 GATEWAY_HANGUP_GRACE_S_ENV = "MULTIMODAL_AGENT_GATEWAY_HANGUP_GRACE_S"
 GATEWAY_REAPER_INTERVAL_S_ENV = "MULTIMODAL_AGENT_GATEWAY_REAPER_INTERVAL_S"
 GATEWAY_START_REAPER_ENV = "MULTIMODAL_AGENT_GATEWAY_START_REAPER"
+GATEWAY_MAX_ACTIVE_RUNS_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS"
+GATEWAY_MAX_PENDING_PER_SESSION_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_PENDING_PER_SESSION"
+GATEWAY_MAX_QUEUED_TURNS_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_QUEUED_TURNS"
+GATEWAY_QUEUE_WAIT_TIMEOUT_MS_ENV = "MULTIMODAL_AGENT_GATEWAY_QUEUE_WAIT_TIMEOUT_MS"
+GATEWAY_DEDUPE_TTL_S_ENV = "MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S"
+GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER_ENV = (
+    "MULTIMODAL_AGENT_GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER"
+)
 GATEWAY_HTTP_RESPONSE_CAPTURE_ID = "http_response_capture_id"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -84,12 +92,46 @@ def create_gateway_session_manager(
 
     source = os.environ if env is None else env
     resolved_backend_factory = backend_factory or _default_gateway_backend_factory
+    defaults = GatewayQueuePolicy()
+    queue_policy = GatewayQueuePolicy(
+        max_active_runs=_positive_int_env(
+            source,
+            GATEWAY_MAX_ACTIVE_RUNS_ENV,
+            default=defaults.max_active_runs,
+        ),
+        max_pending_per_session=_positive_int_env(
+            source,
+            GATEWAY_MAX_PENDING_PER_SESSION_ENV,
+            default=defaults.max_pending_per_session,
+        ),
+        max_queued_turns_global=_positive_int_env(
+            source,
+            GATEWAY_MAX_QUEUED_TURNS_ENV,
+            default=defaults.max_queued_turns_global,
+        ),
+        queue_wait_timeout_ms=_positive_int_env(
+            source,
+            GATEWAY_QUEUE_WAIT_TIMEOUT_MS_ENV,
+            default=defaults.queue_wait_timeout_ms,
+        ),
+        dedupe_ttl_s=_positive_float_env(
+            source,
+            GATEWAY_DEDUPE_TTL_S_ENV,
+            default=defaults.dedupe_ttl_s,
+        ),
+        dedupe_max_entries_per_user=_positive_int_env(
+            source,
+            GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER_ENV,
+            default=defaults.dedupe_max_entries_per_user,
+        ),
+    )
     return GatewaySessionManager(
         max_sessions=_int_env(source, GATEWAY_MAX_SESSIONS_ENV, default=20),
         idle_timeout_s=_float_env(source, GATEWAY_IDLE_TIMEOUT_S_ENV, default=300.0),
         hangup_grace_s=_optional_float_env(source, GATEWAY_HANGUP_GRACE_S_ENV),
         reaper_interval_s=_float_env(source, GATEWAY_REAPER_INTERVAL_S_ENV, default=30.0),
         backend_factory=resolved_backend_factory,
+        queue_policy=queue_policy,
         start_reaper=_bool_env(source, GATEWAY_START_REAPER_ENV, default=True)
         if start_reaper is None
         else start_reaper,
@@ -223,6 +265,32 @@ def _int_env(env: Mapping[str, str], name: str, *, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def _positive_int_env(env: Mapping[str, str], name: str, *, default: int) -> int:
+    raw = str(env.get(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _positive_float_env(env: Mapping[str, str], name: str, *, default: float) -> float:
+    raw = str(env.get(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be positive") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
 
 
 def _float_env(env: Mapping[str, str], name: str, *, default: float) -> float:
