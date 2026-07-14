@@ -23,6 +23,15 @@ from assistant_agent.schemas.proactive_wake import (
 _SCHEMA_VERSION = 2
 
 
+class ProactiveWakeStoreError(RuntimeError):
+    """Structured persistence rejection for proactive wake data."""
+
+    def __init__(self, *, code: str, message: str | None = None) -> None:
+        self.code = code
+        self.message = message or code
+        super().__init__(self.message)
+
+
 class StaleNotificationLeaseError(RuntimeError):
     """Raised when a notification transition no longer owns its claimed lease."""
 
@@ -132,21 +141,21 @@ class SQLiteProactiveWakeStore:
     def save_rule(self, rule: WakeRule) -> WakeRule:
         owner = rule.owner
         with self._connect() as connection, connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT INTO wake_rules (
                     rule_id, tenant_id, user_id, project_id, enabled, version,
                     rule_json, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(rule_id) DO UPDATE SET
-                    tenant_id = excluded.tenant_id,
-                    user_id = excluded.user_id,
-                    project_id = excluded.project_id,
                     enabled = excluded.enabled,
                     version = excluded.version,
                     rule_json = excluded.rule_json,
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at
+                WHERE wake_rules.tenant_id IS excluded.tenant_id
+                  AND wake_rules.user_id = excluded.user_id
+                  AND wake_rules.project_id IS excluded.project_id
                 """,
                 (
                     rule.rule_id,
@@ -160,6 +169,11 @@ class SQLiteProactiveWakeStore:
                     _datetime_text(rule.updated_at),
                 ),
             )
+            if cursor.rowcount == 0:
+                raise ProactiveWakeStoreError(
+                    code="rule_owner_conflict",
+                    message="Rule owner is immutable.",
+                )
             empty_state = WakeRuleState(rule_id=rule.rule_id)
             connection.execute(
                 """

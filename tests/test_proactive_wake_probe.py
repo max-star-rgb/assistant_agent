@@ -264,22 +264,31 @@ def test_unknown_rule_tool_returns_structured_validation_code() -> None:
     assert (unknown.accepted, unknown.code) == (False, "proactive_tool_unknown")
 
 
-def test_action_validation_rejection_is_structured_and_skips_tool() -> None:
+def test_invalid_probe_arguments_are_rejected_before_action_execution() -> None:
     calls: list[dict[str, Any]] = []
     registry = ToolRegistry()
     registry.register(make_calendar_tool(calls))
-    rule = make_rule(arguments={})
+    rule = make_rule(arguments={"unrelated": "Bearer secret-probe-input"})
+    validator = ProactiveRuleValidator(
+        registry=registry,
+        allowed_tool_names={"calendar.search_events"},
+    )
 
+    validation = validator.validate(rule)
     observation = GovernedProbeRunner(
         registry=registry,
         allowed_tool_names={"calendar.search_events"},
     ).run(rule, make_signal(rule))
 
+    assert validation.accepted is False
+    assert validation.code == "proactive_probe_arguments_invalid"
+    assert "secret-probe-input" not in validation.message
     assert observation.accepted is False
-    assert observation.code == "invalid_tool_input"
+    assert observation.code == "proactive_probe_arguments_invalid"
     assert observation.success is False
     assert observation.prompt_safe_payload == {}
     assert observation.source_refs == []
+    assert "secret-probe-input" not in observation.summary
     assert calls == []
 
 

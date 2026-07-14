@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.state import AgentState
@@ -72,6 +72,15 @@ class ProactiveRuleValidator:
                     "Probe tool must be auto-executable, confirmation-free, read-only, "
                     "and declare no resource writes."
                 ),
+            )
+        try:
+            tool = self.registry.get(rule.probe.tool_name)
+            tool.input_schema.model_validate(rule.probe.arguments)
+        except ValidationError:
+            return ProactiveRuleValidation(
+                accepted=False,
+                code="proactive_probe_arguments_invalid",
+                message="Probe arguments do not match the registered tool input schema.",
             )
         return ProactiveRuleValidation(
             accepted=True,

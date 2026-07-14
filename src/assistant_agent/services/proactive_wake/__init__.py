@@ -25,7 +25,10 @@ from assistant_agent.schemas.proactive_wake import (
     WakeSignalKind,
     WakeTriggerSpec,
 )
-from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
+from assistant_agent.services.proactive_wake.store import (
+    ProactiveWakeStoreError,
+    SQLiteProactiveWakeStore,
+)
 from assistant_agent.services.proactive_wake.change_detector import (
     build_wake_evidence,
     evidence_fingerprint,
@@ -72,6 +75,7 @@ __all__ = [
     "ProbeObservation",
     "ProactiveWakeCoordinator",
     "ProactiveWakeError",
+    "ProactiveWakeStoreError",
     "ProactiveNotificationTransport",
     "ProactiveWakeRunResult",
     "ProactiveRuleValidation",

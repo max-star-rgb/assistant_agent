@@ -49,6 +49,11 @@ class QueryInput(BaseModel):
     query: str = Field(min_length=1)
 
 
+class StrictQueryInput(BaseModel):
+    query: str = Field(min_length=1)
+    calendar_id: str = Field(min_length=1)
+
+
 class SequenceTool:
     def __init__(self, responses: list[dict[str, Any] | ToolResult], *, delay_s: float = 0) -> None:
         self.responses = responses
@@ -316,6 +321,68 @@ def test_first_probe_establishes_baseline_without_notification(tmp_path) -> None
     assert state.next_reconcile_at == NOW + timedelta(seconds=300)
     assert store.list_outbox(rule.owner) == []
     assert store.get_rule(rule.owner, rule.rule_id).enabled is True
+
+
+def test_save_rule_maps_owner_conflict_without_replacing_original(tmp_path) -> None:
+    coordinator, store, _, _ = make_harness(tmp_path, [{"event": "unused"}])
+    original = coordinator.save_rule(make_rule())
+    takeover = make_rule(
+        owner=WakeOwner(
+            tenant_id=original.owner.tenant_id,
+            user_id="other-user",
+            project_id=original.owner.project_id,
+        )
+    )
+
+    with pytest.raises(ProactiveWakeError) as raised:
+        coordinator.save_rule(takeover)
+
+    assert raised.value.code == "rule_owner_conflict"
+    assert store.get_rule(original.owner, original.rule_id) == original
+    assert store.get_rule(takeover.owner, takeover.rule_id) is None
+
+
+def test_save_rule_rejects_invalid_probe_arguments_without_persistence(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "unused"}])
+    invalid = make_rule()
+    invalid = invalid.model_copy(
+        update={
+            "probe": invalid.probe.model_copy(
+                update={"arguments": {"unrelated": "Bearer secret-probe-input"}}
+            )
+        }
+    )
+
+    with pytest.raises(ProactiveWakeError) as raised:
+        coordinator.save_rule(invalid)
+
+    assert raised.value.code == "proactive_probe_arguments_invalid"
+    assert "secret-probe-input" not in raised.value.message
+    assert store.get_rule(invalid.owner, invalid.rule_id) is None
+    assert store.list_rules(invalid.owner) == []
+    assert sequence.call_count == 0
+
+
+def test_runtime_schema_change_persists_config_error_without_probe_or_outbox(tmp_path) -> None:
+    coordinator, store, sequence, _ = make_harness(tmp_path, [{"event": "must-not-run"}])
+    rule = coordinator.save_rule(make_rule())
+    sequence.tool.input_schema = StrictQueryInput
+
+    result = run_rule(coordinator, rule, make_signal(rule, signal_id="schema-changed"))
+
+    assert (result.run.status, result.run.reason_code) == (
+        "config_error",
+        "proactive_probe_arguments_invalid",
+    )
+    assert sequence.call_count == 0
+    assert store.list_outbox(rule.owner) == []
+    persisted = next(
+        run for run in store.list_runs(rule.owner) if run.signal_id == "schema-changed"
+    )
+    assert (persisted.status, persisted.reason_code) == (
+        "config_error",
+        "proactive_probe_arguments_invalid",
+    )
 
 
 def test_same_evidence_stays_silent_without_notification(tmp_path) -> None:

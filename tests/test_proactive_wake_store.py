@@ -157,6 +157,45 @@ def test_rule_update_preserves_existing_state(tmp_path) -> None:
     assert store.get_rule_state(rule.rule_id) == state
 
 
+@pytest.mark.parametrize(
+    "conflicting_owner",
+    [
+        WakeOwner(tenant_id="tenant-2", user_id="user-1", project_id="project-1"),
+        WakeOwner(tenant_id="tenant-1", user_id="user-2", project_id="project-1"),
+        WakeOwner(tenant_id="tenant-1", user_id="user-1", project_id="project-2"),
+    ],
+    ids=["tenant", "user", "project"],
+)
+def test_rule_id_conflict_cannot_replace_owner_or_existing_state(
+    tmp_path,
+    conflicting_owner,
+) -> None:
+    store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
+    original = make_rule(
+        owner=WakeOwner(
+            tenant_id="tenant-1",
+            user_id="user-1",
+            project_id="project-1",
+        )
+    )
+    store.save_rule(original)
+    original_state = store.get_rule_state(original.rule_id).model_copy(
+        update={"last_fingerprint": "original-fingerprint", "notification_count": 2}
+    )
+    store.save_rule_state(original_state)
+    takeover = make_rule(owner=conflicting_owner).model_copy(
+        update={"name": "Owner takeover attempt"}
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        store.save_rule(takeover)
+
+    assert getattr(raised.value, "code", None) == "rule_owner_conflict"
+    assert store.get_rule(original.owner, original.rule_id) == original
+    assert store.get_rule(conflicting_owner, original.rule_id) is None
+    assert store.get_rule_state(original.rule_id) == original_state
+
+
 def test_nullable_owner_fields_do_not_broaden_rule_or_run_queries(tmp_path) -> None:
     store = SQLiteProactiveWakeStore(tmp_path / "wake.sqlite3")
     base_owner = WakeOwner(user_id="u1")

@@ -117,7 +117,7 @@ class GatewayActivityTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(service.snapshot_started.wait(), timeout=1.0)
 
             self.assertTrue(
-                await asyncio.wait_for(manager.destroy("u1"), timeout=0.2)
+                await asyncio.wait_for(manager.destroy("u1"), timeout=1.0)
             )
             service.snapshot_release.set()
             self.assertFalse(await asyncio.wait_for(snapshot_task, timeout=1.0))

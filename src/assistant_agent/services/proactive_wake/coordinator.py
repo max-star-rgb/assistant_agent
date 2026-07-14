@@ -34,7 +34,10 @@ from assistant_agent.services.proactive_wake.probe import (
     GovernedProbeRunner,
     ProactiveRuleValidator,
 )
-from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
+from assistant_agent.services.proactive_wake.store import (
+    ProactiveWakeStoreError,
+    SQLiteProactiveWakeStore,
+)
 
 _RuleLockKey = tuple[str | None, str, str | None, str]
 
@@ -83,7 +86,10 @@ class ProactiveWakeCoordinator:
         validation = self.rule_validator.validate(rule)
         if not validation.accepted:
             raise ProactiveWakeError(code=validation.code, message=validation.message)
-        return self.store.save_rule(rule)
+        try:
+            return self.store.save_rule(rule)
+        except ProactiveWakeStoreError as exc:
+            raise ProactiveWakeError(code=exc.code, message=exc.message) from exc
 
     async def run_rule(
         self,
