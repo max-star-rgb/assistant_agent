@@ -30,6 +30,7 @@ ContextSectionKind = Literal[
     "recent_transcript",
     "retrieved_memory",
     "realtime_task_state",
+    "durable_task_state",
     "plan_state",
     "tool_observation",
     "tool_schema",
@@ -116,6 +117,7 @@ class ContextBudgetReport(BaseModel):
     conversation_chars: int = Field(default=0, ge=0)
     memory_chars: int = Field(default=0, ge=0)
     realtime_task_state_chars: int = Field(default=0, ge=0)
+    durable_task_state_chars: int = Field(default=0, ge=0)
     plan_chars: int = Field(default=0, ge=0)
     observations_chars: int = Field(default=0, ge=0)
     tool_spec_chars: int = Field(default=0, ge=0)
@@ -133,6 +135,7 @@ class ContextBudgetReport(BaseModel):
     request_tokens: int = Field(default=0, ge=0)
     conversation_tokens: int = Field(default=0, ge=0)
     memory_tokens: int = Field(default=0, ge=0)
+    durable_task_state_tokens: int = Field(default=0, ge=0)
     plan_tokens: int = Field(default=0, ge=0)
     observations_tokens: int = Field(default=0, ge=0)
     tool_spec_tokens: int = Field(default=0, ge=0)
@@ -281,6 +284,7 @@ class AssistantContextPack(BaseModel):
     memory_text: str = ""
     memory_blocks: list[dict[str, Any]] = Field(default_factory=list)
     realtime_task_state: dict[str, Any] | None = None
+    durable_task_state: dict[str, Any] | None = None
     plan_state: AssistantPlanContext = Field(default_factory=AssistantPlanContext)
     observations: list[dict[str, Any]] = Field(default_factory=list)
     tool_specs: list[ToolSpec] = Field(default_factory=list)

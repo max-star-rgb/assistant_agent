@@ -244,6 +244,7 @@ def test_context_report_v1_summarizes_sections_without_raw_payloads() -> None:
         "recent_transcript",
         "memory",
         "realtime_task_state",
+        "durable_task_state",
         "plan_state",
         "tool_observations",
         "tool_schema",

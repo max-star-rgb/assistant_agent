@@ -25,6 +25,7 @@ CONTEXT_REPORT_SECTION_NAMES = (
     "recent_transcript",
     "memory",
     "realtime_task_state",
+    "durable_task_state",
     "plan_state",
     "tool_observations",
     "tool_schema",
@@ -88,6 +89,14 @@ def build_context_report(
         item_count=len(pack.realtime_task_state) if isinstance(pack.realtime_task_state, dict) else 0,
         included=pack.realtime_task_state is not None,
         source="request.metadata.realtime_task_state",
+    )
+    sections["durable_task_state"] = ContextReportSection(
+        chars=_json_chars(pack.durable_task_state) if pack.durable_task_state else 0,
+        tokens=_positive_or_none(pack.budget.durable_task_state_tokens),
+        item_count=1 if pack.durable_task_state is not None else 0,
+        included=pack.durable_task_state is not None,
+        trimmed="durable_task_state" in pack.budget.trimmed_sections,
+        source="trusted_runtime.durable_task_snapshot",
     )
     sections["plan_state"] = ContextReportSection(
         chars=_plan_chars(pack),
@@ -239,6 +248,14 @@ def context_report_from_trace_context_summary(context: dict[str, Any]) -> Contex
         item_count=_int_value(source_counts.get("realtime_task_state")),
         included=_int_value(source_counts.get("realtime_task_state")) > 0,
         source="legacy_context_summary.budget",
+    )
+    sections["durable_task_state"] = ContextReportSection(
+        chars=_int_value(budget.get("durable_task_state_chars")),
+        tokens=_positive_or_none(_int_value(budget.get("durable_task_state_tokens"))),
+        item_count=_int_value(source_counts.get("durable_task_state")),
+        included=_int_value(source_counts.get("durable_task_state")) > 0,
+        trimmed="durable_task_state" in trimmed_sections,
+        source="trusted_runtime.durable_task_snapshot",
     )
     sections["plan_state"] = ContextReportSection(
         chars=_int_value(budget.get("plan_chars")),
