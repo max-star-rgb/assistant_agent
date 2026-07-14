@@ -118,6 +118,7 @@ def context_trace_summary(pack: AssistantContextPack) -> dict[str, Any]:
         "compaction": _context_compaction_summary(pack.observations),
         "tool_catalog": pack.tool_catalog_summary.model_dump(mode="json"),
         "skill_report_v1": pack.skill_report.model_dump(mode="json"),
+        "context_sources": pack.context_source_report.model_dump(mode="json"),
         "compactor_type": pack.compactor_type,
         "context_summary_present": pack.context_summary is not None,
         "memory_promotion_candidates": _metadata_int(pack.request.metadata, "memory_promotion_candidates"),

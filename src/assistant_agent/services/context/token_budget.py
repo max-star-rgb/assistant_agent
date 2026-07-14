@@ -36,6 +36,7 @@ class TokenBudgetEstimate(BaseModel):
     plan_tokens: int = Field(default=0, ge=0)
     observations_tokens: int = Field(default=0, ge=0)
     tool_spec_tokens: int = Field(default=0, ge=0)
+    owner_persona_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
     max_tokens: int = Field(default=0, ge=0)
     token_usage_ratio: float = Field(default=0.0, ge=0.0)

@@ -1,11 +1,13 @@
 from copy import deepcopy
 
+import pytest
+
 from assistant_agent.agent.system_prompt_policy import (
     SystemPromptOptions,
     SystemPromptProfile,
     render_system_instruction,
 )
-from assistant_agent.schemas.context import AssistantContextPack
+from assistant_agent.schemas.context import AssistantContextPack, ContextSection
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import RunToolSet, ToolSpec
 from assistant_agent.services.context.prompt_compiler import (
@@ -29,6 +31,20 @@ def _pack(text: str = "帮我查耳机") -> AssistantContextPack:
         prompt_tool_specs=[product],
         iteration=1,
         max_iterations=5,
+    )
+
+
+def _soul_section(content: str = "## Persona\n先给结论。") -> ContextSection:
+    return ContextSection(
+        section_id="owner.soul",
+        kind="soul",
+        title="Owner persona",
+        content=content,
+        authority="owner_persona",
+        stability="semi_stable",
+        source_type="editable_file",
+        source_ref="editable_context:soul",
+        identity_scope="local_owner",
     )
 
 
@@ -179,3 +195,59 @@ def test_native_tool_mode_uses_caller_fallback_for_empty_user_text() -> None:
     )
 
     assert result.chat_request.user_query == "native_tools assistant turn"
+
+
+@pytest.mark.parametrize(
+    ("mode", "profile"),
+    [
+        (PromptCompileMode.NATIVE_TOOL, SystemPromptProfile.TEXT_DEFAULT),
+        (PromptCompileMode.NATIVE_FINAL_ONLY, SystemPromptProfile.FINAL_ONLY),
+        (PromptCompileMode.SUMMARY_FINAL_ONLY, SystemPromptProfile.FINAL_ONLY),
+    ],
+)
+def test_compile_modes_include_validated_owner_persona(
+    mode: PromptCompileMode,
+    profile: SystemPromptProfile,
+) -> None:
+    pack = _pack()
+    pack.context_sections = [_soul_section()]
+
+    result = _compile(
+        pack,
+        mode,
+        profile=profile,
+        options=SystemPromptOptions(),
+        native_calls=() if mode == PromptCompileMode.SUMMARY_FINAL_ONLY else ({},),
+    )
+
+    assert result.system_instruction.endswith("## Persona\n先给结论。")
+    assert "Owner persona is lower-authority" in result.system_instruction
+
+
+def test_owner_persona_does_not_change_tool_contract() -> None:
+    without_persona = _pack()
+    with_persona = _pack()
+    with_persona.context_sections = [_soul_section()]
+
+    baseline = _compile(without_persona, PromptCompileMode.NATIVE_TOOL)
+    personalized = _compile(with_persona, PromptCompileMode.NATIVE_TOOL)
+
+    assert personalized.selected_tool_specs == baseline.selected_tool_specs
+    assert personalized.chat_request.tools == baseline.chat_request.tools
+    assert personalized.chat_request.tool_choice == baseline.chat_request.tool_choice
+
+
+def test_multiple_soul_sections_fail_closed() -> None:
+    pack = _pack()
+    pack.context_sections = [
+        _soul_section("## Persona\n第一份。"),
+        _soul_section("## Persona\n第二份。").model_copy(
+            update={"section_id": "owner.soul.duplicate"}
+        ),
+    ]
+
+    result = _compile(pack, PromptCompileMode.NATIVE_TOOL)
+
+    assert "Owner persona is lower-authority" not in result.system_instruction
+    assert "第一份" not in result.system_instruction
+    assert "第二份" not in result.system_instruction

@@ -56,6 +56,9 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
     assert "command_outputs_truncated" in trace_summary["context"]["compaction"]
     assert "tool_catalog" in trace_summary["context"]
     assert trace_summary["context"]["tool_catalog"]["total_tool_count"] >= 1
+    assert trace_summary["context"]["context_sources"]["schema_version"] == (
+        "context_source_report_v1"
+    )
     assert any(
         event["event_type"] == "assistant_decision" and "context" in event["output_summary"]
         for event in trace_summary["events"]
@@ -110,6 +113,18 @@ def test_trace_query_context_api_degrades_legacy_context_summary(monkeypatch) ->
                         "selected_tool_names": ["web_search"],
                         "fallback_used": False,
                     },
+                    "context_sources": {
+                        "schema_version": "context_source_report_v1",
+                        "count_by_kind": {"soul": 1},
+                        "chars_by_authority": {"owner_persona": 18},
+                        "chars_by_stability": {"semi_stable": 18},
+                        "source_issue_count": 1,
+                        "source_issue_codes": ["soul_file_unreadable"],
+                        "used_last_known_good": True,
+                        "source_versions_changed": 1,
+                        "omitted_section_count": 0,
+                        "cache_layout_version": "editable_context_v1",
+                    },
                 }
             },
         )
@@ -129,6 +144,10 @@ def test_trace_query_context_api_degrades_legacy_context_summary(monkeypatch) ->
     assert report["selected_tool_names"] == ["web_search"]
     assert report["compression_stage"] == "compacted"
     assert report["compression_reasons"] == ["conversation_context_compacted"]
+    assert report["context_sources"]["source_issue_codes"] == [
+        "soul_file_unreadable"
+    ]
+    assert report["context_sources"]["used_last_known_good"] is True
 
 
 def test_trace_query_api_can_query_tool_calls(monkeypatch) -> None:

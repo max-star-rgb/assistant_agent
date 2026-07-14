@@ -1,11 +1,102 @@
 """Assistant context assembly contracts."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import RunToolSet, ToolSpec
+
+
+ContextAuthority = Literal[
+    "system_policy",
+    "owner_persona",
+    "procedural_guidance",
+    "user_profile_data",
+    "user_history_evidence",
+    "session_state",
+    "runtime_evidence",
+    "tool_contract",
+]
+ContextStability = Literal["invariant", "semi_stable", "volatile"]
+ContextSectionKind = Literal[
+    "soul",
+    "user_profile",
+    "core_memory",
+    "skill_index",
+    "skill_body",
+    "skill_reference",
+    "session_summary",
+    "recent_transcript",
+    "retrieved_memory",
+    "realtime_task_state",
+    "plan_state",
+    "tool_observation",
+    "tool_schema",
+    "tool_capability",
+]
+ContextSourceType = Literal[
+    "runtime",
+    "editable_file",
+    "memory_service",
+    "skill_loader",
+    "tool_registry",
+]
+ContextIdentityScope = Literal["runtime", "local_owner", "user", "project", "tenant"]
+
+
+class ContextSection(BaseModel):
+    """Validated prompt material with explicit authority and provenance."""
+
+    schema_version: Literal["context_section_v1"] = "context_section_v1"
+    section_id: str = Field(min_length=1)
+    kind: ContextSectionKind
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    authority: ContextAuthority
+    stability: ContextStability
+    source_type: ContextSourceType
+    source_ref: str = ""
+    source_version: str = ""
+    identity_scope: ContextIdentityScope = "runtime"
+    priority: int = Field(default=100, ge=0)
+    max_chars: int = Field(default=0, ge=0)
+    max_tokens: int = Field(default=0, ge=0)
+    sensitive: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
+class ContextSourceIssue(BaseModel):
+    """Prompt-safe source loading issue that never contains source content."""
+
+    code: str = Field(min_length=1)
+    source_ref: str = ""
+    section_id: str | None = None
+    recoverable: bool = True
+    public_message: str = Field(min_length=1)
+
+
+class ContextSourceResult(BaseModel):
+    """Validated context sections frozen for one assistant run."""
+
+    sections: list[ContextSection] = Field(default_factory=list)
+    issues: list[ContextSourceIssue] = Field(default_factory=list)
+    used_last_known_good: bool = False
+
+
+class ContextSourceReport(BaseModel):
+    """Redacted source accounting safe for traces and public debugging."""
+
+    schema_version: Literal["context_source_report_v1"] = "context_source_report_v1"
+    count_by_kind: dict[str, int] = Field(default_factory=dict)
+    chars_by_authority: dict[str, int] = Field(default_factory=dict)
+    chars_by_stability: dict[str, int] = Field(default_factory=dict)
+    source_issue_count: int = Field(default=0, ge=0)
+    source_issue_codes: list[str] = Field(default_factory=list)
+    used_last_known_good: bool = False
+    source_versions_changed: int = Field(default=0, ge=0)
+    omitted_section_count: int = Field(default=0, ge=0)
+    cache_layout_version: str = "editable_context_v1"
 
 
 class AssistantPlanContext(BaseModel):
@@ -29,6 +120,7 @@ class ContextBudgetReport(BaseModel):
     observations_chars: int = Field(default=0, ge=0)
     tool_spec_chars: int = Field(default=0, ge=0)
     tool_capability_chars: int = Field(default=0, ge=0)
+    owner_persona_chars: int = Field(default=0, ge=0)
     total_chars: int = Field(default=0, ge=0)
     max_chars: int = Field(default=0, ge=0)
     over_budget: bool = False
@@ -44,6 +136,7 @@ class ContextBudgetReport(BaseModel):
     plan_tokens: int = Field(default=0, ge=0)
     observations_tokens: int = Field(default=0, ge=0)
     tool_spec_tokens: int = Field(default=0, ge=0)
+    owner_persona_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
     max_tokens: int = Field(default=0, ge=0)
     token_usage_ratio: float = Field(default=0.0, ge=0.0)
@@ -101,6 +194,7 @@ class ContextReport(BaseModel):
     selected_tool_names: list[str] = Field(default_factory=list)
     memory_item_ids: list[str] = Field(default_factory=list)
     skill_report: SkillExposureReport = Field(default_factory=SkillExposureReport)
+    context_sources: ContextSourceReport = Field(default_factory=ContextSourceReport)
     compression_stage: str = "none"
     compression_reasons: list[str] = Field(default_factory=list)
     was_compacted: bool = False
@@ -195,6 +289,8 @@ class AssistantContextPack(BaseModel):
     tool_catalog_summary: ToolCatalogSummary = Field(default_factory=ToolCatalogSummary)
     tool_capabilities: list[ToolCapabilityDescriptor] = Field(default_factory=list)
     skill_report: SkillExposureReport = Field(default_factory=SkillExposureReport)
+    context_sections: list[ContextSection] = Field(default_factory=list)
+    context_source_report: ContextSourceReport = Field(default_factory=ContextSourceReport)
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=1, ge=1)
     source_counts: dict[str, int] = Field(default_factory=dict)

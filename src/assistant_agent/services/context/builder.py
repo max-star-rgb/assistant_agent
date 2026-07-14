@@ -10,6 +10,7 @@ from assistant_agent.schemas.context import (
     AssistantPlanContext,
     ContextBudgetReport,
     ContextPolicy,
+    ContextSection,
     ContextSummary,
     ToolCapabilityDescriptor,
 )
@@ -38,6 +39,7 @@ from assistant_agent.services.context.policy import (
 from assistant_agent.services.context.capability_catalog import (
     select_tool_capability_descriptors,
 )
+from assistant_agent.services.context.report import build_context_source_report
 from assistant_agent.services.context.token_budget import token_budget_reporter_from_request
 from assistant_agent.services.context.tool_catalog import prompt_tool_spec_payload, select_prompt_tool_specs
 from assistant_agent.services.realtime_task_state import REALTIME_TASK_STATE_METADATA_KEY
@@ -91,6 +93,31 @@ def build_assistant_context_pack(
         tool_capabilities=tool_capabilities,
     )
     plan_state = build_assistant_plan_context(state)
+    unbudgeted_context_sections = [
+        section
+        for section in state.context_source_result.sections
+        if section.kind == "soul" and not section.sensitive
+    ]
+    unbudgeted_report = _budget_report(
+        request=active_request,
+        conversation_text=conversation_text,
+        memory_text=text,
+        realtime_task_state=realtime_task_state,
+        plan_state=plan_state,
+        observations=context_observations,
+        tool_specs=prompt_tool_specs,
+        tool_capabilities=tool_capabilities,
+        context_sections=unbudgeted_context_sections,
+        max_chars=budget_limit,
+    )
+    context_sections, context_section_trimmed = _fit_context_sections_to_budget(
+        unbudgeted_context_sections,
+        available_chars=max(
+            0,
+            budget_limit
+            - (unbudgeted_report.total_chars - unbudgeted_report.owner_persona_chars),
+        ),
+    )
     source_counts = _source_counts(
         request=active_request,
         memory_summaries=summaries,
@@ -100,6 +127,8 @@ def build_assistant_context_pack(
         tool_specs=active_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
         tool_capabilities=tool_capabilities,
+        context_sections=context_sections,
+        context_source_issue_count=len(state.context_source_result.issues),
     )
     initial_budget = _budget_report(
         request=active_request,
@@ -110,6 +139,7 @@ def build_assistant_context_pack(
         observations=context_observations,
         tool_specs=prompt_tool_specs,
         tool_capabilities=tool_capabilities,
+        context_sections=context_sections,
         max_chars=budget_limit,
     )
     compaction_budget_policy = context_policy.model_copy(
@@ -137,6 +167,7 @@ def build_assistant_context_pack(
         active_request.metadata["context_summary_present"] = True
         active_request.metadata["context_compactor_type"] = compactor_type
 
+    owner_persona_chars = _owner_persona_chars(context_sections)
     budgeted = _enforce_context_budget(
         request=active_request,
         conversation_text=conversation_text,
@@ -146,17 +177,45 @@ def build_assistant_context_pack(
         plan_state=plan_state,
         tool_specs=prompt_tool_specs,
         tool_capabilities=tool_capabilities,
-        max_chars=budget_limit,
+        max_chars=max(0, budget_limit - owner_persona_chars),
     )
     if budgeted.memory_text == "":
         summaries = []
-    over_budget = initial_budget.total_chars > budget_limit
+    trimmed_sections = _unique(
+        [*context_section_trimmed, *budgeted.trimmed_sections]
+    )
+    over_budget = unbudgeted_report.total_chars > budget_limit
     compression_reasons = _compression_reasons(
         request=active_request,
         observations=context_observations,
         over_budget=over_budget,
-        trimmed_sections=budgeted.trimmed_sections,
+        trimmed_sections=trimmed_sections,
         extra_reasons=compaction_decision.reasons,
+    )
+    final_budget = _budget_report(
+        request=active_request,
+        conversation_text=budgeted.conversation_text,
+        memory_text=budgeted.memory_text,
+        realtime_task_state=realtime_task_state,
+        plan_state=plan_state,
+        observations=budgeted.observations,
+        tool_specs=prompt_tool_specs,
+        tool_capabilities=tool_capabilities,
+        context_sections=context_sections,
+        max_chars=budget_limit,
+        over_budget=over_budget,
+        compaction_triggered=compaction_decision.triggered or bool(trimmed_sections),
+        trimmed_chars=max(
+            0,
+            unbudgeted_report.total_chars
+            - (budgeted.total_chars + owner_persona_chars),
+        ),
+        trimmed_sections=trimmed_sections,
+        compression_stage=_compression_stage(
+            compression_reasons,
+            trimmed_sections=trimmed_sections,
+        ),
+        compression_reasons=compression_reasons,
     )
     return AssistantContextPack(
         request=active_request,
@@ -175,29 +234,15 @@ def build_assistant_context_pack(
         tool_catalog_summary=tool_catalog.summary,
         tool_capabilities=tool_capabilities,
         skill_report=tool_capability_catalog.skill_report,
+        context_sections=context_sections,
+        context_source_report=build_context_source_report(
+            state.context_source_result,
+            context_sections,
+        ),
         iteration=iteration,
         max_iterations=max_iterations,
         source_counts=source_counts,
-        budget=_budget_report(
-            request=active_request,
-            conversation_text=budgeted.conversation_text,
-            memory_text=budgeted.memory_text,
-            realtime_task_state=realtime_task_state,
-            plan_state=plan_state,
-            observations=budgeted.observations,
-            tool_specs=prompt_tool_specs,
-            tool_capabilities=tool_capabilities,
-            max_chars=budget_limit,
-            over_budget=over_budget,
-            compaction_triggered=compaction_decision.triggered or bool(budgeted.trimmed_sections),
-            trimmed_chars=max(0, initial_budget.total_chars - budgeted.total_chars),
-            trimmed_sections=budgeted.trimmed_sections,
-            compression_stage=_compression_stage(
-                compression_reasons,
-                trimmed_sections=budgeted.trimmed_sections,
-            ),
-            compression_reasons=compression_reasons,
-        ),
+        budget=final_budget,
     )
 
 
@@ -266,6 +311,8 @@ def _source_counts(
     tool_specs: list[ToolSpec],
     prompt_tool_specs: list[ToolSpec],
     tool_capabilities: list[ToolCapabilityDescriptor],
+    context_sections: list[ContextSection],
+    context_source_issue_count: int,
 ) -> dict[str, int]:
     conversation_history = request.metadata.get("conversation_history")
     artifact_refs = request.metadata.get("memory_context_refs")
@@ -281,6 +328,8 @@ def _source_counts(
         "tool_specs": len(tool_specs),
         "prompt_tool_specs": len(prompt_tool_specs),
         "tool_capabilities": len(tool_capabilities),
+        "context_sections": len(context_sections),
+        "context_source_issues": context_source_issue_count,
     }
 
 
@@ -294,6 +343,7 @@ def _budget_report(
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
     tool_capabilities: list[ToolCapabilityDescriptor] | None = None,
+    context_sections: list[ContextSection] | None = None,
     max_chars: int = 0,
     over_budget: bool = False,
     compaction_triggered: bool = False,
@@ -312,6 +362,7 @@ def _budget_report(
     tool_capability_chars = _json_chars(
         [descriptor.model_dump(mode="json") for descriptor in tool_capabilities or []]
     )
+    owner_persona_chars = _owner_persona_chars(context_sections or [])
     total_chars = (
         request_chars
         + conversation_chars
@@ -321,6 +372,7 @@ def _budget_report(
         + observations_chars
         + tool_spec_chars
         + tool_capability_chars
+        + owner_persona_chars
     )
     context_usage_ratio = total_chars / max_chars if max_chars > 0 else 0.0
     token_reporter = token_budget_reporter_from_request(request)
@@ -338,6 +390,11 @@ def _budget_report(
                 "tool_capability": [
                     descriptor.model_dump(mode="json") for descriptor in tool_capabilities or []
                 ],
+                "owner_persona": "\n\n".join(
+                    section.content
+                    for section in context_sections or []
+                    if section.kind == "soul"
+                ),
             },
         )
         if token_reporter is not None
@@ -352,6 +409,7 @@ def _budget_report(
         observations_chars=observations_chars,
         tool_spec_chars=tool_spec_chars,
         tool_capability_chars=tool_capability_chars,
+        owner_persona_chars=owner_persona_chars,
         total_chars=total_chars,
         max_chars=max_chars,
         over_budget=over_budget,
@@ -424,6 +482,51 @@ def _effective_context_budget_limit(
 def _metadata_int(request: UserRequest, key: str) -> int:
     value = request.metadata.get(key)
     return value if isinstance(value, int) and value >= 0 else 0
+
+
+def _owner_persona_chars(sections: list[ContextSection]) -> int:
+    return sum(len(section.content) for section in sections if section.kind == "soul")
+
+
+def _fit_context_sections_to_budget(
+    sections: list[ContextSection],
+    *,
+    available_chars: int,
+) -> tuple[list[ContextSection], list[str]]:
+    """Fit validated sections at whole-paragraph boundaries."""
+
+    remaining = max(0, available_chars)
+    fitted: list[ContextSection] = []
+    trimmed: list[str] = []
+    for section in sorted(sections, key=lambda item: item.priority):
+        if len(section.content) <= remaining:
+            fitted.append(section)
+            remaining -= len(section.content)
+            continue
+        content = _fit_section_content(section.content, max_chars=remaining)
+        if content:
+            notes = list(section.notes)
+            if "budget_trimmed" not in notes:
+                notes.append("budget_trimmed")
+            fitted.append(section.model_copy(update={"content": content, "notes": notes}))
+            remaining -= len(content)
+        if section.kind == "soul" and "owner_persona" not in trimmed:
+            trimmed.append("owner_persona")
+    return fitted, trimmed
+
+
+def _fit_section_content(value: str, *, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(value) <= max_chars:
+        return value
+    selected: list[str] = []
+    for block in value.split("\n\n"):
+        candidate = "\n\n".join([*selected, block])
+        if len(candidate) > max_chars:
+            break
+        selected.append(block)
+    return "\n\n".join(selected)
 
 
 class _BudgetedContext:

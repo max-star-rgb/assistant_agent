@@ -5,7 +5,14 @@ from pathlib import Path
 from assistant_agent.agent.state import AgentState
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime_profile import get_runtime_profile
-from assistant_agent.schemas.context import AssistantContextPack, ContextSummary, ToolCatalogSummary
+from assistant_agent.schemas.context import (
+    AssistantContextPack,
+    ContextSection,
+    ContextSourceIssue,
+    ContextSourceResult,
+    ContextSummary,
+    ToolCatalogSummary,
+)
 from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
@@ -1269,6 +1276,179 @@ def test_native_tool_context_omits_full_tool_specs_but_keeps_request_memory_and_
     assert '"current_step_id": "step_1"' in message
     assert "可用工具 ToolSpec 列表" not in message
     assert "hidden_full_tool_spec" not in message
+
+
+def test_context_pack_consumes_frozen_owner_persona_and_source_issues() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="你好")
+    state = AgentState.from_request(request)
+    section = _owner_persona_section("## Persona\n保持简洁。", source_version="private-version")
+    state.context_source_result = ContextSourceResult(
+        sections=[section],
+        issues=[
+            ContextSourceIssue(
+                code="soul_file_unreadable",
+                source_ref="editable_context:soul",
+                public_message="The configured SOUL source could not be read.",
+            )
+        ],
+        used_last_known_good=True,
+    )
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert pack.context_sections == [section]
+    assert pack.budget.owner_persona_chars == len(section.content)
+    assert pack.source_counts["context_sections"] == 1
+    assert pack.source_counts["context_source_issues"] == 1
+
+
+def test_context_pack_includes_owner_persona_in_local_token_estimate() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="你好",
+        metadata={"context_budget_estimate_tokens": True},
+    )
+    baseline = build_assistant_context_pack(
+        state=AgentState.from_request(request),
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+    state = AgentState.from_request(request)
+    state.context_source_result = ContextSourceResult(
+        sections=[_owner_persona_section("## Persona\n保持简洁。")]
+    )
+
+    with_persona = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert with_persona.budget.owner_persona_tokens > 0
+    assert with_persona.budget.total_tokens == (
+        baseline.budget.total_tokens + with_persona.budget.owner_persona_tokens
+    )
+
+
+def test_hard_budget_trims_owner_persona_before_fresh_observation() -> None:
+    content = "\n\n".join(
+        [
+            "## Relationship Boundaries\n" + "界" * 120,
+            "## Avoid\n" + "避" * 120,
+            "## Persona\n" + "人" * 120,
+        ]
+    )
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="继续",
+        metadata={"context_budget_max_chars": 500},
+    )
+    state = AgentState.from_request(request)
+    state.context_source_result = ContextSourceResult(
+        sections=[_owner_persona_section(content)]
+    )
+    observations = [
+        {
+            "tool_name": "product_search",
+            "status": "succeeded",
+            "summary": "fresh evidence",
+        }
+    ]
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=observations,
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    assert pack.observations == observations
+    assert pack.context_sections
+    assert len(pack.context_sections[0].content) < len(content)
+    assert pack.context_sections[0].content.startswith("## Relationship Boundaries")
+    assert not pack.context_sections[0].content.endswith("## Persona")
+    assert "owner_persona" in pack.budget.trimmed_sections
+    assert "observations" not in pack.budget.trimmed_sections
+    assert pack.budget.total_chars <= pack.budget.max_chars
+
+
+def test_context_report_exposes_redacted_source_accounting_without_double_counting() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="你好")
+    state = AgentState.from_request(request)
+    section = _owner_persona_section(
+        "## Persona\n保持简洁。",
+        source_version="private-version",
+        notes=["source_version_changed"],
+    )
+    state.context_source_result = ContextSourceResult(
+        sections=[section],
+        issues=[
+            ContextSourceIssue(
+                code="soul_file_unreadable",
+                source_ref="editable_context:soul",
+                public_message="The configured SOUL source could not be read.",
+            )
+        ],
+        used_last_known_good=True,
+    )
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+    system_prompt = "immutable policy\n" + pack.context_sections[0].content
+
+    report = build_context_report(pack, system_prompt=system_prompt)
+    serialized = report.model_dump_json()
+
+    assert report.sections["system_prompt"].chars == len(system_prompt)
+    assert report.context_sources.count_by_kind == {"soul": 1}
+    assert report.context_sources.chars_by_authority == {
+        "owner_persona": len(section.content)
+    }
+    assert report.context_sources.source_issue_codes == ["soul_file_unreadable"]
+    assert report.context_sources.used_last_known_good is True
+    assert report.context_sources.source_versions_changed == 1
+    assert report.total_chars == sum(item.chars for item in report.sections.values())
+    assert section.content not in serialized
+    assert "private-version" not in serialized
+
+
+def _owner_persona_section(
+    content: str,
+    *,
+    source_version: str = "version",
+    notes: list[str] | None = None,
+) -> ContextSection:
+    return ContextSection(
+        section_id="owner.soul",
+        kind="soul",
+        title="Owner persona",
+        content=content,
+        authority="owner_persona",
+        stability="semi_stable",
+        source_type="editable_file",
+        source_ref="editable_context:soul",
+        source_version=source_version,
+        identity_scope="local_owner",
+        max_chars=2_000,
+        notes=notes or [],
+    )
 
 
 def _memory(summary: str) -> MemoryItem:

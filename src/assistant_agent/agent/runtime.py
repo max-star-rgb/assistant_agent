@@ -3,6 +3,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal
 
@@ -52,6 +53,15 @@ from assistant_agent.services.context.prompt_compiler import (
     PromptCompiler,
 )
 from assistant_agent.services.context.report import build_context_report
+from assistant_agent.services.context.soul_source import (
+    SOUL_COMPILED_MAX_CHARS,
+    SOUL_SOURCE_ID,
+    SoulContextSource,
+)
+from assistant_agent.services.context.sources import (
+    ContextSourceCoordinator,
+    ContextSourceRequest,
+)
 from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
 from assistant_agent.services.memory_core_status import build_memory_core_status, update_memory_core_status_errors
 from assistant_agent.services.response_observability import append_response_final_event
@@ -126,6 +136,7 @@ class AgentGraphRuntime:
         video_context_store: VideoContextStore | None = None,
         realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
         checkpointer: Any | None = None,
+        context_source_coordinator: ContextSourceCoordinator | None = None,
     ) -> None:
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
@@ -156,6 +167,9 @@ class AgentGraphRuntime:
         self.chat_adapter = chat_adapter or create_chat_adapter(self.config)
         self.context_compactor = context_compactor or create_context_compactor(self.config, self.chat_adapter)
         self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
+        self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
+            [SoulContextSource()]
+        )
         self.tool_executor = ToolExecutor(
             registry=self.registry,
             tool_history=self.tool_history,
@@ -195,6 +209,17 @@ class AgentGraphRuntime:
             cancel_token=cancel_token,
         )
         state = AgentState.from_request(request)
+        state.context_source_result = self.context_source_coordinator.load_once(
+            ContextSourceRequest(
+                user_id=state.user_id,
+                source_root=Path(self.config.editable_context_root),
+                local_owner_user_id=self.config.editable_context_user_id,
+                runtime_profile=self.config.runtime_profile.name,
+                editable_context_enabled=self.config.editable_context_enabled,
+                section_char_budgets={"soul": SOUL_COMPILED_MAX_CHARS},
+                enabled_source_ids={SOUL_SOURCE_ID},
+            )
+        )
         run_started_at = perf_counter()
         self._emit(
             AgentEvent(

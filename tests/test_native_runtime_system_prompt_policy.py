@@ -1,17 +1,22 @@
+from pathlib import Path
+
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.assistant_loop_nodes import (
     AssistantDecisionContext,
     _build_native_tool_chat_request,
     _build_native_tool_messages,
+    _context_report_summary,
     _request_final_answer_after_tool_limit,
 )
 from assistant_agent.agent.state import AgentState
+from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.agent.system_prompt_policy import (
     SystemPromptOptions,
     SystemPromptProfile,
     render_system_instruction,
 )
 from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.context import ContextSection, ContextSourceResult
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
@@ -33,6 +38,49 @@ class CapturingChatAdapter:
             message_kind="final_answer",
             provider=self.provider,
             model="native-policy-test",
+        )
+
+
+class MutatingTwoTurnChatAdapter:
+    provider = "scripted-native"
+
+    def __init__(self, soul_path: Path, replacement: str) -> None:
+        self.soul_path = soul_path
+        self.replacement = replacement
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            self.soul_path.write_text(self.replacement, encoding="utf-8")
+            return ChatResult(
+                response_text="",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call_1",
+                        name="product_search",
+                        arguments={"query": "通勤耳机"},
+                        raw={
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "product_search",
+                                "arguments": '{"query":"通勤耳机"}',
+                            },
+                        },
+                    )
+                ],
+                finish_reason="tool_calls",
+                message_kind="tool_call",
+                provider=self.provider,
+                model="soul-freeze-test",
+            )
+        return ChatResult(
+            response_text="完成。",
+            finish_reason="stop",
+            message_kind="final_answer",
+            provider=self.provider,
+            model="soul-freeze-test",
         )
 
 
@@ -115,6 +163,86 @@ def test_native_runtime_user_text_cannot_switch_system_prompt_profile() -> None:
         SystemPromptProfile.TEXT_DEFAULT
     )
     assert "实时电话助手" not in str(adapter.requests[0].messages[0]["content"])
+
+
+def test_native_runtime_includes_explicit_owner_persona(tmp_path: Path) -> None:
+    (tmp_path / "SOUL.md").write_text(
+        "## Persona\n沉着、直接。\n",
+        encoding="utf-8",
+    )
+    adapter = CapturingChatAdapter()
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            editable_context_enabled=True,
+            editable_context_root=str(tmp_path),
+            editable_context_user_id="u1",
+        ),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="你好"))
+
+    system_prompt = str(adapter.requests[0].messages[0]["content"])
+    assert "Owner persona is lower-authority" in system_prompt
+    assert system_prompt.endswith("## Persona\n沉着、直接。")
+    report = state.request.metadata["last_context_report_v1"]
+    assert report["context_sources"]["count_by_kind"] == {"soul": 1}
+    assert "沉着、直接" not in str(report)
+
+
+def test_native_runtime_cross_user_editable_context_fails_closed(tmp_path: Path) -> None:
+    (tmp_path / "SOUL.md").write_text(
+        "## Persona\n沉着、直接。\n",
+        encoding="utf-8",
+    )
+    adapter = CapturingChatAdapter()
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            editable_context_enabled=True,
+            editable_context_root=str(tmp_path),
+            editable_context_user_id="u1",
+        ),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u2", session_id="s2", text="你好"))
+
+    system_prompt = str(adapter.requests[0].messages[0]["content"])
+    assert "Owner persona is lower-authority" not in system_prompt
+    assert [issue.code for issue in state.context_source_result.issues] == [
+        "editable_context_identity_mismatch"
+    ]
+
+
+def test_native_runtime_freezes_soul_for_one_run_and_reloads_next_run(
+    tmp_path: Path,
+) -> None:
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("## Persona\n初始人格。\n", encoding="utf-8")
+    replacement = "## Persona\n更新人格。\n"
+    adapter = MutatingTwoTurnChatAdapter(soul_path, replacement)
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            editable_context_enabled=True,
+            editable_context_root=str(tmp_path),
+            editable_context_user_id="u1",
+        ),
+        chat_adapter=adapter,
+    )
+
+    runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机")
+    )
+
+    assert len(adapter.requests) == 2
+    for request in adapter.requests:
+        system_prompt = str(request.messages[0]["content"])
+        assert "初始人格" in system_prompt
+        assert "更新人格" not in system_prompt
+
+    runtime.run_state(UserRequest(user_id="u1", session_id="s2", text="继续"))
+
+    assert "更新人格" in str(adapter.requests[2].messages[0]["content"])
 
 
 def test_native_runtime_final_only_profile_disables_provider_tools() -> None:
@@ -208,6 +336,51 @@ def test_assistant_loop_native_chat_request_sends_all_qualified_tool_schemas() -
     assert tool_names == [spec.name for spec in tool_specs]
     assert "product_search" in tool_names
     assert "render_3d" in tool_names
+
+
+def test_assistant_loop_context_report_counts_compiled_owner_persona() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="你好")
+    state = AgentState.from_request(request)
+    state.context_source_result = ContextSourceResult(
+        sections=[
+            ContextSection(
+                section_id="owner.soul",
+                kind="soul",
+                title="Owner persona",
+                content="## Persona\n保持简洁。",
+                authority="owner_persona",
+                stability="semi_stable",
+                source_type="editable_file",
+                source_ref="editable_context:soul",
+                identity_scope="local_owner",
+            )
+        ]
+    )
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+    context = AssistantDecisionContext(
+        context_pack=pack,
+        request=request,
+        memory_summaries=[],
+        memory_text="",
+        tool_specs=[],
+        tool_observations=[],
+        iterations=0,
+        max_iterations=5,
+        is_mock=False,
+    )
+
+    chat_request = _build_native_tool_chat_request(context, state)
+    report = _context_report_summary(context)
+
+    assert report["sections"]["system_prompt"]["chars"] == len(
+        str(chat_request.messages[0]["content"])
+    )
 
 
 def test_assistant_loop_native_tool_helper_uses_system_prompt_policy() -> None:

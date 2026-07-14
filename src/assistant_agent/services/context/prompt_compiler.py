@@ -64,6 +64,7 @@ class PromptCompiler:
         system_instruction = render_system_instruction(
             request.profile,
             options=request.options,
+            owner_persona=owner_persona_for_pack(request.context_pack),
         )
         rendered_context = _render_context(request)
         user_content = _rendered_user_content(rendered_context, request.mode)
@@ -113,6 +114,19 @@ def prompt_tool_specs_for_mode(
     if pack.run_tool_set.registered_tool_names:
         return tuple(pack.prompt_tool_specs)
     return tuple(pack.prompt_tool_specs or pack.tool_specs)
+
+
+def owner_persona_for_pack(pack: AssistantContextPack) -> str:
+    """Return the single validated owner persona, or fail closed."""
+
+    sections = [
+        section
+        for section in pack.context_sections
+        if section.kind == "soul" and not section.sensitive
+    ]
+    if len(sections) != 1:
+        return ""
+    return sections[0].content
 
 
 def _render_context(request: PromptCompileRequest) -> RenderedAssistantContext:

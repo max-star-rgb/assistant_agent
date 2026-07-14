@@ -55,6 +55,7 @@ from assistant_agent.services.context.prompt_compiler import (
     PromptCompileRequest,
     PromptCompileResult,
     PromptCompiler,
+    owner_persona_for_pack,
     prompt_tool_specs_for_mode,
 )
 from assistant_agent.services.context.report import build_context_report
@@ -1682,6 +1683,7 @@ def _context_trace_summary(context: AssistantDecisionContext | None) -> dict[str
         "source_counts": pack.source_counts,
         "compaction": _context_compaction_summary(pack.observations),
         "tool_catalog": pack.tool_catalog_summary.model_dump(mode="json"),
+        "context_sources": pack.context_source_report.model_dump(mode="json"),
         "compactor_type": pack.compactor_type,
         "context_summary_present": pack.context_summary is not None,
         "memory_promotion_candidates": _metadata_int(pack.request.metadata, "memory_promotion_candidates"),
@@ -1694,6 +1696,7 @@ def _context_report_summary(context: AssistantDecisionContext) -> dict[str, Any]
     system_prompt = render_system_instruction(
         SystemPromptProfile.TEXT_DEFAULT,
         options=SystemPromptOptions(product_mode=True),
+        owner_persona=owner_persona_for_pack(context.context_pack),
     )
     return build_context_report(
         context.context_pack,

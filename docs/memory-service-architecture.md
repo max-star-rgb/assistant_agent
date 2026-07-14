@@ -71,6 +71,8 @@ Context engineering owns:
 
 Do not move memory retrieval, ranking, fallback, write policy, profile merge, or store selection into context builders or prompt renderers. Do not move prompt rendering, observation compaction, session summary, or global context budget into `MemoryManager`.
 
+The local editable-context phase currently implements only owner-bound `SOUL.md`. Future `USER.md` and `MEMORY.md` files, if added, are editable projections rather than durable truth: runtime memory reads must still come through `MemoryManager` and `MemoryReadPolicy`, and imports must become explicit, versioned, auditable proposals that pass `MemoryWritePolicy`. This phase does not implement projection export/import, file watchers, direct file-backed profile merge, or direct runtime reads from `USER.md` / `MEMORY.md`.
+
 Final boundary:
 
 - `context_summary` is session transcript state. It may be injected into the current session context, but it is not a durable memory item.

@@ -97,6 +97,9 @@ class ProviderConfig:
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 8
+    editable_context_enabled: bool = False
+    editable_context_root: str = ".local/context"
+    editable_context_user_id: str | None = None
     chat_provider: ChatProviderName = "mock"
     chat_api_key: str | None = None
     chat_base_url: str | None = None
@@ -277,6 +280,16 @@ class ProviderConfig:
                 source.get("MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS")
                 or source.get("MULTIMODAL_AGENT_MAX_CONVERSATION_TURNS"),
                 8,
+            ),
+            editable_context_enabled=_bool_env(
+                source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED"),
+                False,
+            ),
+            editable_context_root=(
+                source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT") or ".local/context"
+            ),
+            editable_context_user_id=(
+                source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID") or None
             ),
             chat_provider=chat_provider,
             chat_api_key=chat_settings.api_key,

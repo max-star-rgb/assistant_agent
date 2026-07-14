@@ -13,6 +13,28 @@ def test_default_provider_config_validation_is_valid_and_offline() -> None:
     assert result.issues == []
 
 
+def test_editable_context_config_defaults_closed() -> None:
+    config = ProviderConfig.from_env({})
+
+    assert config.editable_context_enabled is False
+    assert config.editable_context_root == ".local/context"
+    assert config.editable_context_user_id is None
+
+
+def test_editable_context_config_uses_only_fixed_env_names() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED": "true",
+            "MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT": "/tmp/local-context",
+            "MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID": "owner-1",
+        }
+    )
+
+    assert config.editable_context_enabled is True
+    assert config.editable_context_root == "/tmp/local-context"
+    assert config.editable_context_user_id == "owner-1"
+
+
 def test_provider_smoke_validation_reports_missing_explicit_real_config() -> None:
     config = ProviderConfig.from_env(
         {

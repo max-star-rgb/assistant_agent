@@ -5,7 +5,14 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
-from assistant_agent.schemas.context import AssistantContextPack, ContextReport, ContextReportSection
+from assistant_agent.schemas.context import (
+    AssistantContextPack,
+    ContextReport,
+    ContextReportSection,
+    ContextSection,
+    ContextSourceReport,
+    ContextSourceResult,
+)
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 
@@ -122,9 +129,61 @@ def build_context_report(
         selected_tool_names=[spec.name for spec in selected_specs],
         memory_item_ids=memory_item_ids,
         skill_report=pack.skill_report,
+        context_sources=pack.context_source_report,
         compression_stage=pack.budget.compression_stage,
         compression_reasons=list(pack.budget.compression_reasons),
         was_compacted=pack.budget.compaction_triggered or pack.budget.compression_stage != "none",
+    )
+
+
+def build_context_source_report(
+    result: ContextSourceResult,
+    sections: Iterable[ContextSection],
+) -> ContextSourceReport:
+    """Build content-free accounting for governed context sources."""
+
+    active_sections = list(sections)
+    count_by_kind: dict[str, int] = {}
+    chars_by_authority: dict[str, int] = {}
+    chars_by_stability: dict[str, int] = {}
+    for section in active_sections:
+        count_by_kind[section.kind] = count_by_kind.get(section.kind, 0) + 1
+        chars_by_authority[section.authority] = (
+            chars_by_authority.get(section.authority, 0) + len(section.content)
+        )
+        chars_by_stability[section.stability] = (
+            chars_by_stability.get(section.stability, 0) + len(section.content)
+        )
+    issue_codes = _unique_strings(issue.code for issue in result.issues)
+    explicit_rejections = sum(
+        1
+        for issue in result.issues
+        if issue.code
+        in {
+            "context_source_duplicate_section_id",
+            "context_source_sensitive_section_rejected",
+        }
+    )
+    omitted_section_count = max(
+        0,
+        len(result.sections) - len(active_sections),
+        explicit_rejections,
+    )
+    if result.issues and not active_sections and not result.used_last_known_good:
+        omitted_section_count = max(1, omitted_section_count)
+    return ContextSourceReport(
+        count_by_kind=count_by_kind,
+        chars_by_authority=chars_by_authority,
+        chars_by_stability=chars_by_stability,
+        source_issue_count=len(result.issues),
+        source_issue_codes=issue_codes,
+        used_last_known_good=result.used_last_known_good,
+        source_versions_changed=sum(
+            1
+            for section in result.sections
+            if "source_version_changed" in section.notes
+        ),
+        omitted_section_count=omitted_section_count,
     )
 
 
@@ -221,6 +280,7 @@ def context_report_from_trace_context_summary(context: dict[str, Any]) -> Contex
         max_tokens=_int_value(budget.get("max_tokens")),
         selected_tool_names=selected_tool_names,
         memory_item_ids=_string_list(context.get("memory_item_ids")),
+        context_sources=_context_source_report(context.get("context_sources")),
         compression_stage=compression_stage,
         compression_reasons=compression_reasons,
         was_compacted=bool(
@@ -302,6 +362,15 @@ def _positive_or_none(value: int) -> int | None:
     return value if isinstance(value, int) and value > 0 else None
 
 
+def _context_source_report(value: Any) -> ContextSourceReport:
+    if not isinstance(value, dict):
+        return ContextSourceReport()
+    try:
+        return ContextSourceReport.model_validate(value)
+    except Exception:
+        return ContextSourceReport()
+
+
 def _int_value(value: Any) -> int:
     return value if isinstance(value, int) and value >= 0 else 0
 
@@ -317,4 +386,12 @@ def _string_list(value: Any) -> list[str]:
     for item in value:
         if isinstance(item, str) and item and item not in result:
             result.append(item)
+    return result
+
+
+def _unique_strings(values: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
     return result

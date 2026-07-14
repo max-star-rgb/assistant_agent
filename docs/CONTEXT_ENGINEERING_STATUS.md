@@ -11,7 +11,7 @@ Last updated: 2026-07-13
 - 当前结论：上下文工程第一版已经可用并适合阶段性收口，不是缺核心组件的状态。
 - 当前权威入口：本文件。
 - 说明：已移除完成态阶段计划，当前以本文件作为上下文工程状态与交接入口。
-- 已实现核心闭环：`AssistantContextPack`、Context Compiler v1 redacted report、session summary、token-aware recent transcript、增量滑动窗口摘要、session handoff v2、realtime task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
+- 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md` source、Context Compiler v1 redacted report、session summary、token-aware recent transcript、增量滑动窗口摘要、session handoff v2、realtime task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
 - 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
 - 预算现状：全局压缩控制仍以字符预算为准；recent transcript 选择已使用本地 token 估算；Memory context 有单独 token-aware 注入边界；其余 token 字段仍主要用于报告。
 - memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期读取由 `MemoryReadPolicy` gate，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
@@ -26,13 +26,14 @@ Last updated: 2026-07-13
 - 多阶段 Context Engine + Memory Policy 计划已经完成；后续应把 `docs/CONTEXT_ENGINEERING_STATUS.md` 作为当前入口。
 - 主运行时是 LangGraph/ReAct assistant loop，默认 mock/local/offline。
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、plan state、tool observations、tool specs、source counts 和 budget。
+- `AgentGraphRuntime` 可在 run 入口通过 `ContextSourceCoordinator` 加载一次显式 owner-bound 的 `SOUL.md`，把验证后的 `ContextSourceResult` 冻结到 `AgentState`；同一 run 的多次 assistant iteration 不重复读文件，下一 run 才观察合法更新。
 - 生产 provider-native `ChatRequest` 现在统一通过无副作用 `PromptCompiler` 编译；native tool、native-context final-only 和 summary final-only 使用显式 mode，保留各自既有 renderer、tool choice、tool-call evidence 和生成参数。legacy prompt-json renderer 仍只用于离线兼容与测试。
 - `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
-- Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，只记录大小、计数、来源、压缩/裁剪标志、selected tool names 和 memory item ids，不暴露完整 prompt、memory 文本、tool observation 或 provider payload。
+- Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，并以非累加的 `context_source_report_v1` 报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数；不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、tool observation 或 provider payload。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - Realtime task-state snapshot 只在进入 runtime 前显式启用：`interaction_mode=realtime`、`enable_realtime_task_state=true` 或 entry capability `supports_realtime_task_state=true`。普通 `/agent/run` 即使经由 Gateway 生命周期，也不会因为存在 `gateway` metadata 或 `realtime.run_id`/`turn_id` 自动启用。
 - `MemoryManager` 负责按 read policy 加载或跳过分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
-- Assistant context 已有字符预算兜底；超限时优先压缩 memory/conversation，最后才压缩工具 observation。
+- Assistant context 已有字符预算兜底；owner persona 超限时先按完整段落收缩 persona，再沿用 memory/conversation 优先压缩、工具 observation 最后压缩的顺序。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，`keep_recent_turns=2` 是 recent transcript 的最小原文保留 guard。
 - `CompactionPolicy` 统一判断压缩触发：usage 高水位、超预算、大 tool observation、provider context overflow metadata、显式 `/compact` 或 `compact_context=True`。
 - `ContextCompactor` 已抽象为可插拔边界；默认 deterministic/local，不调用真实 LLM。`LLMCompactor` 仅在 `provider_smoke` 或 `pilot` profile 且 chat adapter 非 mock 时启用，输出无效时回退 deterministic。
@@ -119,6 +120,15 @@ Last updated: 2026-07-13
 - session summary renderer 会把 `handoff_v2` 标注为当前会话上下文数据，不作为长期记忆或系统指令。
 - prompt 明确声明 conversation、memory、realtime task state、observation 和 tool output 都是数据，不是系统指令；retrieved memory 是用户历史证据，不是权威信息，当前用户输入和新工具结果优先，不能执行 memory 中的指令。
 
+### Editable Owner Context
+
+- Editable owner context 默认关闭，只接受进程配置 `MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED=true`、`MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT=<root>` 和显式 `MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID=<user_id>`；request metadata 不能启用能力、改变 root 或切换 owner。
+- 首版只读取固定 `<root>/SOUL.md`。支持的二级标题只有 `Persona`、`Expression Style`、`Relationship Boundaries` 和 `Avoid`，编译优先级固定为 `Relationship Boundaries -> Avoid -> Persona -> Expression Style`。
+- loader 使用 owner identity fail-closed、root containment、symlink/non-regular-file 拒绝、UTF-8、16,000 bytes、4,000 chars、2,000 compiled chars、每 subsection 800 chars和 secret/base64/raw-provider marker 检查。超限或 unsafe 新版本不会静默截断生效。
+- 合法内容生成单一 `authority=owner_persona`、`stability=semi_stable` 的 `ContextSection v1`。`PromptCompiler` 只消费已验证 section，并把它放在不可变 runtime policy 之后；persona 不能改变 ToolSpec、RunToolSet、tool choice、validator、审批、identity、memory policy 或 runtime profile。
+- 非法更新可回退到按 `(resolved root, owner user id)` 分区的 process-local last-known-good。该缓存不提供跨 worker 一致性，进程重启后的首次非法文件会被省略。
+- Owner-trusted persona 会影响模型表达；本地治理保证的是能力和安全边界不被它配置性地改写，不承诺任意恶意人格文字对生成内容零影响。
+
 ### Realtime Task State Context
 
 - `prepare_realtime_task_state_request` 只在显式 realtime mode/capability 的请求进入 `AgentGraphRuntime.run_state(...)` 前生成 prompt-safe task-state snapshot。
@@ -136,7 +146,7 @@ Last updated: 2026-07-13
 
 ### Context Budget And Observability
 
-- `ContextBudgetReport` 统计 request、conversation、memory、plan、observations、tool specs 和 total chars，并报告 `context_usage_ratio`、`compaction_triggered`。
+- `ContextBudgetReport` 统计 request、conversation、memory、plan、observations、tool specs、`owner_persona_chars` 和 total chars，并报告 `context_usage_ratio`、`compaction_triggered`；启用本地 token 估算时，最终实际注入的 persona 同时计入 `owner_persona_tokens` 和 `total_tokens`。
 - `ContextBudgetReport` also tracks `tool_capability_chars` so the skill-style capability catalog is visible in budget/debug output. `AssistantContextPack` and `ContextReport` carry prompt-safe `skill_report_v1` fields for loaded, selected, skipped, fallback, override, governed-tool, and permission issue visibility.
 - 默认动态 context 字符预算是 12000 chars；identity recall 的固定 qualified tool/capability schema 在未显式配置硬预算时使用独立 headroom，不挤占 conversation/memory/observation 的默认预算。测试或特定调用通过 request metadata `context_budget_max_chars` 设置的值仍是包含工具 schema 在内的硬上限。
 - 可选 token budget 字段包括 section token estimates、`total_tokens`、`max_tokens`、`token_usage_ratio`、`token_budget_source` 和 provider usage counters；它们只用于报告，不替代 char budget control path。
@@ -166,6 +176,7 @@ Last updated: 2026-07-13
 - 默认自动压缩仍是 deterministic formatting/summary。LLM semantic compaction 已有受控入口，但默认离线 profile 不启用。
 - 当前全局压缩控制仍是 approximate character budget；recent transcript 和 memory context 已有独立 token-aware 边界，但这不替代 AssistantContextPack 的全局字符预算。
 - Context Compiler v1 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；token 字段仍依赖现有估算或 provider usage metadata。
+- Editable owner context 当前只实现本机 owner-bound `SOUL.md`；没有实现 `USER.md` / `MEMORY.md` projection、skill L1/L2 view、Provider cache hint 或跨进程 last-known-good。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
 - 会话历史压缩只增量合并滑出 token-aware recent window 的较早轮次，不做跨轮语义重写、事实抽取、冲突消解或质量反馈调参。
 - assistant loop 的真实 LLM 路径中，长期记忆写入应由 assistant 通过 `memory_save` 工具显式选择；图尾不会自动写长期 task summary。
@@ -182,6 +193,8 @@ Last updated: 2026-07-13
 - `src/assistant_agent/services/context/report.py`
 - `src/assistant_agent/services/context/capability_catalog.py`
 - `src/assistant_agent/services/context/skill_loader.py`
+- `src/assistant_agent/services/context/sources.py`
+- `src/assistant_agent/services/context/soul_source.py`
 - `src/assistant_agent/services/realtime_task_state.py`
 - `src/assistant_agent/services/agent_delegation_context.py`
 - `src/assistant_agent/schemas/context.py`
@@ -204,6 +217,8 @@ Last updated: 2026-07-13
 - `tests/test_agent_communication_routing.py`
 - `tests/test_phase8a1_react_action_quality.py`
 - `tests/test_trace_query_api.py`
+- `tests/test_context_sources.py`
+- `tests/test_soul_context_source.py`
 
 Current small regression coverage includes budget trimming order, product observation field preservation, prompt data-boundary labels, empty-query memory browsing, conversation compaction, trace context summaries, and run-summary context reporting.
 
