@@ -30,6 +30,7 @@ class ScheduledToolCall:
     resource_reads: tuple[str, ...] = ()
     resource_writes: tuple[str, ...] = ()
     realtime_safety: RealtimeToolSafety = "needs_confirmation"
+    validation_latency_ms: int = 0
     native_call_id: str | None = None
     tool_spec: ToolSpec | None = None
 
@@ -53,6 +54,7 @@ class ScheduledToolCall:
             "resource_reads": list(self.resource_reads),
             "resource_writes": list(self.resource_writes),
             "realtime_safety": self.realtime_safety,
+            "validation_latency_ms": self.validation_latency_ms,
         }
 
 
@@ -108,6 +110,7 @@ def build_scheduled_tool_call(
     call_index: int,
     decision: AssistantDecision,
     validation: ActionValidationResult,
+    validation_latency_ms: int = 0,
     native_call_id: str | None = None,
     tool_spec: ToolSpec | None = None,
 ) -> ScheduledToolCall:
@@ -130,6 +133,7 @@ def build_scheduled_tool_call(
         resource_reads=tuple(policy.resource_reads),
         resource_writes=tuple(policy.resource_writes),
         realtime_safety=policy.realtime_safety,
+        validation_latency_ms=max(0, validation_latency_ms),
         native_call_id=native_call_id,
         tool_spec=tool_spec,
     )

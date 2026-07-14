@@ -1,10 +1,12 @@
 """Agent HTTP routes."""
 
 import json
+import os
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from assistant_agent.agent_routing import AgentRouteRequest, AgentRouter, create_default_agent_router
 from assistant_agent.api import gateway_runtime
@@ -78,6 +80,14 @@ from assistant_agent.services.trace_query import (
     ToolCallSummary,
     TraceSummary,
 )
+from assistant_agent.services.trace_persistence import (
+    close_trace_store,
+    create_server_trace_store,
+)
+from assistant_agent.services.trace_conversation import (
+    TraceConversationView,
+    find_trace_conversation,
+)
 from assistant_agent.services.trial_access import (
     TrialAccessGate,
     TrialAccessStatus,
@@ -91,13 +101,30 @@ _AGENT_ROUTER: AgentRouter | None = None
 _FEEDBACK_STORE: BetaFeedbackStore | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
+SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
+LOCAL_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"
 
 
 def get_agent_runtime() -> Any:
     global _RUNTIME
     if _RUNTIME is None:
-        _RUNTIME = create_runtime()
+        trace_store = (
+            create_server_trace_store()
+            if os.environ.get(SERVER_TRACE_ENABLED_ENV) == "1"
+            else None
+        )
+        _RUNTIME = create_runtime(trace_store=trace_store)
     return _RUNTIME
+
+
+def shutdown_agent_runtime() -> None:
+    """Flush owned trace persistence and clear the process runtime singleton."""
+
+    global _RUNTIME
+    runtime = _RUNTIME
+    _RUNTIME = None
+    if runtime is not None:
+        close_trace_store(getattr(runtime, "trace_store", None), timeout=1.0)
 
 
 def get_assistant_runtime_app() -> AssistantRuntimeApp:
@@ -346,12 +373,48 @@ def get_trace_summary(trace_id: str) -> TraceSummary:
     return summary
 
 
+@router.get("/traces/{trace_id}/conversation", response_model=TraceConversationView)
+def get_trace_conversation(trace_id: str, request: Request) -> TraceConversationView:
+    if os.environ.get(LOCAL_TRACE_CONTENT_ENV) != "1":
+        raise HTTPException(status_code=404, detail="trace conversation not found")
+    if not _is_loopback_client(request):
+        raise HTTPException(status_code=403, detail="trace conversation is available only on loopback")
+
+    runtime = get_agent_runtime()
+    events = runtime.trace_store.list_by_trace(trace_id)
+    identity_event = next(
+        (event for event in events if event.user_id and event.session_id),
+        None,
+    )
+    if identity_event is None:
+        raise HTTPException(status_code=404, detail="trace conversation not found")
+    conversation = find_trace_conversation(
+        get_default_conversation_store(runtime.config),
+        user_id=identity_event.user_id,
+        session_id=identity_event.session_id,
+        trace_id=trace_id,
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="trace conversation not found")
+    return conversation
+
+
 @router.get("/traces/{trace_id}/context", response_model=ContextReportQueryResult)
 def get_trace_context(trace_id: str) -> ContextReportQueryResult:
     summary = get_assistant_runtime_app().trace_query().context_by_trace(trace_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="trace not found")
     return summary
+
+
+def _is_loopback_client(request: Request) -> bool:
+    host = request.client.host if request.client is not None else ""
+    if host == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 @router.get("/runs/{run_id}/tool-calls", response_model=ToolCallSummary)

@@ -159,6 +159,10 @@ Agent 兼容说明：
 
 Agent 返回 `chatResponseAck` 且 `code=0` 才表示应用层 ACK 已记录。媒体端对视频理解 turn 的等待时间必须至少为 90 秒。
 
+Agent 在最终 `chatResponse` 的 WebSocket `send_text()` 返回后记录本轮发送耗时；
+该时刻只代表响应已交给连接，不代表媒体应用已处理。协商 `chatResponseAck` 时，
+ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用确认。
+
 响应 `agent -> client`：
 
 ```json
@@ -376,6 +380,51 @@ Qwen 视频适配器复用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_AP
 `chatResponse` 状态以及 WebSocket close code。不得记录 Key、Base64 图片、
 绝对路径、Provider 请求体或原始响应。`videoResponse body.code=0` 只证明帧已成功
 校验、解码、注册和调度；后台视觉理解成功还必须由 provider/model/status 证据确认。
+
+### 7.1 单轮耗时诊断
+
+`scripts/run_server.py` 默认启用非阻塞 trace 持久化。收到安全 INFO 日志中的
+`trace` 后，可在服务运行期间查询该轮完整耗时；`gateway_run` 是 Gateway 包装
+run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py trace_xxx \
+  --server http://127.0.0.1:8089
+```
+
+输出中的 `bottleneck` 是本轮最大关键路径阶段。常见慢点映射如下：
+
+| 诊断项 | 含义 |
+| --- | --- |
+| `chat_queue_wait` | 同一 session 的上一轮仍在执行，本轮等待串行锁。 |
+| `conversation_prepare` | 会话历史读取、上下文请求准备较慢。 |
+| `llm_chat[1]` | 首次 LLM 工具选择/直接回答调用较慢。 |
+| `tool_execute[video_understanding]` | 查询时视频回退或视觉 Provider 调用较慢。 |
+| `llm_chat[2]` | 工具观察后的最终回答 LLM 调用较慢。 |
+| `websocket_send` | socket/媒体接收端产生传输背压。 |
+| `ACK pending` | 最终响应已发送，但媒体应用确认尚未到达。 |
+| `snapshot_age` 较高 | 本轮使用的后台视频语义观察已经陈旧。 |
+| `unattributed` | 端到端耗时中尚未被叶子阶段解释的剩余部分。 |
+
+视频诊断中的后台观察 latency 不直接计入 chat 关键路径。只有
+`recent_frame_fallback` 在本轮查询时调用视觉 Provider，才会体现在
+`tool_execute[video_understanding]`。`videoResponse(code=0)` 仍仅是帧校验、
+解码、注册与调度成功的证据，不是 MLLM 完成证据。
+
+默认日志、trace、`.data/graph_trace.jsonl` 和 delivery audit 均不含对话正文。
+确需确认分析的是哪一轮时，只能在本机调试进程显式开启正文查询：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
+  --provider mock --image-provider mock --host 127.0.0.1 --port 8089 \
+  --allow-local-trace-content
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py trace_xxx \
+  --server http://127.0.0.1:8089 --include-conversation
+```
+
+正文查询默认关闭，只接受 loopback 客户端，每侧最多返回 1000 个 Unicode 字符，
+且只返回当前 trace 对应的用户文本和最终回复。不得在共享或生产进程启用，也不得
+把终端正文重新写入日志、trace 或联调证据。
 
 使用任意 WebSocket 客户端连接：
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
@@ -128,6 +129,53 @@ def test_observer_validates_and_executes_selected_frame_through_tool_boundary(tm
         assert tool.context_metadata["realtime_video_observation"] is True
         assert tool.inputs[0]["video_ref"] == VIDEO_ID
         assert memory.snapshot(VIDEO_ID).healthy is True
+        await observer.close()
+
+    asyncio.run(scenario())
+
+
+def test_observer_records_deterministic_phase_timings(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        registry = ToolRegistry()
+        registry.register(VideoUnderstandingTool(adapter=MockVideoUnderstandingAdapter()))
+        memory = RealtimeVideoMemoryStore()
+        times = iter(
+            [
+                1_000_000_000,
+                1_002_000_000,
+                1_009_000_000,
+                1_010_000_000,
+                1_090_000_000,
+            ]
+        )
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=memory,
+            keyframe_root=tmp_path / "keyframes",
+            collector=AlwaysSelectCollector(),
+            clock_ns=lambda: next(times),
+            wall_clock_ms=lambda: 10_000,
+        )
+        frame = replace(
+            _decoded_frame(tmp_path, sequence=1),
+            metadata={"h264_decode_latency_ms": 4},
+        )
+
+        await observer.submit(frame)
+        await observer.wait_idle()
+
+        snapshot = memory.snapshot(VIDEO_ID)
+        assert snapshot is not None
+        diagnostics = snapshot.observation_diagnostics
+        assert diagnostics is not None
+        assert diagnostics.h264_decode_latency_ms == 4
+        assert diagnostics.keyframe_selection_latency_ms == 2
+        assert diagnostics.queue_wait_latency_ms == 7
+        assert diagnostics.observation_latency_ms == 80
+        assert diagnostics.published_at_ms == 10_000
         await observer.close()
 
     asyncio.run(scenario())

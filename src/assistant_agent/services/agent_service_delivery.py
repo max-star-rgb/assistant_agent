@@ -32,6 +32,8 @@ class AgentServiceDelivery:
     expects_ack: bool
     status: str = "accepted"
     run_id: str | None = None
+    gateway_run_id: str | None = None
+    assistant_run_id: str | None = None
     trace_id: str | None = None
 
 
@@ -50,6 +52,8 @@ class JsonlAgentServiceDeliveryAudit:
             "status": delivery.status,
             "expects_ack": delivery.expects_ack,
             "run_id": delivery.run_id,
+            "gateway_run_id": delivery.gateway_run_id,
+            "assistant_run_id": delivery.assistant_run_id,
             "trace_id": delivery.trace_id,
             "created_at": datetime.now(UTC).isoformat(),
             **metadata,
@@ -91,9 +95,18 @@ class AgentServiceDeliveryRegistry:
         delivery_id: str,
         *,
         run_id: str | None = None,
+        gateway_run_id: str | None = None,
+        assistant_run_id: str | None = None,
         trace_id: str | None = None,
     ) -> AgentServiceDelivery:
-        return self._transition(delivery_id, "sent", run_id=run_id, trace_id=trace_id)
+        return self._transition(
+            delivery_id,
+            "sent",
+            run_id=run_id,
+            gateway_run_id=gateway_run_id,
+            assistant_run_id=assistant_run_id,
+            trace_id=trace_id,
+        )
 
     def mark_failed(self, delivery_id: str, *, error_code: str) -> AgentServiceDelivery:
         return self._transition(delivery_id, "failed", error_code=error_code)
@@ -152,10 +165,15 @@ class AgentServiceDeliveryRegistry:
             current = self._deliveries.get(delivery_id)
             if current is None:
                 raise AgentServiceDeliveryError("unknown deliveryId")
+            legacy_run_id = metadata.pop("run_id", None)
+            gateway_run_id = metadata.pop("gateway_run_id", None) or legacy_run_id
+            assistant_run_id = metadata.pop("assistant_run_id", None)
             updated = replace(
                 current,
                 status=status,
-                run_id=metadata.pop("run_id", None) or current.run_id,
+                run_id=legacy_run_id or gateway_run_id or current.run_id,
+                gateway_run_id=gateway_run_id or current.gateway_run_id,
+                assistant_run_id=assistant_run_id or current.assistant_run_id,
                 trace_id=metadata.pop("trace_id", None) or current.trace_id,
             )
             self._deliveries[delivery_id] = updated

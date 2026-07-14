@@ -1,6 +1,7 @@
 """Reusable LangGraph node functions for agent execution."""
 
 from inspect import signature
+from time import perf_counter
 from typing import NotRequired, TypedDict
 
 from assistant_agent.agent.intent import IntentDetector
@@ -254,6 +255,7 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
     state = graph_state["state"]
     if state.status != "failed":
         save_demo_memory(graph_state["request"], state, graph_state["tool_executor"])
+    response_started_at = perf_counter()
     response = compose_response(state)
     if state.status == "failed":
         state.response = response
@@ -265,6 +267,7 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
         node_name=graph_state.get("current_node_name", "compose_response"),
         state=state,
         source="compose_response",
+        latency_ms=int((perf_counter() - response_started_at) * 1000),
     )
     return graph_state
 

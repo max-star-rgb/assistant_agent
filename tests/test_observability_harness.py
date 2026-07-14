@@ -472,3 +472,60 @@ def test_native_runtime_trace_satisfies_success_timeline_invariants() -> None:
         "raw_provider_payload",
         "thought",
     )
+
+
+def test_native_runtime_traces_validation_and_response_finalization_latency() -> None:
+    trace_store = InMemoryTraceStore()
+    adapter = ScriptedNativeChatAdapter(
+        [
+            ChatResult(
+                response_text="",
+                provider="scripted",
+                model="native-test",
+                latency_ms=3,
+                tool_calls=[
+                    NativeToolCall(
+                        id="call_native_latency",
+                        name="product_search",
+                        arguments={"query": "白色运动鞋"},
+                    )
+                ],
+                message_kind="tool_calls",
+            ),
+            ChatResult(
+                response_text="处理完成。",
+                provider="scripted",
+                model="native-test",
+                latency_ms=4,
+                message_kind="content",
+            ),
+        ]
+    )
+
+    state = AgentGraphRuntime(trace_store=trace_store, chat_adapter=adapter).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我找白色运动鞋")
+    )
+
+    events = trace_store.list_by_run(state.run_id)
+    validation = next(event for event in events if event.canonical_event == "action.validation.finished")
+    final = next(event for event in events if event.canonical_event == "response.final")
+    assert isinstance(validation.latency_ms, int)
+    assert validation.latency_ms >= 0
+    assert isinstance(final.latency_ms, int)
+    assert final.latency_ms >= 0
+
+
+def test_mock_graph_traces_response_finalization_latency() -> None:
+    trace_store = InMemoryTraceStore()
+
+    state = AgentGraphRuntime(trace_store=trace_store).run_state(
+        UserRequest(user_id="u1", session_id="s1", text="你好")
+    )
+
+    final = next(
+        event
+        for event in trace_store.list_by_run(state.run_id)
+        if event.canonical_event == "response.final"
+    )
+    assert isinstance(final.latency_ms, int)
+    assert final.latency_ms >= 0

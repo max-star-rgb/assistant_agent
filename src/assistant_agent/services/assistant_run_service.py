@@ -8,6 +8,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Protocol
 
 from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
@@ -39,7 +40,7 @@ from assistant_agent.services.realtime_task_state import (
     realtime_task_state_enabled,
     record_realtime_task_state_run_artifacts,
 )
-from assistant_agent.services.trace_store import trace_debug_summary
+from assistant_agent.services.trace_store import TraceStore, trace_debug_summary
 from assistant_agent.services.video_context import load_demo_video_frames
 
 
@@ -424,12 +425,17 @@ def create_runtime(
     *,
     config: ProviderConfig | None = None,
     event_sink: EventSink | None = None,
+    trace_store: TraceStore | None = None,
     load_env: bool = True,
 ) -> AgentGraphRuntime:
     """Create the shared runtime with manual `.env` loading and offline test isolation."""
 
     resolved_config = resolve_runtime_config(config=config, load_env=load_env)
-    return AgentGraphRuntime(config=resolved_config, event_sink=event_sink)
+    return AgentGraphRuntime(
+        config=resolved_config,
+        event_sink=event_sink,
+        trace_store=trace_store,
+    )
 
 
 def resolve_runtime_config(
@@ -468,6 +474,7 @@ def run_assistant_request(
     resolved_store = conversation_store or get_default_conversation_store(runtime_config)
     resolved_task_store = realtime_task_state_store or get_default_realtime_task_state_store()
     _preload_demo_video_context(request, resolved_runtime)
+    conversation_prepare_started_at = perf_counter()
     resolved_request = _prepare_conversation_request(
         request,
         conversation_store=resolved_store,
@@ -476,6 +483,17 @@ def run_assistant_request(
     resolved_request = prepare_realtime_task_state_request(
         resolved_request,
         store=resolved_task_store,
+    )
+    resolved_request = resolved_request.model_copy(
+        update={
+            "metadata": {
+                **resolved_request.metadata,
+                "conversation_prepare_latency_ms": int(
+                    (perf_counter() - conversation_prepare_started_at) * 1000
+                ),
+            }
+        },
+        deep=True,
     )
     runtime_sink = _RealtimeTaskStateTrackingEventSink(
         inner=sink,

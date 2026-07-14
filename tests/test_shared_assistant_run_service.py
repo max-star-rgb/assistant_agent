@@ -17,6 +17,7 @@ from assistant_agent.services.assistant_run_service import (
     run_assistant_request_stream,
 )
 from assistant_agent.services.context.builder import build_assistant_context_pack
+from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
 class RecordingSink:
@@ -74,6 +75,27 @@ def test_shared_assistant_run_service_accepts_user_request() -> None:
     assert response.trace_id.startswith("trace_")
     assert response.runtime_info["graph_mode"] == "assistant_loop"
     assert response.current_stage
+
+
+def test_shared_assistant_run_service_traces_conversation_preparation_before_run() -> None:
+    trace_store = InMemoryTraceStore()
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+
+    artifacts = run_assistant_request(
+        UserRequest(user_id="u1", session_id="s1", text="不要把这句话写入准备事件"),
+        runtime=runtime,
+        load_env=False,
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    events = trace_store.list_by_run(artifacts.state.run_id)
+    canonical = [event.canonical_event for event in events]
+    prepare_event = next(event for event in events if event.canonical_event == "conversation.prepare.finished")
+    assert canonical.index("conversation.prepare.finished") < canonical.index("run.started")
+    assert isinstance(prepare_event.latency_ms, int)
+    assert prepare_event.latency_ms >= 0
+    assert prepare_event.attributes["conversation_turn_index"] == 1
+    assert "不要把这句话写入准备事件" not in prepare_event.model_dump_json()
 
 
 def test_run_assistant_request_stream_yields_events_and_returns_artifacts() -> None:

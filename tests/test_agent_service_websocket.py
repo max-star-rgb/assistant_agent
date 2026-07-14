@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from threading import Event
@@ -10,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.state import AgentState
 from assistant_agent.api import routes_agent
 from assistant_agent.api import agent_service_websocket as agent_service_ws
@@ -20,6 +22,10 @@ from assistant_agent.services.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
     JsonlAgentServiceDeliveryAudit,
 )
+from assistant_agent.services.agent_service_latency import AgentServiceTurnTiming
+from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.services.trace_persistence import BufferedJsonlTraceStore, close_trace_store
+from assistant_agent.services.trace_store import CompositeTraceStore, TraceEvent
 
 
 class RecordingRuntime:
@@ -145,6 +151,161 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
         "supports_raw_media": True,
         "supports_tts_edge_events": False,
     }
+
+
+def test_agent_service_chat_appends_correlated_turn_latency_trace(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    trace_store = InMemoryTraceStore()
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+    registry = AgentServiceDeliveryRegistry(
+        JsonlAgentServiceDeliveryAudit(tmp_path / "delivery.jsonl")
+    )
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(agent_service_ws, "_create_delivery_registry", lambda: registry)
+    client = TestClient(create_app())
+
+    with caplog.at_level(logging.INFO, logger="assistant_agent.api.agent_service_websocket"):
+        with client.websocket_connect("/agent-service/v1?sessionId=s1") as websocket:
+            websocket.send_json(
+                _envelope(
+                    "chat",
+                    "s1",
+                    {
+                        "chatIndex": "private-chat-index",
+                        "userNumber": "10086",
+                        "contents": [
+                            {
+                                "speakerNumber": "10086",
+                                "speechContent": "unique private turn text",
+                                "time": "2026-07-13T08:30:00Z",
+                            }
+                        ],
+                    },
+                )
+            )
+            assert websocket.receive_json()["message"] == "chatResponse"
+
+    terminal = next(
+        event
+        for event in trace_store.events
+        if event.canonical_event == "agent_service.turn.finished"
+    )
+    summary = terminal.output_summary["turn_latency"]
+    assert summary["status"] == "sent"
+    assert summary["total_ms"] >= 0
+    assert summary["gateway_run_id"]
+    assert summary["assistant_run_id"] == terminal.run_id
+    assert summary["gateway_run_id"] != summary["assistant_run_id"]
+    assert summary["trace_id"] == terminal.trace_id
+    assert any(stage["name"] == "websocket_send" for stage in summary["stages"])
+    dumped = terminal.model_dump_json()
+    assert "unique private turn text" not in dumped
+    assert "10086" not in dumped
+    assert "private-chat-index" not in dumped
+    assert any(record.getMessage().startswith("turn_latency status=sent") for record in caplog.records)
+
+
+def test_blocked_trace_persistence_does_not_delay_chat_response(monkeypatch) -> None:
+    started = Event()
+    release = Event()
+
+    class BlockingSink(InMemoryTraceStore):
+        def append(self, event: TraceEvent) -> None:
+            started.set()
+            assert release.wait(timeout=3)
+            super().append(event)
+
+    primary = InMemoryTraceStore()
+    buffered = BufferedJsonlTraceStore(BlockingSink(), capacity=128)
+    trace_store = CompositeTraceStore(primary, [buffered])
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    try:
+        with client.websocket_connect("/agent-service/v1?sessionId=s1") as websocket:
+            websocket.send_json(
+                _envelope(
+                    "chat",
+                    "s1",
+                    {
+                        "chatIndex": "chat-blocked-trace",
+                        "userNumber": "10086",
+                        "contents": [
+                            {
+                                "speakerNumber": "10086",
+                                "speechContent": "answer while persistence is blocked",
+                                "time": "2026-07-13T08:30:00Z",
+                            }
+                        ],
+                    },
+                )
+            )
+            assert started.wait(timeout=2)
+            response = websocket.receive_json()
+
+        assert response["message"] == "chatResponse"
+        assert any(
+            event.canonical_event == "agent_service.turn.finished"
+            for event in primary.events
+        )
+    finally:
+        release.set()
+        assert close_trace_store(trace_store, timeout=1.0) is True
+
+
+def test_chat_response_ack_appends_separate_latency_event(tmp_path: Path) -> None:
+    trace_store = InMemoryTraceStore()
+    registry = AgentServiceDeliveryRegistry(
+        JsonlAgentServiceDeliveryAudit(tmp_path / "delivery.jsonl")
+    )
+    delivery = registry.accept("s1", "chat-1", expects_ack=True)
+    registry.mark_sent(
+        delivery.delivery_id,
+        gateway_run_id="gateway_run_1",
+        assistant_run_id="assistant_run_1",
+        trace_id="trace_1",
+    )
+    timing = AgentServiceTurnTiming(
+        delivery_id=delivery.delivery_id,
+        session_turn=1,
+        chat_index_digest=delivery.chat_index_digest,
+        expects_ack=True,
+        received_ns=1_000_000_000,
+        accepted_ns=1_001_000_000,
+    )
+    timing.mark("send_finished", at_ns=1_100_000_000)
+    timing.bind_turn(
+        turn_id="turn_1",
+        gateway_run_id="gateway_run_1",
+        assistant_run_id="assistant_run_1",
+        trace_id="trace_1",
+    )
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        delivery_registry=registry,
+        trace_store=trace_store,
+        clock_ns=lambda: 1_125_000_000,
+        turn_timings={delivery.delivery_id: timing},
+    )
+
+    response = asyncio.run(
+        agent_service_ws.ChatResponseAckHandler().handle(
+            session_id="s1",
+            body={"deliveryId": delivery.delivery_id, "chatIndex": "chat-1"},
+            state=state,
+        )
+    )
+
+    assert _body(response)["code"] == 0
+    event = trace_store.list_by_trace("trace_1")[-1]
+    assert event.canonical_event == "agent_service.delivery.acked"
+    assert event.latency_ms == 25
+    assert delivery.delivery_id not in state.turn_timings
 
 
 def test_agent_service_video_context_reaches_following_chat(monkeypatch, tmp_path: Path) -> None:
@@ -313,6 +474,65 @@ def test_video_observation_does_not_block_later_media_ack(monkeypatch, tmp_path:
     assert observer.closed is True
 
 
+def test_video_ingestion_projects_h264_decode_latency_to_observer(monkeypatch, tmp_path: Path) -> None:
+    class CapturingObserver:
+        def __init__(self) -> None:
+            self.frames: list[VideoFrame] = []
+
+        async def submit(self, frame: VideoFrame) -> None:
+            self.frames.append(frame)
+
+        async def close(self) -> None:
+            return None
+
+    class Ingestion:
+        def ingest(self, *_args):
+            return VideoFrame(
+                video_id="agent-service-video-timing",
+                frame_id="frame-1",
+                uri=str(tmp_path / "frame-1.jpg"),
+                sequence=1,
+                metadata={"source": "test"},
+            )
+
+        def cleanup(self, _video_id: str) -> None:
+            return None
+
+    observer = CapturingObserver()
+    monkeypatch.setattr(agent_service_ws, "_create_video_ingestion_service", Ingestion)
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_create_realtime_video_observer",
+        lambda **_kwargs: observer,
+    )
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/agent-service/v1") as websocket:
+        websocket.send_json(
+            _media_envelope(
+                "video",
+                {
+                    "userNumber": "10086",
+                    "videoIndex": "1",
+                    "contents": [
+                        {
+                            "speakerNumber": "10086",
+                            "videoContent": "0000000165aa",
+                            "time": "2026-07-13T08:30:00Z",
+                        }
+                    ],
+                    "videoConfig": {"codec": "H264"},
+                },
+            )
+        )
+        assert _body(websocket.receive_json())["code"] == 0
+
+    assert len(observer.frames) == 1
+    assert observer.frames[0].metadata["source"] == "test"
+    assert isinstance(observer.frames[0].metadata["h264_decode_latency_ms"], int)
+    assert observer.frames[0].metadata["h264_decode_latency_ms"] >= 0
+
+
 def test_agent_service_video_ack_continues_while_chat_is_running(monkeypatch, tmp_path: Path) -> None:
     started = Event()
     release = Event()
@@ -383,6 +603,168 @@ def test_agent_service_video_ack_continues_while_chat_is_running(monkeypatch, tm
     assert during_chat["message"] == "videoResponse"
     assert _body(during_chat) == {"code": 0, "message": "video received"}
     assert final["message"] == "chatResponse"
+
+
+def test_agent_service_second_chat_reports_same_session_queue_wait(monkeypatch) -> None:
+    started = Event()
+    release = Event()
+    summaries = []
+
+    class BlockingRuntime(RecordingRuntime):
+        def run_state(self, request):
+            started.set()
+            assert release.wait(timeout=3)
+            return super().run_state(request)
+
+    runtime = BlockingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        agent_service_ws,
+        "report_turn_latency",
+        lambda summary, **_kwargs: summaries.append(summary),
+    )
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/agent-service/v1?sessionId=s1") as websocket:
+        for chat_index in ("chat-1", "chat-2"):
+            websocket.send_json(
+                _envelope(
+                    "chat",
+                    "s1",
+                    {
+                        "chatIndex": chat_index,
+                        "userNumber": "10086",
+                        "contents": [
+                            {
+                                "speakerNumber": "10086",
+                                "speechContent": f"turn {chat_index}",
+                                "time": "2026-07-13T08:30:00Z",
+                            }
+                        ],
+                    },
+                )
+            )
+            if chat_index == "chat-1":
+                assert started.wait(timeout=2)
+        time.sleep(0.05)
+        release.set()
+        assert websocket.receive_json()["message"] == "chatResponse"
+        assert websocket.receive_json()["message"] == "chatResponse"
+
+    second = next(summary for summary in summaries if summary.session_turn == 2)
+    assert second.stage("chat_queue_wait").duration_ms > 0
+
+
+@pytest.mark.parametrize(
+    "observer_name",
+    ["analyze_agent_service_turn", "append_turn_latency_trace", "report_turn_latency"],
+)
+def test_turn_latency_observer_failure_does_not_block_chat_response(
+    monkeypatch,
+    observer_name: str,
+) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("observer failed")
+
+    monkeypatch.setattr(agent_service_ws, observer_name, fail)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/agent-service/v1?sessionId=s1") as websocket:
+        websocket.send_json(
+            _envelope(
+                "chat",
+                "s1",
+                {
+                    "chatIndex": "chat-observer-failure",
+                    "userNumber": "10086",
+                    "contents": [
+                        {
+                            "speakerNumber": "10086",
+                            "speechContent": "still answer",
+                            "time": "2026-07-13T08:30:00Z",
+                        }
+                    ],
+                },
+            )
+        )
+        response = websocket.receive_json()
+
+    assert response["message"] == "chatResponse"
+
+
+def test_failed_websocket_send_never_reports_sent_status(tmp_path: Path) -> None:
+    summaries = []
+
+    class Facade:
+        async def run_turn(self, _request):
+            class Turn:
+                status = "completed"
+                payload = {}
+                reason = "completed"
+                response_text = "answer"
+                run_id = "gateway_run_1"
+                turn_id = "turn_1"
+                trace_id = None
+
+            return Turn()
+
+    class FailingWebSocket:
+        async def send_text(self, _raw: str) -> None:
+            raise RuntimeError("send failed")
+
+    registry = AgentServiceDeliveryRegistry(
+        JsonlAgentServiceDeliveryAudit(tmp_path / "delivery.jsonl")
+    )
+    delivery = registry.accept("s1", "chat-1", expects_ack=False)
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=Facade(),
+        delivery_registry=registry,
+    )
+    prepared = agent_service_ws.PreparedChat(
+        session_id="s1",
+        response_session_id="s1",
+        body={},
+        chat_index="chat-1",
+        user_number="10086",
+        latest_speech="hello",
+        contents=[{"speechContent": "hello"}],
+        video_ids=[],
+        received_ns=state.clock_ns(),
+        accepted_ns=state.clock_ns(),
+        session_turn=1,
+    )
+    timing = AgentServiceTurnTiming(
+        delivery_id=delivery.delivery_id,
+        session_turn=1,
+        chat_index_digest=delivery.chat_index_digest,
+        expects_ack=False,
+        received_ns=prepared.received_ns,
+        accepted_ns=prepared.accepted_ns,
+    )
+    timing.mark("queue_entered", at_ns=state.clock_ns())
+    state.turn_timings[delivery.delivery_id] = timing
+    original_reporter = agent_service_ws.report_turn_latency
+    agent_service_ws.report_turn_latency = lambda summary, **_kwargs: summaries.append(summary)
+    try:
+        asyncio.run(
+            agent_service_ws._run_chat_delivery(
+                FailingWebSocket(),
+                state=state,
+                prepared=prepared,
+                delivery=delivery,
+            )
+        )
+    finally:
+        agent_service_ws.report_turn_latency = original_reporter
+
+    assert summaries
+    assert all(summary.status != "sent" for summary in summaries)
+    assert registry.get(delivery.delivery_id).status == "disconnected_before_send"
 
 
 def test_agent_service_negotiates_progress_and_acknowledges_final_delivery(monkeypatch, tmp_path: Path) -> None:
