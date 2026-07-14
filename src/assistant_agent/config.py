@@ -164,6 +164,11 @@ class ProviderConfig:
     max_tool_iterations: int = 5
     max_plan_steps: int = 8
     max_plan_revisions: int = 2
+    durable_tasks_enabled: bool = False
+    durable_task_path: str = ".local/tasks/durable_tasks.sqlite3"
+    durable_task_worker_enabled: bool = False
+    durable_task_lease_seconds: int = 30
+    durable_task_poll_seconds: float = 1.0
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
@@ -300,6 +305,26 @@ class ProviderConfig:
             native_provider_streaming=_bool_env(
                 source.get("MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING"),
                 False,
+            ),
+            durable_tasks_enabled=_bool_env(
+                source.get("MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED"),
+                False,
+            ),
+            durable_task_path=(
+                source.get("MULTIMODAL_AGENT_DURABLE_TASK_PATH")
+                or ".local/tasks/durable_tasks.sqlite3"
+            ),
+            durable_task_worker_enabled=_bool_env(
+                source.get("MULTIMODAL_AGENT_DURABLE_TASK_WORKER_ENABLED"),
+                False,
+            ),
+            durable_task_lease_seconds=max(
+                5,
+                _int_env(source.get("MULTIMODAL_AGENT_DURABLE_TASK_LEASE_SECONDS"), 30),
+            ),
+            durable_task_poll_seconds=max(
+                0.1,
+                _float_env(source.get("MULTIMODAL_AGENT_DURABLE_TASK_POLL_SECONDS"), 1.0),
             ),
             openai_chat_base_url=source.get("OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"),
             openai_chat_model=source.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),

@@ -14,6 +14,7 @@ from assistant_agent.schemas.context import (
     ContextSummary,
     ToolCapabilityDescriptor,
 )
+from assistant_agent.schemas.durable_tasks import DurableTaskSnapshot
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.context.compactor import (
@@ -72,6 +73,7 @@ def build_assistant_context_pack(
     )
     memory_blocks = _metadata_dict_list(active_request, "memory_context_blocks")
     realtime_task_state = _metadata_dict(active_request, REALTIME_TASK_STATE_METADATA_KEY)
+    durable_task_state, durable_task_state_trimmed = _durable_task_context(active_request)
     active_observations = observations or []
     context_observations = compact_observations_for_context(active_observations)
     active_tool_specs = tool_specs or []
@@ -103,6 +105,7 @@ def build_assistant_context_pack(
         conversation_text=conversation_text,
         memory_text=text,
         realtime_task_state=realtime_task_state,
+        durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=context_observations,
         tool_specs=prompt_tool_specs,
@@ -123,6 +126,7 @@ def build_assistant_context_pack(
         memory_summaries=summaries,
         memory_blocks=memory_blocks,
         realtime_task_state=realtime_task_state,
+        durable_task_state=durable_task_state,
         observations=active_observations,
         tool_specs=active_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
@@ -135,6 +139,7 @@ def build_assistant_context_pack(
         conversation_text=conversation_text,
         memory_text=text,
         realtime_task_state=realtime_task_state,
+        durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=context_observations,
         tool_specs=prompt_tool_specs,
@@ -173,6 +178,7 @@ def build_assistant_context_pack(
         conversation_text=conversation_text,
         memory_text=text,
         realtime_task_state=realtime_task_state,
+        durable_task_state=durable_task_state,
         observations=context_observations,
         plan_state=plan_state,
         tool_specs=prompt_tool_specs,
@@ -182,7 +188,11 @@ def build_assistant_context_pack(
     if budgeted.memory_text == "":
         summaries = []
     trimmed_sections = _unique(
-        [*context_section_trimmed, *budgeted.trimmed_sections]
+        [
+            *context_section_trimmed,
+            *(["durable_task_state"] if durable_task_state_trimmed else []),
+            *budgeted.trimmed_sections,
+        ]
     )
     over_budget = unbudgeted_report.total_chars > budget_limit
     compression_reasons = _compression_reasons(
@@ -197,6 +207,7 @@ def build_assistant_context_pack(
         conversation_text=budgeted.conversation_text,
         memory_text=budgeted.memory_text,
         realtime_task_state=realtime_task_state,
+        durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=budgeted.observations,
         tool_specs=prompt_tool_specs,
@@ -226,6 +237,7 @@ def build_assistant_context_pack(
         memory_text=budgeted.memory_text,
         memory_blocks=memory_blocks,
         realtime_task_state=realtime_task_state,
+        durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=budgeted.observations,
         tool_specs=active_tool_specs,
@@ -301,12 +313,75 @@ def _metadata_dict(request: UserRequest, key: str) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, dict) else None
 
 
+def _durable_task_context(request: UserRequest) -> tuple[dict[str, Any] | None, bool]:
+    """Validate and whitelist the worker-owned snapshot before prompt exposure."""
+
+    raw_snapshot = request.metadata.get("durable_task_snapshot")
+    try:
+        snapshot = DurableTaskSnapshot.model_validate(raw_snapshot)
+    except (TypeError, ValueError):
+        return None, False
+    wait = snapshot.wait or {}
+    payload: dict[str, Any] = {
+        "task_id": snapshot.task_id,
+        "objective": snapshot.objective,
+        "active_constraints": list(snapshot.active_constraints),
+        "task_status": snapshot.task_status,
+        "plan_version": snapshot.plan_version,
+        "plan": snapshot.plan.model_dump(mode="json"),
+        "ready_step_ids": list(snapshot.ready_step_ids),
+        "completed_steps": [
+            {
+                key: item[key]
+                for key in ("step_id", "summary", "output_ref")
+                if key in item
+            }
+            for item in snapshot.completed_steps
+        ],
+        "artifact_refs": [item.model_dump(mode="json") for item in snapshot.artifact_refs],
+        "wait": (
+            {
+                key: wait[key]
+                for key in ("kind", "step_id", "confirmation_id", "message", "missing_inputs")
+                if key in wait
+            }
+            if wait
+            else None
+        ),
+        "remaining_budget": dict(snapshot.remaining_budget),
+    }
+    clipped, trimmed = _clip_durable_prompt_value(payload)
+    return clipped, trimmed
+
+
+def _clip_durable_prompt_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, str):
+        if len(value) <= 512:
+            return value, False
+        return value[:509] + "...", True
+    if isinstance(value, list):
+        items = value[:16]
+        clipped_items = [_clip_durable_prompt_value(item) for item in items]
+        return [item for item, _ in clipped_items], len(value) > 16 or any(flag for _, flag in clipped_items)
+    if isinstance(value, dict):
+        clipped_items = {
+            key: _clip_durable_prompt_value(item)
+            for key, item in value.items()
+        }
+        return (
+            {key: item for key, (item, _) in clipped_items.items()},
+            any(flag for _, flag in clipped_items.values()),
+        )
+    return value, False
+
+
 def _source_counts(
     *,
     request: UserRequest,
     memory_summaries: list[str],
     memory_blocks: list[dict[str, Any]],
     realtime_task_state: dict[str, Any] | None,
+    durable_task_state: dict[str, Any] | None,
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
     prompt_tool_specs: list[ToolSpec],
@@ -323,6 +398,7 @@ def _source_counts(
         "memory_items": len(memory_summaries),
         "memory_blocks": len(memory_blocks),
         "realtime_task_state": 1 if realtime_task_state is not None else 0,
+        "durable_task_state": 1 if durable_task_state is not None else 0,
         "artifact_refs": len(artifact_refs) if isinstance(artifact_refs, list) else 0,
         "observations": len(observations),
         "tool_specs": len(tool_specs),
@@ -339,6 +415,7 @@ def _budget_report(
     conversation_text: str,
     memory_text: str,
     realtime_task_state: dict[str, Any] | None,
+    durable_task_state: dict[str, Any] | None,
     plan_state: AssistantPlanContext,
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
@@ -356,6 +433,7 @@ def _budget_report(
     conversation_chars = len(conversation_text)
     memory_chars = len(memory_text)
     realtime_task_state_chars = _json_chars(realtime_task_state) if realtime_task_state else 0
+    durable_task_state_chars = _json_chars(durable_task_state) if durable_task_state else 0
     plan_chars = _json_chars(plan_state.model_dump(mode="json")) if _has_plan_context(plan_state) else 0
     observations_chars = _json_chars(observations)
     tool_spec_chars = _json_chars([prompt_tool_spec_payload(spec) for spec in tool_specs])
@@ -368,6 +446,7 @@ def _budget_report(
         + conversation_chars
         + memory_chars
         + realtime_task_state_chars
+        + durable_task_state_chars
         + plan_chars
         + observations_chars
         + tool_spec_chars
@@ -384,6 +463,7 @@ def _budget_report(
                 "conversation": conversation_text,
                 "memory": memory_text,
                 "realtime_task_state": realtime_task_state or {},
+                "durable_task_state": durable_task_state or {},
                 "plan": plan_state.model_dump(mode="json") if _has_plan_context(plan_state) else {},
                 "observations": observations,
                 "tool_spec": [spec.model_dump(mode="json") for spec in tool_specs],
@@ -405,6 +485,7 @@ def _budget_report(
         conversation_chars=conversation_chars,
         memory_chars=memory_chars,
         realtime_task_state_chars=realtime_task_state_chars,
+        durable_task_state_chars=durable_task_state_chars,
         plan_chars=plan_chars,
         observations_chars=observations_chars,
         tool_spec_chars=tool_spec_chars,
@@ -552,6 +633,7 @@ def _enforce_context_budget(
     conversation_text: str,
     memory_text: str,
     realtime_task_state: dict[str, Any] | None,
+    durable_task_state: dict[str, Any] | None,
     observations: list[dict[str, Any]],
     plan_state: AssistantPlanContext,
     tool_specs: list[ToolSpec],
@@ -563,6 +645,7 @@ def _enforce_context_budget(
         conversation_text=conversation_text,
         memory_text=memory_text,
         realtime_task_state=realtime_task_state,
+        durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=observations,
         tool_specs=tool_specs,
@@ -581,6 +664,7 @@ def _enforce_context_budget(
     fixed_chars = (
         budget.request_chars
         + budget.realtime_task_state_chars
+        + budget.durable_task_state_chars
         + budget.plan_chars
         + budget.tool_spec_chars
         + budget.tool_capability_chars
@@ -619,6 +703,7 @@ def _enforce_context_budget(
         conversation_text=budgeted_conversation_text,
         memory_text=budgeted_memory_text,
         realtime_task_state=realtime_task_state,
+        durable_task_state=durable_task_state,
         plan_state=plan_state,
         observations=budgeted_observations,
         tool_specs=tool_specs,

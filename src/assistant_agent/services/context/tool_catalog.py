@@ -141,7 +141,10 @@ def recall_qualified_tool_specs(
 ) -> list[ToolSpec]:
     """Return every qualified ToolSpec until a future recall design is approved."""
 
-    del request
+    if request.metadata.get("_trusted_durable_execution") is True:
+        ready = set(_string_list(request.metadata.get("ready_tool_names")))
+        allowed = ready | {"task_plan_submit"}
+        return [spec for spec in qualified_tool_specs if spec.name in allowed]
     return list(qualified_tool_specs)
 
 

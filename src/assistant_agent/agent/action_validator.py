@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -44,6 +46,13 @@ class ActionValidator:
         tool_name = decision.tool_name
         if tool_name not in registry.list():
             return _reject("unknown_tool", f"Unknown tool: {tool_name}.")
+        task_mode_error = _validate_task_execution_mode(
+            tool_name=tool_name,
+            decision=decision,
+            request=request,
+        )
+        if task_mode_error is not None:
+            return task_mode_error
         run_tool_set = state.run_tool_set
         if run_tool_set is not None and not run_tool_set.allows_execution(tool_name):
             return _reject(
@@ -116,6 +125,61 @@ class ActionValidator:
             )
 
         return ActionValidationResult(accepted=True, code="accepted", message="Action accepted.", metadata=metadata)
+
+
+def _validate_task_execution_mode(
+    *,
+    tool_name: str,
+    decision: AssistantDecision,
+    request: UserRequest,
+) -> ActionValidationResult | None:
+    mode = request.task_execution_mode
+    binding = request.metadata.get("durable_task_binding")
+    if mode == "foreground" and tool_name == "task_plan_submit":
+        return _reject(
+            "durable_plan_forbidden",
+            "Foreground execution does not allow durable task submission.",
+        )
+    if mode == "durable" and binding is None and tool_name != "task_plan_submit":
+        return _reject(
+            "durable_plan_required",
+            "Durable execution requires task_plan_submit before business tools.",
+        )
+    if mode != "durable" or binding is None or tool_name == "task_plan_submit":
+        return None
+    try:
+        from assistant_agent.schemas.durable_tasks import DurableTaskSnapshot, TrustedTaskBinding
+
+        trusted_binding = TrustedTaskBinding.model_validate(binding)
+        snapshot = DurableTaskSnapshot.model_validate(
+            request.metadata.get("durable_task_snapshot")
+        )
+    except (TypeError, ValueError):
+        return _reject("durable_task_binding_invalid", "Durable task binding is invalid.")
+    if decision.step_id not in trusted_binding.ready_step_ids:
+        return _reject("durable_step_not_ready", "Tool call does not target a ready durable step.")
+    step = next((item for item in snapshot.plan.steps if item.step_id == decision.step_id), None)
+    if step is None or step.tool_name != tool_name:
+        return _reject("durable_step_tool_mismatch", "Tool call does not match the bound durable step.")
+    if trusted_binding.verified_confirmation_id is not None:
+        digest = hashlib.sha256(
+            json.dumps(
+                decision.tool_input or {},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        if (
+            trusted_binding.verified_confirmation_tool_name != tool_name
+            or trusted_binding.verified_confirmation_input_digest != digest
+        ):
+            return _reject(
+                "durable_confirmation_binding_mismatch",
+                "Tool call does not match the user-approved durable action.",
+            )
+    return None
 
 
 def _validate_required_media(

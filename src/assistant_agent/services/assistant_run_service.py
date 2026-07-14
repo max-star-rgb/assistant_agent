@@ -31,6 +31,7 @@ from assistant_agent.services.context.conversation import (
 )
 from assistant_agent.services.context.policy import context_policy_from_request
 from assistant_agent.services.event_sink import EventSink, ListEventSink
+from assistant_agent.services.durable_tasks.service import DurableTaskService
 from assistant_agent.services.realtime_task_state import (
     RealtimeTaskStateStore,
     get_default_realtime_task_state_store,
@@ -427,6 +428,7 @@ def create_runtime(
     event_sink: EventSink | None = None,
     trace_store: TraceStore | None = None,
     load_env: bool = True,
+    durable_task_service: DurableTaskService | None = None,
 ) -> AgentGraphRuntime:
     """Create the shared runtime with manual `.env` loading and offline test isolation."""
 
@@ -435,6 +437,7 @@ def create_runtime(
         config=resolved_config,
         event_sink=event_sink,
         trace_store=trace_store,
+        durable_task_service=durable_task_service,
     )
 
 

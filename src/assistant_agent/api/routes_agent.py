@@ -127,6 +127,13 @@ def shutdown_agent_runtime() -> None:
         close_trace_store(getattr(runtime, "trace_store", None), timeout=1.0)
 
 
+def release_agent_runtime(runtime: Any) -> None:
+    """Close and release the process-global runtime when it matches its owner."""
+
+    if _RUNTIME is runtime:
+        shutdown_agent_runtime()
+
+
 def get_assistant_runtime_app() -> AssistantRuntimeApp:
     return AssistantRuntimeApp(runtime_factory=get_agent_runtime)
 
@@ -1053,7 +1060,17 @@ def _with_identity_metadata(request: UserRequest, resolution: ResolvedRequestIde
 
 def _public_request_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     safe_metadata = dict(metadata)
-    for key in ("system_prompt_profile", "channel", "source"):
+    for key in (
+        "system_prompt_profile",
+        "channel",
+        "source",
+        "durable_task_binding",
+        "durable_task_snapshot",
+        "durable_confirmation",
+        "durable_idempotency_key",
+        "worker_lease",
+        "_trusted_durable_execution",
+    ):
         safe_metadata.pop(key, None)
     return safe_metadata
 

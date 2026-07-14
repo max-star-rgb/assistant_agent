@@ -35,6 +35,34 @@ def test_editable_context_config_uses_only_fixed_env_names() -> None:
     assert config.editable_context_user_id == "owner-1"
 
 
+def test_durable_task_config_defaults_closed() -> None:
+    config = ProviderConfig.from_env({})
+
+    assert config.durable_tasks_enabled is False
+    assert config.durable_task_worker_enabled is False
+    assert config.durable_task_path == ".local/tasks/durable_tasks.sqlite3"
+    assert config.durable_task_lease_seconds == 30
+    assert config.durable_task_poll_seconds == 1.0
+
+
+def test_durable_task_config_reads_and_bounds_fixed_env_names() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED": "true",
+            "MULTIMODAL_AGENT_DURABLE_TASK_WORKER_ENABLED": "true",
+            "MULTIMODAL_AGENT_DURABLE_TASK_PATH": "/tmp/tasks.sqlite3",
+            "MULTIMODAL_AGENT_DURABLE_TASK_LEASE_SECONDS": "2",
+            "MULTIMODAL_AGENT_DURABLE_TASK_POLL_SECONDS": "0.01",
+        }
+    )
+
+    assert config.durable_tasks_enabled is True
+    assert config.durable_task_worker_enabled is True
+    assert config.durable_task_path == "/tmp/tasks.sqlite3"
+    assert config.durable_task_lease_seconds == 5
+    assert config.durable_task_poll_seconds == 0.1
+
+
 def test_provider_smoke_validation_reports_missing_explicit_real_config() -> None:
     config = ProviderConfig.from_env(
         {

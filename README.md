@@ -10,6 +10,7 @@
 - Observability and trace harness: `docs/observability-harness.md`
 - Memory service architecture: `docs/memory-service-architecture.md`
 - Context engineering status: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Durable structured execution is documented across the Gateway, tool-calling, and context authority documents above; its task API is under `/tasks/{task_id}` and is disabled by default.
 - Multi-agent routing: `docs/agent-communication-routing.md`
 
 External Memory Server contract/reference material:
