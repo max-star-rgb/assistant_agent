@@ -34,6 +34,22 @@ class RecordingRuntime:
         return state
 
 
+def test_public_request_metadata_strips_reserved_durable_runtime_state() -> None:
+    metadata = routes_agent._public_request_metadata(
+        {
+            "client_hint": "keep",
+            "durable_task_binding": {"lease_token": "spoofed"},
+            "durable_task_snapshot": {"task_id": "spoofed"},
+            "durable_confirmation": "spoofed",
+            "durable_idempotency_key": "spoofed",
+            "worker_lease": "spoofed",
+            "_trusted_durable_execution": True,
+        }
+    )
+
+    assert metadata == {"client_hint": "keep"}
+
+
 class RecordingRouter:
     def __init__(self) -> None:
         self.requests: list[object] = []

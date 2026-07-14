@@ -990,7 +990,17 @@ def _with_identity_metadata(request: UserRequest, resolution: ResolvedRequestIde
 
 def _public_request_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     safe_metadata = dict(metadata)
-    for key in ("system_prompt_profile", "channel", "source"):
+    for key in (
+        "system_prompt_profile",
+        "channel",
+        "source",
+        "durable_task_binding",
+        "durable_task_snapshot",
+        "durable_confirmation",
+        "durable_idempotency_key",
+        "worker_lease",
+        "_trusted_durable_execution",
+    ):
         safe_metadata.pop(key, None)
     return safe_metadata
 

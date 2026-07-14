@@ -578,7 +578,6 @@ def create_default_registry(
             raise ValueError("agent_communication_service is required when agent delegation is enabled")
         registry.register(AgentDelegationTool(agent_communication_service))
     if config is not None and config.durable_tasks_enabled:
-        if durable_task_service is None:
-            raise ValueError("durable_task_service is required when durable tasks are enabled")
-        registry.register(TaskPlanSubmitTool(durable_task_service))
+        if durable_task_service is not None:
+            registry.register(TaskPlanSubmitTool(durable_task_service))
     return registry

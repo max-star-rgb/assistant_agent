@@ -38,10 +38,16 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.assistant_decision import AssistantDecision, native_tool_call_to_assistant_decision
 from assistant_agent.schemas.api import api_error_from_agent_error
 from assistant_agent.schemas.events import AgentEvent
-from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.schemas.requests import (
+    AgentResponse,
+    UserRequest,
+    normalize_task_execution_mode,
+)
 from assistant_agent.schemas.tool_observation import observation_from_tool_result, rejected_observation
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.event_sink import EventSink
+from assistant_agent.services.durable_tasks.service import DurableTaskService
+from assistant_agent.services.durable_tasks.sqlite_store import SQLiteTaskStore
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
 from assistant_agent.services.checkpointer import create_checkpointer
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
@@ -73,6 +79,7 @@ from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore,
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry, tool_execution_policy
+from assistant_agent.tools.task_plan_tool import TaskPlanSubmitTool
 
 
 PROGRESS_MESSAGES = {
@@ -137,6 +144,7 @@ class AgentGraphRuntime:
         realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
+        durable_task_service: DurableTaskService | None = None,
     ) -> None:
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
@@ -148,6 +156,17 @@ class AgentGraphRuntime:
             video_context_store=self.video_context_store,
             realtime_video_memory_store=self.realtime_video_memory_store,
         )
+        self.durable_task_service = durable_task_service
+        if self.config.durable_tasks_enabled:
+            self.durable_task_service = self.durable_task_service or DurableTaskService(
+                store=SQLiteTaskStore(self.config.durable_task_path),
+                registry=self.registry,
+                max_plan_steps=self.config.max_plan_steps,
+                max_plan_revisions=self.config.max_plan_revisions,
+                lease_seconds=self.config.durable_task_lease_seconds,
+            )
+            if "task_plan_submit" not in self.registry.list():
+                self.registry.register(TaskPlanSubmitTool(self.durable_task_service))
         registry_get = getattr(self.registry, "get", None)
         if registry is not None and callable(registry_get):
             try:
@@ -174,7 +193,10 @@ class AgentGraphRuntime:
             registry=self.registry,
             tool_history=self.tool_history,
             event_sink=self.event_sink,
-            context_metadata={"memory_manager": self.memory_manager},
+            context_metadata={
+                "memory_manager": self.memory_manager,
+                "durable_task_service": self.durable_task_service,
+            },
         )
         self._conditional_graph = build_conditional_agent_graph()
         self._react_graph = build_assistant_loop_graph()
@@ -193,6 +215,10 @@ class AgentGraphRuntime:
         connection) without mutating ``self.event_sink``.
         """
 
+        request = normalize_task_execution_mode(
+            request,
+            durable_tasks_enabled=self.config.durable_tasks_enabled,
+        )
         base_event_sink = event_sink or self.event_sink
         run_event_sink = (
             _ResponseDeltaTrackingEventSink(base_event_sink)
@@ -205,7 +231,10 @@ class AgentGraphRuntime:
             registry=self.registry,
             tool_history=self.tool_history,
             event_sink=run_event_sink,
-            context_metadata={"memory_manager": self.memory_manager},
+            context_metadata={
+                "memory_manager": self.memory_manager,
+                "durable_task_service": self.durable_task_service,
+            },
             cancel_token=cancel_token,
         )
         state = AgentState.from_request(request)
@@ -272,7 +301,9 @@ class AgentGraphRuntime:
         except AgentRunCancelled as exc:
             state.cancel(exc.message, source=exc.source, details=exc.details)
         else:
-            if self._should_use_native_runtime():
+            if request.task_execution_mode == "durable" and not self.config.durable_tasks_enabled:
+                _set_durable_tasks_disabled_response(state)
+            elif self._should_use_native_runtime():
                 native_started_at = perf_counter()
                 try:
                     state = self._run_native_runtime(
@@ -735,6 +766,9 @@ class AgentGraphRuntime:
             if result.success and result.tool_calls:
                 if stream_buffer is not None:
                     stream_buffer.discard()
+                if _invalid_durable_plan_batch(result.tool_calls):
+                    _set_durable_plan_batch_rejection_response(state)
+                    return state
                 schedule = self._plan_native_tool_schedule(
                     result.tool_calls,
                     request=request,
@@ -878,6 +912,9 @@ class AgentGraphRuntime:
                     state.request.metadata["native_runtime_observations"] = observations
                     _record_native_observation_metadata(state, observation)
                     _append_native_tool_observation_event(self, state, observation)
+                    if tool_result.success and tool_result.tool_name == "task_plan_submit":
+                        _set_durable_task_accepted_response(state, tool_result)
+                        return state
                     if state.status == "failed":
                         return state
                     if len(observations) >= max_iterations:
@@ -1643,7 +1680,10 @@ def _native_runtime_tool_specs(registry: Any, state: AgentState) -> list[ToolSpe
             specs = registry.list_specs()
         else:
             specs = registry.describe_tools()
-        return [spec if isinstance(spec, ToolSpec) else ToolSpec.model_validate(spec) for spec in specs]
+        normalized = [spec if isinstance(spec, ToolSpec) else ToolSpec.model_validate(spec) for spec in specs]
+        if state.request.task_execution_mode != "durable":
+            normalized = [spec for spec in normalized if spec.name != "task_plan_submit"]
+        return normalized
     except Exception as exc:
         _set_native_tool_description_failure_response(state, exc)
         return None
@@ -1736,6 +1776,46 @@ def _set_native_validation_rejection_response(
             },
         )
     )
+
+
+def _invalid_durable_plan_batch(tool_calls: list[Any]) -> bool:
+    names = [str(getattr(call, "name", "")) for call in tool_calls]
+    return "task_plan_submit" in names and names != ["task_plan_submit"]
+
+
+def _set_durable_plan_batch_rejection_response(state: AgentState) -> None:
+    code = "durable_plan_must_be_standalone"
+    message = "task_plan_submit must be the only call in a provider tool-call batch."
+    state.errors.append(
+        AgentError(message=message, source="native_runtime", details={"code": code})
+    )
+    state.response = AgentResponse(
+        message="任务计划必须单独提交，本次没有执行任何工具。",
+        data={"native_runtime": True, "errors": [{"code": code, "message": message}]},
+    )
+    state.status = "failed"
+
+
+def _set_durable_task_accepted_response(state: AgentState, result: ToolResult) -> None:
+    task = dict((result.data or {}).get("task") or {})
+    state.set_response(
+        AgentResponse(
+            message="任务已创建，我会按计划继续处理。",
+            data={"task": task, "native_runtime": True},
+            output_refs=[result.output_ref] if result.output_ref else [],
+        )
+    )
+
+
+def _set_durable_tasks_disabled_response(state: AgentState) -> None:
+    code = "durable_tasks_disabled"
+    message = "Durable task execution is disabled for this runtime."
+    state.errors.append(AgentError(message=message, source="runtime", details={"code": code}))
+    state.response = AgentResponse(
+        message="当前运行时未启用持久化任务执行。",
+        data={"errors": [{"code": code, "message": message}]},
+    )
+    state.status = "failed"
 
 
 def _record_native_decision_metadata(
