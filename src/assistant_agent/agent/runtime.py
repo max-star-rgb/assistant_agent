@@ -1,11 +1,14 @@
 """Default LangGraph runtime for agent execution."""
 
 import asyncio
+import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.cancellation import AgentRunCancelled, raise_if_cancelled
@@ -38,6 +41,11 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.assistant_decision import AssistantDecision, native_tool_call_to_assistant_decision
 from assistant_agent.schemas.api import api_error_from_agent_error
 from assistant_agent.schemas.events import AgentEvent
+from assistant_agent.schemas.durable_tasks import (
+    DurableTaskSnapshot,
+    TaskCheckpoint,
+    TrustedTaskBinding,
+)
 from assistant_agent.schemas.requests import (
     AgentResponse,
     UserRequest,
@@ -80,6 +88,9 @@ from assistant_agent.services.video_context import InMemoryVideoContextStore, Vi
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry, tool_execution_policy
 from assistant_agent.tools.task_plan_tool import TaskPlanSubmitTool
+
+if TYPE_CHECKING:
+    from assistant_agent.services.durable_tasks.worker import TaskQuantumResult
 
 
 PROGRESS_MESSAGES = {
@@ -482,6 +493,186 @@ class AgentGraphRuntime:
             )
         _update_memory_core_status_from_recall(state.request.metadata)
         return state
+
+    def run_task_quantum(
+        self,
+        request: UserRequest,
+        *,
+        binding: TrustedTaskBinding,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+    ) -> "TaskQuantumResult":
+        """Run at most one governed durable-task action and yield a checkpoint."""
+
+        from assistant_agent.services.durable_tasks.worker import TaskQuantumResult
+
+        request = request.model_copy(update={"task_execution_mode": "durable"}, deep=True)
+        request.metadata["durable_task_binding"] = binding.model_dump(mode="json")
+        snapshot = DurableTaskSnapshot.model_validate(
+            request.metadata.get("durable_task_snapshot")
+        )
+        state = AgentState.from_request(request)
+        state.request.metadata["native_runtime"] = True
+        tool_executor = ToolExecutor(
+            registry=self.registry,
+            tool_history=self.tool_history,
+            event_sink=event_sink,
+            context_metadata={
+                "memory_manager": self.memory_manager,
+                "durable_task_service": self.durable_task_service,
+                "durable_task_binding": binding,
+            },
+            cancel_token=cancel_token,
+        )
+        try:
+            raise_if_cancelled(cancel_token, phase="durable_quantum_start", state=state)
+            load_memory_with_trace(
+                manager=self.memory_manager,
+                trace_store=self.trace_store,
+                trace_id=state.trace_id,
+                node_name="durable_task_quantum",
+                state=state,
+                request=request,
+            )
+            chat_request = self._native_runtime_chat_request(
+                request,
+                state=state,
+                observations=[],
+                native_calls=[],
+                stream_callback=None,
+                iteration=0,
+                max_iterations=1,
+            )
+            if chat_request is None:
+                return TaskQuantumResult(
+                    TaskCheckpoint(kind="failed", error_code="tool_schema_unavailable"),
+                    state,
+                )
+            result = self._run_native_chat_turn(chat_request)
+            self._record_native_runtime_chat_call(state, request, result)
+            if not result.success:
+                message = result.errors[0].message if result.errors else "Provider call failed."
+                return TaskQuantumResult(
+                    TaskCheckpoint(
+                        kind="failed",
+                        error_code="durable_provider_failed",
+                        error_message=message,
+                    ),
+                    state,
+                )
+            if not result.tool_calls:
+                if not binding.ready_step_ids:
+                    state.set_response(AgentResponse(message=result.response_text or "任务完成。"))
+                    return TaskQuantumResult(
+                        TaskCheckpoint(kind="completed", summary=result.response_text or "Task completed."),
+                        state,
+                    )
+                step_id = binding.ready_step_ids[0]
+                return TaskQuantumResult(
+                    TaskCheckpoint(
+                        kind="tool_failed",
+                        step_id=step_id,
+                        error_code="durable_step_required",
+                        error_message="Required durable steps remain incomplete.",
+                    ),
+                    state,
+                )
+            if len(result.tool_calls) != 1:
+                return TaskQuantumResult(
+                    TaskCheckpoint(
+                        kind="failed",
+                        error_code="durable_quantum_tool_limit",
+                        error_message="A durable quantum accepts exactly one tool call.",
+                    ),
+                    state,
+                )
+            call = result.tool_calls[0]
+            decision = native_tool_call_to_assistant_decision(call)
+            if call.name != "task_plan_submit":
+                decision.step_id = _durable_step_id_for_call(snapshot, binding, call.name)
+            validation = ActionValidator().validate(
+                decision=decision,
+                registry=self.registry,
+                request=request,
+                state=state,
+            )
+            if not validation.accepted:
+                checkpoint_kind = (
+                    "waiting_input"
+                    if validation.code in {"invalid_tool_input", "missing_required_input"}
+                    else "tool_failed" if decision.step_id else "failed"
+                )
+                return TaskQuantumResult(
+                    TaskCheckpoint(
+                        kind=checkpoint_kind,
+                        step_id=decision.step_id,
+                        error_code=validation.code,
+                        error_message=validation.message,
+                    ),
+                    state,
+                )
+            tool_result = tool_executor.run_tool(
+                state,
+                decision.step_id or "plan_revision",
+                decision.tool_name or "",
+                decision.tool_input or {},
+                trace_store=self.trace_store,
+                trace_id=state.trace_id,
+                node_name="durable_task_quantum",
+            )
+            if tool_result.tool_name == "task_plan_submit" and tool_result.success:
+                return TaskQuantumResult(
+                    TaskCheckpoint(kind="plan_revised", summary="Plan revised."),
+                    state,
+                )
+            if (tool_result.data or {}).get("requires_confirmation") is True:
+                return TaskQuantumResult(
+                    TaskCheckpoint(
+                        kind="waiting_confirmation",
+                        step_id=decision.step_id,
+                        summary=str((tool_result.data or {}).get("summary") or "Confirmation required."),
+                        tool_name=decision.tool_name,
+                        tool_input_digest=_durable_tool_input_digest(decision.tool_input or {}),
+                        confirmation_expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+                    ),
+                    state,
+                )
+            if (tool_result.data or {}).get("side_effect_state") == "unknown":
+                return TaskQuantumResult(
+                    TaskCheckpoint(
+                        kind="outcome_unknown",
+                        step_id=decision.step_id,
+                        summary=_durable_tool_result_summary(tool_result),
+                        error_code="mutating_outcome_unknown",
+                        error_message=tool_result.error,
+                    ),
+                    state,
+                )
+            if tool_result.success:
+                return TaskQuantumResult(
+                    TaskCheckpoint(
+                        kind="tool_succeeded",
+                        step_id=decision.step_id,
+                        output_ref=tool_result.output_ref,
+                        summary=_durable_tool_result_summary(tool_result),
+                    ),
+                    state,
+                )
+            return TaskQuantumResult(
+                TaskCheckpoint(
+                    kind="tool_failed",
+                    step_id=decision.step_id,
+                    error_code="durable_tool_failed",
+                    error_message=tool_result.error or "Tool execution failed.",
+                ),
+                state,
+            )
+        except AgentRunCancelled as exc:
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+            return TaskQuantumResult(
+                TaskCheckpoint(kind="cancelled", summary=exc.message),
+                state,
+            )
 
     def _should_use_native_runtime(self) -> bool:
         """Use provider-native content/tool_calls for every non-mock runtime run."""
@@ -1781,6 +1972,42 @@ def _set_native_validation_rejection_response(
 def _invalid_durable_plan_batch(tool_calls: list[Any]) -> bool:
     names = [str(getattr(call, "name", "")) for call in tool_calls]
     return "task_plan_submit" in names and names != ["task_plan_submit"]
+
+
+def _durable_step_id_for_call(
+    snapshot: DurableTaskSnapshot,
+    binding: TrustedTaskBinding,
+    tool_name: str,
+) -> str | None:
+    matching = [
+        step.step_id
+        for step in snapshot.plan.steps
+        if step.step_id in binding.ready_step_ids and step.tool_name == tool_name
+    ]
+    if len(matching) == 1:
+        return matching[0]
+    return binding.ready_step_ids[0] if len(binding.ready_step_ids) == 1 else None
+
+
+def _durable_tool_input_digest(tool_input: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        tool_input,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _durable_tool_result_summary(result: ToolResult) -> str:
+    data = result.data or {}
+    summary = data.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary.strip()[:1000]
+    if result.voice_summary:
+        return result.voice_summary[:1000]
+    return f"{result.tool_name} completed successfully."
 
 
 def _set_durable_plan_batch_rejection_response(state: AgentState) -> None:

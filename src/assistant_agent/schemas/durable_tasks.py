@@ -173,6 +173,8 @@ class TrustedTaskBinding(BaseModel):
     ready_step_ids: list[str]
     step_idempotency_keys: dict[str, str] = Field(default_factory=dict)
     verified_confirmation_id: str | None = None
+    verified_confirmation_tool_name: str | None = None
+    verified_confirmation_input_digest: str | None = None
 
 
 class DurableTaskLease(BaseModel):

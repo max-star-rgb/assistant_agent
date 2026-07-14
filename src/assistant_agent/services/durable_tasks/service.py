@@ -225,7 +225,11 @@ class DurableTaskService:
         bundle = self.get_task(identity=identity, task_id=task_id)
         if bundle.task.status != "waiting_input":
             raise TaskTransitionRejected("task is not waiting for input")
+        bundle.task.active_constraints.append(f"User-provided task input: {text}")
         bundle.task.status = "queued"
+        for run in self._current_step_runs(bundle):
+            if run.status == "waiting_input":
+                run.status = "pending"
         self._refresh_ready_steps(bundle)
         return self.store.save(
             bundle,
@@ -396,6 +400,14 @@ class DurableTaskService:
             bundle.task.lease_token = None
             bundle.task.lease_expires_at = None
             event_type = "confirmation.required"
+        elif transition.kind == "waiting_input":
+            if run is not None:
+                run.status = "waiting_input"
+            bundle.task.status = "waiting_input"
+            bundle.task.lease_owner = None
+            bundle.task.lease_token = None
+            bundle.task.lease_expires_at = None
+            event_type = "task.input_required"
         elif transition.kind == "completed":
             if any(
                 run.status not in {"succeeded", "skipped"}

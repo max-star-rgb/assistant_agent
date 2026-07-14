@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -159,6 +161,24 @@ def _validate_task_execution_mode(
     step = next((item for item in snapshot.plan.steps if item.step_id == decision.step_id), None)
     if step is None or step.tool_name != tool_name:
         return _reject("durable_step_tool_mismatch", "Tool call does not match the bound durable step.")
+    if trusted_binding.verified_confirmation_id is not None:
+        digest = hashlib.sha256(
+            json.dumps(
+                decision.tool_input or {},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        if (
+            trusted_binding.verified_confirmation_tool_name != tool_name
+            or trusted_binding.verified_confirmation_input_digest != digest
+        ):
+            return _reject(
+                "durable_confirmation_binding_mismatch",
+                "Tool call does not match the user-approved durable action.",
+            )
     return None
 
 
