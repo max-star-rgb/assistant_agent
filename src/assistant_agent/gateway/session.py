@@ -17,11 +17,15 @@ from assistant_agent.gateway.observability import (
 )
 from assistant_agent.gateway.protocol import RUN_QUEUED, Frame, frame
 from assistant_agent.gateway.queueing import (
+    DedupeRecord,
     GatewayQueuePolicy,
     GatewayRunAdmissionController,
+    GatewayTurnIdentityIndex,
+    IdentityConflictError,
     QueueOverflowError,
     QueuedTurn,
     RunPermit,
+    gateway_payload_fingerprint,
 )
 from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
 from assistant_agent.realtime import (
@@ -124,6 +128,11 @@ class GatewaySessionService:
         self._pending_by_session: dict[str, deque[QueuedTurn]] = {}
         self._history_by_session: dict[str, list[str]] = {}
         self._turns_by_run_id: dict[str, QueuedTurn] = {}
+        self._identity_index = GatewayTurnIdentityIndex(
+            ttl_s=self._queue_policy.dedupe_ttl_s,
+            max_entries=self._queue_policy.dedupe_max_entries_per_user,
+        )
+        self._identity_records_by_run_id: dict[str, DedupeRecord] = {}
         self._lock = asyncio.Lock()
         self._closed = False
 
@@ -145,6 +154,11 @@ class GatewaySessionService:
         self._queue_policy = queue_policy
         self._admission = admission_controller
         self._owns_admission = False
+        self._identity_index = GatewayTurnIdentityIndex(
+            ttl_s=queue_policy.dedupe_ttl_s,
+            max_entries=queue_policy.dedupe_max_entries_per_user,
+        )
+        self._identity_records_by_run_id.clear()
 
     def _emit_lifecycle(
         self,
@@ -253,8 +267,60 @@ class GatewaySessionService:
                 now + self._queue_policy.queue_wait_timeout_ms / 1000
             ),
             client_message_id=_optional_string(payload.get("client_message_id")),
-            payload_fingerprint="",
+            payload_fingerprint=gateway_payload_fingerprint(payload),
         )
+
+        try:
+            duplicate = self._identity_index.check(
+                session_id=turn.session_id,
+                client_message_id=turn.client_message_id,
+                turn_id=turn.turn_id,
+                run_id=turn.run_id,
+                payload_fingerprint=turn.payload_fingerprint,
+            )
+        except IdentityConflictError:
+            await turn.endpoint.send(
+                frame(
+                    type="error",
+                    session_id=turn.session_id,
+                    turn_id=turn.turn_id,
+                    run_id=turn.run_id,
+                    error={"code": "identity_conflict"},
+                )
+            )
+            return
+        if duplicate is not None:
+            await turn.endpoint.send(
+                frame(
+                    type="error",
+                    session_id=turn.session_id,
+                    turn_id=duplicate.turn_id,
+                    run_id=duplicate.run_id,
+                    error={
+                        "code": "duplicate_message",
+                        "turn_id": duplicate.turn_id,
+                        "run_id": duplicate.run_id,
+                        "state": duplicate.state,
+                    },
+                )
+            )
+            return
+
+        async with self._lock:
+            pending_depth = len(self._pending_by_session.get(session_id, ()))
+            session_limit_reached = (
+                session_id in self._current_by_session
+                and pending_depth >= self._queue_policy.max_pending_per_session
+            )
+        if session_limit_reached:
+            await self._send_queue_error(
+                turn,
+                code="queue_overflow",
+                scope="session",
+                limit=self._queue_policy.max_pending_per_session,
+            )
+            return
+
         try:
             turn.reservation = await self._admission.reserve(
                 user_id=user_id,
@@ -291,6 +357,15 @@ class GatewaySessionService:
                 queued = True
             else:
                 self._current_by_session[session_id] = turn
+            record = self._identity_index.remember(
+                session_id=turn.session_id,
+                client_message_id=turn.client_message_id,
+                turn_id=turn.turn_id,
+                run_id=turn.run_id,
+                payload_fingerprint=turn.payload_fingerprint,
+                state=turn.state,
+            )
+            self._identity_records_by_run_id[turn.run_id] = record
 
         if queued:
             await self._send_queued(turn)
@@ -357,6 +432,14 @@ class GatewaySessionService:
             )
         )
 
+    def _set_turn_state(self, turn: QueuedTurn, state: str) -> None:
+        turn.state = state
+        record = self._identity_records_by_run_id.get(turn.run_id)
+        if record is not None:
+            self._identity_index.update_state(record, state)
+            if state == "terminal":
+                self._identity_records_by_run_id.pop(turn.run_id, None)
+
     async def _expire_queued_turn(self, turn: QueuedTurn) -> None:
         await asyncio.sleep(
             max(0.0, turn.queue_deadline_monotonic - time.monotonic())
@@ -407,7 +490,7 @@ class GatewaySessionService:
                         self._pending_by_session[turn.session_id] = kept
                     else:
                         self._pending_by_session.pop(turn.session_id, None)
-            turn.state = "terminal"
+            self._set_turn_state(turn, "terminal")
             self._turns_by_run_id.pop(turn.run_id, None)
             ticket = turn.admission_ticket
             reservation = turn.reservation
@@ -491,7 +574,7 @@ class GatewaySessionService:
         ticket = await self._admission.request_permit(turn.reservation)
         turn.admission_ticket = ticket
         if not ticket.ready.done():
-            turn.state = "admission_queued"
+            self._set_turn_state(turn, "admission_queued")
             turn.queue_reason = "global_capacity"
             await self._send_queued(turn)
         permit = await ticket.ready
@@ -507,7 +590,7 @@ class GatewaySessionService:
             ):
                 release_unused_permit = True
             else:
-                turn.state = "running"
+                self._set_turn_state(turn, "running")
                 history = self._history_by_session.setdefault(turn.session_id, [])
                 history.append(turn.user_text)
                 history_snapshot = list(history)
@@ -675,7 +758,7 @@ class GatewaySessionService:
                     self._active_by_session.pop(session_id, None)
                 current = self._current_by_session.get(session_id)
                 if current is not None and current.run_id == run_id:
-                    current.state = "terminal"
+                    self._set_turn_state(current, "terminal")
                     self._current_by_session.pop(session_id, None)
                     self._turns_by_run_id.pop(run_id, None)
                     pending = self._pending_by_session.get(session_id)

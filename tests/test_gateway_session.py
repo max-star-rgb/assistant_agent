@@ -79,6 +79,18 @@ async def _read_run_end(endpoint, run_id: str):
     return await asyncio.wait_for(_read(), timeout=3.0)
 
 
+async def _read_error_code(endpoint, code: str):
+    async def _read():
+        async for received in endpoint:
+            error = received.get("error")
+            if received.get("type") == "error" and isinstance(error, dict):
+                if error.get("code") == code:
+                    return received
+        raise AssertionError(f"endpoint closed before error {code}")
+
+    return await asyncio.wait_for(_read(), timeout=3.0)
+
+
 class _BlockingFirstBackend:
     def __init__(self) -> None:
         self.release_first = asyncio.Event()
@@ -123,6 +135,160 @@ class CapturingChatAdapter:
 
 
 class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_queued_message_executes_once(self) -> None:
+        backend = _BlockingFirstBackend()
+        session = GatewaySessionService(backend=backend)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+        second_payload = {
+            "text": "second",
+            "client_message_id": "m2",
+            "turn_id": "t2",
+            "run_id": "r2",
+        }
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="dedupe-session",
+                    payload={
+                        "text": "first",
+                        "client_message_id": "m1",
+                        "turn_id": "t1",
+                        "run_id": "r1",
+                    },
+                )
+            )
+            await _read_frame_type(client_ep, "run.started")
+            await client_ep.send(
+                frame(type="message.user", session_id="dedupe-session", payload=second_payload)
+            )
+            await _read_frame_type(client_ep, "run.queued")
+
+            await client_ep.send(
+                frame(type="message.user", session_id="dedupe-session", payload=second_payload)
+            )
+            duplicate = await _read_error_code(client_ep, "duplicate_message")
+
+            assert duplicate["error"] == {
+                "code": "duplicate_message",
+                "turn_id": "t2",
+                "run_id": "r2",
+                "state": "session_queued",
+            }
+            assert [request.text for request in backend.requests] == ["first"]
+
+            backend.release_first.set()
+            await _read_run_end(client_ep, "r1")
+            await _read_run_end(client_ep, "r2")
+            assert [request.text for request in backend.requests] == ["first", "second"]
+        finally:
+            backend.release_first.set()
+            await _close_session(client_ep, session_ep, session_task)
+
+    async def test_reused_identity_with_different_payload_is_rejected(self) -> None:
+        backend = _BlockingFirstBackend()
+        session = GatewaySessionService(backend=backend)
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="identity-conflict",
+                    payload={
+                        "text": "first",
+                        "client_message_id": "m1",
+                        "turn_id": "t1",
+                        "run_id": "r1",
+                    },
+                )
+            )
+            await _read_frame_type(client_ep, "run.started")
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="identity-conflict",
+                    payload={
+                        "text": "changed",
+                        "client_message_id": "m1",
+                        "turn_id": "t1",
+                        "run_id": "r1",
+                    },
+                )
+            )
+
+            conflict = await _read_error_code(client_ep, "identity_conflict")
+
+            assert conflict["run_id"] == "r1"
+            assert conflict["turn_id"] == "t1"
+            assert [request.text for request in backend.requests] == ["first"]
+        finally:
+            backend.release_first.set()
+            await _close_session(client_ep, session_ep, session_task)
+
+    async def test_session_overflow_rejects_newest_and_allows_retry(self) -> None:
+        backend = _BlockingFirstBackend()
+        session = GatewaySessionService(
+            backend=backend,
+            queue_policy=GatewayQueuePolicy(max_pending_per_session=1),
+        )
+        client_ep, session_ep = InMemoryDuplex.create_pair()
+        session_task = asyncio.create_task(session.serve(session_ep))
+        third_payload = {
+            "text": "third",
+            "client_message_id": "m3",
+            "turn_id": "t3",
+            "run_id": "r3",
+        }
+
+        try:
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="overflow-session",
+                    payload={"text": "first", "turn_id": "t1", "run_id": "r1"},
+                )
+            )
+            await _read_frame_type(client_ep, "run.started")
+            await client_ep.send(
+                frame(
+                    type="message.user",
+                    session_id="overflow-session",
+                    payload={"text": "second", "turn_id": "t2", "run_id": "r2"},
+                )
+            )
+            await _read_frame_type(client_ep, "run.queued")
+            await client_ep.send(
+                frame(type="message.user", session_id="overflow-session", payload=third_payload)
+            )
+
+            overflow = await _read_error_code(client_ep, "queue_overflow")
+
+            assert overflow["error"]["scope"] == "session"
+            assert overflow["error"]["limit"] == 1
+            assert [request.text for request in backend.requests] == ["first"]
+
+            backend.release_first.set()
+            await _read_run_end(client_ep, "r1")
+            await _read_run_end(client_ep, "r2")
+            await client_ep.send(
+                frame(type="message.user", session_id="overflow-session", payload=third_payload)
+            )
+            await _read_frame_type(client_ep, "run.started")
+            await _read_run_end(client_ep, "r3")
+
+            assert [request.text for request in backend.requests] == [
+                "first",
+                "second",
+                "third",
+            ]
+        finally:
+            backend.release_first.set()
+            await _close_session(client_ep, session_ep, session_task)
+
     async def test_run_cancel_removes_queued_turn_without_backend_or_history(self) -> None:
         backend = _BlockingFirstBackend()
         session = GatewaySessionService(backend=backend)

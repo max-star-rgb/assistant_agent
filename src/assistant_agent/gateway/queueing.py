@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -109,6 +112,147 @@ class QueueOverflowError(RuntimeError):
         super().__init__(f"gateway {scope} queue limit reached: {limit}")
         self.scope = scope
         self.limit = limit
+
+
+def gateway_payload_fingerprint(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class DedupeRecord:
+    session_id: str
+    client_message_id: str | None
+    turn_id: str
+    run_id: str
+    payload_fingerprint: str
+    state: str
+    expires_at_monotonic: float
+
+
+class IdentityConflictError(RuntimeError):
+    """Raised when Gateway identity aliases no longer name one payload."""
+
+
+class GatewayTurnIdentityIndex:
+    """Bounded per-user identity index for process-local turn dedupe."""
+
+    def __init__(self, *, ttl_s: float, max_entries: int) -> None:
+        self._ttl_s = ttl_s
+        self._max_entries = max_entries
+        self._records: OrderedDict[str, DedupeRecord] = OrderedDict()
+
+    def check(
+        self,
+        *,
+        session_id: str,
+        client_message_id: str | None,
+        turn_id: str,
+        run_id: str,
+        payload_fingerprint: str,
+    ) -> DedupeRecord | None:
+        self._prune()
+        matches = [
+            self._records[key]
+            for key in self._keys(session_id, client_message_id, turn_id, run_id)
+            if key in self._records
+        ]
+        if not matches:
+            return None
+        canonical = matches[0]
+        if any(record is not canonical for record in matches):
+            raise IdentityConflictError(
+                "gateway identifiers resolve to different records"
+            )
+        if canonical.payload_fingerprint != payload_fingerprint:
+            raise IdentityConflictError(
+                "gateway identifier reused with different payload"
+            )
+        self._touch(canonical)
+        return canonical
+
+    def remember(
+        self,
+        *,
+        session_id: str,
+        client_message_id: str | None,
+        turn_id: str,
+        run_id: str,
+        payload_fingerprint: str,
+        state: str,
+    ) -> DedupeRecord:
+        record = DedupeRecord(
+            session_id=session_id,
+            client_message_id=client_message_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            payload_fingerprint=payload_fingerprint,
+            state=state,
+            expires_at_monotonic=time.monotonic() + self._ttl_s,
+        )
+        for key in self._keys(session_id, client_message_id, turn_id, run_id):
+            self._records[key] = record
+            self._records.move_to_end(key)
+        self._trim()
+        return record
+
+    def update_state(self, record: DedupeRecord, state: str) -> None:
+        record.state = state
+        record.expires_at_monotonic = time.monotonic() + self._ttl_s
+        self._touch(record)
+
+    @staticmethod
+    def _keys(
+        session_id: str,
+        client_message_id: str | None,
+        turn_id: str,
+        run_id: str,
+    ) -> tuple[str, ...]:
+        keys = [
+            f"turn:{session_id}:{turn_id}",
+            f"run:{session_id}:{run_id}",
+        ]
+        if client_message_id:
+            keys.append(f"client:{session_id}:{client_message_id}")
+        return tuple(keys)
+
+    def _prune(self) -> None:
+        now = time.monotonic()
+        expired = {
+            id(value)
+            for value in self._records.values()
+            if value.expires_at_monotonic <= now
+        }
+        self._records = OrderedDict(
+            (key, value)
+            for key, value in self._records.items()
+            if id(value) not in expired
+        )
+
+    def _touch(self, record: DedupeRecord) -> None:
+        for key, value in list(self._records.items()):
+            if value is record:
+                self._records.move_to_end(key)
+
+    def _trim(self) -> None:
+        newest: list[DedupeRecord] = []
+        seen: set[int] = set()
+        for value in reversed(self._records.values()):
+            if id(value) not in seen:
+                newest.append(value)
+                seen.add(id(value))
+        keep = {id(value) for value in newest[: self._max_entries]}
+        self._records = OrderedDict(
+            (key, value)
+            for key, value in self._records.items()
+            if id(value) in keep
+        )
 
 
 class GatewayRunAdmissionController:

@@ -6,7 +6,10 @@ import unittest
 from assistant_agent.gateway.queueing import (
     GatewayQueuePolicy,
     GatewayRunAdmissionController,
+    GatewayTurnIdentityIndex,
+    IdentityConflictError,
     QueueOverflowError,
+    gateway_payload_fingerprint,
 )
 
 
@@ -60,7 +63,6 @@ class GatewayRunAdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
         assert (await controller.snapshot()).active_runs == 1
 
         await controller.release_permit(first_permit)
-
         second_permit = await asyncio.wait_for(second_ticket.ready, timeout=0.2)
         assert second_permit.run_id == "r2"
         await controller.release_permit(second_permit)
@@ -112,7 +114,6 @@ class GatewayRunAdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
         assert await controller.cancel_ticket(second_ticket) is False
         assert (await controller.snapshot()).queued_turns == 0
         await controller.release_permit(first_permit)
-
     async def test_release_permit_is_idempotent(self) -> None:
         controller = GatewayRunAdmissionController(GatewayQueuePolicy(max_active_runs=1))
         reservation = await controller.reserve(
@@ -194,3 +195,126 @@ class GatewayRunAdmissionControllerTests(unittest.IsolatedAsyncioTestCase):
                 run_id="r3",
             )
         await controller.release_permit(first_permit)
+
+
+class GatewayTurnIdentityIndexTests(unittest.TestCase):
+    def test_duplicate_returns_canonical_record(self) -> None:
+        index = GatewayTurnIdentityIndex(ttl_s=300, max_entries=4)
+        index.remember(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+            state="session_queued",
+        )
+
+        duplicate = index.check(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+        )
+
+        assert duplicate is not None
+        assert duplicate.run_id == "r1"
+        assert duplicate.state == "session_queued"
+
+    def test_reused_identity_with_different_payload_conflicts(self) -> None:
+        index = GatewayTurnIdentityIndex(ttl_s=300, max_entries=4)
+        index.remember(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+            state="session_queued",
+        )
+
+        with self.assertRaises(IdentityConflictError):
+            index.check(
+                session_id="s1",
+                client_message_id="m1",
+                turn_id="t1",
+                run_id="r1",
+                payload_fingerprint="hash-two",
+            )
+
+    def test_identifiers_cannot_resolve_to_different_records(self) -> None:
+        index = GatewayTurnIdentityIndex(ttl_s=300, max_entries=4)
+        index.remember(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+            state="running",
+        )
+        index.remember(
+            session_id="s1",
+            client_message_id="m2",
+            turn_id="t2",
+            run_id="r2",
+            payload_fingerprint="hash-two",
+            state="running",
+        )
+
+        with self.assertRaisesRegex(IdentityConflictError, "different records"):
+            index.check(
+                session_id="s1",
+                client_message_id="m1",
+                turn_id="t2",
+                run_id="r2",
+                payload_fingerprint="hash-two",
+            )
+
+    def test_max_entries_evicts_the_oldest_record(self) -> None:
+        index = GatewayTurnIdentityIndex(ttl_s=300, max_entries=1)
+        index.remember(
+            session_id="s1",
+            client_message_id="m1",
+            turn_id="t1",
+            run_id="r1",
+            payload_fingerprint="hash-one",
+            state="terminal",
+        )
+        index.remember(
+            session_id="s1",
+            client_message_id="m2",
+            turn_id="t2",
+            run_id="r2",
+            payload_fingerprint="hash-two",
+            state="running",
+        )
+
+        assert (
+            index.check(
+                session_id="s1",
+                client_message_id="m1",
+                turn_id="t1",
+                run_id="r1",
+                payload_fingerprint="hash-one",
+            )
+            is None
+        )
+        assert (
+            index.check(
+                session_id="s1",
+                client_message_id="m2",
+                turn_id="t2",
+                run_id="r2",
+                payload_fingerprint="hash-two",
+            )
+            is not None
+        )
+
+    def test_payload_fingerprint_is_stable_for_mapping_order(self) -> None:
+        first = gateway_payload_fingerprint(
+            {"text": "hello", "metadata": {"b": 2, "a": 1}}
+        )
+        second = gateway_payload_fingerprint(
+            {"metadata": {"a": 1, "b": 2}, "text": "hello"}
+        )
+
+        assert first == second
