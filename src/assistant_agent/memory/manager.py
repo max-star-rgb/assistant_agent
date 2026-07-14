@@ -9,7 +9,13 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.memory.context_builder import MemoryContextBlock, MemoryContextBuilder, MemoryLayer
 from assistant_agent.memory.conflict_resolver import MemoryConflictResolver
-from assistant_agent.memory.facts import fact_content, fact_from_item, mark_fact_superseded
+from assistant_agent.memory.facts import (
+    fact_content,
+    fact_from_item,
+    is_active_memory_fact,
+    mark_fact_superseded,
+    memory_fact_status,
+)
 from assistant_agent.memory.profile import USER_PROFILE_MEMORY_ID, UserProfileMemory
 from assistant_agent.memory.read_policy import (
     MemoryReadDecision,
@@ -1616,40 +1622,54 @@ def _profile_all_source_items(items: list[MemoryItem]) -> list[MemoryItem]:
 
 
 def _profile_source_items(items: list[MemoryItem]) -> list[MemoryItem]:
-    return [item for item in _profile_all_source_items(items) if not _is_superseded(item)]
+    return [item for item in _profile_all_source_items(items) if is_active_memory_fact(item)]
 
 
 def _profile_superseded_source_ids(items: list[MemoryItem]) -> list[str]:
-    return [item.memory_id for item in _profile_all_source_items(items) if _is_superseded(item)]
+    return sorted(
+        item.memory_id
+        for item in _profile_all_source_items(items)
+        if memory_fact_status(item) == "superseded"
+    )
 
 
 def _profile_conflict_groups(items: list[MemoryItem]) -> list[dict[str, Any]]:
     grouped: dict[str, list[MemoryItem]] = {}
     for item in _profile_all_source_items(items):
-        if item.memory_type != "preference":
-            continue
-        preference_key = _preference_conflict_key(item)
-        if preference_key:
-            grouped.setdefault(preference_key, []).append(item)
+        fact = fact_from_item(item)
+        if fact is not None:
+            grouped.setdefault(fact.fact_key, []).append(item)
 
     conflicts: list[dict[str, Any]] = []
-    for preference_key, group_items in sorted(grouped.items()):
-        active_items = [item for item in group_items if not _is_superseded(item)]
-        superseded_items = [item for item in group_items if _is_superseded(item)]
-        active_summaries = {_normalize_for_dedupe(item.summary) for item in active_items}
-        unresolved = len(active_summaries) > 1
-        if not superseded_items and not unresolved:
+    for fact_key, group_items in sorted(grouped.items()):
+        active_items = [item for item in group_items if memory_fact_status(item) == "active"]
+        superseded_items = [item for item in group_items if memory_fact_status(item) == "superseded"]
+        disputed_items = [item for item in group_items if memory_fact_status(item) == "disputed"]
+        active_values = {
+            _normalize_for_dedupe(fact.value)
+            for item in active_items
+            if (fact := fact_from_item(item)) is not None
+        }
+        unresolved = len(active_values) > 1 or bool(disputed_items)
+        if not superseded_items and not disputed_items and not unresolved:
             continue
-        latest_active = max(active_items, key=lambda item: item.created_at, default=None)
-        conflicts.append(
-            {
-                "preference_key": preference_key,
-                "active_memory_id": latest_active.memory_id if latest_active else None,
-                "active_memory_ids": [item.memory_id for item in active_items],
-                "superseded_memory_ids": [item.memory_id for item in superseded_items],
-                "unresolved": unresolved,
-            }
+        latest_active = max(
+            active_items,
+            key=lambda item: (item.created_at, item.memory_id),
+            default=None,
         )
+        sample_fact = fact_from_item(group_items[0])
+        payload: dict[str, Any] = {
+            "fact_key": fact_key,
+            "active_memory_id": latest_active.memory_id if latest_active else None,
+            "active_memory_ids": sorted(item.memory_id for item in active_items),
+            "superseded_memory_ids": sorted(item.memory_id for item in superseded_items),
+            "disputed_memory_ids": sorted(item.memory_id for item in disputed_items),
+            "unresolved": unresolved,
+        }
+        if sample_fact is not None and sample_fact.predicate.startswith("preference."):
+            payload["preference_key"] = sample_fact.predicate.removeprefix("preference.")
+        conflicts.append(payload)
     return conflicts
 
 
@@ -1704,7 +1724,7 @@ def _is_profile_source_candidate(item: MemoryItem) -> bool:
 
 
 def _is_superseded(item: MemoryItem) -> bool:
-    return bool(str(item.content.get("superseded_by_memory_id") or "").strip())
+    return memory_fact_status(item) == "superseded"
 
 
 def _preference_conflict_key(item: MemoryItem) -> str | None:

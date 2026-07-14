@@ -7,6 +7,7 @@ from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.memory_intelligence import (
     MemoryFact,
     MemoryFactProvenance,
+    MemoryFactStatus,
     normalize_fact_key,
 )
 
@@ -28,6 +29,23 @@ def fact_from_item(item: MemoryItem) -> MemoryFact | None:
     if explicit is not None:
         return explicit
     return _fact_from_legacy_preference(item)
+
+
+def memory_fact_status(item: MemoryItem) -> MemoryFactStatus:
+    """Return typed status with legacy supersede compatibility."""
+
+    fact = fact_from_item(item)
+    if fact is not None:
+        return fact.status
+    if _optional_string(item.content.get("superseded_by_memory_id")) is not None:
+        return "superseded"
+    return "active"
+
+
+def is_active_memory_fact(item: MemoryItem) -> bool:
+    """Return whether an item may contribute to active recall and profile state."""
+
+    return memory_fact_status(item) == "active"
 
 
 def mark_fact_superseded(

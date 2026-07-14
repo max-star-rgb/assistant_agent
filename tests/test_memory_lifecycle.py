@@ -473,10 +473,12 @@ def test_profile_status_reports_superseded_preference_conflicts() -> None:
     assert status.expected_source_memory_ids == [new_item.memory_id]
     assert status.profile_conflicts == [
         {
+            "fact_key": "user:preference:style",
             "preference_key": "style",
             "active_memory_id": new_item.memory_id,
             "active_memory_ids": [new_item.memory_id],
             "superseded_memory_ids": [old_item.memory_id],
+            "disputed_memory_ids": [],
             "unresolved": False,
         }
     ]

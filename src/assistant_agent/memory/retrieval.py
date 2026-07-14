@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 
+from assistant_agent.memory.facts import memory_fact_status
 from assistant_agent.memory.retriever import KeywordMemoryRetriever
 from assistant_agent.memory.store import MemoryStore
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, memory_item_matches_query_scope
@@ -72,7 +73,10 @@ class MemoryRetrievalStrategy:
 
         filtered = []
         for item in items:
-            if _is_superseded(item) and not query.include_superseded:
+            fact_status = memory_fact_status(item)
+            if fact_status in {"disputed", "retracted"}:
+                continue
+            if fact_status == "superseded" and not query.include_superseded:
                 continue
             if not memory_item_matches_query_scope(item, query):
                 continue
@@ -143,10 +147,6 @@ def _dedupe(items: list[MemoryItem]) -> list[MemoryItem]:
         seen.add(key)
         deduped.append(item)
     return deduped
-
-
-def _is_superseded(item: MemoryItem) -> bool:
-    return bool(str(item.content.get("superseded_by_memory_id") or "").strip())
 
 
 def _allows_recent_context_fallback(query: str) -> bool:
