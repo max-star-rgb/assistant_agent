@@ -486,6 +486,8 @@ def _metrics_counters(events: list[MemoryAuditEvent]) -> dict[str, int]:
             counters["memory.remote.degraded.count"] += event.counts.get("failed", 1)
         elif event.event_type == "memory_remote_lifecycle_failed":
             counters["memory.remote.lifecycle_failed.count"] += event.counts.get("failed", 1)
+        elif event.event_type == "memory_framework_degraded":
+            counters["memory.framework.degraded.count"] += event.counts.get("failed", 1)
     return dict(sorted(counters.items()))
 
 

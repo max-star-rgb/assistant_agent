@@ -1,0 +1,70 @@
+name: assistant-agent-memory-bakeoff
+
+services:
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:0.8.4
+    profiles: ["hindsight"]
+    ports:
+      - "127.0.0.1:8889:8888"
+    environment:
+      HINDSIGHT_API_LLM_PROVIDER: openai
+      HINDSIGHT_API_LLM_MODEL: ${MEMORY_BAKEOFF_CHAT_MODEL:?set MEMORY_BAKEOFF_CHAT_MODEL}
+      HINDSIGHT_API_LLM_API_KEY: ${MEMORY_BAKEOFF_CHAT_API_KEY:?set MEMORY_BAKEOFF_CHAT_API_KEY}
+      HINDSIGHT_API_LLM_BASE_URL: ${MEMORY_BAKEOFF_CHAT_BASE_URL:?set MEMORY_BAKEOFF_CHAT_BASE_URL}
+      HINDSIGHT_API_EMBEDDINGS_PROVIDER: openai
+      HINDSIGHT_API_EMBEDDINGS_MODEL: ${MEMORY_BAKEOFF_EMBEDDING_MODEL:?set MEMORY_BAKEOFF_EMBEDDING_MODEL}
+      HINDSIGHT_API_EMBEDDINGS_API_KEY: ${MEMORY_BAKEOFF_EMBEDDING_API_KEY:?set MEMORY_BAKEOFF_EMBEDDING_API_KEY}
+      HINDSIGHT_API_EMBEDDINGS_BASE_URL: ${MEMORY_BAKEOFF_EMBEDDING_BASE_URL:?set MEMORY_BAKEOFF_EMBEDDING_BASE_URL}
+    volumes:
+      - hindsight_data:/home/hindsight/.pg0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  mem0:
+    image: assistant-agent/mem0-sidecar:2.0.11
+    build:
+      context: ../..
+      dockerfile: docker/memory-frameworks/Mem0.Dockerfile
+    profiles: ["mem0"]
+    ports:
+      - "127.0.0.1:8890:8000"
+    environment:
+      AUTH_DISABLED: "true"
+      OPENAI_API_KEY: ${MEMORY_BAKEOFF_CHAT_API_KEY:?set MEMORY_BAKEOFF_CHAT_API_KEY}
+      OPENAI_BASE_URL: ${MEMORY_BAKEOFF_CHAT_BASE_URL:?set MEMORY_BAKEOFF_CHAT_BASE_URL}
+      OPENAI_MODEL: ${MEMORY_BAKEOFF_CHAT_MODEL:?set MEMORY_BAKEOFF_CHAT_MODEL}
+      EMBEDDING_API_KEY: ${MEMORY_BAKEOFF_EMBEDDING_API_KEY:?set MEMORY_BAKEOFF_EMBEDDING_API_KEY}
+      EMBEDDING_BASE_URL: ${MEMORY_BAKEOFF_EMBEDDING_BASE_URL:?set MEMORY_BAKEOFF_EMBEDDING_BASE_URL}
+      EMBEDDING_MODEL: ${MEMORY_BAKEOFF_EMBEDDING_MODEL:?set MEMORY_BAKEOFF_EMBEDDING_MODEL}
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      HISTORY_DB_PATH: /data/history/history.db
+    volumes:
+      - mem0_history:/data/history
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/docs', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    profiles: ["mem0"]
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  hindsight_data:
+  mem0_history:
+  qdrant_data:

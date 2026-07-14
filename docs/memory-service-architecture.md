@@ -43,6 +43,9 @@ The runtime modes are:
 - Local-only: `memory`, `jsonl`, or `sqlite`; all lifecycle operations stay in the built-in local core.
 - Dual-core retrieval: `dual_core` or legacy `hybrid_remote`; writes, confirmations, profile, audit, export, retention, and deletion stay in the configured local core, while search may merge local results with safe external Memory Server results.
 - External lifecycle owner: `remote_service`; lifecycle operations are delegated to an `ExternalMemoryServiceAdapter`, with no silent local-write fallback.
+- Framework lifecycle owner: `framework`; an explicitly selected Hindsight or Mem0 local sidecar owns extraction, organization, indexing, recall, consolidation, and engine-side profile/mental-model behavior. `MemoryManager` continues to own identity, read/write policy, confirmation, audit, prompt safety, context budgets, and tool governance.
+
+Framework mode does not install Hindsight or Mem0 in the main Python environment. The main process uses the dependency-free HTTP adapters under `memory/framework/`; pinned sidecars and persistent volumes are isolated by Docker. LangGraph remains the only Agent runtime, and framework-provided Agent/LLM wrappers are not registered.
 
 Memory observability exposes a prompt-safe `core_status` object through memory
 snapshot storage metadata, memory metrics, and per-run request debug metadata
@@ -138,6 +141,7 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | `src/assistant_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract, with redacted confirmation state stored in a sidecar JSONL file. |
 | `src/assistant_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, soft-delete-compatible delete behavior, durable audit-event rows, and durable confirmation rows. |
 | `src/assistant_agent/memory/remote.py` | Opt-in external Memory Server adapters. Converts remote query responses into safe `MemoryItem` / `MemorySearchResult` objects, provides query/health plus media upload/task-status client methods, exposes `HybridMemoryStore` for `dual_core`/legacy `hybrid_remote` where only `search(...)` uses the remote service, and exposes `RemoteServiceMemoryStore` plus `HttpRemoteMemoryServiceAdapter` for an explicit full-lifecycle external service adapter. |
+| `src/assistant_agent/memory/framework/` | Framework lifecycle-owner contract, opaque identity binding, isolated Hindsight/Mem0 HTTP adapters, governance-only SQLite ledger, durable retain/delete outbox, read-only v2 degradation, and deterministic bake-off scoring. It does not contain an Agent runtime or a second local memory algorithm. |
 | `src/assistant_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
 | `src/assistant_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
 | `src/assistant_agent/memory/facts.py` | Typed fact envelope parsing, legacy preference compatibility, active-state lookup, and supersede helpers. |
@@ -256,6 +260,7 @@ Configured by `ProviderConfig`:
 - `memory_backend="dual_core"`: opt-in `HybridMemoryStore` with a configurable built-in local core plus external Memory Server query augmentation. This backend is selected from environment only when `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true` or a runtime profile that allows real/network providers is active.
 - `memory_backend="hybrid_remote"`: legacy alias for the same retrieval-augmentation shape as `dual_core`; kept for compatibility.
 - `memory_backend="remote_service"`: opt-in `RemoteServiceMemoryStore` with an external adapter as lifecycle owner. This mode is selected only when remote memory is explicitly enabled and never falls back to local lifecycle writes by default.
+- `memory_backend="framework"`: opt-in `FrameworkMemoryStore` with `memory_framework="hindsight"` or `"mem0"`. Environment loading requires `MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED=true`; credentials alone and normal offline profiles cannot enable it. A configured legacy local fallback is read-only and is consulted only after framework recall failure.
 - `memory_local_backend`: local core used by `dual_core` / `hybrid_remote`; allowed values are `memory`, `jsonl`, and `sqlite`. Default is `jsonl` for dual-core modes.
 - `memory_path`: default `.local/memory/long_term_memories.jsonl`; when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite`, or a dual-core mode uses `MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND=sqlite`, the default is `.local/memory/long_term_memories.sqlite3`.
 
@@ -271,6 +276,29 @@ Environment variables:
 - `MEMORY_SERVER_DIRECT_ANSWER`
 - `MEMORY_SERVER_INCLUDE_MEDIA_CHUNKS`
 - `MULTIMODAL_AGENT_MEMORY_REMOTE_SERVICE_ADAPTER`
+- `MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED`
+- `MULTIMODAL_AGENT_MEMORY_FRAMEWORK` (`hindsight` or `mem0`)
+- `MEMORY_FRAMEWORK_VERSION` (fixed to `0.8.4` or `2.0.11` for the current bake-off)
+- `MEMORY_FRAMEWORK_BASE_URL`
+- `MEMORY_FRAMEWORK_API_KEY`
+- `MEMORY_FRAMEWORK_TIMEOUT_SECONDS`
+- `MEMORY_FRAMEWORK_IDENTITY_NAMESPACE`
+- `MEMORY_FRAMEWORK_LEDGER_PATH`
+- `MEMORY_FRAMEWORK_FALLBACK_BACKEND` (`none`, `memory`, `jsonl`, or `sqlite`)
+
+### Framework governance ledger and recovery
+
+`FrameworkGovernanceLedger` stores governance state only: project-memory/engine-ID mappings, delete tombstones, redacted confirmations, prompt-safe audit events, coarse call latency/error status, and pending retain/delete outbox entries. Completed framework facts, embeddings, relationship graphs, recall indexes, and profile or mental-model content are not copied into the ledger. A pending retain necessarily contains the already-approved prompt-safe retain request until delivery; it leaves the active outbox after success or user deletion.
+
+Framework writes still pass `MemoryWritePolicy` and confirmation before `FrameworkMemoryStore.retain`. A retain failure returns a structured `partial/queued` tool result with `written=false` and persists an idempotent outbox operation. It never writes the configured v2 fallback. Retry records the framework mapping only after the engine accepts the request. Deleting a pending write cancels it before retry and records a tenant/project-bound tombstone.
+
+Framework recall failures return stable `memory_framework_recall_failed` errors. The Agent run continues with an empty result or the explicitly configured read-only v2 fallback. Runtime debug metadata and audit may expose stable error codes and engine names, but never sidecar URLs, raw exception messages, credentials, raw framework responses, or memory content.
+
+When `FrameworkMemoryStore.framework_managed_algorithms` is active, `MemoryManager` skips built-in duplicate/conflict resolution and local `user_profile` projection. This hands extraction, update integration, ranking, and profile/mental-model algorithms to the selected framework while retaining project governance, confirmation, audit, identity, safety, and context-budget boundaries.
+
+### Framework bake-off gate
+
+Hindsight `0.8.4` and Mem0 OSS `2.0.11` are scored from measured inputs by `memory/framework/bakeoff.py` and `scripts/run_memory_framework_bakeoff.py`. The fixed score is quality 45, governance 25, and operations 30. Cross-user leakage must be zero; export/delete/clear, runtime governance, offline defaults, restart recovery, and no-silent-loss must pass; total score must be at least 75 and quality at least 35. A difference of at most three points uses operations score, p95 recall, then RSS as tie-breakers. If neither passes, v2 remains the recommendation. No runtime adapter is removed until a real pilot/provider-smoke bake-off report establishes a winner.
 
 Operational examples for local-only SQLite, `dual_core`, legacy
 `hybrid_remote`, and `remote_service` configurations live in

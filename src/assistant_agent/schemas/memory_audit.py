@@ -24,6 +24,7 @@ MemoryAuditEventType = Literal[
     "memory_profile_repaired",
     "memory_remote_degraded",
     "memory_remote_lifecycle_failed",
+    "memory_framework_degraded",
 ]
 MemoryAuditEventOutcome = Literal["succeeded", "skipped", "rejected", "failed"]
 MemoryProfileRepairAction = Literal["none", "create", "update", "delete"]

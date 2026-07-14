@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-MemoryCoreMode = Literal["local_only", "dual_core", "remote_service"]
+MemoryCoreMode = Literal["local_only", "dual_core", "remote_service", "framework"]
 
 
 class MemoryCoreStatus(BaseModel):

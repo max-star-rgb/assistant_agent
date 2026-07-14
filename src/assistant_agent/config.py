@@ -22,12 +22,15 @@ AgentGraphMode = Literal["conditional", "assistant_loop"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
 LocalMemoryBackend = Literal["memory", "jsonl", "sqlite"]
-MemoryBackend = Literal["memory", "jsonl", "sqlite", "hybrid_remote", "dual_core", "remote_service"]
+MemoryBackend = Literal["memory", "jsonl", "sqlite", "hybrid_remote", "dual_core", "remote_service", "framework"]
+MemoryFrameworkName = Literal["hindsight", "mem0"]
+MemoryFrameworkFallbackBackend = Literal["none", "memory", "jsonl", "sqlite"]
 RemoteMemoryServiceAdapterKind = Literal["unavailable", "http"]
 
 
 DEFAULT_JSONL_MEMORY_PATH = ".local/memory/long_term_memories.jsonl"
 DEFAULT_SQLITE_MEMORY_PATH = ".local/memory/long_term_memories.sqlite3"
+DEFAULT_FRAMEWORK_LEDGER_PATH = ".local/memory/framework_governance.sqlite3"
 
 
 VisionProviderName = str
@@ -94,6 +97,14 @@ class ProviderConfig:
     memory_server_direct_answer: bool = False
     memory_server_include_media_chunks: bool = False
     memory_remote_service_adapter: RemoteMemoryServiceAdapterKind = "unavailable"
+    memory_framework: MemoryFrameworkName = "hindsight"
+    memory_framework_version: str = ""
+    memory_framework_base_url: str | None = None
+    memory_framework_api_key: str | None = None
+    memory_framework_timeout_seconds: float = 5.0
+    memory_framework_identity_namespace: str = "assistant-agent-local"
+    memory_framework_ledger_path: str = DEFAULT_FRAMEWORK_LEDGER_PATH
+    memory_framework_fallback_backend: MemoryFrameworkFallbackBackend = "none"
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 8
@@ -170,6 +181,13 @@ class ProviderConfig:
     durable_task_lease_seconds: int = 30
     durable_task_poll_seconds: float = 1.0
 
+    def __post_init__(self) -> None:
+        expected = "0.8.4" if self.memory_framework == "hindsight" else "2.0.11"
+        if not self.memory_framework_version:
+            object.__setattr__(self, "memory_framework_version", expected)
+        elif self.memory_framework_version != expected:
+            raise ValueError(f"unsupported {self.memory_framework} version: {self.memory_framework_version}")
+
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
         source = _clean_env_source(os.environ if env is None else env)
@@ -197,9 +215,14 @@ class ProviderConfig:
         )
         image_generation_settings = resolve_image_generation_provider(image_generation_provider, source)
         memory_remote_enabled = _bool_env(source.get("MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED"), False)
+        memory_framework_enabled = _bool_env(
+            source.get("MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED"),
+            False,
+        )
         memory_backend = _memory_backend(
             source.get("MULTIMODAL_AGENT_MEMORY_BACKEND"),
             allow_remote=allow_real_providers or memory_remote_enabled,
+            allow_framework=memory_framework_enabled,
         )
         memory_local_backend = _memory_local_backend(
             source.get("MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND"),
@@ -278,6 +301,24 @@ class ProviderConfig:
                 source.get("MULTIMODAL_AGENT_MEMORY_REMOTE_SERVICE_ADAPTER")
                 or source.get("MEMORY_REMOTE_SERVICE_ADAPTER"),
                 allow_remote=allow_real_providers or memory_remote_enabled,
+            ),
+            memory_framework=_memory_framework_name(
+                source.get("MULTIMODAL_AGENT_MEMORY_FRAMEWORK")
+            ),
+            memory_framework_version=source.get("MEMORY_FRAMEWORK_VERSION") or "",
+            memory_framework_base_url=source.get("MEMORY_FRAMEWORK_BASE_URL"),
+            memory_framework_api_key=source.get("MEMORY_FRAMEWORK_API_KEY"),
+            memory_framework_timeout_seconds=_float_env(
+                source.get("MEMORY_FRAMEWORK_TIMEOUT_SECONDS"), 5.0
+            ),
+            memory_framework_identity_namespace=(
+                source.get("MEMORY_FRAMEWORK_IDENTITY_NAMESPACE") or "assistant-agent-local"
+            ),
+            memory_framework_ledger_path=(
+                source.get("MEMORY_FRAMEWORK_LEDGER_PATH") or DEFAULT_FRAMEWORK_LEDGER_PATH
+            ),
+            memory_framework_fallback_backend=_memory_framework_fallback_backend(
+                source.get("MEMORY_FRAMEWORK_FALLBACK_BACKEND")
             ),
             conversation_history_backend=conversation_history_backend,
             conversation_history_path=conversation_history_path,
@@ -556,7 +597,14 @@ class ProviderConfig:
         )
 
 
-def _memory_backend(value: str | None, *, allow_remote: bool = False) -> MemoryBackend:
+def _memory_backend(
+    value: str | None,
+    *,
+    allow_remote: bool = False,
+    allow_framework: bool = False,
+) -> MemoryBackend:
+    if value == "framework" and allow_framework:
+        return "framework"
     if value == "hybrid_remote" and allow_remote:
         return "hybrid_remote"
     if value == "dual_core" and allow_remote:
@@ -568,6 +616,16 @@ def _memory_backend(value: str | None, *, allow_remote: bool = False) -> MemoryB
     if value == "jsonl":
         return "jsonl"
     return "memory"
+
+
+def _memory_framework_name(value: str | None) -> MemoryFrameworkName:
+    return "mem0" if value and value.strip().lower() == "mem0" else "hindsight"
+
+
+def _memory_framework_fallback_backend(value: str | None) -> MemoryFrameworkFallbackBackend:
+    if value in {"memory", "jsonl", "sqlite"}:
+        return value
+    return "none"
 
 
 def _memory_local_backend(value: str | None, *, memory_backend: MemoryBackend) -> LocalMemoryBackend:
