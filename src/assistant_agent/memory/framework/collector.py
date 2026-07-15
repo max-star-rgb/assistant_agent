@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import secrets
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -178,6 +179,7 @@ class _ProbeInput(BaseModel):
     text: str | None = None
     query: str | None = None
     top_k: int = Field(default=5, ge=1, le=50)
+    execution_nonce: str | None = None
 
 
 class _ProbeOutput(BaseModel):
@@ -301,6 +303,13 @@ class _MemoryBakeoffProbeTool(MockTool):
             self.manager.clear_identity(identity)
             return _probe_result(self.name, status="cleared", count=before)
         report = self.manager.retry_pending_writes()
+        if report.failed:
+            return ToolResult(
+                tool_name=self.name,
+                success=False,
+                error="memory_bakeoff_outbox_retry_failed",
+                data={"status": "retry_failed", "ids": [], "count": report.succeeded},
+            )
         return _probe_result(self.name, status="retried", count=report.succeeded)
 
 
@@ -352,6 +361,7 @@ class BakeoffFrameworkCollector:
         registry.register(_MemoryBakeoffProbeTool(self.manager))
         self.executor = ToolExecutor(registry=registry)
         self.tool_calls = 0
+        self._execution_nonce = secrets.token_hex(8)
 
     def collect(self) -> BakeoffCollectionResult:
         health = self.adapter.health()
@@ -462,7 +472,7 @@ class BakeoffFrameworkCollector:
             owner,
             operation="retain",
             memory_id="isolation-marker",
-            text="isolation marker belongs to owner",
+            text="The owner's stable project codename is Quartz and the release branch is lunar.",
         )
         attackers = [
             owner.model_copy(update={"tenant_id": "other-tenant"}),
@@ -472,9 +482,17 @@ class BakeoffFrameworkCollector:
         ]
         failures = 0
         for attacker in attackers:
-            result, _ = self._execute(attacker, operation="recall", query="isolation marker")
+            result, _ = self._execute(
+                attacker,
+                operation="recall",
+                query="What is the owner's project codename?",
+            )
             failures += int("isolation-marker" in _result_ids(result))
-        passed = retained.success and failures == 0
+        passed = (
+            retained.success
+            and (retained.data or {}).get("status") == "retained"
+            and failures == 0
+        )
         return BakeoffProbeEvidence(
             probe_id="cross-user-isolation",
             passed=passed,
@@ -486,7 +504,12 @@ class BakeoffFrameworkCollector:
     def _crud_probes(self) -> tuple[BakeoffProbeEvidence, BakeoffProbeEvidence]:
         identity = _probe_identity("crud")
         memory_id = "crud-marker"
-        retained, _ = self._execute(identity, operation="retain", memory_id=memory_id, text="crud marker alpha")
+        retained, _ = self._execute(
+            identity,
+            operation="retain",
+            memory_id=memory_id,
+            text="The stable project release branch is lunar and team Delta owns the release.",
+        )
         got, _ = self._execute(identity, operation="get", memory_id=memory_id)
         listed, _ = self._execute(identity, operation="list")
         exported, _ = self._execute(identity, operation="export")
@@ -498,21 +521,29 @@ class BakeoffFrameworkCollector:
             ),
             None,
         )
-        history = self.adapter.history(identity=mapping.identity, engine_id=mapping.engine_id) if mapping else []
+        history_verified = False
+        if mapping:
+            self.adapter.history(identity=mapping.identity, engine_id=mapping.engine_id)
+            history_verified = True
         confirmation, _ = self._execute(identity, operation="confirm", memory_id="confirmation-marker")
         deleted, _ = self._execute(identity, operation="delete", memory_id=memory_id)
-        recalled, _ = self._execute(identity, operation="recall", query="crud marker alpha")
+        recalled, _ = self._execute(identity, operation="recall", query="Which branch is the release branch?")
         clear_id = "clear-marker"
-        clear_retain, _ = self._execute(identity, operation="retain", memory_id=clear_id, text="clear marker beta")
+        clear_retain, _ = self._execute(
+            identity,
+            operation="retain",
+            memory_id=clear_id,
+            text="The stable project deployment region is east and the service owner is team Cedar.",
+        )
         cleared, _ = self._execute(identity, operation="clear")
-        after_clear, _ = self._execute(identity, operation="recall", query="clear marker beta")
+        after_clear, _ = self._execute(identity, operation="recall", query="Which region hosts the service?")
         crud_ok = all(
             (
                 retained.success,
                 memory_id in _result_ids(got),
                 memory_id in _result_ids(listed),
                 memory_id in _result_ids(exported),
-                bool(history),
+                history_verified,
                 (confirmation.data or {}).get("status") == "pending_confirmation",
                 (deleted.data or {}).get("status") == "deleted",
                 memory_id not in _result_ids(recalled),
@@ -558,14 +589,18 @@ class BakeoffFrameworkCollector:
             identity,
             operation="retain",
             memory_id="context-marker",
-            text="context marker epsilon",
+            text="The stable context project codename is Epsilon and its owner is team River.",
         )
         loaded, latency = self._execute(
             identity,
             operation="context",
-            query="context marker epsilon",
+            query="What is the context project codename?",
         )
-        passed = retained.success and "context-marker" in _result_ids(loaded)
+        passed = (
+            retained.success
+            and (retained.data or {}).get("status") == "retained"
+            and "context-marker" in _result_ids(loaded)
+        )
         return BakeoffProbeEvidence(
             probe_id="langgraph-context",
             passed=passed,
@@ -579,12 +614,20 @@ class BakeoffFrameworkCollector:
             identity,
             operation="retain",
             memory_id="restart-marker",
-            text="restart marker gamma",
+            text="The stable restart project codename is Gamma and its deployment region is west.",
         )
         try:
             self.lifecycle.restart()
-            recalled, latency = self._execute(identity, operation="recall", query="restart marker gamma")
-            passed = retained.success and "restart-marker" in _result_ids(recalled)
+            recalled, latency = self._execute(
+                identity,
+                operation="recall",
+                query="What is the restart project codename?",
+            )
+            passed = (
+                retained.success
+                and (retained.data or {}).get("status") == "retained"
+                and "restart-marker" in _result_ids(recalled)
+            )
             return BakeoffProbeEvidence(
                 probe_id="restart-recovery",
                 passed=passed,
@@ -606,23 +649,48 @@ class BakeoffFrameworkCollector:
                 identity,
                 operation="retain",
                 memory_id="outbox-marker",
-                text="outbox marker delta",
+                text="The stable outbox project codename is Delta and its deployment region is north.",
             )
             queued_ok = (queued.data or {}).get("status") == "queued" and self.ledger.pending_outbox_count() > 0
             self.lifecycle.start()
-            retried, _ = self._execute(identity, operation="retry")
-            recalled, latency = self._execute(identity, operation="recall", query="outbox marker delta")
+            retry_attempts = 0
+            retried = ToolResult(tool_name=_MemoryBakeoffProbeTool.name, success=False)
+            while retry_attempts < 3 and self.ledger.pending_outbox_count() > 0:
+                retry_attempts += 1
+                retried, _ = self._execute(
+                    identity,
+                    operation="retry",
+                    memory_id=f"outbox-retry-{self._execution_nonce}-{retry_attempts}",
+                )
+                if self.ledger.pending_outbox_count() > 0:
+                    time.sleep(0.25)
+            recalled, latency = self._execute(
+                identity,
+                operation="recall",
+                query="What is the outbox project codename?",
+            )
+            pending_after_retry = self.ledger.pending_outbox_count()
+            recall_recovered = "outbox-marker" in _result_ids(recalled)
             passed = (
                 queued_ok
                 and retried.success
-                and self.ledger.pending_outbox_count() == 0
-                and "outbox-marker" in _result_ids(recalled)
+                and pending_after_retry == 0
+                and recall_recovered
             )
+            error_code = None
+            if not queued_ok:
+                error_code = "memory_bakeoff_outbox_queue_failed"
+            elif not retried.success or pending_after_retry:
+                error_code = "memory_bakeoff_outbox_retry_incomplete"
+            elif not recall_recovered:
+                error_code = "memory_bakeoff_outbox_recall_failed"
             return BakeoffProbeEvidence(
                 probe_id="no-silent-write-loss",
                 passed=passed,
+                attempts=retry_attempts,
+                failures=0 if passed else 1,
                 latency_ms=latency,
-                error_code=None if passed else "memory_bakeoff_outbox_recovery_failed",
+                error_code=error_code,
             )
         except Exception:
             try:
@@ -648,7 +716,7 @@ class BakeoffFrameworkCollector:
             state,
             f"probe-{self.tool_calls + 1}",
             _MemoryBakeoffProbeTool.name,
-            tool_input,
+            {**tool_input, "execution_nonce": self._execution_nonce},
         )
         latency_ms = (time.perf_counter() - started) * 1000
         self.tool_calls += len(state.tool_calls)

@@ -31,7 +31,17 @@ report.
 
 ## Validate the local runtime
 
-The Hindsight image and Qdrant image use fixed tags. The Mem0 image is built locally with `mem0ai==2.0.11` because the official API-server registry does not publish a `2.0.11` image tag; the main assistant environment remains dependency-free. Hindsight's OpenAI-compatible embedding variables use the required `HINDSIGHT_API_EMBEDDINGS_OPENAI_*` names. Mem0 and Qdrant both fix the embedding dimension to 1024.
+The Hindsight base image is fixed to the published `0.8.4` digest. A local
+derived image pre-caches its unchanged default
+`cross-encoder/ms-marco-MiniLM-L-6-v2` model so runtime startup does not depend
+on a Hugging Face download; Hindsight code and reranker selection are not
+changed. The Qdrant image uses a fixed tag. The Mem0 image is built locally
+with `mem0ai==2.0.11` because the official API-server registry does not publish
+a `2.0.11` image tag; the main assistant environment remains dependency-free.
+Hindsight's OpenAI-compatible embedding variables use the required
+`HINDSIGHT_API_EMBEDDINGS_OPENAI_*` names. Mem0 and Qdrant both fix the
+embedding dimension to 1024. Hindsight retain completion is capped at `32768`,
+the maximum accepted by `qwen-plus`, instead of the image default of `64000`.
 
 ```bash
 docker version
@@ -46,7 +56,9 @@ in a temporary runtime directory. Manual sidecar startup and framework backend
 environment switching are not required for evidence collection. Hindsight is
 given a 900-second first-start budget because initializing pg0 from an empty
 volume can exceed the image's default five-minute startup window; Mem0 keeps a
-180-second budget.
+600-second budget because its readiness endpoint initializes both the primary
+and migration Qdrant collections before quality cases begin. The Mem0 sidecar
+serializes singleton initialization so health retries cannot race each other.
 
 ## Collect evidence
 

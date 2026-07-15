@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from functools import lru_cache
+from threading import Lock
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
@@ -11,10 +11,20 @@ from mem0 import Memory
 
 
 app = FastAPI(title="assistant_agent Mem0 sidecar", version="2.0.11")
+_MEMORY: Memory | None = None
+_MEMORY_LOCK = Lock()
 
 
-@lru_cache(maxsize=1)
 def memory() -> Memory:
+    global _MEMORY
+    if _MEMORY is None:
+        with _MEMORY_LOCK:
+            if _MEMORY is None:
+                _MEMORY = _build_memory()
+    return _MEMORY
+
+
+def _build_memory() -> Memory:
     return Memory.from_config(
         {
             "llm": {
@@ -50,6 +60,7 @@ def memory() -> Memory:
 
 @app.get("/")
 def health() -> dict[str, Any]:
+    _ = memory()
     return {"status": "ok", "framework": "mem0", "version": "2.0.11"}
 
 

@@ -270,6 +270,33 @@ def test_delete_uses_mapping_and_keeps_tombstone_when_sidecar_fails(tmp_path) ->
     assert ledger.pending_outbox_count() == 1
 
 
+def test_project_scoped_delete_tombstones_all_mappings_with_one_engine_call(tmp_path) -> None:
+    engine = ScriptedEngine()
+    engine.project_scoped_delete = True
+    ledger = FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3")
+    store = FrameworkMemoryStore(adapter=engine, ledger=ledger, identity_namespace="test")
+    store.save(_item())
+    first = ledger.list_mappings(user_id="u1")[0]
+    ledger.record_mapping(
+        user_id="u1",
+        tenant_id="t1",
+        project_id="p1",
+        session_id="s1",
+        project_memory_id="m1",
+        engine_id="eng-m1-second-fact",
+        engine_name=engine.name,
+        identity=first.identity,
+    )
+
+    assert store.delete("u1", "m1") is True
+
+    assert len(engine.deleted) == 1
+    assert ledger.is_tombstoned(user_id="u1", project_memory_id="m1", engine_id="eng-m1")
+    assert ledger.is_tombstoned(
+        user_id="u1", project_memory_id="m1", engine_id="eng-m1-second-fact"
+    )
+
+
 def test_delete_cancels_pending_retain_before_sidecar_recovery(tmp_path) -> None:
     engine = ScriptedEngine()
     engine.fail_retain = True

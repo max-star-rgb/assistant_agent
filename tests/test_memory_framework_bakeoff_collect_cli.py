@@ -110,7 +110,7 @@ def test_collect_cli_help_documents_fixed_provider_and_no_provider_payload_outpu
 def test_collect_cli_resets_dedicated_volumes_and_maps_one_key_to_both_providers() -> None:
     source = (REPO_ROOT / SCRIPT).read_text(encoding="utf-8")
 
-    assert 'self._compose("down", "--volumes", "--remove-orphans")' in source
+    assert 'self._compose("down", "--volumes", "--remove-orphans", profile=self.framework)' in source
     assert '"MEMORY_BAKEOFF_CHAT_API_KEY": api_key' in source
     assert '"MEMORY_BAKEOFF_EMBEDDING_API_KEY": api_key' in source
 
@@ -142,14 +142,14 @@ def test_collect_cli_sanitizes_unexpected_collection_failure(monkeypatch, capsys
     assert marker not in captured.err
 
 
-def test_hindsight_empty_volume_gets_longer_startup_budget_than_mem0() -> None:
+def test_empty_volume_startup_budgets_cover_slow_local_docker_storage() -> None:
     spec = spec_from_file_location("collect_memory_framework_bakeoff_timeouts", REPO_ROOT / SCRIPT)
     assert spec is not None and spec.loader is not None
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
 
     assert module._startup_timeout_seconds("hindsight") == 900.0
-    assert module._startup_timeout_seconds("mem0") == 180.0
+    assert module._startup_timeout_seconds("mem0") == 600.0
 
     compose = (REPO_ROOT / "docker/memory-frameworks/compose.yaml").read_text(encoding="utf-8")
     assert 'HINDSIGHT_API_STARTUP_WAIT_SECONDS: "900"' in compose
@@ -173,3 +173,23 @@ def test_health_wait_fails_immediately_when_sidecar_exits(monkeypatch) -> None:
         assert exc.error_code == "memory_bakeoff_sidecar_exited"
     else:
         raise AssertionError("exited sidecar must abort health wait")
+
+
+def test_hindsight_lifecycle_builds_the_derived_image_before_start(monkeypatch) -> None:
+    spec = spec_from_file_location("collect_memory_framework_bakeoff_build", REPO_ROOT / SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    lifecycle = module.DockerComposeLifecycle(framework="hindsight", api_key="not-written")
+    calls = []
+    monkeypatch.setattr(
+        lifecycle,
+        "_compose",
+        lambda *args, profile=None: calls.append((args, profile)),
+    )
+    monkeypatch.setattr(lifecycle, "_wait_healthy", lambda: None)
+
+    lifecycle.reset_and_start()
+
+    assert calls[0] == (("down", "--volumes", "--remove-orphans"), "hindsight")
+    assert calls[1] == (("up", "-d", "--build", "hindsight"), "hindsight")

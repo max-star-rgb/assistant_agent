@@ -76,11 +76,9 @@ class DockerComposeLifecycle(BakeoffLifecycleController):
         self._compose("config", "--quiet")
 
     def reset_and_start(self) -> None:
-        self._compose("down", "--volumes", "--remove-orphans")
+        self._compose("down", "--volumes", "--remove-orphans", profile=self.framework)
         started = time.perf_counter()
-        args = ["up", "-d"]
-        if self.framework == "mem0":
-            args.append("--build")
+        args = ["up", "-d", "--build"]
         args.append(self.service)
         self._compose(*args, profile=self.framework)
         self._wait_healthy()
@@ -256,7 +254,7 @@ def _validate_runtime(*, version: str, expected_version: str) -> None:
 
 
 def _startup_timeout_seconds(framework: str) -> float:
-    return 900.0 if framework == "hindsight" else 180.0
+    return 900.0 if framework == "hindsight" else 600.0
 
 
 def _size_to_mb(value: str) -> float:

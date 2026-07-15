@@ -262,7 +262,7 @@ class FakeFrameworkEngine:
         return [self.get(identity=identity, engine_id=item.engine_id) for item in self.records[self._scope(identity)]]
 
     def history(self, *, identity, engine_id):
-        return [{"id": engine_id}] if self.get(identity=identity, engine_id=engine_id) else []
+        return []
 
     def delete(self, *, identity, engine_id, project_memory_id=None):
         before = len(self.records[self._scope(identity)])
@@ -342,6 +342,147 @@ def test_collector_runs_cases_and_governance_probes_through_tool_executor(tmp_pa
     serialized = result.model_dump_json()
     assert "user drinks oat milk" not in serialized
     assert "Which milk" not in serialized
+
+
+def test_isolation_probe_rejects_a_queued_owner_write(tmp_path) -> None:
+    class RejectingEngine(FakeFrameworkEngine):
+        def retain(self, request):
+            return FrameworkRetainResult(accepted=False)
+
+    engine = RejectingEngine()
+    collector = BakeoffFrameworkCollector(
+        framework="hindsight",
+        phase="smoke",
+        adapter=engine,
+        ledger_path=tmp_path / "ledger.sqlite3",
+        lifecycle=FakeLifecycle(engine),
+        cases=[
+            BakeoffCase(
+                case_id="basic-test",
+                category="basic_recall",
+                query="Which milk?",
+                memories=[BakeoffMemory(memory_id="basic-test-m1", text="user drinks oat milk")],
+                expected_ids=["basic-test-m1"],
+            )
+        ],
+    )
+
+    assert collector._isolation_probe().passed is False
+
+
+def test_outbox_probe_recovers_from_one_transient_retry_failure(tmp_path) -> None:
+    class TransientRecoveryEngine(FakeFrameworkEngine):
+        recovery_attempts = 0
+
+        def retain(self, request):
+            if self.available and request.project_memory_id == "outbox-marker":
+                self.recovery_attempts += 1
+                if self.recovery_attempts == 1:
+                    return FrameworkRetainResult(accepted=False)
+            return super().retain(request)
+
+    engine = TransientRecoveryEngine()
+    collector = BakeoffFrameworkCollector(
+        framework="hindsight",
+        phase="smoke",
+        adapter=engine,
+        ledger_path=tmp_path / "ledger.sqlite3",
+        lifecycle=FakeLifecycle(engine),
+        cases=[
+            BakeoffCase(
+                case_id="basic-test",
+                category="basic_recall",
+                query="Which milk?",
+                memories=[BakeoffMemory(memory_id="basic-test-m1", text="user drinks oat milk")],
+                expected_ids=["basic-test-m1"],
+            )
+        ],
+    )
+
+    assert collector._outbox_probe().passed is True
+    assert engine.recovery_attempts == 2
+
+
+def test_retry_tool_reports_failed_outbox_attempt_as_failure(tmp_path) -> None:
+    class RejectingRecoveryEngine(FakeFrameworkEngine):
+        def retain(self, request):
+            if self.available:
+                return FrameworkRetainResult(accepted=False)
+            return super().retain(request)
+
+    engine = RejectingRecoveryEngine()
+    lifecycle = FakeLifecycle(engine)
+    collector = BakeoffFrameworkCollector(
+        framework="hindsight",
+        phase="smoke",
+        adapter=engine,
+        ledger_path=tmp_path / "ledger.sqlite3",
+        lifecycle=lifecycle,
+        cases=[
+            BakeoffCase(
+                case_id="basic-test",
+                category="basic_recall",
+                query="Which milk?",
+                memories=[BakeoffMemory(memory_id="basic-test-m1", text="user drinks oat milk")],
+                expected_ids=["basic-test-m1"],
+            )
+        ],
+    )
+    identity = RequestIdentity.for_user(user_id="retry-user", session_id="retry-session")
+    lifecycle.stop()
+    collector._execute(
+        identity,
+        operation="retain",
+        memory_id="retry-marker",
+        text="The stable retry project codename is Orion.",
+    )
+    lifecycle.start()
+
+    retried, _ = collector._execute(identity, operation="retry")
+
+    assert retried.success is False
+    assert retried.error == "memory_bakeoff_outbox_retry_failed"
+
+
+def test_collectors_do_not_reuse_tool_idempotency_results_across_runs(tmp_path) -> None:
+    engine = FakeFrameworkEngine()
+    lifecycle = FakeLifecycle(engine)
+    case = BakeoffCase(
+        case_id="basic-test",
+        category="basic_recall",
+        query="Which milk?",
+        memories=[BakeoffMemory(memory_id="basic-test-m1", text="user drinks oat milk")],
+        expected_ids=["basic-test-m1"],
+    )
+    identity = RequestIdentity.for_user(user_id="repeat-user", session_id="repeat-session")
+    execution_nonces = []
+
+    for index in range(2):
+        collector = BakeoffFrameworkCollector(
+            framework="hindsight",
+            phase="smoke",
+            adapter=engine,
+            ledger_path=tmp_path / f"ledger-{index}.sqlite3",
+            lifecycle=lifecycle,
+            cases=[case],
+        )
+        original_run_tool = collector.executor.run_tool
+
+        def capture_run_tool(state, step_id, tool_name, tool_input):
+            execution_nonces.append(tool_input.get("execution_nonce"))
+            return original_run_tool(state, step_id, tool_name, tool_input)
+
+        collector.executor.run_tool = capture_run_tool
+        collector._execute(
+            identity,
+            operation="retain",
+            memory_id="repeat-marker",
+            text="The stable repeated project codename is Orion.",
+        )
+
+    assert sum(len(records) for records in engine.records.values()) == 2
+    assert all(execution_nonces)
+    assert len(set(execution_nonces)) == 2
 
 
 def test_smoke_aborts_with_stable_code_when_retain_cannot_recover(tmp_path) -> None:
