@@ -39,7 +39,10 @@ SMOKE_CASES = [
     (
         Path("scripts/smoke_video_understanding.py"),
         ["--video-ref", "mock://video/demo"],
-        {"MULTIMODAL_AGENT_VIDEO_PROVIDER": "http", "VIDEO_UNDERSTANDING_API_KEY": "sk-provider-safety-test"},
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+        },
     ),
     (
         Path("scripts/smoke_native_tool_calling.py"),

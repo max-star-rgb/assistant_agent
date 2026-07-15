@@ -60,6 +60,7 @@ def test_provider_config_reads_environment_values() -> None:
             "OPENAI_API_KEY": "test-openai-key",
             "QWEN_API_KEY": "test-qwen-key",
             "QWEN_VISION_API_KEY": "test-qwen-vision-key",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
             "QWEN_IMAGE_API_KEY": "test-qwen-image-key",
             "SEED_API_KEY": "test-seed-key",
             "SEED_VISION_BASE_URL": "https://seed.local/vision",
@@ -96,7 +97,6 @@ def test_provider_config_reads_environment_values() -> None:
             "RENDER_BASE_URL": "http://localhost:7003",
             "RENDER_API_KEY": "test-render-key",
             "RENDER_TIMEOUT_SECONDS": "5.5",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "http",
             "VIDEO_UNDERSTANDING_BASE_URL": "http://localhost:7004",
             "VIDEO_UNDERSTANDING_API_KEY": "test-video-key",
             "VIDEO_UNDERSTANDING_MODEL": "video-test-model",
@@ -158,10 +158,10 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.render_base_url == "http://localhost:7003"
     assert config.render_api_key == "test-render-key"
     assert config.render_timeout_seconds == 5.5
-    assert config.video_provider == "http"
-    assert config.video_understanding_base_url == "http://localhost:7004"
-    assert config.video_understanding_api_key == "test-video-key"
-    assert config.video_understanding_model == "video-test-model"
+    assert config.video_provider == "qwen"
+    assert config.video_understanding_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config.video_understanding_api_key == "test-qwen-vision-key"
+    assert config.video_understanding_model == "qwen-vl-plus"
     assert config.video_understanding_timeout_seconds == 6.5
     assert config.max_video_bytes == 1024
     assert config.max_video_seconds == 12.5
@@ -191,13 +191,14 @@ def test_provider_config_selects_qwen_video_from_qwen_vision_settings() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
             "QWEN_VISION_API_KEY": "test-qwen-video-key",
             "QWEN_VISION_BASE_URL": "https://qwen.local/v1",
             "QWEN_VISION_MODEL": "qwen-vl-test",
         }
     )
 
+    assert config.vision_provider == "qwen"
     assert config.video_provider == "qwen"
     assert config.video_understanding_api_key == "test-qwen-video-key"
     assert config.video_understanding_base_url == "https://qwen.local/v1"
@@ -207,7 +208,7 @@ def test_provider_config_selects_qwen_video_from_qwen_vision_settings() -> None:
 def test_local_demo_does_not_enable_qwen_video_from_key_only() -> None:
     config = ProviderConfig.from_env(
         {
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
             "QWEN_VISION_API_KEY": "test-qwen-video-key",
         }
     )
@@ -244,6 +245,7 @@ def test_provider_smoke_allows_explicit_provider_selection() -> None:
     assert config.vision_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert config.vision_model == "qwen-vl-plus"
     assert config.vision_adapter_kind == "openai_compatible"
+    assert config.video_provider == "qwen"
 
 
 def test_provider_config_reads_deepseek_chat_provider() -> None:
@@ -353,6 +355,10 @@ def test_provider_config_reads_qwen_vision_provider_from_spec() -> None:
     assert config.vision_base_url == "https://qwen.local/v1"
     assert config.vision_model == "qwen-vl-test"
     assert config.vision_adapter_kind == "openai_compatible"
+    assert config.video_provider == "qwen"
+    assert config.video_understanding_api_key == "test-qwen-key"
+    assert config.video_understanding_base_url == "https://qwen.local/v1"
+    assert config.video_understanding_model == "qwen-vl-test"
     assert config.resolved_vision_provider().missing_required_env() == []
 
 
@@ -374,6 +380,10 @@ def test_provider_config_reads_ark_vision_provider_from_spec() -> None:
     assert config.vision_adapter_kind == "ark_responses"
     assert config.ark_vision_base_url == "https://ark.local/api/v3"
     assert config.ark_vision_model == "ark-vision-test"
+    assert config.video_provider == "ark"
+    assert config.video_understanding_api_key == "test-ark-key"
+    assert config.video_understanding_base_url == "https://ark.local/api/v3"
+    assert config.video_understanding_model == "ark-vision-test"
     assert config.resolved_vision_provider().missing_required_env() == []
 
 
@@ -382,7 +392,6 @@ def test_provider_config_cleans_mismatched_trailing_quotes() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark",
             "ARK_VISION_API_KEY": "test-ark-key",
             "ARK_VISION_BASE_URL": "\"https://ark.local/api/v3'\"",
             "ARK_VISION_MODEL": "ark-vision-test",

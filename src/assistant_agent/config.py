@@ -210,6 +210,7 @@ class ProviderConfig:
             allow_real=allow_real_providers,
         )
         vision_settings = resolve_vision_provider(vision_provider, source)
+        video_provider = _video_provider(vision_provider)
         vision_embedding_provider = _vision_embedding_provider(
             source.get("MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER"),
             allow_real=allow_real_providers,
@@ -434,13 +435,10 @@ class ProviderConfig:
             render_base_url=source.get("RENDER_BASE_URL") or source.get("BLENDER_RENDER_URL"),
             render_api_key=source.get("RENDER_API_KEY"),
             render_timeout_seconds=_float_env(source.get("RENDER_TIMEOUT_SECONDS"), 10.0),
-            video_provider=_video_provider(
-                source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER"),
-                allow_real=allow_real_providers,
-            ),
-            video_understanding_base_url=_video_base_url(source),
-            video_understanding_api_key=_video_api_key(source),
-            video_understanding_model=_video_model(source),
+            video_provider=video_provider,
+            video_understanding_base_url=_video_base_url(source, video_provider),
+            video_understanding_api_key=_video_api_key(source, video_provider),
+            video_understanding_model=_video_model(source, video_provider),
             video_understanding_timeout_seconds=_float_env(
                 source.get("VIDEO_UNDERSTANDING_TIMEOUT_SECONDS"),
                 60.0,
@@ -782,26 +780,26 @@ def _clean_env_value(value: str) -> str:
     return cleaned.strip().strip('"').strip("'").strip("“”‘’")
 
 
-def _video_base_url(source: Mapping[str, str]) -> str | None:
-    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "ark":
+def _video_base_url(source: Mapping[str, str], provider: VideoProviderName) -> str | None:
+    if provider == "ark":
         return source.get("ARK_VISION_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
-    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "qwen":
+    if provider == "qwen":
         return source.get("QWEN_VISION_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
     return source.get("VIDEO_UNDERSTANDING_BASE_URL")
 
 
-def _video_api_key(source: Mapping[str, str]) -> str | None:
-    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "ark":
+def _video_api_key(source: Mapping[str, str], provider: VideoProviderName) -> str | None:
+    if provider == "ark":
         return source.get("ARK_VISION_API_KEY")
-    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "qwen":
+    if provider == "qwen":
         return source.get("QWEN_VISION_API_KEY") or source.get("DASHSCOPE_API_KEY")
     return source.get("VIDEO_UNDERSTANDING_API_KEY")
 
 
-def _video_model(source: Mapping[str, str]) -> str:
-    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "ark":
+def _video_model(source: Mapping[str, str], provider: VideoProviderName) -> str:
+    if provider == "ark":
         return source.get("ARK_VISION_MODEL") or "doubao-seed-2-0-lite-260215"
-    if source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER") == "qwen":
+    if provider == "qwen":
         return source.get("QWEN_VISION_MODEL") or "qwen-vl-plus"
     return source.get("VIDEO_UNDERSTANDING_MODEL", "video-understanding")
 

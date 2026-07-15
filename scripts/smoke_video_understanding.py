@@ -36,14 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     source = os.environ if env is None else env
-    provider = source.get("MULTIMODAL_AGENT_VIDEO_PROVIDER", "mock")
+    config = ProviderConfig.from_env(source)
+    provider = config.video_provider
 
     missing = _missing_provider_config(provider, source)
     if missing:
         _print_provider_unconfigured(missing)
         return 2
 
-    config = ProviderConfig.from_env(source)
     request = UserRequest(
         user_id=args.user_id,
         session_id=args.session_id,
@@ -71,19 +71,14 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
 
 
 def _missing_provider_config(provider: str, source: Mapping[str, str]) -> str | None:
-    if provider == "http":
-        missing = []
-        if not source.get("VIDEO_UNDERSTANDING_BASE_URL"):
-            missing.append("VIDEO_UNDERSTANDING_BASE_URL")
-        if not source.get("VIDEO_UNDERSTANDING_API_KEY"):
-            missing.append("VIDEO_UNDERSTANDING_API_KEY")
-        if missing:
-            return f"missing {', '.join(missing)}"
     if provider == "ark":
         if not source.get("ARK_VISION_API_KEY"):
             return "missing ARK_VISION_API_KEY"
-    if provider not in {"mock", "http", "ark"}:
-        return "MULTIMODAL_AGENT_VIDEO_PROVIDER must be mock, http, or ark."
+    if provider == "qwen":
+        if not (source.get("QWEN_VISION_API_KEY") or source.get("DASHSCOPE_API_KEY")):
+            return "missing QWEN_VISION_API_KEY"
+    if provider not in {"mock", "ark", "qwen"}:
+        return "MULTIMODAL_AGENT_VISION_PROVIDER must select mock, qwen, or ark for video understanding."
     return None
 
 
@@ -110,7 +105,7 @@ def _api_error_payload(error: Any) -> dict[str, Any]:
 def _print_provider_unconfigured(reason: str) -> None:
     print("provider_unconfigured")
     print(reason)
-    print("Please set MULTIMODAL_AGENT_VIDEO_PROVIDER and the required video provider configuration.")
+    print("Please set MULTIMODAL_AGENT_VISION_PROVIDER and the required vision provider configuration.")
 
 
 def _sanitize_payload(value: Any) -> Any:

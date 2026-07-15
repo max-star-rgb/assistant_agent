@@ -377,13 +377,14 @@ App                 Media                         Agent
 
 ```bash
 MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke \
-MULTIMODAL_AGENT_VIDEO_PROVIDER=qwen \
+MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
   --host 0.0.0.0 \
   --port 8089
 ```
 
-Qwen 视频适配器复用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_API_KEY`）、
+图像与视频理解统一由 `MULTIMODAL_AGENT_VISION_PROVIDER` 选择。Qwen 视频适配器复用
+`QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_API_KEY`）、
 `QWEN_VISION_BASE_URL` 和 `QWEN_VISION_MODEL`。启动前应确认 chat 与
 `video_understanding` readiness 均为 `ready`，并确认解析出的
 `video_provider=qwen`；显式选择 Qwen 失败时不会静默回退到 Ark、Doubao 或 mock。

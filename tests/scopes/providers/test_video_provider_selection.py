@@ -48,7 +48,7 @@ def test_create_video_adapter_returns_qwen_adapter_when_selected() -> None:
     assert isinstance(adapter, QwenVideoUnderstandingAdapter)
 
 
-def test_provider_config_reads_video_provider_environment() -> None:
+def test_legacy_video_provider_environment_no_longer_selects_video() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
@@ -62,7 +62,7 @@ def test_provider_config_reads_video_provider_environment() -> None:
         }
     )
 
-    assert config.video_provider == "http"
+    assert config.video_provider == "mock"
     assert config.video_understanding_base_url == "http://video.local"
     assert config.video_understanding_api_key == "test-video-key"
     assert config.video_understanding_model == "video-model"
@@ -71,11 +71,24 @@ def test_provider_config_reads_video_provider_environment() -> None:
     assert config.max_video_seconds == 9.5
 
 
+def test_vision_provider_without_video_adapter_keeps_video_mocked() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "openai",
+            "OPENAI_API_KEY": "test-openai-key",
+        }
+    )
+
+    assert config.vision_provider == "openai"
+    assert config.video_provider == "mock"
+
+
 def test_provider_config_reads_ark_video_provider_environment() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
             "ARK_VISION_API_KEY": "test-ark-video-key",
             "ARK_VISION_BASE_URL": "https://ark.local/api/v3",
             "ARK_VISION_MODEL": "ark-video-model",
@@ -92,7 +105,7 @@ def test_provider_config_reuses_ark_vision_key_for_video_when_video_key_absent()
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
             "ARK_VISION_API_KEY": "test-ark-vision-key",
         }
     )
@@ -146,7 +159,7 @@ def test_default_registry_uses_ark_video_adapter_from_env_config() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
             "ARK_VISION_API_KEY": "test-ark-vision-key",
             "ARK_VISION_BASE_URL": "https://ark.local/api/v3",
             "ARK_VISION_MODEL": "ark-video-model",
