@@ -140,3 +140,36 @@ def test_collect_cli_sanitizes_unexpected_collection_failure(monkeypatch, capsys
     captured = capsys.readouterr()
     assert "memory_bakeoff_collection_failed" in captured.err
     assert marker not in captured.err
+
+
+def test_hindsight_empty_volume_gets_longer_startup_budget_than_mem0() -> None:
+    spec = spec_from_file_location("collect_memory_framework_bakeoff_timeouts", REPO_ROOT / SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module._startup_timeout_seconds("hindsight") == 900.0
+    assert module._startup_timeout_seconds("mem0") == 180.0
+
+    compose = (REPO_ROOT / "docker/memory-frameworks/compose.yaml").read_text(encoding="utf-8")
+    assert 'HINDSIGHT_API_STARTUP_WAIT_SECONDS: "900"' in compose
+
+
+def test_health_wait_fails_immediately_when_sidecar_exits(monkeypatch) -> None:
+    spec = spec_from_file_location("collect_memory_framework_bakeoff_exit", REPO_ROOT / SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    lifecycle = module.DockerComposeLifecycle.__new__(module.DockerComposeLifecycle)
+    lifecycle.framework = "hindsight"
+    lifecycle.service = "hindsight"
+    lifecycle.base_url = "http://127.0.0.1:8889"
+    monkeypatch.setattr(lifecycle, "_container_id", lambda service: "container-id")
+    monkeypatch.setattr(lifecycle, "_container_running", lambda container_id: False)
+
+    try:
+        lifecycle._wait_healthy(timeout_seconds=900)
+    except module.BakeoffCliError as exc:
+        assert exc.error_code == "memory_bakeoff_sidecar_exited"
+    else:
+        raise AssertionError("exited sidecar must abort health wait")

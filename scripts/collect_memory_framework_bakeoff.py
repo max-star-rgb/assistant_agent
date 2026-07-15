@@ -124,11 +124,15 @@ class DockerComposeLifecycle(BakeoffLifecycleController):
         self._peak_rss_mb = max(self._peak_rss_mb, current)
 
     def _container_id(self, service: str) -> str:
-        result = self._compose("ps", "-q", service, profile=self.framework)
+        result = self._compose("ps", "--all", "-q", service, profile=self.framework)
         container_id = result.stdout.strip()
         if not container_id:
             raise BakeoffCliError("memory_bakeoff_container_missing")
         return container_id
+
+    def _container_running(self, container_id: str) -> bool:
+        result = self._run(["docker", "inspect", "--format", "{{.State.Running}}", container_id])
+        return result.stdout.strip().lower() == "true"
 
     def _rss_mb(self, container_id: str) -> float:
         result = self._run(
@@ -145,10 +149,14 @@ class DockerComposeLifecycle(BakeoffLifecycleController):
         except ValueError as exc:
             raise BakeoffCliError("memory_bakeoff_disk_stat_invalid") from exc
 
-    def _wait_healthy(self, *, timeout_seconds: float = 180.0) -> None:
+    def _wait_healthy(self, *, timeout_seconds: float | None = None) -> None:
+        timeout_seconds = timeout_seconds or _startup_timeout_seconds(self.framework)
         deadline = time.monotonic() + timeout_seconds
         health_url = f"{self.base_url}/health" if self.framework == "hindsight" else f"{self.base_url}/"
+        container_id = self._container_id(self.service)
         while time.monotonic() < deadline:
+            if not self._container_running(container_id):
+                raise BakeoffCliError("memory_bakeoff_sidecar_exited")
             try:
                 with urllib.request.urlopen(health_url, timeout=2) as response:
                     if 200 <= response.status < 300:
@@ -245,6 +253,10 @@ def _validate_runtime(*, version: str, expected_version: str) -> None:
         raise BakeoffCliError("memory_bakeoff_profile_not_allowed")
     if not os.environ.get("MEMORY_BAKEOFF_API_KEY", "").strip():
         raise BakeoffCliError("memory_bakeoff_missing_api_key")
+
+
+def _startup_timeout_seconds(framework: str) -> float:
+    return 900.0 if framework == "hindsight" else 180.0
 
 
 def _size_to_mb(value: str) -> float:

@@ -43,7 +43,10 @@ The collector validates the rendered Compose configuration with the fixed
 provider values, removes the dedicated project volumes, starts only the
 selected profile, waits for localhost health, and keeps its governance ledger
 in a temporary runtime directory. Manual sidecar startup and framework backend
-environment switching are not required for evidence collection.
+environment switching are not required for evidence collection. Hindsight is
+given a 900-second first-start budget because initializing pg0 from an empty
+volume can exceed the image's default five-minute startup window; Mem0 keeps a
+180-second budget.
 
 ## Collect evidence
 
