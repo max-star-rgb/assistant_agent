@@ -962,6 +962,7 @@ def test_agent_service_stream_true_sends_incremental_then_terminal_packets(tmp_p
     ] == ["PROCESSING", "PROCESSING", "SUCCESS"]
     assert [_body(item)["final"] for item in packets] == [False, False, True]
     assert [_body(item)["display_only"] for item in packets] == [False, False, True]
+    assert [_body(item)["displayOnly"] for item in packets] == [False, False, True]
     assert [_body(item)["sequence"] for item in packets] == [1, 2, 3]
     assert "deliveryId" not in _body(packets[0])
     assert _body(packets[-1])["deliveryId"] == delivery.delivery_id
@@ -2177,6 +2178,7 @@ def test_agent_service_accepts_media_control_and_chat_protocol(monkeypatch) -> N
             },
         },
         "display_only": False,
+        "displayOnly": False,
         "sequence": 1,
         "final": True,
     }

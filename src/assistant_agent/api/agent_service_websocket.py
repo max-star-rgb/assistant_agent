@@ -277,7 +277,7 @@ class ChatHandler(BaseHandler):
                             }
                         },
                     },
-                    "display_only": False,
+                    **_display_flags(False),
                 },
             )
         return _response_envelope(
@@ -968,7 +968,7 @@ def _prepared_chat_response(
                 "chatIndex": prepared.chat_index,
                 "content": {"intentResult": {"description": turn.response_text, "status": "SUCCESS"}},
             },
-            "display_only": sequence > 1,
+            **_display_flags(sequence > 1),
             "sequence": sequence,
             "final": True,
         }
@@ -1161,11 +1161,18 @@ def _streaming_chat_response(
                 "chatIndex": prepared.chat_index,
                 "content": {"intentResult": intent},
             },
-            "display_only": False,
+            **_display_flags(False),
             "sequence": sequence,
             "final": False,
         },
     )
+
+
+def _display_flags(display_only: bool) -> dict[str, bool]:
+    return {
+        "display_only": display_only,
+        "displayOnly": display_only,
+    }
 
 
 def _is_provider_token_delta(chunk_frame: dict[str, Any]) -> bool:
