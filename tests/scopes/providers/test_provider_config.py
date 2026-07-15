@@ -204,6 +204,33 @@ def test_provider_config_selects_qwen_video_from_qwen_vision_settings() -> None:
     assert config.video_understanding_model == "qwen-vl-test"
 
 
+def test_provider_config_reads_qwen_realtime_vision_settings_and_prefers_vision_key() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "QWEN_VISION_API_KEY": "vision-key",
+            "DASHSCOPE_API_KEY": "dashscope-key",
+            "QWEN_REALTIME_VISION_BASE_URL": "wss://qwen.local/realtime",
+            "QWEN_REALTIME_VISION_MODEL": "qwen-realtime-test",
+        }
+    )
+
+    assert config.qwen_realtime_vision_api_key == "vision-key"
+    assert config.qwen_realtime_vision_base_url == "wss://qwen.local/realtime"
+    assert config.qwen_realtime_vision_model == "qwen-realtime-test"
+
+
+def test_provider_config_qwen_realtime_vision_key_falls_back_to_dashscope() -> None:
+    config = ProviderConfig.from_env({"DASHSCOPE_API_KEY": "dashscope-key"})
+
+    assert config.qwen_realtime_vision_api_key == "dashscope-key"
+    assert config.qwen_realtime_vision_base_url == (
+        "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+    )
+    assert config.qwen_realtime_vision_model == "qwen3.5-omni-flash-realtime"
+
+
 def test_local_demo_does_not_enable_qwen_video_from_key_only() -> None:
     config = ProviderConfig.from_env(
         {

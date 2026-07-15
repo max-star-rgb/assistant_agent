@@ -1109,12 +1109,16 @@ def _create_video_ingestion_service() -> H264VideoIngestionService:
 
 def _create_realtime_video_observer(*, user_id: str, session_id: str) -> RealtimeVideoObserver:
     from assistant_agent.api import routes_agent
+    from assistant_agent.tools.registry import create_realtime_video_observation_registry
 
     runtime = routes_agent.get_assistant_runtime_app().runtime
     return RealtimeVideoObserver(
         user_id=user_id,
         session_id=session_id,
-        registry=runtime.registry,
+        registry=create_realtime_video_observation_registry(
+            runtime.config,
+            realtime_video_memory_store=runtime.realtime_video_memory_store,
+        ),
         memory_store=runtime.realtime_video_memory_store,
     )
 

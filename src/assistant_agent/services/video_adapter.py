@@ -181,6 +181,29 @@ def create_video_understanding_adapter(config: ProviderConfig | None = None) -> 
     return MockVideoUnderstandingAdapter()
 
 
+def create_realtime_video_understanding_adapter(
+    config: ProviderConfig | None = None,
+) -> VideoUnderstandingAdapter:
+    """Select Qwen realtime only for background live-video observations."""
+
+    resolved = config or ProviderConfig.from_env()
+    if resolved.vision_provider == "qwen":
+        from assistant_agent.providers.qwen_realtime_vision import (
+            QwenRealtimeVisionAdapter,
+            QwenRealtimeVisionConfig,
+        )
+
+        return QwenRealtimeVisionAdapter(
+            QwenRealtimeVisionConfig(
+                api_key=resolved.qwen_realtime_vision_api_key,
+                base_url=resolved.qwen_realtime_vision_base_url,
+                model=resolved.qwen_realtime_vision_model,
+                timeout_seconds=resolved.video_understanding_timeout_seconds,
+            )
+        )
+    return create_video_understanding_adapter(resolved)
+
+
 def _safe_ref_suffix(video_ref: str) -> str:
     suffix = video_ref.rsplit("/", maxsplit=1)[-1].strip() or "demo"
     return "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in suffix)

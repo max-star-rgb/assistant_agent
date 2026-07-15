@@ -59,6 +59,7 @@ class ProviderConfig:
     dashscope_api_key: str | None = None
     ark_api_key: str | None = None
     qwen_vision_api_key: str | None = None
+    qwen_realtime_vision_api_key: str | None = None
     qwen_image_api_key: str | None = None
     ark_vision_api_key: str | None = None
     ark_image_api_key: str | None = None
@@ -84,6 +85,8 @@ class ProviderConfig:
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_vision_model: str = "qwen-vl-plus"
+    qwen_realtime_vision_base_url: str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+    qwen_realtime_vision_model: str = "qwen3.5-omni-flash-realtime"
     ark_vision_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     ark_vision_model: str = "doubao-seed-2-0-lite-260215"
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
@@ -251,6 +254,9 @@ class ProviderConfig:
             dashscope_api_key=source.get("DASHSCOPE_API_KEY"),
             ark_api_key=source.get("ARK_API_KEY"),
             qwen_vision_api_key=source.get("QWEN_VISION_API_KEY"),
+            qwen_realtime_vision_api_key=(
+                source.get("QWEN_VISION_API_KEY") or source.get("DASHSCOPE_API_KEY")
+            ),
             qwen_image_api_key=source.get("QWEN_IMAGE_API_KEY"),
             ark_vision_api_key=source.get("ARK_VISION_API_KEY"),
             ark_image_api_key=source.get("ARK_IMAGE_API_KEY"),
@@ -289,6 +295,14 @@ class ProviderConfig:
                 "https://dashscope.aliyuncs.com/compatible-mode/v1",
             ),
             qwen_vision_model=source.get("QWEN_VISION_MODEL", "qwen-vl-plus"),
+            qwen_realtime_vision_base_url=source.get(
+                "QWEN_REALTIME_VISION_BASE_URL",
+                "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+            ),
+            qwen_realtime_vision_model=source.get(
+                "QWEN_REALTIME_VISION_MODEL",
+                "qwen3.5-omni-flash-realtime",
+            ),
             ark_vision_base_url=source.get("ARK_VISION_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
             ark_vision_model=source.get("ARK_VISION_MODEL", "doubao-seed-2-0-lite-260215"),
             seed_vision_base_url=source.get("SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"),
@@ -467,6 +481,7 @@ class ProviderConfig:
                 self.ark_api_key,
                 self.vision_embedding_api_key,
                 self.qwen_vision_api_key,
+                self.qwen_realtime_vision_api_key,
                 self.qwen_image_api_key,
                 self.ark_vision_api_key,
                 self.ark_image_api_key,
