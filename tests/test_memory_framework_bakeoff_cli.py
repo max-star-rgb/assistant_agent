@@ -74,6 +74,7 @@ def test_cli_scores_measured_files_and_writes_reproducible_report(tmp_path) -> N
 def test_compose_uses_pinned_images_local_ports_and_persistent_volumes() -> None:
     compose = (REPO_ROOT / "docker/memory-frameworks/compose.yaml").read_text(encoding="utf-8")
 
+    assert "name: assistant-agent-memory-bakeoff" in compose
     assert "ghcr.io/vectorize-io/hindsight:0.8.4" in compose
     assert "assistant-agent/mem0-sidecar:2.0.11" in compose
     assert "qdrant/qdrant:v1.15.4" in compose
@@ -83,8 +84,18 @@ def test_compose_uses_pinned_images_local_ports_and_persistent_volumes() -> None
     assert "hindsight_data:" in compose
     assert "mem0_history:" in compose
     assert "qdrant_data:" in compose
+    assert "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY:" in compose
+    assert "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL:" in compose
+    assert "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL:" in compose
+    assert "HINDSIGHT_API_EMBEDDINGS_API_KEY:" not in compose
     dockerfile = (REPO_ROOT / "docker/memory-frameworks/Mem0.Dockerfile").read_text(
         encoding="utf-8"
     )
     assert "mem0ai==2.0.11" in dockerfile
     assert ":latest" not in dockerfile
+    sidecar = (REPO_ROOT / "docker/memory-frameworks/mem0_sidecar.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"embedding_dims": 1024' in sidecar
+    assert '"embedding_model_dims": 1024' in sidecar
+    assert "limit=int(payload.get(\"top_k\")" in sidecar

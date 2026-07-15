@@ -184,6 +184,8 @@ class MemoryManager:
         """Search memory for an identity, ignoring caller-supplied user_id."""
 
         scoped_query = _query_for_identity(identity, query)
+        if bool(getattr(self.store, "session_scoped_engine_identity", False)):
+            scoped_query = scoped_query.model_copy(update={"session_id": identity.session_id})
         result = self.search(scoped_query)
         self._record_remote_search_event(identity=identity, result=result)
         return result
@@ -817,6 +819,14 @@ class MemoryManager:
 
     def clear_user(self, user_id: str) -> None:
         self.clear_identity(RequestIdentity.for_user(user_id=user_id))
+
+    def retry_pending_writes(self, *, limit: int = 100) -> Any:
+        """Retry a lifecycle-owner store outbox through the manager boundary."""
+
+        retry = getattr(self.store, "retry_outbox", None)
+        if not callable(retry):
+            raise ValueError("active memory store does not expose pending write recovery")
+        return retry(limit=max(1, limit))
 
     def clear_identity(self, identity: RequestIdentity) -> None:
         deleted = 0

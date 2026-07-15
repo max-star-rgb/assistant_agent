@@ -29,6 +29,7 @@ class FrameworkMemoryStore:
     """Framework lifecycle owner; optional v2 store is read-only fallback."""
 
     framework_managed_algorithms = True
+    session_scoped_engine_identity = True
 
     def __init__(
         self,

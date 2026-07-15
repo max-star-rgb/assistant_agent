@@ -1,6 +1,6 @@
 # Memory Service Architecture
 
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 
 This document is the current canonical entry for memory service architecture. Update it whenever `MemoryManager`, memory stores, retrieval, write policy, user profile behavior, memory tools, memory APIs, or memory context boundaries change.
 
@@ -182,6 +182,7 @@ Current P0 behavior:
 - Local/mock paths derive identity from `UserRequest`, `ToolContext`, API path/query parameters, or inbound A2A metadata.
 - API routes resolve request-derived identity through `services/api_identity.py` before trial-access checks and memory service calls. `api/auth.py` provides the default FastAPI `AuthContext` dependency, which returns anonymous/no-auth context and ignores auth-like headers unless the explicit `MULTIMODAL_AGENT_AUTH_HEADER_ENABLED` pilot flag is enabled. In that pilot mode, only controlled `X-Multimodal-Agent-*` headers are converted into `AuthContext`; body/path/query user mismatch is rejected by the identity resolver. This centralizes provenance (`request_body`, `path`, `query`, `a2a_metadata`, `websocket_query`, `auth_context`) without treating it as production JWT/session authentication. `IdentityPolicy` can classify the resolved identity as auth-bound, request-derived warning, local bypass warning, or production-blocking failure.
 - `MemoryManager` exposes identity-aware methods such as `search_for_identity(...)`, `load_context_for_identity(...)`, `save_explicit_for_identity(...)`, `get_for_identity(...)`, `list_for_identity(...)`, and identity-scoped delete helpers.
+- Identity-aware search and context loading overwrite caller-controlled `user_id`, `tenant_id`, `project_id`, and allowed scopes from trusted `RequestIdentity`. Local long-term memory remains cross-session by default. A lifecycle-owner store that declares `session_scoped_engine_identity` additionally binds the trusted `session_id`; framework mode hashes it into the engine run scope, so dropping it there would address a different sidecar partition.
 - `MemoryAuditService` and `MemorySnapshotService` expose identity-aware methods and keep the legacy `user_id` methods as compatibility wrappers.
 - Memory tools bind identity from `ToolContext` before invoking `MemoryManager`, so model-supplied `user_id` cannot override runtime context.
 - `MemoryItem` and `MemoryQuery` carry optional `tenant_id`, `project_id`, and coarse `scope` fields. If a memory item has tenant/project/scope metadata, retrieval, list, get, and delete paths must filter it against `RequestIdentity`.
@@ -301,6 +302,28 @@ When `FrameworkMemoryStore.framework_managed_algorithms` is active, `MemoryManag
 ### Framework bake-off gate
 
 Hindsight `0.8.4` and Mem0 OSS `2.0.11` are scored from measured inputs by `memory/framework/bakeoff.py` and `scripts/run_memory_framework_bakeoff.py`. The fixed score is quality 45, governance 25, and operations 30. Cross-user leakage must be zero; export/delete/clear, runtime governance, offline defaults, restart recovery, and no-silent-loss must pass; total score must be at least 75 and quality at least 35. A difference of at most three points uses operations score, p95 recall, then RSS as tie-breakers. If neither passes, v2 remains the recommendation. No runtime adapter is removed until a real pilot/provider-smoke bake-off report establishes a winner.
+
+Measured inputs are collected by `scripts/collect_memory_framework_bakeoff.py`
+from the fixed 50-case synthetic corpus in
+`memory/framework/collector.py`. The smoke subset and the full corpus execute
+retain, recall, identity isolation, CRUD, export/delete/clear, confirmation,
+restart, and durable-outbox recovery through an internal-only probe registered
+with `ToolExecutor`. The probe delegates lifecycle behavior to `MemoryManager`;
+`MemoryManager.retry_pending_writes(...)` is the governed recovery entry for a
+lifecycle-owner store outbox. Direct calls are limited to sidecar health,
+adapter history, and Docker resource/lifecycle observations.
+
+The collector requires `pilot` or `provider_smoke`, one shell-only
+`MEMORY_BAKEOFF_API_KEY`, and fixed Alibaba Cloud Model Studio configuration:
+`https://dashscope.aliyuncs.com/compatible-mode/v1`, `qwen-plus`, and
+`text-embedding-v4`. The CLI maps the same key to chat and embedding container
+variables without writing it. Each invocation removes the dedicated
+`assistant-agent-memory-bakeoff` Compose volumes before startup and never
+opens, migrates, or modifies the v2 database. Its governance ledger is a
+temporary runtime file; successful evidence contains only anonymous case and
+memory IDs, stable error codes, latencies, probe outcomes, resource statistics,
+and aggregate metrics under the ignored evidence directory. Smoke hard-gate
+failure exits without metrics or JSON evidence.
 
 Operational examples for local-only SQLite, `dual_core`, legacy
 `hybrid_remote`, and `remote_service` configurations live in

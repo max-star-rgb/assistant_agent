@@ -31,6 +31,7 @@ def memory() -> Memory:
                     "model": _required("EMBEDDING_MODEL"),
                     "api_key": _required("EMBEDDING_API_KEY"),
                     "openai_base_url": _required("EMBEDDING_BASE_URL"),
+                    "embedding_dims": 1024,
                 },
             },
             "vector_store": {
@@ -39,6 +40,7 @@ def memory() -> Memory:
                     "host": os.getenv("QDRANT_HOST", "qdrant"),
                     "port": int(os.getenv("QDRANT_PORT", "6333")),
                     "collection_name": "assistant_agent_memory_bakeoff",
+                    "embedding_model_dims": 1024,
                 },
             },
             "history_db_path": os.getenv("HISTORY_DB_PATH", "/data/history/history.db"),
@@ -69,7 +71,7 @@ def search_memories(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     result = memory().search(
         query=str(payload.get("query") or ""),
         filters=payload.get("filters") or _entity_filters(payload),
-        top_k=int(payload.get("top_k") or payload.get("limit") or 5),
+        limit=int(payload.get("top_k") or payload.get("limit") or 5),
     )
     return _result(result)
 

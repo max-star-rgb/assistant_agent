@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from assistant_agent.memory.framework.ledger import FrameworkGovernanceLedger
+from assistant_agent.memory.framework.base import bind_engine_identity
 from assistant_agent.memory.framework.store import FrameworkMemoryStore
 from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.memory.remote import MemoryServiceOperationError
@@ -145,6 +146,25 @@ def test_failed_retain_is_durable_and_retry_is_idempotent_without_fallback_write
     assert second_report.attempted == 0
     assert len(engine.retained) == 1
     assert restarted.ledger.pending_outbox_count() == 0
+
+
+def test_manager_retries_framework_pending_writes_without_store_bypass(tmp_path) -> None:
+    engine = ScriptedEngine()
+    engine.fail_retain = True
+    manager = MemoryManager(
+        FrameworkMemoryStore(
+            adapter=engine,
+            ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+            identity_namespace="test",
+        )
+    )
+    manager.store.save(_item())
+    engine.fail_retain = False
+
+    report = manager.retry_pending_writes()
+
+    assert report.attempted == 1
+    assert report.succeeded == 1
 
 
 def test_memory_save_tool_reports_durable_queue_instead_of_claiming_framework_write(tmp_path) -> None:
@@ -379,6 +399,25 @@ def test_manager_audits_framework_recall_degradation(tmp_path) -> None:
     assert len(events) == 1
     assert events[0].metadata["error_code"] == "memory_framework_recall_failed"
     assert "sidecar unavailable" not in events[0].model_dump_json()
+
+
+def test_manager_context_recall_binds_trusted_session_to_framework_run_scope(tmp_path) -> None:
+    engine = ScriptedEngine()
+    manager = MemoryManager(
+        FrameworkMemoryStore(
+            adapter=engine,
+            ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+            identity_namespace="test",
+        )
+    )
+    identity = RequestIdentity.for_user(
+        user_id="u1", tenant_id="t1", project_id="p1", session_id="trusted-session"
+    )
+
+    manager.load_context_for_identity(identity, query_text="深色")
+
+    expected = bind_engine_identity(identity, namespace="test")
+    assert engine.recalled[0].identity.run_id == expected.run_id
 
 
 def test_manager_delegates_dedupe_conflict_and_profile_algorithms_to_framework(tmp_path) -> None:
