@@ -96,7 +96,6 @@ def test_provider_config_reads_environment_values() -> None:
             "RENDER_BASE_URL": "http://localhost:7003",
             "RENDER_API_KEY": "test-render-key",
             "RENDER_TIMEOUT_SECONDS": "5.5",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "http",
             "VIDEO_UNDERSTANDING_BASE_URL": "http://localhost:7004",
             "VIDEO_UNDERSTANDING_API_KEY": "test-video-key",
             "VIDEO_UNDERSTANDING_MODEL": "video-test-model",
@@ -191,7 +190,7 @@ def test_provider_config_selects_qwen_video_from_qwen_vision_settings() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
             "QWEN_VISION_API_KEY": "test-qwen-video-key",
             "QWEN_VISION_BASE_URL": "https://qwen.local/v1",
             "QWEN_VISION_MODEL": "qwen-vl-test",
@@ -229,17 +228,6 @@ def test_provider_config_qwen_realtime_vision_key_falls_back_to_dashscope() -> N
         "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
     )
     assert config.qwen_realtime_vision_model == "qwen3.5-omni-flash-realtime"
-
-
-def test_local_demo_does_not_enable_qwen_video_from_key_only() -> None:
-    config = ProviderConfig.from_env(
-        {
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "qwen",
-            "QWEN_VISION_API_KEY": "test-qwen-video-key",
-        }
-    )
-
-    assert config.video_provider == "mock"
 
 
 def test_provider_smoke_does_not_enable_real_provider_from_key_only() -> None:
@@ -409,7 +397,6 @@ def test_provider_config_cleans_mismatched_trailing_quotes() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark",
             "ARK_VISION_API_KEY": "test-ark-key",
             "ARK_VISION_BASE_URL": "\"https://ark.local/api/v3'\"",
             "ARK_VISION_MODEL": "ark-vision-test",

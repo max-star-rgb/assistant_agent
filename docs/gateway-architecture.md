@@ -152,8 +152,10 @@ independently decodable H.264 Annex-B frames, decodes them to a three-frame
 JPEG window plus a bounded local grayscale fingerprint, and attaches the stable
 session video reference to later chat turns. A per-connection observer applies
 adaptive sampling, pixel difference, SSIM, and local histogram change detection;
-selected frames enter a latest-wins background queue. Background understanding
-still runs through `ActionValidator -> ToolExecutor -> video_understanding`, but
+首帧、明显变化帧和最长静态 2 秒到期帧进入 latest-wins 后台队列。每轮后台理解只向
+Provider 发送当前选中的一张 JPEG；历史画面不作为多帧请求重发，只把上次成功语义摘要
+裁剪后作为文本上下文。Background understanding
+still runs through `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding`, but
 `video_understanding` is not exposed to the foreground Agent-Service model.
 The entry adapter does not call the video provider directly.
 
@@ -162,15 +164,19 @@ before every Agent-Service model context build it projects the latest snapshot
 into the independent `realtime_video_context` section. Thus the first DeepSeek
 decision can use completed Qwen observations without a foreground tool round
 trip. A narrow current-camera reference targets the latest decoded frame
-sequence and may wait up to 4.0 seconds for the shared observer snapshot to
+sequence and may wait up to 1.5 seconds for the shared observer snapshot to
 reach that sequence. If no equal/newer work is represented, the latest frame is
 promoted through the same governed queue. Timeout injects `refreshing` or
 `stale` state with a sequence gap and never starts a foreground or second Qwen
 call. Frame freshness uses capture age; snapshot publication age remains a
 separate diagnostic. Ordinary non-Agent-Service video/API requests retain
 the explicit `video_understanding` tool and `recent_frame_fallback` behavior.
-The raw window is 3 frames, semantic retention is 8 keyframes, and observer
-concurrency is one in flight plus one latest pending frame.
+本地 raw window 仍为 3 帧，语义记忆仍最多保留 8 个成功关键帧；它们不等于 Qwen
+单轮输入历史。每个 `video_id` 只持有一个 persistent Qwen WebSocket，observer
+concurrency 为一个 in-flight 加一个 latest pending。连接每 20 次成功观察或 60 秒轮换，
+断线按有界退避重连；成功、失败、刷新中和陈旧状态都保留最后成功快照。切换 video id、
+WebSocket 断开或 observer close 会关闭 Provider session，并清理 pending、语义状态、
+retained/raw JPEG 与运行时临时文件。
 
 Vendor chat execution is detached from the WebSocket receive loop, so a long
 Gateway turn does not prevent later raw media frames from being validated and

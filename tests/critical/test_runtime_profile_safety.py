@@ -23,7 +23,6 @@ def test_offline_eval_blocks_real_provider_selectors_from_environment() -> None:
             "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http",
             "MULTIMODAL_AGENT_PRICE_PROVIDER": "http",
             "MULTIMODAL_AGENT_RENDER_PROVIDER": "http",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "http",
             "QWEN_VISION_API_KEY": "sk-runtime-profile-test",
             "OPENAI_API_KEY": "sk-runtime-profile-test",
             "COMFYUI_BASE_URL": "http://provider.local",

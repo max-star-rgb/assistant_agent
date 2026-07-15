@@ -273,17 +273,19 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 
 处理规则：
 
+- 本次后台观察实现变化不修改 Media wire：`video` / `videoResponse` 的外层 envelope、`body` 字符串、字段名、H.264 Hex 编码和 ACK 语义保持不变。
 - `videoContent` 必须是无 `0x` 前缀的 H.264 Annex-B Hex 字符串，并以三字节或四字节 NAL 起始码开头。
 - 媒体服务必须让每条消息可独立解码：每帧包含 SPS、PPS 和 I-Frame，不依赖前后消息。
 - Agent 使用本机 FFmpeg 在一次解码中同时生成 JPEG 和 `32x18` 灰度指纹；指纹只用于本地变化检测，不进入 prompt、trace 或 Provider 请求。
-- 每个连接维护一个本地自适应观察器：先按采样频率、像素差、SSIM 和本地直方图语义差异筛选关键帧，再把选中帧交给后台串行任务。
-- 原始视频上下文只保留最近 3 帧；成功理解的语义关键帧独立保留最多 8 帧。后台队列最多包含 1 个执行中帧和 1 个待处理帧，积压时用最新候选替换旧候选。
+- 每个连接维护一个本地自适应观察器：首帧必选，明显变化立即成为候选，静态画面最长 2 秒产生一次候选；再把选中帧交给后台串行任务，不退化为固定 2 秒轮询。
+- 原始视频上下文只保留最近 3 帧；成功理解的语义关键帧独立保留最多 8 帧。它们是本地 fallback/语义记忆，不作为 Qwen 多帧历史发送。每轮 Qwen 请求只含当前选中的一张 JPEG 和最多 2,000 字符的上一成功语义摘要。后台队列最多包含 1 个执行中帧和 1 个待处理帧，积压时用最新候选替换旧候选。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解复用 `video_understanding`，并经过 `ActionValidator -> ToolExecutor -> ToolRegistry`；WebSocket 入口不直接调用 Provider。默认 `local_demo` / `offline_eval` 不联网，真实连续 MLLM 只允许显式 `provider_smoke` / `pilot` 配置。
 - 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。Agent-Service 前台 LLM 的工具集合不包含 `video_understanding`；它只消费后台观察器已发布的被动 `realtime_video_context` snapshot，并根据当前问题决定是否使用其中的视觉事实。
 - 可信 Agent-Service 请求把它表述为双方共享的当前实时镜头，不把 opaque `video_id` 渲染成上传视频，也不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
-- 明确询问当前画面时，以提问时最近已解码帧的 sequence 为目标；若现有成功快照落后，则复用或提升同一 observer 的 latest-wins 候选，并最多等待 4.0 秒直到成功快照达到目标 sequence。该屏障不启动前台 `video_understanding`，普通问候不等待。
+- 明确询问当前画面时，以提问时最近已解码帧的 sequence 为目标；若现有成功快照落后，则复用或提升同一 observer 的 latest-wins 候选，并在 promotion 与 sequence wait 共用的 1.5 秒总预算内等待成功快照达到目标 sequence。该屏障不启动前台 `video_understanding`，普通问候不等待。
 - 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；查询驱动提升也复用这条队列与工具治理链。
+- 每个 `video_id` 只维护一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后主动轮换，断线使用 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；切换 video id、连接关闭或 observer close 会关闭 Provider session 并清理 pending、快照、retained/raw JPEG 和临时文件。
 - 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；采集时间缺失或在未来时不伪造采集年龄。
 - 普通上传/API（非 Agent-Service）仍可显式调用 `video_understanding`：最新观察成功时读取滚动语义记忆，记忆未就绪或最新观察失败时使用最近 3 帧走 Provider 回退。
 - Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖有界 freshness wait、Gateway 与前台 LLM 执行；它不表示前台会调用视频 Provider。普通 chat 使用 30 秒。
@@ -377,14 +379,17 @@ App                 Media                         Agent
 
 ```bash
 MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke \
-MULTIMODAL_AGENT_VIDEO_PROVIDER=qwen \
+MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
   --host 0.0.0.0 \
   --port 8089
 ```
 
-Qwen 视频适配器复用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_API_KEY`）、
-`QWEN_VISION_BASE_URL` 和 `QWEN_VISION_MODEL`。启动前应确认 chat 与
+Qwen realtime 视频适配器优先使用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_API_KEY`），
+并读取 `QWEN_REALTIME_VISION_BASE_URL` 和 `QWEN_REALTIME_VISION_MODEL`。普通图片和上传视频
+继续使用 `QWEN_VISION_BASE_URL` / `QWEN_VISION_MODEL` 对应的 HTTP adapter；设置
+`VIDEO_UNDERSTANDING_BASE_URL`、`VIDEO_UNDERSTANDING_API_KEY` 和可选 model 时，普通上传视频
+改走该显式 HTTP service，不会误入 realtime WebSocket。启动前应确认 chat 与
 `video_understanding` readiness 均为 `ready`，并确认解析出的
 `video_provider=qwen`；显式选择 Qwen 失败时不会静默回退到 Ark、Doubao 或 mock。
 
@@ -393,6 +398,24 @@ Qwen 视频适配器复用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_AP
 `chatResponse` 状态以及 WebSocket close code。不得记录 Key、Base64 图片、
 绝对路径、Provider 请求体或原始响应。`videoResponse body.code=0` 只证明帧已成功
 校验、解码、注册和调度；后台视觉理解成功还必须由 provider/model/status 证据确认。
+
+仓库的 opt-in smoke 覆盖单帧、连续五帧后最终完成 sequence、主动断线后的新 session
+恢复，以及首 delta/完整观察耗时。只有同时设置 `RUN_INTEGRATION_TESTS=1`、
+`MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke|pilot`、
+`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 和 `QWEN_VISION_API_KEY`（或 fallback
+`DASHSCOPE_API_KEY`）时才会联网：
+
+```bash
+RUN_INTEGRATION_TESTS=1 \
+MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke \
+MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
+  tests/integration/test_qwen_realtime_vision_provider_smoke.py -q -s
+```
+
+当前性能目标是 first delta `<500ms`、total observation `<1s`。smoke 始终输出实际值和
+是否达到目标；目标未达到时不得伪造通过数据，也不把环境延迟与协议正确性混为一谈。
+未满足任一 opt-in 条件时用例必须 skip，默认测试不得加载真实 `.env` 或调用网络。
 
 ### 7.1 单轮耗时诊断
 
@@ -418,7 +441,7 @@ run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 | `ACK pending` | 最终响应已发送，但媒体应用确认尚未到达。 |
 | `frame_capture_age_ms` 较高 | 本轮消费的语义对应 Media 帧采集时间较早，是画面陈旧度主指标。 |
 | `snapshot_publish_age_ms` 较高 | Qwen 结果发布后已过去较长时间。 |
-| `sequence_gap` 大于 0 | 4 秒目标序号屏障未满足；回答必须保留画面可能滞后的不确定性。 |
+| `sequence_gap` 大于 0 | 1.5 秒目标序号屏障未满足；回答必须保留画面可能滞后的不确定性。 |
 | `unattributed` | 端到端耗时中尚未被叶子阶段解释的剩余部分。 |
 
 视频诊断中的后台观察 latency 不直接计入 chat 关键路径。只有普通上传/API 的

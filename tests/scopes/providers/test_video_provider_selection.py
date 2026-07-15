@@ -89,7 +89,6 @@ def test_provider_config_reads_video_provider_environment() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "http",
             "VIDEO_UNDERSTANDING_BASE_URL": "http://video.local",
             "VIDEO_UNDERSTANDING_API_KEY": "test-video-key",
             "VIDEO_UNDERSTANDING_MODEL": "video-model",
@@ -112,7 +111,7 @@ def test_provider_config_reads_ark_video_provider_environment() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
             "ARK_VISION_API_KEY": "test-ark-video-key",
             "ARK_VISION_BASE_URL": "https://ark.local/api/v3",
             "ARK_VISION_MODEL": "ark-video-model",
@@ -129,7 +128,7 @@ def test_provider_config_reuses_ark_vision_key_for_video_when_video_key_absent()
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
             "ARK_VISION_API_KEY": "test-ark-vision-key",
         }
     )
@@ -183,7 +182,7 @@ def test_default_registry_uses_ark_video_adapter_from_env_config() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_VIDEO_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
             "ARK_VISION_API_KEY": "test-ark-vision-key",
             "ARK_VISION_BASE_URL": "https://ark.local/api/v3",
             "ARK_VISION_MODEL": "ark-video-model",
