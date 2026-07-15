@@ -8,7 +8,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from time import perf_counter_ns, time
+from time import perf_counter_ns
 from typing import Any, ClassVar
 
 from anyio import CancelScope
@@ -29,7 +29,7 @@ from assistant_agent.services.agent_service_latency import (
 )
 from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
 from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
-from assistant_agent.services.realtime_video_memory import project_realtime_video_context
+from assistant_agent.services.video_context import VideoFrame
 from assistant_agent.services.trace_store import TraceStore, append_observability_event
 from assistant_agent.services.gateway_turn_facade import (
     GatewayStreamChunkConsumer,
@@ -47,7 +47,7 @@ FAIL_CODE = "FAIL"
 POLICY_VIOLATION_CLOSE_CODE = 1008
 VIDEO_TURN_TIMEOUT_SECONDS = 90.0
 CHAT_PROGRESS_INTERVAL_SECONDS = 15.0
-INITIAL_VIDEO_CONTEXT_WAIT_SECONDS = 1.5
+VIDEO_FRESHNESS_WAIT_SECONDS = 4.0
 _REALTIME_VISUAL_REFERENCE = re.compile(
     r"(?:眼前|画面|摄像头|镜头|看到什么|看见什么|这是什么|那个是什么|"
     r"in\s+front\s+of\s+(?:me|the\s+camera)|on\s+(?:screen|camera)|"
@@ -1180,40 +1180,11 @@ async def _run_agent_service_chat_turn(
     if state.gateway_facade is None:
         raise RuntimeError("agent-service Gateway facade is not initialized")
     active_video_ids = list(state.video_ids if video_ids is None else video_ids)
-    waited_for_initial_snapshot = False
-    initial_snapshot_ready = False
-    wait_for_first_snapshot = getattr(
-        state.video_observer,
-        "wait_for_first_terminal_snapshot",
-        None,
-    )
-    current_video_context = _active_realtime_video_context(
+    freshness_metadata = await _realtime_video_freshness_metadata(
         state=state,
         video_ids=active_video_ids,
+        latest_speech=latest_speech,
     )
-    if (
-        active_video_ids
-        and current_video_context is not None
-        and current_video_context.status == "pending"
-        and callable(wait_for_first_snapshot)
-        and _explicit_realtime_visual_reference(latest_speech)
-    ):
-        waited_for_initial_snapshot = True
-        try:
-            await asyncio.wait_for(
-                wait_for_first_snapshot(),
-                timeout=INITIAL_VIDEO_CONTEXT_WAIT_SECONDS,
-            )
-            refreshed_context = _active_realtime_video_context(
-                state=state,
-                video_ids=active_video_ids,
-            )
-            initial_snapshot_ready = bool(
-                refreshed_context is not None
-                and refreshed_context.snapshot_sequence is not None
-            )
-        except TimeoutError:
-            initial_snapshot_ready = False
     try:
         request = GatewayTurnRequest(
             user_id=user_number,
@@ -1226,8 +1197,7 @@ async def _run_agent_service_chat_turn(
                 user_number=user_number,
                 chat_index=chat_index,
                 content_count=len(contents),
-                waited_for_initial_snapshot=waited_for_initial_snapshot,
-                initial_snapshot_ready=initial_snapshot_ready,
+                freshness_metadata=freshness_metadata,
             ),
             config={
                 "system_prompt_profile": "realtime_phone",
@@ -1246,21 +1216,76 @@ async def _run_agent_service_chat_turn(
         raise AgentServiceProtocolError(str(exc)) from exc
 
 
-def _active_realtime_video_context(
+async def _realtime_video_freshness_metadata(
     *,
     state: AgentServiceConnectionState,
     video_ids: list[str],
-):
-    if not video_ids or state.video_observer is None:
+    latest_speech: str,
+) -> dict[str, int | bool]:
+    if (
+        not video_ids
+        or state.video_observer is None
+        or not _explicit_realtime_visual_reference(latest_speech)
+    ):
+        return {}
+    video_id = video_ids[-1]
+    latest_frame = _latest_decoded_video_frame(video_id)
+    if latest_frame is None:
+        return {}
+    target_sequence = latest_frame.sequence
+    observer = state.video_observer
+    memory_store = getattr(observer, "memory_store", None)
+    snapshot_reader = getattr(memory_store, "snapshot", None)
+    if not callable(snapshot_reader):
+        return {}
+    snapshot = snapshot_reader(video_id)
+    snapshot_sequence = snapshot.last_success_sequence if snapshot is not None else None
+    represented_sequence = getattr(observer, "represented_sequence", None)
+    if callable(represented_sequence):
+        represented_sequence = represented_sequence()
+    if isinstance(represented_sequence, bool) or not isinstance(represented_sequence, int):
+        represented_sequence = snapshot_sequence
+
+    promote = getattr(observer, "promote", None)
+    wait_for_sequence = getattr(observer, "wait_for_snapshot_sequence", None)
+    wait_started_ns = perf_counter_ns()
+    if (snapshot_sequence or 0) < target_sequence:
+        if (represented_sequence or 0) < target_sequence and callable(promote):
+            await promote(latest_frame)
+        if callable(wait_for_sequence):
+            try:
+                await asyncio.wait_for(
+                    wait_for_sequence(target_sequence),
+                    timeout=VIDEO_FRESHNESS_WAIT_SECONDS,
+                )
+            except TimeoutError:
+                pass
+    waited_ms = _elapsed_ms(wait_started_ns, perf_counter_ns())
+    refreshed = snapshot_reader(video_id)
+    refreshed_sequence = refreshed.last_success_sequence if refreshed is not None else None
+    effective_snapshot_sequence = refreshed_sequence or 0
+    return {
+        "realtime_video_target_sequence": target_sequence,
+        "realtime_video_snapshot_sequence": effective_snapshot_sequence,
+        "realtime_video_sequence_gap": max(
+            0,
+            target_sequence - effective_snapshot_sequence,
+        ),
+        "realtime_video_freshness_waited_ms": waited_ms,
+        "realtime_video_freshness_satisfied": effective_snapshot_sequence >= target_sequence,
+    }
+
+
+def _latest_decoded_video_frame(video_id: str) -> VideoFrame | None:
+    from assistant_agent.api import routes_agent
+
+    runtime = routes_agent.get_assistant_runtime_app().runtime
+    store = getattr(runtime, "video_context_store", None)
+    get_recent_frames = getattr(store, "get_recent_frames", None)
+    if not callable(get_recent_frames):
         return None
-    memory_store = getattr(state.video_observer, "memory_store", None)
-    snapshot = getattr(memory_store, "snapshot", None)
-    if not callable(snapshot):
-        return None
-    return project_realtime_video_context(
-        snapshot(video_ids[-1]),
-        now_ms=int(time() * 1000),
-    )
+    frames = get_recent_frames(video_id, limit=1)
+    return frames[-1] if frames else None
 
 
 def _agent_service_gateway_metadata(
@@ -1269,8 +1294,7 @@ def _agent_service_gateway_metadata(
     user_number: str,
     chat_index: Any,
     content_count: int,
-    waited_for_initial_snapshot: bool = False,
-    initial_snapshot_ready: bool = False,
+    freshness_metadata: dict[str, int | bool] | None = None,
 ) -> dict[str, Any]:
     metadata = {
         "transport": "agent_service_websocket",
@@ -1285,9 +1309,7 @@ def _agent_service_gateway_metadata(
             "entry_capabilities": AGENT_SERVICE_ENTRY_CAPABILITIES.to_metadata(),
         },
     }
-    if waited_for_initial_snapshot:
-        metadata["realtime_video_waited_for_initial_snapshot"] = True
-        metadata["realtime_video_initial_snapshot_ready"] = initial_snapshot_ready
+    metadata.update(freshness_metadata or {})
     return metadata
 
 

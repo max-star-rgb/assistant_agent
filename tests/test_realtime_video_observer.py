@@ -73,6 +73,28 @@ class BlockingVideoAdapter:
         )
 
 
+class SequenceBlockingVideoAdapter:
+    def __init__(self, sequences: tuple[int, ...]) -> None:
+        self.started = {sequence: threading.Event() for sequence in sequences}
+        self.release = {sequence: threading.Event() for sequence in sequences}
+        self.completed = {sequence: threading.Event() for sequence in sequences}
+        self.sequences: list[int] = []
+
+    def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+        sequence = int(Path(request.frame_refs[-1]).stem.rsplit("-", 1)[-1])
+        self.sequences.append(sequence)
+        self.started[sequence].set()
+        if not self.release[sequence].wait(timeout=5.0):
+            raise TimeoutError(f"test release timed out for sequence {sequence}")
+        self.completed[sequence].set()
+        return VideoUnderstandingResult(
+            summary=f"frame {sequence}",
+            objects=[f"object-{sequence}"],
+            provider="blocking-test",
+            output_ref=f"provider://video/test/{sequence}",
+        )
+
+
 class FailingVideoAdapter:
     def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
         return VideoUnderstandingResult(
@@ -217,6 +239,104 @@ def test_observer_keeps_one_inflight_and_latest_pending_frame(tmp_path: Path) ->
         await observer.close()
         assert memory.snapshot(VIDEO_ID) is None
         assert list(keyframe_root.rglob("*.jpg")) == []
+
+    asyncio.run(scenario())
+
+
+def test_observer_promotes_latest_frame_and_waits_for_target_snapshot_sequence(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        adapter = SequenceBlockingVideoAdapter((1, 3))
+        registry = ToolRegistry()
+        registry.register(VideoUnderstandingTool(adapter=adapter))
+        memory = RealtimeVideoMemoryStore()
+        keyframe_root = tmp_path / "keyframes"
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=memory,
+            keyframe_root=keyframe_root,
+            collector=AlwaysSelectCollector(),
+        )
+
+        await observer.submit(_decoded_frame(tmp_path, sequence=1))
+        assert await asyncio.to_thread(adapter.started[1].wait, 2.0)
+        await observer.submit(_decoded_frame(tmp_path, sequence=2))
+        promoted = await observer.promote(_decoded_frame(tmp_path, sequence=3))
+
+        pending = memory.snapshot(VIDEO_ID)
+        assert pending is not None
+        assert pending.in_flight is True
+        assert pending.pending_count == 1
+        assert promoted.keyframe_selected is True
+        assert "frame-000002.jpg" not in {
+            path.name for path in keyframe_root.rglob("*.jpg")
+        }
+
+        waiter = asyncio.create_task(observer.wait_for_snapshot_sequence(3))
+        await asyncio.sleep(0)
+        assert not waiter.done()
+
+        adapter.release[1].set()
+        assert await asyncio.to_thread(adapter.completed[1].wait, 2.0)
+        assert await asyncio.to_thread(adapter.started[3].wait, 2.0)
+        await asyncio.sleep(0)
+        assert not waiter.done()
+
+        adapter.release[3].set()
+        await asyncio.wait_for(waiter, 1.0)
+        assert memory.snapshot(VIDEO_ID).last_success_sequence == 3
+        assert adapter.sequences == [1, 3]
+        await observer.close()
+
+    asyncio.run(scenario())
+
+
+def test_observer_concurrent_promotion_cannot_replace_newer_pending_sequence(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        adapter = BlockingVideoAdapter()
+        registry = ToolRegistry()
+        registry.register(VideoUnderstandingTool(adapter=adapter))
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=RealtimeVideoMemoryStore(),
+            keyframe_root=tmp_path / "keyframes",
+            collector=AlwaysSelectCollector(),
+        )
+
+        await observer.submit(_decoded_frame(tmp_path, sequence=1))
+        assert await asyncio.to_thread(adapter.started.wait, 2.0)
+
+        retain_started = threading.Event()
+        release_older_retain = threading.Event()
+        original_retain = observer._retain_keyframe
+
+        def delayed_retain(frame: VideoFrame):
+            if frame.sequence == 3:
+                retain_started.set()
+                assert release_older_retain.wait(timeout=2.0)
+            return original_retain(frame)
+
+        observer._retain_keyframe = delayed_retain
+        older = asyncio.create_task(observer.promote(_decoded_frame(tmp_path, sequence=3)))
+        assert await asyncio.to_thread(retain_started.wait, 2.0)
+        await observer.promote(_decoded_frame(tmp_path, sequence=5))
+        release_older_retain.set()
+        await older
+
+        assert observer.represented_sequence == 5
+        adapter.release.set()
+        await observer.wait_idle()
+        assert adapter.sequences == [1, 5]
+        await observer.close()
 
     asyncio.run(scenario())
 

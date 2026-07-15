@@ -1283,7 +1283,18 @@ class AgentGraphRuntime:
             return
         video_id = request.video_ids[-1]
         snapshot = self.realtime_video_memory_store.snapshot(video_id)
-        context = project_realtime_video_context(snapshot, now_ms=int(time() * 1000))
+        target_sequence = request.metadata.get("realtime_video_target_sequence")
+        if (
+            isinstance(target_sequence, bool)
+            or not isinstance(target_sequence, int)
+            or target_sequence < 0
+        ):
+            target_sequence = None
+        context = project_realtime_video_context(
+            snapshot,
+            now_ms=int(time() * 1000),
+            target_sequence=target_sequence,
+        )
         request.metadata["realtime_video_context"] = context.model_dump(mode="json")
         request.metadata["realtime_video_context_trusted"] = True
 

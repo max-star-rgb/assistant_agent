@@ -1097,7 +1097,7 @@ def test_agent_service_video_chat_allows_provider_timeout_budget() -> None:
     assert captured["request"].timeout_s == 90.0
 
 
-def test_visual_chat_waits_for_existing_background_snapshot_and_uses_trusted_profile() -> None:
+def test_visual_chat_without_decoded_frame_does_not_wait_and_uses_trusted_profile() -> None:
     captured = {}
 
     class Observer:
@@ -1149,8 +1149,8 @@ def test_visual_chat_waits_for_existing_background_snapshot_and_uses_trusted_pro
     )
 
     request = captured["request"]
-    assert observer.wait_calls == 1
-    assert request.metadata["realtime_video_waited_for_initial_snapshot"] is True
+    assert observer.wait_calls == 0
+    assert "realtime_video_target_sequence" not in request.metadata
     assert request.config == {
         "system_prompt_profile": "realtime_phone",
         "channel": "realtime_phone",
@@ -1193,7 +1193,7 @@ def test_greeting_does_not_wait_for_pending_video_snapshot() -> None:
     assert "realtime_video_waited_for_initial_snapshot" not in captured["request"].metadata
 
 
-def test_visual_chat_timeout_forwards_pending_state_without_second_observation(
+def test_visual_chat_without_decoded_frame_does_not_start_freshness_timeout(
     monkeypatch,
 ) -> None:
     captured = {}
@@ -1217,7 +1217,7 @@ def test_visual_chat_timeout_forwards_pending_state_without_second_observation(
             captured["request"] = request
             return object()
 
-    monkeypatch.setattr(agent_service_ws, "INITIAL_VIDEO_CONTEXT_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(agent_service_ws, "VIDEO_FRESHNESS_WAIT_SECONDS", 0.01)
     observer = Observer()
     state = agent_service_ws.AgentServiceConnectionState(
         session_id="s1",
@@ -1238,10 +1238,9 @@ def test_visual_chat_timeout_forwards_pending_state_without_second_observation(
         )
     )
 
-    assert observer.wait_calls == 1
+    assert observer.wait_calls == 0
     request = captured["request"]
-    assert request.metadata["realtime_video_waited_for_initial_snapshot"] is True
-    assert request.metadata["realtime_video_initial_snapshot_ready"] is False
+    assert "realtime_video_target_sequence" not in request.metadata
 
 
 def test_visual_chat_does_not_wait_when_ready_snapshot_is_refreshing() -> None:
@@ -1301,6 +1300,309 @@ def test_visual_chat_does_not_wait_when_ready_snapshot_is_refreshing() -> None:
     )
 
     assert "realtime_video_waited_for_initial_snapshot" not in captured["request"].metadata
+
+
+def test_visual_freshness_promotes_latest_decoded_frame_and_waits_for_target_sequence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+    video_id = "agent-service-video-test"
+    latest = VideoFrame(
+        video_id=video_id,
+        frame_id="frame-5",
+        uri=str(tmp_path / "frame-5.jpg"),
+        sequence=5,
+        timestamp_ms=5_000,
+    )
+
+    class Observer:
+        def __init__(self) -> None:
+            self.memory_store = RealtimeVideoMemoryStore()
+            self.memory_store.record_success(
+                video_id,
+                SemanticKeyframeRecord(
+                    frame_id="frame-3",
+                    uri="/tmp/frame-3.jpg",
+                    sequence=3,
+                    timestamp_ms=3_000,
+                ),
+                VideoUnderstandingResult(
+                    summary="frame 3",
+                    provider="qwen",
+                    output_ref="provider://video/3",
+                ),
+            )
+            self.represented_sequence = 3
+            self.promoted: list[int] = []
+            self.waited: list[int] = []
+
+        async def promote(self, frame: VideoFrame) -> None:
+            self.promoted.append(frame.sequence)
+            self.represented_sequence = frame.sequence
+            self.memory_store.record_success(
+                video_id,
+                SemanticKeyframeRecord(
+                    frame_id=frame.frame_id,
+                    uri=frame.uri,
+                    sequence=frame.sequence,
+                    timestamp_ms=frame.timestamp_ms,
+                ),
+                VideoUnderstandingResult(
+                    summary="frame 5",
+                    provider="qwen",
+                    output_ref="provider://video/5",
+                ),
+            )
+
+        async def wait_for_snapshot_sequence(self, sequence: int) -> None:
+            self.waited.append(sequence)
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    observer = Observer()
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_latest_decoded_video_frame",
+        lambda _video_id: latest,
+        raising=False,
+    )
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=[video_id],
+        video_observer=observer,
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-freshness",
+            latest_speech="眼前是什么？",
+            contents=[{"speechContent": "眼前是什么？"}],
+        )
+    )
+
+    assert observer.promoted == [5]
+    assert observer.waited == [5]
+    metadata = captured["request"].metadata
+    assert metadata["realtime_video_target_sequence"] == 5
+    assert metadata["realtime_video_snapshot_sequence"] == 5
+    assert metadata["realtime_video_sequence_gap"] == 0
+    assert metadata["realtime_video_freshness_satisfied"] is True
+
+
+def test_visual_freshness_waits_for_existing_target_without_second_execution(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+    video_id = "agent-service-video-test"
+    latest = VideoFrame(
+        video_id=video_id,
+        frame_id="frame-5",
+        uri=str(tmp_path / "frame-5.jpg"),
+        sequence=5,
+    )
+
+    class Observer:
+        def __init__(self) -> None:
+            self.memory_store = RealtimeVideoMemoryStore()
+            self.memory_store.record_success(
+                video_id,
+                SemanticKeyframeRecord(frame_id="frame-3", uri="/tmp/3.jpg", sequence=3),
+                VideoUnderstandingResult(
+                    summary="frame 3",
+                    provider="qwen",
+                    output_ref="provider://video/3",
+                ),
+            )
+            self.memory_store.mark_pending(video_id, pending_count=0, in_flight=True)
+            self.represented_sequence = 5
+            self.waited: list[int] = []
+
+        async def promote(self, _frame: VideoFrame) -> None:
+            raise AssertionError("sequence 5 is already in flight")
+
+        async def wait_for_snapshot_sequence(self, sequence: int) -> None:
+            self.waited.append(sequence)
+            self.memory_store.record_success(
+                video_id,
+                SemanticKeyframeRecord(frame_id="frame-5", uri="/tmp/5.jpg", sequence=5),
+                VideoUnderstandingResult(
+                    summary="frame 5",
+                    provider="qwen",
+                    output_ref="provider://video/5",
+                ),
+            )
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    observer = Observer()
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_latest_decoded_video_frame",
+        lambda _video_id: latest,
+        raising=False,
+    )
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=[video_id],
+        video_observer=observer,
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-inflight",
+            latest_speech="摄像头里看到什么？",
+            contents=[{"speechContent": "摄像头里看到什么？"}],
+        )
+    )
+
+    assert observer.waited == [5]
+    assert captured["request"].metadata["realtime_video_freshness_satisfied"] is True
+
+
+def test_visual_freshness_timeout_reports_target_sequence_and_gap(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+    video_id = "agent-service-video-test"
+    latest = VideoFrame(
+        video_id=video_id,
+        frame_id="frame-5",
+        uri=str(tmp_path / "frame-5.jpg"),
+        sequence=5,
+    )
+
+    class Observer:
+        def __init__(self) -> None:
+            self.memory_store = RealtimeVideoMemoryStore()
+            self.memory_store.record_success(
+                video_id,
+                SemanticKeyframeRecord(frame_id="frame-3", uri="/tmp/3.jpg", sequence=3),
+                VideoUnderstandingResult(
+                    summary="frame 3",
+                    provider="qwen",
+                    output_ref="provider://video/3",
+                ),
+            )
+            self.represented_sequence = 3
+            self.promoted: list[int] = []
+
+        async def promote(self, frame: VideoFrame) -> None:
+            self.promoted.append(frame.sequence)
+            self.represented_sequence = frame.sequence
+
+        async def wait_for_snapshot_sequence(self, _sequence: int) -> None:
+            await asyncio.Event().wait()
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    monkeypatch.setattr(agent_service_ws, "VIDEO_FRESHNESS_WAIT_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_latest_decoded_video_frame",
+        lambda _video_id: latest,
+        raising=False,
+    )
+    observer = Observer()
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=[video_id],
+        video_observer=observer,
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-timeout-sequence",
+            latest_speech="眼前是什么？",
+            contents=[{"speechContent": "眼前是什么？"}],
+        )
+    )
+
+    assert observer.promoted == [5]
+    metadata = captured["request"].metadata
+    assert metadata["realtime_video_target_sequence"] == 5
+    assert metadata["realtime_video_snapshot_sequence"] == 3
+    assert metadata["realtime_video_sequence_gap"] == 2
+    assert metadata["realtime_video_freshness_waited_ms"] >= 0
+    assert metadata["realtime_video_freshness_satisfied"] is False
+
+
+def test_greeting_freshness_does_not_promote_or_wait_for_latest_frame(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+    latest = VideoFrame(
+        video_id="agent-service-video-test",
+        frame_id="frame-5",
+        uri=str(tmp_path / "frame-5.jpg"),
+        sequence=5,
+    )
+
+    class Observer:
+        async def promote(self, _frame: VideoFrame) -> None:
+            raise AssertionError("greeting must not promote video")
+
+        async def wait_for_snapshot_sequence(self, _sequence: int) -> None:
+            raise AssertionError("greeting must not wait for video")
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_latest_decoded_video_frame",
+        lambda _video_id: latest,
+        raising=False,
+    )
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=[latest.video_id],
+        video_observer=Observer(),
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-greeting-freshness",
+            latest_speech="你好",
+            contents=[{"speechContent": "你好"}],
+        )
+    )
+
+    assert "realtime_video_target_sequence" not in captured["request"].metadata
 
 
 def test_video_handler_rotates_observer_before_selecting_a_new_video_id(monkeypatch) -> None:

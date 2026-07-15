@@ -190,15 +190,26 @@ def project_realtime_video_context(
     snapshot: RealtimeVideoSnapshot | None,
     *,
     now_ms: int,
+    target_sequence: int | None = None,
 ) -> RealtimeVideoContext:
     """Project internal rolling state without paths, raw errors, or media data."""
 
     if snapshot is None:
-        return RealtimeVideoContext()
+        return RealtimeVideoContext(
+            target_sequence=target_sequence,
+            sequence_gap=target_sequence,
+        )
     has_success = snapshot.last_success_sequence is not None
     pending = snapshot.in_flight or snapshot.pending_count > 0
+    sequence_gap = (
+        max(0, target_sequence - (snapshot.last_success_sequence or 0))
+        if target_sequence is not None
+        else None
+    )
     if has_success and pending:
         status: RealtimeVideoContextStatus = "refreshing"
+    elif has_success and sequence_gap:
+        status = "stale"
     elif has_success and snapshot.last_observation_status == "failed":
         status = "stale"
     elif has_success:
@@ -211,6 +222,8 @@ def project_realtime_video_context(
         status = "unavailable"
     diagnostics = snapshot.observation_diagnostics
     published_at_ms = diagnostics.published_at_ms if diagnostics is not None else None
+    capture_age = _past_age_ms(snapshot.last_success_timestamp_ms, now_ms)
+    publish_age = _past_age_ms(published_at_ms, now_ms)
     error_code = snapshot.last_error.get("code") if isinstance(snapshot.last_error, dict) else None
     return RealtimeVideoContext(
         status=status,
@@ -221,7 +234,11 @@ def project_realtime_video_context(
         events=_clip_items(snapshot.events, limit=3),
         scene=_clip_text(snapshot.scene or "", 100) or None,
         snapshot_sequence=snapshot.last_success_sequence,
-        snapshot_age_ms=max(0, now_ms - published_at_ms) if published_at_ms is not None else None,
+        target_sequence=target_sequence,
+        sequence_gap=sequence_gap,
+        snapshot_age_ms=capture_age if capture_age is not None else publish_age,
+        frame_capture_age_ms=capture_age,
+        snapshot_publish_age_ms=publish_age,
         observation_latency_ms=(diagnostics.observation_latency_ms if diagnostics is not None else None),
         provider=_clip_text(snapshot.provider or "", 80) or None,
         model=_clip_text(snapshot.model or "", 120) or None,
@@ -229,6 +246,12 @@ def project_realtime_video_context(
         in_flight=snapshot.in_flight,
         error_code=_clip_text(str(error_code), 80) if error_code else None,
     )
+
+
+def _past_age_ms(value: int | None, now_ms: int) -> int | None:
+    if value is None or value > now_ms:
+        return None
+    return now_ms - value
 
 
 def _clip_items(values: list[str], *, limit: int) -> list[str]:
