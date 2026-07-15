@@ -48,6 +48,8 @@ DEFAULT_HAODANKU_SORT = "0"
 HAODANKU_LINKED_MIN_BACK = 20
 HAODANKU_LINKED_MEDIUM_BACK = 50
 HAODANKU_LINKED_BACK_MULTIPLIER = 3
+HAODANKU_JD_BACK_VALUES = (1, 2, 5, 10, 20, 30, 50)
+HAODANKU_PDD_BACK_VALUES = (10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
 COUPON_LINK_FIELDS = (
     "couponurl",
     "coupon_url",
@@ -177,7 +179,9 @@ class HaodankuProductSearchAdapter:
                 used_filters[used_key][platform] = platform_metadata
 
         if items:
-            filter_request = request.model_copy(update={"top_k": len(items)})
+            filter_request = request.model_copy(
+                update={"platforms": requested_platforms, "top_k": len(items)}
+            )
             items = filter_products(items, filter_request)
         used_filters["per_platform_top_k"] = request.top_k
         if requested_platforms == ["taobao"]:
@@ -210,6 +214,8 @@ class HaodankuProductSearchAdapter:
                 default=DEFAULT_HAODANKU_BACK,
                 allowed_values=HAODANKU_BACK_VALUES,
             ).provider_limit
+        elif platform in {"jd", "pdd"}:
+            provider_limit = _normalize_platform_back(platform, top_k)
         url = build_haodanku_platform_search_url(
             base_url=self.config.base_url,
             api_key=self.config.api_key or "",
@@ -271,6 +277,8 @@ class HaodankuPriceCompareAdapter:
         self._search_adapter = search_adapter or HaodankuProductSearchAdapter(config)
 
     def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
+        normalized_platforms = _requested_platforms(request.platforms) if request.platforms else []
+        normalized_request = request.model_copy(update={"platforms": normalized_platforms})
         items = list(request.items)
         if not items:
             if not request.query:
@@ -282,7 +290,11 @@ class HaodankuPriceCompareAdapter:
                     recoverable=True,
                 )
             search_result = self._search_adapter.search(
-                ProductSearchRequest(query=request.query, top_k=request.top_k)
+                ProductSearchRequest(
+                    query=request.query,
+                    platforms=normalized_platforms,
+                    top_k=request.top_k,
+                )
             )
             if not search_result.items:
                 if not search_result.errors:
@@ -303,7 +315,7 @@ class HaodankuPriceCompareAdapter:
                 )
             items = search_result.items
 
-        result = compare_products(items, request, provider=self.provider)
+        result = compare_products(items, normalized_request, provider=self.provider)
         if result.errors:
             return result
         converted = [self._convert_offer(offer, items) for offer in result.offers]
@@ -397,16 +409,40 @@ def build_haodanku_platform_search_url(
         "jd": "unify_jdgoods_search",
         "pdd": "unify_pdd_goods_search",
     }[platform]
-    size_key = "limit" if platform == "pdd" else "back"
-    query = urllib.parse.urlencode({"apikey": api_key, "keyword": keyword, size_key: limit, "min_id": 1})
+    provider_limit = _normalize_platform_back(platform, limit)
+    query = urllib.parse.urlencode(
+        {"apikey": api_key, "keyword": keyword, "back": provider_limit, "min_id": 1}
+    )
     return f"{_normalize_haodanku_base_url(base_url)}/{endpoint}?{query}"
+
+
+def _normalize_platform_back(platform: str, requested: int) -> int:
+    """Map provider-neutral result counts onto platform-supported page sizes."""
+
+    allowed_values = {
+        "jd": HAODANKU_JD_BACK_VALUES,
+        "pdd": HAODANKU_PDD_BACK_VALUES,
+    }.get(platform)
+    if allowed_values is None:
+        return requested
+    return normalize_provider_limit(
+        requested,
+        default=allowed_values[0],
+        allowed_values=allowed_values,
+    ).provider_limit
 
 
 def _requested_platforms(platforms: list[str]) -> list[str]:
     requested = platforms or ["taobao", "jd", "pdd"]
     normalized: list[str] = []
     for platform in requested:
-        value = "taobao" if platform == "tmall" else platform
+        value = {
+            "淘宝": "taobao",
+            "天猫": "taobao",
+            "tmall": "taobao",
+            "京东": "jd",
+            "拼多多": "pdd",
+        }.get(platform.strip().lower(), platform.strip().lower())
         if value in {"taobao", "jd", "pdd"} and value not in normalized:
             normalized.append(value)
     return normalized or ["taobao", "jd", "pdd"]

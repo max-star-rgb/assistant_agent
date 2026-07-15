@@ -7,12 +7,39 @@ from assistant_agent.providers.haodanku_product_search import (
     HaodankuConfig,
     HaodankuPriceCompareAdapter,
     HaodankuProductSearchAdapter,
+    build_haodanku_platform_search_url,
     map_haodanku_platform_items,
 )
 from assistant_agent.schemas.products import ProductSearchRequest
 from assistant_agent.schemas.products import PriceCompareRequest, ProductResult
 from assistant_agent.schemas.products import ProductProviderError, ProductSearchResult
 from assistant_agent.tools.product_search_tool import ProductSearchTool
+
+
+def test_pdd_search_url_normalizes_top_k_to_supported_back() -> None:
+    url = build_haodanku_platform_search_url(
+        base_url="https://v3.api.haodanku.com",
+        api_key="key",
+        platform="pdd",
+        keyword="蓝牙耳机",
+        limit=3,
+    )
+
+    assert "back=10" in url
+    assert "limit=" not in url
+
+
+def test_jd_search_url_normalizes_top_k_to_supported_back() -> None:
+    url = build_haodanku_platform_search_url(
+        base_url="https://v3.api.haodanku.com",
+        api_key="key",
+        platform="jd",
+        keyword="蓝牙耳机",
+        limit=3,
+    )
+
+    assert "back=5" in url
+    assert "limit=" not in url
 
 
 def test_maps_taobao_jd_and_pdd_into_one_contract() -> None:
@@ -54,7 +81,7 @@ def test_search_runs_three_platforms_concurrently_and_keeps_partial_success(monk
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     result = HaodankuProductSearchAdapter(HaodankuConfig(api_key="key")).search(
-        ProductSearchRequest(query="手机", top_k=3)
+        ProductSearchRequest(query="手机", platforms=["淘宝", "京东", "拼多多"], top_k=3)
     )
 
     assert set(seen) == {"supersearch", "unify_jdgoods_search", "unify_pdd_goods_search"}
@@ -140,3 +167,27 @@ def test_compare_returns_structured_no_products_when_all_searches_are_empty() ->
 
     assert result.success is False
     assert result.errors[0].code == "price_no_products"
+
+
+def test_compare_normalizes_chinese_platform_filters() -> None:
+    item = ProductResult(
+        product_id="tb:1",
+        provider_item_id="1",
+        title="蓝牙耳机",
+        price=29.9,
+        platform="taobao",
+        product_url="https://item.taobao.com/item.htm?id=1",
+        image_url="https://img.example/tb.jpg",
+    )
+
+    result = HaodankuPriceCompareAdapter(HaodankuConfig(api_key=None)).compare(
+        PriceCompareRequest(
+            query="蓝牙耳机",
+            items=[item],
+            platforms=["淘宝", "京东", "拼多多"],
+            top_k=9,
+        )
+    )
+
+    assert result.success is True
+    assert [offer.platform for offer in result.offers] == ["taobao"]
