@@ -60,10 +60,6 @@ def _apply_test_layer_markers(item) -> None:
         item.add_marker(pytest.mark.slow)
         return
 
-    if filename.startswith("test_phase"):
-        item.add_marker(pytest.mark.regression)
-        item.add_marker(pytest.mark.slow)
-
     if "eval" in filename:
         item.add_marker(pytest.mark.eval)
         item.add_marker(pytest.mark.slow)

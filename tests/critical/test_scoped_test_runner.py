@@ -331,6 +331,7 @@ def test_test_documentation_routes_scoped_and_full_commands() -> None:
 def test_final_repository_layout_uses_only_critical_and_scope_directories() -> None:
     scope_map = MODULE.load_scope_map(PROJECT_ROOT / "tests/scope-map.toml")
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    conftest = (PROJECT_ROOT / "tests/conftest.py").read_text(encoding="utf-8")
 
     assert scope_map.critical_paths == ("tests/critical",)
     assert {
@@ -349,6 +350,15 @@ def test_final_repository_layout_uses_only_critical_and_scope_directories() -> N
         )
     }
     assert 'testpaths = ["tests/critical"]' in pyproject
+    legacy_phase_rules = {
+        "phase-level regression marker": "phase-level behavior guards" in pyproject,
+        "test_phase filename hook": 'filename.startswith("test_phase")' in conftest,
+    }
+    assert not any(legacy_phase_rules.values()), legacy_phase_rules
+    assert (
+        '"regression: named historical defect or compatibility behavior guards"'
+        in pyproject
+    )
 
 
 def test_full_mode_runs_final_offline_suite(monkeypatch, tmp_path: Path) -> None:

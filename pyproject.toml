@@ -24,5 +24,5 @@ markers = [
     "slow: broader regression checks that are not part of the small-change fast path",
     "integration: opt-in integration checks that may require explicit environment setup",
     "e2e: end-to-end demo or multi-layer workflow checks",
-    "regression: historical or phase-level behavior guards",
+    "regression: named historical defect or compatibility behavior guards",
 ]
