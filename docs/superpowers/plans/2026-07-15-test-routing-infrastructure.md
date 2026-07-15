@@ -121,7 +121,7 @@ def test_offline_environment_removes_integration_opt_in() -> None:
 
 - [x] **步骤 2：运行 RED 后实现 CLI**
 
-互斥入口为可重复 `--scope NAME`、`--changed BASE..HEAD`、`--full-legacy`。`--` 后参数原样传给 pytest。普通模式运行 critical 与选中 scope；full legacy 固定运行 `python -m pytest tests -m "not integration"`。执行前打印 mode、scopes、test paths，并原样传播 pytest 退出码。
+互斥入口为可重复 `--scope NAME`、`--changed BASE..HEAD`、`--full`。`--` 后参数原样传给 pytest。普通模式运行 critical 与选中 scope；full 固定运行 critical 与全部 scope 并排除 integration。执行前打印 mode、scopes、test paths，并原样传播 pytest 退出码。
 
 - [x] **步骤 3：写 Git 与退出码测试**
 
@@ -217,9 +217,9 @@ def test_test_documentation_routes_scoped_and_legacy_commands() -> None:
         encoding="utf-8"
     )
     assert "run_scoped_tests.py --changed" in readme
-    assert "run_scoped_tests.py --full-legacy" in readme
+    assert "run_scoped_tests.py --full " in readme
     assert "普通开发" in agents and "run_scoped_tests.py" in agents
-    assert "full-legacy" in skill
+    assert "--full" in skill
 ```
 
 - [x] **步骤 2：确认 RED 后更新文档**
@@ -256,7 +256,7 @@ git diff --check
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py \
-  --full-legacy -- --collect-only -q
+  --full -- --collect-only -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -m fast -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   .codex/skills/assistant-agent-test-governance/scripts/collect_test_evidence.py \

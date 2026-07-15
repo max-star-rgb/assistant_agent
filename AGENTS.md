@@ -80,7 +80,7 @@ User / CLI / API / Web UI
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --scope tools -- -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --changed BASE..HEAD -- -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -m fast -q
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --full-legacy -- -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --full -- -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_demo_flows.py
 ```
@@ -89,7 +89,7 @@ User / CLI / API / Web UI
 
 1. 开发循环运行新增测试和直接相关回归；阶段结束使用 `run_scoped_tests.py --scope ...`，已提交范围可使用 `--changed BASE..HEAD`。
 2. 涉及跨层功能时，在提交前补充并运行一条离线端到端测试，贯穿真实仓库调用链，但使用 scripted/fake Provider，禁止默认联网。
-3. `--full-legacy` 只用于跨 scope 高风险变更、共享测试基础设施、发布/合并门槛或用户明确要求，不要求每轮局部修改后运行。
+3. `--full` 只用于跨 scope 高风险变更、共享测试基础设施、发布/合并门槛或用户明确要求，不要求每轮局部修改后运行。
 4. scoped 测试结构、scope 列表、marker 和新增测试方法以 `tests/README.md` 为准。
 
 本地 mock 服务：

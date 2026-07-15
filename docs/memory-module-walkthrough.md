@@ -188,8 +188,8 @@ typed fact，可以理解成“有固定标签和来源的事实卡片”。除�
 - `src/assistant_agent/schemas/memory_intelligence.py`
 - `src/assistant_agent/memory/facts.py`
 - `src/assistant_agent/memory/conflict_resolver.py`
-- `tests/test_memory_fact_status.py`
-- `tests/test_memory_manager_fact_conflicts.py`
+- `tests/scopes/memory/test_memory_fact_status.py`
+- `tests/scopes/memory/test_memory_manager_fact_conflicts.py`
 
 ### SQLite FTS 和 framework mode 分别是什么？
 
@@ -440,9 +440,9 @@ snapshot，就是“现场快照”：它把当前 session、conversation、memo
 - `src/assistant_agent/memory/`
 - `src/assistant_agent/services/memory_audit.py`
 - `src/assistant_agent/services/memory_snapshot.py`
-- `tests/test_memory_manager.py`
-- `tests/test_memory_store_boundary.py`
-- `tests/test_memory_retrieval_eval.py`
+- `tests/scopes/memory/test_memory_manager.py`
+- `tests/scopes/memory/test_memory_store_boundary.py`
+- `tests/scopes/memory/test_memory_retrieval_eval.py`
 
 ## 常见误解
 

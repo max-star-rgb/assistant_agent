@@ -222,7 +222,7 @@ Confirm local default behavior:
 $PY scripts/check_pilot_readiness.py
 $PY scripts/collect_pilot_evidence.py --strict
 $PY scripts/check_env.py
-$PY -m pytest tests/test_agent_pilot_readiness.py tests/test_api_agent_graph_runtime.py
+$PY -m pytest tests/scopes/runtime/test_agent_pilot_readiness.py tests/scopes/api/test_api_agent_graph_runtime.py
 ```
 
 ## Current Limits

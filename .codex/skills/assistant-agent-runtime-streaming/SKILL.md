@@ -36,9 +36,9 @@ Use this skill for runtime and provider streaming work. `docs/runtime-event-stre
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
-  tests/test_agent_runtime_stream.py tests/test_async_chat_stream.py \
-  tests/test_llm_events.py tests/test_runtime_provider_streaming.py \
-  tests/test_shared_assistant_run_service.py -q
+  tests/scopes/runtime/test_agent_runtime_stream.py tests/scopes/runtime/test_async_chat_stream.py \
+  tests/scopes/runtime/test_llm_events.py tests/scopes/runtime/test_runtime_provider_streaming.py \
+  tests/scopes/context/test_shared_assistant_run_service.py -q
 git diff --check -- AGENTS.md README.md docs/runtime-event-stream-architecture.md \
   .codex/skills/assistant-agent-runtime-streaming src tests
 ```

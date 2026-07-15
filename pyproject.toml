@@ -10,10 +10,11 @@ dependencies = ["fastapi>=0.115.0", "openai>=2.0", "pydantic>=2.0", "uvicorn>=0.
 dev = ["httpx2>=0.0.1", "pytest>=8.0"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/critical"]
 pythonpath = ["src"]
 markers = [
-    "fast: unit and contract checks suitable for small scoped changes",
+    "critical: cross-scope offline safety and contract baseline",
+    "fast: critical offline checks suitable for the shortest feedback loop",
     "unit: isolated tests for local data models, helpers, and small services",
     "contract: adapter and tool contract checks",
     "api: HTTP, WebSocket, CLI, or external entry-layer checks",

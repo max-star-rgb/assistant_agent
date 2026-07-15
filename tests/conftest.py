@@ -35,7 +35,7 @@ PROVIDER_ENV_KEYS = {
 
 
 def pytest_collection_modifyitems(config, items):
-    """Apply coarse test-layer markers without moving the existing test tree."""
+    """Apply stable cost/layer markers to the final test tree."""
 
     for item in items:
         _apply_test_layer_markers(item)
@@ -46,13 +46,8 @@ def _apply_test_layer_markers(item) -> None:
     normalized_path = path.as_posix()
     filename = path.name
 
-    if _path_is_under_tests_dir(normalized_path, "unit"):
-        item.add_marker(pytest.mark.unit)
-        item.add_marker(pytest.mark.fast)
-        return
-
-    if _path_is_under_tests_dir(normalized_path, "contracts"):
-        item.add_marker(pytest.mark.contract)
+    if _path_is_under_tests_dir(normalized_path, "critical"):
+        item.add_marker(pytest.mark.critical)
         item.add_marker(pytest.mark.fast)
         return
 

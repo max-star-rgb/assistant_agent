@@ -48,8 +48,8 @@ Choose the smallest validation that covers the change:
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest <targeted tests>
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_fact_contract.py tests/test_memory_conflict_resolver.py tests/test_memory_manager_fact_conflicts.py tests/test_memory_fact_status.py tests/test_memory_retrieval_ranking.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_framework_adapters.py tests/test_framework_memory_store.py tests/test_memory_framework_config.py tests/test_memory_framework_bakeoff.py tests/test_memory_framework_bakeoff_cli.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/memory/test_memory_fact_contract.py tests/scopes/memory/test_memory_conflict_resolver.py tests/scopes/memory/test_memory_manager_fact_conflicts.py tests/scopes/memory/test_memory_fact_status.py tests/scopes/memory/test_memory_retrieval_ranking.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/memory/test_memory_framework_adapters.py tests/scopes/memory/test_framework_memory_store.py tests/scopes/memory/test_memory_framework_config.py tests/scopes/memory/test_memory_framework_bakeoff.py tests/scopes/memory/test_memory_framework_bakeoff_cli.py
 git diff --check -- AGENTS.md docs/memory-service-architecture.md src tests .codex/skills
 ```
 

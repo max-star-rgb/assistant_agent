@@ -127,7 +127,7 @@ Realtime cancellation is a safety boundary:
 The focused gate is:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_personal_realtime_assistant_runtime_gate.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --scope gateway -- -q
 ```
 
 ## Acceptance Commands
@@ -135,7 +135,7 @@ The focused gate is:
 Run these before declaring the realtime runtime loop healthy:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase1_realtime_loop_deep_gate.py tests/test_gateway_api.py tests/test_realtime_call_simulator.py tests/test_personal_realtime_assistant_runtime_gate.py tests/test_realtime_runtime_operator_surface.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --scope gateway -- -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_realtime_call_simulator.py --scenario all --quiet
 ```
 

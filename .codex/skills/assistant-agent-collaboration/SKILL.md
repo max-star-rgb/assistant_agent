@@ -41,7 +41,7 @@ Inspect these areas as relevant:
 - `src/assistant_agent/services/agent_control_plane.py`: redacted router run, route, delegation, budget, audit and replay-preview records.
 - `src/assistant_agent/tools/agent_delegation_tool.py`: thin agent-callable `delegate_to_agent` tool.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`: local readiness and evidence workflows.
-- `tests/test_agent_communication_routing.py`, `tests/test_agent_router.py`, `tests/test_agent_routing_policy.py`, `tests/test_api_a2a.py`, `tests/test_a2a_json_rpc_transport.py`, and `tests/test_agent_pilot_readiness.py`.
+- `tests/scopes/runtime/test_agent_communication_routing.py`, `tests/scopes/runtime/test_agent_router.py`, `tests/scopes/runtime/test_agent_routing_policy.py`, `tests/scopes/api/test_api_a2a.py`, `tests/scopes/runtime/test_a2a_json_rpc_transport.py`, and `tests/scopes/runtime/test_agent_pilot_readiness.py`.
 
 ## Working Rules
 
@@ -64,9 +64,9 @@ Choose the smallest validation that covers the change:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_communication_routing.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_agent_router.py tests/test_agent_routing_policy.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_api_a2a.py tests/test_a2a_json_rpc_transport.py tests/test_agent_pilot_readiness.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/runtime/test_agent_communication_routing.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/runtime/test_agent_router.py tests/scopes/runtime/test_agent_routing_policy.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/api/test_api_a2a.py tests/scopes/runtime/test_a2a_json_rpc_transport.py tests/scopes/runtime/test_agent_pilot_readiness.py
 git diff --check -- AGENTS.md docs/agent-communication-routing.md src tests scripts .codex/skills
 ```
 

@@ -1,68 +1,88 @@
 # 测试分层与路由
 
-本文件是测试结构和运行方式的人类可读权威；`tests/scope-map.toml` 是 scoped runner
-使用的机器可读权威。第一阶段保留现有全量套件，不改变裸 `pytest` 的收集行为，同时为普通开发
-提供更短的反馈路径。
+本文件是测试结构和运行方式的人类可读权威；`tests/scope-map.toml` 是源码到测试范围的
+机器可读权威。旧的根目录、`unit`、`contracts`、phase、demo、eval 和 smoke 汇总布局已移除。
 
-## 日常运行
+## 最终目录
 
-普通开发优先运行 critical bootstrap 与受影响 scope：
+```text
+tests/
+  critical/       # 裸 pytest 默认收集的跨 scope 安全底座
+  scopes/
+    prompt/
+    context/
+    tools/
+    gateway/
+    runtime/
+    memory/
+    providers/
+    api/
+  integration/    # 显式 opt-in；不属于默认 offline suite
+  conftest.py
+  scope-map.toml
+```
+
+critical 覆盖 Provider/offline 安全、Tool 治理、Memory read/write policy、Gateway 生命周期、
+runtime 恢复、redaction 和测试路由。普通领域行为只进入一个权威 scope。高延迟、多进程或需要
+外部环境的证据进入 integration。
+
+## 命令
 
 ```bash
-# 已知模块边界时，可重复传入 --scope
+# 最快安全底座；裸 pytest 与此等价
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
+
+# 已知模块边界，可重复传入 --scope
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --scope tools -- -q
 
 # 按已提交 Git range 自动选择 scope
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --changed BASE..HEAD -- -q
 
-# 显式运行保留的全量离线回归
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --full-legacy -- -q
+# critical 与全部 scope 的完整离线套件
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --full -- -q
 ```
 
-runner 始终使用 mock/offline profile，移除 integration opt-in，并拒绝未映射的
-`src/assistant_agent/**` 路径。无法判断范围时应补充 scope map 或显式选择测试，不静默退化为漏测。
+runner 强制 mock/offline profile、禁用 dotenv，并移除 integration opt-in。源码路径无法映射、
+scope 不存在或为空时会保守失败。修改 `tests/**`、runner、scope map、conftest 或 pytest 配置
+会选择所有 scope。
 
-当前 critical bootstrap 是 `tests/unit` 与 `tests/contracts`；`tests/critical` 只是后续迁移入口。
-当前 scope 为 `prompt`、`context`、`tools`、`gateway`、`runtime`、`memory`、`providers`、`api`。
-
-## 何时运行全量 Legacy
-
-以下情况运行 `--full-legacy`：
-
-- 变更跨越多个 scope 且共享行为难以局部证明；
-- 修改 `tests/conftest.py`、scope map、runner、pytest 配置或共享 fixture/builder；
-- 发布、合并主干前的最终门槛；
-- 用户明确要求全量回归。
-
-普通局部开发不因习惯而反复运行全量套件。当前 CI 和裸 `pytest` 行为保持不变，等 scoped
-基线稳定后再单独决定是否切换默认入口。
+`--full` 只用于跨 scope 高风险变更、共享测试基础设施、发布/合并门槛或用户明确要求。
+普通局部开发不反复运行完整套件。
 
 ## Marker 语义
 
-- `fast`：适合局部开发循环的单元和契约检查。
+- `critical`：所有变更都必须守住的跨 scope 离线底座。
+- `fast`：当前与 critical 同步，适合最短反馈循环。
 - `unit`：隔离的模型、helper 或本地 service 行为。
-- `contract`：adapter、tool 或边界契约。
+- `contract`：adapter、tool 或协议边界契约。
 - `api`：HTTP、WebSocket、CLI 或入口层行为。
 - `runtime`：assistant loop、graph、gateway、realtime 或 routing 行为。
-- `eval`：完全离线的评测样例。
-- `smoke`：smoke 脚本和运维入口检查。
-- `slow`：不适合小变更反馈路径的宽回归。
-- `integration`：需要显式环境配置的 opt-in 检查。
-- `e2e`：跨层业务流。
-- `regression`：有明确历史缺陷或阶段行为价值的保护。
+- `integration`：显式 opt-in 的高延迟、多进程或外部环境检查。
+- `regression`：必须说明具体历史缺陷或兼容目的的保护。
 
-marker 描述成本和边界，不替代 scope。真实 Provider 测试仍只能通过显式 integration/profile
-配置启用，默认测试不得联网。
+scope 决定“改了什么要跑什么”，marker 描述成本和层级，两者不能互相替代。默认测试不得联网
+或调用真实 Provider。
 
-## 新增与迁移测试的方法
+## 新增测试方法
 
-- 先确定要保护的契约、边界或历史失败模式，再写能先失败的最小测试。
-- 优先在最窄层验证；只有单测无法证明跨层 wiring 时才增加离线端到端测试。
-- 每个测试保持单一、可定位的失败原因；不要把许多小测试合并成难诊断的大测试。
-- 新测试必须进入一个明确 scope；只有跨模块不可缺少、快速、稳定且完全离线的契约才进入 critical。
-- 迁移旧测试时应移动或重写并删除旧副本，不复制形成两份权威。
-- 测试数量、覆盖率、年龄或耗时只能帮助排序，不能单独作为删除依据。
-- 删除或合并必须命名保留测试，并证明断言、边界、失败模式和历史回归价值均已覆盖。
+每个新增测试必须说明并落实：
 
-全仓测试审计、去重、分层、marker 治理或清理仅在用户明确要求时使用
+1. 保护的稳定契约或具名历史故障；
+2. 现有测试未覆盖的边界；
+3. 唯一的架构 scope 和最窄权威 layer；
+4. 可直接定位的单一失败原因；
+5. 时间、随机值、网络和全局状态的确定性处理。
+
+执行规则：
+
+- TDD：先观察正确原因的失败，再写最小实现并验证 GREEN。
+- 只有跨模块不可缺少、快速、稳定、完全离线的契约才能进入 critical。
+- 单测能证明的行为不再增加跨层重复；只有 wiring 无法在窄层证明时才增加离线端到端测试。
+- 禁止新增 phase 编号、汇总型测试文件和真实 sleep；时间使用注入时钟或事件。
+- 参数化只合并 setup、边界、失败模式和断言等价的用例，不能牺牲失败定位。
+- 新 regression 必须替代旧测试时，在同一变更删除旧副本。
+- 数量、覆盖率、年龄或耗时只能帮助排序，不能单独授权删除。
+- 删除或合并必须命名保留测试，或明确说明被保护行为已不再受支持。
+
+全仓审计、去重、分层、marker 治理或清理仅在用户明确要求时使用
 `.codex/skills/assistant-agent-test-governance`。

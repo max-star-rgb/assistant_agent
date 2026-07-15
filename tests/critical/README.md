@@ -1,7 +1,8 @@
 # Critical 测试迁移入口
 
-当前阶段尚未改变裸 `pytest` 的收集范围。scoped runner 暂时把现有
-`tests/unit` 与 `tests/contracts` 作为 critical bootstrap，保证基础契约和测试路由本身始终执行。
+裸 `pytest` 只收集本目录。这里保存跨 scope 不可缺少、足够快且完全离线的系统级不变量：
+Provider/offline 安全、Tool 治理、Memory policy、Gateway 生命周期、runtime 恢复、redaction
+以及测试路由本身。
 
-后续只把跨模块不可缺少、足够快且完全离线的测试迁入本目录。迁移时应移动或重写原测试，
-并删除旧副本，避免形成两份测试权威。
+普通领域行为不得放入 critical；应进入 `tests/scopes/<domain>`。高延迟、多进程或外部环境
+行为进入显式 opt-in 的 `tests/integration`。

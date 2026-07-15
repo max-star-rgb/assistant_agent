@@ -176,13 +176,13 @@ def offline_environment(base: Mapping[str, str]) -> dict[str, str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--scope-map", type=Path, default=Path("tests/scope-map.toml"))
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--scope", action="append", dest="scopes", metavar="NAME")
     mode.add_argument("--changed", metavar="BASE..HEAD")
-    mode.add_argument("--full-legacy", action="store_true")
+    mode.add_argument("--full", action="store_true")
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     return parser
 
@@ -197,10 +197,10 @@ def main(argv: list[str] | None = None) -> int:
         extra_args = extra_args[1:]
 
     try:
-        if args.full_legacy:
-            mode = "full-legacy"
+        if args.full:
+            mode = "full"
             scopes: tuple[str, ...] = ()
-            test_paths = ("tests",)
+            test_paths = ("tests/critical", "tests/scopes")
             pytest_args = ["-m", "not integration", *extra_args]
         else:
             scope_map_path = args.scope_map
@@ -222,7 +222,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"mode: {mode}")
-    print(f"scopes: {', '.join(scopes) if scopes else '(critical only)'}")
+    if mode == "full":
+        scope_label = "(all scopes)"
+    else:
+        scope_label = ", ".join(scopes) if scopes else "(critical only)"
+    print(f"scopes: {scope_label}")
     print("test_paths:")
     for path in test_paths:
         print(f"  - {path}")

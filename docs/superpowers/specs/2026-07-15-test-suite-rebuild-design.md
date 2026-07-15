@@ -2,8 +2,8 @@
 
 ## 状态
 
-本设计已于 2026-07-15 在对话中确认。第一阶段 scoped test routing 基础设施已实施；
-旧测试的逐 scope 迁移与清理仍按本设计后续推进。
+本设计已于 2026-07-15 在对话中确认并完成实施。critical 底座、八个 scope、最终 runner、
+默认 pytest 入口、legacy 清理和高延迟 integration 重分类均已落地。
 
 ## 问题
 
@@ -114,12 +114,12 @@ test_paths = ["tests/scopes/gateway/"]
 ```bash
 python scripts/run_scoped_tests.py --scope tools
 python scripts/run_scoped_tests.py --changed BASE..HEAD
-python scripts/run_scoped_tests.py --full-legacy
+python scripts/run_scoped_tests.py --full
 ```
 
 - `--scope` 运行 `tests/critical/` 和指定 scope。
 - `--changed` 把 Git 变更映射为 scope，运行 critical 与所有受影响 scope 的并集。未知源码路径保守失败并给出可执行提示，不能静默跳过测试。
-- `--full-legacy` 强制 mock/offline 环境并显式运行排除 integration 的旧完整套件。
+- `--full` 强制 mock/offline 环境并运行 critical 与全部 scope，排除 integration。
 
 Runner 执行前打印选择出的 scope 和 pytest 路径，且绝不启用真实 Provider。
 
@@ -230,3 +230,29 @@ critical 底座就绪后，裸 `pytest` 只收集 `tests/critical/`。Codex 的�
 - critical 覆盖列出的安全不变量并满足运行目标。
 - 每个被删除的旧测试都有具名保留测试或明确的行为移除说明。
 - Runner 测试覆盖单 scope、多 scope、未映射路径、非法 Git range、pytest 退出码传播、offline 环境强制和 tracked file 不变性。
+
+## 实施结果
+
+- `tests/critical` 保留 22 个文件、199 个 node；裸 pytest 实测 4.7 秒。
+- 八个 scope 保留 226 个权威测试文件；单 scope 实测约 2–40 秒。
+- 删除 69 个 legacy 文件，主要包括 phase 汇总门禁、旧 intent/router/planner 路径、
+  demo/eval/smoke 脚本自测和重复文档门禁。Phase 8 的真实 ReAct 契约改为语义命名后保留。
+- proactive wake coordinator、delivery 和 SQLite store 的高延迟并发/恢复证据没有删除，
+  重分类到显式 opt-in 的 `tests/integration`。
+- integration 共保留 7 个文件，默认 critical、scope 和 `--full` 都不会启用真实 Provider。
+- 最终完整 offline suite 为 2061 个测试与 6 个 subtest，实测约 4 分 13 秒；普通开发不运行它。
+
+删除证据按候选类别记录如下：
+
+| 候选类别 | 处理与保留证据 |
+| --- | --- |
+| `test_phase0_*` | 汇总门禁删除；Gateway、Tool、Memory 和 redaction 不变量分别由 `tests/critical/test_gateway*.py`、`test_tool_*.py`、`test_memory_*.py` 和 scope 权威测试承接。 |
+| `test_phase1_*` | 汇总门禁删除；realtime lifecycle、cancel、arbitration 由 `tests/scopes/gateway/` 承接。 |
+| `test_phase2_*` | 汇总门禁删除；Memory manager、read/write policy、retrieval eval 由 critical 与 `tests/scopes/memory/` 承接。 |
+| `test_phase3_*` | 汇总门禁删除；Skill loader/catalog 和 native tool contract 由 context/tools scope 承接。 |
+| `test_phase4_*`、`test_phase5_*` | 汇总门禁删除；multi-agent routing 与 observability 由 runtime scope 的具名测试承接。 |
+| `test_phase6*`、`test_phase7*` | 阶段文档/API 汇总删除；当前 API contract 由 `tests/scopes/api/` 承接。 |
+| `test_phase8a1_*`、`test_phase8a2_*` | 不删除行为；重命名为 `test_react_action_quality.py` 和 `test_react_final_answer_handoff.py` 后迁入 runtime。 |
+| intent/router/planner/rule-router 旧路径 | 按仓库架构边界移除其测试权威；真实 LLM 路径不再依赖旧 intent/router/plan 选择工具。 |
+| demo/eval/smoke 与脚本 import 汇总 | 删除重复入口自测；Provider opt-in/redaction 由 `tests/scopes/providers/test_provider_opt_in_safety.py`，领域契约由各 scope 承接。 |
+| 文档门禁、旧目录 layering、entry cleanup | 由 `tests/critical/test_scoped_test_runner.py` 的最终目录、文档路由、全源码映射和无 legacy 路径断言承接。 |
