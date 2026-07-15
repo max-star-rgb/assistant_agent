@@ -21,6 +21,7 @@
 | trace、运行监控、ReAct 关键节点观测、redaction | `docs/observability-harness.md` |
 | 面试训练、题库、回答点评、标准答案、面试文档更新 | `.codex/skills/assistant-agent-interview-trainer`；`docs/interview/README.md` |
 | 用户显式请求的全仓文档同步、漂移审计、权威对齐或失效文档清理 | `.codex/skills/assistant-agent-documentation-sync`；不得因普通代码变更隐式触发 |
+| 用户显式请求的测试审计、去重、分层、marker 治理或测试清理 | `.codex/skills/assistant-agent-test-governance`；`tests/README.md`；不得因普通功能开发隐式触发 |
 
 `docs/development/**` 只保留仍有现实用途的操作 runbook 或用户明确点名的执行材料，不作为默认设计权威。不要把旧 roadmap 或阶段计划当作当前架构。
 

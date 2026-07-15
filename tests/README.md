@@ -30,3 +30,12 @@ Default guidance:
 - Runtime/tool/API changes: add the matching `runtime`, `api`, or domain-specific test files.
 - Before merging broader changes: run the full offline pytest suite.
 - Real provider tests remain opt-in through `RUN_INTEGRATION_TESTS=1` and explicit provider configuration.
+
+Test governance:
+
+- Repository-wide auditing, deduplication, layering, marker governance, and cleanup use
+  `.codex/skills/assistant-agent-test-governance` only when the user explicitly requests them.
+- Classify candidates as keep, merge, reclassify, or delete from behavioral evidence. Test
+  count, coverage percentage, age, or runtime alone never authorizes deletion.
+- After changing tests, keep markers, shared fixtures/builders, and this layer guide aligned;
+  preserve focused failure diagnostics instead of creating oversized merged tests.
