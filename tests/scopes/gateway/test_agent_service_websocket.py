@@ -1298,6 +1298,43 @@ def test_agent_service_video_chat_allows_provider_timeout_budget() -> None:
     assert captured["request"].timeout_s == 90.0
 
 
+def test_agent_service_visual_freshness_barrier_uses_one_point_five_second_budget() -> None:
+    assert agent_service_ws.VIDEO_FRESHNESS_WAIT_SECONDS == 1.5
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "看看眼前",
+        "现在画面里有什么？",
+        "摄像头拍到了什么？",
+        "镜头里有什么？",
+        "你看到什么？",
+        "你看见什么了？",
+        "这是什么？",
+        "那个是什么？",
+        "我手里拿的是什么？",
+        "桌上放着什么？",
+        "我旁边有什么？",
+        "我前面是什么？",
+        "我后面有什么？",
+        "左边有什么？",
+        "右边是什么？",
+        "描述当前场景",
+    ],
+)
+def test_agent_service_common_current_camera_references_share_freshness_barrier(
+    text: str,
+) -> None:
+    assert agent_service_ws._explicit_realtime_visual_reference(text) is True
+
+
+def test_agent_service_discourse_directions_do_not_trigger_visual_freshness() -> None:
+    text = "前面提到的方案很好，后面再继续讨论。"
+
+    assert agent_service_ws._explicit_realtime_visual_reference(text) is False
+
+
 def test_visual_chat_without_decoded_frame_does_not_wait_and_uses_trusted_profile() -> None:
     captured = {}
 

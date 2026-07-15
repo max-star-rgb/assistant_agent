@@ -47,9 +47,12 @@ FAIL_CODE = "FAIL"
 POLICY_VIOLATION_CLOSE_CODE = 1008
 VIDEO_TURN_TIMEOUT_SECONDS = 90.0
 CHAT_PROGRESS_INTERVAL_SECONDS = 15.0
-VIDEO_FRESHNESS_WAIT_SECONDS = 4.0
+VIDEO_FRESHNESS_WAIT_SECONDS = 1.5
 _REALTIME_VISUAL_REFERENCE = re.compile(
     r"(?:眼前|画面|摄像头|镜头|看到什么|看见什么|这是什么|那个是什么|"
+    r"当前场景|"
+    r"(?:看看|看下|看一看|描述).{0,12}(?:手里|桌上|旁边|前面|后面|左边|右边)|"
+    r"(?:手里|桌上|旁边|前面|后面|左边|右边).{0,12}(?:什么|啥|有何|有啥|东西|物体|场景)|"
     r"in\s+front\s+of\s+(?:me|the\s+camera)|on\s+(?:screen|camera)|"
     r"what\s+(?:do\s+you\s+see|is\s+this|is\s+that))",
     re.IGNORECASE,
