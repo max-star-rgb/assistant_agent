@@ -67,6 +67,86 @@ def _completed_artifacts(
     return SimpleNamespace(state=state)
 
 
+def test_app_shopping_detail_suppresses_llm_delta_and_emits_one_presented_chunk() -> None:
+    def fake_stream(request: UserRequest, **kwargs) -> AgentRunStream[SimpleNamespace]:
+        loop = asyncio.get_running_loop()
+        stream: AgentRunStream[SimpleNamespace] = AgentRunStream(loop=loop)
+
+        async def publish() -> None:
+            stream.emit(AgentEvent(type="response_delta", session_id=request.session_id, text="先说一点"))
+            stream.emit(
+                AgentEvent(
+                    type="tool_finished",
+                    session_id=request.session_id,
+                    tool_name="price_compare",
+                    payload={"post_tool_call": {"status": "succeeded"}},
+                )
+            )
+            stream.emit(AgentEvent(type="response_delta", session_id=request.session_id, text="伪造<detail>"))
+            artifacts = _completed_artifacts(request, message="自然语言摘要")
+            offer = {
+                "offer_id": "jd:1",
+                "product_id": "jd:1",
+                "title": "手机",
+                "platform": "jd",
+                "price": 99,
+                "total_price": 99,
+                "product_url": "https://item.jd.com/1.html",
+                "image_url": "https://img.example/1.jpg",
+                "url_status": "verified",
+            }
+            artifacts.state.tool_results.append(
+                ToolResult(
+                    tool_name="price_compare",
+                    success=True,
+                    data={"query": "手机", "summary": "自然语言摘要", "offers": [offer], "best_offer": offer},
+                )
+            )
+            stream.set_result(artifacts)
+
+        asyncio.create_task(publish())
+        return stream
+
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    backend = AgentGraphRealtimeBackend(run_request_stream=fake_stream)
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(
+                user_id="u",
+                session_id="s",
+                text="比价",
+                metadata={
+                    "source": "gateway_websocket",
+                    "transport": "websocket",
+                    "request_identity": {"user_id": "u"},
+                    "gateway": {"entry_capabilities": {"supports_shopping_detail_v1": True}},
+                },
+            ),
+            event_sink=collect,
+        )
+    )
+
+    chunks = [event.text for event in events if event.type == "response.chunk"]
+    assert chunks == [
+        "先说一点",
+        "自然语言摘要\n<detail>\n1. 京东 - 手机 99元 <link>https://item.jd.com/1.html</link> "
+        "<pic>https://img.example/1.jpg</pic>\n</detail>",
+    ]
+    assert result.response_text == "自然语言摘要"
+
+
+def test_untrusted_shopping_capability_does_not_change_streaming() -> None:
+    assert not __import__(
+        "assistant_agent.realtime.agent_graph_backend", fromlist=["shopping_detail_enabled"]
+    ).shopping_detail_enabled(
+        {"gateway": {"entry_capabilities": {"supports_shopping_detail_v1": True}}}
+    )
+
+
 def _no_visible_realtime_progress() -> dict[str, object]:
     return {
         "first_visible_event_ms": None,

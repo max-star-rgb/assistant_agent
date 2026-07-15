@@ -222,6 +222,7 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
         "supports_raw_media": True,
         "supports_tts_edge_events": False,
         "supports_semantic_interrupt": False,
+        "supports_shopping_detail_v1": False,
     }
 
 

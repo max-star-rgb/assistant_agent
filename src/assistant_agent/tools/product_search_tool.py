@@ -23,15 +23,16 @@ class ProductSearchTool(MockTool):
     def _run(self, input: ProductSearchInput, context: ToolContext) -> ToolResult:
         result = self.adapter.search(input)
         data = result.model_dump(mode="json")
+        succeeded = result.success
         contract = build_capability_output_contract(
             capability="product_search",
-            status="failed" if result.errors else "succeeded",
+            status="succeeded" if succeeded else "failed",
             output_ref=result.output_ref,
             data={"items": data.get("items", []), "query_used": result.query_used, "total": result.total},
             errors=[error.model_dump(mode="json") for error in result.errors],
             metadata={"provider": result.provider, "latency_ms": result.latency_ms},
         )
-        if result.errors:
+        if not succeeded:
             return ToolResult(
                 tool_name=self.name,
                 success=False,

@@ -18,6 +18,7 @@ from assistant_agent.schemas.products import (
     RankingReason,
 )
 from assistant_agent.services.provider_errors import build_provider_error
+from assistant_agent.utils.product_matching import compare_products
 
 
 class ProductSearchAdapter(Protocol):
@@ -69,7 +70,7 @@ class MockPriceCompareAdapter:
     provider = "mock"
 
     def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
-        return _compare_products(
+        return compare_products(
             request.items,
             request,
             provider=self.provider,
@@ -248,6 +249,10 @@ def create_product_search_adapter(config: ProviderConfig | None = None) -> Produ
                 api_key=resolved.haodanku_api_key,
                 base_url=resolved.haodanku_base_url,
                 timeout_seconds=resolved.haodanku_timeout_seconds,
+                taobao_pid=resolved.haodanku_taobao_pid,
+                taobao_authorized_name=resolved.haodanku_taobao_authorized_name,
+                jd_sub_union_id=resolved.haodanku_jd_sub_union_id,
+                pdd_channel=resolved.haodanku_pdd_channel,
             )
         )
     if resolved.product_search_provider == "http":
@@ -276,6 +281,10 @@ def create_price_compare_adapter(config: ProviderConfig | None = None) -> PriceC
                 api_key=resolved.haodanku_api_key,
                 base_url=resolved.haodanku_base_url,
                 timeout_seconds=resolved.haodanku_timeout_seconds,
+                taobao_pid=resolved.haodanku_taobao_pid,
+                taobao_authorized_name=resolved.haodanku_taobao_authorized_name,
+                jd_sub_union_id=resolved.haodanku_jd_sub_union_id,
+                pdd_channel=resolved.haodanku_pdd_channel,
             )
         )
     if resolved.price_compare_provider == "http":

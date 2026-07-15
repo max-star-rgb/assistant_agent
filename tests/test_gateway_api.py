@@ -228,6 +228,7 @@ def test_realtime_media_websocket_injects_entry_capabilities() -> None:
         "supports_raw_media": False,
         "supports_tts_edge_events": True,
         "supports_semantic_interrupt": True,
+        "supports_shopping_detail_v1": False,
     }
 
 

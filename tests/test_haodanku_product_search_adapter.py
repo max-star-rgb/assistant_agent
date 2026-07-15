@@ -172,7 +172,7 @@ def test_map_haodanku_items_maps_coupon_price_and_platform() -> None:
     assert first.product_id == "1001"
     assert first.title == "白色低帮运动鞋 男款"
     assert first.price == 299.0  # 券后价
-    assert first.platform == "tmall"  # shoptype=1
+    assert first.platform == "taobao"  # Tmall is normalized into the Taobao group.
     assert first.sales == 1200
     assert first.image_url == "https://img.example/1001.jpg"
     assert first.url == "https://s.click.example/1001"
@@ -352,7 +352,7 @@ def test_search_normalizes_top_k_to_supported_back_and_truncates(monkeypatch) ->
     monkeypatch.setattr("urllib.request.urlopen", _opener)
     adapter = HaodankuProductSearchAdapter(HaodankuConfig(api_key="test-key"))
 
-    result = adapter.search(ProductSearchInput(query="白色运动鞋", top_k=3))
+    result = adapter.search(ProductSearchInput(query="白色运动鞋", top_k=3, platforms=["taobao"]))
 
     assert result.success is True
     assert "back=20" in captured["url"]
@@ -376,7 +376,7 @@ def test_search_overfetches_and_returns_only_linked_items(monkeypatch) -> None:
     monkeypatch.setattr("urllib.request.urlopen", _opener)
     adapter = HaodankuProductSearchAdapter(HaodankuConfig(api_key="test-key"))
 
-    result = adapter.search(ProductSearchInput(query="乐事薯片", top_k=2))
+    result = adapter.search(ProductSearchInput(query="乐事薯片", top_k=2, platforms=["taobao"]))
 
     assert result.success is True
     assert "back=20" in captured["url"]
@@ -399,7 +399,7 @@ def test_search_drops_unlinked_haodanku_items_without_fake_urls(monkeypatch) -> 
     )
     adapter = HaodankuProductSearchAdapter(HaodankuConfig(api_key="test-key"))
 
-    result = adapter.search(ProductSearchInput(query="乐事薯片", top_k=5))
+    result = adapter.search(ProductSearchInput(query="乐事薯片", top_k=5, platforms=["taobao"]))
 
     assert result.success is True
     assert result.items == []
@@ -438,8 +438,8 @@ def test_compare_with_supplied_items_ranks_by_coupon_price(monkeypatch) -> None:
     assert result.best_value_product_id == "1002"  # 券后价 259 < 299
     assert result.items[0].price <= result.items[-1].price
     assert result.best_offer is not None
-    assert result.best_offer.product_url == "https://item.example/1002"
-    assert result.best_offer.url_status == "unverified"
+    assert result.best_offer.product_url is None
+    assert result.best_offer.url_status == "missing"
     assert result.best_offer.availability == "unknown"
 
 

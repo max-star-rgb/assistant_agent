@@ -16,12 +16,15 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
 from assistant_agent.schemas.products import (
     PriceCompareRequest,
     PriceCompareResult,
+    PriceOffer,
+    ProductProviderError,
     ProductResult,
     ProductSearchRequest,
     ProductSearchResult,
@@ -89,6 +92,10 @@ class HaodankuConfig:
     base_url: str = DEFAULT_HAODANKU_BASE_URL
     timeout_seconds: float = DEFAULT_HAODANKU_TIMEOUT_SECONDS
     sort: str = DEFAULT_HAODANKU_SORT
+    taobao_pid: str | None = None
+    taobao_authorized_name: str | None = None
+    jd_sub_union_id: str | None = None
+    pdd_channel: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,85 +136,117 @@ class HaodankuProductSearchAdapter:
                 recoverable=True,
             )
 
-        provider_back_request = _linked_search_back_request(request.top_k)
-        limit = normalize_provider_limit(
-            provider_back_request,
-            default=DEFAULT_HAODANKU_BACK,
-            allowed_values=HAODANKU_BACK_VALUES,
+        requested_platforms = _requested_platforms(request.platforms)
+        results: dict[str, tuple[list[ProductResult], ProductProviderError | None, dict[str, Any]]] = {}
+        with ThreadPoolExecutor(max_workers=len(requested_platforms)) as executor:
+            futures = {
+                executor.submit(self._search_platform, platform, keyword, request.top_k): platform
+                for platform in requested_platforms
+            }
+            for future in as_completed(futures):
+                platform = futures[future]
+                try:
+                    results[platform] = future.result()
+                except Exception as exc:  # pragma: no cover - defensive worker boundary.
+                    results[platform] = (
+                        [],
+                        ProductProviderError(
+                            code="provider_execution_failed",
+                            message=str(exc),
+                            recoverable=True,
+                        ),
+                        {},
+                    )
+
+        items: list[ProductResult] = []
+        succeeded: list[str] = []
+        failed: list[str] = []
+        platform_errors: dict[str, list[ProductProviderError]] = {}
+        used_filters = filters_used(request)
+        for platform in requested_platforms:
+            platform_items, error, platform_metadata = results[platform]
+            if error is not None:
+                failed.append(platform)
+                platform_errors[platform] = [error]
+            else:
+                succeeded.append(platform)
+                items.extend(platform_items[: request.top_k])
+            if platform_metadata:
+                used_key = "platform_metrics"
+                used_filters.setdefault(used_key, {})
+                used_filters[used_key][platform] = platform_metadata
+
+        if items:
+            filter_request = request.model_copy(update={"top_k": len(items)})
+            items = filter_products(items, filter_request)
+        used_filters["per_platform_top_k"] = request.top_k
+        if requested_platforms == ["taobao"]:
+            used_filters.update(used_filters.get("platform_metrics", {}).get("taobao", {}))
+        errors = [error for platform in failed for error in platform_errors[platform]]
+        return ProductSearchResult(
+            items=items,
+            provider=self.provider,
+            query_used=keyword,
+            filters_used=used_filters,
+            total=len(items),
+            errors=errors,
+            output_ref=f"haodanku://search/{urllib.parse.quote(keyword)}",
+            requested_platforms=requested_platforms,
+            succeeded_platforms=succeeded,
+            failed_platforms=failed,
+            platform_errors=platform_errors,
         )
-        url = build_haodanku_search_url(
+
+    def _search_platform(
+        self,
+        platform: str,
+        keyword: str,
+        top_k: int,
+    ) -> tuple[list[ProductResult], ProductProviderError | None, dict[str, Any]]:
+        provider_limit = _linked_search_back_request(top_k) if platform == "taobao" else top_k
+        if platform == "taobao":
+            provider_limit = normalize_provider_limit(
+                provider_limit,
+                default=DEFAULT_HAODANKU_BACK,
+                allowed_values=HAODANKU_BACK_VALUES,
+            ).provider_limit
+        url = build_haodanku_platform_search_url(
             base_url=self.config.base_url,
-            api_key=self.config.api_key,
+            api_key=self.config.api_key or "",
+            platform=platform,
             keyword=keyword,
-            back=limit.provider_limit,
-            sort=self.config.sort,
+            limit=provider_limit,
         )
         http_request = urllib.request.Request(url, method="GET")
         try:
             with urllib.request.urlopen(http_request, timeout=self.config.timeout_seconds) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except TimeoutError as exc:
-            return failed_search_result(
-                provider=self.provider,
-                code="provider_timeout",
-                message=str(exc),
-                recoverable=True,
-            )
+            return [], ProductProviderError(code="provider_timeout", message=str(exc), recoverable=True), {}
         except urllib.error.HTTPError as exc:
-            return failed_search_result(
-                provider=self.provider,
-                code=_http_status_to_error_code(exc.code),
-                message=f"HTTP {exc.code}",
-                recoverable=False,
-            )
+            return [], ProductProviderError(code=_http_status_to_error_code(exc.code), message=f"HTTP {exc.code}"), {}
         except urllib.error.URLError as exc:
-            return failed_search_result(
-                provider=self.provider,
-                code="provider_network_error",
-                message=str(exc.reason),
-                recoverable=True,
-            )
+            return [], ProductProviderError(code="provider_network_error", message=str(exc.reason), recoverable=True), {}
         except json.JSONDecodeError:
-            return failed_search_result(
-                provider=self.provider,
-                code="provider_bad_response",
-                message="haodanku response JSON decode failed",
-                recoverable=False,
-            )
+            return [], ProductProviderError(code="provider_bad_response", message="haodanku response JSON decode failed"), {}
 
         error_message = _haodanku_error_message(payload)
         if error_message is not None:
-            return failed_search_result(
-                provider=self.provider,
-                code="provider_bad_response",
-                message=error_message,
-                recoverable=False,
+            return [], ProductProviderError(code="provider_bad_response", message=error_message), {}
+        items = map_haodanku_platform_items(platform, payload)
+        metadata: dict[str, Any] = {"provider_back": provider_limit}
+        if platform == "taobao":
+            candidate_count = len(items)
+            items = [item for item in items if _has_product_url(item)]
+            metadata.update(
+                {
+                    "linked_only": True,
+                    "linked_items_found": len(items),
+                    "linked_items_returned": min(len(items), top_k),
+                    "unlinked_items_dropped": candidate_count - len(items),
+                }
             )
-
-        items = map_haodanku_items(payload)
-        provider_request = request.model_copy(update={"top_k": limit.provider_limit})
-        candidates = filter_products(items, provider_request)
-        linked_candidates = [item for item in candidates if _has_product_url(item)]
-        filtered = linked_candidates[: request.top_k]
-        used_filters = filters_used(request)
-        used_filters["provider_back"] = limit.provider_limit
-        used_filters["linked_only"] = True
-        used_filters["linked_items_found"] = len(linked_candidates)
-        used_filters["linked_items_returned"] = len(filtered)
-        used_filters["unlinked_items_dropped"] = len(candidates) - len(linked_candidates)
-        if limit.normalized:
-            used_filters["requested_provider_back"] = limit.requested
-            used_filters["limit_normalized"] = True
-        if limit.capped:
-            used_filters["limit_capped"] = True
-        return ProductSearchResult(
-            items=filtered,
-            provider=self.provider,
-            query_used=keyword,
-            filters_used=used_filters,
-            total=len(filtered),
-            output_ref=f"haodanku://search/{urllib.parse.quote(keyword)}",
-        )
+        return items[:top_k], None, metadata
 
     def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
         return HaodankuPriceCompareAdapter(self.config, search_adapter=self).compare(request)
@@ -245,7 +284,15 @@ class HaodankuPriceCompareAdapter:
             search_result = self._search_adapter.search(
                 ProductSearchRequest(query=request.query, top_k=request.top_k)
             )
-            if search_result.errors:
+            if not search_result.items:
+                if not search_result.errors:
+                    return failed_price_result(
+                        provider=self.provider,
+                        query=request.query,
+                        code="price_no_products",
+                        message="没有搜索到可比较的商品。",
+                        recoverable=True,
+                    )
                 error = search_result.errors[0]
                 return failed_price_result(
                     provider=self.provider,
@@ -256,7 +303,62 @@ class HaodankuPriceCompareAdapter:
                 )
             items = search_result.items
 
-        return compare_products(items, request, provider=self.provider)
+        result = compare_products(items, request, provider=self.provider)
+        if result.errors:
+            return result
+        converted = [self._convert_offer(offer, items) for offer in result.offers]
+        best_id = result.best_offer.offer_id if result.best_offer is not None else None
+        best = next((offer for offer in converted if offer.offer_id == best_id), None)
+        return result.model_copy(update={"offers": converted, "best_offer": best})
+
+    def _convert_offer(self, offer: PriceOffer, items: list[ProductResult]) -> PriceOffer:
+        item = next((candidate for candidate in items if candidate.product_id == offer.product_id), None)
+        if item is None or not self.config.api_key:
+            return _safe_fallback_offer(offer)
+        platform = "taobao" if offer.platform == "tmall" else offer.platform
+        params: dict[str, Any] = {"apikey": self.config.api_key}
+        if platform == "taobao":
+            if not self.config.taobao_pid or not self.config.taobao_authorized_name:
+                return _safe_fallback_offer(offer)
+            endpoint = "ratesurl"
+            params.update(
+                {
+                    "itemid": item.provider_item_id or item.product_id,
+                    "pid": self.config.taobao_pid,
+                    "tb_name": self.config.taobao_authorized_name,
+                    "get_taoword": 1,
+                    "title": item.title,
+                }
+            )
+        elif platform == "jd":
+            endpoint = "unify_jditems_link"
+            params["material_id"] = item.product_url or item.provider_item_id or item.product_id
+            if self.config.jd_sub_union_id:
+                params["subUnionId"] = self.config.jd_sub_union_id
+        elif platform == "pdd":
+            endpoint = "unify_pdditems_link"
+            params["itemid"] = item.provider_item_id or item.product_id
+            if self.config.pdd_channel:
+                params["channel"] = self.config.pdd_channel
+        else:
+            return _safe_fallback_offer(offer)
+
+        request = urllib.request.Request(
+            f"{_normalize_haodanku_base_url(self.config.base_url)}/{endpoint}",
+            data=urllib.parse.urlencode(params).encode("utf-8"),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (TimeoutError, urllib.error.URLError, json.JSONDecodeError):
+            return _safe_fallback_offer(offer)
+        if _haodanku_error_message(payload) is not None:
+            return _safe_fallback_offer(offer)
+        converted = _conversion_url(platform, payload)
+        if not _valid_platform_url(converted, platform):
+            return _safe_fallback_offer(offer)
+        return offer.model_copy(update={"product_url": converted, "url_status": "verified"})
 
 
 def build_haodanku_search_url(
@@ -282,6 +384,34 @@ def build_haodanku_search_url(
     return f"{normalized}/supersearch?{query}"
 
 
+def build_haodanku_platform_search_url(
+    *,
+    base_url: str,
+    api_key: str,
+    platform: str,
+    keyword: str,
+    limit: int,
+) -> str:
+    endpoint = {
+        "taobao": "supersearch",
+        "jd": "unify_jdgoods_search",
+        "pdd": "unify_pdd_goods_search",
+    }[platform]
+    size_key = "limit" if platform == "pdd" else "back"
+    query = urllib.parse.urlencode({"apikey": api_key, "keyword": keyword, size_key: limit, "min_id": 1})
+    return f"{_normalize_haodanku_base_url(base_url)}/{endpoint}?{query}"
+
+
+def _requested_platforms(platforms: list[str]) -> list[str]:
+    requested = platforms or ["taobao", "jd", "pdd"]
+    normalized: list[str] = []
+    for platform in requested:
+        value = "taobao" if platform == "tmall" else platform
+        if value in {"taobao", "jd", "pdd"} and value not in normalized:
+            normalized.append(value)
+    return normalized or ["taobao", "jd", "pdd"]
+
+
 def _linked_search_back_request(top_k: int | None) -> int:
     requested = top_k or DEFAULT_HAODANKU_BACK
     if requested <= 5:
@@ -303,6 +433,111 @@ def map_haodanku_items(payload: Any) -> list[ProductResult]:
         if product is not None:
             products.append(product)
     return products
+
+
+def map_haodanku_platform_items(platform: str, payload: Any) -> list[ProductResult]:
+    """Map one platform payload into the provider-neutral contract."""
+
+    normalized = "taobao" if platform in {"taobao", "tmall"} else platform
+    products: list[ProductResult] = []
+    for raw in _extract_raw_items(payload):
+        if not isinstance(raw, dict):
+            continue
+        title = _clean_str(raw.get("itemtitle") or raw.get("goodsname"))
+        item_id = _clean_str(raw.get("goods_sign") or raw.get("itemid") or raw.get("item_id"))
+        original_price = _to_float(raw.get("itemprice"))
+        effective_price = _to_float(raw.get("itemendprice")) or original_price
+        if not title or not item_id or effective_price is None:
+            continue
+        link = _product_link_metadata(raw, provider_item_id=item_id) if normalized == "taobao" else ProductLinkMetadata(
+            product_url=_first_provider_link(raw, COUPON_LINK_FIELDS + LANDING_LINK_FIELDS),
+            raw_url=_first_provider_link(raw, COUPON_LINK_FIELDS + LANDING_LINK_FIELDS),
+            landing_url=_first_provider_link(raw, LANDING_LINK_FIELDS),
+            coupon_url=_first_provider_link(raw, COUPON_LINK_FIELDS),
+            click_url=_first_provider_link(raw, COUPON_LINK_FIELDS),
+            url_status="unverified",
+        )
+        if link.product_url is None:
+            direct_url = _platform_direct_url(normalized, item_id)
+            link = ProductLinkMetadata(
+                product_url=direct_url,
+                raw_url=None,
+                landing_url=direct_url,
+                coupon_url=None,
+                click_url=None,
+                url_status="unverified" if direct_url else "missing",
+            )
+        products.append(
+            ProductResult(
+                product_id=item_id if normalized == "taobao" else f"{normalized}:{item_id}",
+                provider_item_id=item_id,
+                title=title,
+                brand=_clean_str(raw.get("brand_name")),
+                price=effective_price,
+                original_price=original_price,
+                coupon_amount=_to_float(raw.get("couponmoney")),
+                effective_price=effective_price,
+                unconditional_price=effective_price,
+                platform=normalized,
+                shop=_clean_str(raw.get("shopname")),
+                url=link.product_url,
+                product_url=link.product_url,
+                raw_url=link.raw_url,
+                landing_url=link.landing_url,
+                coupon_url=link.coupon_url,
+                click_url=link.click_url,
+                url_status=link.url_status,
+                image_url=_clean_str(raw.get("itempic")),
+                sales=_to_int(raw.get("itemsale")),
+                source="haodanku",
+            )
+        )
+    return products
+
+
+def _platform_direct_url(platform: str, item_id: str) -> str | None:
+    encoded = urllib.parse.quote(item_id, safe="")
+    if platform == "jd" and item_id.isdigit():
+        return f"https://item.jd.com/{encoded}.html"
+    if platform == "pdd":
+        return f"https://mobile.yangkeduo.com/goods.html?goods_id={encoded}"
+    return None
+
+
+def _conversion_url(platform: str, payload: Any) -> str | None:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict):
+        return None
+    fields = {
+        "taobao": ("coupon_click_url", "item_url"),
+        "jd": ("clickURL", "shortURL"),
+        "pdd": ("url", "short_url", "mobile_url", "mobile_short_url"),
+    }[platform]
+    return _first_provider_link(data, fields)
+
+
+def _valid_platform_url(value: str | None, platform: str) -> bool:
+    if not value:
+        return False
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not parsed.path:
+        return False
+    host = parsed.hostname or ""
+    allowed = {
+        "taobao": ("taobao.com", "tmall.com"),
+        "jd": ("jd.com",),
+        "pdd": ("yangkeduo.com", "pinduoduo.com"),
+    }[platform]
+    return any(host == domain or host.endswith(f".{domain}") for domain in allowed)
+
+
+def _safe_fallback_offer(offer: PriceOffer) -> PriceOffer:
+    platform = "taobao" if offer.platform == "tmall" else offer.platform
+    if _valid_platform_url(offer.product_url, platform):
+        return offer.model_copy(update={"url_status": "unverified"})
+    return offer.model_copy(update={"product_url": None, "url_status": "missing"})
 
 
 def _map_single_item(raw: dict[str, Any]) -> ProductResult | None:
@@ -345,6 +580,10 @@ def _map_single_item(raw: dict[str, Any]) -> ProductResult | None:
         title=title,
         category=_clean_str(raw.get("itemtitle_cat")) or None,
         price=price,
+        original_price=_to_float(raw.get("itemprice")),
+        coupon_amount=coupon,
+        effective_price=price,
+        unconditional_price=price,
         platform=platform,
         shop=shop,
         url=link.product_url,
@@ -364,9 +603,7 @@ def _map_single_item(raw: dict[str, Any]) -> ProductResult | None:
 
 
 def _platform_from_shoptype(value: Any) -> str:
-    text = _clean_str(value)
-    if text in {"1", "B"}:
-        return "tmall"
+    # Tmall stays in the Taobao display/comparison group.
     return "taobao"
 
 

@@ -381,7 +381,8 @@ contract
 - 成功 observation 包含 summary、output_ref、structured_output、next_step_hint。
 - 失败或 rejected observation 包含 sanitized error_code/error_message 和 recovery hint。
 - `web_search` 会保留 `title`、`url`、`snippet`、`published_at`、`source`，成功 observation 摘要首条结果和总数。
-- 商品搜索/比价会保留 title、price、currency、URL、url_status 等后续回答和 price_compare 必需字段。
+- 商品搜索/比价会保留 title、price、原价、券额、无条件到手价、条件价说明、currency、图片、URL、url_status、品牌/型号/核心规格等后续回答和 `price_compare` 必需字段。好单库 real adapter 在显式 `provider_smoke`/`pilot` profile 下并发搜索淘宝（天猫归入淘宝组）、京东、拼多多；单平台失败通过 `requested_platforms`、`succeeded_platforms`、`failed_platforms` 和 `platform_errors` 报告，不丢弃其他平台结果。
+- `price_compare` 先按品牌、型号和核心规格形成可比较组，以同款可信度、无条件到手总价、链接状态、销量和数据完整度排序；会员、补贴、凑单等条件价只作说明。结果最多九条且每个平台最多三条，入选报价再经过淘宝 `ratesurl`、京东 `unify_jditems_link`、拼多多 `unify_pdditems_link` 官方转链；转链失败只保留通过 HTTP(S)、平台域名和非空路径校验的直链，并标记 `unverified`。
 - context builder 会压缩大 observation、截断命令输出、移除 raw provider payload、base64、secret-like 内容。
 
 - rich policy 的 `max_result_chars` 在 `ToolResult -> ToolObservation` 边界生效；限制由 registry ToolSpec 提供，工具结果不能自行放宽。超限 observation 保留 status、summary、error/output reference，并记录 `truncated=true` 与 `original_chars`，不会截断原始审计引用。

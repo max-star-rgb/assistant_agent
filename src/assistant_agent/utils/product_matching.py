@@ -150,7 +150,7 @@ def compare_products(
             recoverable=True,
         )
 
-    offers = [offer_from_product(item) for item in items if item.price is not None]
+    offers = [offer_from_product(item, query=request.query) for item in items if item.price is not None]
     offers = filter_offers(offers, request)
     if not offers:
         return failed_price_result(
@@ -161,7 +161,7 @@ def compare_products(
             recoverable=True,
         )
 
-    offers = sort_offers(offers, request.sort_by)[: request.top_k]
+    offers = _apply_platform_quotas(sort_offers(offers, request.sort_by), top_k=request.top_k)
     best_offer = offers[0]
     items_by_id = {item.product_id: item for item in items}
     sorted_items = [items_by_id[offer.product_id] for offer in offers if offer.product_id in items_by_id]
@@ -180,11 +180,13 @@ def compare_products(
     )
 
 
-def offer_from_product(product: ProductResult) -> PriceOffer:
+def offer_from_product(product: ProductResult, *, query: str = "") -> PriceOffer:
     """Build a normalized price offer from a product candidate."""
 
     shipping_fee = 0.0
-    total_price = product.price + shipping_fee
+    unconditional_price = product.unconditional_price if product.unconditional_price is not None else product.price
+    total_price = unconditional_price + shipping_fee
+    comparison_group = _comparison_group(product)
     return PriceOffer(
         offer_id=f"offer_{product.product_id}_{product.platform}",
         product_id=product.product_id,
@@ -192,15 +194,25 @@ def offer_from_product(product: ProductResult) -> PriceOffer:
         platform=product.platform,
         shop=product.shop,
         price=product.price,
+        original_price=product.original_price,
+        coupon_amount=product.coupon_amount,
+        effective_price=product.effective_price or product.price,
+        unconditional_price=unconditional_price,
+        conditional_price=product.conditional_price,
+        conditional_price_note=product.conditional_price_note,
         currency=product.currency,
         shipping_fee=shipping_fee,
         total_price=total_price,
         product_url=product.product_url or product.url,
+        image_url=product.image_url,
         url_status=product.url_status,
         availability=product.availability or "unknown",
         rating=product.rating,
         sales=product.sales,
         similarity_score=product.similarity_score if product.similarity_score is not None else product.similarity,
+        comparison_group=comparison_group,
+        same_product_confidence=_same_product_confidence(product, query),
+        data_completeness=_data_completeness(product),
         reason=product.reason,
         ranking_reason=product.ranking_reason,
     )
@@ -224,7 +236,16 @@ def sort_offers(offers: list[PriceOffer], sort_by: str) -> list[PriceOffer]:
     """Sort offers according to the requested comparison mode."""
 
     if sort_by == "price":
-        return sorted(offers, key=lambda offer: offer.total_price)
+        return sorted(
+            offers,
+            key=lambda offer: (
+                -(offer.same_product_confidence or 0.0),
+                offer.total_price,
+                _link_rank(offer),
+                -(offer.sales or 0),
+                -(offer.data_completeness or 0.0),
+            ),
+        )
     if sort_by == "similarity":
         return sorted(offers, key=lambda offer: (offer.similarity_score or 0.0, -offer.total_price), reverse=True)
     if sort_by == "rating":
@@ -232,11 +253,67 @@ def sort_offers(offers: list[PriceOffer], sort_by: str) -> list[PriceOffer]:
     return sorted(
         offers,
         key=lambda offer: (
+            -(offer.same_product_confidence or 0.0),
             offer.total_price,
+            _link_rank(offer),
+            -(offer.sales or 0),
+            -(offer.data_completeness or 0.0),
             -(offer.similarity_score or 0.0),
             -(offer.rating or 0.0),
         ),
     )
+
+
+def _comparison_group(product: ProductResult) -> str:
+    parts = [product.brand or "", product.model or ""]
+    parts.extend(f"{key}={value}" for key, value in sorted(product.specifications.items()))
+    return "|".join(part.strip().lower() for part in parts if part.strip()) or product.title.strip().lower()
+
+
+def _link_rank(offer: PriceOffer) -> int:
+    if offer.url_status == "verified":
+        return 0
+    if offer.url_status == "unverified" and offer.product_url:
+        return 1
+    return 2
+
+
+def _data_completeness(product: ProductResult) -> float:
+    values = (
+        product.brand,
+        product.model,
+        product.original_price,
+        product.image_url,
+        product.sales,
+        product.product_url or product.url,
+        product.specifications or None,
+    )
+    return sum(value is not None for value in values) / len(values)
+
+
+def _same_product_confidence(product: ProductResult, query: str) -> float:
+    query_lower = query.lower()
+    identity = [product.brand, product.model, *product.specifications.values()]
+    present = [value for value in identity if value and value.strip()]
+    if not present:
+        # Visual similarity is useful metadata but cannot prove an identical SKU.
+        return 0.5
+    matched = sum(str(value).lower() in query_lower for value in present)
+    return matched / len(present)
+
+
+def _apply_platform_quotas(offers: list[PriceOffer], *, top_k: int) -> list[PriceOffer]:
+    selected: list[PriceOffer] = []
+    counts: dict[str, int] = {}
+    for offer in offers:
+        platform = "taobao" if offer.platform == "tmall" else offer.platform
+        if counts.get(platform, 0) >= 3:
+            continue
+        selected.append(offer)
+        counts[platform] = counts.get(platform, 0) + 1
+        if len(selected) >= min(top_k, 9):
+            break
+    return selected
 
 
 def ranking_reason(best_offer: PriceOffer, sort_by: str) -> RankingReason:

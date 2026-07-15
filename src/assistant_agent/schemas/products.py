@@ -18,6 +18,12 @@ class ProductResult(BaseModel):
     brand: str | None = None
     category: str | None = None
     price: float = Field(ge=0)
+    original_price: float | None = Field(default=None, ge=0)
+    coupon_amount: float | None = Field(default=None, ge=0)
+    effective_price: float | None = Field(default=None, ge=0)
+    unconditional_price: float | None = Field(default=None, ge=0)
+    conditional_price: float | None = Field(default=None, ge=0)
+    conditional_price_note: str | None = None
     currency: str = Field(default="CNY", min_length=1)
     platform: str = Field(min_length=1)
     shop: str | None = None
@@ -30,6 +36,8 @@ class ProductResult(BaseModel):
     url_status: ProductUrlStatus | None = None
     availability: ProductAvailability | None = None
     image_url: str | None = None
+    model: str | None = None
+    specifications: dict[str, str] = Field(default_factory=dict)
     similarity: float | None = Field(default=None, ge=0.0, le=1.0)
     similarity_score: float | None = Field(default=None, ge=0.0, le=1.0)
     text_match_score: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -70,10 +78,14 @@ class ProductSearchResult(BaseModel):
     errors: list[ProductProviderError] = Field(default_factory=list)
     latency_ms: int | None = Field(default=None, ge=0)
     output_ref: str | None = None
+    requested_platforms: list[str] = Field(default_factory=list)
+    succeeded_platforms: list[str] = Field(default_factory=list)
+    failed_platforms: list[str] = Field(default_factory=list)
+    platform_errors: dict[str, list[ProductProviderError]] = Field(default_factory=dict)
 
     @property
     def success(self) -> bool:
-        return not self.errors
+        return bool(self.items) or not self.errors
 
 
 class ProductSearchRequest(BaseModel):
@@ -109,15 +121,25 @@ class PriceOffer(BaseModel):
     platform: str = Field(min_length=1)
     shop: str | None = None
     price: float = Field(ge=0)
+    original_price: float | None = Field(default=None, ge=0)
+    coupon_amount: float | None = Field(default=None, ge=0)
+    effective_price: float | None = Field(default=None, ge=0)
+    unconditional_price: float | None = Field(default=None, ge=0)
+    conditional_price: float | None = Field(default=None, ge=0)
+    conditional_price_note: str | None = None
     currency: str = Field(default="CNY", min_length=1)
     shipping_fee: float | None = Field(default=None, ge=0)
     total_price: float = Field(ge=0)
     product_url: str | None = None
+    image_url: str | None = None
     url_status: ProductUrlStatus | None = None
     availability: ProductAvailability | None = None
     rating: float | None = Field(default=None, ge=0.0, le=5.0)
     sales: int | None = Field(default=None, ge=0)
     similarity_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    comparison_group: str | None = None
+    same_product_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    data_completeness: float | None = Field(default=None, ge=0.0, le=1.0)
     reason: str | None = None
     ranking_reason: RankingReason | None = None
 

@@ -28,11 +28,13 @@ from assistant_agent.schemas.realtime_cancellation import (
 )
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.products import PriceCompareResult
 from assistant_agent.services.assistant_run_service import (
     run_assistant_request,
     run_assistant_request_stream,
 )
 from assistant_agent.services.realtime_task_state import realtime_metadata_requests_interrupt
+from assistant_agent.services.shopping_detail_presenter import ShoppingDetailPresenter
 from assistant_agent.services.trace_store import append_observability_event
 
 
@@ -56,6 +58,41 @@ _RUN_EVENT_TYPES = {
     "task_failed",
     "task_cancelled",
 }
+
+
+def shopping_detail_enabled(metadata: dict[str, Any]) -> bool:
+    """Accept the App format only from trusted Gateway WebSocket metadata."""
+
+    if metadata.get("source") != "gateway_websocket" or metadata.get("transport") != "websocket":
+        return False
+    if not isinstance(metadata.get("request_identity"), dict):
+        return False
+    gateway = metadata.get("gateway")
+    if not isinstance(gateway, dict):
+        return False
+    capabilities = gateway.get("entry_capabilities")
+    return bool(
+        isinstance(capabilities, dict)
+        and capabilities.get("supports_shopping_detail_v1") is True
+    )
+
+
+def _successful_price_compare_event(event: AgentEvent) -> bool:
+    if event.type not in {"tool_finished", "tool_completed"} or event.tool_name != "price_compare":
+        return False
+    post_tool_call = event.payload.get("post_tool_call")
+    return isinstance(post_tool_call, dict) and post_tool_call.get("status") == "succeeded"
+
+
+def _successful_price_compare_result(state: Any) -> PriceCompareResult | None:
+    for result in reversed(getattr(state, "tool_results", [])):
+        if result.tool_name != "price_compare" or not result.success or not isinstance(result.data, dict):
+            continue
+        try:
+            return PriceCompareResult.model_validate(result.data)
+        except ValueError:
+            return None
+    return None
 
 
 class AgentGraphRealtimeBackend:
@@ -118,6 +155,7 @@ class AgentGraphRealtimeBackend:
         forwarder = _RealtimeForwardingEventSink(
             event_sink=event_sink,
             progress_policy=self._progress_policy,
+            shopping_detail_enabled=shopping_detail_enabled(request.metadata),
         )
         first_progress_task = forwarder.start_first_progress_fallback(cancel_token)
         heartbeat_task = forwarder.start_heartbeat(cancel_token)
@@ -195,13 +233,22 @@ class AgentGraphRealtimeBackend:
             status = "error" if state.status == "failed" else "completed"
 
             if status == "completed" and event_sink is not None:
-                await _emit_final_response_events(
-                    forwarder,
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    response_text=response_text,
-                    emit_chunks=not forwarder.response_delta_seen,
-                )
+                shopping_result = _successful_price_compare_result(state) if forwarder.shopping_detail_active else None
+                if shopping_result is not None:
+                    await _emit_shopping_detail_events(
+                        forwarder,
+                        result=shopping_result,
+                        session_id=state.session_id,
+                        run_id=state.run_id,
+                    )
+                else:
+                    await _emit_final_response_events(
+                        forwarder,
+                        session_id=state.session_id,
+                        run_id=state.run_id,
+                        response_text=response_text,
+                        emit_chunks=not forwarder.response_delta_seen,
+                    )
 
             result_metadata["realtime_progress"] = forwarder.progress_summary()
             return RealtimeAgentResult(
@@ -357,15 +404,22 @@ class _RealtimeForwardingEventSink:
         *,
         event_sink: RealtimeEventSink | None,
         progress_policy: ProgressPolicy,
+        shopping_detail_enabled: bool = False,
     ) -> None:
         self.events: list[AgentEvent] = []
         self._event_sink = event_sink
         self._progress: ProgressTracker = progress_policy.tracker()
         self._response_delta_seen = False
+        self._shopping_detail_enabled = shopping_detail_enabled
+        self._shopping_detail_active = False
 
     @property
     def response_delta_seen(self) -> bool:
         return self._response_delta_seen
+
+    @property
+    def shopping_detail_active(self) -> bool:
+        return self._shopping_detail_active
 
     def progress_summary(self) -> dict[str, object]:
         return self._progress.summary()
@@ -374,8 +428,12 @@ class _RealtimeForwardingEventSink:
         self.events.append(event)
         if self._event_sink is None or event.type not in _RUN_EVENT_TYPES:
             return
+        if self._shopping_detail_enabled and _successful_price_compare_event(event):
+            self._shopping_detail_active = True
         if event.type == "response_delta":
             self._response_delta_seen = True
+            if self._shopping_detail_active:
+                return
         mapped_events = map_agent_event_stream(event)
         if not mapped_events:
             return
@@ -490,6 +548,29 @@ async def _emit_final_response_events(
         realtime_events = [mapped] if mapped is not None else []
     for realtime_event in realtime_events:
         await forwarder.forward_realtime_event(realtime_event)
+
+
+async def _emit_shopping_detail_events(
+    forwarder: _RealtimeForwardingEventSink,
+    *,
+    result: PriceCompareResult,
+    session_id: str,
+    run_id: str,
+) -> None:
+    rendered = ShoppingDetailPresenter().present(result)
+    if rendered:
+        await forwarder.forward_realtime_event(
+            RealtimeAgentEvent(
+                type="response.chunk",
+                text=rendered,
+                payload={"shopping_detail_version": "v1", "token_streaming": False},
+            )
+        )
+    mapped = map_agent_event(
+        AgentEvent(type="final_response", session_id=session_id, run_id=run_id, text=result.summary)
+    )
+    if mapped is not None:
+        await forwarder.forward_realtime_event(mapped)
 
 
 async def _emit_backend_error(
