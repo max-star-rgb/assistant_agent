@@ -1250,16 +1250,14 @@ async def _realtime_video_freshness_metadata(
     wait_for_sequence = getattr(observer, "wait_for_snapshot_sequence", None)
     wait_started_ns = perf_counter_ns()
     if (snapshot_sequence or 0) < target_sequence:
-        if (represented_sequence or 0) < target_sequence and callable(promote):
-            await promote(latest_frame)
-        if callable(wait_for_sequence):
-            try:
-                await asyncio.wait_for(
-                    wait_for_sequence(target_sequence),
-                    timeout=VIDEO_FRESHNESS_WAIT_SECONDS,
-                )
-            except TimeoutError:
-                pass
+        try:
+            async with asyncio.timeout(VIDEO_FRESHNESS_WAIT_SECONDS):
+                if (represented_sequence or 0) < target_sequence and callable(promote):
+                    await promote(latest_frame)
+                if callable(wait_for_sequence):
+                    await wait_for_sequence(target_sequence)
+        except TimeoutError:
+            pass
     waited_ms = _elapsed_ms(wait_started_ns, perf_counter_ns())
     refreshed = snapshot_reader(video_id)
     refreshed_sequence = refreshed.last_success_sequence if refreshed is not None else None

@@ -295,6 +295,110 @@ def test_observer_promotes_latest_frame_and_waits_for_target_snapshot_sequence(
     asyncio.run(scenario())
 
 
+def test_observer_sequence_wait_does_not_lose_update_before_await(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        memory = RealtimeVideoMemoryStore()
+        memory.mark_pending(VIDEO_ID, pending_count=1, in_flight=True)
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=ToolRegistry(),
+            memory_store=memory,
+            keyframe_root=tmp_path / "keyframes",
+        )
+        observer.video_id = VIDEO_ID
+        original_snapshot = memory.snapshot
+        first_snapshot = True
+
+        def snapshot_with_boundary_success(video_id: str):
+            nonlocal first_snapshot
+            snapshot = original_snapshot(video_id)
+            if first_snapshot:
+                first_snapshot = False
+                memory.record_success(
+                    VIDEO_ID,
+                    module.SemanticKeyframeRecord(
+                        frame_id="frame-3",
+                        uri="/tmp/frame-3.jpg",
+                        sequence=3,
+                    ),
+                    VideoUnderstandingResult(
+                        summary="frame 3",
+                        provider="boundary-test",
+                        output_ref="provider://video/test/3",
+                    ),
+                )
+                observer._snapshot_updated.set()
+            return snapshot
+
+        memory.snapshot = snapshot_with_boundary_success
+        try:
+            await asyncio.wait_for(observer.wait_for_snapshot_sequence(3), 0.1)
+        finally:
+            memory.snapshot = original_snapshot
+            await observer.close()
+
+    asyncio.run(scenario())
+
+
+def test_observer_concurrent_equal_sequence_promotion_retains_one_queued_artifact(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        adapter = BlockingVideoAdapter()
+        registry = ToolRegistry()
+        registry.register(VideoUnderstandingTool(adapter=adapter))
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=RealtimeVideoMemoryStore(),
+            keyframe_root=tmp_path / "keyframes",
+            collector=AlwaysSelectCollector(),
+        )
+
+        await observer.submit(_decoded_frame(tmp_path, sequence=1))
+        assert await asyncio.to_thread(adapter.started.wait, 2.0)
+
+        first_retain_started = threading.Event()
+        second_retain_started = threading.Event()
+        release_first_retain = threading.Event()
+        retain_calls: list[int] = []
+        original_retain = observer._retain_keyframe
+
+        def racing_retain(frame: VideoFrame):
+            if frame.sequence == 5:
+                retain_calls.append(frame.sequence)
+                if len(retain_calls) == 1:
+                    first_retain_started.set()
+                    assert release_first_retain.wait(timeout=2.0)
+                else:
+                    second_retain_started.set()
+            return original_retain(frame)
+
+        observer._retain_keyframe = racing_retain
+        first = asyncio.create_task(observer.promote(_decoded_frame(tmp_path, sequence=5)))
+        assert await asyncio.to_thread(first_retain_started.wait, 2.0)
+        second = asyncio.create_task(observer.promote(_decoded_frame(tmp_path, sequence=5)))
+        await asyncio.to_thread(second_retain_started.wait, 0.2)
+        release_first_retain.set()
+        await asyncio.gather(first, second)
+
+        assert retain_calls == [5]
+        assert observer.represented_sequence == 5
+        assert observer._pending_item is not None
+        assert Path(observer._pending_item.record.uri).is_file()
+
+        adapter.release.set()
+        await observer.wait_idle()
+        assert adapter.sequences == [1, 5]
+        await observer.close()
+
+    asyncio.run(scenario())
+
+
 def test_observer_concurrent_promotion_cannot_replace_newer_pending_sequence(
     tmp_path: Path,
 ) -> None:
@@ -328,9 +432,10 @@ def test_observer_concurrent_promotion_cannot_replace_newer_pending_sequence(
         observer._retain_keyframe = delayed_retain
         older = asyncio.create_task(observer.promote(_decoded_frame(tmp_path, sequence=3)))
         assert await asyncio.to_thread(retain_started.wait, 2.0)
-        await observer.promote(_decoded_frame(tmp_path, sequence=5))
+        newer = asyncio.create_task(observer.promote(_decoded_frame(tmp_path, sequence=5)))
+        await asyncio.sleep(0)
         release_older_retain.set()
-        await older
+        await asyncio.gather(older, newer)
 
         assert observer.represented_sequence == 5
         adapter.release.set()

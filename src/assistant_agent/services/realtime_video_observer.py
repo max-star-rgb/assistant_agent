@@ -87,6 +87,7 @@ class RealtimeVideoObserver:
         self._idle.set()
         self._first_terminal_snapshot = asyncio.Event()
         self._snapshot_updated = asyncio.Event()
+        self._enqueue_lock = asyncio.Lock()
 
     async def submit(self, frame: VideoFrame) -> FrameProcessingResult:
         """Run local selection and enqueue a selected frame for background analysis."""
@@ -153,6 +154,25 @@ class RealtimeVideoObserver:
         enqueued_ns: int,
         keyframe_selection_latency_ms: int,
     ) -> bool:
+        async with self._enqueue_lock:
+            return await self._enqueue_serialized(
+                frame,
+                enqueued_ns=enqueued_ns,
+                keyframe_selection_latency_ms=keyframe_selection_latency_ms,
+            )
+
+    async def _enqueue_serialized(
+        self,
+        frame: VideoFrame,
+        *,
+        enqueued_ns: int,
+        keyframe_selection_latency_ms: int,
+    ) -> bool:
+        if self.closed:
+            raise RuntimeError("realtime video observer is closed")
+        represented = self._represented_sequence()
+        if represented is not None and represented >= frame.sequence:
+            return False
         retained = await asyncio.to_thread(self._retain_keyframe, frame)
         if self.closed:
             self._delete_record(retained)
@@ -196,10 +216,10 @@ class RealtimeVideoObserver:
         """Wait until a successful snapshot reaches the requested sequence."""
 
         while not self.closed:
+            self._snapshot_updated.clear()
             snapshot = self.memory_store.snapshot(self.video_id) if self.video_id else None
             if snapshot is not None and (snapshot.last_success_sequence or 0) >= sequence:
                 return
-            self._snapshot_updated.clear()
             await self._snapshot_updated.wait()
         raise RuntimeError("realtime video observer is closed")
 
