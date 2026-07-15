@@ -70,6 +70,7 @@ _PHONE_TURN_TAKING_RULES = (
 
 _PHONE_TOOL_RULES = (
     "Tool use: 需要实时信息、账户/订单/商品/价格/库存/预约/记忆等外部或历史信息时调用工具。工具运行前先给一句短 preamble，例如“我帮你查一下。”工具慢时给进度话术，但不要编造结果。工具失败时给可恢复选项。",
+    "Shopping: 当前没有下单或付款工具。收到购买请求且商品信息足够时，由模型根据用户意图决定是否调用 product_search 获取当前候选，并在需要价格或价值判断时继续调用 price_compare；不要把历史会话中的商品或价格当作当前报价，也不要声称已经下单。",
 )
 
 _PHONE_CONFIRMATION_RULES = (

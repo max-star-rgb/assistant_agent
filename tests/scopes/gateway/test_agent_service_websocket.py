@@ -114,6 +114,32 @@ def test_agent_service_connection_cleanup_is_shielded_from_outer_cancel() -> Non
     asyncio.run(scenario())
 
 
+def test_agent_service_gateway_manager_uses_operational_lifecycle_sink() -> None:
+    manager = agent_service_ws._create_agent_service_gateway_manager()
+
+    assert manager.lifecycle_sink is agent_service_ws.log_gateway_lifecycle
+
+
+def test_agent_service_connection_log_excludes_query_values_and_raw_session_id(
+    caplog,
+) -> None:
+    raw_session_id = "raw-session-secret"
+    raw_token = "query-token-secret"
+    client = TestClient(create_app())
+
+    with caplog.at_level(logging.INFO, logger="assistant_agent.api.agent_service_websocket"):
+        with client.websocket_connect(
+            f"/agent-service/v1?sessionId={raw_session_id}&token={raw_token}"
+        ):
+            pass
+
+    output = caplog.text
+    assert raw_session_id not in output
+    assert raw_token not in output
+    assert "query_keys=sessionId,token" in output
+    assert "session_digest=" in output
+
+
 def test_agent_service_start_ack_accepts_media_envelope() -> None:
     client = TestClient(create_app())
 
@@ -201,7 +227,7 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
     assert len(runtime.requests) == 1
     request = runtime.requests[0]
     assert request.user_id == "10086"
-    assert request.session_id == "s1"
+    assert request.session_id.startswith("agent-service-")
     assert request.text == "你好"
     assert request.metadata["runtime"]["history"] == ["你好"]
     assert request.metadata["transport"] == "agent_service_websocket"
@@ -935,9 +961,43 @@ def test_agent_service_stream_true_sends_incremental_then_terminal_packets(tmp_p
         for item in packets
     ] == ["PROCESSING", "PROCESSING", "SUCCESS"]
     assert [_body(item)["final"] for item in packets] == [False, False, True]
+    assert [_body(item)["display_only"] for item in packets] == [False, False, True]
     assert [_body(item)["sequence"] for item in packets] == [1, 2, 3]
     assert "deliveryId" not in _body(packets[0])
     assert _body(packets[-1])["deliveryId"] == delivery.delivery_id
+
+
+def test_agent_service_uses_a_fresh_internal_session_for_each_call(monkeypatch) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    for chat_index in ("call-1", "call-2"):
+        with client.websocket_connect("/agent-service/v1?sessionId=reused-media-session") as websocket:
+            websocket.send_json(
+                _envelope(
+                    "chat",
+                    "reused-media-session",
+                    {
+                        "chatIndex": chat_index,
+                        "userNumber": "10086",
+                        "contents": [
+                            {
+                                "speakerNumber": "10086",
+                                "speechContent": "你好",
+                                "time": "2026-07-15T16:30:00+08:00",
+                            }
+                        ],
+                    },
+                )
+            )
+            response = websocket.receive_json()
+            assert response["sessionId"] == "reused-media-session"
+
+    assert len(runtime.requests) == 2
+    internal_session_ids = [request.session_id for request in runtime.requests]
+    assert all(value.startswith("agent-service-") for value in internal_session_ids)
+    assert len(set(internal_session_ids)) == 2
 
 
 def test_agent_service_stream_false_sends_one_terminal_packet(tmp_path: Path) -> None:
@@ -2123,7 +2183,7 @@ def test_agent_service_accepts_media_control_and_chat_protocol(monkeypatch) -> N
     assert len(runtime.requests) == 1
     request = runtime.requests[0]
     assert request.user_id == "10086"
-    assert request.session_id == "10086"
+    assert request.session_id.startswith("agent-service-")
     assert request.text == "你好"
     assert request.metadata["transport"] == "agent_service_websocket"
     assert request.metadata["agent_service"]["chat_index"] == "chat-1"

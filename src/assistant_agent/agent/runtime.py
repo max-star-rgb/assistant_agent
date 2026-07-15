@@ -20,9 +20,8 @@ from assistant_agent.agent.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.agent.shopping_guards import (
-    explicit_price_compare_completed,
+    price_compare_completed,
     repair_price_compare_decision_from_search,
-    required_price_compare_after_search,
 )
 from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.agent.system_prompt_policy import (
@@ -1030,44 +1029,46 @@ class AgentGraphRuntime:
                 error=_chat_result_error(result),
             )
             if result.success:
-                required_compare = required_price_compare_after_search(state, request)
-                if required_compare is not None:
-                    proposed_call = result.tool_calls[0] if len(result.tool_calls) == 1 else None
-                    proposed_decision = (
-                        native_tool_call_to_assistant_decision(proposed_call)
-                        if proposed_call is not None
-                        else None
+                proposed_call = result.tool_calls[0] if len(result.tool_calls) == 1 else None
+                proposed_decision = (
+                    native_tool_call_to_assistant_decision(proposed_call)
+                    if proposed_call is not None
+                    else None
+                )
+                if (
+                    proposed_call is not None
+                    and proposed_decision is not None
+                    and proposed_decision.tool_name == "price_compare"
+                ):
+                    replacement = repair_price_compare_decision_from_search(
+                        proposed_decision,
+                        state,
+                        request,
                     )
-                    replacement = required_compare
-                    guard_action = "required_price_compare_after_search"
-                    if proposed_decision is not None and proposed_decision.tool_name == "price_compare":
-                        replacement = repair_price_compare_decision_from_search(
-                            proposed_decision,
-                            required_compare,
-                        )
-                        guard_action = "price_compare_input_repaired_from_search"
+                    if replacement is proposed_decision:
+                        replacement = None
+                else:
+                    replacement = None
+                if replacement is not None and proposed_call is not None:
                     if stream_buffer is not None:
                         stream_buffer.discard()
-                    state.request.metadata["native_runtime_required_price_compare_after_search"] = True
-                    state.request.metadata["native_runtime_shopping_guard_action"] = guard_action
-                    forced_call = NativeToolCall(
-                        id=(
-                            proposed_call.id
-                            if proposed_call is not None
-                            else f"native_guard_price_compare_{iteration + 1}"
-                        ),
+                    state.request.metadata["native_runtime_shopping_guard_action"] = (
+                        "price_compare_input_repaired_from_search"
+                    )
+                    repaired_call = NativeToolCall(
+                        id=proposed_call.id,
                         name=replacement.tool_name or "price_compare",
                         arguments=replacement.tool_input or {},
                         provider_format="runtime_guard",
                         raw={
-                            **(proposed_call.raw if proposed_call is not None else {}),
-                            "runtime_guard": guard_action,
+                            **proposed_call.raw,
+                            "runtime_guard": "price_compare_input_repaired_from_search",
                         },
                     )
                     result = result.model_copy(
                         update={
                             "response_text": "",
-                            "tool_calls": [forced_call],
+                            "tool_calls": [repaired_call],
                             "finish_reason": "tool_calls",
                             "message_kind": "tool_call",
                         }
@@ -1282,7 +1283,7 @@ class AgentGraphRuntime:
     ) -> ChatRequest | None:
         self._refresh_realtime_video_context(request)
         profile = _system_prompt_profile_from_request(request)
-        if profile != SystemPromptProfile.FINAL_ONLY and explicit_price_compare_completed(state, request):
+        if profile != SystemPromptProfile.FINAL_ONLY and price_compare_completed(state):
             profile = SystemPromptProfile.FINAL_ONLY
         tool_specs = [] if profile == SystemPromptProfile.FINAL_ONLY else _native_runtime_tool_specs(self.registry, state)
         if tool_specs is None:

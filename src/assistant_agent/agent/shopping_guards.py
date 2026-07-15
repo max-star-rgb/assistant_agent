@@ -1,4 +1,4 @@
-"""Shared deterministic guards for governed shopping tool sequences."""
+"""Input-integrity helpers for model-selected shopping tool calls."""
 
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.assistant_decision import AssistantDecision
@@ -6,16 +6,12 @@ from assistant_agent.schemas.products import ProductResult
 from assistant_agent.schemas.requests import UserRequest
 
 
-def required_price_compare_after_search(
+def _price_compare_input_from_search(
     state: AgentState,
     request: UserRequest,
-) -> AssistantDecision | None:
-    """Require price comparison after a successful search for explicit compare requests."""
+) -> dict[str, object] | None:
+    """Build structured compare input after the model has selected price_compare."""
 
-    if not request_asks_for_price_compare(request):
-        return None
-    if any(result.tool_name == "price_compare" for result in state.tool_results):
-        return None
     search_result = next(
         (
             result
@@ -43,38 +39,13 @@ def required_price_compare_after_search(
             for platform in succeeded_platforms
             if isinstance(platform, str) and platform.strip()
         ]
-    return AssistantDecision(
-        type="tool_call",
-        tool_name="price_compare",
-        tool_input=tool_input,
-        reason="用户明确要求比较价格；product_search 已返回候选商品，继续执行 price_compare 后再回答。",
-        safety_notes=["required_price_compare_after_search"],
-    )
+    return tool_input
 
 
-def request_asks_for_price_compare(request: UserRequest) -> bool:
-    text = request.text or ""
-    markers = (
-        "比价",
-        "比较价格",
-        "比较一下价格",
-        "价格比较",
-        "哪个便宜",
-        "哪款便宜",
-        "最低价",
-        "最便宜",
-        "compare price",
-        "price compare",
-        "cheapest",
-    )
-    lowered = text.lower()
-    return any(marker in text or marker in lowered for marker in markers)
+def price_compare_completed(state: AgentState) -> bool:
+    """Return whether the model-selected price comparison already succeeded."""
 
-
-def explicit_price_compare_completed(state: AgentState, request: UserRequest) -> bool:
-    """Return whether an explicit comparison request already has a successful result."""
-
-    return request_asks_for_price_compare(request) and any(
+    return any(
         result.tool_name == "price_compare" and result.success
         for result in state.tool_results
     )
@@ -82,11 +53,15 @@ def explicit_price_compare_completed(state: AgentState, request: UserRequest) ->
 
 def repair_price_compare_decision_from_search(
     decision: AssistantDecision,
-    fallback: AssistantDecision,
+    state: AgentState,
+    request: UserRequest,
 ) -> AssistantDecision:
-    """Repair model-compressed price-compare input from the successful search result."""
+    """Repair a model-selected compare call from the successful search result."""
 
-    fallback_input = dict(fallback.tool_input or {})
+    fallback_input = _price_compare_input_from_search(state, request)
+    if fallback_input is None:
+        return decision
+    fallback_input = dict(fallback_input)
     proposed_input = decision.tool_input if isinstance(decision.tool_input, dict) else {}
     repaired_input = dict(fallback_input)
     proposed_items = proposed_input.get("items")
@@ -109,7 +84,7 @@ def repair_price_compare_decision_from_search(
     return decision.model_copy(
         update={
             "tool_input": repaired_input,
-            "reason": "用户明确要求比价；使用上一次 product_search 的完整商品对象修复 price_compare 入参。",
+            "reason": "模型已选择比价；使用本轮 product_search 的完整商品对象修复 price_compare 入参。",
             "safety_notes": [*decision.safety_notes, "price_compare_input_repaired_from_search"],
         }
     )

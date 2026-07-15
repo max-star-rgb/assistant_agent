@@ -581,12 +581,11 @@ def test_native_tool_call_may_choose_any_qualified_tool_without_keyword_routing(
     assert state.response.message == "已根据 web_search observation 回答。"
 
 
-def test_native_runtime_requires_price_compare_after_search_for_explicit_compare_request() -> None:
+def test_native_runtime_does_not_override_model_final_answer_after_product_search() -> None:
     adapter = NativeToolChatAdapter(
         [
             native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
             final_result("已经搜索到商品。"),
-            final_result("已经完成搜索和比价。"),
         ]
     )
     runtime = AgentGraphRuntime(config=ProviderConfig(max_tool_iterations=5), chat_adapter=adapter)
@@ -595,16 +594,14 @@ def test_native_runtime_requires_price_compare_after_search_for_explicit_compare
         UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
     )
 
-    assert adapter.calls == 3
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
-    assert adapter.requests[2].tools == []
-    assert adapter.requests[2].tool_choice == "none"
-    assert state.request.metadata["native_runtime_required_price_compare_after_search"] is True
+    assert adapter.calls == 2
+    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert "native_runtime_required_price_compare_after_search" not in state.request.metadata
     assert state.response is not None
-    assert state.response.message == "已经完成搜索和比价。"
+    assert state.response.message == "已经搜索到商品。"
 
 
-def test_native_runtime_replaces_repeated_search_with_required_price_compare() -> None:
+def test_native_runtime_preserves_model_selected_repeated_search() -> None:
     adapter = NativeToolChatAdapter(
         [
             native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
@@ -619,7 +616,7 @@ def test_native_runtime_replaces_repeated_search_with_required_price_compare() -
     )
 
     assert adapter.calls == 3
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "product_search"]
     assert state.response is not None
     assert state.response.message == "已经完成搜索和比价。"
 
@@ -648,7 +645,7 @@ def test_native_runtime_repairs_price_compare_items_from_search_result() -> None
     assert state.response.message == "已经完成搜索和比价。"
 
 
-def test_native_runtime_replaces_unrelated_tool_with_required_price_compare() -> None:
+def test_native_runtime_preserves_model_selected_unrelated_tool() -> None:
     adapter = NativeToolChatAdapter(
         [
             native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
@@ -662,11 +659,10 @@ def test_native_runtime_replaces_unrelated_tool_with_required_price_compare() ->
         UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
     )
 
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
-    assert adapter.requests[2].tools == []
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
 
 
-def test_native_runtime_replaces_multi_tool_batch_with_required_price_compare() -> None:
+def test_native_runtime_preserves_model_selected_multi_tool_batch() -> None:
     adapter = NativeToolChatAdapter(
         [
             native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
@@ -685,8 +681,11 @@ def test_native_runtime_replaces_multi_tool_batch_with_required_price_compare() 
         UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
     )
 
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
-    assert adapter.requests[2].tools == []
+    assert [call.tool_name for call in state.tool_calls] == [
+        "product_search",
+        "web_search",
+        "product_search",
+    ]
 
 
 def test_native_video_tool_call_uses_agent_service_frame_context(tmp_path: Path) -> None:

@@ -397,7 +397,7 @@ assistant loop 有本地保护，不依赖模型自律：
 - unknown tool、invalid input、missing required input、render intent 缺失等会触发 rejection guard。
 - 同一工具失败达到阈值会停止重复调用。
 - `image_generation` 和 `render_3d` 是 terminal tools；成功后再次请求同一工具会被阻止并转为 final answer。
-- 明确比价请求中，`product_search` 成功后会强制或修复下一步 `price_compare`，并从搜索结果继承成功平台与完整商品对象，防止只搜索不比价或被模型后续平台参数误删候选；`price_compare` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
+- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词把 `final_answer`、重复搜索或其他模型动作强制改写成 `price_compare`。当模型已经选择 `price_compare` 时，runtime 可从本轮成功的 `product_search` 结果修复被压缩的完整商品对象与成功平台；`price_compare` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
 
 计划状态是本地治理结构，不是生产 runtime 的独立 planner/controller 调用：
 

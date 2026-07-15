@@ -89,7 +89,7 @@ def test_product_search_observation_includes_user_visible_product_url() -> None:
     assert "mock://shop-a/p1" in observation.summary
 
 
-def test_product_search_observation_hints_price_compare_when_requested() -> None:
+def test_product_search_observation_leaves_next_action_to_model_reasoning() -> None:
     result = ProductSearchTool(adapter=MockProductSearchAdapter()).run({"query": "白色低帮运动鞋"})
 
     observation = observation_from_tool_result(
@@ -99,10 +99,10 @@ def test_product_search_observation_hints_price_compare_when_requested() -> None
 
     assert observation.status == "succeeded"
     assert observation.next_step_hint is not None
-    assert "Call price_compare next" in observation.next_step_hint
+    assert "Decide from the current user request" in observation.next_step_hint
+    assert "If you select price_compare" in observation.next_step_hint
     assert "structured_output.items as full product objects" in observation.next_step_hint
-    assert "not title strings" in observation.next_step_hint
-    assert "do not run product_search again" in observation.next_step_hint
+    assert "Local keyword rules do not choose the next tool" in observation.next_step_hint
 
 
 def test_repeated_product_search_failure_observation_points_to_prior_success() -> None:

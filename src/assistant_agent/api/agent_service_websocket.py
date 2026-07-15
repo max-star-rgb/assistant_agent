@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from time import perf_counter_ns
 from typing import Any, ClassVar
+from uuid import uuid4
 
 from anyio import CancelScope
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -62,6 +63,7 @@ class AgentServiceConnectionState:
 
     session_id: str | None
     query_params: dict[str, str]
+    runtime_session_id: str | None = None
     response_session_id: str | None = None
     media_protocol: bool = False
     gateway_manager: GatewaySessionManager | None = None
@@ -248,7 +250,7 @@ class ChatHandler(BaseHandler):
         state.chats.append(dict(body))
         turn = await _run_agent_service_chat_turn(
             state=state,
-            session_id=session_id,
+            session_id=state.runtime_session_id or session_id,
             user_number=user_number,
             chat_index=chat_index,
             latest_speech=latest_speech,
@@ -454,6 +456,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     state = AgentServiceConnectionState(
         session_id=_optional_text(websocket.query_params.get("sessionId")),
         query_params={str(key): str(value) for key, value in websocket.query_params.items()},
+        runtime_session_id=f"agent-service-{uuid4().hex}",
         delivery_registry=_create_delivery_registry(),
         trace_store=_get_agent_service_trace_store(),
     )
@@ -738,9 +741,10 @@ def _prepare_chat_raw_message(
         envelope = _parse_envelope(raw)
         body = handler.parse_body(envelope)
         response_session_id = _response_session_id_from_envelope(envelope, state)
-        session_id = _session_id_from_envelope(envelope, state) or _session_id_from_body("chat", body)
-        if session_id is None:
+        protocol_session_id = _session_id_from_envelope(envelope, state) or _session_id_from_body("chat", body)
+        if protocol_session_id is None:
             raise AgentServiceProtocolError("missing sessionId")
+        session_id = state.runtime_session_id or protocol_session_id
         chat_index = handler.require_present(body, "chatIndex")
         user_number = handler.required_text(body, "userNumber")
         contents = body.get("contents")
@@ -760,7 +764,7 @@ def _prepare_chat_raw_message(
         if not latest_speech:
             raise AgentServiceProtocolError("missing contents[].speechContent")
         state.session_turn_counter += 1
-        state.session_id = session_id
+        state.session_id = protocol_session_id
         state.chats.append(dict(body))
         return PreparedChat(
             session_id=session_id,
@@ -959,7 +963,7 @@ def _prepared_chat_response(
                 "chatIndex": prepared.chat_index,
                 "content": {"intentResult": {"description": turn.response_text, "status": "SUCCESS"}},
             },
-            "display_only": False,
+            "display_only": sequence > 1,
             "sequence": sequence,
             "final": True,
         }

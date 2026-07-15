@@ -183,18 +183,13 @@ def _next_step_hint(
     if tool_name == "product_search":
         items = data.get("items")
         has_items = isinstance(items, list) and bool(items)
-        if _request_asks_for_price_compare(request_text) and has_items and not _has_prior_successful_observation(
-            prior_observations,
-            "price_compare",
-        ):
-            return (
-                "The user asked for price comparison and product_search returned candidates. "
-                "Call price_compare next with structured_output.items as full product objects, not title strings; "
-                "do not run product_search again unless the candidates are empty."
-            )
         if not has_items:
             return "No product candidates were returned; try a narrower shopping query or ask the user for clarification."
-        return "Use the product candidates or price result in the final answer or next shopping action."
+        return (
+            "Decide from the current user request whether to answer or choose another shopping action. "
+            "If you select price_compare, use structured_output.items as full product objects, not title strings. "
+            "Local keyword rules do not choose the next tool."
+        )
     if tool_name == "price_compare":
         return "Use the compared offers and best_offer in the final answer; include URL status when present."
     if tool_name == "web_search":
@@ -214,25 +209,6 @@ def _has_prior_successful_observation(
         observation.get("tool_name") == tool_name and observation.get("status") == "succeeded"
         for observation in prior_observations
     )
-
-
-def _request_asks_for_price_compare(request_text: str | None) -> bool:
-    text = request_text or ""
-    lowered = text.lower()
-    markers = (
-        "比价",
-        "比较价格",
-        "比较一下价格",
-        "价格比较",
-        "哪个便宜",
-        "哪款便宜",
-        "最低价",
-        "最便宜",
-        "compare price",
-        "price compare",
-        "cheapest",
-    )
-    return any(marker in text or marker in lowered for marker in markers)
 
 
 def _bound_observation(

@@ -129,7 +129,11 @@ are not product entrypoint precedent.
 
 Vendor `/agent-service/v1` also uses a local Gateway manager and facade per
 connection, but keeps the vendor `message` / optional `sessionId` / stringified
-`body` envelope. Its Gateway session uses the trusted `realtime_phone` profile
+`body` envelope. Every WebSocket connection allocates a fresh internal
+Agent/Gateway `session_id`; the vendor `sessionId` remains only the protocol
+correlation value returned to the media side and cannot resume conversation
+history from an older call. Its Gateway session uses the trusted
+`realtime_phone` profile
 and a fixed foreground tool set: `web_search`, `product_search`,
 `price_compare`, `memory_retrieval`, and `memory_save`. This qualification is
 derived from trusted session config, never user text. `assistantControl`
@@ -139,7 +143,10 @@ clients. `chat` maps the latest `speechContent` to a Gateway turn. With
 `stream=true`, committed provider-token `stream.chunk` frames become media
 `chatResponse` delta packets (`PROCESSING`, increasing sequence,
 `final=false`), followed by one complete terminal packet (`SUCCESS`,
-`final=true`). With `stream=false`, or when no provider token delta exists,
+`final=true`). When at least one delta was delivered, that complete terminal
+packet is marked `display_only=true` so media TTS does not speak the accumulated
+text a second time; it remains the authoritative display/commit payload. With
+`stream=false`, or when no provider token delta exists,
 only the successful terminal packet is sent. `deliveryId` and application ACK
 apply only to a successful terminal packet. A streamed failure closes with
 `code=FAIL` and body-level `final=true`, but has no `deliveryId` and is not

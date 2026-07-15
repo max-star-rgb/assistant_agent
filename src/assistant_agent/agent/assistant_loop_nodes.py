@@ -29,7 +29,6 @@ from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.agent.shopping_guards import (
     repair_price_compare_decision_from_search,
-    required_price_compare_after_search,
 )
 from assistant_agent.agent.system_prompt_policy import (
     SystemPromptOptions,
@@ -542,14 +541,8 @@ def _apply_decision_guards(
     """Apply loop/safety guards after a policy proposes an assistant decision."""
 
     state = graph_state["state"]
-    required_price_compare = _required_price_compare_after_search(state, context)
-    if required_price_compare is not None:
-        if decision.type == "final_answer":
-            return required_price_compare
-        if decision.type == "tool_call" and decision.tool_name == "product_search":
-            return required_price_compare
-        if decision.type == "tool_call" and decision.tool_name == "price_compare":
-            return _repair_price_compare_decision_from_search(decision, required_price_compare)
+    if decision.type == "tool_call" and decision.tool_name == "price_compare":
+        return repair_price_compare_decision_from_search(decision, state, context.request)
 
     if decision.reason == "Empty or whitespace-only output.":
         guard = LoopGuard(state.request.metadata).record_empty_decision()
@@ -594,24 +587,6 @@ def _apply_memory_tool_selection_policy(
     )
     record_memory_tool_selection_audit(context.request, audit)
     return decision
-
-
-def _required_price_compare_after_search(
-    state: AgentState,
-    context: AssistantDecisionContext,
-) -> AssistantDecision | None:
-    """Keep explicit shopping compare requests from stopping after search only."""
-
-    return required_price_compare_after_search(state, context.request)
-
-
-def _repair_price_compare_decision_from_search(
-    decision: AssistantDecision,
-    fallback: AssistantDecision,
-) -> AssistantDecision:
-    """Use the last product_search result when LLM compressed price_compare items."""
-
-    return repair_price_compare_decision_from_search(decision, fallback)
 
 
 def _apply_terminal_decision(
