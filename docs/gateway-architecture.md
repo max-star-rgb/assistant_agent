@@ -140,8 +140,10 @@ clients. `chat` maps the latest `speechContent` to a Gateway turn. With
 `chatResponse` delta packets (`PROCESSING`, increasing sequence,
 `final=false`), followed by one complete terminal packet (`SUCCESS`,
 `final=true`). With `stream=false`, or when no provider token delta exists,
-only the terminal packet is sent. `deliveryId` and application ACK apply only
-to that terminal packet. `audio` and `interrupt` are accepted as transport
+only the successful terminal packet is sent. `deliveryId` and application ACK
+apply only to a successful terminal packet. A streamed failure closes with
+`code=FAIL` and body-level `final=true`, but has no `deliveryId` and is not
+ACK-negotiated. `audio` and `interrupt` are accepted as transport
 compatibility messages and acknowledged at the entry layer. `video` accepts
 independently decodable H.264 Annex-B frames, decodes them to a three-frame
 JPEG window plus a bounded local grayscale fingerprint, and attaches the stable

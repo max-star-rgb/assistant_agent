@@ -145,7 +145,7 @@ Agent 兼容说明：
 - chat run 在独立任务中执行，WebSocket 主循环会继续接收并 ACK 后续媒体消息。
 - `stream=true` 的中间包只携带本包新增文本，`status=PROCESSING`、`sequence>=1`、`final=false`；终包携带完整回答，`status=SUCCESS`、最后一个 `sequence`、`final=true`。
 - 只有真实 Provider token delta 产生中间包；Provider 不支持或未产生 token delta 时，即使 `stream=true` 也只发送一个完整终包，不伪造流式能力。
-- `deliveryId` 和 `chatResponseAck` 只属于终包，中间包不进入应用层 ACK 状态。
+- `deliveryId` 和 `chatResponseAck` 只属于成功终包；中间包和失败终包都不进入应用层 ACK 状态。
 - Provider 的工具调用前导文本受 runtime commit barrier 保护；会被工具调用取代的 provisional 文本不会发送给 Media/App。
 
 协商 `chatProgress` 后，Agent 立即并每 15 秒发送一次：
@@ -172,7 +172,7 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 {"message":"chatResponse","body":"{\"message\":{\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"你\",\"status\":\"PROCESSING\"}}},\"sequence\":1,\"final\":false,\"display_only\":false}"}
 ```
 
-协商 `chatResponseAck` 后的终包 body（未协商时省略 `deliveryId`）：
+协商 `chatResponseAck` 后的成功终包 body（未协商时省略 `deliveryId`）：
 
 ```json
 {
@@ -202,7 +202,8 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 ```
 
 若已发送一个或多个中间包后运行失败，Agent 仍发送 `code=FAIL`、`final=true`
-的终包；失败终包不重复已发送正文，协商 ACK 时才携带 `deliveryId`。
+的失败终包以关闭本轮 stream；失败终包不重复已发送正文，也不携带
+`deliveryId`，不能发送 `chatResponseAck`。
 
 ### 4.3 audio
 
@@ -279,23 +280,23 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 原始视频上下文只保留最近 3 帧；成功理解的语义关键帧独立保留最多 8 帧。后台队列最多包含 1 个执行中帧和 1 个待处理帧，积压时用最新候选替换旧候选。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解复用 `video_understanding`，并经过 `ActionValidator -> ToolExecutor -> ToolRegistry`；WebSocket 入口不直接调用 Provider。默认 `local_demo` / `offline_eval` 不联网，真实连续 MLLM 只允许显式 `provider_smoke` / `pilot` 配置。
-- 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。真实 LLM 根据用户语义自主决定是否调用 `video_understanding`，工具调用仍经过 validator、executor、registry 和 Provider policy。
+- 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。Agent-Service 前台 LLM 的工具集合不包含 `video_understanding`；它只消费后台观察器已发布的被动 `realtime_video_context` snapshot，并根据当前问题决定是否使用其中的视觉事实。
 - 可信 Agent-Service 请求把它表述为双方共享的当前实时镜头，不把 opaque `video_id` 渲染成上传视频，也不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
 - 明确询问当前画面时，以提问时最近已解码帧的 sequence 为目标；若现有成功快照落后，则复用或提升同一 observer 的 latest-wins 候选，并最多等待 4.0 秒直到成功快照达到目标 sequence。该屏障不启动前台 `video_understanding`，普通问候不等待。
 - 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；查询驱动提升也复用这条队列与工具治理链。
 - 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；采集时间缺失或在未来时不伪造采集年龄。
-- 查询时若最新已完成观察成功，`video_understanding` 直接返回滚动语义记忆，不再次调用视觉 MLLM；若记忆尚未就绪或最新观察失败，则使用最近 3 帧执行原有 Provider 回退。
-- 携带视频引用的 chat turn 使用 90 秒 facade 等待预算，以覆盖视频 Provider 最长 60 秒的调用预算以及调用前后的 LLM 决策；普通 chat 仍使用 30 秒。
+- 普通上传/API（非 Agent-Service）仍可显式调用 `video_understanding`：最新观察成功时读取滚动语义记忆，记忆未就绪或最新观察失败时使用最近 3 帧走 Provider 回退。
+- Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖有界 freshness wait、Gateway 与前台 LLM 执行；它不表示前台会调用视频 Provider。普通 chat 使用 30 秒。
 - 连接关闭时先停止观察器、丢弃待处理帧并拒绝晚到结果，再移除滚动语义记忆、关键帧、原始帧上下文和 JPEG 运行时文件。
 
 成功响应中的 `video received` 表示该帧已经通过校验、成功解码、注册到视频上下文并完成本地选帧调度，不再只是传输层收到；它不表示后台视觉 MLLM 已完成。Hex、codec、NAL 起始码、大小或解码失败时返回 `videoResponse` 且 `body.code="FAIL"`；连接保持可用，失败帧不会附加到后续 chat。
 
-`video_understanding` 的结构化结果用 `source` 标明解析路径：
+受治理后台观察与普通上传/API `video_understanding` 的结构化结果用 `source` 标明解析路径：
 
 | `source` | 含义 |
 | --- | --- |
-| `rolling_video_memory` | 最新已完成观察成功，查询直接读取滚动语义记忆，未发生查询时视觉 Provider 调用 |
-| `recent_frame_fallback` | 记忆未就绪或最新观察失败，查询使用最近原始帧调用 Provider |
+| `rolling_video_memory` | 普通上传/API 查询读取最新健康滚动语义记忆，未发生查询时视觉 Provider 调用 |
+| `recent_frame_fallback` | 普通上传/API 在记忆未就绪或最新观察失败时使用最近原始帧调用 Provider |
 | `background_keyframe_observation` | 持续观察器对选中关键帧执行的受治理后台分析 |
 
 ### 4.5 interrupt
@@ -411,7 +412,7 @@ run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 | `chat_queue_wait` | 同一 session 的上一轮仍在执行，本轮等待串行锁。 |
 | `conversation_prepare` | 会话历史读取、上下文请求准备较慢。 |
 | `llm_chat[1]` | 首次 LLM 工具选择/直接回答调用较慢。 |
-| `tool_execute[video_understanding]` | 查询时视频回退或视觉 Provider 调用较慢。 |
+| `tool_execute[video_understanding]` | 普通上传/API 的显式视频查询发生记忆回退或视觉 Provider 调用；Agent-Service 前台不会出现该阶段。 |
 | `llm_chat[2]` | 工具观察后的最终回答 LLM 调用较慢。 |
 | `websocket_send` | socket/媒体接收端产生传输背压。 |
 | `ACK pending` | 最终响应已发送，但媒体应用确认尚未到达。 |
@@ -420,9 +421,10 @@ run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 | `sequence_gap` 大于 0 | 4 秒目标序号屏障未满足；回答必须保留画面可能滞后的不确定性。 |
 | `unattributed` | 端到端耗时中尚未被叶子阶段解释的剩余部分。 |
 
-视频诊断中的后台观察 latency 不直接计入 chat 关键路径。只有
-`recent_frame_fallback` 在本轮查询时调用视觉 Provider，才会体现在
-`tool_execute[video_understanding]`。`videoResponse(code=0)` 仍仅是帧校验、
+视频诊断中的后台观察 latency 不直接计入 chat 关键路径。只有普通上传/API 的
+`recent_frame_fallback` 在本轮显式查询时调用视觉 Provider，才会体现在
+`tool_execute[video_understanding]`；Agent-Service 前台只消费被动 snapshot。
+`videoResponse(code=0)` 仍仅是帧校验、
 解码、注册与调度成功的证据，不是 MLLM 完成证据。
 
 默认日志、trace、`.data/graph_trace.jsonl` 和 delivery audit 均不含对话正文。

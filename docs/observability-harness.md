@@ -17,6 +17,13 @@ reasoning.
 `send_text()` returned; only `acked` proves the media application processed the
 final response.
 
+A streamed failure terminal (`code=FAIL`, `final=true`) closes the Media stream
+but has no `deliveryId` and is not ACK-negotiated. Only a successful terminal
+delivery can transition to `acked`; a failure terminal can never produce
+`agent_service.delivery.acked`. Transport-level delivery audit may still record
+that a failure terminal was handed to the WebSocket, while an exception path is
+recorded as `failed`.
+
 Records use digests for session and chat identifiers and may include run/trace
 ids, close code, and a close-reason category. They never include response text,
 raw media, phone numbers, credentials, or provider payloads. This JSONL file is
@@ -29,7 +36,8 @@ Every accepted `/agent-service/v1` chat delivery can produce one prompt-safe
 returns. This is the user-visible send boundary. When `chatResponseAck` was
 negotiated, application delivery confirmation remains a later, separate
 `agent_service.delivery.acked` event. A turn with `ack_status=pending` was sent
-but has not been confirmed by the media application.
+successfully but has not been confirmed by the media application. Failure
+terminals are never `ack_status=pending` and carry no ACK-able delivery ID.
 
 The correlation identifiers are deliberately distinct:
 

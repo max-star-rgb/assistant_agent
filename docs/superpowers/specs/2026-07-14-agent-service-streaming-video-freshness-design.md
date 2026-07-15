@@ -35,8 +35,8 @@ Media 发送 `chat.body.stream=true` 时，Agent 使用现有 `chatResponse` 消
 
 - 中间包的 `intentResult.description` 是本包新增文本，`intentResult.status` 为 `PROCESSING`。
 - 最终包的 `intentResult.description` 是完整回答，`intentResult.status` 为 `SUCCESS`。
-- 中间包携带递增 `sequence` 和 `final=false`；最终包携带最后序号和 `final=true`。这些是 `intentResult` 的可选兼容字段，Media 可据此区分增量与终态。
-- `deliveryId` 只出现在最终包；`chatResponseAck` 只确认最终投递。
+- 中间包在 response body 顶层携带递增 `sequence` 和 `final=false`；成功终包在 response body 顶层携带最后序号和 `final=true`。这些字段不属于 `intentResult`；Media 用它们区分增量与终态。
+- `deliveryId` 只出现在成功终包；`chatResponseAck` 只确认成功最终投递。流式失败以 `code=FAIL`、`final=true` 的无回答正文、无 `deliveryId` 终包关闭本轮 stream，该投递不进入 ACK 状态。
 - `stream=false` 或缺省时保持单个完整 `chatResponse`，不改变旧客户端行为。
 - 工具调用阶段的 provisional 文本继续受 runtime commit barrier 保护，不向 Media 泄漏可能被工具调用取代的模型前导语。
 
@@ -87,10 +87,10 @@ Media 发送 `chat.body.stream=true` 时，Agent 使用现有 `chatResponse` 消
 
 ## 错误与兼容行为
 
-- Provider streaming 未启用或 Provider 不支持时，Agent 返回一个最终包，并在安全 trace 中标记 `provider_streaming=false`；不对 Media 声称存在 token 流。
+- Provider streaming 未启用、不支持或未产生 token delta 时，Agent 只返回一个成功终包；安全 trace 以 `provider_token_stream_seen=false` 和 `stream_chunk_count=0` 表达实际观测，不对 Media 声称存在 token 流。
 - WebSocket 在发送中间包时断开，当前 delivery 标记 disconnected；不记录最终已发送或 ACK pending。
 - 中间包发送失败会取消当前 Gateway run，避免后台继续生成不可投递文本。
-- 最终文本仍以 Gateway terminal result 为准；中间包拼接结果与最终文本不一致时记录安全计数诊断，不记录正文。
+- 最终文本仍以 Gateway terminal result 为准；当前诊断记录是否看到 Provider token delta、成功发送的中间包数量、首包耗时和成功终包是否已发送，不记录或比较正文。
 - `stream=false`、旧 `assistantControlStart`、`chatProgress`、`chatResponseAck`、音视频 ACK 和最终响应 body 的既有字段保持兼容。
 - 非 Agent-Service 视频上传/API 不受 freshness barrier 和实时措辞影响。
 
@@ -103,13 +103,13 @@ Media 发送 `chat.body.stream=true` 时，Agent 使用现有 `chatResponse` 消
 - `stream_chunk_count`
 - `first_stream_chunk_latency_ms`
 - `final_response_sent`
-- `video_target_sequence`
-- `video_snapshot_sequence`
-- `video_sequence_gap`
-- `video_frame_capture_age_ms`
-- `video_snapshot_publish_age_ms`
-- `video_freshness_waited_ms`
-- `video_freshness_satisfied`
+- `video.target_sequence`
+- `video.snapshot_sequence`
+- `video.sequence_gap`
+- `video.frame_capture_age_ms`
+- `video.snapshot_publish_age_ms`
+- `video.freshness_waited_ms`
+- `video.freshness_satisfied`
 
 不得记录 token 文本、完整回答、用户原话、帧路径、Base64/Hex 媒体或 Qwen 原文。
 

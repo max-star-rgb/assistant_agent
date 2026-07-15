@@ -1014,7 +1014,7 @@ def test_agent_service_stream_error_after_delta_sends_failure_terminal_packet(
             )
             return _error_turn(response_text="partial secret must not repeat")
 
-    packets, delivery = asyncio.run(
+    packets, _delivery = asyncio.run(
         _run_prepared_chat_delivery(
             tmp_path=tmp_path,
             facade=ErrorAfterDeltaFacade(),
@@ -1028,7 +1028,7 @@ def test_agent_service_stream_error_after_delta_sends_failure_terminal_packet(
     assert terminal["code"] == "FAIL"
     assert terminal["sequence"] == 2
     assert terminal["final"] is True
-    assert terminal["deliveryId"] == delivery.delivery_id
+    assert "deliveryId" not in terminal
     assert "partial secret" not in json.dumps(terminal)
 
 
@@ -1051,7 +1051,7 @@ def test_agent_service_stream_exception_after_delta_sends_failure_terminal_packe
             )
             raise RuntimeError("delivery exploded")
 
-    packets, delivery = asyncio.run(
+    packets, _delivery = asyncio.run(
         _run_prepared_chat_delivery(
             tmp_path=tmp_path,
             facade=ExceptionAfterDeltaFacade(),
@@ -1065,7 +1065,7 @@ def test_agent_service_stream_exception_after_delta_sends_failure_terminal_packe
     assert terminal["code"] == "FAIL"
     assert terminal["sequence"] == 2
     assert terminal["final"] is True
-    assert terminal["deliveryId"] == delivery.delivery_id
+    assert "deliveryId" not in terminal
     assert "partial secret" not in json.dumps(terminal)
     assert "delivery exploded" not in json.dumps(terminal)
 

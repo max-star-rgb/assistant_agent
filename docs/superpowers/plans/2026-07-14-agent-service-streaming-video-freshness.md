@@ -13,7 +13,7 @@
 - Do not change the App protocol or make App connect directly to Agent.
 - Keep Media `message` plus stringified `body` envelopes and existing `chatResponse` message type.
 - Intermediate stream packets use delta text with `status=PROCESSING`, `sequence>=1`, and `final=false`; the terminal packet uses complete text with `status=SUCCESS` and `final=true`.
-- `deliveryId` and `chatResponseAck` apply only to the terminal packet.
+- `deliveryId` and `chatResponseAck` apply only to a successful terminal packet. A failure terminal closes a started stream with `code=FAIL` and `final=true`, but carries no `deliveryId` and is not ACK-negotiated.
 - Keep at most one Qwen observation in flight and one latest-wins pending frame per connection.
 - Visual freshness wait is bounded to 4.0 seconds and never starts a foreground `video_understanding` tool call.
 - Do not log or persist user text, answer chunks, frame paths, Base64/Hex media, or Provider raw responses.
@@ -139,7 +139,7 @@ body = {
 }
 ```
 
-Terminal Media response uses `sequence=intermediate_count + 1` and `final=true`. Do not attach `deliveryId` to intermediate packets.
+Successful terminal Media response uses `sequence=intermediate_count + 1` and `final=true`. Do not attach `deliveryId` to intermediate or failure-terminal packets.
 
 - [ ] **Step 8: Verify stream protocol GREEN and regressions**
 
@@ -411,7 +411,7 @@ Document exact Media packet examples:
 {"message":"chatResponse","body":"{\"message\":{\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"你\",\"status\":\"PROCESSING\"}}},\"sequence\":1,\"final\":false,\"display_only\":false}"}
 ```
 
-State that final packets contain the full answer, only final packets carry `deliveryId`, realtime camera wording differs from uploads, and freshness uses frame capture time plus a 4-second target-sequence barrier.
+State that successful final packets contain the full answer and are the only packets that may carry `deliveryId`; failure terminals close a started stream without `deliveryId` or ACK. Realtime camera wording differs from uploads, and freshness uses frame capture time plus a 4-second target-sequence barrier.
 
 - [ ] **Step 6: Run focused verification**
 

@@ -873,7 +873,6 @@ async def _run_chat_delivery(
         if not state.closed:
             response = _failure_chat_response(
                 prepared,
-                delivery=delivery,
                 message=str(exc),
                 sequence=sequence + 1 if sequence else None,
             )
@@ -944,7 +943,6 @@ def _prepared_chat_response(
     if turn.status == "error":
         return _failure_chat_response(
             prepared,
-            delivery=delivery,
             message=turn.payload.get("message") or turn.reason or "Gateway run failed",
             sequence=sequence if sequence > 1 else None,
         )
@@ -1118,7 +1116,6 @@ def _create_realtime_video_observer(*, user_id: str, session_id: str) -> Realtim
 def _failure_chat_response(
     prepared: PreparedChat,
     *,
-    delivery: AgentServiceDelivery,
     message: str,
     sequence: int | None,
 ) -> dict[str, Any]:
@@ -1126,8 +1123,6 @@ def _failure_chat_response(
     body: dict[str, Any] = {"code": FAIL_CODE, "message": safe_message}
     if sequence is not None:
         body.update({"sequence": sequence, "final": True})
-        if delivery.expects_ack:
-            body["deliveryId"] = delivery.delivery_id
     return _response_envelope(
         message="chatResponse",
         session_id=prepared.response_session_id,
