@@ -309,6 +309,50 @@ def test_realtime_adapter_uses_capped_backoff_and_resets_after_success(tmp_path:
     assert adapter.connection_failures == 0
 
 
+def test_realtime_adapter_counts_failed_reconnect_attempts_independently_from_sessions(
+    tmp_path: Path,
+) -> None:
+    frame = _frame(tmp_path)
+    attempts = 0
+    success_socket = FakeWebSocket(_successful_responses())
+
+    def connect(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise ConnectionError("offline")
+        return success_socket
+
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key"),
+        connect=connect,
+        sleep=lambda _seconds: None,
+    )
+    request = VideoUnderstandingRequest(
+        video_ref="v",
+        frame_refs=[str(frame)],
+        metadata={"frame_sequence": 9},
+    )
+
+    first_failure = adapter.understand_video(request)
+    first_diagnostics = adapter.last_observation_diagnostics
+    second_failure = adapter.understand_video(request)
+    second_diagnostics = adapter.last_observation_diagnostics
+    success = adapter.understand_video(request)
+    success_diagnostics = adapter.last_observation_diagnostics
+
+    assert first_failure.errors[0]["code"] == "provider_connection_failed"
+    assert first_diagnostics["session_generation"] is None
+    assert first_diagnostics["reconnect_count"] == 0
+    assert second_failure.errors[0]["code"] == "provider_connection_failed"
+    assert second_diagnostics["session_generation"] is None
+    assert second_diagnostics["reconnect_count"] == 1
+    assert success.errors == []
+    assert success_diagnostics["session_generation"] == 1
+    assert success_diagnostics["reconnect_count"] == 2
+    assert success_diagnostics["completed_sequence"] == 9
+
+
 def test_realtime_adapter_resets_backoff_after_handshake_even_if_round_fails(tmp_path: Path) -> None:
     frame = _frame(tmp_path)
     attempts = 0

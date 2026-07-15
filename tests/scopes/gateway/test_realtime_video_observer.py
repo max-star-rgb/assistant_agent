@@ -258,12 +258,12 @@ def test_default_observer_collector_selects_initial_change_and_two_second_static
     )
     changed = replace(
         _decoded_frame(tmp_path, sequence=2),
-        timestamp_ms=200,
+        timestamp_ms=50,
         fingerprint=tuple([255] * 16),
     )
     static_due = replace(
         _decoded_frame(tmp_path, sequence=3),
-        timestamp_ms=2_200,
+        timestamp_ms=2_100,
         fingerprint=tuple([255] * 16),
     )
 
@@ -677,6 +677,47 @@ def test_observer_close_waits_for_late_retention_and_cleans_ownership(
         assert isinstance(promotion_result[0], RuntimeError)
         assert observer._owned_paths == set()
         assert not keyframe_root.exists()
+
+    asyncio.run(scenario())
+
+
+def test_observer_close_timeout_deletes_inflight_artifact_before_return(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        adapter = BlockingVideoAdapter()
+        registry = ToolRegistry()
+        registry.register(VideoUnderstandingTool(adapter=adapter))
+        memory = RealtimeVideoMemoryStore()
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=memory,
+            keyframe_root=tmp_path / "keyframes",
+            collector=AlwaysSelectCollector(),
+            close_wait_seconds=0.01,
+        )
+
+        await observer.submit(_decoded_frame(tmp_path, sequence=1))
+        assert await asyncio.to_thread(adapter.started.wait, 2.0)
+        assert observer._inflight_item is not None
+        retained_path = Path(observer._inflight_item.record.uri)
+        late_execution = observer._execution_task
+        assert retained_path.is_file()
+        assert late_execution is not None
+
+        await observer.close()
+
+        assert not retained_path.exists()
+        assert observer._owned_paths == set()
+        assert memory.snapshot(VIDEO_ID) is None
+
+        adapter.release.set()
+        await asyncio.wait_for(asyncio.shield(late_execution), 1.0)
+        assert not retained_path.exists()
+        assert memory.snapshot(VIDEO_ID) is None
 
     asyncio.run(scenario())
 

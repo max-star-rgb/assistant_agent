@@ -27,6 +27,7 @@ from assistant_agent.services.video_context import VideoFrame
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.video_ai.keyframe.collector import AdaptiveKeyframeCollector
 from assistant_agent.video_ai.keyframe.selector import KeyframeSelectorConfig
+from assistant_agent.video_ai.sampling.adaptive_sampler import AdaptiveSamplerConfig
 from assistant_agent.video_ai.types import (
     FrameProcessingResult,
     KeyframeChangeMetrics,
@@ -74,6 +75,7 @@ class RealtimeVideoObserver:
         self.memory_store = memory_store
         self.keyframe_root = Path(keyframe_root)
         self.collector = collector or AdaptiveKeyframeCollector(
+            sampler_config=AdaptiveSamplerConfig(immediate_change_threshold=0.35),
             keyframe_config=KeyframeSelectorConfig(
                 min_interval_seconds=0.0,
                 max_interval_seconds=REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS,
@@ -287,7 +289,7 @@ class RealtimeVideoObserver:
                 inflight = self._inflight_item
                 if inflight is not None:
                     path = Path(inflight.record.uri)
-                    self._owned_paths.discard(path)
+                    self._delete_record(inflight)
                     execution.add_done_callback(lambda _task, owned=path: self._delete_late_path(owned))
 
         if self._worker is not None:

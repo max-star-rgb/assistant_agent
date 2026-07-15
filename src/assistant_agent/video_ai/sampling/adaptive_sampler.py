@@ -20,6 +20,7 @@ class AdaptiveSamplerConfig:
     active_threshold: float = 0.2
     burst_threshold: float = 0.65
     burst_duration_seconds: float = 2.0
+    immediate_change_threshold: float | None = None
 
 
 class AdaptiveFrameSampler:
@@ -37,6 +38,13 @@ class AdaptiveFrameSampler:
         if force:
             self._last_sampled_at = timestamp_seconds
             return SamplingDecision(sampled=True, sampling_rate=rate, reason="forced_interval")
+        if (
+            self._last_sampled_at is not None
+            and self.config.immediate_change_threshold is not None
+            and change_score >= self.config.immediate_change_threshold
+        ):
+            self._last_sampled_at = timestamp_seconds
+            return SamplingDecision(sampled=True, sampling_rate=rate, reason="immediate_change")
         if self._last_sampled_at is None:
             self._last_sampled_at = timestamp_seconds
             return SamplingDecision(sampled=True, sampling_rate=rate, reason="initial")

@@ -51,6 +51,8 @@ class QwenRealtimeVisionAdapter:
         self._successful_observations = 0
         self._connection_failures = 0
         self._session_generation = 0
+        self._connect_attempts = 0
+        self._reconnect_count = 0
         self._connection_reused = False
         self._observation_started_at = 0.0
         self._first_delta_latency_ms: int | None = None
@@ -160,6 +162,9 @@ class QwenRealtimeVisionAdapter:
             self._sleep(_backoff_seconds(self._connection_failures))
         socket: Any | None = None
         try:
+            if self._connect_attempts > 0:
+                self._reconnect_count += 1
+            self._connect_attempts += 1
             socket = self._connect(
                 _model_url(self.config.base_url, self.config.model),
                 additional_headers={"Authorization": f"Bearer {self.config.api_key}"},
@@ -261,7 +266,7 @@ class QwenRealtimeVisionAdapter:
             "transport": "websocket",
             "session_generation": self._session_generation or None,
             "connection_reused": self._connection_reused,
-            "reconnect_count": max(0, self._session_generation - 1),
+            "reconnect_count": self._reconnect_count,
             "target_sequence": self._target_sequence,
             "completed_sequence": completed_sequence,
             "first_delta_latency_ms": self._first_delta_latency_ms,
