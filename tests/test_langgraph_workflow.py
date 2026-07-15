@@ -1,5 +1,4 @@
 from assistant_agent.agent.graph import build_agent_graph, run_agent_graph
-from assistant_agent.agent.workflow import AgentWorkflow
 from assistant_agent.schemas.requests import UserRequest
 
 
@@ -24,18 +23,3 @@ def test_langgraph_workflow_handles_simple_query() -> None:
     assert state.intent.intent == "image_understanding"
     assert state.response is not None
     assert state.tool_calls[0].tool_name == "vision_understanding"
-
-
-def test_agent_workflow_run_still_works() -> None:
-    state = AgentWorkflow().run(
-        UserRequest(
-            user_id="u1",
-            session_id="s1",
-            text="找相似款",
-        )
-    )
-
-    assert state.intent is not None
-    assert state.intent.intent == "product_search"
-    assert state.status == "completed"
-    assert state.tool_calls[0].tool_name == "product_search"

@@ -1,8 +1,12 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from assistant_agent.api.app import create_app
+
+
+pytestmark = [pytest.mark.api, pytest.mark.regression]
 
 
 def test_legacy_web_chat_console_is_not_served() -> None:

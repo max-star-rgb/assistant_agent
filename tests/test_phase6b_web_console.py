@@ -4,22 +4,6 @@ import assistant_agent.api.app as app_module
 from assistant_agent.api.app import create_app
 
 
-def test_demo_console_page_is_not_served() -> None:
-    client = TestClient(create_app())
-
-    response = client.get("/demo/console")
-
-    assert response.status_code == 404
-
-
-def test_static_console_asset_is_not_served() -> None:
-    client = TestClient(create_app())
-
-    response = client.get("/static/index.html")
-
-    assert response.status_code == 404
-
-
 def test_generated_artifact_static_path_is_served(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(app_module, "GENERATED_ARTIFACT_DIR", tmp_path)
     (tmp_path / "sample.png").write_bytes(b"fake-png")

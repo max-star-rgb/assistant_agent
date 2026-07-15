@@ -44,19 +44,6 @@ def test_video_understanding_tool_returns_structured_missing_video_error() -> No
     assert result.contract.errors[0].code == "video_missing_input"
 
 
-def test_video_understanding_tool_output_contract() -> None:
-    result = VideoUnderstandingTool(adapter=MockVideoUnderstandingAdapter()).run(
-        {"video_ref": "mock://video/demo", "user_query": "总结视频"}
-    )
-
-    assert result.contract is not None
-    assert result.contract.capability == "video_understanding"
-    assert result.contract.status == "succeeded"
-    assert result.contract.output_ref == "mock://video/understanding/demo"
-    assert result.contract.data["summary"] == result.data["summary"]
-    assert result.contract.metadata["provider"] == "mock"
-
-
 def test_default_registry_contains_video_understanding_tool_with_mock_adapter() -> None:
     tool = create_default_registry().get("video_understanding")
 

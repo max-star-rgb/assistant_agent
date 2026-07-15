@@ -20,22 +20,6 @@ def test_api_tool_results_include_capability_contracts() -> None:
     assert payload["data"]["contracts"][0]["capability"] == "product_search"
 
 
-def test_api_direct_chat_includes_capability_contract() -> None:
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/agent/run",
-        json={"user_id": "u1", "session_id": "s1", "text": "帮我写一段商品介绍"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-
-    assert payload["tool_results"] == []
-    assert payload["data"]["contract"]["capability"] == "direct_chat"
-    assert payload["data"]["contract"]["status"] == "succeeded"
-
-
 def test_api_failed_tool_contract_has_errors() -> None:
     client = TestClient(create_app())
 

@@ -115,10 +115,3 @@ def test_agent_run_accepts_explicit_plan_and_solve_strategy() -> None:
     assert payload["response_text"] == "native plan strategy response"
     assert payload["tool_calls"] == []
     assert payload["data"]["native_runtime"] is True
-
-
-def test_phase7c_legacy_ws_agent_route_is_removed() -> None:
-    client = TestClient(create_app())
-    route_paths = {getattr(route, "path", "") for route in client.app.routes}
-
-    assert "/ws/agent/{session_id}" not in route_paths

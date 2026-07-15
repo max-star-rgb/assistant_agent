@@ -16,7 +16,7 @@ def test_mock_vision_adapter_returns_visual_understanding_schema() -> None:
 
 
 def test_mock_vision_adapter_rejects_missing_media() -> None:
-    with pytest.raises(ValueError, match="缺少图片或视频 ID"):
+    with pytest.raises(ValueError, match="缺少图片或视频 ID，无法进行视觉理解"):
         MockVisionUnderstandingAdapter().understand(VisionUnderstandingInput())
 
 

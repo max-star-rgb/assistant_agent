@@ -51,6 +51,14 @@ def test_render_tool_returns_preview_url_and_task_status() -> None:
     assert result.data["task_id"] == "mock_render_task_1"
     assert result.data["status"] == "succeeded"
     assert result.data["preview_url"] == "mock://render/preview.png"
+    assert result.data["model_url"] == "mock://render/model.glb"
+    assert result.output_ref == "mock://render/preview.png"
+
+
+def test_render_tool_supports_text_only_scene() -> None:
+    result = Render3DTool().run({"scene": "客厅"})
+
+    assert result.success is True
     assert result.output_ref == "mock://render/preview.png"
 
 
@@ -69,12 +77,3 @@ def test_render_tool_returns_structured_error_without_scene() -> None:
     assert result.data is not None
     assert result.data["errors"][0]["code"] == "render_missing_scene"
     assert result.error == "render_missing_scene: Render request requires scene_description or scene."
-
-
-def test_mock_render_adapter_requires_scene() -> None:
-    adapter = MockRenderAdapter()
-
-    result = adapter.render(RenderRequest(product_ref="p1"))
-
-    assert result.status == "failed"
-    assert result.errors[0]["code"] == "render_missing_scene"

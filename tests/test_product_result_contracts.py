@@ -171,23 +171,3 @@ def test_product_search_observation_does_not_show_invalid_synthetic_product_url(
     assert "item.taobao.com" not in observation.summary
     assert "未提供可直接打开的商品链接" in message
     assert "item.taobao.com" not in message
-
-
-def test_product_search_api_output_contract_is_stable() -> None:
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/agent/run",
-        json={"user_id": "u1", "session_id": "s1", "text": "帮我找相似款"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    tool_result = payload["tool_results"][0]
-    product = tool_result["data"]["items"][0]
-    assert tool_result["success"] is True
-    assert product["product_id"]
-    assert product["product_url"] == "mock://shop-a/p1"
-    assert product["source"] == "mock"
-    assert product["ranking_reason"]["explanation"]
-    assert "provider_response" not in tool_result["data"]

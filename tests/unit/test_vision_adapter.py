@@ -32,17 +32,6 @@ def test_mock_vision_adapter_understands_image() -> None:
     assert result.scene == "室内展示场景"
 
 
-def test_mock_vision_adapter_requires_media() -> None:
-    adapter = MockVisionUnderstandingAdapter()
-
-    try:
-        adapter.understand(VisionUnderstandingInput(question="图里是什么"))
-    except ValueError as exc:
-        assert str(exc) == "缺少图片或视频 ID，无法进行视觉理解"
-    else:
-        raise AssertionError("expected ValueError")
-
-
 def test_vision_tool_calls_adapter_and_returns_tool_result() -> None:
     tool = VisionUnderstandingTool(adapter=MockVisionUnderstandingAdapter())
 

@@ -11,6 +11,7 @@ def test_mock_image_generation_adapter_returns_generation_schema() -> None:
     )
 
     assert isinstance(result, ImageGenerationResult)
+    assert result.task_id == "mock_image_task_1"
     assert result.status == "succeeded"
     assert result.image_url == "local://generated/poster.png"
     assert result.prompt

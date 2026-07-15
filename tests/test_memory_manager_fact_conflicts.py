@@ -9,7 +9,7 @@ from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory_intelligence import MemoryConflictPolicy, MemoryFact
 
 
-NOW = datetime(2026, 7, 14, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc)
 
 
 def _fact_payload(

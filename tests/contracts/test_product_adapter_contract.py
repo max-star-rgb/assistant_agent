@@ -23,8 +23,12 @@ def test_mock_product_adapter_compare_returns_price_compare_schema() -> None:
     result = adapter.compare(PriceCompareInput(items=products, query="白色低帮运动鞋"))
 
     assert isinstance(result, PriceCompareResult)
-    assert result.items[0].price <= result.items[-1].price
-    assert result.best_value_product_id == result.items[0].product_id
+    prices = [item.price for item in result.items]
+    assert prices == sorted(prices)
+    assert [item.product_id for item in result.items] == ["p2", "p1", "p3"]
+    assert result.best_value_product_id == "p2"
+    assert result.offers[0].product_id == "p2"
+    assert result.best_offer.product_id == "p2"
 
 
 def test_mock_product_adapter_rejects_missing_search_query() -> None:

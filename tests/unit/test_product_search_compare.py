@@ -1,6 +1,5 @@
 from assistant_agent.services.product_adapter import (
     MockProductSearchAdapter,
-    PriceCompareInput,
     ProductSearchInput,
 )
 from assistant_agent.tools.price_compare_tool import PriceCompareTool
@@ -30,6 +29,7 @@ def test_product_search_tool_returns_structured_tool_result() -> None:
     assert result.data is not None
     assert result.data["provider"] == "mock"
     assert len(result.data["items"]) == 3
+    assert result.data["items"][0]["product_id"] == "p1"
     assert result.data["items"][0]["title"] == "白色低帮运动鞋 A"
     assert result.data["items"][0]["reason"]
 
@@ -40,20 +40,6 @@ def test_product_search_tool_returns_structured_error_without_description() -> N
     assert result.success is False
     assert result.error == "缺少商品描述，无法搜索"
     assert result.data["errors"][0]["code"] == "product_query_empty"
-
-
-def test_mock_price_compare_sorts_by_ascending_price() -> None:
-    adapter = MockProductSearchAdapter()
-    products = adapter.search(ProductSearchInput(query="白色低帮运动鞋")).items
-
-    result = adapter.compare(PriceCompareInput(items=products, query="白色低帮运动鞋"))
-
-    prices = [item.price for item in result.items]
-    assert prices == sorted(prices)
-    assert [item.product_id for item in result.items] == ["p2", "p1", "p3"]
-    assert result.best_value_product_id == "p2"
-    assert result.offers[0].product_id == "p2"
-    assert result.best_offer.product_id == "p2"
 
 
 def test_price_compare_tool_sorts_by_ascending_price() -> None:
@@ -69,6 +55,7 @@ def test_price_compare_tool_sorts_by_ascending_price() -> None:
     prices = [item["price"] for item in compare_result.data["items"]]
     assert prices == sorted(prices)
     assert all(item["reason"] for item in compare_result.data["items"])
+    assert compare_result.data["best_value_product_id"] == "p2"
     assert compare_result.data["offers"][0]["product_id"] == "p2"
     assert compare_result.data["best_offer"]["product_id"] == "p2"
 

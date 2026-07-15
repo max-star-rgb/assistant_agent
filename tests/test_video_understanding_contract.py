@@ -1,7 +1,12 @@
+import pytest
+
 from assistant_agent.schemas.capability_output import CapabilityOutputContract
 from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
 from assistant_agent.services.video_adapter import MockVideoUnderstandingAdapter
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
+
+
+pytestmark = [pytest.mark.contract, pytest.mark.fast]
 
 
 def test_video_understanding_request_supports_video_ref_context_fields() -> None:
@@ -44,4 +49,7 @@ def test_video_understanding_capability_output_contract_shape() -> None:
     assert isinstance(tool_result.contract, CapabilityOutputContract)
     assert tool_result.contract.capability == "video_understanding"
     assert tool_result.contract.status == "succeeded"
+    assert tool_result.contract.output_ref == "mock://video/understanding/demo"
+    assert tool_result.contract.data["summary"] == tool_result.data["summary"]
     assert tool_result.contract.data["provider"] == "mock"
+    assert tool_result.contract.metadata["provider"] == "mock"

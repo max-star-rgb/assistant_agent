@@ -1,4 +1,3 @@
-from assistant_agent.schemas.generation import ImageGenerationResult
 from assistant_agent.services.image_generation_adapter import (
     ImageGenerationInput,
     MockImageGenerationAdapter,
@@ -18,22 +17,6 @@ def test_build_prompt_contains_product_and_japanese_poster_style() -> None:
     assert "白色低帮运动鞋" in prompt
     assert "日系海报" in prompt
     assert "商品主体" in prompt
-
-
-def test_mock_adapter_returns_structured_image_generation_result() -> None:
-    result = MockImageGenerationAdapter().generate(
-        ImageGenerationInput(
-            style="日系海报",
-            product_info={"title": "白色低帮运动鞋"},
-        )
-    )
-
-    assert isinstance(result, ImageGenerationResult)
-    assert result.task_id == "mock_image_task_1"
-    assert result.status == "succeeded"
-    assert result.image_url == "local://generated/poster.png"
-    assert "白色低帮运动鞋" in result.prompt
-    assert "日系海报" in result.prompt
 
 
 def test_image_generation_tool_returns_tool_result() -> None:
