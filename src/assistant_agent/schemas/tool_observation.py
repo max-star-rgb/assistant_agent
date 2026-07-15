@@ -184,11 +184,17 @@ def _next_step_hint(
         items = data.get("items")
         has_items = isinstance(items, list) and bool(items)
         if not has_items:
-            return "No product candidates were returned; try a narrower shopping query or ask the user for clarification."
+            return "没有返回商品候选；可以换一个更具体的商品查询，或向用户追问关键信息。"
+        if _requests_price_compare_after_search(request_text):
+            return (
+                "用户正在请求购买建议或性价比/价格判断。当前 product_search 已返回商品候选，但还没有完成 price_compare。"
+                "请先调用 price_compare，并把 structured_output.items 里的完整商品对象作为 items 传入；"
+                "完成比价后再给最终购买建议。"
+            )
         return (
-            "Decide from the current user request whether to answer or choose another shopping action. "
-            "If you select price_compare, use structured_output.items as full product objects, not title strings. "
-            "Local keyword rules do not choose the next tool."
+            "由当前用户请求决定是直接回答，还是继续选择另一个购物工具。"
+            "如果模型选择 price_compare，请把 structured_output.items 里的完整商品对象作为 items 传入，"
+            "不要只传商品标题。本地关键词规则不会替模型选择工具。"
         )
     if tool_name == "price_compare":
         return "Use the compared offers and best_offer in the final answer; include URL status when present."
@@ -199,6 +205,35 @@ def _next_step_hint(
     if tool_name == "render_3d":
         return "Return the 3D preview reference to the user."
     return "Use this observation to decide whether to answer or call another action."
+
+
+def _requests_price_compare_after_search(request_text: str | None) -> bool:
+    if not request_text:
+        return False
+    normalized = request_text.strip().lower()
+    if not normalized:
+        return False
+    purchase_terms = ("购买", "帮我买", "想买", "要买", "买个", "买一个", "下单", "入手")
+    value_terms = (
+        "购买建议",
+        "推荐",
+        "建议",
+        "划算",
+        "性价比",
+        "值不值",
+        "值得",
+        "便宜",
+        "省钱",
+        "价格",
+        "比价",
+        "比较",
+        "对比",
+        "最低价",
+        "最便宜",
+    )
+    return any(term in normalized for term in purchase_terms) or any(
+        term in normalized for term in value_terms
+    )
 
 
 def _has_prior_successful_observation(
