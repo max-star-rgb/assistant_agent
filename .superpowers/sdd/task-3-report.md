@@ -56,3 +56,11 @@ Agent-Service wire body 没有 video ID switching 字段。`H264VideoIngestionSe
 
 - 视觉指代识别仍是入口层的窄正则 gate，不是通用语义分类器；本次只覆盖验收要求的常见表达并保护明显的叙事方向词误触发。
 - freshness barrier 是协作式 deadline；已启动的共享 observer promotion 可在 caller deadline 后继续由后台 observer 持有，这正是避免取消/重复 Qwen 执行的既有设计。
+
+## Review follow-up：位置词 false positive
+
+- Review 发现位置词分支仍会把 `看看前面的设计方案`、`描述后面的实施步骤` 与 `左边的代码为什么报错` 当作当前镜头指代。
+- RED：新增参数化测试同时断言 helper 返回 false，且完整 Agent-Service chat 路径不调用 observer `promote` / `wait_for_snapshot_sequence`；结果 `3 failed, 16 passed`，三个失败均为 regex 误命中。
+- 修复：移除“视觉动词 + 任意 12 字符 + 位置词”分支；位置词现在必须直接进入 `有/是/放着/拿着/摆着/站着/出现` 等 live visual object/question 结构，不再通过任意字符跨到“为什么”中的“什么”。
+- GREEN：既有直接 freshness/greeting/timeout 回归 `23 passed in 1.58s`；普通位置/方向文本负例 `4 passed in 1.36s`。
+- 正例继续覆盖 `看看桌上有什么`、`手里有什么`、`右边是什么`、`描述当前场景` 等当前镜头问法。

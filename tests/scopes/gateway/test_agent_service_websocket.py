@@ -1313,8 +1313,8 @@ def test_agent_service_visual_freshness_barrier_uses_one_point_five_second_budge
         "你看见什么了？",
         "这是什么？",
         "那个是什么？",
-        "我手里拿的是什么？",
-        "桌上放着什么？",
+        "手里有什么？",
+        "看看桌上有什么？",
         "我旁边有什么？",
         "我前面是什么？",
         "我后面有什么？",
@@ -1333,6 +1333,54 @@ def test_agent_service_discourse_directions_do_not_trigger_visual_freshness() ->
     text = "前面提到的方案很好，后面再继续讨论。"
 
     assert agent_service_ws._explicit_realtime_visual_reference(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "看看前面的设计方案",
+        "描述后面的实施步骤",
+        "左边的代码为什么报错",
+    ],
+)
+def test_agent_service_ordinary_location_words_do_not_promote_or_wait(
+    text: str,
+) -> None:
+    captured = {}
+
+    class Observer:
+        async def promote(self, _frame: VideoFrame) -> None:
+            raise AssertionError("ordinary text must not promote video")
+
+        async def wait_for_snapshot_sequence(self, _sequence: int) -> None:
+            raise AssertionError("ordinary text must not wait for video")
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    assert agent_service_ws._explicit_realtime_visual_reference(text) is False
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=["agent-service-video-test"],
+        video_observer=Observer(),
+    )
+
+    asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-ordinary-location",
+            latest_speech=text,
+            contents=[{"speechContent": text}],
+        )
+    )
+
+    assert "realtime_video_target_sequence" not in captured["request"].metadata
 
 
 def test_visual_chat_without_decoded_frame_does_not_wait_and_uses_trusted_profile() -> None:
