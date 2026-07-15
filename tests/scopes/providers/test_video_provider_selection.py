@@ -1,3 +1,6 @@
+import tomllib
+from pathlib import Path
+
 from assistant_agent.config import ProviderConfig
 from assistant_agent.services.video_adapter import (
     HttpVideoUnderstandingAdapter,
@@ -13,6 +16,15 @@ from assistant_agent.tools.registry import (
     create_realtime_video_observation_registry,
 )
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_realtime_qwen_transport_dependency_is_declared() -> None:
+    project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+
+    assert "websockets>=15.0,<16" in project["dependencies"]
 
 
 def test_create_video_adapter_defaults_to_mock() -> None:

@@ -2138,6 +2138,136 @@ def test_video_handler_rotates_observer_before_selecting_a_new_video_id(monkeypa
     assert state.video_ids[-1] == "video-new"
 
 
+def test_queued_visual_chat_uses_rotated_observer_video_without_promoting_old_frame(
+    monkeypatch,
+) -> None:
+    async def scenario() -> None:
+        old_video_id = "video-old"
+        new_video_id = "video-new"
+        captured: dict[str, object] = {}
+        latest_reads: list[str] = []
+
+        class Ingestion:
+            def ingest(self, *_args):
+                return VideoFrame(
+                    video_id=new_video_id,
+                    frame_id="frame-new",
+                    uri="/tmp/frame-new.jpg",
+                    sequence=1,
+                )
+
+        class Observer:
+            def __init__(self, video_id: str | None = None) -> None:
+                self.video_id = video_id
+                self.memory_store = RealtimeVideoMemoryStore()
+                self.promoted: list[str] = []
+
+            async def close(self) -> None:
+                return None
+
+            async def submit(self, frame: VideoFrame) -> None:
+                self.video_id = frame.video_id
+                self.memory_store.record_success(
+                    frame.video_id,
+                    SemanticKeyframeRecord(
+                        frame_id=frame.frame_id,
+                        uri=frame.uri,
+                        sequence=frame.sequence,
+                    ),
+                    VideoUnderstandingResult(
+                        summary="new frame",
+                        provider="qwen",
+                        output_ref="provider://video/new",
+                    ),
+                )
+
+            async def promote(self, frame: VideoFrame) -> None:
+                self.promoted.append(frame.video_id)
+                if frame.video_id != self.video_id:
+                    raise ValueError("cannot promote an old frame to the new observer")
+
+            async def wait_for_snapshot_sequence(self, _sequence: int) -> None:
+                return None
+
+        class CapturingFacade:
+            async def run_turn(self, request):
+                captured["request"] = request
+                return object()
+
+        old_observer = Observer(old_video_id)
+        new_observer = Observer()
+        state = agent_service_ws.AgentServiceConnectionState(
+            session_id="s1",
+            query_params={},
+            gateway_facade=CapturingFacade(),
+            video_ids=[old_video_id],
+            video_ingestion=Ingestion(),
+            video_observer=old_observer,
+        )
+        prepared = agent_service_ws.PreparedChat(
+            session_id="s1",
+            response_session_id="s1",
+            body={},
+            chat_index="queued-chat",
+            user_number="10086",
+            latest_speech="眼前是什么？",
+            contents=[{"speechContent": "眼前是什么？"}],
+            video_ids=list(state.video_ids),
+            received_ns=state.clock_ns(),
+            accepted_ns=state.clock_ns(),
+            session_turn=1,
+        )
+        monkeypatch.setattr(
+            agent_service_ws,
+            "_create_realtime_video_observer",
+            lambda **_kwargs: new_observer,
+        )
+        await agent_service_ws.VideoHandler().handle(
+            session_id="s1",
+            body={
+                "userNumber": "10086",
+                "videoIndex": "2",
+                "videoConfig": {"codec": "H264"},
+                "contents": [
+                    {
+                        "videoContent": "00",
+                        "time": "now",
+                        "speakerNumber": "10086",
+                    }
+                ],
+            },
+            state=state,
+        )
+
+        def latest_frame(video_id: str) -> VideoFrame:
+            latest_reads.append(video_id)
+            return VideoFrame(
+                video_id=video_id,
+                frame_id=f"frame-{video_id}",
+                uri=f"/tmp/{video_id}.jpg",
+                sequence=1,
+            )
+
+        monkeypatch.setattr(agent_service_ws, "_latest_decoded_video_frame", latest_frame)
+
+        await agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id=prepared.session_id,
+            user_number=prepared.user_number,
+            chat_index=prepared.chat_index,
+            latest_speech=prepared.latest_speech,
+            contents=prepared.contents,
+            video_ids=prepared.video_ids,
+        )
+
+        request = captured["request"]
+        assert request.video_ids == [new_video_id]
+        assert latest_reads == [new_video_id]
+        assert new_observer.promoted == []
+
+    asyncio.run(scenario())
+
+
 def test_agent_service_accepts_media_control_and_chat_protocol(monkeypatch) -> None:
     runtime = RecordingRuntime()
     monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)

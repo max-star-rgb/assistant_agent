@@ -1,8 +1,10 @@
 import base64
+import importlib
 import json
 from pathlib import Path
 from typing import Any
 
+from assistant_agent.providers import qwen_realtime_vision as qwen_realtime
 from assistant_agent.providers.qwen_realtime_vision import (
     QwenRealtimeVisionAdapter,
     QwenRealtimeVisionConfig,
@@ -42,6 +44,34 @@ def _successful_responses(summary: str = "ok") -> list[dict[str, Any]]:
         {"type": "response.text.delta", "delta": json.dumps({"summary": summary})},
         {"type": "response.done", "response": {"status": "completed"}},
     ]
+
+
+def test_realtime_transport_imports_without_injected_connector() -> None:
+    transport = importlib.import_module("websockets.sync.client")
+
+    assert callable(transport.connect)
+    assert QwenRealtimeVisionAdapter(QwenRealtimeVisionConfig())._connect is qwen_realtime._default_connect
+
+
+def test_default_connect_bounds_close_handshake(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    sentinel = object()
+
+    def connect(url: str, **kwargs: Any) -> object:
+        captured.update({"url": url, **kwargs})
+        return sentinel
+
+    transport = importlib.import_module("websockets.sync.client")
+    monkeypatch.setattr(transport, "connect", connect)
+
+    result = qwen_realtime._default_connect("wss://qwen.local/realtime", open_timeout=2.0)
+
+    assert result is sentinel
+    assert captured == {
+        "url": "wss://qwen.local/realtime",
+        "open_timeout": 2.0,
+        "close_timeout": 1.0,
+    }
 
 
 def test_realtime_adapter_handshake_and_single_frame_protocol(tmp_path: Path) -> None:
@@ -307,6 +337,38 @@ def test_realtime_adapter_uses_capped_backoff_and_resets_after_success(tmp_path:
 
     assert sleeps == [0.25, 0.5, 1.0, 2.0, 5.0, 5.0]
     assert adapter.connection_failures == 0
+
+
+def test_reconnect_backoff_cannot_outlive_round_deadline(tmp_path: Path) -> None:
+    frame = _frame(tmp_path)
+    now = [10.0]
+    sleeps: list[float] = []
+    connect_calls = 0
+
+    def connect(*_args, **_kwargs):
+        nonlocal connect_calls
+        connect_calls += 1
+        raise ConnectionError("offline")
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key", timeout_seconds=0.1),
+        connect=connect,
+        clock=lambda: now[0],
+        sleep=sleep,
+    )
+    request = VideoUnderstandingRequest(video_ref="v", frame_refs=[str(frame)])
+
+    assert adapter.understand_video(request).errors[0]["code"] == "provider_connection_failed"
+    timed_out = adapter.understand_video(request)
+
+    assert timed_out.errors[0]["code"] == "provider_timeout"
+    assert len(sleeps) == 1
+    assert 0 < sleeps[0] <= 0.1
+    assert connect_calls == 1
 
 
 def test_realtime_adapter_counts_failed_reconnect_attempts_independently_from_sessions(

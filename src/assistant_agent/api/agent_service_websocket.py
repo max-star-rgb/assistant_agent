@@ -1196,7 +1196,7 @@ async def _run_agent_service_chat_turn(
 ):
     if state.gateway_facade is None:
         raise RuntimeError("agent-service Gateway facade is not initialized")
-    active_video_ids = list(state.video_ids if video_ids is None else video_ids)
+    active_video_ids = _active_chat_video_ids(state=state, prepared_video_ids=video_ids)
     freshness_metadata = await _realtime_video_freshness_metadata(
         state=state,
         video_ids=active_video_ids,
@@ -1275,7 +1275,7 @@ async def _realtime_video_freshness_metadata(
                     await asyncio.shield(promotion)
                 if callable(wait_for_sequence):
                     await wait_for_sequence(target_sequence)
-        except TimeoutError:
+        except (TimeoutError, ValueError, RuntimeError):
             pass
     waited_ms = _elapsed_ms(wait_started_ns, perf_counter_ns())
     refreshed = snapshot_reader(video_id)
@@ -1298,6 +1298,28 @@ def _consume_task_exception(task: asyncio.Task[Any]) -> None:
 
     if not task.cancelled():
         task.exception()
+
+
+def _active_chat_video_ids(
+    *,
+    state: AgentServiceConnectionState,
+    prepared_video_ids: list[str] | None,
+) -> list[str]:
+    requested = list(state.video_ids if prepared_video_ids is None else prepared_video_ids)
+    if not requested:
+        return []
+    current = list(state.video_ids)
+    if not current:
+        return []
+    observer_video_id = getattr(state.video_observer, "video_id", None)
+    current_video_id = (
+        observer_video_id
+        if isinstance(observer_video_id, str) and observer_video_id in current
+        else current[-1]
+    )
+    if requested[-1] != current_video_id:
+        return [current_video_id]
+    return requested
 
 
 def _latest_decoded_video_frame(video_id: str) -> VideoFrame | None:

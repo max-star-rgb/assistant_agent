@@ -19,6 +19,7 @@ DEFAULT_QWEN_REALTIME_VISION_MODEL = "qwen3.5-omni-flash-realtime"
 MAX_BASE64_JPEG_BYTES = 256 * 1024
 PCM_SAMPLE_RATE = 16_000
 PCM_SILENCE_MILLISECONDS = 200
+DEFAULT_CLOSE_TIMEOUT_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -159,7 +160,13 @@ class QwenRealtimeVisionAdapter:
             self._connection_reused = True
             return self._socket
         if self._connection_failures:
-            self._sleep(_backoff_seconds(self._connection_failures))
+            self._sleep(
+                min(
+                    _backoff_seconds(self._connection_failures),
+                    self._remaining(deadline),
+                )
+            )
+            self._remaining(deadline)
         socket: Any | None = None
         try:
             if self._connect_attempts > 0:
@@ -277,7 +284,7 @@ class QwenRealtimeVisionAdapter:
 def _default_connect(url: str, **kwargs: Any) -> Any:
     from websockets.sync.client import connect
 
-    return connect(url, **kwargs)
+    return connect(url, close_timeout=DEFAULT_CLOSE_TIMEOUT_SECONDS, **kwargs)
 
 
 def _model_url(base_url: str, model: str) -> str:
