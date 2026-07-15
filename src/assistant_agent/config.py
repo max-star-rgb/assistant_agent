@@ -158,6 +158,7 @@ class ProviderConfig:
     haodanku_api_key: str | None = None
     haodanku_base_url: str = "https://v3.api.haodanku.com"
     haodanku_timeout_seconds: float = 10.0
+    haodanku_enabled_platforms: tuple[str, ...] = ("taobao",)
     haodanku_taobao_pid: str | None = None
     haodanku_taobao_authorized_name: str | None = None
     haodanku_jd_sub_union_id: str | None = None
@@ -419,6 +420,9 @@ class ProviderConfig:
             haodanku_api_key=source.get("HAODANKU_API_KEY"),
             haodanku_base_url=source.get("HAODANKU_BASE_URL") or "https://v3.api.haodanku.com",
             haodanku_timeout_seconds=_float_env(source.get("HAODANKU_TIMEOUT_SECONDS"), 10.0),
+            haodanku_enabled_platforms=_haodanku_enabled_platforms(
+                source.get("HAODANKU_ENABLED_PLATFORMS")
+            ),
             haodanku_taobao_pid=source.get("HAODANKU_TAOBAO_PID"),
             haodanku_taobao_authorized_name=source.get("HAODANKU_TAOBAO_AUTHORIZED_NAME"),
             haodanku_jd_sub_union_id=source.get("HAODANKU_JD_SUB_UNION_ID"),
@@ -738,6 +742,15 @@ def _price_compare_provider(value: str | None, *, allow_real: bool = True) -> Pr
     if value in {"http", "haodanku"}:
         return value
     return "mock"
+
+
+def _haodanku_enabled_platforms(value: str | None) -> tuple[str, ...]:
+    enabled: list[str] = []
+    for platform in (value or "taobao").split(","):
+        normalized = platform.strip().lower()
+        if normalized in {"taobao", "jd", "pdd"} and normalized not in enabled:
+            enabled.append(normalized)
+    return tuple(enabled) or ("taobao",)
 
 
 def _render_provider(value: str | None, *, allow_real: bool = True) -> RenderProviderName:

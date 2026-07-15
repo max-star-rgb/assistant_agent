@@ -17,12 +17,27 @@ def test_provider_config_allows_empty_environment() -> None:
     assert config.web_search_api_key is None
     assert config.product_search_provider == "mock"
     assert config.price_compare_provider == "mock"
+    assert config.haodanku_enabled_platforms == ("taobao",)
     assert config.render_provider == "mock"
     assert config.video_provider == "mock"
     assert config.intent_router == "rule"
     assert config.conversation_history_backend == "memory"
     assert config.langgraph_checkpointer_backend == "memory"
     assert config.has_any_real_provider() is False
+
+
+def test_provider_config_parses_enabled_haodanku_platforms() -> None:
+    config = ProviderConfig.from_env(
+        {"HAODANKU_ENABLED_PLATFORMS": "taobao,jd,taobao,invalid,pdd,jd"}
+    )
+
+    assert config.haodanku_enabled_platforms == ("taobao", "jd", "pdd")
+
+
+def test_provider_config_falls_back_to_taobao_when_enabled_platforms_are_invalid() -> None:
+    config = ProviderConfig.from_env({"HAODANKU_ENABLED_PLATFORMS": "tmall,invalid"})
+
+    assert config.haodanku_enabled_platforms == ("taobao",)
 
 
 def test_provider_config_auto_persists_conversation_history_with_jsonl_memory() -> None:

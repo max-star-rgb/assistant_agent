@@ -62,3 +62,42 @@ def test_presenter_skips_invalid_cards_and_omits_empty_detail() -> None:
     result = PriceCompareResult(query="商品", summary="没有可展示商品。", offers=[invalid], best_offer=invalid)
 
     assert ShoppingDetailPresenter().present(result) == "没有可展示商品。"
+
+
+def test_presenter_skips_zero_price_card() -> None:
+    invalid = _offer(
+        "free",
+        platform="taobao",
+        title="无合法价格商品",
+        price=0,
+        link="https://item.taobao.com/item.htm?id=1",
+    )
+    result = PriceCompareResult(query="商品", summary="没有可展示商品。", offers=[invalid])
+
+    assert ShoppingDetailPresenter().present(result) == "没有可展示商品。"
+
+
+def test_presenter_limits_detail_to_three_eligible_offers() -> None:
+    offers = [
+        _offer(
+            f"tb{index}",
+            platform="taobao",
+            title=f"淘宝手机 {index}",
+            price=float(index),
+            link=f"https://item.taobao.com/item.htm?id={index}",
+            image=f"https://img.example/{index}.jpg",
+        )
+        for index in range(1, 6)
+    ]
+    result = PriceCompareResult(
+        query="手机",
+        summary="找到淘宝商品。",
+        offers=offers,
+        best_offer=offers[0],
+        provider="haodanku",
+    )
+
+    rendered = ShoppingDetailPresenter().present(result)
+
+    assert rendered.count("<link>") == 3
+    assert "4. 淘宝" not in rendered

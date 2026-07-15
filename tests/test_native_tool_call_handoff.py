@@ -581,6 +581,114 @@ def test_native_tool_call_may_choose_any_qualified_tool_without_keyword_routing(
     assert state.response.message == "已根据 web_search observation 回答。"
 
 
+def test_native_runtime_requires_price_compare_after_search_for_explicit_compare_request() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            final_result("已经搜索到商品。"),
+            final_result("已经完成搜索和比价。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(config=ProviderConfig(max_tool_iterations=5), chat_adapter=adapter)
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
+    )
+
+    assert adapter.calls == 3
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    assert adapter.requests[2].tools == []
+    assert adapter.requests[2].tool_choice == "none"
+    assert state.request.metadata["native_runtime_required_price_compare_after_search"] is True
+    assert state.response is not None
+    assert state.response.message == "已经完成搜索和比价。"
+
+
+def test_native_runtime_replaces_repeated_search_with_required_price_compare() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            final_result("已经完成搜索和比价。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(config=ProviderConfig(max_tool_iterations=5), chat_adapter=adapter)
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
+    )
+
+    assert adapter.calls == 3
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    assert state.response is not None
+    assert state.response.message == "已经完成搜索和比价。"
+
+
+def test_native_runtime_repairs_price_compare_items_from_search_result() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            native_result("price_compare", {"query": "通勤耳机", "platforms": ["京东"]}),
+            final_result("已经完成搜索和比价。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(config=ProviderConfig(max_tool_iterations=5), chat_adapter=adapter)
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
+    )
+
+    assert adapter.calls == 3
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    repaired_call = state.request.metadata["native_tool_calls"][1]
+    assert repaired_call["name"] == "price_compare"
+    assert repaired_call["arguments"]["items"]
+    assert "platforms" not in repaired_call["arguments"]
+    assert state.response is not None
+    assert state.response.message == "已经完成搜索和比价。"
+
+
+def test_native_runtime_replaces_unrelated_tool_with_required_price_compare() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            native_result("web_search", {"query": "通勤耳机评测", "limit": 2}),
+            final_result("已经完成搜索和比价。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(config=ProviderConfig(max_tool_iterations=5), chat_adapter=adapter)
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    assert adapter.requests[2].tools == []
+
+
+def test_native_runtime_replaces_multi_tool_batch_with_required_price_compare() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            native_multi_result(
+                [
+                    ("web_search", {"query": "通勤耳机评测", "limit": 2}),
+                    ("product_search", {"query": "通勤耳机", "top_k": 2}),
+                ]
+            ),
+            final_result("已经完成搜索和比价。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(config=ProviderConfig(max_tool_iterations=5), chat_adapter=adapter)
+
+    state = runtime.run_state(
+        UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    assert adapter.requests[2].tools == []
+
+
 def test_native_video_tool_call_uses_agent_service_frame_context(tmp_path: Path) -> None:
     video_id = "agent-service-video-test"
     store = InMemoryVideoContextStore(window_size=3)

@@ -27,6 +27,10 @@ from assistant_agent.agent.plan_validator import PlanValidationResult, PlanValid
 from assistant_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
+from assistant_agent.agent.shopping_guards import (
+    repair_price_compare_decision_from_search,
+    required_price_compare_after_search,
+)
 from assistant_agent.agent.system_prompt_policy import (
     SystemPromptOptions,
     SystemPromptProfile,
@@ -38,7 +42,6 @@ from assistant_agent.schemas.capabilities import canonical_intent
 from assistant_agent.schemas.context import AssistantContextPack
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
-from assistant_agent.schemas.products import ProductResult
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tool_observation import (
     ToolObservation,
@@ -599,29 +602,7 @@ def _required_price_compare_after_search(
 ) -> AssistantDecision | None:
     """Keep explicit shopping compare requests from stopping after search only."""
 
-    if not _request_asks_for_price_compare(context.request):
-        return None
-    if any(result.tool_name == "price_compare" for result in state.tool_results):
-        return None
-    search_result = _latest_successful_tool_result(state, "product_search")
-    if search_result is None:
-        return None
-    items = (search_result.data or {}).get("items")
-    if not isinstance(items, list) or not items:
-        return None
-    query = (search_result.data or {}).get("query_used") or context.request.text or "price_compare"
-    return AssistantDecision(
-        type="tool_call",
-        tool_name="price_compare",
-        tool_input={
-            "query": query,
-            "items": items,
-            "top_k": min(len(items), 5),
-            "sort_by": "value",
-        },
-        reason="用户明确要求比较价格；product_search 已返回候选商品，继续执行 price_compare 后再回答。",
-        safety_notes=["required_price_compare_after_search"],
-    )
+    return required_price_compare_after_search(state, context.request)
 
 
 def _repair_price_compare_decision_from_search(
@@ -630,88 +611,7 @@ def _repair_price_compare_decision_from_search(
 ) -> AssistantDecision:
     """Use the last product_search result when LLM compressed price_compare items."""
 
-    fallback_input = dict(fallback.tool_input or {})
-    proposed_input = decision.tool_input if isinstance(decision.tool_input, dict) else {}
-    repaired_input = dict(fallback_input)
-    proposed_items = proposed_input.get("items")
-    if _valid_price_compare_items(proposed_items):
-        repaired_input["items"] = proposed_items
-    for key in ("query", "currency"):
-        value = proposed_input.get(key)
-        if isinstance(value, str) and value.strip():
-            repaired_input[key] = value
-    for key in ("budget_min", "budget_max"):
-        value = proposed_input.get(key)
-        if isinstance(value, int | float) and value >= 0:
-            repaired_input[key] = value
-    platforms = proposed_input.get("platforms")
-    if isinstance(platforms, list) and all(isinstance(item, str) and item.strip() for item in platforms):
-        repaired_input["platforms"] = platforms
-    top_k = proposed_input.get("top_k")
-    if isinstance(top_k, int) and top_k >= 1:
-        repaired_input["top_k"] = min(top_k, len(repaired_input.get("items", [])) or top_k)
-    sort_by = _normalize_price_compare_sort_by(proposed_input.get("sort_by"))
-    if sort_by is not None:
-        repaired_input["sort_by"] = sort_by
-    return decision.model_copy(
-        update={
-            "tool_input": repaired_input,
-            "reason": (
-                "用户明确要求比价；使用上一次 product_search 的完整商品对象修复 price_compare 入参。"
-            ),
-            "safety_notes": [*decision.safety_notes, "price_compare_input_repaired_from_search"],
-        }
-    )
-
-
-def _valid_price_compare_items(value: Any) -> bool:
-    if not isinstance(value, list) or not value:
-        return False
-    for item in value:
-        if not isinstance(item, dict):
-            return False
-        try:
-            ProductResult.model_validate(item)
-        except Exception:
-            return False
-    return True
-
-
-def _normalize_price_compare_sort_by(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip().lower()
-    if normalized in {"price", "similarity", "rating", "value"}:
-        return normalized
-    if normalized in {"price_asc", "lowest_price", "cheapest", "低价", "最低价", "最便宜"}:
-        return "price"
-    return None
-
-
-def _request_asks_for_price_compare(request: UserRequest) -> bool:
-    text = request.text or ""
-    markers = (
-        "比价",
-        "比较价格",
-        "比较一下价格",
-        "价格比较",
-        "哪个便宜",
-        "哪款便宜",
-        "最低价",
-        "最便宜",
-        "compare price",
-        "price compare",
-        "cheapest",
-    )
-    lowered = text.lower()
-    return any(marker in text or marker in lowered for marker in markers)
-
-
-def _latest_successful_tool_result(state: AgentState, tool_name: str) -> ToolResult | None:
-    for result in reversed(state.tool_results):
-        if result.tool_name == tool_name and result.success:
-            return result
-    return None
+    return repair_price_compare_decision_from_search(decision, fallback)
 
 
 def _apply_terminal_decision(

@@ -85,14 +85,20 @@ def _successful_price_compare_event(event: AgentEvent) -> bool:
 
 
 def _successful_price_compare_result(state: Any) -> PriceCompareResult | None:
-    for result in reversed(getattr(state, "tool_results", [])):
+    first_successful: PriceCompareResult | None = None
+    presenter = ShoppingDetailPresenter()
+    for result in getattr(state, "tool_results", []):
         if result.tool_name != "price_compare" or not result.success or not isinstance(result.data, dict):
             continue
         try:
-            return PriceCompareResult.model_validate(result.data)
+            candidate = PriceCompareResult.model_validate(result.data)
         except ValueError:
-            return None
-    return None
+            continue
+        if first_successful is None:
+            first_successful = candidate
+        if "<detail>" in presenter.present(candidate):
+            return candidate
+    return first_successful
 
 
 class AgentGraphRealtimeBackend:
@@ -235,6 +241,7 @@ class AgentGraphRealtimeBackend:
             if status == "completed" and event_sink is not None:
                 shopping_result = _successful_price_compare_result(state) if forwarder.shopping_detail_active else None
                 if shopping_result is not None:
+                    forwarder.discard_buffered_response_deltas()
                     await _emit_shopping_detail_events(
                         forwarder,
                         result=shopping_result,
@@ -242,6 +249,7 @@ class AgentGraphRealtimeBackend:
                         run_id=state.run_id,
                     )
                 else:
+                    await forwarder.flush_buffered_response_deltas()
                     await _emit_final_response_events(
                         forwarder,
                         session_id=state.session_id,
@@ -412,6 +420,7 @@ class _RealtimeForwardingEventSink:
         self._response_delta_seen = False
         self._shopping_detail_enabled = shopping_detail_enabled
         self._shopping_detail_active = False
+        self._buffered_response_deltas: list[RealtimeAgentEvent] = []
 
     @property
     def response_delta_seen(self) -> bool:
@@ -437,7 +446,18 @@ class _RealtimeForwardingEventSink:
         mapped_events = map_agent_event_stream(event)
         if not mapped_events:
             return
+        if event.type == "response_delta" and self._shopping_detail_enabled:
+            self._buffered_response_deltas.extend(mapped_events)
+            return
         await self._forward_events(mapped_events)
+
+    async def flush_buffered_response_deltas(self) -> None:
+        buffered = self._buffered_response_deltas
+        self._buffered_response_deltas = []
+        await self._forward_events(buffered)
+
+    def discard_buffered_response_deltas(self) -> None:
+        self._buffered_response_deltas = []
 
     def start_heartbeat(
         self,

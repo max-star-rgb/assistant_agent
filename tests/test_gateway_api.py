@@ -56,6 +56,30 @@ class CancellableRealtimeBackend:
         return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
 
 
+class ShoppingRealtimeBackend:
+    async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+        assert event_sink is not None
+        assert request.metadata["gateway"]["entry_capabilities"]["supports_shopping_detail_v1"] is True
+        await event_sink(
+            RealtimeAgentEvent(
+                type="response.chunk",
+                text=(
+                    "找到淘宝商品。\n<detail>\n"
+                    "1. 淘宝 - 小米手机 2999元 "
+                    "<link>https://item.taobao.com/item.htm?id=1</link> "
+                    "<pic>https://img.alicdn.com/1.jpg</pic>\n</detail>"
+                ),
+                payload={"shopping_detail_version": "v1", "token_streaming": False},
+            )
+        )
+        return RealtimeAgentResult(
+            status="completed",
+            run_id=request.run_id,
+            trace_id="trace-shopping-gateway",
+            response_text="找到淘宝商品。",
+        )
+
+
 def test_gateway_websocket_accepts_gateway_frames() -> None:
     backend = RecordingRealtimeBackend()
     _install_gateway_backend(backend)
@@ -94,6 +118,32 @@ def test_gateway_websocket_accepts_gateway_frames() -> None:
     assert backend.requests[0].metadata["gateway"]["history"] == ["hello gateway"]
     assert backend.requests[0].metadata["gateway"]["session_config"] == {"tone": "concise"}
     assert backend.requests[0].metadata["source"] == "gateway_websocket"
+
+
+def test_gateway_websocket_emits_one_taobao_detail_chunk_then_completed_end() -> None:
+    _install_gateway_backend(ShoppingRealtimeBackend())
+    try:
+        client = TestClient(create_app())
+        with client.websocket_connect("/ws/gateway?user_id=shopping-user") as websocket:
+            websocket.send_json(
+                {
+                    "type": "message.user",
+                    "session_id": "shopping-session",
+                    "payload": {"text": "比价小米手机"},
+                }
+            )
+            frames = _receive_until(websocket, "run.end")
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+    assert [item["type"] for item in frames] == ["run.started", "stream.chunk", "run.end"]
+    detail = frames[1]["payload"]["text"]
+    assert detail.count("<detail>") == detail.count("</detail>") == 1
+    assert detail.count("<link>") == 1
+    assert "淘宝" in detail
+    assert "京东" not in detail
+    assert "拼多多" not in detail
+    assert frames[2]["reason"] == "completed"
 
 
 def test_gateway_websocket_run_cancel_cancels_active_run() -> None:

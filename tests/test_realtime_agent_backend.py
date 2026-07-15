@@ -102,6 +102,19 @@ def test_app_shopping_detail_suppresses_llm_delta_and_emits_one_presented_chunk(
                     data={"query": "手机", "summary": "自然语言摘要", "offers": [offer], "best_offer": offer},
                 )
             )
+            later_ineligible_offer = {**offer, "offer_id": "jd:2", "product_id": "jd:2", "image_url": None}
+            artifacts.state.tool_results.append(
+                ToolResult(
+                    tool_name="price_compare",
+                    success=True,
+                    data={
+                        "query": "手机",
+                        "summary": "后续无卡片比价结果",
+                        "offers": [later_ineligible_offer],
+                        "best_offer": later_ineligible_offer,
+                    },
+                )
+            )
             stream.set_result(artifacts)
 
         asyncio.create_task(publish())
@@ -132,9 +145,8 @@ def test_app_shopping_detail_suppresses_llm_delta_and_emits_one_presented_chunk(
 
     chunks = [event.text for event in events if event.type == "response.chunk"]
     assert chunks == [
-        "先说一点",
         "自然语言摘要\n<detail>\n1. 京东 - 手机 99元 <link>https://item.jd.com/1.html</link> "
-        "<pic>https://img.example/1.jpg</pic>\n</detail>",
+        "<pic>https://img.example/1.jpg</pic>\n</detail>"
     ]
     assert result.response_text == "自然语言摘要"
 

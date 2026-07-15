@@ -41,7 +41,7 @@ SAMPLE_PAYLOAD = {
             "shopname": "示例运动旗舰店",
             "shoptype": "1",
             "itemsale": "1200",
-            "couponurl": "https://s.click.example/1001",
+            "couponurl": "https://s.click.taobao.com/1001",
         },
         {
             "itemid": "1002",
@@ -54,7 +54,7 @@ SAMPLE_PAYLOAD = {
             "shopname": "示例鞋类店",
             "shoptype": "0",
             "itemsale": "800",
-            "itemlink": "https://item.example/1002",
+            "itemlink": "https://item.taobao.com/item.htm?id=1002",
         },
     ],
 }
@@ -99,7 +99,7 @@ def _sample_payload_with_mixed_link_items() -> dict:
                 "itemtitle": "乐事薯片有券链接款 B",
                 "itemprice": "39.90",
                 "itemendprice": "29.90",
-                "couponurl": "https://s.click.example/lays-b",
+                "couponurl": "https://s.click.taobao.com/lays-b",
             },
             {
                 "itemid": "AAE9r8Z",
@@ -112,7 +112,7 @@ def _sample_payload_with_mixed_link_items() -> dict:
                 "itemtitle": "乐事薯片落地链接款 D",
                 "itemprice": "35.90",
                 "itemendprice": "25.90",
-                "itemlink": "https://item.example/lays-d",
+                "itemlink": "https://item.taobao.com/lays-d",
             },
             {
                 "itemid": "123456",
@@ -175,11 +175,11 @@ def test_map_haodanku_items_maps_coupon_price_and_platform() -> None:
     assert first.platform == "taobao"  # Tmall is normalized into the Taobao group.
     assert first.sales == 1200
     assert first.image_url == "https://img.example/1001.jpg"
-    assert first.url == "https://s.click.example/1001"
-    assert first.product_url == "https://s.click.example/1001"
-    assert first.raw_url == "https://s.click.example/1001"
-    assert first.coupon_url == "https://s.click.example/1001"
-    assert first.click_url == "https://s.click.example/1001"
+    assert first.url == "https://s.click.taobao.com/1001"
+    assert first.product_url == "https://s.click.taobao.com/1001"
+    assert first.raw_url == "https://s.click.taobao.com/1001"
+    assert first.coupon_url == "https://s.click.taobao.com/1001"
+    assert first.click_url == "https://s.click.taobao.com/1001"
     assert first.landing_url is None
     assert first.provider_item_id == "1001"
     assert first.url_status == "unverified"
@@ -187,9 +187,9 @@ def test_map_haodanku_items_maps_coupon_price_and_platform() -> None:
     assert first.source == "haodanku"
     assert "coupon" in first.style_tags
     assert items[1].platform == "taobao"  # shoptype=0
-    assert items[1].product_url == "https://item.example/1002"
-    assert items[1].landing_url == "https://item.example/1002"
-    assert items[1].raw_url == "https://item.example/1002"
+    assert items[1].product_url == "https://item.taobao.com/item.htm?id=1002"
+    assert items[1].landing_url == "https://item.taobao.com/item.htm?id=1002"
+    assert items[1].raw_url == "https://item.taobao.com/item.htm?id=1002"
     assert items[1].coupon_url is None
     assert items[1].click_url is None
     assert items[1].url_status == "unverified"
@@ -252,15 +252,15 @@ def test_map_haodanku_items_does_not_build_product_url_from_non_numeric_itemid()
 @pytest.mark.parametrize(
     ("field", "link"),
     [
-        ("click_url", "https://s.click.example/tool"),
-        ("clickURL", "https://jd.example/click"),
-        ("short_url", "https://pdd.example/short"),
-        ("mobile_url", "https://pdd.example/mobile"),
-        ("kwaiUrl", "https://ks.example/kwai"),
-        ("linkUrl", "https://ks.example/link"),
-        ("trans_url", "https://tool.example/trans"),
-        ("share_link", "https://dy.example/share"),
-        ("referral_link", "https://mt.example/referral"),
+        ("click_url", "https://s.click.taobao.com/tool"),
+        ("clickURL", "https://s.click.taobao.com/click"),
+        ("short_url", "https://s.click.taobao.com/short"),
+        ("mobile_url", "https://s.click.taobao.com/mobile"),
+        ("kwaiUrl", "https://s.click.taobao.com/kwai"),
+        ("linkUrl", "https://s.click.taobao.com/link"),
+        ("trans_url", "https://s.click.taobao.com/trans"),
+        ("share_link", "https://s.click.taobao.com/share"),
+        ("referral_link", "https://s.click.taobao.com/referral"),
     ],
 )
 def test_map_haodanku_items_preserves_documented_provider_link_fields(field: str, link: str) -> None:
@@ -305,6 +305,52 @@ def test_map_haodanku_items_ignores_non_http_deeplink_as_browser_product_url() -
     assert item.product_url is None
     assert item.raw_url is None
     assert item.url_status == "invalid_id"
+
+
+@pytest.mark.parametrize(
+    "unsafe_url",
+    [
+        "https://evil.example/phish",
+        "https://taobao.com.evil.example/phish",
+    ],
+)
+def test_map_haodanku_items_rejects_non_taobao_http_links(unsafe_url: str) -> None:
+    payload = {
+        "code": 1,
+        "data": [
+            {
+                "itemid": "AAE9r8X",
+                "itemtitle": "不安全链接商品",
+                "itemprice": "99.00",
+                "itemendprice": "79.00",
+                "itemlink": unsafe_url,
+            }
+        ],
+    }
+
+    item = map_haodanku_items(payload)[0]
+
+    assert item.product_url is None
+    assert item.url_status == "invalid_id"
+
+
+def test_map_haodanku_items_replaces_unsafe_link_with_official_numeric_item_url() -> None:
+    payload = {
+        "code": 1,
+        "data": [
+            {
+                "itemid": "123456",
+                "itemtitle": "数字 ID 商品",
+                "itemprice": "99.00",
+                "itemlink": "https://evil.example/phish",
+            }
+        ],
+    }
+
+    item = map_haodanku_items(payload)[0]
+
+    assert item.product_url == "https://item.taobao.com/item.htm?id=123456"
+    assert item.url_status == "unverified"
 
 
 def test_search_without_api_key_returns_provider_unconfigured() -> None:
@@ -438,8 +484,8 @@ def test_compare_with_supplied_items_ranks_by_coupon_price(monkeypatch) -> None:
     assert result.best_value_product_id == "1002"  # 券后价 259 < 299
     assert result.items[0].price <= result.items[-1].price
     assert result.best_offer is not None
-    assert result.best_offer.product_url is None
-    assert result.best_offer.url_status == "missing"
+    assert result.best_offer.product_url == "https://item.taobao.com/item.htm?id=1002"
+    assert result.best_offer.url_status == "unverified"
     assert result.best_offer.availability == "unknown"
 
 
@@ -457,11 +503,16 @@ def test_compare_without_items_runs_search_first(monkeypatch) -> None:
 
 
 def test_factory_selects_haodanku_when_configured() -> None:
-    config = ProviderConfig(product_search_provider="haodanku", haodanku_api_key="test-key")
+    config = ProviderConfig(
+        product_search_provider="haodanku",
+        haodanku_api_key="test-key",
+        haodanku_enabled_platforms=("taobao", "jd"),
+    )
 
     adapter = create_product_search_adapter(config)
 
     assert isinstance(adapter, HaodankuProductSearchAdapter)
+    assert adapter.config.enabled_platforms == ("taobao", "jd")
 
 
 def test_factory_returns_unconfigured_without_api_key() -> None:
@@ -477,11 +528,16 @@ def test_factory_returns_unconfigured_without_api_key() -> None:
 
 
 def test_price_factory_selects_haodanku_when_configured() -> None:
-    config = ProviderConfig(price_compare_provider="haodanku", haodanku_api_key="test-key")
+    config = ProviderConfig(
+        price_compare_provider="haodanku",
+        haodanku_api_key="test-key",
+        haodanku_enabled_platforms=("taobao", "jd"),
+    )
 
     adapter = create_price_compare_adapter(config)
 
     assert isinstance(adapter, HaodankuPriceCompareAdapter)
+    assert adapter.config.enabled_platforms == ("taobao", "jd")
 
 
 def test_local_demo_profile_falls_back_to_mock() -> None:

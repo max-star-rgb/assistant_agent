@@ -38,7 +38,7 @@ class ShoppingDetailPresenter:
                     seen.add(offer.offer_id)
 
         lines = ["<detail>"]
-        for index, offer in enumerate(ordered, start=1):
+        for index, offer in enumerate(ordered[:3], start=1):
             platform = "taobao" if offer.platform == "tmall" else offer.platform
             lines.append(
                 f"{index}. {_PLATFORM_LABELS[platform]} - {_clean_title(offer.title)} "
@@ -69,7 +69,7 @@ def _http_url(value: str | None) -> bool:
 
 
 def _eligible(offer: PriceOffer) -> bool:
-    return offer.total_price >= 0 and _http_url(offer.product_url) and _http_url(offer.image_url)
+    return offer.total_price > 0 and _http_url(offer.product_url) and _http_url(offer.image_url)
 
 
 def _format_price(value: float) -> str:

@@ -80,7 +80,9 @@ def test_search_runs_three_platforms_concurrently_and_keeps_partial_success(monk
         return io.BytesIO(json.dumps(payload).encode())
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    result = HaodankuProductSearchAdapter(HaodankuConfig(api_key="key")).search(
+    result = HaodankuProductSearchAdapter(
+        HaodankuConfig(api_key="key", enabled_platforms=("taobao", "jd", "pdd"))
+    ).search(
         ProductSearchRequest(query="手机", platforms=["淘宝", "京东", "拼多多"], top_k=3)
     )
 
@@ -90,6 +92,68 @@ def test_search_runs_three_platforms_concurrently_and_keeps_partial_success(monk
     assert result.failed_platforms == ["jd"]
     assert result.platform_errors["jd"][0].code == "provider_permission_denied"
     assert {item.platform for item in result.items} == {"taobao", "pdd"}
+
+
+def test_default_search_only_calls_taobao_supersearch(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_urlopen(request, timeout=None):  # noqa: ANN001, ARG001
+        seen.append(request.full_url.split("?", 1)[0].rsplit("/", 1)[-1])
+        payload = {
+            "code": 1,
+            "data": [{"itemid": "1", "itemtitle": "淘宝手机", "itemprice": "10", "itempic": "https://img.example/tb.jpg"}],
+        }
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    result = HaodankuProductSearchAdapter(HaodankuConfig(api_key="key")).search(
+        ProductSearchRequest(query="手机", top_k=3)
+    )
+
+    assert seen == ["supersearch"]
+    assert result.requested_platforms == ["taobao"]
+    assert result.succeeded_platforms == ["taobao"]
+    assert result.failed_platforms == []
+
+
+def test_search_intersects_model_platforms_with_enabled_platforms(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_urlopen(request, timeout=None):  # noqa: ANN001, ARG001
+        seen.append(request.full_url.split("?", 1)[0].rsplit("/", 1)[-1])
+        payload = {
+            "code": 1,
+            "data": [{"itemid": "1", "itemtitle": "淘宝手机", "itemprice": "10", "itempic": "https://img.example/tb.jpg"}],
+        }
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    result = HaodankuProductSearchAdapter(HaodankuConfig(api_key="key")).search(
+        ProductSearchRequest(query="手机", platforms=["淘宝", "京东", "拼多多"], top_k=3)
+    )
+
+    assert seen == ["supersearch"]
+    assert result.requested_platforms == ["taobao"]
+    assert result.failed_platforms == []
+
+
+def test_search_rejects_only_disabled_platform_without_http(monkeypatch) -> None:
+    calls = 0
+
+    def fake_urlopen(request, timeout=None):  # noqa: ANN001, ARG001
+        nonlocal calls
+        calls += 1
+        raise AssertionError("disabled platform must not access provider")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    result = HaodankuProductSearchAdapter(HaodankuConfig(api_key="key")).search(
+        ProductSearchRequest(query="手机", platforms=["京东"])
+    )
+
+    assert calls == 0
+    assert result.success is False
+    assert result.errors[0].code == "provider_platform_disabled"
+    assert result.failed_platforms == []
 
 
 def test_compare_converts_selected_offers_with_official_platform_endpoints(monkeypatch) -> None:
@@ -114,7 +178,14 @@ def test_compare_converts_selected_offers_with_official_platform_endpoints(monke
         ProductResult(product_id="pdd:3", provider_item_id="3", title="拼多多手机", price=12, platform="pdd", product_url="https://mobile.yangkeduo.com/goods.html?goods_id=3", image_url="https://img.example/pdd.jpg"),
     ]
     adapter = HaodankuPriceCompareAdapter(
-        HaodankuConfig(api_key="key", taobao_pid="pid", taobao_authorized_name="name", jd_sub_union_id="sub", pdd_channel="channel")
+        HaodankuConfig(
+            api_key="key",
+            enabled_platforms=("taobao", "jd", "pdd"),
+            taobao_pid="pid",
+            taobao_authorized_name="name",
+            jd_sub_union_id="sub",
+            pdd_channel="channel",
+        )
     )
 
     result = adapter.compare(PriceCompareRequest(query="手机", items=items, top_k=9))
@@ -191,3 +262,16 @@ def test_compare_normalizes_chinese_platform_filters() -> None:
 
     assert result.success is True
     assert [offer.platform for offer in result.offers] == ["taobao"]
+
+
+def test_compare_rejects_only_disabled_platform_without_search() -> None:
+    class UnexpectedSearch:
+        def search(self, request):  # noqa: ANN001
+            raise AssertionError("disabled platform must not search")
+
+    result = HaodankuPriceCompareAdapter(
+        HaodankuConfig(api_key="key"), search_adapter=UnexpectedSearch()
+    ).compare(PriceCompareRequest(query="手机", platforms=["京东"]))
+
+    assert result.success is False
+    assert result.errors[0].code == "provider_platform_disabled"

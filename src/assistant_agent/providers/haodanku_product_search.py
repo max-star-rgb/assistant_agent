@@ -94,6 +94,7 @@ class HaodankuConfig:
     base_url: str = DEFAULT_HAODANKU_BASE_URL
     timeout_seconds: float = DEFAULT_HAODANKU_TIMEOUT_SECONDS
     sort: str = DEFAULT_HAODANKU_SORT
+    enabled_platforms: tuple[str, ...] = ("taobao",)
     taobao_pid: str | None = None
     taobao_authorized_name: str | None = None
     jd_sub_union_id: str | None = None
@@ -138,7 +139,12 @@ class HaodankuProductSearchAdapter:
                 recoverable=True,
             )
 
-        requested_platforms = _requested_platforms(request.platforms)
+        requested_platforms = _requested_platforms(
+            request.platforms,
+            enabled_platforms=self.config.enabled_platforms,
+        )
+        if not requested_platforms:
+            return _platform_disabled_search_result(keyword, request.platforms)
         results: dict[str, tuple[list[ProductResult], ProductProviderError | None, dict[str, Any]]] = {}
         with ThreadPoolExecutor(max_workers=len(requested_platforms)) as executor:
             futures = {
@@ -277,7 +283,18 @@ class HaodankuPriceCompareAdapter:
         self._search_adapter = search_adapter or HaodankuProductSearchAdapter(config)
 
     def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
-        normalized_platforms = _requested_platforms(request.platforms) if request.platforms else []
+        normalized_platforms = _requested_platforms(
+            request.platforms,
+            enabled_platforms=self.config.enabled_platforms,
+        )
+        if request.platforms and not normalized_platforms:
+            return failed_price_result(
+                provider=self.provider,
+                query=request.query,
+                code="provider_platform_disabled",
+                message="请求的平台未在 HAODANKU_ENABLED_PLATFORMS 中启用。",
+                recoverable=True,
+            )
         normalized_request = request.model_copy(update={"platforms": normalized_platforms})
         items = list(request.items)
         if not items:
@@ -432,8 +449,12 @@ def _normalize_platform_back(platform: str, requested: int) -> int:
     ).provider_limit
 
 
-def _requested_platforms(platforms: list[str]) -> list[str]:
-    requested = platforms or ["taobao", "jd", "pdd"]
+def _requested_platforms(
+    platforms: list[str],
+    *,
+    enabled_platforms: tuple[str, ...],
+) -> list[str]:
+    requested = platforms or list(enabled_platforms)
     normalized: list[str] = []
     for platform in requested:
         value = {
@@ -443,9 +464,31 @@ def _requested_platforms(platforms: list[str]) -> list[str]:
             "京东": "jd",
             "拼多多": "pdd",
         }.get(platform.strip().lower(), platform.strip().lower())
-        if value in {"taobao", "jd", "pdd"} and value not in normalized:
+        if value in enabled_platforms and value not in normalized:
             normalized.append(value)
-    return normalized or ["taobao", "jd", "pdd"]
+    return normalized
+
+
+def _platform_disabled_search_result(
+    keyword: str,
+    requested_platforms: list[str],
+) -> ProductSearchResult:
+    error = ProductProviderError(
+        code="provider_platform_disabled",
+        message="请求的平台未在 HAODANKU_ENABLED_PLATFORMS 中启用。",
+        recoverable=True,
+    )
+    return ProductSearchResult(
+        provider="haodanku",
+        query_used=keyword,
+        filters_used={"platforms": list(requested_platforms)},
+        total=0,
+        errors=[error],
+        requested_platforms=[],
+        succeeded_platforms=[],
+        failed_platforms=[],
+        platform_errors={},
+    )
 
 
 def _linked_search_back_request(top_k: int | None) -> int:
@@ -646,6 +689,10 @@ def _platform_from_shoptype(value: Any) -> str:
 def _product_link_metadata(raw: dict[str, Any], *, provider_item_id: str) -> ProductLinkMetadata:
     coupon_url = _first_provider_link(raw, COUPON_LINK_FIELDS)
     landing_url = _first_provider_link(raw, LANDING_LINK_FIELDS)
+    if not _valid_platform_url(coupon_url, "taobao"):
+        coupon_url = None
+    if not _valid_platform_url(landing_url, "taobao"):
+        landing_url = None
     direct = coupon_url or landing_url
     if direct:
         return ProductLinkMetadata(
