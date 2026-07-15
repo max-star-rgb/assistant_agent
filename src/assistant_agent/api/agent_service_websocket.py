@@ -1253,7 +1253,9 @@ async def _realtime_video_freshness_metadata(
         try:
             async with asyncio.timeout(VIDEO_FRESHNESS_WAIT_SECONDS):
                 if (represented_sequence or 0) < target_sequence and callable(promote):
-                    await promote(latest_frame)
+                    promotion = asyncio.create_task(promote(latest_frame))
+                    promotion.add_done_callback(_consume_task_exception)
+                    await asyncio.shield(promotion)
                 if callable(wait_for_sequence):
                     await wait_for_sequence(target_sequence)
         except TimeoutError:
@@ -1272,6 +1274,13 @@ async def _realtime_video_freshness_metadata(
         "realtime_video_freshness_waited_ms": waited_ms,
         "realtime_video_freshness_satisfied": effective_snapshot_sequence >= target_sequence,
     }
+
+
+def _consume_task_exception(task: asyncio.Task[Any]) -> None:
+    """Retrieve late promotion failures after the caller-visible deadline."""
+
+    if not task.cancelled():
+        task.exception()
 
 
 def _latest_decoded_video_frame(video_id: str) -> VideoFrame | None:

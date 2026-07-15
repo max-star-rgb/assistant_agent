@@ -24,6 +24,7 @@ from assistant_agent.services.realtime_video_memory import (
     RealtimeVideoObservationDiagnostics,
     SemanticKeyframeRecord,
 )
+from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame
 from assistant_agent.services.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
@@ -33,6 +34,7 @@ from assistant_agent.services.agent_service_latency import AgentServiceTurnTimin
 from assistant_agent.services.trace_store import InMemoryTraceStore
 from assistant_agent.services.trace_persistence import BufferedJsonlTraceStore, close_trace_store
 from assistant_agent.services.trace_store import CompositeTraceStore, TraceEvent
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class RecordingRuntime:
@@ -1581,12 +1583,17 @@ def test_visual_freshness_budget_covers_blocking_promotion_and_sequence_wait(
             self.represented_sequence = 3
             self.promote_cancelled = False
             self.wait_calls = 0
+            self.release_promotion = asyncio.Event()
+            self.promotion_completed = asyncio.Event()
 
         async def promote(self, _frame: VideoFrame) -> None:
             try:
-                await asyncio.Event().wait()
-            finally:
+                await self.release_promotion.wait()
+            except asyncio.CancelledError:
                 self.promote_cancelled = True
+                raise
+            finally:
+                self.promotion_completed.set()
 
         async def wait_for_snapshot_sequence(self, _sequence: int) -> None:
             self.wait_calls += 1
@@ -1626,16 +1633,110 @@ def test_visual_freshness_budget_covers_blocking_promotion_and_sequence_wait(
             ),
             timeout=0.2,
         )
+        assert observer.promote_cancelled is False
+        assert observer.wait_calls == 0
+        observer.release_promotion.set()
+        await asyncio.wait_for(observer.promotion_completed.wait(), 0.1)
 
     asyncio.run(scenario())
 
-    assert observer.promote_cancelled is True
+    assert observer.promote_cancelled is False
     assert observer.wait_calls == 0
     metadata = captured["request"].metadata
     assert metadata["realtime_video_freshness_waited_ms"] == 10
     assert metadata["realtime_video_target_sequence"] == 5
     assert metadata["realtime_video_snapshot_sequence"] == 3
     assert metadata["realtime_video_freshness_satisfied"] is False
+
+
+def test_visual_freshness_timeout_retains_background_promotion_ownership(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+    video_id = "agent-service-video-test"
+    raw_path = tmp_path / "raw-frame-5.jpg"
+    raw_path.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+    latest = VideoFrame(
+        video_id=video_id,
+        frame_id="frame-5",
+        uri=str(raw_path),
+        sequence=5,
+    )
+    observer = RealtimeVideoObserver(
+        user_id="10086",
+        session_id="s1",
+        registry=ToolRegistry(),
+        memory_store=RealtimeVideoMemoryStore(),
+        keyframe_root=tmp_path / "keyframes",
+    )
+    observer._ensure_worker = lambda: None
+    retain_started = Event()
+    release_retain = Event()
+    retain_finished = Event()
+    retain_calls = 0
+    original_retain = observer._retain_keyframe
+
+    def blocking_retain(frame: VideoFrame):
+        nonlocal retain_calls
+        retain_calls += 1
+        retain_started.set()
+        assert release_retain.wait(timeout=2.0)
+        retained = original_retain(frame)
+        retain_finished.set()
+        return retained
+
+    observer._retain_keyframe = blocking_retain
+
+    class CapturingFacade:
+        async def run_turn(self, request):
+            captured["request"] = request
+            return object()
+
+    monkeypatch.setattr(agent_service_ws, "VIDEO_FRESHNESS_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        agent_service_ws,
+        "_latest_decoded_video_frame",
+        lambda _video_id: latest,
+    )
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+        video_ids=[video_id],
+        video_observer=observer,
+    )
+
+    async def scenario() -> None:
+        await agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-late-promotion",
+            latest_speech="眼前是什么？",
+            contents=[{"speechContent": "眼前是什么？"}],
+        )
+        assert retain_started.is_set()
+        release_retain.set()
+        assert await asyncio.to_thread(retain_finished.wait, 2.0)
+        await observer.wait_for_promotions()
+
+        assert retain_calls == 1
+        assert observer._pending_item is not None
+        pending_path = Path(observer._pending_item.record.uri)
+        assert pending_path.is_file()
+        assert observer._owned_paths == {pending_path}
+
+        await observer.promote(latest)
+        assert retain_calls == 1
+        await observer.close()
+
+    asyncio.run(scenario())
+
+    metadata = captured["request"].metadata
+    assert metadata["realtime_video_snapshot_sequence"] == 0
+    assert metadata["realtime_video_freshness_satisfied"] is False
+    assert not (tmp_path / "keyframes").exists()
 
 
 def test_greeting_freshness_does_not_promote_or_wait_for_latest_frame(

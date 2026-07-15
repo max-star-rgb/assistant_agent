@@ -399,6 +399,48 @@ def test_observer_concurrent_equal_sequence_promotion_retains_one_queued_artifac
     asyncio.run(scenario())
 
 
+def test_observer_close_waits_for_late_retention_and_cleans_ownership(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        keyframe_root = tmp_path / "keyframes"
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=ToolRegistry(),
+            memory_store=RealtimeVideoMemoryStore(),
+            keyframe_root=keyframe_root,
+        )
+        retain_started = threading.Event()
+        release_retain = threading.Event()
+        original_retain = observer._retain_keyframe
+
+        def late_retain(frame: VideoFrame):
+            retain_started.set()
+            assert release_retain.wait(timeout=2.0)
+            return original_retain(frame)
+
+        observer._retain_keyframe = late_retain
+        promotion = asyncio.create_task(
+            observer.promote(_decoded_frame(tmp_path, sequence=5))
+        )
+        assert await asyncio.to_thread(retain_started.wait, 2.0)
+
+        close_task = asyncio.create_task(observer.close())
+        await asyncio.sleep(0)
+        assert not close_task.done()
+        release_retain.set()
+        promotion_result = await asyncio.gather(promotion, return_exceptions=True)
+        await close_task
+
+        assert isinstance(promotion_result[0], RuntimeError)
+        assert observer._owned_paths == set()
+        assert not keyframe_root.exists()
+
+    asyncio.run(scenario())
+
+
 def test_observer_concurrent_promotion_cannot_replace_newer_pending_sequence(
     tmp_path: Path,
 ) -> None:

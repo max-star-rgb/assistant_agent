@@ -88,6 +88,7 @@ class RealtimeVideoObserver:
         self._first_terminal_snapshot = asyncio.Event()
         self._snapshot_updated = asyncio.Event()
         self._enqueue_lock = asyncio.Lock()
+        self._promotion_tasks: set[asyncio.Task[FrameProcessingResult]] = set()
 
     async def submit(self, frame: VideoFrame) -> FrameProcessingResult:
         """Run local selection and enqueue a selected frame for background analysis."""
@@ -118,6 +119,12 @@ class RealtimeVideoObserver:
 
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
+        task = asyncio.create_task(self._promote(frame))
+        self._promotion_tasks.add(task)
+        task.add_done_callback(self._promotion_tasks.discard)
+        return await asyncio.shield(task)
+
+    async def _promote(self, frame: VideoFrame) -> FrameProcessingResult:
         self._accept_video_id(frame)
         started_ns = self.clock_ns()
         represented = self._represented_sequence()
@@ -174,6 +181,7 @@ class RealtimeVideoObserver:
         if represented is not None and represented >= frame.sequence:
             return False
         retained = await asyncio.to_thread(self._retain_keyframe, frame)
+        self._owned_paths.add(Path(retained.uri))
         if self.closed:
             self._delete_record(retained)
             raise RuntimeError("realtime video observer is closed")
@@ -223,6 +231,14 @@ class RealtimeVideoObserver:
             await self._snapshot_updated.wait()
         raise RuntimeError("realtime video observer is closed")
 
+    async def wait_for_promotions(self) -> None:
+        """Wait until all observer-owned promotion work has settled."""
+
+        while self._promotion_tasks:
+            tasks = tuple(self._promotion_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._promotion_tasks.difference_update(tasks)
+
     @property
     def represented_sequence(self) -> int | None:
         """Return the newest successful, in-flight, or pending sequence."""
@@ -236,6 +252,7 @@ class RealtimeVideoObserver:
             return
         self.closed = True
         self._drop_pending()
+        await self.wait_for_promotions()
 
         execution = self._execution_task
         if execution is not None and not execution.done():
@@ -392,7 +409,6 @@ class RealtimeVideoObserver:
         destination = directory / f"frame-{frame.sequence:06d}.jpg"
         shutil.copy2(frame.uri, destination)
         destination = destination.resolve()
-        self._owned_paths.add(destination)
         return SemanticKeyframeRecord(
             frame_id=frame.frame_id,
             uri=str(destination),
