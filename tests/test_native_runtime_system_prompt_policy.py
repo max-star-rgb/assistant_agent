@@ -125,6 +125,37 @@ def test_native_runtime_can_select_realtime_phone_profile_from_metadata() -> Non
     assert adapter.requests[0].messages[0]["content"] == render_system_instruction(
         SystemPromptProfile.REALTIME_PHONE
     )
+    assert "双方正在共享的当前镜头" not in adapter.requests[0].messages[0]["content"]
+
+
+def test_native_runtime_enables_live_camera_prompt_only_for_trusted_agent_service() -> None:
+    adapter = CapturingChatAdapter()
+    runtime = AgentGraphRuntime(config=ProviderConfig(), chat_adapter=adapter)
+
+    runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="眼前是什么？",
+            video_ids=["video-live"],
+            metadata={
+                "system_prompt_profile": "realtime_phone",
+                "channel": "realtime_phone",
+                "transport": "agent_service_websocket",
+                "gateway": {"session_config": {"entry_profile": "agent_service"}},
+            },
+        )
+    )
+
+    prompt = adapter.requests[0].messages[0]["content"]
+    assert "双方正在共享的当前镜头" in prompt
+    assert prompt == render_system_instruction(
+        SystemPromptProfile.REALTIME_PHONE,
+        options=SystemPromptOptions(
+            channel="realtime_phone",
+            shared_live_camera=True,
+        ),
+    )
 
 
 def test_native_runtime_unknown_profile_falls_back_to_text_default() -> None:
