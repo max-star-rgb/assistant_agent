@@ -36,6 +36,7 @@ from assistant_agent.video_ai.types import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_KEYFRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_keyframes"
 DEFAULT_CLOSE_WAIT_SECONDS = 1.0
+REALTIME_PREVIOUS_SUMMARY_MAX_CHARS = 2_000
 
 
 @dataclass(frozen=True)
@@ -285,6 +286,7 @@ class RealtimeVideoObserver:
         if self._worker is not None:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)
+        await self._close_video_adapter()
         if self.video_id is not None:
             self.memory_store.remove_video(self.video_id)
         for path in list(self._owned_paths):
@@ -378,16 +380,20 @@ class RealtimeVideoObserver:
         )
         state = AgentState.from_request(request)
         snapshot = self.memory_store.snapshot(video_id)
-        history_refs = [record.uri for record in snapshot.keyframes[-2:]] if snapshot is not None else []
         tool_input: dict[str, Any] = {
             "video_ref": video_id,
-            "frame_refs": [*history_refs, item.uri],
+            "frame_refs": [item.uri],
             "user_query": "更新当前场景、物体、人物、动作和重要变化。",
             "metadata": {
                 "frame_id": item.frame_id,
                 "frame_sequence": item.sequence,
                 "frame_timestamp_ms": item.timestamp_ms,
             },
+            "memory_context": (
+                snapshot.current_state[:REALTIME_PREVIOUS_SUMMARY_MAX_CHARS]
+                if snapshot is not None and snapshot.current_state
+                else None
+            ),
         }
         decision = AssistantDecision(
             type="tool_call",
@@ -418,6 +424,16 @@ class RealtimeVideoObserver:
             tool_input,
             node_name="realtime_video_observer",
         )
+
+    async def _close_video_adapter(self) -> None:
+        try:
+            tool = self.registry.get("video_understanding")
+        except KeyError:
+            return
+        adapter = getattr(tool, "adapter", None)
+        close = getattr(adapter, "close", None)
+        if callable(close):
+            await asyncio.to_thread(close)
 
     def _retain_keyframe(self, frame: VideoFrame) -> SemanticKeyframeRecord:
         suffix = _safe_name(frame.video_id.removeprefix("agent-service-video-"))

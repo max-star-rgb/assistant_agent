@@ -37,8 +37,10 @@ def _successful_responses(summary: str = "ok") -> list[dict[str, Any]]:
     return [
         {"type": "session.created"},
         {"type": "session.updated"},
+        {"type": "session.updated"},
+        {"type": "input_audio_buffer.committed"},
         {"type": "response.text.delta", "delta": json.dumps({"summary": summary})},
-        {"type": "response.done"},
+        {"type": "response.done", "response": {"status": "completed"}},
     ]
 
 
@@ -48,9 +50,11 @@ def test_realtime_adapter_handshake_and_single_frame_protocol(tmp_path: Path) ->
         [
             {"type": "session.created"},
             {"type": "session.updated"},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
             {"type": "response.text.delta", "delta": '{"summary":"杯子在桌上",'},
             {"type": "response.text.delta", "delta": '"objects":["杯子"]}'},
-            {"type": "response.done"},
+            {"type": "response.done", "response": {"status": "completed"}},
         ]
     )
     connect_calls: list[tuple[str, dict]] = []
@@ -80,17 +84,23 @@ def test_realtime_adapter_handshake_and_single_frame_protocol(tmp_path: Path) ->
     assert connect_calls[0][1]["additional_headers"]["Authorization"] == "Bearer test-key"
     assert [event["type"] for event in socket.sent] == [
         "session.update",
+        "session.update",
         "input_audio_buffer.append",
         "input_image_buffer.append",
         "input_audio_buffer.commit",
         "response.create",
     ]
-    silence = base64.b64decode(socket.sent[1]["audio"])
-    assert len(silence) == 24_000 * 2 // 5
-    assert socket.sent[2]["image"].startswith("data:image/jpeg;base64,")
-    instructions = socket.sent[4]["response"]["instructions"]
+    assert socket.sent[0]["session"]["input_audio_format"] == "pcm"
+    assert socket.sent[0]["session"]["output_audio_format"] == "pcm"
+    assert socket.sent[0]["session"]["turn_detection"] is None
+    silence = base64.b64decode(socket.sent[2]["audio"])
+    assert len(silence) == 6_400
+    assert base64.b64decode(socket.sent[3]["image"]) == frame.read_bytes()
+    assert not socket.sent[3]["image"].startswith("data:")
+    instructions = socket.sent[1]["session"]["instructions"]
     assert "描述当前画面" in instructions
     assert "上一轮没有杯子" in instructions
+    assert socket.sent[5] == {"type": "response.create"}
 
 
 def test_realtime_adapter_rejects_non_single_or_oversized_frame_without_connecting(tmp_path: Path) -> None:
@@ -124,8 +134,10 @@ def test_realtime_adapter_sanitizes_invalid_json_and_closes_failed_connection(tm
         [
             {"type": "session.created"},
             {"type": "session.updated"},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
             {"type": "response.text.delta", "delta": "secret-provider-garbage"},
-            {"type": "response.done"},
+            {"type": "response.done", "response": {"status": "completed"}},
         ]
     )
     adapter = QwenRealtimeVisionAdapter(
@@ -157,7 +169,12 @@ def test_realtime_adapter_maps_timeout_and_disconnect_to_structured_errors(tmp_p
             raise TimeoutError("raw timeout details")
 
     timeout_socket = TimeoutSocket(
-        [{"type": "session.created"}, {"type": "session.updated"}]
+        [
+            {"type": "session.created"},
+            {"type": "session.updated"},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
+        ]
     )
     timeout_adapter = QwenRealtimeVisionAdapter(
         QwenRealtimeVisionConfig(api_key="test-key"),
@@ -188,7 +205,12 @@ def test_realtime_adapter_maps_mid_response_disconnect_without_raw_details(tmp_p
             raise ConnectionError("raw mid-response secret")
 
     socket = DisconnectSocket(
-        [{"type": "session.created"}, {"type": "session.updated"}]
+        [
+            {"type": "session.created"},
+            {"type": "session.updated"},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
+        ]
     )
     adapter = QwenRealtimeVisionAdapter(
         QwenRealtimeVisionConfig(api_key="test-key"),
@@ -230,6 +252,66 @@ def test_realtime_adapter_uses_capped_backoff_and_resets_after_success(tmp_path:
     assert adapter.connection_failures == 0
 
 
+def test_realtime_adapter_resets_backoff_after_handshake_even_if_round_fails(tmp_path: Path) -> None:
+    frame = _frame(tmp_path)
+    attempts = 0
+    socket = FakeWebSocket(
+        [
+            {"type": "session.created"},
+            {"type": "session.updated"},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
+            {"type": "response.done", "response": {"status": "failed"}},
+        ]
+    )
+
+    def connect(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ConnectionError("offline")
+        return socket
+
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key"), connect=connect, sleep=lambda _seconds: None
+    )
+    request = VideoUnderstandingRequest(video_ref="v", frame_refs=[str(frame)])
+
+    assert adapter.understand_video(request).errors[0]["code"] == "provider_connection_failed"
+    result = adapter.understand_video(request)
+
+    assert result.errors[0]["code"] == "provider_incomplete_response"
+    assert adapter.connection_failures == 0
+    assert adapter.successful_observations == 0
+
+
+def test_realtime_adapter_uses_one_deadline_and_remaining_recv_time(tmp_path: Path) -> None:
+    frame = _frame(tmp_path)
+    times = iter([10.0, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5, 13.0, 13.5])
+    recv_timeouts: list[float] = []
+    socket = FakeWebSocket(_successful_responses())
+    original_recv = socket.recv
+
+    def recv(timeout: float | None = None) -> str:
+        recv_timeouts.append(timeout or 0.0)
+        return original_recv(timeout)
+
+    socket.recv = recv
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key", timeout_seconds=5.0),
+        connect=lambda *_args, **_kwargs: socket,
+        clock=lambda: next(times),
+    )
+
+    result = adapter.understand_video(
+        VideoUnderstandingRequest(video_ref="v", frame_refs=[str(frame)])
+    )
+
+    assert result.errors == []
+    assert recv_timeouts == sorted(recv_timeouts, reverse=True)
+    assert recv_timeouts[0] > recv_timeouts[-1]
+
+
 def test_realtime_adapter_rotates_after_twenty_successes_and_closes(tmp_path: Path) -> None:
     frame = _frame(tmp_path)
     sockets = [
@@ -238,7 +320,15 @@ def test_realtime_adapter_rotates_after_twenty_successes_and_closes(tmp_path: Pa
                 {"type": "session.created"},
                 {"type": "session.updated"},
                 *sum(
-                    ([{"type": "response.text.delta", "delta": '{"summary":"ok"}'}, {"type": "response.done"}] for _ in range(20)),
+                    (
+                        [
+                            {"type": "session.updated"},
+                            {"type": "input_audio_buffer.committed"},
+                            {"type": "response.text.delta", "delta": '{"summary":"ok"}'},
+                            {"type": "response.done", "response": {"status": "completed"}},
+                        ]
+                        for _ in range(20)
+                    ),
                     [],
                 ),
             ]

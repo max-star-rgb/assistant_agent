@@ -17,7 +17,7 @@ from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoU
 DEFAULT_QWEN_REALTIME_VISION_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 DEFAULT_QWEN_REALTIME_VISION_MODEL = "qwen3.5-omni-flash-realtime"
 MAX_BASE64_JPEG_BYTES = 256 * 1024
-PCM_SAMPLE_RATE = 24_000
+PCM_SAMPLE_RATE = 16_000
 PCM_SILENCE_MILLISECONDS = 200
 
 
@@ -56,6 +56,10 @@ class QwenRealtimeVisionAdapter:
     def connection_failures(self) -> int:
         return self._connection_failures
 
+    @property
+    def successful_observations(self) -> int:
+        return self._successful_observations
+
     def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
         started_at = perf_counter()
         if not self.config.api_key:
@@ -63,16 +67,21 @@ class QwenRealtimeVisionAdapter:
         if len(request.frame_refs) != 1:
             return self._failure("invalid_frame_count", "Qwen realtime vision requires exactly one frame.", started_at)
         try:
-            image = _jpeg_data_url(request.frame_refs[0])
+            image = _jpeg_base64(request.frame_refs[0])
         except (OSError, ValueError) as exc:
             code = "frame_too_large" if "256KB" in str(exc) else "invalid_frame"
             return self._failure(code, str(exc), started_at)
 
         try:
-            socket = self._ensure_connection()
-            for event in _turn_events(image=image, instructions=_instructions(request)):
-                socket.send(json.dumps(event, ensure_ascii=False))
-            text = self._receive_response(socket)
+            deadline = self._clock() + self.config.timeout_seconds
+            socket = self._ensure_connection(deadline)
+            socket.send(json.dumps(_session_update(instructions=_instructions(request)), ensure_ascii=False))
+            self._expect_event(socket, "session.updated", deadline)
+            for event in _media_events(image=image):
+                socket.send(json.dumps(event))
+            self._expect_event(socket, "input_audio_buffer.committed", deadline)
+            socket.send(json.dumps({"type": "response.create"}))
+            text = self._receive_response(socket, deadline)
             payload = json.loads(text)
             if not isinstance(payload, dict):
                 raise ValueError("Realtime response must be a JSON object.")
@@ -104,6 +113,12 @@ class QwenRealtimeVisionAdapter:
                 "Qwen realtime vision connection failed.",
                 started_at,
             )
+        except _IncompleteResponse:
+            return self._failure(
+                "provider_incomplete_response",
+                "Qwen realtime vision response did not complete.",
+                started_at,
+            )
         except Exception:
             self._discard_connection()
             return self._failure("provider_bad_response", "Qwen realtime vision request failed.", started_at)
@@ -115,7 +130,7 @@ class QwenRealtimeVisionAdapter:
         self._closed = True
         self._discard_connection()
 
-    def _ensure_connection(self) -> Any:
+    def _ensure_connection(self, deadline: float) -> Any:
         if self._closed:
             raise RuntimeError("Qwen realtime vision adapter is closed.")
         now = self._clock()
@@ -132,13 +147,13 @@ class QwenRealtimeVisionAdapter:
             socket = self._connect(
                 _model_url(self.config.base_url, self.config.model),
                 additional_headers={"Authorization": f"Bearer {self.config.api_key}"},
-                open_timeout=self.config.timeout_seconds,
+                open_timeout=self._remaining(deadline),
             )
-            created = _receive_json(socket, self.config.timeout_seconds)
+            created = _receive_json(socket, self._remaining(deadline))
             if created.get("type") != "session.created":
                 raise ValueError("Expected session.created.")
             socket.send(json.dumps(_session_update()))
-            updated = _receive_json(socket, self.config.timeout_seconds)
+            updated = _receive_json(socket, self._remaining(deadline))
             if updated.get("type") != "session.updated":
                 raise ValueError("Expected session.updated.")
         except TimeoutError:
@@ -160,12 +175,22 @@ class QwenRealtimeVisionAdapter:
         self._socket = socket
         self._connected_at = now
         self._successful_observations = 0
+        self._connection_failures = 0
         return socket
 
-    def _receive_response(self, socket: Any) -> str:
+    def _expect_event(self, socket: Any, expected_type: str, deadline: float) -> dict[str, Any]:
+        while True:
+            event = _receive_json(socket, self._remaining(deadline))
+            event_type = event.get("type")
+            if event_type == expected_type:
+                return event
+            if event_type == "error":
+                raise RuntimeError("Provider returned an error.")
+
+    def _receive_response(self, socket: Any, deadline: float) -> str:
         deltas: list[str] = []
         while True:
-            event = _receive_json(socket, self.config.timeout_seconds)
+            event = _receive_json(socket, self._remaining(deadline))
             event_type = event.get("type")
             if event_type in {"response.text.delta", "response.output_text.delta"}:
                 delta = event.get("delta")
@@ -174,7 +199,16 @@ class QwenRealtimeVisionAdapter:
             elif event_type == "error":
                 raise RuntimeError("Provider returned an error.")
             elif event_type == "response.done":
+                response = event.get("response")
+                if not isinstance(response, dict) or response.get("status") != "completed":
+                    raise _IncompleteResponse
                 return "".join(deltas)
+
+    def _remaining(self, deadline: float) -> float:
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise TimeoutError("Qwen realtime vision round deadline exceeded.")
+        return remaining
 
     def _discard_connection(self) -> None:
         socket, self._socket = self._socket, None
@@ -206,29 +240,28 @@ def _model_url(base_url: str, model: str) -> str:
     return f"{base_url}{separator}{urlencode({'model': model})}"
 
 
-def _session_update() -> dict[str, Any]:
+def _session_update(*, instructions: str | None = None) -> dict[str, Any]:
+    session: dict[str, Any] = {
+        "modalities": ["text"],
+        "input_audio_format": "pcm",
+        "output_audio_format": "pcm",
+        "turn_detection": None,
+    }
+    if instructions is not None:
+        session["instructions"] = instructions
     return {
         "type": "session.update",
-        "session": {
-            "modalities": ["text"],
-            "input_audio_format": "pcm16",
-            "output_audio_format": "pcm16",
-            "turn_detection": None,
-        },
+        "session": session,
     }
 
 
-def _turn_events(*, image: str, instructions: str) -> list[dict[str, Any]]:
+def _media_events(*, image: str) -> list[dict[str, Any]]:
     silence_bytes = PCM_SAMPLE_RATE * 2 * PCM_SILENCE_MILLISECONDS // 1000
     silence = base64.b64encode(bytes(silence_bytes)).decode("ascii")
     return [
         {"type": "input_audio_buffer.append", "audio": silence},
         {"type": "input_image_buffer.append", "image": image},
         {"type": "input_audio_buffer.commit"},
-        {
-            "type": "response.create",
-            "response": {"modalities": ["text"], "instructions": instructions},
-        },
     ]
 
 
@@ -243,14 +276,14 @@ def _instructions(request: VideoUnderstandingRequest) -> str:
     )
 
 
-def _jpeg_data_url(frame_ref: str) -> str:
+def _jpeg_base64(frame_ref: str) -> str:
     data = Path(frame_ref).read_bytes()
     if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
         raise ValueError("Frame must be a JPEG image.")
     encoded = base64.b64encode(data)
     if len(encoded) > MAX_BASE64_JPEG_BYTES:
         raise ValueError("Base64 JPEG exceeds 256KB.")
-    return "data:image/jpeg;base64," + encoded.decode("ascii")
+    return encoded.decode("ascii")
 
 
 def _receive_json(socket: Any, timeout: float) -> dict[str, Any]:
@@ -271,4 +304,8 @@ def _safe_ref(video_ref: str | None) -> str:
 
 
 class _ConnectionFailed(RuntimeError):
+    pass
+
+
+class _IncompleteResponse(RuntimeError):
     pass

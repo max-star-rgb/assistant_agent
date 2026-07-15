@@ -113,6 +113,34 @@ class FailingVideoAdapter:
         )
 
 
+class SummaryRecordingAdapter:
+    def __init__(self) -> None:
+        self.requests: list[VideoUnderstandingRequest] = []
+
+    def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+        self.requests.append(request)
+        return VideoUnderstandingResult(
+            summary="s" * 5_000 if len(self.requests) == 1 else "second",
+            provider="summary-test",
+            output_ref=f"provider://video/test/{len(self.requests)}",
+        )
+
+
+class CloseRecordingAdapter:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+        return VideoUnderstandingResult(
+            summary="ok",
+            provider="close-test",
+            output_ref=f"provider://video/test/{request.video_ref}",
+        )
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
 def _decoded_frame(root: Path, *, sequence: int) -> VideoFrame:
     raw_root = root / "raw"
     raw_root.mkdir(parents=True, exist_ok=True)
@@ -154,6 +182,67 @@ def test_observer_validates_and_executes_selected_frame_through_tool_boundary(tm
         assert tool.inputs[0]["video_ref"] == VIDEO_ID
         assert memory.snapshot(VIDEO_ID).healthy is True
         await observer.close()
+
+    asyncio.run(scenario())
+
+
+def test_observer_second_round_sends_one_frame_and_bounded_previous_summary(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        adapter = SummaryRecordingAdapter()
+        registry = ToolRegistry()
+        registry.register(VideoUnderstandingTool(adapter=adapter))
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=RealtimeVideoMemoryStore(),
+            keyframe_root=tmp_path / "keyframes",
+            collector=AlwaysSelectCollector(),
+        )
+
+        await observer.submit(_decoded_frame(tmp_path, sequence=1))
+        await observer.wait_idle()
+        await observer.submit(_decoded_frame(tmp_path, sequence=2))
+        await observer.wait_idle()
+
+        assert len(adapter.requests) == 2
+        assert len(adapter.requests[1].frame_refs) == 1
+        assert adapter.requests[1].frame_refs[0].endswith("frame-000002.jpg")
+        assert adapter.requests[1].memory_context == "s" * 2_000
+        await observer.close()
+
+    asyncio.run(scenario())
+
+
+def test_observer_close_closes_private_adapter_exactly_once_and_tolerates_mock(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        adapter = CloseRecordingAdapter()
+        registry = ToolRegistry()
+        registry.register(VideoUnderstandingTool(adapter=adapter))
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=RealtimeVideoMemoryStore(),
+            keyframe_root=tmp_path / "private",
+        )
+
+        await observer.close()
+        await observer.close()
+        assert adapter.close_calls == 1
+
+        mock_registry = ToolRegistry()
+        mock_registry.register(VideoUnderstandingTool(adapter=MockVideoUnderstandingAdapter()))
+        mock_observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=mock_registry,
+            memory_store=RealtimeVideoMemoryStore(),
+            keyframe_root=tmp_path / "mock",
+        )
+        await mock_observer.close()
 
     asyncio.run(scenario())
 
