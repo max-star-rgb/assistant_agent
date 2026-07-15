@@ -26,7 +26,7 @@ from assistant_agent.agent.system_prompt_policy import (
         (
             SystemPromptProfile.REALTIME_PHONE,
             None,
-            "65e6b86ca779b362b9f586a115ee867852bab9bdc514e6402dac1712bf902f55",
+            "938ec3cec1fc9a2ad35cfd828215f85bf20b8defd4592d99c666753dbba37809",
         ),
         (
             SystemPromptProfile.FINAL_ONLY,
@@ -137,10 +137,12 @@ def test_realtime_phone_profile_covers_voice_turn_taking_and_governance() -> Non
     assert "工具运行前先给一句短 preamble" in prompt
     assert "工具慢时给进度话术，但不要编造结果" in prompt
     assert "购买请求" in prompt
-    assert "购买建议" in prompt
-    assert "先完成 price_compare" in prompt
+    assert "shopping_search" in prompt
+    assert "搜索和比价" in prompt
+    assert "product_search" not in prompt
+    assert "price_compare" not in prompt
     assert "没有下单或付款工具" in prompt
-    assert "由模型根据用户意图决定" in prompt
+    assert "不要声称已经下单" in prompt
     assert "不要把历史会话中的商品或价格当作当前报价" in prompt
     assert "必须复述关键字段并得到明确确认" in prompt
     assert "没有确认时不要执行 hard side-effect 工具" in prompt

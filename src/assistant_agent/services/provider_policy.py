@@ -74,6 +74,7 @@ class TimeoutPolicy(BaseModel):
             "image_understanding": self.vision_timeout_seconds,
             "vision_understanding": self.vision_timeout_seconds,
             "video_understanding": self.video_timeout_seconds,
+            "shopping_search": self.search_timeout_seconds,
             "product_search": self.search_timeout_seconds,
             "price_compare": self.search_timeout_seconds,
             "render_3d": self.render_timeout_seconds,

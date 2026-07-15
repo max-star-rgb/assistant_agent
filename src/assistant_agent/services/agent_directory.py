@@ -119,6 +119,7 @@ def default_agent_instance(
             "tool_calling",
             "vision_understanding",
             "video_understanding",
+            "shopping_search",
             "product_search",
             "price_compare",
             "image_generation",

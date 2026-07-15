@@ -106,7 +106,7 @@ def test_product_search_observation_leaves_next_action_to_model_reasoning() -> N
     assert "本地关键词规则不会替模型选择工具" in observation.next_step_hint
 
 
-def test_product_search_observation_prompts_chinese_price_compare_for_purchase_advice() -> None:
+def test_product_search_observation_does_not_keyword_force_price_compare_for_purchase_advice() -> None:
     result = ProductSearchTool(adapter=MockProductSearchAdapter()).run({"query": "蓝牙耳机"})
 
     observation = observation_from_tool_result(
@@ -116,9 +116,8 @@ def test_product_search_observation_prompts_chinese_price_compare_for_purchase_a
 
     assert observation.status == "succeeded"
     assert observation.next_step_hint is not None
-    assert "购买建议" in observation.next_step_hint
-    assert "还没有完成 price_compare" in observation.next_step_hint
-    assert "请先调用 price_compare" in observation.next_step_hint
+    assert "由当前用户请求决定" in observation.next_step_hint
+    assert "请先调用 price_compare" not in observation.next_step_hint
     assert "structured_output.items" in observation.next_step_hint
     assert "完整商品对象" in observation.next_step_hint
 

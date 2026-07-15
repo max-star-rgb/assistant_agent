@@ -194,8 +194,7 @@ def test_agent_service_live_camera_first_llm_call_uses_natural_context_without_e
     assert "video-live" not in user_message
     assert "A person is holding a red cup." in user_message
     assert set(tool_names) == {
-        "product_search",
-        "price_compare",
+        "shopping_search",
         "web_search",
         "memory_retrieval",
         "memory_save",

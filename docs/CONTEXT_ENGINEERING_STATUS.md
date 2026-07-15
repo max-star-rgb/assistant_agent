@@ -102,7 +102,7 @@ Last updated: 2026-07-15
 ### Tool Observation Compaction
 
 - 工具 observation 在进入 assistant prompt 前会压缩，不修改原始 observation。
-- `product_search` 和 `price_compare` 有专门字段白名单，只保留标题、价格、URL、平台、可用性、评分、相似度等决策必要字段。
+- `shopping_search`、`product_search` 和 `price_compare` 有专门字段白名单，只保留标题、价格、URL、平台、可用性、评分、相似度等决策必要字段。
 - 列表默认最多保留 3 条，超出记录 omitted count。
 - 字符串默认最多保留 1200 字，超出添加 truncated 标记。
 - raw provider/file/media payload 字段、base64/data URI、HTML/raw body 等高风险内容会从 prompt 副本中移除。

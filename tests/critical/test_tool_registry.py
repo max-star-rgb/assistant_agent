@@ -51,6 +51,7 @@ def test_default_registry_contains_mock_tools() -> None:
 
     assert set(registry.list()) >= {
         "vision_understanding",
+        "shopping_search",
         "product_search",
         "price_compare",
         "image_generation",
@@ -98,6 +99,13 @@ def test_registry_list_specs_is_the_canonical_tool_description() -> None:
     assert product_search.execution.resource_writes == []
     assert product_search.execution.artifact_reuse == "reusable"
     assert product_search.execution.progress_message == "我查一下。"
+
+    shopping_search = next(spec for spec in specs if spec.name == "shopping_search")
+    assert shopping_search.execution.dependency_mode == "independent"
+    assert shopping_search.execution.realtime_safety == "safe"
+    assert shopping_search.execution.resource_reads == ["product_catalog", "offers"]
+    assert shopping_search.execution.artifact_reuse == "reusable"
+    assert shopping_search.execution.progress_message == "我查一下并比一下价格。"
 
     price_compare = next(spec for spec in specs if spec.name == "price_compare")
     assert price_compare.execution.dependency_mode == "requires_prior_observation"

@@ -40,7 +40,7 @@ def extract_response_fields(contracts: list[dict[str, Any]]) -> dict[str, Any]:
     for contract in contracts:
         capability = contract.get("capability")
         data = contract.get("data") or {}
-        if capability == "price_compare":
+        if capability in {"price_compare", "shopping_search"}:
             best_offer = data.get("best_offer") or {}
             product_title = best_offer.get("title") or product_title
             best_price = best_offer.get("total_price") or best_offer.get("price") or best_price
@@ -65,7 +65,7 @@ def _summary_for_contract(contract: dict[str, Any]) -> str:
         return _product_search_summary(data)
     if capability == "web_search":
         return _web_search_summary(data)
-    if capability == "price_compare":
+    if capability in {"price_compare", "shopping_search"}:
         return _price_compare_summary(data)
     if capability == "image_generation":
         image_url = data.get("download_url") or data.get("image_url") or output_ref

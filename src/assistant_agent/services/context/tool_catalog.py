@@ -21,8 +21,7 @@ from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
 _AGENT_SERVICE_TOOL_NAMES = {
     "web_search",
-    "product_search",
-    "price_compare",
+    "shopping_search",
     "memory_retrieval",
     "memory_save",
 }

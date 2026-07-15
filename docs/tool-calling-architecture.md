@@ -200,7 +200,7 @@ excluded_reasons
 
 工具副作用策略是工具治理元数据，不属于 Gateway 协议。
 
-- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`product_search`、`price_compare`、image/video understanding。
+- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`shopping_search`、`product_search`、`price_compare`、image/video understanding。
 - 创建可替换 artifact 的工具标为 `compensatable`，例如 `image_generation` 和 `render_3d`；中断后应生成修正版或说明已有 artifact，而不是宣称旧结果被撤销。
 - confirmation-sensitive 工具标为 `pending_confirmation`，例如 `memory_save` 和 legacy `memory`；如果工具结果返回 `requires_confirmation=true` 或 `confirmation_id`，realtime task-state 会记录 pending confirmation。
 - 如果 confirmation-sensitive 或未知工具已经成功返回，realtime task-state 会把它视为 `committed`，中断后的下一轮必须报告已发生状态或提供安全后续动作。
@@ -225,6 +225,7 @@ Runtime gate 映射：
 - `vision_understanding`
 - `video_understanding`
 - `web_search`
+- `shopping_search`
 - `product_search`
 - `price_compare`
 - `image_generation`
@@ -241,7 +242,7 @@ Repo/user-local Python tools use the explicit `@tool` decorator plus `load_local
 
 默认副作用分类：
 
-- `vision_understanding`、`video_understanding`、`web_search`、`product_search`、`price_compare`: `external_read`。
+- `vision_understanding`、`video_understanding`、`web_search`、`shopping_search`、`product_search`、`price_compare`: `external_read`。
 - `memory_retrieval`: `local_read`。
 - `memory_ingest_status`: `external_read`。
 - `image_generation`、`render_3d`: `compensatable`。
@@ -251,7 +252,7 @@ Repo/user-local Python tools use the explicit `@tool` decorator plus `load_local
 
 默认执行属性：
 
-- `web_search`、`product_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`、`artifact_reuse=reusable`。
+- `web_search`、`shopping_search`、`product_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`、`artifact_reuse=reusable`。
 - `price_compare`: `dependency_mode=requires_prior_observation`，因为同一批次中通常需要先消费商品候选或先前 observation。
 - `image_generation`、`render_3d`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=requires_validation`。
 - `delegate_to_agent`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=do_not_reuse`。
@@ -297,6 +298,7 @@ Provider 边界：
 - `vision_understanding` 必须有 `image_ids`，`video_understanding` 必须有 `video_ref` 或 `video_ids`。
 - `image_generation` 必须有 prompt 或 product information。
 - `web_search` 必须有非空 query；`limit` 等范围由工具 Pydantic schema 校验。
+- `shopping_search` 必须有 query、visual summary、video summary 或商品描述字段；该工具一次执行商品搜索和比价，不下单、不付款。
 - `product_search` 必须有 query 或 visual summary。
 - `price_compare` 必须有 query 或 items。
 - `memory_retrieval` 必须有 query，并且当前用户请求必须显式引用历史、上次/之前、已保存记忆、个人偏好或继续旧任务；query 本身不构成读取授权。
@@ -382,6 +384,7 @@ contract
 - 成功 observation 包含 summary、output_ref、structured_output、next_step_hint。
 - 失败或 rejected observation 包含 sanitized error_code/error_message 和 recovery hint。
 - `web_search` 会保留 `title`、`url`、`snippet`、`published_at`、`source`，成功 observation 摘要首条结果和总数。
+- `shopping_search` 是购物推荐/购买建议/比价的一步式工具：模型只需调用该工具一次，工具内部先执行商品搜索，再用搜索结果执行比价，并在同一个 observation 中返回 `search`、`comparison`、`offers`、`best_offer`、`summary` 和 URL 状态。它不下单、不付款。
 - 商品搜索/比价会保留 title、price、原价、券额、无条件到手价、条件价说明、currency、图片、URL、url_status、品牌/型号/核心规格等后续回答和 `price_compare` 必需字段。好单库 real adapter 仍只在显式 `provider_smoke`/`pilot` profile 下启用；`HAODANKU_ENABLED_PLATFORMS` 默认仅为 `taobao`（天猫归入淘宝组），可用规范名 `taobao,jd,pdd` 显式恢复多平台。模型请求的平台会与已启用集合取交集，未启用平台不访问 Provider、不进入 `failed_platforms`；若只请求未启用平台，则返回 `provider_platform_disabled`。
 - `price_compare` 使用与搜索相同的已启用平台集合，先按品牌、型号和核心规格形成可比较组，以同款可信度、无条件到手总价、链接状态、销量和数据完整度排序；会员、补贴、凑单等条件价只作说明。内部结果仍最多九条且每个平台最多三条；App 购物协议最多展示三条。入选报价再经过淘宝 `ratesurl`、京东 `unify_jditems_link`、拼多多 `unify_pdditems_link` 官方转链；淘宝未配置 PID/授权昵称时不调用 `ratesurl`，只保留通过 HTTP(S)、平台域名和非空路径校验的真实直链并标记 `unverified`，不得表述为返利链接或佣金保证。
 - context builder 会压缩大 observation、截断命令输出、移除 raw provider payload、base64、secret-like 内容。
@@ -397,7 +400,7 @@ assistant loop 有本地保护，不依赖模型自律：
 - unknown tool、invalid input、missing required input、render intent 缺失等会触发 rejection guard。
 - 同一工具失败达到阈值会停止重复调用。
 - `image_generation` 和 `render_3d` 是 terminal tools；成功后再次请求同一工具会被阻止并转为 final answer。
-- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词把 `final_answer`、重复搜索或其他模型动作强制改写成 `price_compare`。当模型已经选择 `price_compare` 时，runtime 可从本轮成功的 `product_search` 结果修复被压缩的完整商品对象与成功平台；`price_compare` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
+- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词把 `final_answer`、重复搜索或其他模型动作强制改写成 `price_compare`。Agent-Service 通话前台只暴露 `shopping_search` 作为购物入口，由该工具内部完成搜索和比价；普通非通话路径仍保留 `product_search` / `price_compare` 供显式多步使用。当模型已经选择 `price_compare` 时，runtime 可从本轮成功的 `product_search` 结果修复被压缩的完整商品对象与成功平台；`price_compare` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
 
 计划状态是本地治理结构，不是生产 runtime 的独立 planner/controller 调用：
 

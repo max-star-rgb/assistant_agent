@@ -20,6 +20,7 @@ from assistant_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveToo
 from assistant_agent.tools.price_compare_tool import PriceCompareTool
 from assistant_agent.tools.product_search_tool import ProductSearchTool
 from assistant_agent.tools.render_tool import Render3DTool
+from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 from assistant_agent.services.web_search_adapter import create_web_search_adapter
 from assistant_agent.services.image_generation_adapter import create_image_generation_adapter
 from assistant_agent.services.memory_media_ingestion import create_memory_media_ingestion_service
@@ -315,6 +316,29 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "progress_message": "我查一下。",
         },
     },
+    "shopping_search": {
+        "when_to_use": [
+            "Search current product candidates and compare prices or offers in one call.",
+            "User asks for shopping recommendations, purchase advice, value judgement, or price comparison.",
+        ],
+        "when_not_to_use": ["User only asks for general chat, image description, or non-shopping web facts."],
+        "runtime_constraints": [
+            "Requires query, visual summary, video summary, or product descriptors.",
+            "Does not place orders or perform payment.",
+        ],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads product/provider offer data and does not mutate external state.",
+        },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["product_catalog", "offers"],
+            "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我查一下并比一下价格。",
+        },
+    },
     "price_compare": {
         "when_to_use": ["Compare prices, offers, or cheapest options."],
         "when_not_to_use": ["No product candidates or product query are available."],
@@ -554,6 +578,8 @@ def create_default_registry(
 ) -> ToolRegistry:
     registry = ToolRegistry()
     memory_media_service = create_memory_media_ingestion_service(config)
+    product_search_adapter = create_product_search_adapter(config)
+    price_compare_adapter = create_price_compare_adapter(config)
     for tool in (
         VisionUnderstandingTool(adapter=create_vision_adapter(config)),
         VideoUnderstandingTool(
@@ -561,8 +587,12 @@ def create_default_registry(
             context_store=video_context_store,
             memory_store=realtime_video_memory_store,
         ),
-        ProductSearchTool(adapter=create_product_search_adapter(config)),
-        PriceCompareTool(adapter=create_price_compare_adapter(config)),
+        ShoppingSearchTool(
+            search_adapter=product_search_adapter,
+            price_compare_adapter=price_compare_adapter,
+        ),
+        ProductSearchTool(adapter=product_search_adapter),
+        PriceCompareTool(adapter=price_compare_adapter),
         WebSearchTool(adapter=create_web_search_adapter(config)),
         ImageGenerationTool(adapter=create_image_generation_adapter(config)),
         Render3DTool(adapter=create_render_adapter(config)),

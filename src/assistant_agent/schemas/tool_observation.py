@@ -116,6 +116,10 @@ def _shopping_summary(tool_name: str, data: dict[str, Any]) -> str:
         best_offer = data.get("best_offer")
         if isinstance(best_offer, dict) and best_offer:
             return _format_product_item_summary(best_offer, prefix="Best offer")
+    if tool_name == "shopping_search":
+        best_offer = data.get("best_offer")
+        if isinstance(best_offer, dict) and best_offer:
+            return _format_product_item_summary(best_offer, prefix="Best shopping offer")
     return ""
 
 
@@ -185,17 +189,13 @@ def _next_step_hint(
         has_items = isinstance(items, list) and bool(items)
         if not has_items:
             return "没有返回商品候选；可以换一个更具体的商品查询，或向用户追问关键信息。"
-        if _requests_price_compare_after_search(request_text):
-            return (
-                "用户正在请求购买建议或性价比/价格判断。当前 product_search 已返回商品候选，但还没有完成 price_compare。"
-                "请先调用 price_compare，并把 structured_output.items 里的完整商品对象作为 items 传入；"
-                "完成比价后再给最终购买建议。"
-            )
         return (
             "由当前用户请求决定是直接回答，还是继续选择另一个购物工具。"
             "如果模型选择 price_compare，请把 structured_output.items 里的完整商品对象作为 items 传入，"
             "不要只传商品标题。本地关键词规则不会替模型选择工具。"
         )
+    if tool_name == "shopping_search":
+        return "已完成商品搜索和比价；请基于 structured_output.best_offer、offers 和 URL 状态给出最终购物建议，不要声称已经下单。"
     if tool_name == "price_compare":
         return "Use the compared offers and best_offer in the final answer; include URL status when present."
     if tool_name == "web_search":
@@ -205,35 +205,6 @@ def _next_step_hint(
     if tool_name == "render_3d":
         return "Return the 3D preview reference to the user."
     return "Use this observation to decide whether to answer or call another action."
-
-
-def _requests_price_compare_after_search(request_text: str | None) -> bool:
-    if not request_text:
-        return False
-    normalized = request_text.strip().lower()
-    if not normalized:
-        return False
-    purchase_terms = ("购买", "帮我买", "想买", "要买", "买个", "买一个", "下单", "入手")
-    value_terms = (
-        "购买建议",
-        "推荐",
-        "建议",
-        "划算",
-        "性价比",
-        "值不值",
-        "值得",
-        "便宜",
-        "省钱",
-        "价格",
-        "比价",
-        "比较",
-        "对比",
-        "最低价",
-        "最便宜",
-    )
-    return any(term in normalized for term in purchase_terms) or any(
-        term in normalized for term in value_terms
-    )
 
 
 def _has_prior_successful_observation(

@@ -30,6 +30,7 @@ PUBLIC_CAPABILITY_TAGS = {
     "price_compare",
     "product_search",
     "render_3d",
+    "shopping_search",
     "tool_calling",
     "video_understanding",
     "vision_understanding",

@@ -180,3 +180,25 @@ class PriceCompareRequest(BaseModel):
 
 
 PriceCompareInput = PriceCompareRequest
+
+
+class ShoppingSearchResult(BaseModel):
+    """Combined shopping search and price comparison result."""
+
+    query: str = Field(min_length=1)
+    search: ProductSearchResult
+    comparison: PriceCompareResult | None = None
+    items: list[ProductResult] = Field(default_factory=list)
+    offers: list[PriceOffer] = Field(default_factory=list)
+    best_offer: PriceOffer | None = None
+    best_value_product_id: str | None = None
+    ranking_reason: RankingReason | None = None
+    summary: str = Field(min_length=1)
+    provider: str = "mock"
+    errors: list[ProductProviderError] = Field(default_factory=list)
+    latency_ms: int | None = Field(default=None, ge=0)
+    output_ref: str | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.comparison is not None and self.comparison.success

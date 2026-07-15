@@ -1028,6 +1028,69 @@ def test_context_pack_enforces_character_budget() -> None:
     assert "context_budget_trimmed" in pack.budget.compression_reasons
 
 
+def test_context_pack_compacts_shopping_search_observation() -> None:
+    request = UserRequest(user_id="u1", session_id="s1", text="帮我买个划算耳机")
+    state = AgentState.from_request(request)
+    offers = [
+        {
+            "offer_id": f"offer-{index}",
+            "product_id": f"p{index}",
+            "title": f"通勤耳机 {index}",
+            "platform": "mock-shop",
+            "price": 199 + index,
+            "currency": "CNY",
+            "total_price": 199 + index,
+            "product_url": f"https://example.test/products/{index}",
+            "url_status": "verified",
+            "raw_provider_response": {"token": "secret"},
+        }
+        for index in range(5)
+    ]
+    observation = {
+        "tool_name": "shopping_search",
+        "status": "succeeded",
+        "summary": "Best shopping offer: 通勤耳机 0, price 199 CNY.",
+        "structured_output": {
+            "query": "通勤耳机",
+            "search": {
+                "provider": "mock",
+                "query_used": "通勤耳机",
+                "total": 5,
+                "items": [_product(index) for index in range(5)],
+            },
+            "comparison": {
+                "query": "通勤耳机",
+                "summary": "通勤耳机 0 当前综合最优。",
+                "provider": "mock",
+                "offers": offers,
+                "best_offer": offers[0],
+            },
+            "offers": offers,
+            "best_offer": offers[0],
+        },
+        "raw_provider_payload": "x" * 5000,
+    }
+
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[observation],
+        tool_specs=[],
+        iteration=1,
+        max_iterations=5,
+    )
+
+    compacted = pack.observations[0]["structured_output"]
+
+    assert pack.observations[0]["compacted"] is True
+    assert compacted["best_offer"]["product_url"] == "https://example.test/products/0"
+    assert len(compacted["offers"]) == 3
+    assert compacted["omitted_offers_count"] == 2
+    assert len(compacted["search"]["items"]) == 3
+    assert compacted["search"]["omitted_items_count"] == 2
+    assert "raw_provider_payload" not in pack.observations[0]
+    assert "raw_provider_response" not in compacted["best_offer"]
+
+
 def test_context_budget_preserves_product_fields_needed_for_price_compare() -> None:
     request = UserRequest(
         user_id="u1",

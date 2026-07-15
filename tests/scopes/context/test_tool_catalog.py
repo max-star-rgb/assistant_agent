@@ -70,6 +70,45 @@ def test_tool_catalog_uses_trusted_agent_service_entry_to_narrow_tools() -> None
     ]
 
 
+def test_tool_catalog_exposes_unified_shopping_tool_for_agent_service() -> None:
+    specs = [
+        ToolSpec(name="web_search"),
+        ToolSpec(name="shopping_search"),
+        ToolSpec(name="product_search"),
+        ToolSpec(name="price_compare"),
+        ToolSpec(name="memory_retrieval"),
+        ToolSpec(name="memory_save"),
+    ]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="帮我买个划算的耳机",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+
+    selection = select_prompt_tool_specs(request, specs)
+
+    assert selection.run_tool_set.qualified_tool_names == [
+        "web_search",
+        "shopping_search",
+        "memory_retrieval",
+        "memory_save",
+    ]
+    assert selection.run_tool_set.executable_tool_names == [
+        "web_search",
+        "shopping_search",
+        "memory_retrieval",
+        "memory_save",
+    ]
+    assert selection.run_tool_set.excluded_reasons == {
+        "product_search": ["entry_profile_not_exposed"],
+        "price_compare": ["entry_profile_not_exposed"],
+    }
+
+
 def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text() -> None:
     specs = create_default_registry().list_specs()
     requests = [

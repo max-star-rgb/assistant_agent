@@ -86,7 +86,7 @@ def compose_response(state: AgentState) -> AgentResponse:
     for result in state.tool_results:
         if not result.success or not result.data:
             continue
-        if result.tool_name == "price_compare" and result.data.get("items") and not product_title:
+        if result.tool_name in {"price_compare", "shopping_search"} and result.data.get("items") and not product_title:
             first_item = result.data["items"][0]
             product_title = first_item.get("title")
             best_price = first_item.get("price")

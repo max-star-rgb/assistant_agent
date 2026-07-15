@@ -134,9 +134,11 @@ Agent/Gateway `session_id`; the vendor `sessionId` remains only the protocol
 correlation value returned to the media side and cannot resume conversation
 history from an older call. Its Gateway session uses the trusted
 `realtime_phone` profile
-and a fixed foreground tool set: `web_search`, `product_search`,
-`price_compare`, `memory_retrieval`, and `memory_save`. This qualification is
-derived from trusted session config, never user text. `assistantControl`
+and a fixed foreground tool set: `web_search`, `shopping_search`,
+`memory_retrieval`, and `memory_save`. `shopping_search` is the only foreground
+shopping entry for this phone profile and internally performs product search
+plus price comparison. This qualification is derived from trusted session
+config, never user text. `assistantControl`
 validates and records media control state,
 and the legacy `assistantControlStart` handshake remains accepted for older
 clients. `chat` maps the latest `speechContent` to a Gateway turn. With

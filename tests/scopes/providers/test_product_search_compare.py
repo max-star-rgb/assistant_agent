@@ -4,6 +4,7 @@ from assistant_agent.services.product_adapter import (
 )
 from assistant_agent.tools.price_compare_tool import PriceCompareTool
 from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.registry import create_default_registry
 
 
 def test_mock_product_search_returns_products_for_white_low_top_sneaker() -> None:
@@ -66,3 +67,21 @@ def test_price_compare_tool_returns_structured_error_without_items() -> None:
     assert result.success is False
     assert result.error == "缺少商品候选列表，无法比价"
     assert result.data["errors"][0]["code"] == "price_no_products"
+
+
+def test_shopping_search_tool_runs_search_then_price_compare() -> None:
+    registry = create_default_registry()
+
+    result = registry.run("shopping_search", {"query": "白色低帮运动鞋"})
+
+    assert result.tool_name == "shopping_search"
+    assert result.success is True
+    assert result.data is not None
+    assert result.data["query"] == "白色低帮运动鞋"
+    assert result.data["search"]["total"] == 3
+    assert len(result.data["search"]["items"]) == 3
+    assert result.data["comparison"]["best_offer"]["product_id"] == "p2"
+    assert result.data["best_offer"]["product_id"] == "p2"
+    assert result.contract is not None
+    assert result.contract.capability == "shopping_search"
+    assert result.contract.data["best_offer"]["product_id"] == "p2"

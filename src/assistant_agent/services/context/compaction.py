@@ -235,6 +235,8 @@ def _compact_structured_output(tool_name: str, value: Any, *, stats: _Compaction
     data = dict(value)
     if tool_name == "product_search":
         return _compact_product_search_output(data, stats=stats)
+    if tool_name == "shopping_search":
+        return _compact_shopping_search_output(data, stats=stats)
     if tool_name == "price_compare":
         return _compact_price_compare_output(data, stats=stats)
     return _compact_generic_mapping(data, stats=stats, key_path=("structured_output",))
@@ -283,6 +285,56 @@ def _compact_price_compare_output(data: dict[str, Any], *, stats: _CompactionSta
             "output_ref",
         ),
     )
+    if isinstance(output.get("best_offer"), Mapping):
+        output["best_offer"] = _compact_offer(
+            output["best_offer"],
+            stats=stats,
+            key_path=("structured_output", "best_offer"),
+        )
+    offers = output.get("offers")
+    if isinstance(offers, list):
+        output["offers"] = [
+            _compact_offer(offer, stats=stats, key_path=("structured_output", "offers", f"[{index}]"))
+            for index, offer in enumerate(offers[:MAX_ITEMS_PER_LIST])
+            if isinstance(offer, Mapping)
+        ]
+        if len(offers) > MAX_ITEMS_PER_LIST:
+            output["omitted_offers_count"] = len(offers) - MAX_ITEMS_PER_LIST
+    items = output.get("items")
+    if isinstance(items, list):
+        output["items"] = [
+            _compact_product_item(item, stats=stats, key_path=("structured_output", "items", f"[{index}]"))
+            for index, item in enumerate(items[:MAX_ITEMS_PER_LIST])
+            if isinstance(item, Mapping)
+        ]
+        if len(items) > MAX_ITEMS_PER_LIST:
+            output["omitted_items_count"] = len(items) - MAX_ITEMS_PER_LIST
+    return _compact_generic_mapping(output, stats=stats, key_path=("structured_output",))
+
+
+def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
+    output = _copy_keys(
+        data,
+        (
+            "query",
+            "summary",
+            "provider",
+            "best_value_product_id",
+            "best_offer",
+            "offers",
+            "items",
+            "ranking_reason",
+            "errors",
+            "latency_ms",
+            "output_ref",
+        ),
+    )
+    search = data.get("search")
+    if isinstance(search, Mapping):
+        output["search"] = _compact_product_search_output(dict(search), stats=stats)
+    comparison = data.get("comparison")
+    if isinstance(comparison, Mapping):
+        output["comparison"] = _compact_price_compare_output(dict(comparison), stats=stats)
     if isinstance(output.get("best_offer"), Mapping):
         output["best_offer"] = _compact_offer(
             output["best_offer"],

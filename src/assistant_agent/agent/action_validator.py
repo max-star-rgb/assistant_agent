@@ -208,6 +208,11 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
             return _reject("invalid_tool_input", "image_generation requires prompt or product information.")
     if tool_name == "product_search" and not (tool_input.get("query") or tool_input.get("visual_summary")):
         return _reject("invalid_tool_input", "product_search requires query or visual_summary.")
+    if tool_name == "shopping_search" and not _has_product_search_description(tool_input):
+        return _reject(
+            "invalid_tool_input",
+            "shopping_search requires query, visual_summary, video_summary, or product descriptors.",
+        )
     if tool_name == "price_compare" and not (tool_input.get("query") or tool_input.get("items")):
         return _reject("invalid_tool_input", "price_compare requires query or items.")
     if tool_name == "web_search" and not _non_empty_string(tool_input.get("query")):
@@ -232,6 +237,16 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
         if not _has_agent_delegation_payload(tool_input):
             return _reject("invalid_tool_input", "delegate_to_agent requires text, image_ids, video_ids, or audio_id.")
     return None
+
+
+def _has_product_search_description(tool_input: dict[str, Any]) -> bool:
+    if tool_input.get("query") or tool_input.get("visual_summary") or tool_input.get("video_summary"):
+        return True
+    for key in ("objects", "colors", "materials"):
+        value = tool_input.get(key)
+        if isinstance(value, list) and any(isinstance(item, str) and item.strip() for item in value):
+            return True
+    return bool(tool_input.get("brand") or tool_input.get("category"))
 
 
 def _has_memory_save_text(tool_input: dict[str, Any]) -> bool:
