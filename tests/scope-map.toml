@@ -1,0 +1,120 @@
+[critical]
+test_paths = ["tests/unit", "tests/contracts"]
+
+[[scope]]
+name = "prompt"
+source_paths = [
+  "src/assistant_agent/agent/prompt_builder.py",
+  "src/assistant_agent/agent/system_prompt_policy.py",
+  "src/assistant_agent/services/prompt_builder.py",
+  "src/assistant_agent/utils/prompting.py",
+]
+test_paths = [
+  "tests/test_prompt*.py",
+  "tests/test_native_runtime_system_prompt_policy.py",
+]
+
+[[scope]]
+name = "context"
+source_paths = [
+  "src/assistant_agent/services/context/**",
+  "src/assistant_agent/memory/context_builder.py",
+  "src/assistant_agent/schemas/context.py",
+]
+test_paths = [
+  "tests/test_*context*.py",
+  "tests/test_assistant_context_renderer.py",
+  "tests/test_skill_loader.py",
+  "tests/test_tool_catalog.py",
+]
+
+[[scope]]
+name = "tools"
+source_paths = [
+  "src/assistant_agent/tools/**",
+  "src/assistant_agent/agent/action_validator.py",
+  "src/assistant_agent/agent/tool_*.py",
+  "src/assistant_agent/services/tool_*.py",
+  "src/assistant_agent/mcp/**",
+]
+test_paths = [
+  "tests/test_tool_*.py",
+  "tests/test_native_tool_call*.py",
+  "tests/test_mcp_tool*.py",
+  "tests/test_provider_budget_in_tool_executor.py",
+]
+
+[[scope]]
+name = "gateway"
+source_paths = [
+  "src/assistant_agent/gateway/**",
+  "src/assistant_agent/realtime/**",
+  "src/assistant_agent/services/gateway_turn_facade.py",
+  "src/assistant_agent/services/realtime_*.py",
+]
+test_paths = [
+  "tests/test_gateway*.py",
+  "tests/test_realtime*.py",
+  "tests/test_agent_service*.py",
+  "tests/test_personal_realtime_assistant_runtime_gate.py",
+]
+
+[[scope]]
+name = "runtime"
+source_paths = [
+  "src/assistant_agent/agent/**",
+  "src/assistant_agent/agent_routing/**",
+  "src/assistant_agent/services/assistant_*.py",
+  "src/assistant_agent/services/agent_*.py",
+]
+test_paths = [
+  "tests/test_agent_runtime*.py",
+  "tests/test_assistant_*.py",
+  "tests/test_graph*.py",
+  "tests/test_langgraph*.py",
+  "tests/test_agent_*routing*.py",
+]
+
+[[scope]]
+name = "memory"
+source_paths = [
+  "src/assistant_agent/memory/**",
+  "src/assistant_agent/tools/memory_*.py",
+  "src/assistant_agent/services/memory_*.py",
+  "src/assistant_agent/schemas/memory*.py",
+]
+test_paths = [
+  "tests/test_memory*.py",
+  "tests/test_framework_memory_store.py",
+  "tests/test_explicit_memory_e2e.py",
+]
+
+[[scope]]
+name = "providers"
+source_paths = [
+  "src/assistant_agent/providers/**",
+  "src/assistant_agent/services/provider_*.py",
+  "src/assistant_agent/config.py",
+  "src/assistant_agent/runtime_profile.py",
+]
+test_paths = [
+  "tests/test_provider*.py",
+  "tests/test_runtime_profile*.py",
+  "tests/test_qwen*.py",
+  "tests/test_ark*.py",
+]
+
+[[scope]]
+name = "api"
+source_paths = [
+  "src/assistant_agent/api/**",
+  "src/assistant_agent/schemas/api.py",
+  "src/assistant_agent/services/api_identity.py",
+  "src/assistant_agent/services/trial_access.py",
+]
+test_paths = [
+  "tests/test_api*.py",
+  "tests/test_session_api.py",
+  "tests/test_trial_access.py",
+  "tests/test_beta_trial_api.py",
+]
