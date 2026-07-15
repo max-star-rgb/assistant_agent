@@ -1166,6 +1166,108 @@ def test_agent_service_stream_exception_after_delta_sends_failure_terminal_packe
     assert "delivery exploded" not in json.dumps(terminal)
 
 
+@pytest.mark.parametrize("failure_kind", ["error", "exception"])
+def test_agent_service_stream_failure_before_delta_has_canonical_terminal_packet(
+    tmp_path: Path,
+    failure_kind: str,
+) -> None:
+    class FailureBeforeDeltaFacade:
+        async def run_turn(self, request, *, on_stream_chunk=None):
+            assert request.config["response_streaming"] is True
+            assert on_stream_chunk is not None
+            if failure_kind == "exception":
+                raise RuntimeError("private provider exception")
+            return _error_turn(response_text="private provider response")
+
+    packets, _delivery = asyncio.run(
+        _run_prepared_chat_delivery(
+            tmp_path=tmp_path,
+            facade=FailureBeforeDeltaFacade(),
+            stream=True,
+        )
+    )
+
+    assert len(packets) == 1
+    terminal = _body(packets[0])
+    assert terminal == {
+        "code": "FAIL",
+        "message": "Gateway run failed",
+        "sequence": 1,
+        "final": True,
+    }
+
+
+def test_agent_service_cancelled_terminal_is_failed_not_acknowledgeable(
+    tmp_path: Path,
+) -> None:
+    class CancelledFacade:
+        async def run_turn(self, request, *, on_stream_chunk=None):
+            return _cancelled_turn()
+
+    class RecordingWebSocket:
+        def __init__(self) -> None:
+            self.packets: list[dict] = []
+
+        async def send_text(self, raw: str) -> None:
+            self.packets.append(json.loads(raw))
+
+    registry = AgentServiceDeliveryRegistry(
+        JsonlAgentServiceDeliveryAudit(tmp_path / "delivery.jsonl")
+    )
+    delivery = registry.accept("s1", "chat-cancelled", expects_ack=True)
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        response_session_id="s1",
+        media_protocol=True,
+        gateway_facade=CancelledFacade(),
+        delivery_registry=registry,
+    )
+    prepared = agent_service_ws.PreparedChat(
+        session_id="s1",
+        response_session_id="s1",
+        body={"stream": True},
+        chat_index="chat-cancelled",
+        user_number="10086",
+        latest_speech="hello",
+        contents=[{"speechContent": "hello"}],
+        video_ids=[],
+        received_ns=state.clock_ns(),
+        accepted_ns=state.clock_ns(),
+        session_turn=1,
+    )
+    websocket = RecordingWebSocket()
+
+    asyncio.run(
+        agent_service_ws._run_chat_delivery(
+            websocket,
+            state=state,
+            prepared=prepared,
+            delivery=delivery,
+        )
+    )
+
+    terminal = _body(websocket.packets[-1])
+    assert terminal == {
+        "code": "FAIL",
+        "message": "Gateway run failed",
+        "sequence": 1,
+        "final": True,
+    }
+    assert registry.get(delivery.delivery_id).status == "failed"
+    with pytest.raises(AgentServiceDeliveryError, match="not awaiting acknowledgment"):
+        asyncio.run(
+            agent_service_ws.ChatResponseAckHandler().handle(
+                session_id="s1",
+                body={
+                    "deliveryId": delivery.delivery_id,
+                    "chatIndex": "chat-cancelled",
+                },
+                state=state,
+            )
+        )
+
+
 def test_agent_service_video_chat_allows_provider_timeout_budget() -> None:
     captured = {}
 
@@ -2310,6 +2412,19 @@ def _error_turn(*, response_text: str):
         trace_id = None
 
     Turn.response_text = response_text
+    return Turn()
+
+
+def _cancelled_turn():
+    class Turn:
+        status = "cancelled"
+        payload = {}
+        reason = "cancelled"
+        run_id = "gateway_run_stream_cancelled"
+        turn_id = "turn_stream_cancelled"
+        trace_id = None
+        response_text = ""
+
     return Turn()
 
 

@@ -854,7 +854,7 @@ async def _run_chat_delivery(
         await _send_response(websocket, response, state=state)
         if timing is not None:
             timing.mark("send_finished", at_ns=state.clock_ns())
-        if turn.status == "error":
+        if turn.status != "completed":
             state.delivery_registry.mark_failed(
                 delivery.delivery_id,
                 error_code="gateway_run_failed",
@@ -867,7 +867,7 @@ async def _run_chat_delivery(
                 trace_id=turn.trace_id,
             )
         if timing is not None:
-            terminal_status = "failed" if turn.status == "error" else "sent"
+            terminal_status = "sent" if turn.status == "completed" else "failed"
             _observe_turn_terminal(state, timing, status=terminal_status)
             if not timing.expects_ack or terminal_status != "sent":
                 state.turn_timings.pop(delivery.delivery_id, None)
@@ -880,7 +880,7 @@ async def _run_chat_delivery(
             response = _failure_chat_response(
                 prepared,
                 message=str(exc),
-                sequence=sequence + 1 if sequence else None,
+                sequence=sequence + 1 if prepared_stream_requested else None,
             )
             try:
                 if timing is not None:
@@ -946,11 +946,11 @@ def _prepared_chat_response(
     delivery: AgentServiceDelivery,
     sequence: int,
 ) -> dict[str, Any]:
-    if turn.status == "error":
+    if turn.status != "completed":
         return _failure_chat_response(
             prepared,
             message=turn.payload.get("message") or turn.reason or "Gateway run failed",
-            sequence=sequence if sequence > 1 else None,
+            sequence=sequence if prepared.body.get("stream") is True else None,
         )
     if state.media_protocol or "stream" in prepared.body or prepared.response_session_id is None:
         state.media_protocol = True

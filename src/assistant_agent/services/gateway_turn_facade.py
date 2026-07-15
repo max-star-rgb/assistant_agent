@@ -200,7 +200,17 @@ class GatewayTurnFacade:
                     chunk = _chunk_text(received)
                     chunks.append(chunk)
                     if chunk and on_stream_chunk is not None:
-                        await on_stream_chunk(chunk, dict(received))
+                        try:
+                            await on_stream_chunk(chunk, dict(received))
+                        except Exception:
+                            await _best_effort_cancel(
+                                endpoint,
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                run_id=run_id,
+                                reason="stream_consumer_failed",
+                            )
+                            raise
                     continue
                 if received.get("type") == "run.end":
                     return _turn_result(frames=frames, terminal=received, chunks=chunks)
@@ -208,24 +218,38 @@ class GatewayTurnFacade:
         try:
             return await asyncio.wait_for(_read_until_terminal(), timeout=timeout_s)
         except TimeoutError as exc:
-            try:
-                await endpoint.send(
-                    frame(
-                        type="run.cancel",
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        run_id=run_id,
-                        payload={
-                            "source": "gateway_cancel",
-                            "reason": "facade_timeout",
-                        },
-                    )
-                )
-            except Exception:
-                pass
+            await _best_effort_cancel(
+                endpoint,
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                reason="facade_timeout",
+            )
             raise GatewayTurnTimeout(
                 f"Gateway turn timed out after {timeout_s:.3g}s before run.end"
             ) from exc
+
+
+async def _best_effort_cancel(
+    endpoint,
+    *,
+    session_id: str,
+    turn_id: str,
+    run_id: str,
+    reason: str,
+) -> None:
+    try:
+        await endpoint.send(
+            frame(
+                type="run.cancel",
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                payload={"source": "gateway_cancel", "reason": reason},
+            )
+        )
+    except Exception:
+        pass
 
 
 def _message_payload(

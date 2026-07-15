@@ -443,6 +443,53 @@ def test_observer_close_waits_for_late_retention_and_cleans_ownership(
     asyncio.run(scenario())
 
 
+def test_cancelled_adaptive_submit_retention_remains_observer_owned_until_close(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        keyframe_root = tmp_path / "keyframes"
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=ToolRegistry(),
+            memory_store=RealtimeVideoMemoryStore(),
+            keyframe_root=keyframe_root,
+            collector=AlwaysSelectCollector(),
+        )
+        retain_started = threading.Event()
+        release_retain = threading.Event()
+        retain_finished = threading.Event()
+        original_retain = observer._retain_keyframe
+
+        def blocked_retain(frame: VideoFrame):
+            retain_started.set()
+            assert release_retain.wait(timeout=2.0)
+            retained = original_retain(frame)
+            retain_finished.set()
+            return retained
+
+        observer._retain_keyframe = blocked_retain
+        submission = asyncio.create_task(
+            observer.submit(_decoded_frame(tmp_path, sequence=5))
+        )
+        assert await asyncio.to_thread(retain_started.wait, 2.0)
+        submission.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await submission
+
+        release_retain.set()
+        assert await asyncio.to_thread(retain_finished.wait, 2.0)
+        await asyncio.sleep(0)
+        await observer.close()
+
+        assert observer._owned_paths == set()
+        assert observer._promotion_tasks == set()
+        assert not keyframe_root.exists()
+
+    asyncio.run(scenario())
+
+
 def test_observer_partial_retention_failure_cleans_unregistered_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

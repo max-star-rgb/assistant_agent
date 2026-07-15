@@ -95,6 +95,9 @@ class RealtimeVideoObserver:
 
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
+        return await self._run_owned_retention(self._submit(frame))
+
+    async def _submit(self, frame: VideoFrame) -> FrameProcessingResult:
         self._accept_video_id(frame)
 
         selection_started_ns = self.clock_ns()
@@ -119,10 +122,24 @@ class RealtimeVideoObserver:
 
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
-        task = asyncio.create_task(self._promote(frame))
+        return await self._run_owned_retention(self._promote(frame))
+
+    async def _run_owned_retention(
+        self,
+        operation,
+    ) -> FrameProcessingResult:
+        task = asyncio.create_task(operation)
         self._promotion_tasks.add(task)
-        task.add_done_callback(self._promotion_tasks.discard)
+        task.add_done_callback(self._settle_owned_retention)
         return await asyncio.shield(task)
+
+    def _settle_owned_retention(
+        self,
+        task: asyncio.Task[FrameProcessingResult],
+    ) -> None:
+        self._promotion_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
 
     async def _promote(self, frame: VideoFrame) -> FrameProcessingResult:
         self._accept_video_id(frame)
