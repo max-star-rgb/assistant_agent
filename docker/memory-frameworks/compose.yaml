@@ -2,7 +2,10 @@ name: assistant-agent-memory-bakeoff
 
 services:
   hindsight:
-    image: ghcr.io/vectorize-io/hindsight:0.8.4
+    image: assistant-agent/hindsight-bakeoff:0.8.4
+    build:
+      context: ../..
+      dockerfile: docker/memory-frameworks/Hindsight.Dockerfile
     profiles: ["hindsight"]
     ports:
       - "127.0.0.1:8889:8888"
@@ -12,9 +15,12 @@ services:
       HINDSIGHT_API_LLM_API_KEY: ${MEMORY_BAKEOFF_CHAT_API_KEY:?set MEMORY_BAKEOFF_CHAT_API_KEY}
       HINDSIGHT_API_LLM_BASE_URL: ${MEMORY_BAKEOFF_CHAT_BASE_URL:?set MEMORY_BAKEOFF_CHAT_BASE_URL}
       HINDSIGHT_API_EMBEDDINGS_PROVIDER: openai
-      HINDSIGHT_API_EMBEDDINGS_MODEL: ${MEMORY_BAKEOFF_EMBEDDING_MODEL:?set MEMORY_BAKEOFF_EMBEDDING_MODEL}
-      HINDSIGHT_API_EMBEDDINGS_API_KEY: ${MEMORY_BAKEOFF_EMBEDDING_API_KEY:?set MEMORY_BAKEOFF_EMBEDDING_API_KEY}
-      HINDSIGHT_API_EMBEDDINGS_BASE_URL: ${MEMORY_BAKEOFF_EMBEDDING_BASE_URL:?set MEMORY_BAKEOFF_EMBEDDING_BASE_URL}
+      HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL: ${MEMORY_BAKEOFF_EMBEDDING_MODEL:?set MEMORY_BAKEOFF_EMBEDDING_MODEL}
+      HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY: ${MEMORY_BAKEOFF_EMBEDDING_API_KEY:?set MEMORY_BAKEOFF_EMBEDDING_API_KEY}
+      HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL: ${MEMORY_BAKEOFF_EMBEDDING_BASE_URL:?set MEMORY_BAKEOFF_EMBEDDING_BASE_URL}
+      HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS: "32768"
+      HINDSIGHT_API_STARTUP_WAIT_SECONDS: "900"
+      HINDSIGHT_API_WORKER_ID: "assistant-agent-memory-bakeoff-hindsight"
     volumes:
       - hindsight_data:/home/hindsight/.pg0
     healthcheck:
@@ -48,7 +54,7 @@ services:
       qdrant:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/docs', timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=2)"]
       interval: 10s
       timeout: 3s
       retries: 12

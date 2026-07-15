@@ -29,6 +29,7 @@ class FrameworkMemoryStore:
     """Framework lifecycle owner; optional v2 store is read-only fallback."""
 
     framework_managed_algorithms = True
+    session_scoped_engine_identity = True
 
     def __init__(
         self,
@@ -200,6 +201,12 @@ class FrameworkMemoryStore:
                 project_memory_id=memory_id,
                 engine_id=mapping.engine_id,
             )
+        delete_mappings = (
+            mappings[:1]
+            if bool(getattr(self.adapter, "project_scoped_delete", False))
+            else mappings
+        )
+        for mapping in delete_mappings:
             payload = {
                 "user_id": user_id,
                 "project_memory_id": memory_id,

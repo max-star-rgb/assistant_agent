@@ -95,6 +95,69 @@ def test_hindsight_maps_retain_and_recall_to_versioned_bank_api() -> None:
     assert recalled.records[0].relevance is None
 
 
+def test_hindsight_retain_serializes_metadata_values_for_its_string_schema() -> None:
+    requests: list[FrameworkHttpRequest] = []
+
+    def transport(request: FrameworkHttpRequest):
+        requests.append(request)
+        if request.path.endswith("/memories/list"):
+            return {"items": [{"id": "engine-id"}]}
+        return {"success": True}
+
+    scope = bind_engine_identity(_identity(), namespace="test")
+    adapter = HindsightMemoryEngineAdapter(base_url="http://hindsight.local", transport=transport)
+    adapter.retain(
+        FrameworkRetainRequest(
+            identity=scope,
+            project_memory_id="memory-1",
+            text="safe summary",
+            memory_type="task",
+            source="explicit_user_request",
+            created_at=NOW,
+            metadata={"tags": ["one", "two"], "scope": "project"},
+            idempotency_key="retain:memory-1",
+        )
+    )
+
+    metadata = requests[0].body["items"][0]["metadata"]
+    assert metadata["tags"] == '["one", "two"]'
+    assert all(isinstance(value, str) for value in metadata.values())
+
+
+def test_hindsight_history_accepts_the_api_list_response() -> None:
+    history = [{"id": "event-1", "event": "ADD"}]
+    scope = bind_engine_identity(_identity(), namespace="test")
+    adapter = HindsightMemoryEngineAdapter(
+        base_url="http://hindsight.local",
+        transport=lambda request: history,
+    )
+
+    assert adapter.history(identity=scope, engine_id="memory-1") == history
+
+
+def test_hindsight_retain_rejects_success_without_a_queryable_memory() -> None:
+    def transport(request: FrameworkHttpRequest):
+        if request.path.endswith("/memories/list"):
+            return {"items": []}
+        return {"success": True}
+
+    scope = bind_engine_identity(_identity(), namespace="test")
+    adapter = HindsightMemoryEngineAdapter(base_url="http://hindsight.local", transport=transport)
+    result = adapter.retain(
+        FrameworkRetainRequest(
+            identity=scope,
+            project_memory_id="memory-1",
+            text="safe summary",
+            memory_type="task",
+            source="explicit_user_request",
+            created_at=NOW,
+            idempotency_key="retain:memory-1",
+        )
+    )
+
+    assert result.accepted is False
+
+
 def test_mem0_uses_filters_and_never_accepts_model_supplied_identity() -> None:
     requests: list[FrameworkHttpRequest] = []
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Any
 
 from assistant_agent.memory.framework.base import FrameworkHttpRequest
@@ -13,13 +13,13 @@ from assistant_agent.memory.remote import MemoryServiceOperationError
 from assistant_agent.services.provider_errors import sanitize_error_message
 
 
-FrameworkTransport = Callable[[FrameworkHttpRequest], Mapping[str, Any]]
+FrameworkTransport = Callable[[FrameworkHttpRequest], Any]
 
 
 def urllib_framework_transport(base_url: str) -> FrameworkTransport:
     normalized = base_url.rstrip("/")
 
-    def send(request: FrameworkHttpRequest) -> Mapping[str, Any]:
+    def send(request: FrameworkHttpRequest) -> Any:
         url = normalized + request.path
         if request.query:
             url += "?" + urllib.parse.urlencode(request.query)
@@ -36,8 +36,6 @@ def urllib_framework_transport(base_url: str) -> FrameworkTransport:
                 request.path,
                 f"memory framework request failed: {sanitize_error_message(str(exc))}",
             ) from exc
-        if not isinstance(payload, Mapping):
-            raise MemoryServiceOperationError(request.path, "memory framework returned invalid response")
         return payload
 
     return send

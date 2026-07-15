@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -9,6 +10,7 @@ from urllib.parse import quote
 
 from assistant_agent.memory.framework.base import FrameworkHttpRequest
 from assistant_agent.memory.framework.http import FrameworkTransport, urllib_framework_transport
+from assistant_agent.memory.remote import MemoryServiceOperationError
 from assistant_agent.schemas.memory_framework import (
     FrameworkHealthResult,
     FrameworkMemoryRecord,
@@ -35,6 +37,20 @@ class _HttpEngineAdapter:
         query: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]:
+        payload = self._request_value(method, path, body=body, query=query, headers=headers)
+        if not isinstance(payload, Mapping):
+            raise MemoryServiceOperationError(path, "memory framework returned invalid response")
+        return payload
+
+    def _request_value(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: Mapping[str, Any] | None = None,
+        query: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Any:
         return self._transport(
             FrameworkHttpRequest(
                 method=method,
@@ -74,6 +90,7 @@ class UnavailableMemoryEngineAdapter:
 
 class HindsightMemoryEngineAdapter(_HttpEngineAdapter):
     name = "hindsight"
+    project_scoped_delete = True
 
     def __init__(self, *, base_url: str, timeout_seconds: float = 5.0, transport: FrameworkTransport | None = None) -> None:
         super().__init__(base_url=base_url, timeout_seconds=timeout_seconds, transport=transport)
@@ -97,7 +114,7 @@ class HindsightMemoryEngineAdapter(_HttpEngineAdapter):
                         "timestamp": request.created_at.isoformat(),
                         "document_id": request.project_memory_id,
                         "tags": request.identity.hindsight_tags,
-                        "metadata": _safe_metadata(request.metadata, request),
+                        "metadata": _hindsight_metadata(request.metadata, request),
                     }
                 ],
                 "async": False,
@@ -112,7 +129,7 @@ class HindsightMemoryEngineAdapter(_HttpEngineAdapter):
             )
             engine_ids = [str(item["id"]) for item in _mapping_list(listed.get("items")) if item.get("id")]
         return FrameworkRetainResult(
-            accepted=bool(payload.get("success")),
+            accepted=bool(payload.get("success")) and bool(engine_ids),
             engine_ids=engine_ids,
             operation_id=_optional_string(payload.get("operation_id")),
         )
@@ -158,8 +175,13 @@ class HindsightMemoryEngineAdapter(_HttpEngineAdapter):
         return _mapping_list(payload.get("items"))
 
     def history(self, *, identity: MemoryEngineIdentity, engine_id: str) -> list[Mapping[str, Any]]:
-        payload = self._request("GET", self._bank_path(identity, f"/memories/{quote(engine_id, safe='')}/history"))
-        return _mapping_list(payload.get("history") if isinstance(payload, Mapping) else None)
+        path = self._bank_path(identity, f"/memories/{quote(engine_id, safe='')}/history")
+        payload = self._request_value("GET", path)
+        if isinstance(payload, Mapping):
+            return _mapping_list(payload.get("history"))
+        if isinstance(payload, list):
+            return _mapping_list(payload)
+        raise MemoryServiceOperationError(path, "memory framework returned invalid response")
 
     def delete(self, *, identity: MemoryEngineIdentity, engine_id: str, project_memory_id: str | None = None) -> bool:
         document_id = project_memory_id or engine_id
@@ -255,6 +277,17 @@ def _safe_metadata(metadata: Mapping[str, Any], request: FrameworkRetainRequest)
         "memory_type": request.memory_type,
         "source": request.source,
         "idempotency_key": request.idempotency_key,
+    }
+
+
+def _hindsight_metadata(
+    metadata: Mapping[str, Any], request: FrameworkRetainRequest
+) -> dict[str, str]:
+    return {
+        key: value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, sort_keys=True)
+        for key, value in _safe_metadata(metadata, request).items()
     }
 
 

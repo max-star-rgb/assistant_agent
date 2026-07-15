@@ -74,7 +74,9 @@ def test_cli_scores_measured_files_and_writes_reproducible_report(tmp_path) -> N
 def test_compose_uses_pinned_images_local_ports_and_persistent_volumes() -> None:
     compose = (REPO_ROOT / "docker/memory-frameworks/compose.yaml").read_text(encoding="utf-8")
 
-    assert "ghcr.io/vectorize-io/hindsight:0.8.4" in compose
+    assert "name: assistant-agent-memory-bakeoff" in compose
+    assert "assistant-agent/hindsight-bakeoff:0.8.4" in compose
+    assert "dockerfile: docker/memory-frameworks/Hindsight.Dockerfile" in compose
     assert "assistant-agent/mem0-sidecar:2.0.11" in compose
     assert "qdrant/qdrant:v1.15.4" in compose
     assert ":latest" not in compose
@@ -83,8 +85,32 @@ def test_compose_uses_pinned_images_local_ports_and_persistent_volumes() -> None
     assert "hindsight_data:" in compose
     assert "mem0_history:" in compose
     assert "qdrant_data:" in compose
+    assert "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY:" in compose
+    assert "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL:" in compose
+    assert "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL:" in compose
+    assert "HINDSIGHT_API_EMBEDDINGS_API_KEY:" not in compose
+    assert 'HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS: "32768"' in compose
+    assert 'HINDSIGHT_API_WORKER_ID: "assistant-agent-memory-bakeoff-hindsight"' in compose
     dockerfile = (REPO_ROOT / "docker/memory-frameworks/Mem0.Dockerfile").read_text(
         encoding="utf-8"
     )
     assert "mem0ai==2.0.11" in dockerfile
     assert ":latest" not in dockerfile
+    sidecar = (REPO_ROOT / "docker/memory-frameworks/mem0_sidecar.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"embedding_dims": 1024' in sidecar
+    assert '"embedding_model_dims": 1024' in sidecar
+    assert "limit=int(payload.get(\"top_k\")" in sidecar
+    assert "Lock()" in sidecar
+    assert "with _MEMORY_LOCK:" in sidecar
+    assert 'def health()' in sidecar
+    assert '_ = memory()' in sidecar
+    assert "urlopen('http://127.0.0.1:8000/'" in compose
+    hindsight_dockerfile = (
+        REPO_ROOT / "docker/memory-frameworks/Hindsight.Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "ghcr.io/vectorize-io/hindsight:0.8.4@sha256:2c60f233" in hindsight_dockerfile
+    assert "cross-encoder/ms-marco-MiniLM-L-6-v2" in hindsight_dockerfile
+    assert "sentence_transformers" in hindsight_dockerfile
+    assert "HF_HUB_OFFLINE=1" in hindsight_dockerfile
