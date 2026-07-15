@@ -69,7 +69,11 @@ class RealtimeVideoContext(BaseModel):
     events: list[str] = Field(default_factory=list)
     scene: str | None = None
     snapshot_sequence: int | None = Field(default=None, ge=0)
+    target_sequence: int | None = Field(default=None, ge=0)
+    sequence_gap: int | None = Field(default=None, ge=0)
     snapshot_age_ms: int | None = Field(default=None, ge=0)
+    frame_capture_age_ms: int | None = Field(default=None, ge=0)
+    snapshot_publish_age_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
     provider: str | None = None
     model: str | None = None

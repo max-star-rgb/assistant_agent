@@ -50,6 +50,10 @@ class AgentServiceTurnTiming:
     received_ns: int
     accepted_ns: int
     checkpoints: dict[str, int] = field(default_factory=dict)
+    stream_requested: bool = False
+    provider_token_stream_seen: bool = False
+    stream_chunk_count: int = 0
+    first_stream_chunk_ns: int | None = None
     turn_id: str | None = None
     gateway_run_id: str | None = None
     assistant_run_id: str | None = None
@@ -57,6 +61,20 @@ class AgentServiceTurnTiming:
 
     def mark(self, name: CheckpointName, *, at_ns: int | None = None) -> None:
         self.checkpoints[name] = perf_counter_ns() if at_ns is None else at_ns
+
+    def record_stream_chunk(self, *, at_ns: int | None = None) -> None:
+        """Record one delivered provider-token packet without retaining its text."""
+
+        recorded_ns = perf_counter_ns() if at_ns is None else at_ns
+        self.provider_token_stream_seen = True
+        self.stream_chunk_count += 1
+        if self.first_stream_chunk_ns is None:
+            self.first_stream_chunk_ns = recorded_ns
+
+    def observe_provider_token_delta(self) -> None:
+        """Mark provider streaming without retaining the token delta."""
+
+        self.provider_token_stream_seen = True
 
     def bind_turn(
         self,
@@ -96,6 +114,12 @@ class VideoLatencyContext(BaseModel):
     in_flight: bool | None = None
     fallback_used: bool = False
     snapshot_sequence: int | None = Field(default=None, ge=0)
+    target_sequence: int | None = Field(default=None, ge=0)
+    sequence_gap: int | None = Field(default=None, ge=0)
+    frame_capture_age_ms: int | None = Field(default=None, ge=0)
+    snapshot_publish_age_ms: int | None = Field(default=None, ge=0)
+    freshness_waited_ms: int | None = Field(default=None, ge=0)
+    freshness_satisfied: bool | None = None
     provider: str | None = None
     model: str | None = None
     waited_for_initial_snapshot: bool = False
@@ -122,6 +146,11 @@ class TurnLatencySummary(BaseModel):
     ack_status: Literal["not_negotiated", "pending", "acked"]
     ack_latency_ms: int | None = Field(default=None, ge=0)
     terminal_stage: str | None = None
+    stream_requested: bool = False
+    provider_token_stream_seen: bool = False
+    stream_chunk_count: int = Field(default=0, ge=0)
+    first_stream_chunk_latency_ms: int | None = Field(default=None, ge=0)
+    final_response_sent: bool = False
     video: VideoLatencyContext | None = None
 
     def stage(self, name: str) -> TurnLatencyStage:
@@ -192,6 +221,14 @@ def analyze_agent_service_turn(
         ack_status=ack_status,
         ack_latency_ms=ack_latency_ms,
         terminal_stage=_terminal_stage(timing),
+        stream_requested=timing.stream_requested,
+        provider_token_stream_seen=timing.provider_token_stream_seen,
+        stream_chunk_count=timing.stream_chunk_count,
+        first_stream_chunk_latency_ms=_duration_ms(
+            timing.received_ns,
+            timing.first_stream_chunk_ns,
+        ),
+        final_response_sent="send_finished" in timing.checkpoints,
         video=_video_context(events),
     )
 
@@ -332,6 +369,12 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             pending_count=_safe_int(video.get("pending_count")),
             in_flight=video.get("in_flight") if isinstance(video.get("in_flight"), bool) else None,
             snapshot_sequence=_safe_int(video.get("snapshot_sequence")),
+            target_sequence=_safe_int(video.get("target_sequence")),
+            sequence_gap=_safe_int(video.get("sequence_gap")),
+            frame_capture_age_ms=_safe_int(video.get("frame_capture_age_ms")),
+            snapshot_publish_age_ms=_safe_int(video.get("snapshot_publish_age_ms")),
+            freshness_waited_ms=_safe_int(video.get("freshness_waited_ms")),
+            freshness_satisfied=_safe_bool(video.get("freshness_satisfied")),
             provider=_safe_text(video.get("provider")),
             model=_safe_text(video.get("model")),
             waited_for_initial_snapshot=video.get("waited_for_initial_snapshot") is True,
@@ -348,6 +391,12 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             in_flight=payload.get("in_flight") if isinstance(payload.get("in_flight"), bool) else None,
             fallback_used=payload.get("fallback_used") is True,
             snapshot_sequence=_safe_int(payload.get("snapshot_sequence")),
+            target_sequence=_safe_int(payload.get("target_sequence")),
+            sequence_gap=_safe_int(payload.get("sequence_gap")),
+            frame_capture_age_ms=_safe_int(payload.get("frame_capture_age_ms")),
+            snapshot_publish_age_ms=_safe_int(payload.get("snapshot_publish_age_ms")),
+            freshness_waited_ms=_safe_int(payload.get("freshness_waited_ms")),
+            freshness_satisfied=_safe_bool(payload.get("freshness_satisfied")),
             provider=_safe_text(payload.get("provider")),
             model=_safe_text(payload.get("model")),
         )
@@ -384,6 +433,10 @@ def _safe_int(value: object) -> int | None:
 
 def _safe_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _safe_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _share(duration_ms: int, total_ms: int | None) -> float | None:

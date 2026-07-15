@@ -16,7 +16,58 @@ from assistant_agent.services.context.capability_catalog import (
 from assistant_agent.services.context.skill_loader import load_repo_skill_descriptors
 from assistant_agent.services.context import tool_catalog
 from assistant_agent.services.context.tool_catalog import select_prompt_tool_specs
+from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.tools.registry import create_default_registry
+
+
+def test_trusted_agent_service_predicate_rejects_transport_only() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="眼前是什么？",
+        metadata={"transport": "agent_service_websocket"},
+    )
+
+    assert is_trusted_agent_service_request(request) is False
+
+
+def test_trusted_agent_service_predicate_rejects_profile_only() -> None:
+    metadata = {
+        "gateway": {"session_config": {"entry_profile": "agent_service"}},
+    }
+
+    assert is_trusted_agent_service_request(metadata) is False
+
+
+def test_tool_catalog_uses_trusted_agent_service_entry_to_narrow_tools() -> None:
+    specs = [ToolSpec(name="web_search"), ToolSpec(name="video_understanding")]
+    trusted_request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="眼前是什么？",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+    transport_only_request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="分析视频",
+        metadata={"transport": "agent_service_websocket"},
+    )
+
+    trusted = select_prompt_tool_specs(trusted_request, specs)
+    transport_only = select_prompt_tool_specs(transport_only_request, specs)
+
+    assert trusted.run_tool_set.qualified_tool_names == ["web_search"]
+    assert trusted.run_tool_set.excluded_reasons == {
+        "video_understanding": ["entry_profile_not_exposed"]
+    }
+    assert transport_only.run_tool_set.qualified_tool_names == [
+        "web_search",
+        "video_understanding",
+    ]
 
 
 def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text() -> None:

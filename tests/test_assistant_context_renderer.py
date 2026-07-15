@@ -148,6 +148,51 @@ def test_realtime_video_context_is_rendered_budgeted_and_reported_separately() -
     assert "A person is holding a red cup." not in json.dumps(trace, ensure_ascii=False)
 
 
+def test_freshness_diagnostic_context_trace_is_prompt_safe() -> None:
+    video = RealtimeVideoContext(
+        status="stale",
+        summary="private visual description",
+        snapshot_sequence=3,
+        target_sequence=5,
+        sequence_gap=2,
+        snapshot_age_ms=5_000,
+        frame_capture_age_ms=5_000,
+        snapshot_publish_age_ms=3_000,
+    )
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="眼前是什么？",
+        metadata={
+            "realtime_video_context": video.model_dump(mode="json"),
+            "realtime_video_context_trusted": True,
+            "realtime_video_freshness_waited_ms": 4_000,
+            "realtime_video_freshness_satisfied": False,
+            "frame_path": "/tmp/frame.jpg",
+        },
+    )
+    pack = build_assistant_context_pack(
+        state=AgentState.from_request(request),
+        observations=[],
+        tool_specs=[],
+        iteration=0,
+        max_iterations=5,
+    )
+
+    video_trace = context_trace_summary(pack)["realtime_video"]
+
+    assert video_trace["snapshot_sequence"] == 3
+    assert video_trace["target_sequence"] == 5
+    assert video_trace["sequence_gap"] == 2
+    assert video_trace["frame_capture_age_ms"] == 5_000
+    assert video_trace["snapshot_publish_age_ms"] == 3_000
+    assert video_trace["freshness_waited_ms"] == 4_000
+    assert video_trace["freshness_satisfied"] is False
+    serialized = json.dumps(video_trace, ensure_ascii=False)
+    assert "private visual description" not in serialized
+    assert "/tmp/frame" not in serialized
+
+
 def test_unavailable_video_projection_is_diagnostic_only_not_prompt_material() -> None:
     request = UserRequest(
         user_id="u1",

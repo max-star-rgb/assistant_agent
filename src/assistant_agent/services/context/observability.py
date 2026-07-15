@@ -139,7 +139,7 @@ def _realtime_video_trace(pack: AssistantContextPack) -> dict[str, Any]:
             )
             is True,
         }
-    return {
+    trace = {
         "present": True,
         "status": context.status,
         "snapshot_age_ms": context.snapshot_age_ms,
@@ -154,6 +154,22 @@ def _realtime_video_trace(pack: AssistantContextPack) -> dict[str, Any]:
         )
         is True,
     }
+    optional_values = {
+        "target_sequence": context.target_sequence,
+        "sequence_gap": context.sequence_gap,
+        "frame_capture_age_ms": context.frame_capture_age_ms,
+        "snapshot_publish_age_ms": context.snapshot_publish_age_ms,
+        "freshness_waited_ms": _optional_metadata_int(
+            pack.request.metadata,
+            "realtime_video_freshness_waited_ms",
+        ),
+        "freshness_satisfied": _optional_metadata_bool(
+            pack.request.metadata,
+            "realtime_video_freshness_satisfied",
+        ),
+    }
+    trace.update({key: value for key, value in optional_values.items() if value is not None})
+    return trace
 
 
 def _elapsed_ms(started_at: float) -> int:
@@ -223,3 +239,13 @@ def _list_count(value: Any) -> int:
 def _metadata_int(metadata: dict[str, Any], key: str) -> int:
     value = metadata.get(key)
     return value if isinstance(value, int) and value >= 0 else 0
+
+
+def _optional_metadata_int(metadata: dict[str, Any], key: str) -> int | None:
+    value = metadata.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _optional_metadata_bool(metadata: dict[str, Any], key: str) -> bool | None:
+    value = metadata.get(key)
+    return value if isinstance(value, bool) else None

@@ -75,6 +75,37 @@ def test_turn_timing_computes_transport_durations_without_content() -> None:
     assert "speech" not in summary.model_dump_json()
 
 
+def test_stream_diagnostic_reports_only_delivery_facts_without_content() -> None:
+    timing = _sent_timing(total_ms=84)
+    timing.stream_requested = True
+    timing.record_stream_chunk(at_ns=1_020_000_000)
+    timing.record_stream_chunk(at_ns=1_030_000_000)
+
+    summary = analyze_agent_service_turn(timing, [], status="sent")
+
+    assert summary.stream_requested is True
+    assert summary.provider_token_stream_seen is True
+    assert summary.stream_chunk_count == 2
+    assert summary.first_stream_chunk_latency_ms == 20
+    assert summary.final_response_sent is True
+    serialized = summary.model_dump_json()
+    assert "description" not in serialized
+    assert "/tmp/frame" not in serialized
+
+
+def test_stream_diagnostic_distinguishes_provider_delta_from_delivered_chunk() -> None:
+    timing = _sent_timing(total_ms=84)
+    timing.checkpoints.pop("send_finished")
+    timing.observe_provider_token_delta()
+
+    summary = analyze_agent_service_turn(timing, [], status="disconnected")
+
+    assert summary.provider_token_stream_seen is True
+    assert summary.stream_chunk_count == 0
+    assert summary.first_stream_chunk_latency_ms is None
+    assert summary.final_response_sent is False
+
+
 def test_llm_bottleneck_uses_wall_latency_not_provider_latency() -> None:
     events = [
         _event(
@@ -193,6 +224,46 @@ def test_analyzer_prefers_video_context_consumed_by_llm_over_front_tool_projecti
     assert summary.video.snapshot_sequence == 9
     assert summary.video.snapshot_age_ms == 90
     assert "must not escape" not in summary.model_dump_json()
+
+
+def test_freshness_diagnostic_projects_only_numbers_and_booleans() -> None:
+    events = [
+        _event(
+            "context.build.finished",
+            latency_ms=2,
+            output_summary={
+                "context": {
+                    "realtime_video": {
+                        "present": True,
+                        "status": "stale",
+                        "snapshot_sequence": 3,
+                        "target_sequence": 5,
+                        "sequence_gap": 2,
+                        "frame_capture_age_ms": 5_000,
+                        "snapshot_publish_age_ms": 3_000,
+                        "freshness_waited_ms": 4_000,
+                        "freshness_satisfied": False,
+                        "description": "must not escape",
+                        "frame_path": "/tmp/frame.jpg",
+                    }
+                }
+            },
+        )
+    ]
+
+    summary = analyze_agent_service_turn(_sent_timing(total_ms=30), events, status="sent")
+
+    assert summary.video is not None
+    assert summary.video.snapshot_sequence == 3
+    assert summary.video.target_sequence == 5
+    assert summary.video.sequence_gap == 2
+    assert summary.video.frame_capture_age_ms == 5_000
+    assert summary.video.snapshot_publish_age_ms == 3_000
+    assert summary.video.freshness_waited_ms == 4_000
+    assert summary.video.freshness_satisfied is False
+    serialized = summary.model_dump_json()
+    assert "description" not in serialized
+    assert "/tmp/frame" not in serialized
 
 
 def test_negotiated_ack_is_separate_from_primary_turn_latency() -> None:

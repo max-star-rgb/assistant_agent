@@ -10,6 +10,7 @@ from typing import Any
 from assistant_agent.schemas.context import ToolCatalogSummary
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import RunToolSet, ToolSpec
+from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.context.skill_loader import (
     SkillCatalog,
     load_repo_skill_descriptors,
@@ -115,7 +116,7 @@ def qualify_tool_specs(
     )
     qualified_specs: list[ToolSpec] = []
     excluded_reasons: dict[str, list[str]] = {}
-    agent_service_profile = _trusted_agent_service_profile(request)
+    agent_service_profile = is_trusted_agent_service_request(request)
     for spec in tool_specs:
         if agent_service_profile and spec.name not in _AGENT_SERVICE_TOOL_NAMES:
             excluded_reasons[spec.name] = ["entry_profile_not_exposed"]
@@ -143,17 +144,6 @@ def qualify_tool_specs(
         qualified_tool_specs=qualified_specs,
         active_skill_ids=active_skill_ids,
         excluded_reasons=excluded_reasons,
-    )
-
-
-def _trusted_agent_service_profile(request: UserRequest) -> bool:
-    if request.metadata.get("transport") != "agent_service_websocket":
-        return False
-    gateway = request.metadata.get("gateway")
-    session_config = gateway.get("session_config") if isinstance(gateway, dict) else None
-    return bool(
-        isinstance(session_config, dict)
-        and session_config.get("entry_profile") == "agent_service"
     )
 
 

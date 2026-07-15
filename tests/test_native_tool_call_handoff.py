@@ -207,6 +207,60 @@ def test_agent_service_live_camera_first_llm_call_uses_natural_context_without_e
     assert len(response_deltas) <= 1
 
 
+def test_agent_service_freshness_timeout_marks_first_llm_video_context_stale() -> None:
+    memory = RealtimeVideoMemoryStore()
+    memory.record_success(
+        "video-live",
+        SemanticKeyframeRecord(
+            frame_id="frame-3",
+            uri="/private/frame-3.jpg",
+            sequence=3,
+            timestamp_ms=3_000,
+        ),
+        VideoUnderstandingResult(
+            summary="This observation is older than the latest decoded frame.",
+            objects=["red cup"],
+            provider="qwen",
+            model="qwen-vl-max",
+            output_ref="provider://video/result-3",
+        ),
+    )
+    adapter = NativeToolChatAdapter([final_result("我只能确认较早画面。")])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(agent_graph_mode="assistant_loop"),
+        chat_adapter=adapter,
+        realtime_video_memory_store=memory,
+    )
+
+    runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="眼前是什么？",
+            video_ids=["video-live"],
+            metadata={
+                "transport": "agent_service_websocket",
+                "realtime_video_target_sequence": 5,
+                "realtime_video_snapshot_sequence": 3,
+                "realtime_video_sequence_gap": 2,
+                "realtime_video_freshness_satisfied": False,
+                "gateway": {
+                    "session_config": {
+                        "entry_profile": "agent_service",
+                        "response_streaming": False,
+                    }
+                },
+            },
+        )
+    )
+
+    first_context = adapter.requests[0].messages[1]["content"]
+    assert '"status": "stale"' in first_context
+    assert '"snapshot_sequence": 3' in first_context
+    assert '"target_sequence": 5' in first_context
+    assert '"sequence_gap": 2' in first_context
+
+
 def test_agent_service_final_only_context_reprojects_latest_rolling_snapshot() -> None:
     memory = RealtimeVideoMemoryStore()
     frame_1 = SemanticKeyframeRecord(

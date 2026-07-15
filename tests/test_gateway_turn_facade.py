@@ -155,6 +155,63 @@ class GatewayTurnFacadeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await manager.close()
 
+    async def test_stream_consumer_failure_cancels_and_releases_backend_run(self) -> None:
+        class CancellableStreamingBackend:
+            def __init__(self) -> None:
+                self.cancelled = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                assert event_sink is not None
+                await event_sink(RealtimeAgentEvent(type="response.chunk", text="partial"))
+                await cancel_token.cancelled()
+                self.cancelled.set()
+                return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+
+        backend = CancellableStreamingBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            start_reaper=False,
+        )
+        facade = GatewayTurnFacade(manager=manager)
+        handle = await manager.acquire(user_id="u1")
+        sent_cancel_frames = []
+        original_send = handle.endpoint.send
+
+        async def recording_send(outgoing):
+            if outgoing.get("type") == "run.cancel":
+                sent_cancel_frames.append(outgoing)
+            await original_send(outgoing)
+
+        handle.endpoint.send = recording_send
+
+        async def fail_consumer(_text, _frame):
+            raise RuntimeError("consumer exploded")
+
+        try:
+            with pytest.raises(RuntimeError, match="consumer exploded"):
+                await facade.run_turn(
+                    GatewayTurnRequest(
+                        user_id="u1",
+                        session_id="s1",
+                        text="stream",
+                        timeout_s=1.0,
+                    ),
+                    on_stream_chunk=fail_consumer,
+                )
+            await asyncio.wait_for(backend.cancelled.wait(), timeout=1.0)
+
+            async def _wait_for_release() -> None:
+                while (await manager.admission_controller.snapshot()).active_runs:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_wait_for_release(), timeout=1.0)
+            assert sent_cancel_frames[0]["payload"] == {
+                "source": "gateway_cancel",
+                "reason": "stream_consumer_failed",
+            }
+        finally:
+            await manager.close()
+
     async def test_concurrent_same_user_turns_receive_their_own_frames(self) -> None:
         class OrderedBackend:
             def __init__(self) -> None:

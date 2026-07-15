@@ -1,5 +1,7 @@
 # Observability Harness
 
+Last updated: 2026-07-15
+
 This document is the current entry for assistant run status, logs, monitoring,
 trace, and ReAct checkpoint observability. It defines the developer-facing
 harness contract for understanding one run end to end without exposing raw
@@ -15,6 +17,12 @@ reasoning.
 `send_text()` returned; only `acked` proves the media application processed the
 final response.
 
+A streamed failure terminal (`code=FAIL`, `final=true`) closes the Media stream
+but has no `deliveryId` and is not ACK-negotiated. Only a successful terminal
+delivery can transition to `acked`; a failure terminal remains `failed` and can
+never produce `agent_service.delivery.acked`, even when its terminal packet was
+successfully handed to the WebSocket.
+
 Records use digests for session and chat identifiers and may include run/trace
 ids, close code, and a close-reason category. They never include response text,
 raw media, phone numbers, credentials, or provider payloads. This JSONL file is
@@ -27,7 +35,8 @@ Every accepted `/agent-service/v1` chat delivery can produce one prompt-safe
 returns. This is the user-visible send boundary. When `chatResponseAck` was
 negotiated, application delivery confirmation remains a later, separate
 `agent_service.delivery.acked` event. A turn with `ack_status=pending` was sent
-but has not been confirmed by the media application.
+successfully but has not been confirmed by the media application. Failure
+terminals are never `ack_status=pending` and carry no ACK-able delivery ID.
 
 The correlation identifiers are deliberately distinct:
 
@@ -51,6 +60,18 @@ latency is a nested diagnostic and is not added again. The bottleneck is the
 largest critical-path stage, including positive `unattributed`. ACK latency and
 background video diagnostics are secondary measurements and do not change the
 send-path bottleneck.
+
+The versioned `agent_service_turn_latency_v1` summary also exposes only bounded
+stream facts: `stream_requested`, `provider_token_stream_seen`,
+`stream_chunk_count`, `first_stream_chunk_latency_ms`, and
+`final_response_sent`. The count is incremented only after a provider-token
+delta packet is successfully handed to the WebSocket; neither delta text nor
+the final answer is retained in this summary. `provider_token_stream_seen` is
+set when the Provider delta reaches the entry projection, so a disconnected
+send can report `provider_token_stream_seen=true` with `stream_chunk_count=0`.
+`final_response_sent=true` means a terminal response was successfully handed to
+the WebSocket; it covers both `SUCCESS` and `FAIL` terminals and is not a
+business-success flag.
 
 The safe INFO records have this shape and never contain prompts or responses:
 
@@ -98,16 +119,20 @@ rolling snapshots and both retained and raw JPEG artifacts.
 H.264 decode, keyframe selection, observer queue wait, Provider observation,
 and snapshot publication run before or outside the chat critical path. The turn
 summary projects only the latest semantic snapshot actually consumed by that
-turn: source, snapshot age/sequence, observation latency, queue state, and
-Provider/model and whether the entry waited for the first snapshot. The latency
+turn: source, snapshot/target sequence, sequence gap, frame-capture age,
+snapshot-publication age, freshness wait duration/result, observation latency,
+queue state, and Provider/model. The latency
 projection prefers `context.build.finished.realtime_video`; only non-realtime
 foreground tool calls fall back to tool-result projection. If
 `recent_frame_fallback` performs a query-time Provider call,
 that work is inside `tool_execute[video_understanding]` and can become the turn
 bottleneck.
 
-`context.build.finished` reports only presence, state, snapshot age/sequence,
-observation latency, provider/model, queue state, and initial-wait flag. It must
+`context.build.finished` reports only presence, state, snapshot/target sequence,
+sequence gap, capture/publish ages, freshness wait duration/result, observation
+latency, provider/model, and queue state. A current-camera turn waits at most
+4.0 seconds for `snapshot_sequence >= target_sequence`; the same observer keeps
+one Qwen in flight plus one latest-wins pending frame. It must
 not contain the Qwen summary, raw conversation, frame path, Base64, or media
 payload. Agent-Service packet-level received/sent lines are DEBUG; disconnect
 emits one aggregate INFO with message/video/byte/failure counters.

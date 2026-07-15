@@ -53,6 +53,7 @@ from assistant_agent.schemas.requests import (
 )
 from assistant_agent.schemas.tool_observation import observation_from_tool_result, rejected_observation
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
+from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.durable_tasks.service import DurableTaskService
 from assistant_agent.services.durable_tasks.sqlite_store import SQLiteTaskStore
@@ -1276,13 +1277,24 @@ class AgentGraphRuntime:
     def _refresh_realtime_video_context(self, request: UserRequest) -> None:
         """Refresh the passive rolling snapshot immediately before context build."""
 
-        if not _is_agent_service_request(request) or not request.video_ids:
+        if not is_trusted_agent_service_request(request) or not request.video_ids:
             request.metadata.pop("realtime_video_context", None)
             request.metadata.pop("realtime_video_context_trusted", None)
             return
         video_id = request.video_ids[-1]
         snapshot = self.realtime_video_memory_store.snapshot(video_id)
-        context = project_realtime_video_context(snapshot, now_ms=int(time() * 1000))
+        target_sequence = request.metadata.get("realtime_video_target_sequence")
+        if (
+            isinstance(target_sequence, bool)
+            or not isinstance(target_sequence, int)
+            or target_sequence < 0
+        ):
+            target_sequence = None
+        context = project_realtime_video_context(
+            snapshot,
+            now_ms=int(time() * 1000),
+            target_sequence=target_sequence,
+        )
         request.metadata["realtime_video_context"] = context.model_dump(mode="json")
         request.metadata["realtime_video_context_trusted"] = True
 
@@ -1944,6 +1956,7 @@ def _system_prompt_options_from_request(request: UserRequest) -> SystemPromptOpt
         product_mode=metadata.get("product_mode") is True,
         allow_web_search=metadata.get("allow_web_search") is not False,
         allow_memory_tools=metadata.get("allow_memory_tools") is not False,
+        shared_live_camera=is_trusted_agent_service_request(request),
     )
 
 
@@ -2323,19 +2336,8 @@ def _native_runtime_stream_callback(state: AgentState, event_sink: EventSink | N
     return emit_delta
 
 
-def _is_agent_service_request(request: UserRequest) -> bool:
-    if request.metadata.get("transport") != "agent_service_websocket":
-        return False
-    gateway = request.metadata.get("gateway")
-    session_config = gateway.get("session_config") if isinstance(gateway, dict) else None
-    return bool(
-        isinstance(session_config, dict)
-        and session_config.get("entry_profile") == "agent_service"
-    )
-
-
 def _response_streaming_enabled(request: UserRequest) -> bool:
-    if not _is_agent_service_request(request):
+    if not is_trusted_agent_service_request(request):
         return True
     gateway = request.metadata.get("gateway")
     session_config = gateway.get("session_config") if isinstance(gateway, dict) else None

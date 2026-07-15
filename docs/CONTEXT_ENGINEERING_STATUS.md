@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -159,7 +159,10 @@ Last updated: 2026-07-14
 
 - Agent-Service 的后台 observer 继续通过工具治理链执行 Qwen；“后台受治理工具执行”和“前台模型可见工具目录”是两个边界。`video_understanding` 不进入该入口的前台 `RunToolSet`。
 - `AgentGraphRuntime` 在每次模型 context build 前按请求中最后一个 `video_id` 重新投影共享 `RealtimeVideoMemoryStore`，生成 `ready`、`refreshing`、`pending`、`stale`、`failed` 或 `unavailable` 状态。
-- 投影只包含裁剪后的 summary、objects、people、actions、events、scene、序号/年龄、观察耗时、provider/model 和 pending/in-flight 状态，序列化上限约 2,000 字符；不含帧路径、媒体数据或 provider 原始错误。
+- 可信 Agent-Service 入口把 `video_ids` 渲染为“当前通话的实时镜头”而不是上传式“附带视频 ID”；`realtime_phone` prompt 要求自然使用“我看到……”等共享镜头措辞，禁止“你刚发送的视频”、视频 ID、快照、后台观察、上下文注入或 Provider 等实现细节。普通上传/API 仍保留上传语义。
+- 明确当前画面问题以最近已解码帧 sequence 为 `target_sequence`。成功快照落后时，入口复用或提升同一 observer 的 latest-wins 候选，并最多等待 4.0 秒；仍只允许一个 Qwen in-flight 和一个 pending，且不向前台模型暴露或启动 `video_understanding`。问候/闲聊不触发屏障。
+- 投影只包含裁剪后的 summary、objects、people、actions、events、scene、`snapshot_sequence`、`target_sequence`、`sequence_gap`、观察耗时、provider/model 和 pending/in-flight 状态，序列化上限约 2,000 字符；不含帧路径、媒体数据或 provider 原始错误。
+- `snapshot_age_ms` 与 `frame_capture_age_ms` 以成功语义对应帧的采集时间为主，`snapshot_publish_age_ms` 独立表示结果发布时间年龄；缺失或未来采集时间返回空值，不伪造年龄。4 秒未满足时，正 gap 投影为 `stale`（仍有任务时为 `refreshing`），prompt 不得把旧观察断言成当前事实。
 - renderer 把它标注为被动外部观察数据。只有当前请求明确涉及眼前画面或任务确实需要视觉事实时才使用；问候和闲聊不得主动提及。
 - `ContextBudgetReport`、token estimate、`ContextReport.sections.realtime_video_context` 和 `context.build.finished.realtime_video` 独立记账，不并入 conversation、memory、realtime task state 或普通 tool observation。
 

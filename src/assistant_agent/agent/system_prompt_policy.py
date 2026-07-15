@@ -21,6 +21,7 @@ class SystemPromptOptions:
     product_mode: bool = False
     allow_web_search: bool = True
     allow_memory_tools: bool = True
+    shared_live_camera: bool = False
 
 
 _BASE_RUNTIME_RULES = (
@@ -144,20 +145,24 @@ def _render_text_default(options: SystemPromptOptions) -> str:
 
 
 def _render_realtime_phone(options: SystemPromptOptions) -> str:
-    return "\n".join(
+    lines = [
+        *_PHONE_ROLE_RULES,
+        *_PHONE_SPOKEN_RULES,
+        *_PHONE_TURN_TAKING_RULES,
+        *_PHONE_TOOL_RULES,
+        *_PHONE_CONFIRMATION_RULES,
+        *_PHONE_MEMORY_RULES,
+    ]
+    if options.shared_live_camera:
+        lines.extend(_PHONE_LIVE_CAMERA_RULES)
+    lines.extend(
         [
-            *_PHONE_ROLE_RULES,
-            *_PHONE_SPOKEN_RULES,
-            *_PHONE_TURN_TAKING_RULES,
-            *_PHONE_TOOL_RULES,
-            *_PHONE_CONFIRMATION_RULES,
-            *_PHONE_MEMORY_RULES,
-            *_PHONE_LIVE_CAMERA_RULES,
             *_PHONE_DISPLAY_BOUNDARY_RULES,
             *_PHONE_END_CALL_RULES,
             *_PHONE_RUNTIME_RULES,
         ]
     )
+    return "\n".join(lines)
 
 
 def _render_final_only(options: SystemPromptOptions) -> str:

@@ -155,7 +155,9 @@ def test_realtime_video_context_projects_ready_refreshing_and_failed_states() ->
     assert ready.status == "ready"
     assert ready.summary == "A person lifts a red cup."
     assert ready.snapshot_sequence == 3
-    assert ready.snapshot_age_ms == 120
+    assert ready.snapshot_age_ms == 7_120
+    assert ready.frame_capture_age_ms == 7_120
+    assert ready.snapshot_publish_age_ms == 120
     assert ready.observation_latency_ms == 81
 
     store.mark_pending("video-a", pending_count=1, in_flight=True)
@@ -176,6 +178,95 @@ def test_realtime_video_context_projects_ready_refreshing_and_failed_states() ->
     assert failed.error_code == "provider_timeout"
     assert "secret provider detail" not in failed.model_dump_json()
     assert "/private/frame.jpg" not in ready.model_dump_json()
+
+
+def test_realtime_video_context_projects_capture_age_and_publish_age() -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+    store = module.RealtimeVideoMemoryStore()
+    store.record_success(
+        "video-a",
+        module.SemanticKeyframeRecord(
+            frame_id="frame-1",
+            uri="/tmp/frame-1.jpg",
+            sequence=1,
+            timestamp_ms=10_000,
+        ),
+        _result(summary="ready", objects=["cup"]),
+        diagnostics=module.RealtimeVideoObservationDiagnostics(published_at_ms=12_000),
+    )
+
+    context = project_realtime_video_context(store.snapshot("video-a"), now_ms=15_000)
+
+    assert context.snapshot_age_ms == 5_000
+    assert context.frame_capture_age_ms == 5_000
+    assert context.snapshot_publish_age_ms == 3_000
+
+
+def test_realtime_video_context_missing_capture_timestamp_does_not_invent_capture_age() -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+    store = module.RealtimeVideoMemoryStore()
+    store.record_success(
+        "video-a",
+        module.SemanticKeyframeRecord(
+            frame_id="frame-1",
+            uri="/tmp/frame-1.jpg",
+            sequence=1,
+            timestamp_ms=None,
+        ),
+        _result(summary="ready", objects=["cup"]),
+        diagnostics=module.RealtimeVideoObservationDiagnostics(published_at_ms=12_000),
+    )
+
+    context = project_realtime_video_context(store.snapshot("video-a"), now_ms=15_000)
+
+    assert context.frame_capture_age_ms is None
+    assert context.snapshot_publish_age_ms == 3_000
+    assert context.snapshot_age_ms == 3_000
+
+
+def test_realtime_video_context_future_capture_timestamp_does_not_invent_capture_age() -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+    store = module.RealtimeVideoMemoryStore()
+    store.record_success(
+        "video-a",
+        module.SemanticKeyframeRecord(
+            frame_id="frame-1",
+            uri="/tmp/frame-1.jpg",
+            sequence=1,
+            timestamp_ms=20_000,
+        ),
+        _result(summary="ready", objects=["cup"]),
+        diagnostics=module.RealtimeVideoObservationDiagnostics(published_at_ms=12_000),
+    )
+
+    context = project_realtime_video_context(store.snapshot("video-a"), now_ms=15_000)
+
+    assert context.frame_capture_age_ms is None
+    assert context.snapshot_publish_age_ms == 3_000
+    assert context.snapshot_age_ms == 3_000
+
+
+def test_realtime_video_context_projects_target_sequence_gap() -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+    store = module.RealtimeVideoMemoryStore()
+    store.record_success(
+        "video-a",
+        module.SemanticKeyframeRecord(
+            frame_id="frame-3",
+            uri="/tmp/frame-3.jpg",
+            sequence=3,
+        ),
+        _result(summary="ready", objects=["cup"]),
+    )
+
+    context = project_realtime_video_context(
+        store.snapshot("video-a"),
+        now_ms=15_000,
+        target_sequence=5,
+    )
+
+    assert context.target_sequence == 5
+    assert context.sequence_gap == 2
 
 
 def test_realtime_video_context_distinguishes_pending_stale_and_unavailable() -> None:
