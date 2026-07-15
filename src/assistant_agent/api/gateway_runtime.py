@@ -21,6 +21,7 @@ from assistant_agent.gateway import (
 from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
 from assistant_agent.schemas.api import AgentRunResponse
 from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade
+from assistant_agent.services.operational_logging import log_gateway_lifecycle
 from assistant_agent.services.realtime_turn_arbiter import (
     RealtimeTurnArbiter,
     create_realtime_turn_arbiter,
@@ -187,6 +188,7 @@ def create_gateway_session_manager(
         backend_factory=resolved_backend_factory,
         queue_policy=queue_policy,
         turn_arbitration_controller=resolved_turn_arbitration_controller,
+        lifecycle_sink=log_gateway_lifecycle,
         start_reaper=_bool_env(source, GATEWAY_START_REAPER_ENV, default=True)
         if start_reaper is None
         else start_reaper,

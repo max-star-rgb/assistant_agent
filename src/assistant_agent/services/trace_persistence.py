@@ -10,6 +10,7 @@ from time import monotonic
 from typing import Any
 
 from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.services.operational_logging import OperationalTraceLogStore
 from assistant_agent.services.trace_store import (
     CompositeTraceStore,
     InMemoryTraceStore,
@@ -196,7 +197,7 @@ def create_server_trace_store(
 
     primary = InMemoryTraceStore()
     secondary = BufferedJsonlTraceStore(JsonlTraceStore(path), capacity=capacity)
-    return CompositeTraceStore(primary, [secondary])
+    return CompositeTraceStore(primary, [secondary, OperationalTraceLogStore()])
 
 
 def close_trace_store(

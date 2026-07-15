@@ -1229,10 +1229,18 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
             async def run_turn(self, request, *, event_sink=None, cancel_token=None):
                 if request.text == "first":
                     await self.release_first.wait()
-                    return RealtimeAgentResult(status="completed", run_id=request.run_id)
+                    return RealtimeAgentResult(
+                        status="completed",
+                        run_id=request.run_id,
+                        trace_id="trace-first",
+                    )
                 assert event_sink is not None
                 await event_sink(RealtimeAgentEvent(type="response.chunk", text="second done"))
-                return RealtimeAgentResult(status="completed", run_id=request.run_id)
+                return RealtimeAgentResult(
+                    status="completed",
+                    run_id=request.run_id,
+                    trace_id="trace-second",
+                )
 
         events = []
         backend = QueueBackend()
@@ -1282,6 +1290,8 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
         queued = events[2]
         assert queued.session_id == "lifecycle-queue"
         assert queued.payload["queue_depth"] == 1
+        assert events[3].payload["trace_id"] == "trace-first"
+        assert events[6].payload["trace_id"] == "trace-second"
 
     async def test_lifecycle_sink_records_cancel_request_and_cancelled_run_end(self) -> None:
         class CancellableBackend:

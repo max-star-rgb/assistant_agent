@@ -86,6 +86,37 @@ secondary queue drops observability events and increments its drop counter.
 Shutdown attempts a bounded flush. This persistence is local diagnostic data,
 not a delivery authority.
 
+## Operational Logging
+
+本地 server 在不改变 FastAPI 单进程结构的前提下提供三层开发视图：控制台是
+Combined 视图，`.data/logs/gateway.log` 只接收 Gateway lifecycle，
+`.data/logs/runtime.log` 只接收 Assistant runtime trace 投影。三个视图使用同一套
+UTC `key=value` 格式，并保留可用的 `run_id`、`turn_id`、`trace_id`，用于从入口
+lifecycle 串联到 runtime trace。两个文件均通过标准库 `RotatingFileHandler` 轮转，
+单文件上限 5 MiB，保留 3 个备份；重复配置或 reload 不得重复安装 handler。
+launcher 通过显式进程环境把 level/path 传给 `create_app()`，因此 reload 后的实际
+server 子进程会重新执行同一幂等配置。文件目录或 handler 打开失败时保留 Combined
+console 并 fail-open，不得阻止应用启动。
+
+Gateway 日志来自 `GatewayLifecycleEvent` 的 fail-open sink，覆盖 session、queue、
+admission、run、cancel、interrupt 和 terminal 边界。它保留 `run_id` / `turn_id`，
+但只记录 allowlist 内的状态、计数、reason/source 等 prompt-safe 字段；`user_id` 与
+`session_id` 使用稳定短摘要，不记录用户文本。Agent-Service 连接日志同样只记录
+query key、session 摘要和聚合计数，不记录 query value、原始 session ID 或媒体内容。
+
+Runtime 日志由 `OperationalTraceLogStore` 作为 server `CompositeTraceStore` 的只写
+secondary 生成。输入先经过现有 trace redaction，再只投影 canonical event、status、
+tool/provider/model、latency、error code 与关联 ID；prompt、response、memory、
+`attributes` 整体、input/output summary 和 Provider raw payload 均不进入文本日志。
+该视图只用于实时开发排障，`.data/graph_trace.jsonl`、trace query API 与
+`scripts/trace_view.py` 仍是机器查询和调试重建权威。
+
+`scripts/run_server.py` 提供 `--log-level {DEBUG,INFO,WARNING,ERROR}` 与
+`--log-dir PATH`，默认分别为 `INFO` 和 `.data/logs`。共享 PyCharm 配置
+`.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器和 mock Provider 启动：
+Run console 是 Combined 页签，Gateway 与 AgentRuntime 页签分别跟随上述两个文件。
+配置不启用 `--allow-local-trace-content`，也不保存密钥或 `.env` 路径。
+
 ## Realtime Video Observation
 
 Realtime video observation remains visible through the governed background
@@ -158,6 +189,7 @@ require an external APM stack for normal development.
 | `AgentState` | runtime | In-memory fact record for one run: status, tool calls, results, errors, and response. |
 | `AgentEvent` / `EventSink` | runtime and entry layers | Real-time event stream for WebSocket, Gateway, realtime, CLI, and tests. |
 | `TraceStore` / `TraceQueryService` | services | Redacted run and trace summaries for `/runs/{run_id}`, `/traces/{trace_id}`, and tool-call debug views. |
+| Operational text logs | services / gateway | Combined console plus isolated rotating Gateway and AgentRuntime developer views; never replace canonical trace JSONL. |
 | `react_steps` / `decision_trace` | API response metadata | Compact per-response ReAct timeline for developer UI and CLI output. |
 | `RunHistoryStore` / `ToolHistoryStore` / `SessionStore` | services | Local JSONL/session indexes and lifecycle ledgers. |
 | Gateway frames | gateway | Realtime wire lifecycle: `run.started`, `event.progress`, `stream.chunk`, `run.end`, `run.cancel`, call hangup, and config updates. |

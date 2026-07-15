@@ -512,6 +512,14 @@ Gateway talks to assistant execution through `assistant_agent.realtime`:
 
 Long-running assistant turns can emit `RealtimeAgentEvent(type="run.progress", display_only=True)` for user-visible status updates such as current work, completed step, next step, blocked state, or needed user decision. The realtime adapter applies progress throttling and idle heartbeat policy before Gateway maps those updates to `event.progress` frames; entry layers decide how to display them and should not treat them as final answer content.
 
+FastAPI 默认 Gateway manager 与 Agent-Service 每连接 local manager 都绑定同一个
+prompt-safe lifecycle logging sink。该投影覆盖 session、queue、admission、run、
+cancel/interrupt 和 terminal 事件，保留 `run_id` / `turn_id`，并将 `user_id`、
+`session_id` 转为稳定短摘要；它不记录用户文本。sink 继续遵守 Gateway 既有
+fail-open 约束，日志配置或写入失败不得改变 frame、排队、取消或 terminal 行为。
+可读日志写入 `.data/logs/gateway.log`，跨 runtime 的 trace 语义与安全 allowlist
+仍以 `docs/observability-harness.md` 为权威。
+
 Realtime event projection carries stable delivery semantics without moving control flow out of the assistant loop:
 
 | runtime event | Gateway frame | speech policy | persistence | replacement behavior |
@@ -553,6 +561,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/services/realtime_video_memory.py` | Runtime-owned bounded prompt-safe semantic video snapshots, health/failure state, and per-video isolation. |
 | `src/assistant_agent/api/` | FastAPI HTTP/WebSocket entry adapters and product API routes. |
 | `src/assistant_agent/services/gateway_turn_facade.py` | In-process sync-turn facade for request/response entries that need Gateway lifecycle semantics without a WebSocket transport. |
+| `src/assistant_agent/services/operational_logging.py` | Central prompt-safe console/file logging setup, Gateway lifecycle projection, identifier digesting, and write-only runtime trace projection. |
 | `src/assistant_agent/services/assistant_runtime_app.py` | Backend-to-runtime boundary used behind `GatewayAgentAdapter`; owns the internal runtime reference without becoming the target product entry boundary. |
 | `src/assistant_agent/services/assistant_run_service.py` | Shared assistant request/run service used behind `AssistantRuntimeApp`, plus eval and demo utilities. |
 | `scripts/run_demo_flows.py` | Offline demo/scenario entry adapter that runs scenarios through a local `GatewayTurnFacade` and formats the existing demo summary payload. |

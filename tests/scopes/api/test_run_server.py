@@ -1,6 +1,8 @@
 import importlib.util
+import importlib
 import os
 import asyncio
+import logging
 from pathlib import Path
 
 from assistant_agent.api import app as app_module
@@ -45,6 +47,117 @@ def test_run_server_parser_defaults() -> None:
     assert args.provider is None
     assert args.image_provider is None
     assert args.allow_local_trace_content is False
+    assert args.log_level == "INFO"
+    assert args.log_dir == ".data/logs"
+
+
+def test_run_server_parser_accepts_operational_logging_options() -> None:
+    module = _load_module("run_server_parser_logging_test")
+
+    args = module.build_parser().parse_args(
+        ["--log-level", "DEBUG", "--log-dir", "/tmp/assistant-logs"]
+    )
+
+    assert args.log_level == "DEBUG"
+    assert args.log_dir == "/tmp/assistant-logs"
+
+
+def test_operational_logging_is_idempotent_and_separates_component_files(
+    tmp_path,
+    capsys,
+) -> None:
+    assert importlib.util.find_spec("assistant_agent.services.operational_logging") is not None
+    operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
+    try:
+        operational_logging.configure_operational_logging(tmp_path, "INFO")
+        operational_logging.configure_operational_logging(tmp_path, "INFO")
+
+        gateway_logger = logging.getLogger("assistant_agent.gateway.lifecycle")
+        runtime_logger = logging.getLogger("assistant_agent.runtime.trace")
+        gateway_logger.info(
+            "gateway event",
+            extra={
+                "component": "gateway",
+                "event": "gateway.run.started",
+                "run_id": "gateway-run",
+                "turn_id": "gateway-turn",
+                "trace_id": "-",
+            },
+        )
+        runtime_logger.info(
+            "runtime event",
+            extra={
+                "component": "runtime",
+                "event": "llm.chat.finished",
+                "run_id": "runtime-run",
+                "turn_id": "runtime-turn",
+                "trace_id": "runtime-trace",
+            },
+        )
+        logging.getLogger("assistant_agent.api.sample").info("ordinary package event")
+        for logger in (gateway_logger, runtime_logger):
+            for handler in logger.handlers:
+                handler.flush()
+
+        gateway_raw = (tmp_path / "gateway.log").read_text(encoding="utf-8")
+        runtime_raw = (tmp_path / "runtime.log").read_text(encoding="utf-8")
+        assert len(gateway_raw.splitlines()) == 1
+        assert "gateway event" in gateway_raw
+        assert "runtime event" not in gateway_raw
+        assert len(runtime_raw.splitlines()) == 1
+        assert "runtime event" in runtime_raw
+        assert "gateway event" not in runtime_raw
+        assert "component=gateway" in gateway_raw
+        assert "event=llm.chat.finished" in runtime_raw
+        combined = capsys.readouterr().err
+        assert "ordinary package event" in combined
+        assert "component=application event=log" in combined
+    finally:
+        operational_logging.reset_operational_logging_for_tests()
+
+
+def test_operational_logging_file_failure_keeps_combined_console(tmp_path, capsys) -> None:
+    operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("occupied", encoding="utf-8")
+    try:
+        operational_logging.configure_operational_logging(blocked_parent / "logs", "INFO")
+
+        logging.getLogger("assistant_agent.api.sample").info("console remains available")
+
+        assert "console remains available" in capsys.readouterr().err
+    finally:
+        operational_logging.reset_operational_logging_for_tests()
+
+
+def test_app_factory_reconfigures_operational_logging_from_environment(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
+    monkeypatch.setenv("MULTIMODAL_AGENT_OPERATIONAL_LOGGING_ENABLED", "1")
+    monkeypatch.setenv("MULTIMODAL_AGENT_OPERATIONAL_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("MULTIMODAL_AGENT_OPERATIONAL_LOG_LEVEL", "INFO")
+    try:
+        app_module.create_app()
+        logging.getLogger("assistant_agent.gateway.lifecycle").info(
+            "child process gateway event",
+            extra={
+                "component": "gateway",
+                "event": "gateway.run.started",
+                "run_id": "reload-run",
+                "turn_id": "reload-turn",
+                "trace_id": "-",
+            },
+        )
+        for handler in logging.getLogger("assistant_agent.gateway.lifecycle").handlers:
+            handler.flush()
+
+        assert "child process gateway event" in (tmp_path / "gateway.log").read_text(
+            encoding="utf-8"
+        )
+    finally:
+        operational_logging.reset_operational_logging_for_tests()
 
 
 def test_run_server_parser_accepts_public_url() -> None:

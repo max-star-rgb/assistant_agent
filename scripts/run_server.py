@@ -12,7 +12,6 @@ launch it without a module-based uvicorn run configuration.
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -26,6 +25,12 @@ if str(SRC_ROOT) not in sys.path:
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.services.assistant_run_service import load_env_file, runtime_info
+from assistant_agent.services.operational_logging import (
+    OPERATIONAL_LOG_DIR_ENV,
+    OPERATIONAL_LOG_LEVEL_ENV,
+    OPERATIONAL_LOGGING_ENABLED_ENV,
+    configure_operational_logging_from_env,
+)
 from assistant_agent.services.provider_specs import (
     supported_chat_providers,
     supported_image_generation_providers,
@@ -52,6 +57,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--access-log",
         action="store_true",
         help="Enable uvicorn per-request access logs. Disabled by default for a quieter dev console.",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default="INFO",
+        help="Operational log level for combined console and component files.",
+    )
+    parser.add_argument(
+        "--log-dir",
+        default=".data/logs",
+        help="Directory for rotating gateway.log and runtime.log files.",
     )
     parser.add_argument(
         "--allow-local-trace-content",
@@ -198,18 +214,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     loaded_env = _prepare_environment(args)
     config = ProviderConfig.from_env()
 
-    import uvicorn
+    log_dir = Path(args.log_dir).expanduser()
+    if not log_dir.is_absolute():
+        log_dir = REPO_ROOT / log_dir
+    os.environ[OPERATIONAL_LOGGING_ENABLED_ENV] = "1"
+    os.environ[OPERATIONAL_LOG_DIR_ENV] = str(log_dir)
+    os.environ[OPERATIONAL_LOG_LEVEL_ENV] = args.log_level
+    configure_operational_logging_from_env()
 
-    # Surface assistant_agent INFO logs (e.g. WebSocket request/response lines).
-    # uvicorn does not configure the root logger, so attach our own handler
-    # instead of relying on propagation.
-    pkg_logger = logging.getLogger("assistant_agent")
-    pkg_logger.setLevel(logging.INFO)
-    if not pkg_logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(levelname)s:     %(message)s"))
-        pkg_logger.addHandler(handler)
-        pkg_logger.propagate = False
+    import uvicorn
 
     base = f"http://{args.host}:{args.port}"
     print(f"Starting Assistant backend server on {base}")
@@ -221,6 +234,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(f"  Gateway smoke: python scripts/run_gateway_client.py --server {base} \"你好\"")
     print(f"  access_log: {'enabled' if args.access_log else 'disabled'}")
+    print(f"  operational_log_level: {args.log_level}")
+    print(f"  operational_log_dir: {log_dir}")
     _print_runtime_summary(config, loaded_env_keys=sorted(loaded_env))
     if args.public_url:
         print(f"Share this URL with trial users: {args.public_url}")

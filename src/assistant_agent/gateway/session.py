@@ -1029,6 +1029,7 @@ class GatewaySessionService:
     ) -> None:
         expects_reply = True
         end_reason = "error"
+        result: RealtimeAgentResult | None = None
         try:
             self._emit_lifecycle(
                 "gateway.run.started",
@@ -1154,12 +1155,18 @@ class GatewaySessionService:
                 await asyncio.gather(deadline_task, return_exceptions=True)
             if permit is not None:
                 await self._admission.release_permit(permit)
+            terminal_payload: dict[str, Any] = {
+                "reason": end_reason,
+                "expects_reply": expects_reply,
+            }
+            if result is not None and result.trace_id:
+                terminal_payload["trace_id"] = result.trace_id
             self._emit_lifecycle(
                 _terminal_lifecycle_event_type(end_reason),
                 session_id=session_id,
                 run_id=run_id,
                 turn_id=turn_id,
-                payload={"reason": end_reason, "expects_reply": expects_reply},
+                payload=terminal_payload,
             )
             if next_turn is not None and not self._closed:
                 self._schedule_dispatch(next_turn)

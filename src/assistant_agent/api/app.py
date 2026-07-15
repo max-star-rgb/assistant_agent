@@ -22,12 +22,14 @@ from assistant_agent.api.routes_tasks import router as tasks_router
 from assistant_agent.schemas.api import PROTOCOL_VERSION, api_error
 from assistant_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
 from assistant_agent.services.durable_tasks.worker import DurableTaskWorker
+from assistant_agent.services.operational_logging import configure_operational_logging_from_env
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 
 
 def create_app() -> FastAPI:
     load_repo_env_file()
+    configure_operational_logging_from_env()
     app = FastAPI(title="Multimodal Agent", lifespan=_lifespan)
 
     @app.exception_handler(RequestValidationError)

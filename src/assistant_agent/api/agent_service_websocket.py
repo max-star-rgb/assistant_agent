@@ -29,6 +29,7 @@ from assistant_agent.services.agent_service_latency import (
     report_turn_latency,
 )
 from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
+from assistant_agent.services.operational_logging import digest_identifier, log_gateway_lifecycle
 from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.services.video_context import VideoFrame
 from assistant_agent.services.trace_store import TraceStore, append_observability_event
@@ -461,10 +462,10 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         trace_store=_get_agent_service_trace_store(),
     )
     logger.info(
-        "agent-service websocket connected version=%s session_id=%s query=%s",
+        "agent-service websocket connected version=%s session_digest=%s query_keys=%s",
         version,
-        state.session_id,
-        state.query_params,
+        digest_identifier(state.session_id),
+        ",".join(sorted(state.query_params)) or "none",
     )
 
     if version != "v1":
@@ -475,9 +476,9 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         await _send_response(websocket, response, state=state)
         await websocket.close(code=POLICY_VIOLATION_CLOSE_CODE)
         logger.info(
-            "agent-service websocket rejected unsupported version=%s session_id=%s",
+            "agent-service websocket rejected unsupported version=%s session_digest=%s",
             version,
-            state.session_id,
+            digest_identifier(state.session_id),
         )
         return
 
@@ -495,7 +496,11 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             state.received_bytes += len(raw.encode("utf-8"))
             if inbound_message == "video":
                 state.video_packet_count += 1
-            logger.debug("agent-service websocket received session_id=%s bytes=%s", state.session_id, len(raw))
+            logger.debug(
+                "agent-service websocket received session_digest=%s bytes=%s",
+                digest_identifier(state.session_id),
+                len(raw),
+            )
             if inbound_message == "chat":
                 prepared_or_error = _prepare_chat_raw_message(
                     raw,
@@ -552,10 +557,10 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             close_reason=close_reason,
         )
         logger.info(
-            "agent-service websocket closed session_id=%s code=%s reason_present=%s "
+            "agent-service websocket closed session_digest=%s code=%s reason_present=%s "
             "messages_received=%s messages_sent=%s video_packets=%s bytes_received=%s "
             "bytes_sent=%s failures=%s",
-            state.session_id,
+            digest_identifier(state.session_id),
             close_code,
             bool(close_reason),
             state.received_message_count,
@@ -1007,6 +1012,7 @@ def _create_agent_service_gateway_manager() -> GatewaySessionManager:
             run_request=_run_assistant_request_for_agent_service,
             load_env=False,
         ),
+        lifecycle_sink=log_gateway_lifecycle,
         start_reaper=False,
     )
 
@@ -1353,10 +1359,10 @@ async def _send_response(
     if _response_is_failure(response):
         state.failure_count += 1
     logger.debug(
-        "agent-service websocket sent message=%s bytes=%s session_id=%s",
+        "agent-service websocket sent message=%s bytes=%s session_digest=%s",
         response.get("message"),
         len(raw),
-        state.session_id,
+        digest_identifier(state.session_id),
     )
 
 

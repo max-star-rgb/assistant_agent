@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from threading import Event
 
 import pytest
@@ -644,6 +645,55 @@ def test_create_gateway_session_manager_reads_queue_policy_env() -> None:
         dedupe_ttl_s=45.0,
         dedupe_max_entries_per_user=20,
     )
+
+
+def test_default_gateway_session_manager_uses_operational_lifecycle_sink() -> None:
+    from assistant_agent.services.operational_logging import log_gateway_lifecycle
+
+    manager = gateway_runtime.create_gateway_session_manager(env={}, start_reaper=False)
+
+    assert manager.lifecycle_sink is log_gateway_lifecycle
+
+
+def test_gateway_lifecycle_log_uses_terminal_trace_id(caplog) -> None:
+    from assistant_agent.gateway.observability import GatewayLifecycleEvent
+    from assistant_agent.services.operational_logging import log_gateway_lifecycle
+
+    with caplog.at_level(logging.INFO, logger="assistant_agent.gateway.lifecycle"):
+        log_gateway_lifecycle(
+            GatewayLifecycleEvent(
+                type="gateway.run.completed",
+                run_id="gateway-run",
+                turn_id="gateway-turn",
+                payload={"reason": "completed", "trace_id": "runtime-trace"},
+            )
+        )
+
+    record = caplog.records[-1]
+    assert record.run_id == "gateway-run"
+    assert record.turn_id == "gateway-turn"
+    assert record.trace_id == "runtime-trace"
+
+
+def test_gateway_lifecycle_log_does_not_emit_client_cancel_reason(caplog) -> None:
+    from assistant_agent.gateway.observability import GatewayLifecycleEvent
+    from assistant_agent.services.operational_logging import log_gateway_lifecycle
+
+    with caplog.at_level(logging.INFO, logger="assistant_agent.gateway.lifecycle"):
+        log_gateway_lifecycle(
+            GatewayLifecycleEvent(
+                type="gateway.run.cancel_requested",
+                run_id="gateway-run",
+                payload={
+                    "source": "gateway_cancel",
+                    "reason": "client prompt with sk-secret-value",
+                },
+            )
+        )
+
+    assert "client prompt" not in caplog.records[-1].message
+    assert "sk-secret-value" not in caplog.records[-1].message
+    assert "reason=client_supplied" in caplog.records[-1].message
 
 
 def test_create_gateway_session_manager_reads_semantic_interrupt_policy_env() -> None:
