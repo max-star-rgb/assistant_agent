@@ -1,6 +1,6 @@
 # Media 到 Agent WebSocket 接口文档
 
-Last updated: 2026-07-13
+Last updated: 2026-07-15
 
 本文档描述真实媒体服务与 `assistant_agent` 之间的 WebSocket 传输层协议。媒体侧协议为外部对接基准；Agent 侧负责兼容该协议，并在内部把 `chat` 文本请求转入 Gateway 和 assistant runtime。
 
@@ -135,7 +135,7 @@ Agent 兼容说明：
 | `contents[].speechContent` | string | 文本消息必填 | 已完成 ASR 的文本 |
 | `contents[].imageContent` | string | 图片消息可选 | 图片 Base64；当前作为媒体兼容字段接收，不直接进入图像 provider |
 | `contents[].time` | string | 是 | ISO 8601 时间戳 |
-| `stream` | boolean | 否 | 媒体侧流式标记；当前 Agent 返回一个完整 `chatResponse` |
+| `stream` | boolean | 否 | 为 `true` 时，真实 Provider token delta 投影为多个 `chatResponse` 中间包，之后仍发送一个完整终包；缺省或 `false` 时只发送终包 |
 
 处理规则：
 
@@ -143,7 +143,10 @@ Agent 兼容说明：
 - 只包含 `imageContent` 的内容项可以随请求传入，但当前不单独触发图像理解。
 - `chat` 会进入 `GatewayTurnFacade -> GatewaySessionManager -> GatewayAgentAdapter -> AssistantRuntimeApp -> AgentGraphRuntime`。
 - chat run 在独立任务中执行，WebSocket 主循环会继续接收并 ACK 后续媒体消息。
-- 未声明扩展能力的旧客户端仍只收到一个最终 `chatResponse`。
+- `stream=true` 的中间包只携带本包新增文本，`status=PROCESSING`、`sequence>=1`、`final=false`；终包携带完整回答，`status=SUCCESS`、最后一个 `sequence`、`final=true`。
+- 只有真实 Provider token delta 产生中间包；Provider 不支持或未产生 token delta 时，即使 `stream=true` 也只发送一个完整终包，不伪造流式能力。
+- `deliveryId` 和 `chatResponseAck` 只属于终包，中间包不进入应用层 ACK 状态。
+- Provider 的工具调用前导文本受 runtime commit barrier 保护；会被工具调用取代的 provisional 文本不会发送给 Media/App。
 
 协商 `chatProgress` 后，Agent 立即并每 15 秒发送一次：
 
@@ -163,7 +166,13 @@ Agent 在最终 `chatResponse` 的 WebSocket `send_text()` 返回后记录本轮
 该时刻只代表响应已交给连接，不代表媒体应用已处理。协商 `chatResponseAck` 时，
 ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用确认。
 
-响应 `agent -> client`：
+`stream=true` 的中间响应 `agent -> media`（外层 `body` 仍是 JSON 字符串）：
+
+```json
+{"message":"chatResponse","body":"{\"message\":{\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"你\",\"status\":\"PROCESSING\"}}},\"sequence\":1,\"final\":false,\"display_only\":false}"}
+```
+
+协商 `chatResponseAck` 后的终包 body（未协商时省略 `deliveryId`）：
 
 ```json
 {
@@ -176,18 +185,24 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
       }
     }
   },
-  "display_only": false
+  "display_only": false,
+  "sequence": 2,
+  "final": true,
+  "deliveryId": "delivery_xxx"
 }
 ```
 
-外层示例：
+终包外层示例；`description` 是完整回答，不是最后一个 delta：
 
 ```json
 {
   "message": "chatResponse",
-  "body": "{\"message\":{\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"你好，我可以帮你处理。\",\"status\":\"SUCCESS\"}}},\"display_only\":false}"
+  "body": "{\"message\":{\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"你好，我可以帮你处理。\",\"status\":\"SUCCESS\"}}},\"display_only\":false,\"sequence\":2,\"final\":true,\"deliveryId\":\"delivery_xxx\"}"
 }
 ```
+
+若已发送一个或多个中间包后运行失败，Agent 仍发送 `code=FAIL`、`final=true`
+的终包；失败终包不重复已发送正文，协商 ACK 时才携带 `deliveryId`。
 
 ### 4.3 audio
 
@@ -265,6 +280,10 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解复用 `video_understanding`，并经过 `ActionValidator -> ToolExecutor -> ToolRegistry`；WebSocket 入口不直接调用 Provider。默认 `local_demo` / `offline_eval` 不联网，真实连续 MLLM 只允许显式 `provider_smoke` / `pilot` 配置。
 - 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。真实 LLM 根据用户语义自主决定是否调用 `video_understanding`，工具调用仍经过 validator、executor、registry 和 Provider policy。
+- 可信 Agent-Service 请求把它表述为双方共享的当前实时镜头，不把 opaque `video_id` 渲染成上传视频，也不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
+- 明确询问当前画面时，以提问时最近已解码帧的 sequence 为目标；若现有成功快照落后，则复用或提升同一 observer 的 latest-wins 候选，并最多等待 4.0 秒直到成功快照达到目标 sequence。该屏障不启动前台 `video_understanding`，普通问候不等待。
+- 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；查询驱动提升也复用这条队列与工具治理链。
+- 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；采集时间缺失或在未来时不伪造采集年龄。
 - 查询时若最新已完成观察成功，`video_understanding` 直接返回滚动语义记忆，不再次调用视觉 MLLM；若记忆尚未就绪或最新观察失败，则使用最近 3 帧执行原有 Provider 回退。
 - 携带视频引用的 chat turn 使用 90 秒 facade 等待预算，以覆盖视频 Provider 最长 60 秒的调用预算以及调用前后的 LLM 决策；普通 chat 仍使用 30 秒。
 - 连接关闭时先停止观察器、丢弃待处理帧并拒绝晚到结果，再移除滚动语义记忆、关键帧、原始帧上下文和 JPEG 运行时文件。
@@ -326,26 +345,19 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 ## 6. 完整通信流程
 
 ```text
-Client                              Agent
-  |                                   |
-  |========== connect ===============>|
-  |                                   |
-  |======= assistantControl =========>|
-  |<====== assistantControl ==========|
-  |                                   |
-  |============= chat ===============>|
-  |<============ chatResponse ========|
-  |                                   |
-  |============= audio ==============>|
-  |<============ audioResponse =======|
-  |                                   |
-  |============= video ==============>|
-  |<============ videoResponse =======|
-  |                                   |
-  |=========== interrupt ============>|
-  |<========== interrupt =============|
-  |                                   |
-  |============= close ==============>|
+App                 Media                         Agent
+ |                    |                              |
+ |== media/session ==>+== WebSocket connect =======>|
+ |                    |== assistantControl ========>|
+ |                    |<== assistantControl ========|
+ |== ASR/chat =======>|== chat(stream=true) =======>|
+ |<== delta/TTS ======|<== chatResponse PROCESSING==|
+ |<== final/TTS ======|<== chatResponse SUCCESS ====|
+ |== audio/video ====>|== audio/video =============>|
+ |                    |<== audio/videoResponse ======|
+ |== interrupt ======>|== interrupt ================>|
+ |                    |<== interrupt ================|
+ |== close ==========>|== close ====================>|
 ```
 
 ## 7. 本地验证
@@ -403,7 +415,9 @@ run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 | `llm_chat[2]` | 工具观察后的最终回答 LLM 调用较慢。 |
 | `websocket_send` | socket/媒体接收端产生传输背压。 |
 | `ACK pending` | 最终响应已发送，但媒体应用确认尚未到达。 |
-| `snapshot_age` 较高 | 本轮使用的后台视频语义观察已经陈旧。 |
+| `frame_capture_age_ms` 较高 | 本轮消费的语义对应 Media 帧采集时间较早，是画面陈旧度主指标。 |
+| `snapshot_publish_age_ms` 较高 | Qwen 结果发布后已过去较长时间。 |
+| `sequence_gap` 大于 0 | 4 秒目标序号屏障未满足；回答必须保留画面可能滞后的不确定性。 |
 | `unattributed` | 端到端耗时中尚未被叶子阶段解释的剩余部分。 |
 
 视频诊断中的后台观察 latency 不直接计入 chat 关键路径。只有

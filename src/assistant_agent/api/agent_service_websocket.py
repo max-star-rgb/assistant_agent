@@ -798,15 +798,21 @@ async def _run_chat_delivery(
         nonlocal sequence
         if not _is_provider_token_delta(chunk_frame):
             return
+        if timing is not None:
+            timing.observe_provider_token_delta()
         next_sequence = sequence + 1
         await _send_response(
             websocket,
             _streaming_chat_response(prepared, delta=delta, sequence=next_sequence),
             state=state,
         )
+        if timing is not None:
+            timing.record_stream_chunk(at_ns=state.clock_ns())
         sequence = next_sequence
 
     timing = state.turn_timings.get(delivery.delivery_id)
+    if timing is not None:
+        timing.stream_requested = prepared_stream_requested
     if state.client_capabilities.get("chatProgress", False):
         progress_task = asyncio.create_task(
             _emit_periodic_chat_progress(websocket, state=state, prepared=prepared, delivery=delivery)

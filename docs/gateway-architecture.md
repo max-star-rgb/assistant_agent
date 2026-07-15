@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes.
 
@@ -135,9 +135,13 @@ and a fixed foreground tool set: `web_search`, `product_search`,
 derived from trusted session config, never user text. `assistantControl`
 validates and records media control state,
 and the legacy `assistantControlStart` handshake remains accepted for older
-clients. `chat` maps the latest `speechContent` to a Gateway turn and wraps the
-final assistant response in the media `chatResponse` shape when the media
-protocol is used. `audio` and `interrupt` are accepted as transport
+clients. `chat` maps the latest `speechContent` to a Gateway turn. With
+`stream=true`, committed provider-token `stream.chunk` frames become media
+`chatResponse` delta packets (`PROCESSING`, increasing sequence,
+`final=false`), followed by one complete terminal packet (`SUCCESS`,
+`final=true`). With `stream=false`, or when no provider token delta exists,
+only the terminal packet is sent. `deliveryId` and application ACK apply only
+to that terminal packet. `audio` and `interrupt` are accepted as transport
 compatibility messages and acknowledged at the entry layer. `video` accepts
 independently decodable H.264 Annex-B frames, decodes them to a three-frame
 JPEG window plus a bounded local grayscale fingerprint, and attaches the stable
@@ -152,9 +156,13 @@ The runtime owns a bounded semantic snapshot per opaque `video_id`. Immediately
 before every Agent-Service model context build it projects the latest snapshot
 into the independent `realtime_video_context` section. Thus the first DeepSeek
 decision can use completed Qwen observations without a foreground tool round
-trip. A narrow current-camera reference may wait up to 1.5 seconds for the
-already-running first observation; timeout injects `pending` state and never
-starts a second Qwen call. Ordinary non-Agent-Service video/API requests retain
+trip. A narrow current-camera reference targets the latest decoded frame
+sequence and may wait up to 4.0 seconds for the shared observer snapshot to
+reach that sequence. If no equal/newer work is represented, the latest frame is
+promoted through the same governed queue. Timeout injects `refreshing` or
+`stale` state with a sequence gap and never starts a foreground or second Qwen
+call. Frame freshness uses capture age; snapshot publication age remains a
+separate diagnostic. Ordinary non-Agent-Service video/API requests retain
 the explicit `video_understanding` tool and `recent_frame_fallback` behavior.
 The raw window is 3 frames, semantic retention is 8 keyframes, and observer
 concurrency is one in flight plus one latest pending frame.
@@ -162,11 +170,11 @@ concurrency is one in flight plus one latest pending frame.
 Vendor chat execution is detached from the WebSocket receive loop, so a long
 Gateway turn does not prevent later raw media frames from being validated and
 acknowledged. Optional `clientCapabilities` negotiate prompt-free
-`chatProgress` and application-level `chatResponseAck`. Clients that do not
-negotiate these extensions retain the legacy single-final-response behavior.
-Agent-Service provider token streaming is disabled internally; Gateway still
-produces the terminal response events needed to assemble the unchanged final
-`chatResponse`. Per-packet receive/send logs are DEBUG. Connection open/close,
+`chatProgress` and application-level `chatResponseAck`. Media `chat.stream`
+independently selects delta delivery; clients that send `stream=false` or omit
+it retain single-final-response behavior. Provider-token streaming is enabled
+for `stream=true`, while the runtime commit barrier continues to suppress
+tool-call preambles. Per-packet receive/send logs are DEBUG. Connection open/close,
 turn latency, ACK, and failures remain INFO/WARNING, with one close INFO carrying
 message/video/byte/failure counters.
 
