@@ -133,7 +133,7 @@ def plain_final_result(message: str) -> ChatResult:
     )
 
 
-def test_agent_service_first_llm_call_consumes_rolling_video_without_exposing_video_tool() -> None:
+def test_agent_service_live_camera_first_llm_call_uses_natural_context_without_exposing_video_tool() -> None:
     memory = RealtimeVideoMemoryStore()
     memory.record_success(
         "video-live",
@@ -189,6 +189,9 @@ def test_agent_service_first_llm_call_consumes_rolling_video_without_exposing_vi
     first = adapter.requests[0]
     user_message = first.messages[1]["content"]
     tool_names = [tool["function"]["name"] for tool in first.tools]
+    assert "当前通话的实时镜头" in user_message
+    assert "附带视频 ID" not in user_message
+    assert "video-live" not in user_message
     assert "A person is holding a red cup." in user_message
     assert set(tool_names) == {
         "product_search",

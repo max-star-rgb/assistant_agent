@@ -79,13 +79,27 @@ def render_request_context(request: UserRequest) -> str:
     if request.image_ids:
         lines.append(f"附带图片 ID：{request.image_ids}")
     if request.video_ids:
-        lines.append(f"附带视频 ID：{request.video_ids}")
+        if _is_trusted_agent_service_request(request):
+            lines.append("当前通话的实时镜头已连接；只有用户问题需要视觉事实时才使用。")
+        else:
+            lines.append(f"附带视频 ID：{request.video_ids}")
     if request_prefers_plan_mode(request):
         lines.append(
             "调用方计划模式提示：plan_and_solve 是历史兼容字段；"
             "请在同一个 ReAct loop 中优先考虑 enter_plan_mode，而不是使用独立执行策略。"
         )
     return "\n".join(lines)
+
+
+def _is_trusted_agent_service_request(request: UserRequest) -> bool:
+    if request.metadata.get("transport") != "agent_service_websocket":
+        return False
+    gateway = request.metadata.get("gateway")
+    session_config = gateway.get("session_config") if isinstance(gateway, dict) else None
+    return bool(
+        isinstance(session_config, dict)
+        and session_config.get("entry_profile") == "agent_service"
+    )
 
 
 def request_prefers_plan_mode(request: UserRequest) -> bool:

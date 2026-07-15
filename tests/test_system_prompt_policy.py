@@ -26,7 +26,7 @@ from assistant_agent.agent.system_prompt_policy import (
         (
             SystemPromptProfile.REALTIME_PHONE,
             None,
-            "edafe6e532ac5d75b1b16e3d5f0a09d2488f43dfa3911a89de30d35f10073825",
+            "a1a0278fdf0847e08b363b0f78544d2e077ed6f59cb4a91f72585f795e1337bb",
         ),
         (
             SystemPromptProfile.FINAL_ONLY,
@@ -144,6 +144,14 @@ def test_realtime_phone_profile_covers_voice_turn_taking_and_governance() -> Non
     assert "不要逐字朗读长 URL" in prompt
     assert "用户明确结束时礼貌收尾" in prompt
     assert "OpenClaw" not in prompt
+
+
+def test_realtime_phone_profile_uses_natural_live_camera_wording() -> None:
+    prompt = render_system_instruction(SystemPromptProfile.REALTIME_PHONE)
+
+    assert "双方正在共享的当前镜头" in prompt
+    assert "你刚发送的视频" in prompt
+    assert "不得" in prompt
 
 
 def test_final_only_profile_forbids_tools_and_realtime_fabrication() -> None:
