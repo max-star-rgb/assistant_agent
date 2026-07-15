@@ -143,7 +143,10 @@ clients. `chat` maps the latest `speechContent` to a Gateway turn. With
 only the successful terminal packet is sent. `deliveryId` and application ACK
 apply only to a successful terminal packet. A streamed failure closes with
 `code=FAIL` and body-level `final=true`, but has no `deliveryId` and is not
-ACK-negotiated. `audio` and `interrupt` are accepted as transport
+ACK-negotiated; after a successful socket send its delivery state remains
+`failed`. The safe `final_response_sent` diagnostic means either a `SUCCESS` or
+`FAIL` terminal was handed to the WebSocket, not that the business turn
+succeeded. `audio` and `interrupt` are accepted as transport
 compatibility messages and acknowledged at the entry layer. `video` accepts
 independently decodable H.264 Annex-B frames, decodes them to a three-frame
 JPEG window plus a bounded local grayscale fingerprint, and attaches the stable

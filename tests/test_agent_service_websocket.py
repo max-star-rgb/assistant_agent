@@ -27,6 +27,7 @@ from assistant_agent.services.realtime_video_memory import (
 from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame
 from assistant_agent.services.agent_service_delivery import (
+    AgentServiceDeliveryError,
     AgentServiceDeliveryRegistry,
     JsonlAgentServiceDeliveryAudit,
 )
@@ -1030,6 +1031,101 @@ def test_agent_service_stream_error_after_delta_sends_failure_terminal_packet(
     assert terminal["final"] is True
     assert "deliveryId" not in terminal
     assert "partial secret" not in json.dumps(terminal)
+
+
+def test_agent_service_error_terminal_is_failed_not_acknowledgeable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class ErrorAfterDeltaFacade:
+        async def run_turn(self, request, *, on_stream_chunk=None):
+            assert on_stream_chunk is not None
+            await on_stream_chunk(
+                "partial",
+                {
+                    "type": "stream.chunk",
+                    "payload": {
+                        "text": "partial",
+                        "realtime": {"token_streaming": True},
+                    },
+                },
+            )
+            return _error_turn(response_text="partial")
+
+    class RecordingWebSocket:
+        def __init__(self) -> None:
+            self.packets: list[dict] = []
+
+        async def send_text(self, raw: str) -> None:
+            self.packets.append(json.loads(raw))
+
+    registry = AgentServiceDeliveryRegistry(
+        JsonlAgentServiceDeliveryAudit(tmp_path / "delivery.jsonl")
+    )
+    delivery = registry.accept("s1", "chat-error", expects_ack=True)
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        response_session_id="s1",
+        media_protocol=True,
+        gateway_facade=ErrorAfterDeltaFacade(),
+        delivery_registry=registry,
+    )
+    prepared = agent_service_ws.PreparedChat(
+        session_id="s1",
+        response_session_id="s1",
+        body={"stream": True},
+        chat_index="chat-error",
+        user_number="10086",
+        latest_speech="hello",
+        contents=[{"speechContent": "hello"}],
+        video_ids=[],
+        received_ns=state.clock_ns(),
+        accepted_ns=state.clock_ns(),
+        session_turn=1,
+    )
+    timing = AgentServiceTurnTiming(
+        delivery_id=delivery.delivery_id,
+        session_turn=1,
+        chat_index_digest=delivery.chat_index_digest,
+        expects_ack=True,
+        received_ns=prepared.received_ns,
+        accepted_ns=prepared.accepted_ns,
+    )
+    timing.mark("queue_entered", at_ns=state.clock_ns())
+    state.turn_timings[delivery.delivery_id] = timing
+    summaries = []
+    monkeypatch.setattr(
+        agent_service_ws,
+        "report_turn_latency",
+        lambda summary, **_kwargs: summaries.append(summary),
+    )
+    websocket = RecordingWebSocket()
+
+    asyncio.run(
+        agent_service_ws._run_chat_delivery(
+            websocket,
+            state=state,
+            prepared=prepared,
+            delivery=delivery,
+        )
+    )
+
+    terminal = _body(websocket.packets[-1])
+    assert terminal["final"] is True
+    assert "deliveryId" not in terminal
+    assert registry.get(delivery.delivery_id).status == "failed"
+    with pytest.raises(AgentServiceDeliveryError, match="not awaiting acknowledgment"):
+        asyncio.run(
+            agent_service_ws.ChatResponseAckHandler().handle(
+                session_id="s1",
+                body={"deliveryId": delivery.delivery_id, "chatIndex": "chat-error"},
+                state=state,
+            )
+        )
+    assert registry.get(delivery.delivery_id).status == "failed"
+    assert summaries[-1].status == "failed"
+    assert summaries[-1].final_response_sent is True
 
 
 def test_agent_service_stream_exception_after_delta_sends_failure_terminal_packet(

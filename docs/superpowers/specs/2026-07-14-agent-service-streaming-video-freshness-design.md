@@ -90,7 +90,7 @@ Media 发送 `chat.body.stream=true` 时，Agent 使用现有 `chatResponse` 消
 - Provider streaming 未启用、不支持或未产生 token delta 时，Agent 只返回一个成功终包；安全 trace 以 `provider_token_stream_seen=false` 和 `stream_chunk_count=0` 表达实际观测，不对 Media 声称存在 token 流。
 - WebSocket 在发送中间包时断开，当前 delivery 标记 disconnected；不记录最终已发送或 ACK pending。
 - 中间包发送失败会取消当前 Gateway run，避免后台继续生成不可投递文本。
-- 最终文本仍以 Gateway terminal result 为准；当前诊断记录是否看到 Provider token delta、成功发送的中间包数量、首包耗时和成功终包是否已发送，不记录或比较正文。
+- 最终文本仍以 Gateway terminal result 为准；当前诊断记录是否看到 Provider token delta、成功发送的中间包数量、首包耗时和 terminal response 是否已成功交给 WebSocket，不记录或比较正文。`final_response_sent=true` 同时覆盖 `SUCCESS` 与 `FAIL` 终包，是传输事实而不是业务成功标记。
 - `stream=false`、旧 `assistantControlStart`、`chatProgress`、`chatResponseAck`、音视频 ACK 和最终响应 body 的既有字段保持兼容。
 - 非 Agent-Service 视频上传/API 不受 freshness barrier 和实时措辞影响。
 

@@ -372,6 +372,7 @@ Expected: all selected tests PASS and existing one-in-flight/latest-wins asserti
 **Interfaces:**
 - Produces: safe stream and freshness diagnostics without content.
 - Preserves: `agent_service_turn_latency_v1` terminal summary and existing trace redaction.
+- Defines: `final_response_sent=true` whenever a `SUCCESS` or `FAIL` terminal response is successfully handed to the WebSocket; it is not a business-success flag.
 
 - [ ] **Step 1: Add failing safe-diagnostic tests**
 

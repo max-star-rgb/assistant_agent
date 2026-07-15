@@ -203,7 +203,7 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 
 若已发送一个或多个中间包后运行失败，Agent 仍发送 `code=FAIL`、`final=true`
 的失败终包以关闭本轮 stream；失败终包不重复已发送正文，也不携带
-`deliveryId`，不能发送 `chatResponseAck`。
+`deliveryId`，不能发送 `chatResponseAck`，对应 delivery 状态保持 `failed`。
 
 ### 4.3 audio
 

@@ -854,12 +854,18 @@ async def _run_chat_delivery(
         await _send_response(websocket, response, state=state)
         if timing is not None:
             timing.mark("send_finished", at_ns=state.clock_ns())
-        state.delivery_registry.mark_sent(
-            delivery.delivery_id,
-            gateway_run_id=turn.run_id,
-            assistant_run_id=timing.assistant_run_id if timing is not None else None,
-            trace_id=turn.trace_id,
-        )
+        if turn.status == "error":
+            state.delivery_registry.mark_failed(
+                delivery.delivery_id,
+                error_code="gateway_run_failed",
+            )
+        else:
+            state.delivery_registry.mark_sent(
+                delivery.delivery_id,
+                gateway_run_id=turn.run_id,
+                assistant_run_id=timing.assistant_run_id if timing is not None else None,
+                trace_id=turn.trace_id,
+            )
         if timing is not None:
             terminal_status = "failed" if turn.status == "error" else "sent"
             _observe_turn_terminal(state, timing, status=terminal_status)

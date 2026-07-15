@@ -19,10 +19,9 @@ final response.
 
 A streamed failure terminal (`code=FAIL`, `final=true`) closes the Media stream
 but has no `deliveryId` and is not ACK-negotiated. Only a successful terminal
-delivery can transition to `acked`; a failure terminal can never produce
-`agent_service.delivery.acked`. Transport-level delivery audit may still record
-that a failure terminal was handed to the WebSocket, while an exception path is
-recorded as `failed`.
+delivery can transition to `acked`; a failure terminal remains `failed` and can
+never produce `agent_service.delivery.acked`, even when its terminal packet was
+successfully handed to the WebSocket.
 
 Records use digests for session and chat identifiers and may include run/trace
 ids, close code, and a close-reason category. They never include response text,
@@ -70,6 +69,9 @@ delta packet is successfully handed to the WebSocket; neither delta text nor
 the final answer is retained in this summary. `provider_token_stream_seen` is
 set when the Provider delta reaches the entry projection, so a disconnected
 send can report `provider_token_stream_seen=true` with `stream_chunk_count=0`.
+`final_response_sent=true` means a terminal response was successfully handed to
+the WebSocket; it covers both `SUCCESS` and `FAIL` terminals and is not a
+business-success flag.
 
 The safe INFO records have this shape and never contain prompts or responses:
 
