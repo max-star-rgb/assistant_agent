@@ -237,25 +237,25 @@ Last updated: 2026-07-15
 
 ## Relevant Tests
 
-- `tests/test_conversation_context_compaction.py`
-- `tests/test_assistant_context_renderer.py`
-- `tests/test_realtime_task_state.py`
-- `tests/test_realtime_video_memory.py`
-- `tests/test_realtime_video_observer.py`
-- `tests/test_video_context.py`
-- `tests/test_durable_task_context.py`
-- `tests/test_shared_assistant_run_service.py`
-- `tests/test_memory_manager.py`
-- `tests/test_memory_context_builder.py`
-- `tests/test_agent_communication_routing.py`
-- `tests/test_phase8a1_react_action_quality.py`
-- `tests/test_trace_query_api.py`
-- `tests/test_context_sources.py`
-- `tests/test_soul_context_source.py`
-- `tests/test_improvement_evidence.py`
-- `tests/test_improvement_detector.py`
-- `tests/test_improvement_proposer.py`
-- `tests/test_improvement_evaluator.py`
+- `tests/scopes/context/test_conversation_context_compaction.py`
+- `tests/scopes/context/test_assistant_context_renderer.py`
+- `tests/scopes/gateway/test_realtime_task_state.py`
+- `tests/scopes/gateway/test_realtime_video_memory.py`
+- `tests/scopes/gateway/test_realtime_video_observer.py`
+- `tests/scopes/gateway/test_video_context.py`
+- `tests/scopes/context/test_durable_task_context.py`
+- `tests/scopes/context/test_shared_assistant_run_service.py`
+- `tests/scopes/memory/test_memory_manager.py`
+- `tests/scopes/memory/test_memory_context_builder.py`
+- `tests/scopes/runtime/test_agent_communication_routing.py`
+- `tests/scopes/runtime/test_react_action_quality.py`
+- `tests/scopes/api/test_trace_query_api.py`
+- `tests/scopes/context/test_context_sources.py`
+- `tests/scopes/context/test_soul_context_source.py`
+- `tests/scopes/runtime/test_improvement_evidence.py`
+- `tests/scopes/runtime/test_improvement_detector.py`
+- `tests/scopes/runtime/test_improvement_proposer.py`
+- `tests/scopes/runtime/test_improvement_evaluator.py`
 
 Current small regression coverage includes budget trimming order, product observation field preservation, prompt data-boundary labels, empty-query memory browsing, conversation compaction, trace context summaries, and run-summary context reporting.
 

@@ -1,0 +1,86 @@
+[critical]
+test_paths = ["tests/critical"]
+
+[[scope]]
+name = "prompt"
+source_paths = [
+  "src/assistant_agent/agent/prompt_builder.py",
+  "src/assistant_agent/agent/system_prompt_policy.py",
+  "src/assistant_agent/services/prompt_builder.py",
+  "src/assistant_agent/utils/prompting.py",
+]
+test_paths = ["tests/scopes/prompt"]
+
+[[scope]]
+name = "context"
+source_paths = [
+  "src/assistant_agent/services/context/**",
+  "src/assistant_agent/memory/context_builder.py",
+  "src/assistant_agent/schemas/context.py",
+]
+test_paths = ["tests/scopes/context"]
+
+[[scope]]
+name = "tools"
+source_paths = [
+  "src/assistant_agent/tools/**",
+  "src/assistant_agent/agent/action_validator.py",
+  "src/assistant_agent/agent/tool_*.py",
+  "src/assistant_agent/services/tool_*.py",
+  "src/assistant_agent/mcp/**",
+]
+test_paths = ["tests/scopes/tools"]
+
+[[scope]]
+name = "gateway"
+source_paths = [
+  "src/assistant_agent/gateway/**",
+  "src/assistant_agent/realtime/**",
+  "src/assistant_agent/services/gateway_turn_facade.py",
+  "src/assistant_agent/services/realtime_*.py",
+]
+test_paths = ["tests/scopes/gateway"]
+
+[[scope]]
+name = "runtime"
+source_paths = [
+  "src/assistant_agent/__init__.py",
+  "src/assistant_agent/agent/**",
+  "src/assistant_agent/agent_routing/**",
+  "src/assistant_agent/eval/**",
+  "src/assistant_agent/schemas/**",
+  "src/assistant_agent/services/**",
+  "src/assistant_agent/utils/**",
+]
+test_paths = ["tests/scopes/runtime"]
+
+[[scope]]
+name = "memory"
+source_paths = [
+  "src/assistant_agent/memory/**",
+  "src/assistant_agent/tools/memory_*.py",
+  "src/assistant_agent/services/memory_*.py",
+  "src/assistant_agent/schemas/memory*.py",
+]
+test_paths = ["tests/scopes/memory"]
+
+[[scope]]
+name = "providers"
+source_paths = [
+  "src/assistant_agent/providers/**",
+  "src/assistant_agent/video_ai/**",
+  "src/assistant_agent/services/provider_*.py",
+  "src/assistant_agent/config.py",
+  "src/assistant_agent/runtime_profile.py",
+]
+test_paths = ["tests/scopes/providers"]
+
+[[scope]]
+name = "api"
+source_paths = [
+  "src/assistant_agent/api/**",
+  "src/assistant_agent/schemas/api.py",
+  "src/assistant_agent/services/api_identity.py",
+  "src/assistant_agent/services/trial_access.py",
+]
+test_paths = ["tests/scopes/api"]

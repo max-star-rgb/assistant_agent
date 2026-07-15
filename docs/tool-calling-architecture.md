@@ -315,7 +315,8 @@ Provider 边界：
 
 MCP `tool_run`、local tools CLI 等显式工具入口不经过 assistant prompt 装配，因此不会伪造 `RunToolSet`；它们继续使用各自入口 allowlist/config，再统一进入 `ActionValidator -> ToolExecutor`。新增模型驱动入口必须创建并传递 run-scoped tool set，不能退回只检查 registry。
 
-Phase 0 tool governance rejection tests live in `tests/test_phase0_tool_governance_contracts.py`.
+Tool governance rejection contracts live in `tests/critical/test_tool_call_boundaries.py`,
+`tests/critical/test_tool_executor.py`, and `tests/critical/test_tool_risk_gate.py`.
 
 ## ToolExecutor 边界
 
@@ -535,15 +536,15 @@ MCP wrapper、API route 或 `AgentGraphRuntime` node。它只读取脱敏 trace 
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
-  tests/test_tool_executor.py \
-  tests/test_provider_budget_in_tool_executor.py \
-  tests/test_retry_policy.py \
-  tests/test_phase8a1_react_action_quality.py \
-  tests/test_native_tool_call_handoff.py \
-  tests/test_assistant_context_renderer.py \
-  tests/unit/test_tool_spec_adapters.py \
-  tests/test_mcp_server_skeleton.py \
-  tests/test_architecture_boundaries.py
+  tests/critical/test_tool_executor.py \
+  tests/scopes/tools/test_provider_budget_in_tool_executor.py \
+  tests/scopes/tools/test_retry_policy.py \
+  tests/scopes/runtime/test_react_action_quality.py \
+  tests/scopes/tools/test_native_tool_call_handoff.py \
+  tests/scopes/context/test_assistant_context_renderer.py \
+  tests/critical/test_tool_spec_adapters.py \
+  tests/scopes/tools/test_mcp_server_skeleton.py \
+  tests/critical/test_architecture_boundaries.py
 ```
 
 更大范围验收：

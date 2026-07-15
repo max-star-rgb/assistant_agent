@@ -350,7 +350,7 @@ trace/API 只暴露已脱敏摘要，不暴露：
 相关测试：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_assistant_context_renderer.py tests/test_shared_assistant_run_service.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/context/test_assistant_context_renderer.py tests/scopes/context/test_shared_assistant_run_service.py -q
 ```
 
 ### 怀疑压缩没有触发
@@ -366,7 +366,7 @@ trace/API 只暴露已脱敏摘要，不暴露：
 相关测试：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_conversation_context_compaction.py tests/test_assistant_context_renderer.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/context/test_conversation_context_compaction.py tests/scopes/context/test_assistant_context_renderer.py -q
 ```
 
 ### 怀疑 raw payload 泄漏
@@ -380,7 +380,7 @@ trace/API 只暴露已脱敏摘要，不暴露：
 相关测试：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_assistant_context_renderer.py tests/test_trace_query_api.py tests/test_run_summary_query.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/context/test_assistant_context_renderer.py tests/scopes/api/test_trace_query_api.py tests/scopes/api/test_run_summary_query.py -q
 ```
 
 ### 怀疑长期记忆被自动写入
@@ -394,7 +394,7 @@ trace/API 只暴露已脱敏摘要，不暴露：
 相关测试：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_write_policy.py tests/test_memory_manager.py tests/test_memory_tool_boundary.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/critical/test_memory_write_policy.py tests/scopes/memory/test_memory_manager.py tests/critical/test_memory_tool_boundary.py -q
 ```
 
 ### 怀疑 owner/realtime/durable context 缺失或过期
@@ -406,7 +406,7 @@ resume 是否为 trusted。不要通过打印原始 persona、视频或任务 pa
 相关测试：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_context_sources.py tests/test_soul_context_source.py tests/test_realtime_task_state.py tests/test_realtime_video_memory.py tests/test_video_context.py tests/test_durable_task_context.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/context/test_context_sources.py tests/scopes/context/test_soul_context_source.py tests/scopes/gateway/test_realtime_task_state.py tests/scopes/gateway/test_realtime_video_memory.py tests/scopes/gateway/test_video_context.py tests/scopes/context/test_durable_task_context.py -q
 ```
 
 ## 常见误解

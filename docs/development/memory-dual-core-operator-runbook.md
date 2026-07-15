@@ -34,7 +34,7 @@ Preflight:
 
 ```bash
 $PY scripts/check_env.py
-$PY -m pytest tests/test_memory_runtime_integration.py::test_sqlite_memory_backend_writes_memory_file_when_auto_promotion_allowed -q
+$PY -m pytest tests/scopes/memory/test_memory_runtime_integration.py::test_sqlite_memory_backend_writes_memory_file_when_auto_promotion_allowed -q
 ```
 
 Optional SQLite operator procedures live in
@@ -169,9 +169,9 @@ query/media ingestion. Its default project-side paths are:
 Run focused boundary checks:
 
 ```bash
-$PY -m pytest tests/test_memory_runtime_integration.py::test_create_remote_service_store_uses_unavailable_adapter_without_local_fallback -q
-$PY -m pytest tests/test_memory_runtime_integration.py::test_create_remote_service_store_uses_http_adapter_only_when_explicitly_configured -q
-$PY -m pytest tests/test_memory_server_remote_mapping.py::test_http_remote_service_adapter_posts_lifecycle_requests_and_rebinds_identity -q
+$PY -m pytest tests/scopes/memory/test_memory_runtime_integration.py::test_create_remote_service_store_uses_unavailable_adapter_without_local_fallback -q
+$PY -m pytest tests/scopes/memory/test_memory_runtime_integration.py::test_create_remote_service_store_uses_http_adapter_only_when_explicitly_configured -q
+$PY -m pytest tests/scopes/memory/test_memory_server_remote_mapping.py::test_http_remote_service_adapter_posts_lifecycle_requests_and_rebinds_identity -q
 ```
 
 Do not use `remote_service` as a synonym for dual-core query augmentation. Use
@@ -233,8 +233,8 @@ Focused validation:
 ```bash
 $PY scripts/smoke_memory_dual_core.py --offline-only
 $PY scripts/run_evals.py --suite memory_quality
-$PY -m pytest tests/test_memory_runtime_integration.py tests/test_memory_snapshot_api.py tests/test_memory_audit_api.py tests/test_memory_dual_core_runbook.py -q
-$PY -m pytest tests/test_memory_lifecycle.py tests/test_memory_server_remote_mapping.py tests/test_memory_media_ingestion.py -q
+$PY scripts/run_scoped_tests.py --scope memory -- -q
+$PY -m pytest tests/scopes/memory/test_memory_lifecycle.py tests/scopes/memory/test_memory_server_remote_mapping.py tests/scopes/memory/test_memory_media_ingestion.py -q
 ```
 
 Broader offline validation:

@@ -48,8 +48,8 @@ Choose the smallest validation that covers the change:
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest <targeted tests>
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_context_sources.py tests/test_soul_context_source.py tests/test_assistant_context_renderer.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_realtime_task_state.py tests/test_realtime_video_memory.py tests/test_realtime_video_observer.py tests/test_video_context.py tests/test_durable_task_context.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/context/test_context_sources.py tests/scopes/context/test_soul_context_source.py tests/scopes/context/test_assistant_context_renderer.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/gateway/test_realtime_task_state.py tests/scopes/gateway/test_realtime_video_memory.py tests/scopes/gateway/test_realtime_video_observer.py tests/scopes/gateway/test_video_context.py tests/scopes/context/test_durable_task_context.py
 git diff --check -- AGENTS.md docs/CONTEXT_ENGINEERING_STATUS.md src tests .codex/skills
 ```
 

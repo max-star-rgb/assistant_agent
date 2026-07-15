@@ -490,7 +490,8 @@ Regression tests should enforce these invariants:
   `tool.observation` provenance, failed-tool error detail, and hook dispatch
   error redaction.
 - Phase 0 trace invariant gate tests live in
-  `tests/test_phase0_trace_invariant_gate.py`.
+  `tests/scopes/runtime/test_observability_harness.py` and
+  `tests/scopes/runtime/test_hook_invariants.py`.
 - Current harness development should stop after these invariant tests pass.
   Future work should be driven by a concrete debugging gap rather than adding
   more event types, dashboards, exporters, or debug endpoints preemptively.

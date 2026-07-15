@@ -66,10 +66,10 @@ Avoid `runTime/src/openclaw_gateway_runtime/agent_runtime/**`, `skills/**`, and 
 For assistant Gateway changes, run the smallest relevant subset:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway_session.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_gateway_api.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_realtime_agent_backend.py tests/test_realtime_event_mapping.py tests/test_realtime_backend_types.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/critical/test_gateway.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/critical/test_gateway_session.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/gateway/test_gateway_api.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/gateway/test_realtime_agent_backend.py tests/scopes/gateway/test_realtime_event_mapping.py tests/scopes/gateway/test_realtime_backend_types.py
 ```
 
 For compatibility checks against the legacy project:
@@ -82,5 +82,5 @@ cd /home/lenovo1/pycharm_project/runTime && conda run -n hello_agent env PYTHONP
 For skill/doc-only changes:
 
 ```bash
-git diff --check -- AGENTS.md docs/gateway-architecture.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway src/assistant_agent/api/gateway_runtime.py src/assistant_agent/api/gateway_websocket.py tests/test_gateway.py tests/test_gateway_session.py tests/test_gateway_api.py scripts/run_gateway_client.py
+git diff --check -- AGENTS.md docs/gateway-architecture.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway src/assistant_agent/api/gateway_runtime.py src/assistant_agent/api/gateway_websocket.py tests/critical/test_gateway.py tests/critical/test_gateway_session.py tests/scopes/gateway/test_gateway_api.py scripts/run_gateway_client.py
 ```

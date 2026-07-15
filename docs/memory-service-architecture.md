@@ -471,7 +471,10 @@ Current local eval boundary:
 - `scripts/run_evals.py --suite memory` includes the retrieval eval cases from `tests/evals/eval_cases.json`.
 - Metrics include Recall@k, MRR, false-positive rate, correct-empty rate, cross-user leakage rate, sensitive/expired injection rate, and token budget compliance, with an additional `by_backend` split for memory and SQLite cases.
 - Coverage includes black-bag recall, Chinese phrase recall, color/budget preference recall, task/product resume, unrelated empty recall, cross-user isolation, expired exclusion, sensitive non-injection, token budget compliance, superseded/disputed/retracted exclusion, conflict confirmation, and explicitly coexisting same-slot facts.
-- Phase 2 Memory Intelligence v1 gate tests live in `tests/test_phase2_memory_intelligence_gate.py`; they verify candidate audit-only behavior, explicit profile memory, deterministic supersede, active recall, confirmation-before-write, and local memory eval metrics without vector or external memory dependencies.
+- Memory intelligence contracts live in `tests/scopes/memory/test_memory_manager.py`,
+  `tests/critical/test_memory_read_policy.py`, `tests/critical/test_memory_write_policy.py`,
+  and `tests/scopes/memory/test_memory_retrieval_eval.py`; they verify candidate audit-only
+  behavior, profile memory, deterministic supersede, governed recall/write, and local metrics.
 
 ## Write Quality Eval
 
@@ -656,13 +659,13 @@ metadata, not a counter and not a remote health probe.
 Focused validation for memory changes:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_manager.py tests/test_memory_retrieval_strategy.py tests/test_memory_store_boundary.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_write_policy.py tests/test_memory_privacy_redaction.py tests/test_memory_lifecycle.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_audit_api.py tests/test_memory_snapshot_api.py tests/test_memory_runtime_integration.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_tool_boundary.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_retrieval_eval.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_fact_contract.py tests/test_memory_conflict_resolver.py tests/test_memory_manager_fact_conflicts.py tests/test_memory_fact_status.py tests/test_memory_retrieval_ranking.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_framework_adapters.py tests/test_framework_memory_store.py tests/test_memory_framework_config.py tests/test_memory_framework_bakeoff.py tests/test_memory_framework_bakeoff_cli.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/memory/test_memory_manager.py tests/scopes/memory/test_memory_retrieval_strategy.py tests/scopes/memory/test_memory_store_boundary.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/critical/test_memory_write_policy.py tests/critical/test_memory_privacy_redaction.py tests/scopes/memory/test_memory_lifecycle.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/memory/test_memory_audit_api.py tests/scopes/memory/test_memory_snapshot_api.py tests/scopes/memory/test_memory_runtime_integration.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/critical/test_memory_tool_boundary.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/memory/test_memory_retrieval_eval.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/memory/test_memory_fact_contract.py tests/scopes/memory/test_memory_conflict_resolver.py tests/scopes/memory/test_memory_manager_fact_conflicts.py tests/scopes/memory/test_memory_fact_status.py tests/scopes/memory/test_memory_retrieval_ranking.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/memory/test_memory_framework_adapters.py tests/scopes/memory/test_framework_memory_store.py tests/scopes/memory/test_memory_framework_config.py tests/scopes/memory/test_memory_framework_bakeoff.py tests/scopes/memory/test_memory_framework_bakeoff_cli.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory_quality
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_dual_core.py --offline-only

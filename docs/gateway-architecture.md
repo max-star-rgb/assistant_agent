@@ -570,8 +570,10 @@ Phase 0 treats these entry classifications as architecture contracts:
 | MCP `tool_run` | `ActionValidator -> ToolExecutor -> ToolRegistry` | Tool adapter path, not assistant entry. |
 | Removed legacy Web Chat | `/demo/console`, `/static/index.html`, `/ws/agent/{session_id}`, and `scripts/run_client.py` are not registered or shipped | Ordinary browser chat is out of scope until the realtime assistant runtime is stable. |
 
-Phase 0 entry convergence tests live in `tests/test_phase0_entrypoint_contracts.py`.
-Gateway lifecycle invariants for active-run hangup, inactive-run hangup, trusted entry source, and text-only realtime media events live in `tests/test_gateway.py`, `tests/test_gateway_api.py`, and `tests/test_realtime_call_simulator.py`.
+Gateway entry and lifecycle convergence contracts live in `tests/critical/test_gateway.py`,
+`tests/critical/test_gateway_session.py`, and `tests/scopes/gateway/test_gateway_api.py`.
+Active-run hangup, inactive-run hangup, trusted entry source, and realtime media behavior are
+covered by the `gateway` scope.
 
 ## OpenClaw Reference Boundary
 

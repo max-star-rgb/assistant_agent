@@ -201,7 +201,7 @@ Do not manually edit raw memory rows unless there is no valid backup and the rep
 Focused local validation:
 
 ```bash
-$PY -m pytest tests/test_memory_store_boundary.py tests/test_memory_lifecycle.py tests/test_memory_audit_api.py tests/test_memory_runtime_integration.py
+$PY -m pytest tests/scopes/memory/test_memory_store_boundary.py tests/scopes/memory/test_memory_lifecycle.py tests/scopes/memory/test_memory_audit_api.py tests/scopes/memory/test_memory_runtime_integration.py
 $PY scripts/run_evals.py --suite memory
 ```
 
