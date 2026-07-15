@@ -1,5 +1,7 @@
 """Manual smoke entry point for video_understanding capability."""
 
+# ruff: noqa: E402 - the script adds the repository src directory before package imports.
+
 from __future__ import annotations
 
 import argparse
