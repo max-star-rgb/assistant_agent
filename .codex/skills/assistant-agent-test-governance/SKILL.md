@@ -19,7 +19,7 @@ description: Use only when the user explicitly requests an assistant_agent test 
    - **删除**：行为已移除，或全部断言与边界已由明确命名的保留测试完整覆盖。
 5. 证据不足的候选只报告，不修改。测试数量、覆盖率、年龄和耗时都不能单独作为删除理由。
 6. 编辑前记录“候选 -> 保留测试”映射。编辑后同步 marker、共享 fixture/builder、`tests/scope-map.toml` 和 `tests/README.md`；不要制造难以定位失败的大型合并测试。
-7. 修改后运行受影响测试、critical 与受影响 scope、证据采集器复查、Skill 校验和 `git diff --check`。只有跨 scope 高风险变更、发布/合并门槛、共享测试基础设施变更或用户明确要求时，才运行 `--full`。profiling 永远不得启用 integration 或真实 Provider。
+7. 修改后运行受影响测试、critical 与受影响 scope、证据采集器复查、Skill 校验和 `git diff --check`。仅在符合 `tests/README.md`“命令”一节的 `--full` 门槛时运行完整 offline suite。profiling 永远不得启用 integration 或真实 Provider。
 
 ## 证据采集器
 

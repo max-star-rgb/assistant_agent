@@ -1,0 +1,6 @@
+interface:
+  display_name: "Assistant Agent Development Testing"
+  short_description: "Risk-based test decisions during assistant_agent development"
+  default_prompt: "Use $assistant-agent-development-testing to decide how to test and retain tests for this assistant_agent change."
+policy:
+  allow_implicit_invocation: true

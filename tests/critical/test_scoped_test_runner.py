@@ -296,15 +296,36 @@ def test_repository_scope_map_test_patterns_all_expand() -> None:
 def test_test_documentation_routes_scoped_and_full_commands() -> None:
     readme = (PROJECT_ROOT / "tests/README.md").read_text(encoding="utf-8")
     agents = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    skill = (
+    governance_skill = (
         PROJECT_ROOT / ".codex/skills/assistant-agent-test-governance/SKILL.md"
+    ).read_text(encoding="utf-8")
+    governance_metadata = (
+        PROJECT_ROOT / ".codex/skills/assistant-agent-test-governance/agents/openai.yaml"
+    ).read_text(encoding="utf-8")
+    development_skill = (
+        PROJECT_ROOT / ".codex/skills/assistant-agent-development-testing/SKILL.md"
+    ).read_text(encoding="utf-8")
+    development_metadata = (
+        PROJECT_ROOT
+        / ".codex/skills/assistant-agent-development-testing/agents/openai.yaml"
     ).read_text(encoding="utf-8")
 
     assert "run_scoped_tests.py --changed" in readme
     assert "run_scoped_tests.py --full " in readme
     assert "普通开发" in agents and "run_scoped_tests.py" in agents
-    assert "--full" in skill
-    assert "full-legacy" not in readme + agents + skill
+    assert "assistant-agent-development-testing" in agents
+    assert "窄层无法证明 wiring" in agents
+    for decision in ("ADD", "EXTEND", "REUSE", "STAGE", "NO-TEST"):
+        assert f"| {decision} |" in development_skill
+    assert "三个及以上" in readme and "两个 scope" in readme
+    assert "tests/README.md" in development_skill
+    assert "tests/README.md" in governance_skill
+    assert "$assistant-agent-test-governance" in development_skill
+    assert "最终报告" in development_skill
+    assert "allow_implicit_invocation: true" in development_metadata
+    assert "allow_implicit_invocation: false" in governance_metadata
+    assert "--full" in governance_skill
+    assert "full-legacy" not in readme + agents + governance_skill + development_skill
 
 
 def test_final_repository_layout_uses_only_critical_and_scope_directories() -> None:

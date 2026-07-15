@@ -46,7 +46,8 @@ runner 强制 mock/offline profile、禁用 dotenv，并移除 integration opt-i
 scope 不存在或为空时会保守失败。修改 `tests/**`、runner、scope map、conftest 或 pytest 配置
 会选择所有 scope。
 
-`--full` 只用于跨 scope 高风险变更、共享测试基础设施、发布/合并门槛或用户明确要求。
+`--full` 只用于共享测试基础设施或 scope 路由变化、核心安全底座行为变化、三个及以上
+scope、发布/合并门槛或用户明确要求。两个 scope 的普通功能只运行 critical 与受影响 scope，
 普通局部开发不反复运行完整套件。
 
 ## Marker 语义
@@ -64,6 +65,14 @@ scope 决定“改了什么要跑什么”，marker 描述成本和层级，两�
 或调用真实 Provider。
 
 ## 新增测试方法
+
+功能实现、缺陷修复和行为重构先使用 `.codex/skills/assistant-agent-development-testing`，在
+`ADD`、`EXTEND`、`REUSE`、`STAGE`、`NO-TEST` 中选择主要决策。强制的是测试决策和验证证据，
+不是新增测试数量。
+
+STAGE 测试只允许在开发阶段暂存。阶段结束时，稳定契约必须去掉阶段命名后归入唯一 scope，
+具名历史故障可归入 regression，重复或仅证明里程碑完成的测试必须删除；不得以 phase/stage
+命名或待清理标记进入阶段提交。
 
 每个新增测试必须说明并落实：
 

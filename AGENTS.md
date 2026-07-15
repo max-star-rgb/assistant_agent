@@ -20,6 +20,7 @@
 | 多 agent、`assistant_agent.agent_routing`、AgentRouter、AgentDirectory、A2A/JSON-RPC、`delegate_to_agent`、pilot readiness | `.codex/skills/assistant-agent-collaboration`；`docs/agent-communication-routing.md` |
 | trace、运行监控、ReAct 关键节点观测、redaction | `docs/observability-harness.md` |
 | 面试训练、题库、回答点评、标准答案、面试文档更新 | `.codex/skills/assistant-agent-interview-trainer`；`docs/interview/README.md` |
+| 功能实现、缺陷修复或行为重构中的测试决策、阶段验收和测试保留 | `.codex/skills/assistant-agent-development-testing`；普通行为开发自动触发 |
 | 用户显式请求的全仓文档同步、漂移审计、权威对齐或失效文档清理 | `.codex/skills/assistant-agent-documentation-sync`；不得因普通代码变更隐式触发 |
 | 用户显式请求的测试审计、去重、分层、marker 治理或测试清理 | `.codex/skills/assistant-agent-test-governance`；`tests/README.md`；不得因普通功能开发隐式触发 |
 
@@ -87,9 +88,11 @@ User / CLI / API / Web UI
 
 测试反馈按层级执行，避免普通开发反复承担全量套件成本：
 
+日常行为开发先使用 `.codex/skills/assistant-agent-development-testing` 决定新增、扩展、复用、阶段暂存或不新增测试；不得把“使用 TDD”理解为无条件新建测试文件。
+
 1. 开发循环运行新增测试和直接相关回归；阶段结束使用 `run_scoped_tests.py --scope ...`，已提交范围可使用 `--changed BASE..HEAD`。
-2. 涉及跨层功能时，在提交前补充并运行一条离线端到端测试，贯穿真实仓库调用链，但使用 scripted/fake Provider，禁止默认联网。
-3. `--full` 只用于跨 scope 高风险变更、共享测试基础设施、发布/合并门槛或用户明确要求，不要求每轮局部修改后运行。
+2. 涉及跨层功能且窄层无法证明 wiring 时，在提交前补充并运行一条离线端到端测试，贯穿真实仓库调用链，但使用 scripted/fake Provider，禁止默认联网。
+3. `--full` 触发门槛以 `tests/README.md` 为准，不要求每轮局部修改后运行。
 4. scoped 测试结构、scope 列表、marker 和新增测试方法以 `tests/README.md` 为准。
 
 本地 mock 服务：
