@@ -103,6 +103,63 @@ def test_realtime_adapter_handshake_and_single_frame_protocol(tmp_path: Path) ->
     assert socket.sent[5] == {"type": "response.create"}
 
 
+def test_realtime_adapter_reports_prompt_safe_session_and_sequence_diagnostics(
+    tmp_path: Path,
+) -> None:
+    frame = _frame(tmp_path)
+    socket = FakeWebSocket(
+        [
+            {"type": "session.created"},
+            {"type": "session.updated"},
+            *sum(
+                (
+                    [
+                        {"type": "session.updated"},
+                        {"type": "input_audio_buffer.committed"},
+                        {"type": "response.text.delta", "delta": '{"summary":"ok"}'},
+                        {"type": "response.done", "response": {"status": "completed"}},
+                    ]
+                    for _ in range(2)
+                ),
+                [],
+            ),
+        ]
+    )
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key"),
+        connect=lambda *_args, **_kwargs: socket,
+    )
+
+    for sequence in (7, 8):
+        result = adapter.understand_video(
+            VideoUnderstandingRequest(
+                video_ref="private-video-ref",
+                frame_refs=[str(frame)],
+                metadata={"frame_sequence": sequence},
+            )
+        )
+        assert result.errors == []
+
+    diagnostics = adapter.last_observation_diagnostics
+    assert diagnostics == {
+        "transport": "websocket",
+        "session_generation": 1,
+        "connection_reused": True,
+        "reconnect_count": 0,
+        "target_sequence": 8,
+        "completed_sequence": 8,
+        "first_delta_latency_ms": diagnostics["first_delta_latency_ms"],
+        "total_observation_latency_ms": diagnostics["total_observation_latency_ms"],
+    }
+    assert isinstance(diagnostics["first_delta_latency_ms"], int)
+    assert diagnostics["first_delta_latency_ms"] >= 0
+    assert diagnostics["total_observation_latency_ms"] >= diagnostics["first_delta_latency_ms"]
+    serialized = json.dumps(diagnostics)
+    assert str(frame) not in serialized
+    assert "private-video-ref" not in serialized
+    assert "summary" not in serialized
+
+
 def test_realtime_adapter_rejects_non_single_or_oversized_frame_without_connecting(tmp_path: Path) -> None:
     frame = _frame(tmp_path)
     oversized = _frame(tmp_path, "large.jpg", bytes(200_000))

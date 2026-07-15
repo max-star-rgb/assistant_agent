@@ -141,6 +141,60 @@ class CloseRecordingAdapter:
         self.close_calls += 1
 
 
+class SuccessThenBlockingFailureAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.failure_started = threading.Event()
+        self.release_failure = threading.Event()
+        self.last_observation_diagnostics: dict[str, object] = {}
+
+    def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+        self.calls += 1
+        sequence = int(request.metadata["frame_sequence"])
+        if self.calls == 1:
+            self.last_observation_diagnostics = {
+                "transport": "websocket",
+                "session_generation": 1,
+                "connection_reused": False,
+                "reconnect_count": 0,
+                "target_sequence": sequence,
+                "completed_sequence": sequence,
+                "first_delta_latency_ms": 12,
+                "total_observation_latency_ms": 20,
+            }
+            return VideoUnderstandingResult(
+                summary="first successful scene",
+                objects=["cup"],
+                provider="qwen",
+                output_ref="provider://video/test/1",
+            )
+        self.last_observation_diagnostics = {
+            "transport": "websocket",
+            "session_generation": 2,
+            "connection_reused": False,
+            "reconnect_count": 1,
+            "target_sequence": sequence,
+            "completed_sequence": None,
+            "first_delta_latency_ms": None,
+            "total_observation_latency_ms": 30,
+        }
+        self.failure_started.set()
+        if not self.release_failure.wait(timeout=5.0):
+            raise TimeoutError("test release timed out")
+        return VideoUnderstandingResult(
+            summary="observation failed",
+            provider="qwen",
+            output_ref="provider://video/test/error",
+            errors=[
+                {
+                    "code": "provider_timeout",
+                    "message": "safe timeout",
+                    "recoverable": True,
+                }
+            ],
+        )
+
+
 def _decoded_frame(root: Path, *, sequence: int) -> VideoFrame:
     raw_root = root / "raw"
     raw_root.mkdir(parents=True, exist_ok=True)
@@ -184,6 +238,45 @@ def test_observer_validates_and_executes_selected_frame_through_tool_boundary(tm
         await observer.close()
 
     asyncio.run(scenario())
+
+
+def test_default_observer_collector_selects_initial_change_and_two_second_static_frame(
+    tmp_path: Path,
+) -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+    observer = module.RealtimeVideoObserver(
+        user_id="user-1",
+        session_id="session-1",
+        registry=ToolRegistry(),
+        memory_store=RealtimeVideoMemoryStore(),
+        keyframe_root=tmp_path / "keyframes",
+    )
+    initial = replace(
+        _decoded_frame(tmp_path, sequence=1),
+        timestamp_ms=0,
+        fingerprint=tuple([0] * 16),
+    )
+    changed = replace(
+        _decoded_frame(tmp_path, sequence=2),
+        timestamp_ms=200,
+        fingerprint=tuple([255] * 16),
+    )
+    static_due = replace(
+        _decoded_frame(tmp_path, sequence=3),
+        timestamp_ms=2_200,
+        fingerprint=tuple([255] * 16),
+    )
+
+    first = observer.collector.collect(module._to_ai_frame(initial))
+    change = observer.collector.collect(module._to_ai_frame(changed))
+    due = observer.collector.collect(module._to_ai_frame(static_due))
+
+    assert observer.collector.selector.config.max_interval_seconds == 2.0
+    assert first.processing.decision_reason == "initial_keyframe"
+    assert change.selected_frame is not None
+    assert change.processing.decision_reason in {"visual_change", "semantic_change"}
+    assert due.selected_frame is not None
+    assert due.processing.decision_reason == "max_interval"
 
 
 def test_observer_second_round_sends_one_frame_and_bounded_previous_summary(tmp_path: Path) -> None:
@@ -289,6 +382,8 @@ def test_observer_records_deterministic_phase_timings(tmp_path: Path) -> None:
         assert diagnostics.queue_wait_latency_ms == 7
         assert diagnostics.observation_latency_ms == 80
         assert diagnostics.published_at_ms == 10_000
+        assert diagnostics.target_sequence == 1
+        assert diagnostics.completed_sequence == 1
         await observer.close()
 
     asyncio.run(scenario())
@@ -330,6 +425,60 @@ def test_observer_keeps_one_inflight_and_latest_pending_frame(tmp_path: Path) ->
         await observer.close()
         assert memory.snapshot(VIDEO_ID) is None
         assert list(keyframe_root.rglob("*.jpg")) == []
+
+    asyncio.run(scenario())
+
+
+def test_observer_failure_keeps_last_success_and_projects_refreshing_then_stale(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        memory_module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+        adapter = SuccessThenBlockingFailureAdapter()
+        registry = ToolRegistry()
+        registry.register(VideoUnderstandingTool(adapter=adapter))
+        memory = RealtimeVideoMemoryStore()
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=memory,
+            keyframe_root=tmp_path / "keyframes",
+            collector=AlwaysSelectCollector(),
+        )
+
+        await observer.submit(_decoded_frame(tmp_path, sequence=1))
+        await observer.wait_idle()
+        await observer.submit(_decoded_frame(tmp_path, sequence=2))
+        assert await asyncio.to_thread(adapter.failure_started.wait, 2.0)
+
+        refreshing = memory_module.project_realtime_video_context(
+            memory.snapshot(VIDEO_ID), now_ms=5_000, target_sequence=2
+        )
+        assert refreshing.status == "refreshing"
+        assert refreshing.summary == "first successful scene"
+
+        adapter.release_failure.set()
+        await observer.wait_idle()
+        snapshot = memory.snapshot(VIDEO_ID)
+        stale = memory_module.project_realtime_video_context(
+            snapshot, now_ms=5_100, target_sequence=2
+        )
+
+        assert snapshot is not None
+        assert snapshot.current_state == "first successful scene"
+        assert snapshot.last_success_sequence == 1
+        assert [frame.sequence for frame in snapshot.keyframes] == [1]
+        assert stale.status == "stale"
+        assert stale.error_code == "provider_timeout"
+        assert stale.transport == "websocket"
+        assert stale.session_generation == 2
+        assert stale.connection_reused is False
+        assert stale.reconnect_count == 1
+        assert stale.completed_sequence is None
+        assert stale.target_sequence == 2
+        await observer.close()
 
     asyncio.run(scenario())
 

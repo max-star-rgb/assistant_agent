@@ -117,6 +117,48 @@ def test_video_memory_retains_successful_observation_diagnostics() -> None:
     assert snapshot.observation_diagnostics == diagnostics
 
 
+def test_failed_refresh_updates_attempt_diagnostics_without_losing_snapshot_publish_time() -> None:
+    module = importlib.import_module("assistant_agent.services.realtime_video_memory")
+    store = module.RealtimeVideoMemoryStore()
+    successful_frame = module.SemanticKeyframeRecord(
+        frame_id="frame-1", uri="/tmp/1.jpg", sequence=1, timestamp_ms=1_000
+    )
+    store.record_success(
+        "video-a",
+        successful_frame,
+        _result(summary="last good snapshot", objects=[]),
+        diagnostics=module.RealtimeVideoObservationDiagnostics(
+            published_at_ms=10_000,
+            target_sequence=1,
+            completed_sequence=1,
+        ),
+    )
+
+    store.record_failure(
+        "video-a",
+        module.SemanticKeyframeRecord(
+            frame_id="frame-2", uri="/tmp/2.jpg", sequence=2, timestamp_ms=2_000
+        ),
+        {"code": "provider_timeout", "message": "timed out", "recoverable": True},
+        diagnostics=module.RealtimeVideoObservationDiagnostics(
+            transport="websocket",
+            target_sequence=2,
+            completed_sequence=None,
+            total_observation_latency_ms=30,
+        ),
+    )
+
+    snapshot = store.snapshot("video-a")
+    context = project_realtime_video_context(snapshot, now_ms=10_100, target_sequence=2)
+
+    assert snapshot is not None
+    assert snapshot.current_state == "last good snapshot"
+    assert snapshot.observation_diagnostics.published_at_ms == 10_000
+    assert snapshot.observation_diagnostics.target_sequence == 2
+    assert snapshot.observation_diagnostics.completed_sequence is None
+    assert context.snapshot_publish_age_ms == 100
+
+
 def test_runtime_shares_one_video_memory_store_with_default_tool() -> None:
     runtime = AgentGraphRuntime(config=ProviderConfig())
 

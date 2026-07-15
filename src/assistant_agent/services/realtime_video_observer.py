@@ -26,6 +26,7 @@ from assistant_agent.services.realtime_video_memory import (
 from assistant_agent.services.video_context import VideoFrame
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.video_ai.keyframe.collector import AdaptiveKeyframeCollector
+from assistant_agent.video_ai.keyframe.selector import KeyframeSelectorConfig
 from assistant_agent.video_ai.types import (
     FrameProcessingResult,
     KeyframeChangeMetrics,
@@ -37,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_KEYFRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_keyframes"
 DEFAULT_CLOSE_WAIT_SECONDS = 1.0
 REALTIME_PREVIOUS_SUMMARY_MAX_CHARS = 2_000
+REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,12 @@ class RealtimeVideoObserver:
         self.registry = registry
         self.memory_store = memory_store
         self.keyframe_root = Path(keyframe_root)
-        self.collector = collector or AdaptiveKeyframeCollector()
+        self.collector = collector or AdaptiveKeyframeCollector(
+            keyframe_config=KeyframeSelectorConfig(
+                min_interval_seconds=0.0,
+                max_interval_seconds=REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS,
+            )
+        )
         self.validator = validator or ActionValidator()
         self.close_wait_seconds = close_wait_seconds
         self.clock_ns = clock_ns
@@ -320,15 +327,14 @@ class RealtimeVideoObserver:
                     continue
                 if result.success and result.data:
                     observation = VideoUnderstandingResult.model_validate(result.data)
-                    diagnostics = RealtimeVideoObservationDiagnostics(
-                        h264_decode_latency_ms=item.h264_decode_latency_ms,
-                        keyframe_selection_latency_ms=item.keyframe_selection_latency_ms,
-                        queue_wait_latency_ms=_elapsed_ms(item.enqueued_ns, dequeued_ns),
-                        observation_latency_ms=_elapsed_ms(
-                            observation_started_ns,
-                            observation_finished_ns,
-                        ),
-                        published_at_ms=self.wall_clock_ms(),
+                    diagnostics = self._observation_diagnostics(
+                        item=item,
+                        dequeued_ns=dequeued_ns,
+                        observation_started_ns=observation_started_ns,
+                        observation_finished_ns=observation_finished_ns,
+                        succeeded=True,
+                    ).model_copy(
+                        update={"published_at_ms": self.wall_clock_ms()}
                     )
                     evicted = self.memory_store.record_success(
                         item_video_id(item.record, self.video_id),
@@ -343,6 +349,13 @@ class RealtimeVideoObserver:
                         item_video_id(item.record, self.video_id),
                         item.record,
                         _result_error(result),
+                        diagnostics=self._observation_diagnostics(
+                            item=item,
+                            dequeued_ns=dequeued_ns,
+                            observation_started_ns=observation_started_ns,
+                            observation_finished_ns=observation_finished_ns,
+                            succeeded=False,
+                        ),
                     )
                     self._delete_record(item)
             except asyncio.CancelledError:
@@ -434,6 +447,46 @@ class RealtimeVideoObserver:
         close = getattr(adapter, "close", None)
         if callable(close):
             await asyncio.to_thread(close)
+
+    def _observation_diagnostics(
+        self,
+        *,
+        item: _QueuedObservation,
+        dequeued_ns: int,
+        observation_started_ns: int,
+        observation_finished_ns: int,
+        succeeded: bool,
+    ) -> RealtimeVideoObservationDiagnostics:
+        provider = self._provider_diagnostics()
+        return RealtimeVideoObservationDiagnostics(
+            h264_decode_latency_ms=item.h264_decode_latency_ms,
+            keyframe_selection_latency_ms=item.keyframe_selection_latency_ms,
+            queue_wait_latency_ms=_elapsed_ms(item.enqueued_ns, dequeued_ns),
+            observation_latency_ms=_elapsed_ms(
+                observation_started_ns,
+                observation_finished_ns,
+            ),
+            transport=provider.get("transport"),
+            session_generation=provider.get("session_generation"),
+            connection_reused=provider.get("connection_reused"),
+            reconnect_count=provider.get("reconnect_count"),
+            target_sequence=provider.get("target_sequence", item.record.sequence),
+            completed_sequence=provider.get(
+                "completed_sequence",
+                item.record.sequence if succeeded else None,
+            ),
+            first_delta_latency_ms=provider.get("first_delta_latency_ms"),
+            total_observation_latency_ms=provider.get("total_observation_latency_ms"),
+        )
+
+    def _provider_diagnostics(self) -> dict[str, Any]:
+        try:
+            tool = self.registry.get("video_understanding")
+        except KeyError:
+            return {}
+        adapter = getattr(tool, "adapter", None)
+        diagnostics = getattr(adapter, "last_observation_diagnostics", None)
+        return dict(diagnostics) if isinstance(diagnostics, dict) else {}
 
     def _retain_keyframe(self, frame: VideoFrame) -> SemanticKeyframeRecord:
         suffix = _safe_name(frame.video_id.removeprefix("agent-service-video-"))

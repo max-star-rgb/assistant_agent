@@ -50,6 +50,12 @@ class QwenRealtimeVisionAdapter:
         self._connected_at = 0.0
         self._successful_observations = 0
         self._connection_failures = 0
+        self._session_generation = 0
+        self._connection_reused = False
+        self._observation_started_at = 0.0
+        self._first_delta_latency_ms: int | None = None
+        self._target_sequence: int | None = None
+        self._last_observation_diagnostics: dict[str, Any] = {}
         self._closed = False
 
     @property
@@ -60,8 +66,16 @@ class QwenRealtimeVisionAdapter:
     def successful_observations(self) -> int:
         return self._successful_observations
 
+    @property
+    def last_observation_diagnostics(self) -> dict[str, Any]:
+        return dict(self._last_observation_diagnostics)
+
     def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
         started_at = perf_counter()
+        self._observation_started_at = started_at
+        self._first_delta_latency_ms = None
+        self._target_sequence = _safe_sequence(request.metadata.get("frame_sequence"))
+        self._connection_reused = False
         if not self.config.api_key:
             return self._failure("provider_unconfigured", "Qwen realtime vision is not configured.", started_at)
         if len(request.frame_refs) != 1:
@@ -124,6 +138,7 @@ class QwenRealtimeVisionAdapter:
             return self._failure("provider_bad_response", "Qwen realtime vision request failed.", started_at)
         self._successful_observations += 1
         self._connection_failures = 0
+        self._publish_diagnostics(started_at, completed_sequence=self._target_sequence)
         return result
 
     def close(self) -> None:
@@ -139,6 +154,7 @@ class QwenRealtimeVisionAdapter:
         ):
             self._discard_connection()
         if self._socket is not None:
+            self._connection_reused = True
             return self._socket
         if self._connection_failures:
             self._sleep(_backoff_seconds(self._connection_failures))
@@ -173,6 +189,7 @@ class QwenRealtimeVisionAdapter:
                     pass
             raise _ConnectionFailed from None
         self._socket = socket
+        self._session_generation += 1
         self._connected_at = now
         self._successful_observations = 0
         self._connection_failures = 0
@@ -195,6 +212,11 @@ class QwenRealtimeVisionAdapter:
             if event_type in {"response.text.delta", "response.output_text.delta"}:
                 delta = event.get("delta")
                 if isinstance(delta, str):
+                    if self._first_delta_latency_ms is None:
+                        self._first_delta_latency_ms = max(
+                            0,
+                            int((perf_counter() - self._observation_started_at) * 1000),
+                        )
                     deltas.append(delta)
             elif event_type == "error":
                 raise RuntimeError("Provider returned an error.")
@@ -219,6 +241,7 @@ class QwenRealtimeVisionAdapter:
                 pass
 
     def _failure(self, code: str, message: str, started_at: float) -> VideoUnderstandingResult:
+        self._publish_diagnostics(started_at, completed_sequence=None)
         return VideoUnderstandingResult(
             summary="Qwen realtime vision observation failed.",
             provider=self.provider,
@@ -227,6 +250,23 @@ class QwenRealtimeVisionAdapter:
             errors=[{"code": code, "message": message, "recoverable": True}],
             latency_ms=int((perf_counter() - started_at) * 1000),
         )
+
+    def _publish_diagnostics(
+        self,
+        started_at: float,
+        *,
+        completed_sequence: int | None,
+    ) -> None:
+        self._last_observation_diagnostics = {
+            "transport": "websocket",
+            "session_generation": self._session_generation or None,
+            "connection_reused": self._connection_reused,
+            "reconnect_count": max(0, self._session_generation - 1),
+            "target_sequence": self._target_sequence,
+            "completed_sequence": completed_sequence,
+            "first_delta_latency_ms": self._first_delta_latency_ms,
+            "total_observation_latency_ms": max(0, int((perf_counter() - started_at) * 1000)),
+        }
 
 
 def _default_connect(url: str, **kwargs: Any) -> Any:
@@ -301,6 +341,12 @@ def _backoff_seconds(failures: int) -> float:
 def _safe_ref(video_ref: str | None) -> str:
     value = (video_ref or "observation").rsplit("/", maxsplit=1)[-1]
     return "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in value) or "observation"
+
+
+def _safe_sequence(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 class _ConnectionFailed(RuntimeError):

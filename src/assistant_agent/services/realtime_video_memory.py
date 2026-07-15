@@ -32,6 +32,14 @@ class RealtimeVideoObservationDiagnostics(BaseModel):
     queue_wait_latency_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
     published_at_ms: int | None = Field(default=None, ge=0)
+    transport: str | None = Field(default=None, max_length=40)
+    session_generation: int | None = Field(default=None, ge=1)
+    connection_reused: bool | None = None
+    reconnect_count: int | None = Field(default=None, ge=0)
+    target_sequence: int | None = Field(default=None, ge=0)
+    completed_sequence: int | None = Field(default=None, ge=0)
+    first_delta_latency_ms: int | None = Field(default=None, ge=0)
+    total_observation_latency_ms: int | None = Field(default=None, ge=0)
 
 
 class RealtimeVideoSnapshot(BaseModel):
@@ -134,18 +142,32 @@ class RealtimeVideoMemoryStore:
         video_id: str,
         frame: SemanticKeyframeRecord,
         error: dict[str, Any],
+        *,
+        diagnostics: RealtimeVideoObservationDiagnostics | None = None,
     ) -> None:
         """Record a completed failed observation without erasing prior state."""
 
         _ = frame
         with self._lock:
             current = self._snapshots.get(video_id) or RealtimeVideoSnapshot(video_id=video_id)
+            update: dict[str, Any] = {
+                "last_observation_status": "failed",
+                "last_error": dict(error),
+                "in_flight": False,
+            }
+            if diagnostics is not None:
+                successful_diagnostics = current.observation_diagnostics
+                if (
+                    diagnostics.published_at_ms is None
+                    and successful_diagnostics is not None
+                    and successful_diagnostics.published_at_ms is not None
+                ):
+                    diagnostics = diagnostics.model_copy(
+                        update={"published_at_ms": successful_diagnostics.published_at_ms}
+                    )
+                update["observation_diagnostics"] = diagnostics
             self._snapshots[video_id] = current.model_copy(
-                update={
-                    "last_observation_status": "failed",
-                    "last_error": dict(error),
-                    "in_flight": False,
-                },
+                update=update,
                 deep=True,
             )
 
@@ -245,6 +267,17 @@ def project_realtime_video_context(
         pending_count=snapshot.pending_count,
         in_flight=snapshot.in_flight,
         error_code=_clip_text(str(error_code), 80) if error_code else None,
+        transport=diagnostics.transport if diagnostics is not None else None,
+        session_generation=(diagnostics.session_generation if diagnostics is not None else None),
+        connection_reused=(diagnostics.connection_reused if diagnostics is not None else None),
+        reconnect_count=(diagnostics.reconnect_count if diagnostics is not None else None),
+        completed_sequence=(diagnostics.completed_sequence if diagnostics is not None else None),
+        first_delta_latency_ms=(
+            diagnostics.first_delta_latency_ms if diagnostics is not None else None
+        ),
+        total_observation_latency_ms=(
+            diagnostics.total_observation_latency_ms if diagnostics is not None else None
+        ),
     )
 
 
