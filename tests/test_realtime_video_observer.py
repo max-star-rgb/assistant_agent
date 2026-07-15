@@ -6,6 +6,8 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
@@ -435,6 +437,41 @@ def test_observer_close_waits_for_late_retention_and_cleans_ownership(
         await close_task
 
         assert isinstance(promotion_result[0], RuntimeError)
+        assert observer._owned_paths == set()
+        assert not keyframe_root.exists()
+
+    asyncio.run(scenario())
+
+
+def test_observer_partial_retention_failure_cleans_unregistered_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        keyframe_root = tmp_path / "keyframes"
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=ToolRegistry(),
+            memory_store=RealtimeVideoMemoryStore(),
+            keyframe_root=keyframe_root,
+        )
+
+        def partial_copy(_source: str, destination: Path) -> None:
+            Path(destination).write_bytes(b"partial")
+            raise OSError("copy failed after creating destination")
+
+        monkeypatch.setattr(module.shutil, "copy2", partial_copy)
+        promotion = asyncio.create_task(
+            observer.promote(_decoded_frame(tmp_path, sequence=5))
+        )
+        result = await asyncio.gather(promotion, return_exceptions=True)
+        await observer.wait_for_promotions()
+        await observer.close()
+
+        assert isinstance(result[0], OSError)
+        assert promotion.done()
         assert observer._owned_paths == set()
         assert not keyframe_root.exists()
 

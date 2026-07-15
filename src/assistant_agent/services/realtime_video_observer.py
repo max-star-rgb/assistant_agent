@@ -407,7 +407,12 @@ class RealtimeVideoObserver:
         directory = self.keyframe_root / suffix
         directory.mkdir(parents=True, exist_ok=True)
         destination = directory / f"frame-{frame.sequence:06d}.jpg"
-        shutil.copy2(frame.uri, destination)
+        try:
+            shutil.copy2(frame.uri, destination)
+        except OSError:
+            destination.unlink(missing_ok=True)
+            _remove_empty_tree(self.keyframe_root)
+            raise
         destination = destination.resolve()
         return SemanticKeyframeRecord(
             frame_id=frame.frame_id,
