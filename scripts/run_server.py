@@ -26,6 +26,9 @@ if str(SRC_ROOT) not in sys.path:
 from assistant_agent.config import ProviderConfig
 from assistant_agent.services.assistant_run_service import load_env_file, runtime_info
 from assistant_agent.services.operational_logging import (
+    OPERATIONAL_CONSOLE_LEVEL_ENV,
+    OPERATIONAL_CONSOLE_MODE_ENV,
+    OPERATIONAL_FILE_LEVEL_ENV,
     OPERATIONAL_LOG_DIR_ENV,
     OPERATIONAL_LOG_LEVEL_ENV,
     OPERATIONAL_LOGGING_ENABLED_ENV,
@@ -61,8 +64,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--log-level",
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default=None,
+        help="Legacy shorthand that sets both console and file log levels.",
+    )
+    parser.add_argument(
+        "--console-level",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
         default="INFO",
-        help="Operational log level for combined console and component files.",
+        help="Minimum level shown in the Combined console (default: INFO).",
+    )
+    parser.add_argument(
+        "--file-log-level",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default="DEBUG",
+        help="Minimum level written to gateway.log and runtime.log (default: DEBUG).",
+    )
+    parser.add_argument(
+        "--console-mode",
+        choices=("concise", "verbose"),
+        default="concise",
+        help="Concise lifecycle summary or all prompt-safe operational events.",
     )
     parser.add_argument(
         "--log-dir",
@@ -219,7 +240,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         log_dir = REPO_ROOT / log_dir
     os.environ[OPERATIONAL_LOGGING_ENABLED_ENV] = "1"
     os.environ[OPERATIONAL_LOG_DIR_ENV] = str(log_dir)
-    os.environ[OPERATIONAL_LOG_LEVEL_ENV] = args.log_level
+    if args.log_level is not None:
+        os.environ[OPERATIONAL_LOG_LEVEL_ENV] = args.log_level
+    else:
+        os.environ.pop(OPERATIONAL_LOG_LEVEL_ENV, None)
+    os.environ[OPERATIONAL_CONSOLE_LEVEL_ENV] = args.console_level
+    os.environ[OPERATIONAL_FILE_LEVEL_ENV] = args.file_log_level
+    os.environ[OPERATIONAL_CONSOLE_MODE_ENV] = args.console_mode
     configure_operational_logging_from_env()
 
     import uvicorn
@@ -234,7 +261,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(f"  Gateway smoke: python scripts/run_gateway_client.py --server {base} \"你好\"")
     print(f"  access_log: {'enabled' if args.access_log else 'disabled'}")
-    print(f"  operational_log_level: {args.log_level}")
+    if args.log_level is not None:
+        print(f"  operational_log_level: {args.log_level} (legacy override)")
+    else:
+        print(f"  console_log: {args.console_level} / {args.console_mode}")
+        print(f"  file_log_level: {args.file_log_level}")
     print(f"  operational_log_dir: {log_dir}")
     _print_runtime_summary(config, loaded_env_keys=sorted(loaded_env))
     if args.public_url:
@@ -249,6 +280,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         port=args.port,
         reload=args.reload,
         access_log=args.access_log,
+        log_level="info" if args.access_log else "warning",
     )
     return 0
 

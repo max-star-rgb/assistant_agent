@@ -3,6 +3,8 @@ import importlib
 import os
 import asyncio
 import logging
+import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 from assistant_agent.api import app as app_module
@@ -47,7 +49,10 @@ def test_run_server_parser_defaults() -> None:
     assert args.provider is None
     assert args.image_provider is None
     assert args.allow_local_trace_content is False
-    assert args.log_level == "INFO"
+    assert args.log_level is None
+    assert args.console_level == "INFO"
+    assert args.file_log_level == "DEBUG"
+    assert args.console_mode == "concise"
     assert args.log_dir == ".data/logs"
 
 
@@ -55,11 +60,63 @@ def test_run_server_parser_accepts_operational_logging_options() -> None:
     module = _load_module("run_server_parser_logging_test")
 
     args = module.build_parser().parse_args(
-        ["--log-level", "DEBUG", "--log-dir", "/tmp/assistant-logs"]
+        [
+            "--console-level",
+            "WARNING",
+            "--file-log-level",
+            "INFO",
+            "--console-mode",
+            "verbose",
+            "--log-dir",
+            "/tmp/assistant-logs",
+        ]
     )
 
-    assert args.log_level == "DEBUG"
+    assert args.console_level == "WARNING"
+    assert args.file_log_level == "INFO"
+    assert args.console_mode == "verbose"
     assert args.log_dir == "/tmp/assistant-logs"
+
+
+def test_run_server_parser_retains_legacy_log_level_shorthand() -> None:
+    module = _load_module("run_server_parser_legacy_logging_test")
+
+    args = module.build_parser().parse_args(["--log-level", "ERROR"])
+
+    assert args.log_level == "ERROR"
+
+
+def test_run_server_suppresses_uvicorn_info_access_noise(monkeypatch, tmp_path) -> None:
+    module = _load_module("run_server_uvicorn_logging_test")
+    captured: dict[str, object] = {}
+    mutated_env = (
+        "MULTIMODAL_AGENT_OPERATIONAL_LOGGING_ENABLED",
+        "MULTIMODAL_AGENT_OPERATIONAL_LOG_DIR",
+        "MULTIMODAL_AGENT_OPERATIONAL_LOG_LEVEL",
+        "MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_LEVEL",
+        "MULTIMODAL_AGENT_OPERATIONAL_FILE_LEVEL",
+        "MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_MODE",
+        "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED",
+        "MULTIMODAL_AGENT_SKIP_DOTENV",
+    )
+    for key in mutated_env:
+        monkeypatch.setenv(key, os.environ.get(key, ""))
+
+    def _run(*args, **kwargs) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=_run))
+    try:
+        assert module.main(["--no-env-file", "--log-dir", str(tmp_path)]) == 0
+    finally:
+        from assistant_agent.services.operational_logging import (
+            reset_operational_logging_for_tests,
+        )
+
+        reset_operational_logging_for_tests()
+
+    assert captured["access_log"] is False
+    assert captured["log_level"] == "warning"
 
 
 def test_operational_logging_is_idempotent_and_separates_component_files(
@@ -69,8 +126,16 @@ def test_operational_logging_is_idempotent_and_separates_component_files(
     assert importlib.util.find_spec("assistant_agent.services.operational_logging") is not None
     operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
     try:
-        operational_logging.configure_operational_logging(tmp_path, "INFO")
-        operational_logging.configure_operational_logging(tmp_path, "INFO")
+        operational_logging.configure_operational_logging(
+            tmp_path,
+            console_level="INFO",
+            file_level="DEBUG",
+        )
+        operational_logging.configure_operational_logging(
+            tmp_path,
+            console_level="INFO",
+            file_level="DEBUG",
+        )
 
         gateway_logger = logging.getLogger("assistant_agent.gateway.lifecycle")
         runtime_logger = logging.getLogger("assistant_agent.runtime.trace")
@@ -94,7 +159,17 @@ def test_operational_logging_is_idempotent_and_separates_component_files(
                 "trace_id": "runtime-trace",
             },
         )
-        logging.getLogger("assistant_agent.api.sample").info("ordinary package event")
+        runtime_logger.debug(
+            "runtime debug detail",
+            extra={
+                "component": "runtime",
+                "event": "context.build.started",
+                "run_id": "runtime-run",
+                "turn_id": "runtime-turn",
+                "trace_id": "runtime-trace",
+            },
+        )
+        logging.getLogger("assistant_agent.api.sample").info("ordinary package secret")
         for logger in (gateway_logger, runtime_logger):
             for handler in logger.handlers:
                 handler.flush()
@@ -104,14 +179,17 @@ def test_operational_logging_is_idempotent_and_separates_component_files(
         assert len(gateway_raw.splitlines()) == 1
         assert "gateway event" in gateway_raw
         assert "runtime event" not in gateway_raw
-        assert len(runtime_raw.splitlines()) == 1
+        assert len(runtime_raw.splitlines()) == 2
         assert "runtime event" in runtime_raw
+        assert "runtime debug detail" in runtime_raw
         assert "gateway event" not in runtime_raw
         assert "component=gateway" in gateway_raw
         assert "event=llm.chat.finished" in runtime_raw
-        combined = capsys.readouterr().err
-        assert "ordinary package event" in combined
-        assert "component=application event=log" in combined
+        captured = capsys.readouterr()
+        assert "ordinary package secret" not in captured.out
+        assert "runtime debug detail" not in captured.out
+        assert "ordinary package secret" not in captured.err
+        assert "component=application event=log" not in captured.out
     finally:
         operational_logging.reset_operational_logging_for_tests()
 
@@ -123,9 +201,104 @@ def test_operational_logging_file_failure_keeps_combined_console(tmp_path, capsy
     try:
         operational_logging.configure_operational_logging(blocked_parent / "logs", "INFO")
 
-        logging.getLogger("assistant_agent.api.sample").info("console remains available")
+        logging.getLogger("assistant_agent.gateway.lifecycle").info(
+            "safe gateway projection",
+            extra={
+                "component": "gateway",
+                "event": "gateway.run.started",
+                "run_id": "fallback-run",
+                "turn_id": "fallback-turn",
+                "trace_id": "-",
+            },
+        )
 
-        assert "console remains available" in capsys.readouterr().err
+        captured = capsys.readouterr()
+        assert "gateway.run.started" in captured.out
+        assert "gateway.run.started" not in captured.err
+    finally:
+        operational_logging.reset_operational_logging_for_tests()
+
+
+def test_operational_console_splits_severity_and_concise_mode_hides_runtime_detail(
+    tmp_path,
+    capsys,
+) -> None:
+    operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
+    try:
+        operational_logging.configure_operational_logging(
+            tmp_path,
+            console_level="INFO",
+            file_level="DEBUG",
+            console_mode="concise",
+        )
+        gateway_logger = logging.getLogger("assistant_agent.gateway.lifecycle")
+        runtime_logger = logging.getLogger("assistant_agent.runtime.trace")
+        gateway_logger.info(
+            "user_id=sha256:user session_id=sha256:session",
+            extra={
+                "component": "gateway",
+                "event": "gateway.run.started",
+                "run_id": "gateway-run-123456",
+                "turn_id": "gateway-turn-123456",
+                "trace_id": "-",
+            },
+        )
+        runtime_logger.info(
+            "status=completed provider=mock latency_ms=12",
+            extra={
+                "component": "runtime",
+                "event": "llm.chat.finished",
+                "run_id": "runtime-run",
+                "turn_id": "runtime-turn",
+                "trace_id": "runtime-trace",
+            },
+        )
+        logging.getLogger("assistant_agent.api.sample").warning(
+            "operator attention secret-session-value"
+        )
+
+        captured = capsys.readouterr()
+        assert "gateway.run.started" in captured.out
+        assert "run=gateway-run" in captured.out
+        assert "user_id=" not in captured.out
+        assert "llm.chat.finished" not in captured.out
+        assert "operator attention" not in captured.out
+        assert "operator attention" not in captured.err
+        assert "WARNING assistant_agent.api.sample" in captured.err
+        assert "llm.chat.finished" in (tmp_path / "runtime.log").read_text(encoding="utf-8")
+    finally:
+        operational_logging.reset_operational_logging_for_tests()
+
+
+def test_operational_console_verbose_mode_shows_runtime_detail(tmp_path, capsys) -> None:
+    operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
+    try:
+        operational_logging.configure_operational_logging(
+            tmp_path,
+            console_level="INFO",
+            file_level="DEBUG",
+            console_mode="verbose",
+        )
+        logging.getLogger("assistant_agent.runtime.trace").info(
+            "status=completed provider=mock latency_ms=12",
+            extra={
+                "component": "runtime",
+                "event": "llm.chat.finished",
+                "run_id": "runtime-run",
+                "turn_id": "runtime-turn",
+                "trace_id": "runtime-trace",
+            },
+        )
+        logging.getLogger("assistant_agent.api.sample").info(
+            "verbose-secret-session-value"
+        )
+
+        captured = capsys.readouterr()
+        assert "llm.chat.finished" in captured.out
+        assert "provider=mock" in captured.out
+        assert "assistant_agent.api.sample" in captured.out
+        assert "verbose-secret-session-value" not in captured.out
+        assert captured.err == ""
     finally:
         operational_logging.reset_operational_logging_for_tests()
 

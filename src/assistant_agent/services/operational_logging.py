@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sys
 import time
 from collections.abc import Mapping
 from logging.handlers import RotatingFileHandler
@@ -19,15 +20,37 @@ GATEWAY_LOGGER_NAME = "assistant_agent.gateway.lifecycle"
 RUNTIME_LOGGER_NAME = "assistant_agent.runtime.trace"
 DEFAULT_OPERATIONAL_LOG_DIR = Path(".data/logs")
 DEFAULT_OPERATIONAL_LOG_LEVEL = "INFO"
+DEFAULT_OPERATIONAL_CONSOLE_LEVEL = "INFO"
+DEFAULT_OPERATIONAL_FILE_LEVEL = "DEBUG"
+DEFAULT_OPERATIONAL_CONSOLE_MODE = "concise"
 OPERATIONAL_LOG_MAX_BYTES = 5 * 1024 * 1024
 OPERATIONAL_LOG_BACKUP_COUNT = 3
 OPERATIONAL_LOGGING_ENABLED_ENV = "MULTIMODAL_AGENT_OPERATIONAL_LOGGING_ENABLED"
 OPERATIONAL_LOG_DIR_ENV = "MULTIMODAL_AGENT_OPERATIONAL_LOG_DIR"
 OPERATIONAL_LOG_LEVEL_ENV = "MULTIMODAL_AGENT_OPERATIONAL_LOG_LEVEL"
+OPERATIONAL_CONSOLE_LEVEL_ENV = "MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_LEVEL"
+OPERATIONAL_FILE_LEVEL_ENV = "MULTIMODAL_AGENT_OPERATIONAL_FILE_LEVEL"
+OPERATIONAL_CONSOLE_MODE_ENV = "MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_MODE"
 
 _PACKAGE_LOGGER_NAME = "assistant_agent"
 _HANDLER_MARKER = "_assistant_agent_operational_handler"
 _CONFIG_LOCK = RLock()
+_CONCISE_GATEWAY_EVENTS = frozenset(
+    {
+        "gateway.run.started",
+        "gateway.run.queued",
+        "gateway.run.queue_rejected",
+        "gateway.run.queue_expired",
+        "gateway.run.cancel_requested",
+        "gateway.run.cancelled",
+        "gateway.run.completed",
+        "gateway.run.errored",
+        "gateway.session.acquired",
+        "gateway.session.destroyed",
+        "gateway.session.hangup_marked",
+    }
+)
+_CONCISE_RUNTIME_EVENTS = frozenset({"run.failed", "run.cancelled"})
 _GATEWAY_PAYLOAD_FIELDS = frozenset(
     {
         "active_count",
@@ -95,20 +118,84 @@ class _ContextDefaultsFilter(logging.Filter):
         return True
 
 
+class _ConsoleRecordFilter(logging.Filter):
+    def __init__(
+        self,
+        *,
+        minimum_level: int,
+        maximum_level: int | None,
+        mode: str,
+    ) -> None:
+        super().__init__()
+        self._minimum_level = minimum_level
+        self._maximum_level = maximum_level
+        self._mode = mode
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno < self._minimum_level:
+            return False
+        if self._maximum_level is not None and record.levelno >= self._maximum_level:
+            return False
+        if self._mode == "verbose" or record.levelno >= logging.WARNING:
+            return True
+        component = str(getattr(record, "component", "application"))
+        event = str(getattr(record, "event", "log"))
+        if component == "gateway":
+            return event in _CONCISE_GATEWAY_EVENTS
+        if component == "runtime":
+            return event in _CONCISE_RUNTIME_EVENTS
+        return record.levelno >= logging.WARNING
+
+
+class _HumanConsoleFormatter(_UtcOperationalFormatter):
+    def __init__(self, *, mode: str) -> None:
+        super().__init__(datefmt="%H:%M:%S")
+        self._mode = mode
+
+    def format(self, record: logging.LogRecord) -> str:
+        timestamp = self.formatTime(record, self.datefmt)
+        component = str(getattr(record, "component", "application"))
+        event = str(getattr(record, "event", "log"))
+        label = _console_label(record.levelname, event)
+        if component not in {"gateway", "runtime"}:
+            return f"{timestamp} {label:<7} {record.name}"
+        identifiers = _console_identifiers(record)
+        suffix = f" {identifiers}" if identifiers else ""
+        if self._mode == "verbose":
+            message = record.getMessage()
+            if message:
+                suffix += f" {message}"
+        return f"{timestamp} {label:<7} {event}{suffix}"
+
+
 def configure_operational_logging(
     log_dir: Path,
-    level: str = DEFAULT_OPERATIONAL_LOG_LEVEL,
+    level: str | None = None,
+    *,
+    console_level: str = DEFAULT_OPERATIONAL_CONSOLE_LEVEL,
+    file_level: str = DEFAULT_OPERATIONAL_FILE_LEVEL,
+    console_mode: str = DEFAULT_OPERATIONAL_CONSOLE_MODE,
 ) -> None:
-    """Configure one combined console and isolated rotating component files."""
+    """Configure a human console and isolated rotating component files.
+
+    ``level`` is retained as a compatibility shorthand that sets both console
+    and file levels. New callers should use the explicit level arguments.
+    """
 
     try:
-        resolved_level = _resolve_level(level)
+        if level is not None:
+            console_level = level
+            file_level = level
+        resolved_console_level = _resolve_level(console_level)
+        resolved_file_level = _resolve_level(file_level)
     except (TypeError, ValueError):
-        resolved_level = logging.INFO
+        resolved_console_level = logging.INFO
+        resolved_file_level = logging.INFO
+    resolved_console_mode = _resolve_console_mode(console_mode)
     resolved_dir = Path(log_dir)
     with _CONFIG_LOCK:
         reset_operational_logging_for_tests()
-        formatter = _UtcOperationalFormatter(
+        file_formatter = _UtcOperationalFormatter(
             "%(asctime)s.%(msecs)03dZ level=%(levelname)s component=%(component)s "
             "event=%(event)s run_id=%(run_id)s turn_id=%(turn_id)s "
             "trace_id=%(trace_id)s %(message)s",
@@ -116,14 +203,30 @@ def configure_operational_logging(
         )
 
         package_logger = logging.getLogger(_PACKAGE_LOGGER_NAME)
-        package_logger.setLevel(resolved_level)
+        package_logger.setLevel(resolved_console_level)
         package_logger.propagate = False
-        console = logging.StreamHandler()
-        _mark_handler(console, "console")
-        console.addFilter(_ContextDefaultsFilter())
-        console.setLevel(resolved_level)
-        console.setFormatter(formatter)
-        package_logger.addHandler(console)
+        for role, stream, minimum_level, maximum_level in (
+            ("console.stdout", sys.stdout, resolved_console_level, logging.WARNING),
+            (
+                "console.stderr",
+                sys.stderr,
+                max(resolved_console_level, logging.WARNING),
+                None,
+            ),
+        ):
+            console = logging.StreamHandler(stream)
+            _mark_handler(console, role)
+            console.addFilter(_ContextDefaultsFilter())
+            console.addFilter(
+                _ConsoleRecordFilter(
+                    minimum_level=minimum_level,
+                    maximum_level=maximum_level,
+                    mode=resolved_console_mode,
+                )
+            )
+            console.setLevel(logging.DEBUG)
+            console.setFormatter(_HumanConsoleFormatter(mode=resolved_console_mode))
+            package_logger.addHandler(console)
 
         try:
             resolved_dir.mkdir(parents=True, exist_ok=True)
@@ -136,7 +239,7 @@ def configure_operational_logging(
             (RUNTIME_LOGGER_NAME, "runtime.log"),
         ):
             component_logger = logging.getLogger(logger_name)
-            component_logger.setLevel(resolved_level)
+            component_logger.setLevel(min(resolved_console_level, resolved_file_level))
             component_logger.propagate = True
             try:
                 handler = RotatingFileHandler(
@@ -159,8 +262,8 @@ def configure_operational_logging(
                 continue
             _mark_handler(handler, filename)
             handler.addFilter(_ExactLoggerFilter(logger_name))
-            handler.setLevel(resolved_level)
-            handler.setFormatter(formatter)
+            handler.setLevel(resolved_file_level)
+            handler.setFormatter(file_formatter)
             component_logger.addHandler(handler)
 
 
@@ -177,9 +280,20 @@ def configure_operational_logging_from_env(
         "on",
     }:
         return
+    legacy_level = source.get(OPERATIONAL_LOG_LEVEL_ENV)
     configure_operational_logging(
         Path(source.get(OPERATIONAL_LOG_DIR_ENV) or DEFAULT_OPERATIONAL_LOG_DIR),
-        source.get(OPERATIONAL_LOG_LEVEL_ENV) or DEFAULT_OPERATIONAL_LOG_LEVEL,
+        legacy_level,
+        console_level=(
+            source.get(OPERATIONAL_CONSOLE_LEVEL_ENV)
+            or DEFAULT_OPERATIONAL_CONSOLE_LEVEL
+        ),
+        file_level=(
+            source.get(OPERATIONAL_FILE_LEVEL_ENV) or DEFAULT_OPERATIONAL_FILE_LEVEL
+        ),
+        console_mode=(
+            source.get(OPERATIONAL_CONSOLE_MODE_ENV) or DEFAULT_OPERATIONAL_CONSOLE_MODE
+        ),
     )
 
 
@@ -291,6 +405,42 @@ def _resolve_level(level: str) -> int:
     if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
         raise ValueError(f"unsupported operational log level: {level}")
     return int(getattr(logging, normalized))
+
+
+def _resolve_console_mode(mode: str) -> str:
+    normalized = str(mode).lower()
+    if normalized not in {"concise", "verbose"}:
+        return DEFAULT_OPERATIONAL_CONSOLE_MODE
+    return normalized
+
+
+def _console_label(level_name: str, event: str) -> str:
+    if event.endswith(".completed"):
+        return "OK"
+    if event.endswith(".cancelled"):
+        return "CANCEL"
+    if event.endswith(".errored") or event.endswith(".failed"):
+        return "ERROR"
+    return level_name
+
+
+def _console_identifiers(record: logging.LogRecord) -> str:
+    fields = (
+        ("run", getattr(record, "run_id", "-")),
+        ("turn", getattr(record, "turn_id", "-")),
+        ("trace", getattr(record, "trace_id", "-")),
+    )
+    return " ".join(
+        f"{name}={_short_identifier(str(value))}"
+        for name, value in fields
+        if value not in {None, "", "-"}
+    )
+
+
+def _short_identifier(value: str, *, limit: int = 16) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}…"
 
 
 def _record_context(
