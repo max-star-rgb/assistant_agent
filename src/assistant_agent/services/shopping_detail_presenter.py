@@ -6,7 +6,7 @@ import re
 from decimal import Decimal
 from urllib.parse import urlparse
 
-from assistant_agent.schemas.products import PriceCompareResult, PriceOffer
+from assistant_agent.schemas.products import PriceCompareResult, PriceOffer, ShoppingSearchResult
 
 
 _PROTOCOL_BLOCK_RE = re.compile(r"<(detail|link|pic)>.*?</\1>", re.IGNORECASE | re.DOTALL)
@@ -19,14 +19,15 @@ _PLATFORM_ORDER = ("jd", "taobao", "pdd")
 class ShoppingDetailPresenter:
     """Render a successful structured price comparison for App clients."""
 
-    def present(self, result: PriceCompareResult) -> str:
+    def present(self, result: PriceCompareResult | ShoppingSearchResult) -> str:
         summary = _clean_summary(result.summary)
-        eligible = [offer for offer in result.offers if _eligible(offer)]
+        offers = _offers(result)
+        eligible = [offer for offer in offers if _eligible(offer)]
         if not eligible:
             return summary
 
         ordered: list[PriceOffer] = []
-        best = result.best_offer
+        best = _best_offer(result)
         if best is not None and _eligible(best):
             ordered.append(best)
         seen = {offer.offer_id for offer in ordered}
@@ -48,6 +49,22 @@ class ShoppingDetailPresenter:
         lines.append("</detail>")
         block = "\n".join(lines)
         return f"{summary}\n{block}" if summary else block
+
+
+def _offers(result: PriceCompareResult | ShoppingSearchResult) -> list[PriceOffer]:
+    if result.offers:
+        return list(result.offers)
+    if isinstance(result, ShoppingSearchResult) and result.comparison is not None:
+        return list(result.comparison.offers)
+    return []
+
+
+def _best_offer(result: PriceCompareResult | ShoppingSearchResult) -> PriceOffer | None:
+    if result.best_offer is not None:
+        return result.best_offer
+    if isinstance(result, ShoppingSearchResult) and result.comparison is not None:
+        return result.comparison.best_offer
+    return None
 
 
 def _clean_summary(value: str) -> str:

@@ -70,6 +70,27 @@ def test_tool_catalog_uses_trusted_agent_service_entry_to_narrow_tools() -> None
     ]
 
 
+def test_tool_catalog_hides_video_understanding_for_agent_service_when_video_is_active() -> None:
+    specs = [ToolSpec(name="web_search"), ToolSpec(name="video_understanding")]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="屏幕里面有什么？",
+        video_ids=["agent-service-video"],
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+
+    selected = select_prompt_tool_specs(request, specs)
+
+    assert selected.run_tool_set.qualified_tool_names == ["web_search"]
+    assert selected.run_tool_set.excluded_reasons == {
+        "video_understanding": ["entry_profile_not_exposed"]
+    }
+
+
 def test_tool_catalog_exposes_unified_shopping_tool_for_agent_service() -> None:
     specs = [
         ToolSpec(name="web_search"),

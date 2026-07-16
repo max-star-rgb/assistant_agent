@@ -22,6 +22,7 @@ from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.provider_policy import ProviderExecutionPolicy
+from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.tool_call_boundary import (
     build_post_tool_call_summary,
     build_pre_tool_call_summary,
@@ -84,6 +85,7 @@ class ToolExecutor:
             state=state,
         )
         tool_input = _bind_runtime_identity(tool_name, tool_input, state)
+        tool_input = _bind_runtime_media_inputs(tool_name, tool_input, state)
         tool_input = _bind_durable_idempotency(
             tool_input,
             step_id=step_id,
@@ -1033,6 +1035,23 @@ def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: Ag
         "user_id": state.user_id,
         "session_id": state.session_id,
     }
+
+
+def _bind_runtime_media_inputs(tool_name: str, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
+    """Bind request-scoped media refs for tools without exposing them as model-visible facts."""
+
+    if tool_name != "video_understanding":
+        return tool_input
+    if state.request.video_ids and is_trusted_agent_service_request(state.request):
+        sanitized = dict(tool_input)
+        sanitized.pop("video_ref", None)
+        sanitized["video_ids"] = list(state.request.video_ids)
+        return sanitized
+    if tool_input.get("video_ref") or tool_input.get("video_ids"):
+        return tool_input
+    if not state.request.video_ids:
+        return tool_input
+    return {**tool_input, "video_ids": list(state.request.video_ids)}
 
 
 def _bind_durable_idempotency(

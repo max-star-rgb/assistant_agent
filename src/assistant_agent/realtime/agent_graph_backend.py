@@ -28,7 +28,7 @@ from assistant_agent.schemas.realtime_cancellation import (
 )
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.products import PriceCompareResult
+from assistant_agent.schemas.products import PriceCompareResult, ShoppingSearchResult
 from assistant_agent.services.assistant_run_service import (
     run_assistant_request,
     run_assistant_request_stream,
@@ -77,28 +77,46 @@ def shopping_detail_enabled(metadata: dict[str, Any]) -> bool:
     )
 
 
-def _successful_price_compare_event(event: AgentEvent) -> bool:
-    if event.type not in {"tool_finished", "tool_completed"} or event.tool_name != "price_compare":
+ShoppingDetailResult = PriceCompareResult | ShoppingSearchResult
+
+
+def _successful_shopping_detail_event(event: AgentEvent) -> bool:
+    if event.type not in {"tool_finished", "tool_completed"} or event.tool_name not in {
+        "price_compare",
+        "shopping_search",
+    }:
         return False
     post_tool_call = event.payload.get("post_tool_call")
     return isinstance(post_tool_call, dict) and post_tool_call.get("status") == "succeeded"
 
 
-def _successful_price_compare_result(state: Any) -> PriceCompareResult | None:
-    first_successful: PriceCompareResult | None = None
+def _successful_shopping_detail_result(state: Any) -> ShoppingDetailResult | None:
+    first_successful: ShoppingDetailResult | None = None
     presenter = ShoppingDetailPresenter()
     for result in getattr(state, "tool_results", []):
-        if result.tool_name != "price_compare" or not result.success or not isinstance(result.data, dict):
+        if result.tool_name not in {"price_compare", "shopping_search"}:
+            continue
+        if not result.success or not isinstance(result.data, dict):
             continue
         try:
-            candidate = PriceCompareResult.model_validate(result.data)
+            candidate = _parse_shopping_detail_result(result.tool_name, result.data)
         except ValueError:
+            continue
+        if candidate is None:
             continue
         if first_successful is None:
             first_successful = candidate
         if "<detail>" in presenter.present(candidate):
             return candidate
     return first_successful
+
+
+def _parse_shopping_detail_result(tool_name: str, data: dict[str, Any]) -> ShoppingDetailResult | None:
+    if tool_name == "price_compare":
+        return PriceCompareResult.model_validate(data)
+    if tool_name == "shopping_search":
+        return ShoppingSearchResult.model_validate(data)
+    return None
 
 
 class AgentGraphRealtimeBackend:
@@ -239,7 +257,7 @@ class AgentGraphRealtimeBackend:
             status = "error" if state.status == "failed" else "completed"
 
             if status == "completed" and event_sink is not None:
-                shopping_result = _successful_price_compare_result(state) if forwarder.shopping_detail_active else None
+                shopping_result = _successful_shopping_detail_result(state) if forwarder.shopping_detail_active else None
                 if shopping_result is not None:
                     forwarder.discard_buffered_response_deltas()
                     await _emit_shopping_detail_events(
@@ -437,7 +455,7 @@ class _RealtimeForwardingEventSink:
         self.events.append(event)
         if self._event_sink is None or event.type not in _RUN_EVENT_TYPES:
             return
-        if self._shopping_detail_enabled and _successful_price_compare_event(event):
+        if self._shopping_detail_enabled and _successful_shopping_detail_event(event):
             self._shopping_detail_active = True
         if event.type == "response_delta":
             self._response_delta_seen = True
@@ -573,7 +591,7 @@ async def _emit_final_response_events(
 async def _emit_shopping_detail_events(
     forwarder: _RealtimeForwardingEventSink,
     *,
-    result: PriceCompareResult,
+    result: ShoppingDetailResult,
     session_id: str,
     run_id: str,
 ) -> None:

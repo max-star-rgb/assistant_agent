@@ -51,16 +51,7 @@ VIDEO_TURN_TIMEOUT_SECONDS = 90.0
 CHAT_PROGRESS_INTERVAL_SECONDS = 15.0
 VIDEO_FRESHNESS_WAIT_SECONDS = 1.5
 _REALTIME_VISUAL_REFERENCE = re.compile(
-    r"(?:眼前|画面|摄像头|镜头|看到什么|看见什么|这是什么|那个是什么|"
-    r"当前场景|"
-    r"(?:手里|桌上|旁边|前面|后面|左边|右边)(?:"
-    r"(?:有|是)(?:什么|啥|哪些|哪个)|"
-    r"(?:放着|拿着|拿的|摆着|站着|出现(?:了)?)(?:的)?(?:是)?(?:什么|啥|哪些|哪个)|"
-    r"(?:有何|有啥)(?:东西|物体)?|(?:的)?(?:东西|物体|场景)(?:是什么|有哪些)?"
-    r")|"
-    r"in\s+front\s+of\s+(?:me|the\s+camera)|on\s+(?:screen|camera)|"
-    r"what\s+(?:do\s+you\s+see|is\s+this|is\s+that))",
-    re.IGNORECASE,
+    r"(眼前|摄像头|镜头|画面|屏幕|视频|看见|看到|识别.+(?:物体|东西|画面|图片|视频)|当前.+(?:场景|画面|物体|东西))"
 )
 
 
@@ -78,6 +69,7 @@ class AgentServiceConnectionState:
     assistant_control_start: dict[str, Any] | None = None
     chats: list[dict[str, Any]] = field(default_factory=list)
     video_ids: list[str] = field(default_factory=list)
+    latest_video_frames: dict[str, VideoFrame] = field(default_factory=dict)
     video_ingestion: H264VideoIngestionService | None = None
     video_observer: RealtimeVideoObserver | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -392,6 +384,7 @@ class VideoHandler(BaseHandler):
                     session_id=session_id,
                 )
             await state.video_observer.submit(frame)
+            state.latest_video_frames[frame.video_id] = frame
             if frame.video_id not in state.video_ids:
                 state.video_ids.append(frame.video_id)
         state.media_protocol = True
@@ -631,6 +624,7 @@ async def _cleanup_agent_service_connection(
     if state.video_ingestion is not None:
         for video_id in state.video_ids:
             await asyncio.to_thread(state.video_ingestion.cleanup, video_id)
+            state.latest_video_frames.pop(video_id, None)
     if state.gateway_facade is not None:
         await state.gateway_facade.close()
     await gateway_manager.close()
@@ -1229,8 +1223,8 @@ async def _run_agent_service_chat_turn(
     active_video_ids = _active_chat_video_ids(state=state, prepared_video_ids=video_ids)
     freshness_metadata = await _realtime_video_freshness_metadata(
         state=state,
-        video_ids=active_video_ids,
-        latest_speech=latest_speech,
+        text=latest_speech,
+        active_video_ids=active_video_ids,
     )
     try:
         request = GatewayTurnRequest(
@@ -1263,73 +1257,6 @@ async def _run_agent_service_chat_turn(
         raise AgentServiceProtocolError(str(exc)) from exc
 
 
-async def _realtime_video_freshness_metadata(
-    *,
-    state: AgentServiceConnectionState,
-    video_ids: list[str],
-    latest_speech: str,
-) -> dict[str, int | bool]:
-    if (
-        not video_ids
-        or state.video_observer is None
-        or not _explicit_realtime_visual_reference(latest_speech)
-    ):
-        return {}
-    video_id = video_ids[-1]
-    latest_frame = _latest_decoded_video_frame(video_id)
-    if latest_frame is None:
-        return {}
-    target_sequence = latest_frame.sequence
-    observer = state.video_observer
-    memory_store = getattr(observer, "memory_store", None)
-    snapshot_reader = getattr(memory_store, "snapshot", None)
-    if not callable(snapshot_reader):
-        return {}
-    snapshot = snapshot_reader(video_id)
-    snapshot_sequence = snapshot.last_success_sequence if snapshot is not None else None
-    represented_sequence = getattr(observer, "represented_sequence", None)
-    if callable(represented_sequence):
-        represented_sequence = represented_sequence()
-    if isinstance(represented_sequence, bool) or not isinstance(represented_sequence, int):
-        represented_sequence = snapshot_sequence
-
-    promote = getattr(observer, "promote", None)
-    wait_for_sequence = getattr(observer, "wait_for_snapshot_sequence", None)
-    wait_started_ns = perf_counter_ns()
-    if (snapshot_sequence or 0) < target_sequence:
-        try:
-            async with asyncio.timeout(VIDEO_FRESHNESS_WAIT_SECONDS):
-                if (represented_sequence or 0) < target_sequence and callable(promote):
-                    promotion = asyncio.create_task(promote(latest_frame))
-                    promotion.add_done_callback(_consume_task_exception)
-                    await asyncio.shield(promotion)
-                if callable(wait_for_sequence):
-                    await wait_for_sequence(target_sequence)
-        except (TimeoutError, ValueError, RuntimeError):
-            pass
-    waited_ms = _elapsed_ms(wait_started_ns, perf_counter_ns())
-    refreshed = snapshot_reader(video_id)
-    refreshed_sequence = refreshed.last_success_sequence if refreshed is not None else None
-    effective_snapshot_sequence = refreshed_sequence or 0
-    return {
-        "realtime_video_target_sequence": target_sequence,
-        "realtime_video_snapshot_sequence": effective_snapshot_sequence,
-        "realtime_video_sequence_gap": max(
-            0,
-            target_sequence - effective_snapshot_sequence,
-        ),
-        "realtime_video_freshness_waited_ms": waited_ms,
-        "realtime_video_freshness_satisfied": effective_snapshot_sequence >= target_sequence,
-    }
-
-
-def _consume_task_exception(task: asyncio.Task[Any]) -> None:
-    """Retrieve late promotion failures after the caller-visible deadline."""
-
-    if not task.cancelled():
-        task.exception()
-
-
 def _active_chat_video_ids(
     *,
     state: AgentServiceConnectionState,
@@ -1352,16 +1279,70 @@ def _active_chat_video_ids(
     return requested
 
 
-def _latest_decoded_video_frame(video_id: str) -> VideoFrame | None:
-    from assistant_agent.api import routes_agent
+async def _realtime_video_freshness_metadata(
+    *,
+    state: AgentServiceConnectionState,
+    text: str,
+    active_video_ids: list[str],
+) -> dict[str, Any]:
+    """Best-effort current-frame freshness barrier for explicit visual requests."""
 
-    runtime = routes_agent.get_assistant_runtime_app().runtime
-    store = getattr(runtime, "video_context_store", None)
-    get_recent_frames = getattr(store, "get_recent_frames", None)
-    if not callable(get_recent_frames):
-        return None
-    frames = get_recent_frames(video_id, limit=1)
-    return frames[-1] if frames else None
+    if not active_video_ids or not _asks_about_current_visual_scene(text):
+        return {}
+    observer = state.video_observer
+    if observer is None:
+        return {}
+    frame = _latest_realtime_video_frame(state, active_video_ids)
+    if frame is None:
+        return {}
+    target_sequence = frame.sequence
+    metadata: dict[str, Any] = {
+        "realtime_video_target_sequence": target_sequence,
+    }
+    started_ns = state.clock_ns()
+    try:
+        represented = getattr(observer, "represented_sequence", None)
+        if callable(represented):
+            represented = represented()
+        if isinstance(represented, bool) or not isinstance(represented, int):
+            represented = None
+        if represented is None or represented < target_sequence:
+            await observer.promote(frame)
+        await asyncio.wait_for(
+            observer.wait_for_snapshot_sequence(target_sequence),
+            timeout=VIDEO_FRESHNESS_WAIT_SECONDS,
+        )
+        metadata["realtime_video_freshness_satisfied"] = True
+    except TimeoutError:
+        metadata["realtime_video_freshness_satisfied"] = False
+    except (RuntimeError, ValueError):
+        metadata["realtime_video_freshness_satisfied"] = False
+    finally:
+        metadata["realtime_video_freshness_waited_ms"] = _elapsed_ms(started_ns, state.clock_ns())
+    return metadata
+
+
+def _asks_about_current_visual_scene(text: str) -> bool:
+    return _REALTIME_VISUAL_REFERENCE.search(text) is not None
+
+
+def _latest_realtime_video_frame(
+    state: AgentServiceConnectionState,
+    active_video_ids: list[str],
+) -> VideoFrame | None:
+    for video_id in reversed(active_video_ids):
+        frame = state.latest_video_frames.get(video_id)
+        if frame is not None:
+            return frame
+        if state.video_ingestion is None:
+            continue
+        try:
+            frames = state.video_ingestion.store.get_recent_frames(video_id, limit=1)
+        except AttributeError:
+            continue
+        if frames:
+            return frames[-1]
+    return None
 
 
 def _agent_service_gateway_metadata(
@@ -1370,7 +1351,7 @@ def _agent_service_gateway_metadata(
     user_number: str,
     chat_index: Any,
     content_count: int,
-    freshness_metadata: dict[str, int | bool] | None = None,
+    freshness_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = {
         "transport": "agent_service_websocket",
@@ -1385,14 +1366,9 @@ def _agent_service_gateway_metadata(
             "entry_capabilities": AGENT_SERVICE_ENTRY_CAPABILITIES.to_metadata(),
         },
     }
-    metadata.update(freshness_metadata or {})
+    if freshness_metadata:
+        metadata.update(freshness_metadata)
     return metadata
-
-
-def _explicit_realtime_visual_reference(text: str) -> bool:
-    """Recognize only narrow current-camera references; never select tools."""
-
-    return bool(_REALTIME_VISUAL_REFERENCE.search(text or ""))
 
 
 async def _send_response(

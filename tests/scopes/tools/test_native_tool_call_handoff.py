@@ -133,7 +133,7 @@ def plain_final_result(message: str) -> ChatResult:
     )
 
 
-def test_agent_service_live_camera_first_llm_call_uses_natural_context_without_exposing_video_tool() -> None:
+def test_agent_service_live_camera_first_llm_call_uses_context_without_exposing_video_tool_or_id() -> None:
     memory = RealtimeVideoMemoryStore()
     memory.record_success(
         "video-live",
@@ -199,14 +199,13 @@ def test_agent_service_live_camera_first_llm_call_uses_natural_context_without_e
         "memory_retrieval",
         "memory_save",
     }
-    assert "video_understanding" not in tool_names
     assert "vision_understanding" not in tool_names
     assert first.stream_callback is None
     response_deltas = [event for event in sink.events if event.type == "response_delta"]
     assert len(response_deltas) <= 1
 
 
-def test_agent_service_freshness_timeout_marks_first_llm_video_context_stale() -> None:
+def test_agent_service_video_metadata_can_mark_first_llm_video_context_stale() -> None:
     memory = RealtimeVideoMemoryStore()
     memory.record_success(
         "video-live",
@@ -687,7 +686,7 @@ def test_native_runtime_preserves_model_selected_multi_tool_batch() -> None:
     ]
 
 
-def test_native_video_tool_call_uses_agent_service_frame_context(tmp_path: Path) -> None:
+def test_native_video_tool_call_uses_non_agent_service_frame_context(tmp_path: Path) -> None:
     video_id = "agent-service-video-test"
     store = InMemoryVideoContextStore(window_size=3)
     frame_paths: list[str] = []
@@ -724,7 +723,7 @@ def test_native_video_tool_call_uses_agent_service_frame_context(tmp_path: Path)
         [
             native_result(
                 "video_understanding",
-                {"video_ids": [video_id], "user_query": "识别眼前物体"},
+                {"user_query": "识别眼前物体"},
             ),
             final_result("眼前是一个白色水杯。"),
         ]
@@ -748,10 +747,125 @@ def test_native_video_tool_call_uses_agent_service_frame_context(tmp_path: Path)
     assert state.tool_calls[0].status == "succeeded"
     assert captured["request"].video_ref == video_id
     assert captured["request"].frame_refs == frame_paths
+    first_call_args = adapter.requests[0].tools[0]["function"]["parameters"]
+    assert "agent-service-video-test" not in json.dumps(first_call_args, ensure_ascii=False)
     tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
     assert "画面中有一个白色水杯" in tool_messages[0]["content"]
     assert state.response is not None
     assert state.response.message == "眼前是一个白色水杯。"
+
+
+def test_agent_service_rejects_foreground_video_tool_call_without_query_time_provider(
+    tmp_path: Path,
+) -> None:
+    video_id = "agent-service-video-test"
+    store = InMemoryVideoContextStore(window_size=3)
+    frame_path = tmp_path / "frame-1.jpg"
+    frame_path.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+    store.append_frame(
+        VideoFrame(
+            video_id=video_id,
+            frame_id="frame-1",
+            uri=str(frame_path),
+            sequence=1,
+        )
+    )
+
+    class FailingIfCalledVideoAdapter:
+        def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+            raise AssertionError(f"query-time provider called for {request.video_ref}")
+
+    registry = create_default_registry(video_context_store=store)
+    registry.get("video_understanding").adapter = FailingIfCalledVideoAdapter()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "video_understanding",
+                {"user_query": "识别眼前物体"},
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        video_context_store=store,
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="10086",
+            session_id="10086",
+            text="识别眼前物体",
+            video_ids=[video_id],
+            metadata={
+                "transport": "agent_service_websocket",
+                "gateway": {"session_config": {"entry_profile": "agent_service"}},
+            },
+        )
+    )
+
+    assert state.tool_calls == []
+    assert state.errors[-1].details["code"] == "tool_not_allowed_for_run"
+    validator = state.response.data["validator_result"]
+    assert validator["metadata"]["run_tool_set"]["exclusion_reasons"] == [
+        "entry_profile_not_exposed"
+    ]
+
+
+def test_video_tool_call_honors_model_supplied_media_ref_outside_agent_service(tmp_path: Path) -> None:
+    video_id = "agent-service-video-current"
+    store = InMemoryVideoContextStore(window_size=3)
+    current_frame = tmp_path / "current.jpg"
+    current_frame.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+    store.append_frame(
+        VideoFrame(
+            video_id=video_id,
+            frame_id="frame-current",
+            uri=str(current_frame),
+            sequence=1,
+        )
+    )
+
+    captured: dict[str, VideoUnderstandingRequest] = {}
+
+    class CapturingVideoAdapter:
+        def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+            captured["request"] = request
+            return VideoUnderstandingResult(
+                summary="当前镜头里是白色水杯。",
+                provider="capturing-video",
+                output_ref="provider://video/current",
+            )
+
+    registry = create_default_registry(video_context_store=store)
+    registry.get("video_understanding").adapter = CapturingVideoAdapter()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result(
+                "video_understanding",
+                {"video_ref": "external-video-ref", "user_query": "识别眼前物体"},
+            ),
+            final_result("眼前是一个白色水杯。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        video_context_store=store,
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="10086",
+            session_id="10086",
+            text="识别眼前物体",
+            video_ids=[video_id],
+        )
+    )
+
+    assert state.tool_calls[0].status == "succeeded"
+    assert captured["request"].video_ref == "external-video-ref"
+    assert captured["request"].frame_refs == []
 
 
 def test_native_video_tool_call_uses_rolling_memory_without_query_provider(tmp_path: Path) -> None:

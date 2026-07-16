@@ -240,7 +240,7 @@ Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are capa
 
 Repo/user-local Python tools use the explicit `@tool` decorator plus `load_local_tools()` / `register_local_tools()`. They are not import-time global registrations. A local tool may declare `ToolPolicyMetadata` and `ToolExecutionPolicy`; when present, runtime risk gate, boundary summaries, scheduler metadata, trace/history summaries, and `tools simulate` consume that declaration through the same `ToolSpec -> ToolPolicyView -> ActionValidator -> ToolExecutor` path. `assistant_agent.tools.cli validate` checks declaration shape and policy requirements; `simulate` executes one explicitly loaded tool through validator/executor for local verification.
 
-Agent-Service realtime video 使用一个私有 observation registry，但不会缩短治理链：入口只负责 H.264 校验、解码与本地选帧，选中的当前单帧被包装为 `AssistantDecision`，依次经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding -> QwenRealtimeVisionAdapter`。该工具不进入前台 DeepSeek 的 `RunToolSet`；前台只消费已发布的 `realtime_video_context`。`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 只在这个专用 factory 中选择 persistent realtime WebSocket；普通图片与上传视频仍走各自 HTTP adapter，显式 `VIDEO_UNDERSTANDING_*` 配置选择通用 HTTP 上传服务。
+Agent-Service realtime video 使用一个私有 observation registry 预热 rolling 语义，但不会缩短治理链：入口只负责 H.264 校验、解码与本地选帧，选中的当前单帧被包装为 `AssistantDecision`，依次经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding -> QwenRealtimeVisionAdapter`。可信 Agent-Service 前台 `RunToolSet` 不暴露 `video_understanding`，避免 DeepSeek 在回答阶段启动第二条上传式 Provider/Qwen 请求；DeepSeek 只看到实时镜头可用和被动 `realtime_video_context` 文本 snapshot，不看到视频帧、JPEG 路径、base64 或 provider raw response。当前台文本明确指代眼前/摄像头/画面时，入口复用同一个 observer 对最新帧执行最多 1.5 秒 freshness barrier：若目标帧已在 in-flight/pending 中则只等待，不再 promote；超时仅注入 `refreshing`/`stale` 投影。`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 选择实时视觉 Provider；普通图片与上传视频仍走各自 adapter，显式 `VIDEO_UNDERSTANDING_*` 配置只用于通用上传式视频理解。
 
 默认副作用分类：
 
@@ -386,7 +386,7 @@ contract
 - 成功 observation 包含 summary、output_ref、structured_output、next_step_hint。
 - 失败或 rejected observation 包含 sanitized error_code/error_message 和 recovery hint。
 - `web_search` 会保留 `title`、`url`、`snippet`、`published_at`、`source`，成功 observation 摘要首条结果和总数。
-- `shopping_search` 是购物推荐/购买建议/比价的一步式工具：模型只需调用该工具一次，工具内部先执行商品搜索，再用搜索结果执行比价，并在同一个 observation 中返回 `search`、`comparison`、`offers`、`best_offer`、`summary` 和 URL 状态。它不下单、不付款。
+- `shopping_search` 是购物推荐/购买建议/比价的一步式工具：模型只需调用该工具一次，工具内部先执行商品搜索，再用搜索结果执行比价，并在同一个 observation 中返回 `search`、`comparison`、`offers`、`best_offer`、`summary` 和 URL 状态。它不下单、不付款。App/Gateway 购物展示优先由 deterministic presenter 从 `shopping_search` / `price_compare` 的结构化结果生成，LLM 只负责简短自然语言摘要，不应自由手写商品卡片字段。
 - 商品搜索/比价会保留 title、price、原价、券额、无条件到手价、条件价说明、currency、图片、URL、url_status、品牌/型号/核心规格等后续回答和 `price_compare` 必需字段。好单库 real adapter 仍只在显式 `provider_smoke`/`pilot` profile 下启用；`HAODANKU_ENABLED_PLATFORMS` 默认仅为 `taobao`（天猫归入淘宝组），可用规范名 `taobao,jd,pdd` 显式恢复多平台。模型请求的平台会与已启用集合取交集，未启用平台不访问 Provider、不进入 `failed_platforms`；若只请求未启用平台，则返回 `provider_platform_disabled`。
 - `price_compare` 使用与搜索相同的已启用平台集合，先按品牌、型号和核心规格形成可比较组，以同款可信度、无条件到手总价、链接状态、销量和数据完整度排序；会员、补贴、凑单等条件价只作说明。内部结果仍最多九条且每个平台最多三条；App 购物协议最多展示三条。入选报价再经过淘宝 `ratesurl`、京东 `unify_jditems_link`、拼多多 `unify_pdditems_link` 官方转链；淘宝未配置 PID/授权昵称时不调用 `ratesurl`，只保留通过 HTTP(S)、平台域名和非空路径校验的真实直链并标记 `unverified`，不得表述为返利链接或佣金保证。
 - context builder 会压缩大 observation、截断命令输出、移除 raw provider payload、base64、secret-like 内容。

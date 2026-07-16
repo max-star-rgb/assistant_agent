@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,8 @@ MAX_BASE64_JPEG_BYTES = 256 * 1024
 PCM_SAMPLE_RATE = 16_000
 PCM_SILENCE_MILLISECONDS = 200
 DEFAULT_CLOSE_TIMEOUT_SECONDS = 1.0
+JPEG_NORMALIZE_TIMEOUT_SECONDS = 3.0
+JPEG_NORMALIZE_WIDTHS = (1280, 960, 720, 640, 480)
 
 
 @dataclass(frozen=True)
@@ -84,13 +87,16 @@ class QwenRealtimeVisionAdapter:
         if len(request.frame_refs) != 1:
             return self._failure("invalid_frame_count", "Qwen realtime vision requires exactly one frame.", started_at)
         try:
-            image = _jpeg_base64(request.frame_refs[0])
-        except (OSError, ValueError) as exc:
-            code = "frame_too_large" if "256KB" in str(exc) else "invalid_frame"
-            return self._failure(code, str(exc), started_at)
-
-        try:
             deadline = self._clock() + self.config.timeout_seconds
+            try:
+                image = _jpeg_base64(
+                    request.frame_refs[0],
+                    deadline=deadline,
+                    clock=self._clock,
+                )
+            except (OSError, ValueError) as exc:
+                code = "frame_too_large" if "256KB" in str(exc) else "invalid_frame"
+                return self._failure(code, str(exc), started_at)
             socket = self._ensure_connection(deadline)
             socket.send(json.dumps(_session_update(instructions=_instructions(request)), ensure_ascii=False))
             self._expect_event(socket, "session.updated", deadline)
@@ -99,9 +105,7 @@ class QwenRealtimeVisionAdapter:
             self._expect_event(socket, "input_audio_buffer.committed", deadline)
             socket.send(json.dumps({"type": "response.create"}))
             text = self._receive_response(socket, deadline)
-            payload = json.loads(text)
-            if not isinstance(payload, dict):
-                raise ValueError("Realtime response must be a JSON object.")
+            payload = _normalize_result_payload(_parse_response_payload(text))
             result = VideoUnderstandingResult.model_validate(
                 {
                     **payload,
@@ -328,14 +332,81 @@ def _instructions(request: VideoUnderstandingRequest) -> str:
     )
 
 
-def _jpeg_base64(frame_ref: str) -> str:
+def _jpeg_base64(
+    frame_ref: str,
+    *,
+    deadline: float | None = None,
+    clock: Callable[[], float] = monotonic,
+) -> str:
     data = Path(frame_ref).read_bytes()
     if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
         raise ValueError("Frame must be a JPEG image.")
     encoded = base64.b64encode(data)
     if len(encoded) > MAX_BASE64_JPEG_BYTES:
+        data = _normalize_jpeg_bytes(data, deadline=deadline, clock=clock)
+        encoded = base64.b64encode(data)
+    if len(encoded) > MAX_BASE64_JPEG_BYTES:
         raise ValueError("Base64 JPEG exceeds 256KB.")
     return encoded.decode("ascii")
+
+
+def _normalize_jpeg_bytes(
+    data: bytes,
+    *,
+    deadline: float | None = None,
+    clock: Callable[[], float] = monotonic,
+) -> bytes:
+    for width in JPEG_NORMALIZE_WIDTHS:
+        timeout = JPEG_NORMALIZE_TIMEOUT_SECONDS
+        if deadline is not None:
+            timeout = min(timeout, deadline - clock())
+        if timeout <= 0:
+            raise TimeoutError("Qwen realtime vision timed out while normalizing JPEG.")
+        normalized = _ffmpeg_normalize_jpeg(data, width=width, timeout=timeout)
+        if not normalized:
+            continue
+        if not (normalized.startswith(b"\xff\xd8") and normalized.endswith(b"\xff\xd9")):
+            continue
+        if len(base64.b64encode(normalized)) <= MAX_BASE64_JPEG_BYTES:
+            return normalized
+    return data
+
+
+def _ffmpeg_normalize_jpeg(data: bytes, *, width: int, timeout: float) -> bytes | None:
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "image2pipe",
+                "-i",
+                "pipe:0",
+                "-vf",
+                f"scale={width}:720:force_original_aspect_ratio=decrease",
+                "-frames:v",
+                "1",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "-q:v",
+                "6",
+                "pipe:1",
+            ],
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
 
 
 def _receive_json(socket: Any, timeout: float) -> dict[str, Any]:
@@ -344,6 +415,80 @@ def _receive_json(socket: Any, timeout: float) -> dict[str, Any]:
     if not isinstance(event, dict):
         raise ValueError("Provider event must be a JSON object.")
     return event
+
+
+def _parse_response_payload(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    candidates = [stripped]
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            body = lines[1:]
+            if body and body[-1].strip().startswith("```"):
+                body = body[:-1]
+            candidates.append("\n".join(body).strip())
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if 0 <= start < end:
+        candidates.append(stripped[start : end + 1])
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise ValueError("Realtime response must be a JSON object.")
+
+
+def _normalize_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "summary": str(payload.get("summary") or "").strip(),
+        "objects": _string_list(payload.get("objects")),
+        "people": _string_list(payload.get("people")),
+        "actions": _string_list(payload.get("actions")),
+        "events": _string_list(payload.get("events")),
+        "scene": _optional_string(payload.get("scene")),
+        "products": _string_list(payload.get("products")),
+        "brands": _string_list(payload.get("brands")),
+        "colors": _string_list(payload.get("colors")),
+        "materials": _string_list(payload.get("materials")),
+        "text_in_video": _string_list(payload.get("text_in_video")),
+        "timestamps": [dict(item) for item in _list_value(payload.get("timestamps")) if isinstance(item, dict)],
+        "style_tags": _string_list(payload.get("style_tags")),
+        "confidence": _optional_float(payload.get("confidence")),
+    }
+
+
+def _list_value(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _string_list(value: Any) -> list[str]:
+    items: list[str] = []
+    for item in _list_value(value):
+        if isinstance(item, bool) or item is None:
+            continue
+        if isinstance(item, str | int | float):
+            text = str(item).strip()
+            if text:
+                items.append(text[:120])
+    return items
+
+
+def _optional_string(value: Any) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        return text[:200] if text else None
+    return None
+
+
+def _optional_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
 
 
 def _backoff_seconds(failures: int) -> float:

@@ -99,6 +99,7 @@ class RealtimeVideoObserver:
         self._snapshot_updated = asyncio.Event()
         self._enqueue_lock = asyncio.Lock()
         self._promotion_tasks: set[asyncio.Task[FrameProcessingResult]] = set()
+        self._close_task: asyncio.Task[None] | None = None
 
     async def submit(self, frame: VideoFrame) -> FrameProcessingResult:
         """Run local selection and enqueue a selected frame for background analysis."""
@@ -274,6 +275,13 @@ class RealtimeVideoObserver:
 
     async def close(self) -> None:
         """Stop work, reject late results, and remove owned semantic artifacts."""
+
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_once())
+        await asyncio.shield(self._close_task)
+
+    async def _close_once(self) -> None:
+        """Run close cleanup exactly once while concurrent callers await it."""
 
         if self.closed:
             return

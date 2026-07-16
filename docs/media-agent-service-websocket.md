@@ -287,14 +287,14 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 原始视频上下文只保留最近 3 帧；成功理解的语义关键帧独立保留最多 8 帧。它们是本地 fallback/语义记忆，不作为 Qwen 多帧历史发送。每轮 Qwen 请求只含当前选中的一张 JPEG 和最多 2,000 字符的上一成功语义摘要。后台队列最多包含 1 个执行中帧和 1 个待处理帧，积压时用最新候选替换旧候选。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解复用 `video_understanding`，并经过 `ActionValidator -> ToolExecutor -> ToolRegistry`；WebSocket 入口不直接调用 Provider。默认 `local_demo` / `offline_eval` 不联网，真实连续 MLLM 只允许显式 `provider_smoke` / `pilot` 配置。
-- 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。Agent-Service 前台 LLM 的工具集合不包含 `video_understanding`；它只消费后台观察器已发布的被动 `realtime_video_context` snapshot，并根据当前问题决定是否使用其中的视觉事实。
+- 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。有 active video 时，Agent-Service 前台 LLM 的工具集合不包含 `video_understanding`，避免回答阶段绕过 observer 启动第二条上传式视觉 Provider 请求。DeepSeek 只看到实时镜头可用和被动 `realtime_video_context` 文本 snapshot；它看不到视频帧、JPEG 路径、base64、Qwen 原文或 provider raw response。
 - 可信 Agent-Service 请求把它表述为双方共享的当前实时镜头，不把 opaque `video_id` 渲染成上传视频，也不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
-- 明确询问当前画面时，以提问时最近已解码帧的 sequence 为目标；若现有成功快照落后，则复用或提升同一 observer 的 latest-wins 候选，并在 promotion 与 sequence wait 共用的 1.5 秒总预算内等待成功快照达到目标 sequence。该屏障不启动前台 `video_understanding`，普通问候不等待。
-- 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；查询驱动提升也复用这条队列与工具治理链。
+- 后台观察器仍作为预热缓存运行；当前台文本明确指代眼前、摄像头、镜头、画面、屏幕或视频时，入口用最新解码帧复用同一个 observer 执行 freshness barrier。普通问候不等待、不提及视觉。
+- 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；查询驱动提升也复用这条队列与工具治理链。若目标帧已经由 in-flight/pending 代表，入口只等待目标序号，不能启动第二个 Qwen。
 - 每个 `video_id` 只维护一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后主动轮换，断线使用 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；切换 video id、连接关闭或 observer close 会关闭 Provider session 并清理 pending、快照、retained/raw JPEG 和临时文件。
 - 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；采集时间缺失或在未来时不伪造采集年龄。
 - 普通上传/API（非 Agent-Service）仍可显式调用 `video_understanding`：最新观察成功时读取滚动语义记忆，记忆未就绪或最新观察失败时使用最近 3 帧走 Provider 回退。
-- Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖有界 freshness wait、Gateway 与前台 LLM 执行；它不表示前台会调用视频 Provider。普通 chat 使用 30 秒。
+- Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖 Gateway、前台 LLM 执行以及 LLM 自主选择后的视觉工具调用；它不表示入口层会调用视频 Provider，也不表示前台一定会调用视频工具。普通 chat 使用 30 秒。
 - 连接关闭时先停止观察器、丢弃待处理帧并拒绝晚到结果，再移除滚动语义记忆、关键帧、原始帧上下文和 JPEG 运行时文件。
 
 成功响应中的 `video received` 表示该帧已经通过校验、成功解码、注册到视频上下文并完成本地选帧调度，不再只是传输层收到；它不表示后台视觉 MLLM 已完成。Hex、codec、NAL 起始码、大小或解码失败时返回 `videoResponse` 且 `body.code="FAIL"`；连接保持可用，失败帧不会附加到后续 chat。
@@ -533,7 +533,7 @@ run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 | `chat_queue_wait` | 同一 session 的上一轮仍在执行，本轮等待串行锁。 |
 | `conversation_prepare` | 会话历史读取、上下文请求准备较慢。 |
 | `llm_chat[1]` | 首次 LLM 工具选择/直接回答调用较慢。 |
-| `tool_execute[video_understanding]` | 普通上传/API 的显式视频查询发生记忆回退或视觉 Provider 调用；Agent-Service 前台不会出现该阶段。 |
+| `tool_execute[video_understanding]` | 普通上传/API 显式调用视觉工具，或 Agent-Service 后台 observer 通过私有 registry 执行 Qwen observation。Agent-Service 前台工具目录不暴露该工具。 |
 | `llm_chat[2]` | 工具观察后的最终回答 LLM 调用较慢。 |
 | `websocket_send` | socket/媒体接收端产生传输背压。 |
 | `ACK pending` | 最终响应已发送，但媒体应用确认尚未到达。 |
@@ -542,9 +542,10 @@ run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 | `sequence_gap` 大于 0 | 1.5 秒目标序号屏障未满足；回答必须保留画面可能滞后的不确定性。 |
 | `unattributed` | 端到端耗时中尚未被叶子阶段解释的剩余部分。 |
 
-视频诊断中的后台观察 latency 不直接计入 chat 关键路径。只有普通上传/API 的
-`recent_frame_fallback` 在本轮显式查询时调用视觉 Provider，才会体现在
-`tool_execute[video_understanding]`；Agent-Service 前台只消费被动 snapshot。
+视频诊断中的后台观察 latency 不直接计入 chat 关键路径。普通上传/API 的
+`recent_frame_fallback` 会体现在 `tool_execute[video_understanding]`；Agent-Service
+前台视觉新鲜度等待通过 `freshness_waited_ms`、`freshness_satisfied` 和
+`sequence_gap` 体现。
 `videoResponse(code=0)` 仍仅是帧校验、
 解码、注册与调度成功的证据，不是 MLLM 完成证据。
 

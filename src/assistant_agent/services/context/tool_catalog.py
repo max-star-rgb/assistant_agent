@@ -117,7 +117,7 @@ def qualify_tool_specs(
     excluded_reasons: dict[str, list[str]] = {}
     agent_service_profile = is_trusted_agent_service_request(request)
     for spec in tool_specs:
-        if agent_service_profile and spec.name not in _AGENT_SERVICE_TOOL_NAMES:
+        if agent_service_profile and not _agent_service_tool_exposed(request, spec.name):
             excluded_reasons[spec.name] = ["entry_profile_not_exposed"]
             continue
         policy = ToolPolicyInterpreter().view_for_spec(spec)
@@ -144,6 +144,12 @@ def qualify_tool_specs(
         active_skill_ids=active_skill_ids,
         excluded_reasons=excluded_reasons,
     )
+
+
+def _agent_service_tool_exposed(request: UserRequest, tool_name: str) -> bool:
+    if tool_name in _AGENT_SERVICE_TOOL_NAMES:
+        return True
+    return False
 
 
 def recall_qualified_tool_specs(

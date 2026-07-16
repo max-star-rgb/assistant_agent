@@ -141,6 +141,19 @@ class CloseRecordingAdapter:
         self.close_calls += 1
 
 
+class BlockingCloseAdapter(CloseRecordingAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_started = threading.Event()
+        self.release_close = threading.Event()
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.close_started.set()
+        if not self.release_close.wait(timeout=5.0):
+            raise TimeoutError("test close release timed out")
+
+
 class SuccessThenBlockingFailureAdapter:
     def __init__(self) -> None:
         self.calls = 0
@@ -336,6 +349,37 @@ def test_observer_close_closes_private_adapter_exactly_once_and_tolerates_mock(t
             keyframe_root=tmp_path / "mock",
         )
         await mock_observer.close()
+
+    asyncio.run(scenario())
+
+
+def test_observer_concurrent_close_waits_for_same_cleanup(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        adapter = BlockingCloseAdapter()
+        registry = ToolRegistry()
+        registry.register(VideoUnderstandingTool(adapter=adapter))
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=RealtimeVideoMemoryStore(),
+            keyframe_root=tmp_path,
+        )
+
+        first = asyncio.create_task(observer.close())
+        close_started = await asyncio.to_thread(adapter.close_started.wait, 1.0)
+        assert close_started is True
+
+        second = asyncio.create_task(observer.close())
+        await asyncio.sleep(0)
+
+        assert first.done() is False
+        assert second.done() is False
+
+        adapter.release_close.set()
+        await asyncio.gather(first, second)
+        assert adapter.close_calls == 1
 
     asyncio.run(scenario())
 

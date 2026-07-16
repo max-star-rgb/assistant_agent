@@ -83,6 +83,7 @@ _PHONE_MEMORY_RULES = (
 
 _PHONE_LIVE_CAMERA_RULES = (
     "Live camera: 实时视频上下文是双方正在共享的当前镜头，不是用户上传或刚发送的视频文件。需要视觉事实时自然地说‘我看到……’或‘看起来……’；不得说‘你刚发送的视频’，不得提到视频 ID、快照、后台观察、上下文注入或 Provider。画面仍在刷新或证据陈旧时要简短说明不确定性，不得把旧观察断言为当前事实。",
+    "Live camera tool: 如果当前请求需要新的视觉事实，调用 video_understanding；你可以只传 user_query，运行时会绑定当前通话镜头。不要编造画面内容，也不要要求用户提供视频 ID。",
 )
 
 _PHONE_DISPLAY_BOUNDARY_RULES = (

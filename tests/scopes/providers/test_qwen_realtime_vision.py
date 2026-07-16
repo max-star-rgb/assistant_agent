@@ -2,6 +2,7 @@ import base64
 import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from assistant_agent.providers import qwen_realtime_vision as qwen_realtime
@@ -215,6 +216,80 @@ def test_realtime_adapter_rejects_non_single_or_oversized_frame_without_connecti
     assert connected is False
 
 
+def test_realtime_adapter_normalizes_large_jpeg_before_sending(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    frame = _frame(tmp_path, "large.jpg", bytes(200_000))
+    socket = FakeWebSocket(_successful_responses())
+    ffmpeg_calls: list[list[str]] = []
+
+    def run(args: list[str], **kwargs: Any) -> SimpleNamespace:
+        ffmpeg_calls.append(args)
+        assert kwargs["input"] == frame.read_bytes()
+        return SimpleNamespace(returncode=0, stdout=b"\xff\xd8small-jpeg\xff\xd9", stderr=b"")
+
+    monkeypatch.setattr(qwen_realtime.subprocess, "run", run)
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key"),
+        connect=lambda *_args, **_kwargs: socket,
+    )
+
+    result = adapter.understand_video(
+        VideoUnderstandingRequest(video_ref="v", frame_refs=[str(frame)])
+    )
+
+    assert result.errors == []
+    assert ffmpeg_calls
+    assert base64.b64decode(socket.sent[3]["image"]) == b"\xff\xd8small-jpeg\xff\xd9"
+
+
+def test_realtime_adapter_normalization_uses_remaining_provider_deadline(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    frame = _frame(tmp_path, "large.jpg", bytes(200_000))
+    socket = FakeWebSocket(_successful_responses())
+    times = iter(
+        [
+            100.0,
+            100.8,
+            100.9,
+            101.0,
+            101.1,
+            101.2,
+            101.3,
+            101.4,
+            101.5,
+            101.6,
+            101.7,
+            101.8,
+            101.9,
+            102.0,
+        ]
+    )
+    ffmpeg_timeouts: list[float] = []
+
+    def run(_args: list[str], **kwargs: Any) -> SimpleNamespace:
+        ffmpeg_timeouts.append(kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout=b"\xff\xd8small-jpeg\xff\xd9", stderr=b"")
+
+    monkeypatch.setattr(qwen_realtime.subprocess, "run", run)
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key", timeout_seconds=3.0),
+        connect=lambda *_args, **_kwargs: socket,
+        clock=lambda: next(times),
+    )
+
+    result = adapter.understand_video(
+        VideoUnderstandingRequest(video_ref="v", frame_refs=[str(frame)])
+    )
+
+    assert result.errors == []
+    assert len(ffmpeg_timeouts) == 1
+    assert abs(ffmpeg_timeouts[0] - 2.2) < 0.001
+
+
 def test_realtime_adapter_sanitizes_invalid_json_and_closes_failed_connection(tmp_path: Path) -> None:
     frame = _frame(tmp_path)
     socket = FakeWebSocket(
@@ -244,6 +319,69 @@ def test_realtime_adapter_sanitizes_invalid_json_and_closes_failed_connection(tm
     ]
     assert "secret-provider-garbage" not in result.model_dump_json()
     assert socket.closed is True
+
+
+def test_realtime_adapter_accepts_markdown_fenced_json_response(tmp_path: Path) -> None:
+    frame = _frame(tmp_path)
+    socket = FakeWebSocket(
+        [
+            {"type": "session.created"},
+            {"type": "session.updated"},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
+            {"type": "response.text.delta", "delta": "```json\n"},
+            {"type": "response.text.delta", "delta": '{"summary":"杯子","objects":["杯子"]}'},
+            {"type": "response.text.delta", "delta": "\n```"},
+            {"type": "response.done", "response": {"status": "completed"}},
+        ]
+    )
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key"),
+        connect=lambda *_args, **_kwargs: socket,
+    )
+
+    result = adapter.understand_video(
+        VideoUnderstandingRequest(video_ref="v", frame_refs=[str(frame)])
+    )
+
+    assert result.errors == []
+    assert result.summary == "杯子"
+    assert result.objects == ["杯子"]
+
+
+def test_realtime_adapter_discards_non_object_timestamp_items(tmp_path: Path) -> None:
+    frame = _frame(tmp_path)
+    socket = FakeWebSocket(
+        [
+            {"type": "session.created"},
+            {"type": "session.updated"},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
+            {
+                "type": "response.text.delta",
+                "delta": json.dumps(
+                    {
+                        "summary": "杯子",
+                        "objects": ["杯子"],
+                        "timestamps": ["当前帧", {"start_ms": 0, "description": "当前帧"}],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            {"type": "response.done", "response": {"status": "completed"}},
+        ]
+    )
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key"),
+        connect=lambda *_args, **_kwargs: socket,
+    )
+
+    result = adapter.understand_video(
+        VideoUnderstandingRequest(video_ref="v", frame_refs=[str(frame)])
+    )
+
+    assert result.errors == []
+    assert result.timestamps == [{"start_ms": 0, "description": "当前帧"}]
 
 
 def test_realtime_adapter_maps_timeout_and_disconnect_to_structured_errors(tmp_path: Path) -> None:
