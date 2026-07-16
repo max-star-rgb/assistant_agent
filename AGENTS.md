@@ -38,20 +38,17 @@
 
 ## 3. 运行与安全
 
-默认规则不可随意放宽：
+默认保持离线安全：
 
-- 仓库测试、eval、无 key 环境默认只允许 mock/local/offline 路径。
-- 用户本机任务可以在用户明确要求且 profile 允许时使用真实 LLM，但不自动调用真实图片、视频、商品、通知、数据库或其他外部 Provider。
-- 不因为检测到 API key 就启用真实 Provider。
-- 不写入 API key、token、真实 `.env`、真实用户数据或真实 provider raw response；key 只来自本机环境变量或用户已配置的安全位置，不能写入仓库。
-- 不提交真实媒体、生成物、大文件、缓存目录或外部服务原始返回。
-- 不安装新依赖，不联网拉取依赖，除非用户明确要求并允许。
-
-真实 Provider 调用必须同时满足：用户或任务明确要求真实 Provider，使用 `MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke` 或 `pilot`，具体 provider 选择和凭据由本机未跟踪配置显式提供，并在最终报告说明调用范围和验证结果。
+- 测试、eval、无 key 环境只走 mock/local/offline。
+- 真实 Provider 只能在用户明确要求、`provider_smoke` / `pilot` profile、具体 provider 显式配置同时满足时调用；不能因为检测到 key 自动启用。
+- 不写入或提交 API key、token、真实 `.env`、真实用户数据、provider 原始响应、真实媒体、大文件、缓存或生成物。
+- 不主动安装新依赖、不联网拉取依赖，除非用户明确要求并允许；需要安装时先询问用户。
+- 如果本轮调用了真实 Provider，最终报告必须说明调用范围和验证结果。
 
 ## 4. 本地命令
 
-默认使用 conda 环境 `hello_agent`。Codex 执行 Python、pytest、脚本时，优先直接调用：
+默认使用：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python
@@ -62,31 +59,11 @@
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --scope tools -- -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --changed BASE..HEAD -- -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --full -- -q
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_demo_flows.py
 ```
 
-测试反馈按层级执行，避免普通开发反复承担全量套件成本：
-
-日常行为开发的测试分层以 `tests/README.md` 和 `tests/scope-map.toml` 为权威；需要决定新增、扩展、复用、阶段暂存或不新增测试时，使用 `.codex/skills/assistant-agent-development-testing` 作为工作流检查清单。不得把“使用 TDD”理解为无条件新建测试文件。
-
-1. 开发循环运行新增测试和直接相关回归；阶段结束使用 `run_scoped_tests.py --scope ...`，已提交范围可使用 `--changed BASE..HEAD`。
-2. 涉及跨层功能且窄层无法证明 wiring 时，在提交前补充并运行一条离线端到端测试，贯穿真实仓库调用链，但使用 scripted/fake Provider，禁止默认联网。
-3. `--full` 触发门槛以 `tests/README.md` 为准，不要求每轮局部修改后运行。
-4. scoped 测试结构、scope 列表、marker 和新增测试方法以 `tests/README.md` 为准。
-
-本地 mock 服务：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py --provider mock --image-provider mock
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/realtime_media_client.py --server http://127.0.0.1:8000 --scenario basic
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_gateway_client.py --server http://127.0.0.1:8000 "你好"
-```
-
-只有在需要执行非 Python 命令且依赖 conda 激活环境变量时，才使用 `conda run -n hello_agent <command>`。
+测试 scope、marker、新增测试方法和 `--full` 触发条件以 `tests/README.md` 和 `tests/scope-map.toml` 为准。服务、demo、eval、smoke 和 runbook 命令按 README、`scripts/README.md` 或对应 `docs/*.md` 执行。只有在需要 conda 激活环境变量时才使用 `conda run -n hello_agent <command>`。
 
 ## 5. 目录与编辑策略
 
