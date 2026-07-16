@@ -27,11 +27,6 @@ Pilot and realtime operation runbooks:
 - `docs/development/agent-pilot-operator-runbook.md`
 - `docs/development/realtime-runtime-operator-runbook.md`
 
-Walkthroughs for project-owner explanations:
-
-- `docs/context-engineering-walkthrough.md`
-- `docs/agent-collaboration-walkthrough.md`
-
 Interview training material lives under `docs/interview/` and is separate from normal development routing.
 
 ## Local Environment

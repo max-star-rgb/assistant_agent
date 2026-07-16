@@ -18,7 +18,7 @@ Last updated: 2026-07-15
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket；每轮只理解当前单帧并携带裁剪后的上一语义摘要，前台模型只消费独立的 `realtime_video_context`，不获得 `video_understanding` 工具。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
-- 按需补读：给人解释机制时读 `docs/context-engineering-walkthrough.md`；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`。
+- 按需补读：解释机制时读本文件对应小节；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`。
 
 ## Current Stage
 
