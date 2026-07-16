@@ -144,10 +144,12 @@ and the legacy `assistantControlStart` handshake remains accepted for older
 clients. `chat` maps the latest `speechContent` to a Gateway turn. With
 `stream=true`, committed provider-token `stream.chunk` frames become media
 `chatResponse` delta packets (`PROCESSING`, increasing sequence,
-`final=false`), followed by one complete terminal packet (`SUCCESS`,
-`final=true`). When at least one delta was delivered, that complete terminal
-packet is marked `display_only=true` so media TTS does not speak the accumulated
-text a second time; it remains the authoritative display/commit payload. With
+`final=false`), followed by one terminal packet (`SUCCESS`, `final=true`) whose
+`description` contains only text not already delivered by prior deltas. When all
+answer text was already delivered, the terminal packet uses an empty
+`description`. When at least one delta was delivered, that terminal packet is
+also marked `display_only=true` / `displayOnly=true` for clients that support
+that hint. With
 `stream=false`, or when no provider token delta exists,
 only the successful terminal packet is sent. `deliveryId` and application ACK
 apply only to a successful terminal packet. A streamed failure closes with

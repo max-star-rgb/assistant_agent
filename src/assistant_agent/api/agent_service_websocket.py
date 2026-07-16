@@ -801,6 +801,7 @@ async def _run_chat_delivery(
 ) -> None:
     progress_task: asyncio.Task | None = None
     sequence = 0
+    streamed_text_parts: list[str] = []
     prepared_stream_requested = prepared.body.get("stream") is True
 
     async def send_delta(delta: str, chunk_frame: dict[str, Any]) -> None:
@@ -818,6 +819,7 @@ async def _run_chat_delivery(
         if timing is not None:
             timing.record_stream_chunk(at_ns=state.clock_ns())
         sequence = next_sequence
+        streamed_text_parts.append(delta)
 
     timing = state.turn_timings.get(delivery.delivery_id)
     if timing is not None:
@@ -856,6 +858,7 @@ async def _run_chat_delivery(
             turn=turn,
             delivery=delivery,
             sequence=sequence + 1,
+            streamed_text="".join(streamed_text_parts),
         )
         if timing is not None:
             timing.mark("response_built", at_ns=state.clock_ns())
@@ -954,6 +957,7 @@ def _prepared_chat_response(
     turn: Any,
     delivery: AgentServiceDelivery,
     sequence: int,
+    streamed_text: str = "",
 ) -> dict[str, Any]:
     if turn.status != "completed":
         return _failure_chat_response(
@@ -963,10 +967,11 @@ def _prepared_chat_response(
         )
     if state.media_protocol or "stream" in prepared.body or prepared.response_session_id is None:
         state.media_protocol = True
+        response_text = _remaining_stream_text(turn.response_text, streamed_text)
         body = {
             "message": {
                 "chatIndex": prepared.chat_index,
-                "content": {"intentResult": {"description": turn.response_text, "status": "SUCCESS"}},
+                "content": {"intentResult": {"description": response_text, "status": "SUCCESS"}},
             },
             **_display_flags(sequence > 1),
             "sequence": sequence,
@@ -987,6 +992,14 @@ def _prepared_chat_response(
             "message": {"chatIndex": prepared.chat_index, "content": turn.response_text},
         },
     )
+
+
+def _remaining_stream_text(full_text: str, streamed_text: str) -> str:
+    if not streamed_text:
+        return full_text
+    if full_text.startswith(streamed_text):
+        return full_text[len(streamed_text):]
+    return ""
 
 
 def _delivery_capabilities(value: Any) -> dict[str, bool]:

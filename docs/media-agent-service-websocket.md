@@ -135,7 +135,7 @@ Agent 兼容说明：
 | `contents[].speechContent` | string | 文本消息必填 | 已完成 ASR 的文本 |
 | `contents[].imageContent` | string | 图片消息可选 | 图片 Base64；当前作为媒体兼容字段接收，不直接进入图像 provider |
 | `contents[].time` | string | 是 | ISO 8601 时间戳 |
-| `stream` | boolean | 否 | 为 `true` 时，真实 Provider token delta 投影为多个 `chatResponse` 中间包，之后仍发送一个完整终包；缺省或 `false` 时只发送终包 |
+| `stream` | boolean | 否 | 为 `true` 时，真实 Provider token delta 投影为多个 `chatResponse` 中间包，之后发送一个成功终包关闭本轮 stream；缺省或 `false` 时只发送终包 |
 
 处理规则：
 
@@ -143,8 +143,9 @@ Agent 兼容说明：
 - 只包含 `imageContent` 的内容项可以随请求传入，但当前不单独触发图像理解。
 - `chat` 会进入 `GatewayTurnFacade -> GatewaySessionManager -> GatewayAgentAdapter -> AssistantRuntimeApp -> AgentGraphRuntime`。
 - chat run 在独立任务中执行，WebSocket 主循环会继续接收并 ACK 后续媒体消息。
-- `stream=true` 的中间包只携带本包新增文本，`status=PROCESSING`、`sequence>=1`、`final=false`；终包携带完整回答，`status=SUCCESS`、最后一个 `sequence`、`final=true`。
-- 若本轮已经发送过中间包，成功终包会同时携带 `display_only=true` 和 camelCase 兼容字段 `displayOnly=true`。媒体/App 应将终包作为累计文本的确认或替换，不应把终包 `description` 再追加朗读或追加显示一遍。
+- `stream=true` 的中间包只携带本包新增文本，`status=PROCESSING`、`sequence>=1`、`final=false`；终包只携带尚未发送过的剩余文本，`status=SUCCESS`、最后一个 `sequence`、`final=true`。
+- 若本轮正文已经全部通过中间包发送，成功终包的 `description` 为空字符串。媒体/App 可以继续按增量追加处理，不会重复追加完整答案。
+- 若本轮已经发送过中间包，成功终包仍会同时携带 `display_only=true` 和 camelCase 兼容字段 `displayOnly=true`，供支持该标记的客户端识别终包。
 - 只有真实 Provider token delta 产生中间包；Provider 不支持或未产生 token delta 时，即使 `stream=true` 也只发送一个完整终包，不伪造流式能力。
 - `deliveryId` 和 `chatResponseAck` 只属于成功终包；中间包和失败终包都不进入应用层 ACK 状态。
 - Provider 的工具调用前导文本受 runtime commit barrier 保护；会被工具调用取代的 provisional 文本不会发送给 Media/App。
@@ -181,7 +182,7 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
     "chatIndex": "对话索引",
     "content": {
       "intentResult": {
-        "description": "AI回复文本",
+        "description": "",
         "status": "SUCCESS"
       }
     }
@@ -194,13 +195,12 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 }
 ```
 
-终包外层示例；`description` 是完整回答，不是最后一个 delta。若前面已经发过中间包，
-终包应替换/确认累计文本，而不是被当作新的增量追加：
+终包外层示例；前面已经发完正文时，终包 `description` 为空字符串：
 
 ```json
 {
   "message": "chatResponse",
-  "body": "{\"message\":{\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"你好，我可以帮你处理。\",\"status\":\"SUCCESS\"}}},\"display_only\":true,\"displayOnly\":true,\"sequence\":2,\"final\":true,\"deliveryId\":\"delivery_xxx\"}"
+  "body": "{\"message\":{\"chatIndex\":\"chat-1\",\"content\":{\"intentResult\":{\"description\":\"\",\"status\":\"SUCCESS\"}}},\"display_only\":true,\"displayOnly\":true,\"sequence\":2,\"final\":true,\"deliveryId\":\"delivery_xxx\"}"
 }
 ```
 

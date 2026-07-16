@@ -955,7 +955,7 @@ def test_agent_service_stream_true_sends_incremental_then_terminal_packets(tmp_p
     assert [
         _body(item)["message"]["content"]["intentResult"]["description"]
         for item in packets
-    ] == ["你", "好", "你好"]
+    ] == ["你", "好", ""]
     assert [
         _body(item)["message"]["content"]["intentResult"]["status"]
         for item in packets
