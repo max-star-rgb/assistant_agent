@@ -337,7 +337,7 @@ class RealtimeVideoObserver:
                 if self.closed:
                     self._delete_record(item)
                     continue
-                observation = _usable_background_observation(result)
+                observation = _snapshot_publishable_observation(result)
                 if observation is not None:
                     diagnostics = self._observation_diagnostics(
                         item=item,
@@ -624,8 +624,8 @@ def _result_error(result: ToolResult) -> dict[str, Any]:
             }
     if result.success:
         return {
-            "code": "video_observation_unusable",
-            "message": "Video observation did not return usable background VLM text.",
+            "code": "realtime_video_snapshot_not_publishable",
+            "message": "Video observation result is not publishable as a realtime video semantic snapshot.",
             "recoverable": True,
         }
     return {
@@ -635,16 +635,18 @@ def _result_error(result: ToolResult) -> dict[str, Any]:
     }
 
 
-def _usable_background_observation(result: ToolResult) -> VideoUnderstandingResult | None:
+def _snapshot_publishable_observation(result: ToolResult) -> VideoUnderstandingResult | None:
+    """Return a VLM result only when it may publish a rolling semantic snapshot."""
+
     if not result.success or not isinstance(result.data, dict):
-        return None
-    if result.data.get("source") != "background_keyframe_observation":
         return None
     try:
         observation = VideoUnderstandingResult.model_validate(result.data)
     except ValidationError:
         return None
     if observation.errors:
+        return None
+    if result.data.get("source") != "background_keyframe_observation":
         return None
     return observation
 

@@ -113,7 +113,7 @@ class FailingVideoAdapter:
         )
 
 
-class MisclassifiedFailureTool(VideoUnderstandingTool):
+class ExecutionSuccessfulSemanticFailureTool(VideoUnderstandingTool):
     def __init__(self) -> None:
         super().__init__(adapter=MockVideoUnderstandingAdapter())
 
@@ -139,7 +139,7 @@ class MisclassifiedFailureTool(VideoUnderstandingTool):
         )
 
 
-class ExplanatoryUnavailableTool(VideoUnderstandingTool):
+class QueryTimeMemoryUnavailableTool(VideoUnderstandingTool):
     def __init__(self) -> None:
         super().__init__(adapter=MockVideoUnderstandingAdapter())
 
@@ -973,11 +973,11 @@ def test_failed_observation_records_failure_and_deletes_selected_artifact(tmp_pa
     asyncio.run(scenario())
 
 
-def test_misclassified_vlm_failure_does_not_publish_success_snapshot(tmp_path: Path) -> None:
+def test_execution_success_with_vlm_errors_does_not_publish_snapshot(tmp_path: Path) -> None:
     async def scenario() -> None:
         module = importlib.import_module("assistant_agent.services.realtime_video_observer")
         registry = ToolRegistry()
-        registry.register(MisclassifiedFailureTool())
+        registry.register(ExecutionSuccessfulSemanticFailureTool())
         memory = RealtimeVideoMemoryStore()
         keyframe_root = tmp_path / "keyframes"
         observer = module.RealtimeVideoObserver(
@@ -1004,11 +1004,11 @@ def test_misclassified_vlm_failure_does_not_publish_success_snapshot(tmp_path: P
     asyncio.run(scenario())
 
 
-def test_explanatory_unavailable_result_does_not_publish_success_snapshot(tmp_path: Path) -> None:
+def test_query_time_memory_unavailable_result_is_not_publishable_snapshot(tmp_path: Path) -> None:
     async def scenario() -> None:
         module = importlib.import_module("assistant_agent.services.realtime_video_observer")
         registry = ToolRegistry()
-        registry.register(ExplanatoryUnavailableTool())
+        registry.register(QueryTimeMemoryUnavailableTool())
         memory = RealtimeVideoMemoryStore()
         keyframe_root = tmp_path / "keyframes"
         observer = module.RealtimeVideoObserver(
@@ -1028,7 +1028,7 @@ def test_explanatory_unavailable_result_does_not_publish_success_snapshot(tmp_pa
         assert snapshot.healthy is False
         assert snapshot.last_success_sequence is None
         assert snapshot.current_state == ""
-        assert snapshot.last_error["code"] == "video_observation_unusable"
+        assert snapshot.last_error["code"] == "realtime_video_snapshot_not_publishable"
         assert list(keyframe_root.rglob("*.jpg")) == []
         await observer.close()
 
