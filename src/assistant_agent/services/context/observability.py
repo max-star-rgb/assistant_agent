@@ -167,6 +167,13 @@ def _realtime_video_trace(pack: AssistantContextPack) -> dict[str, Any]:
             pack.request.metadata,
             "realtime_video_freshness_satisfied",
         ),
+        "transport": context.transport,
+        "session_generation": context.session_generation,
+        "connection_reused": context.connection_reused,
+        "reconnect_count": context.reconnect_count,
+        "completed_sequence": context.completed_sequence,
+        "first_delta_latency_ms": context.first_delta_latency_ms,
+        "total_observation_latency_ms": context.total_observation_latency_ms,
     }
     trace.update({key: value for key, value in optional_values.items() if value is not None})
     return trace

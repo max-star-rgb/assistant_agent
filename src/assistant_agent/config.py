@@ -59,6 +59,7 @@ class ProviderConfig:
     dashscope_api_key: str | None = None
     ark_api_key: str | None = None
     qwen_vision_api_key: str | None = None
+    qwen_realtime_vision_api_key: str | None = None
     qwen_image_api_key: str | None = None
     ark_vision_api_key: str | None = None
     ark_image_api_key: str | None = None
@@ -84,6 +85,8 @@ class ProviderConfig:
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_vision_model: str = "qwen-vl-plus"
+    qwen_realtime_vision_base_url: str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+    qwen_realtime_vision_model: str = "qwen3.5-omni-flash-realtime"
     ark_vision_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     ark_vision_model: str = "doubao-seed-2-0-lite-260215"
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
@@ -210,7 +213,6 @@ class ProviderConfig:
             allow_real=allow_real_providers,
         )
         vision_settings = resolve_vision_provider(vision_provider, source)
-        video_provider = _video_provider(vision_provider)
         vision_embedding_provider = _vision_embedding_provider(
             source.get("MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER"),
             allow_real=allow_real_providers,
@@ -245,6 +247,11 @@ class ProviderConfig:
         conversation_history_path = source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH") or (
             _default_conversation_history_path(memory_path)
         )
+        video_provider = _video_provider(
+            source,
+            vision_provider=vision_provider,
+            allow_real=allow_real_providers,
+        )
         return cls(
             runtime_profile=runtime_profile,
             openai_api_key=source.get("OPENAI_API_KEY"),
@@ -252,6 +259,9 @@ class ProviderConfig:
             dashscope_api_key=source.get("DASHSCOPE_API_KEY"),
             ark_api_key=source.get("ARK_API_KEY"),
             qwen_vision_api_key=source.get("QWEN_VISION_API_KEY"),
+            qwen_realtime_vision_api_key=(
+                source.get("QWEN_VISION_API_KEY") or source.get("DASHSCOPE_API_KEY")
+            ),
             qwen_image_api_key=source.get("QWEN_IMAGE_API_KEY"),
             ark_vision_api_key=source.get("ARK_VISION_API_KEY"),
             ark_image_api_key=source.get("ARK_IMAGE_API_KEY"),
@@ -290,6 +300,14 @@ class ProviderConfig:
                 "https://dashscope.aliyuncs.com/compatible-mode/v1",
             ),
             qwen_vision_model=source.get("QWEN_VISION_MODEL", "qwen-vl-plus"),
+            qwen_realtime_vision_base_url=source.get(
+                "QWEN_REALTIME_VISION_BASE_URL",
+                "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+            ),
+            qwen_realtime_vision_model=source.get(
+                "QWEN_REALTIME_VISION_MODEL",
+                "qwen3.5-omni-flash-realtime",
+            ),
             ark_vision_base_url=source.get("ARK_VISION_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
             ark_vision_model=source.get("ARK_VISION_MODEL", "doubao-seed-2-0-lite-260215"),
             seed_vision_base_url=source.get("SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"),
@@ -436,9 +454,9 @@ class ProviderConfig:
             render_api_key=source.get("RENDER_API_KEY"),
             render_timeout_seconds=_float_env(source.get("RENDER_TIMEOUT_SECONDS"), 10.0),
             video_provider=video_provider,
-            video_understanding_base_url=_video_base_url(source, video_provider),
-            video_understanding_api_key=_video_api_key(source, video_provider),
-            video_understanding_model=_video_model(source, video_provider),
+            video_understanding_base_url=_video_base_url(source, provider=video_provider),
+            video_understanding_api_key=_video_api_key(source, provider=video_provider),
+            video_understanding_model=_video_model(source, provider=video_provider),
             video_understanding_timeout_seconds=_float_env(
                 source.get("VIDEO_UNDERSTANDING_TIMEOUT_SECONDS"),
                 60.0,
@@ -465,6 +483,7 @@ class ProviderConfig:
                 self.ark_api_key,
                 self.vision_embedding_api_key,
                 self.qwen_vision_api_key,
+                self.qwen_realtime_vision_api_key,
                 self.qwen_image_api_key,
                 self.ark_vision_api_key,
                 self.ark_image_api_key,
@@ -757,12 +776,26 @@ def _render_provider(value: str | None, *, allow_real: bool = True) -> RenderPro
     return "mock"
 
 
-def _video_provider(value: str | None, *, allow_real: bool = True) -> VideoProviderName:
-    if allow_real and value == "http":
+def _video_provider(
+    source: Mapping[str, str],
+    *,
+    vision_provider: VisionProviderName,
+    allow_real: bool = True,
+) -> VideoProviderName:
+    if not allow_real:
+        return "mock"
+    if any(
+        source.get(name)
+        for name in (
+            "VIDEO_UNDERSTANDING_BASE_URL",
+            "VIDEO_UNDERSTANDING_API_KEY",
+            "VIDEO_UNDERSTANDING_MODEL",
+        )
+    ):
         return "http"
-    if allow_real and value == "ark":
+    if vision_provider == "ark":
         return "ark"
-    if allow_real and value == "qwen":
+    if vision_provider == "qwen":
         return "qwen"
     return "mock"
 
@@ -780,7 +813,7 @@ def _clean_env_value(value: str) -> str:
     return cleaned.strip().strip('"').strip("'").strip("“”‘’")
 
 
-def _video_base_url(source: Mapping[str, str], provider: VideoProviderName) -> str | None:
+def _video_base_url(source: Mapping[str, str], *, provider: VideoProviderName) -> str | None:
     if provider == "ark":
         return source.get("ARK_VISION_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
     if provider == "qwen":
@@ -788,7 +821,7 @@ def _video_base_url(source: Mapping[str, str], provider: VideoProviderName) -> s
     return source.get("VIDEO_UNDERSTANDING_BASE_URL")
 
 
-def _video_api_key(source: Mapping[str, str], provider: VideoProviderName) -> str | None:
+def _video_api_key(source: Mapping[str, str], *, provider: VideoProviderName) -> str | None:
     if provider == "ark":
         return source.get("ARK_VISION_API_KEY")
     if provider == "qwen":
@@ -796,7 +829,7 @@ def _video_api_key(source: Mapping[str, str], provider: VideoProviderName) -> st
     return source.get("VIDEO_UNDERSTANDING_API_KEY")
 
 
-def _video_model(source: Mapping[str, str], provider: VideoProviderName) -> str:
+def _video_model(source: Mapping[str, str], *, provider: VideoProviderName) -> str:
     if provider == "ark":
         return source.get("ARK_VISION_MODEL") or "doubao-seed-2-0-lite-260215"
     if provider == "qwen":

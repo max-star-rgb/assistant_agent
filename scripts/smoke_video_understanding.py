@@ -1,5 +1,7 @@
 """Manual smoke entry point for video_understanding capability."""
 
+# ruff: noqa: E402 - the script adds the repository src directory before package imports.
+
 from __future__ import annotations
 
 import argparse
@@ -39,7 +41,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     config = ProviderConfig.from_env(source)
     provider = config.video_provider
 
-    missing = _missing_provider_config(provider, source)
+    missing = _missing_provider_config(config)
     if missing:
         _print_provider_unconfigured(missing)
         return 2
@@ -70,15 +72,20 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     return 1 if state.status == "failed" else 0
 
 
-def _missing_provider_config(provider: str, source: Mapping[str, str]) -> str | None:
-    if provider == "ark":
-        if not source.get("ARK_VISION_API_KEY"):
+def _missing_provider_config(config: ProviderConfig) -> str | None:
+    if config.video_provider == "http":
+        missing = []
+        if not config.video_understanding_base_url:
+            missing.append("VIDEO_UNDERSTANDING_BASE_URL")
+        if not config.video_understanding_api_key:
+            missing.append("VIDEO_UNDERSTANDING_API_KEY")
+        if missing:
+            return f"missing {', '.join(missing)}"
+    if config.video_provider == "ark":
+        if not config.video_understanding_api_key:
             return "missing ARK_VISION_API_KEY"
-    if provider == "qwen":
-        if not (source.get("QWEN_VISION_API_KEY") or source.get("DASHSCOPE_API_KEY")):
-            return "missing QWEN_VISION_API_KEY"
-    if provider not in {"mock", "ark", "qwen"}:
-        return "MULTIMODAL_AGENT_VISION_PROVIDER must select mock, qwen, or ark for video understanding."
+    if config.video_provider == "qwen" and not config.video_understanding_api_key:
+        return "missing QWEN_VISION_API_KEY or DASHSCOPE_API_KEY"
     return None
 
 
@@ -105,7 +112,7 @@ def _api_error_payload(error: Any) -> dict[str, Any]:
 def _print_provider_unconfigured(reason: str) -> None:
     print("provider_unconfigured")
     print(reason)
-    print("Please set MULTIMODAL_AGENT_VISION_PROVIDER and the required vision provider configuration.")
+    print("Please select a vision provider or set the required HTTP video provider configuration.")
 
 
 def _sanitize_payload(value: Any) -> Any:

@@ -49,9 +49,15 @@ FAIL_CODE = "FAIL"
 POLICY_VIOLATION_CLOSE_CODE = 1008
 VIDEO_TURN_TIMEOUT_SECONDS = 90.0
 CHAT_PROGRESS_INTERVAL_SECONDS = 15.0
-VIDEO_FRESHNESS_WAIT_SECONDS = 4.0
+VIDEO_FRESHNESS_WAIT_SECONDS = 1.5
 _REALTIME_VISUAL_REFERENCE = re.compile(
     r"(?:眼前|画面|摄像头|镜头|看到什么|看见什么|这是什么|那个是什么|"
+    r"当前场景|"
+    r"(?:手里|桌上|旁边|前面|后面|左边|右边)(?:"
+    r"(?:有|是)(?:什么|啥|哪些|哪个)|"
+    r"(?:放着|拿着|拿的|摆着|站着|出现(?:了)?)(?:的)?(?:是)?(?:什么|啥|哪些|哪个)|"
+    r"(?:有何|有啥)(?:东西|物体)?|(?:的)?(?:东西|物体|场景)(?:是什么|有哪些)?"
+    r")|"
     r"in\s+front\s+of\s+(?:me|the\s+camera)|on\s+(?:screen|camera)|"
     r"what\s+(?:do\s+you\s+see|is\s+this|is\s+that))",
     re.IGNORECASE,
@@ -1132,12 +1138,16 @@ def _create_video_ingestion_service() -> H264VideoIngestionService:
 
 def _create_realtime_video_observer(*, user_id: str, session_id: str) -> RealtimeVideoObserver:
     from assistant_agent.api import routes_agent
+    from assistant_agent.tools.registry import create_realtime_video_observation_registry
 
     runtime = routes_agent.get_assistant_runtime_app().runtime
     return RealtimeVideoObserver(
         user_id=user_id,
         session_id=session_id,
-        registry=runtime.registry,
+        registry=create_realtime_video_observation_registry(
+            runtime.config,
+            realtime_video_memory_store=runtime.realtime_video_memory_store,
+        ),
         memory_store=runtime.realtime_video_memory_store,
     )
 
@@ -1216,7 +1226,7 @@ async def _run_agent_service_chat_turn(
 ):
     if state.gateway_facade is None:
         raise RuntimeError("agent-service Gateway facade is not initialized")
-    active_video_ids = list(state.video_ids if video_ids is None else video_ids)
+    active_video_ids = _active_chat_video_ids(state=state, prepared_video_ids=video_ids)
     freshness_metadata = await _realtime_video_freshness_metadata(
         state=state,
         video_ids=active_video_ids,
@@ -1295,7 +1305,7 @@ async def _realtime_video_freshness_metadata(
                     await asyncio.shield(promotion)
                 if callable(wait_for_sequence):
                     await wait_for_sequence(target_sequence)
-        except TimeoutError:
+        except (TimeoutError, ValueError, RuntimeError):
             pass
     waited_ms = _elapsed_ms(wait_started_ns, perf_counter_ns())
     refreshed = snapshot_reader(video_id)
@@ -1318,6 +1328,28 @@ def _consume_task_exception(task: asyncio.Task[Any]) -> None:
 
     if not task.cancelled():
         task.exception()
+
+
+def _active_chat_video_ids(
+    *,
+    state: AgentServiceConnectionState,
+    prepared_video_ids: list[str] | None,
+) -> list[str]:
+    requested = list(state.video_ids if prepared_video_ids is None else prepared_video_ids)
+    if not requested:
+        return []
+    current = list(state.video_ids)
+    if not current:
+        return []
+    observer_video_id = getattr(state.video_observer, "video_id", None)
+    current_video_id = (
+        observer_video_id
+        if isinstance(observer_video_id, str) and observer_video_id in current
+        else current[-1]
+    )
+    if requested[-1] != current_video_id:
+        return [current_video_id]
+    return requested
 
 
 def _latest_decoded_video_frame(video_id: str) -> VideoFrame | None:

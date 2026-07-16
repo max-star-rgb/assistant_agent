@@ -160,6 +160,14 @@ owning run/session lifecycle, reconnect, cancel, interrupt, stale-output
 suppression, and transport behavior. Changes to those wire semantics belong in
 `docs/gateway-architecture.md`, not here.
 
+Qwen realtime vision 的 Provider delta 与用户可见 Agent stream 是两条独立流。后台
+`QwenRealtimeVisionAdapter` 在 persistent WebSocket 内累积 `response.text.delta`，直到
+收到 completed `response.done` 后才发布一个结构化 `VideoUnderstandingResult`；这些 delta
+不会映射为 `LLMEvent`、`AgentEvent(response_delta)`、`RealtimeAgentEvent(response.chunk)`
+或 Gateway `stream.chunk`。最终 Agent stream 仍只来自前台 chat Provider，经现有
+commit barrier 与 `AgentRunStream` 进入 realtime/Gateway。视觉 Provider 的首 delta 与总耗时
+只作为 prompt-safe scalar diagnostics，不携带 Qwen 原文或 raw event。
+
 ## Cancellation And Failure Semantics
 
 Cancellation is cooperative:

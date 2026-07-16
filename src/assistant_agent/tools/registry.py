@@ -27,7 +27,10 @@ from assistant_agent.services.memory_media_ingestion import create_memory_media_
 from assistant_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
 from assistant_agent.services.provider_selection import create_vision_adapter
 from assistant_agent.services.render_adapter import create_render_adapter
-from assistant_agent.services.video_adapter import create_video_understanding_adapter
+from assistant_agent.services.video_adapter import (
+    create_realtime_video_understanding_adapter,
+    create_video_understanding_adapter,
+)
 from assistant_agent.services.video_context import VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
@@ -610,4 +613,21 @@ def create_default_registry(
     if config is not None and config.durable_tasks_enabled:
         if durable_task_service is not None:
             registry.register(TaskPlanSubmitTool(durable_task_service))
+    return registry
+
+
+def create_realtime_video_observation_registry(
+    config: ProviderConfig | None = None,
+    *,
+    realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
+) -> ToolRegistry:
+    """Create the governed, realtime-observer-only video tool registry."""
+
+    registry = ToolRegistry()
+    registry.register(
+        VideoUnderstandingTool(
+            adapter=create_realtime_video_understanding_adapter(config),
+            memory_store=realtime_video_memory_store,
+        )
+    )
     return registry

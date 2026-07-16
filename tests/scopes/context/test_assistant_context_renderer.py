@@ -158,6 +158,13 @@ def test_freshness_diagnostic_context_trace_is_prompt_safe() -> None:
         snapshot_age_ms=5_000,
         frame_capture_age_ms=5_000,
         snapshot_publish_age_ms=3_000,
+        transport="websocket",
+        session_generation=3,
+        connection_reused=False,
+        reconnect_count=2,
+        completed_sequence=3,
+        first_delta_latency_ms=420,
+        total_observation_latency_ms=810,
     )
     request = UserRequest(
         user_id="u1",
@@ -188,6 +195,13 @@ def test_freshness_diagnostic_context_trace_is_prompt_safe() -> None:
     assert video_trace["snapshot_publish_age_ms"] == 3_000
     assert video_trace["freshness_waited_ms"] == 4_000
     assert video_trace["freshness_satisfied"] is False
+    assert video_trace["transport"] == "websocket"
+    assert video_trace["session_generation"] == 3
+    assert video_trace["connection_reused"] is False
+    assert video_trace["reconnect_count"] == 2
+    assert video_trace["completed_sequence"] == 3
+    assert video_trace["first_delta_latency_ms"] == 420
+    assert video_trace["total_observation_latency_ms"] == 810
     serialized = json.dumps(video_trace, ensure_ascii=False)
     assert "private visual description" not in serialized
     assert "/tmp/frame" not in serialized

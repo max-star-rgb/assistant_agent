@@ -80,6 +80,13 @@ class RealtimeVideoContext(BaseModel):
     pending_count: int = Field(default=0, ge=0)
     in_flight: bool = False
     error_code: str | None = None
+    transport: str | None = Field(default=None, max_length=40)
+    session_generation: int | None = Field(default=None, ge=1)
+    connection_reused: bool | None = None
+    reconnect_count: int | None = Field(default=None, ge=0)
+    completed_sequence: int | None = Field(default=None, ge=0)
+    first_delta_latency_ms: int | None = Field(default=None, ge=0)
+    total_observation_latency_ms: int | None = Field(default=None, ge=0)
 
 
 class ContextSection(BaseModel):

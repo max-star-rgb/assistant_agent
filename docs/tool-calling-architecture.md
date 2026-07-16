@@ -240,6 +240,8 @@ Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are capa
 
 Repo/user-local Python tools use the explicit `@tool` decorator plus `load_local_tools()` / `register_local_tools()`. They are not import-time global registrations. A local tool may declare `ToolPolicyMetadata` and `ToolExecutionPolicy`; when present, runtime risk gate, boundary summaries, scheduler metadata, trace/history summaries, and `tools simulate` consume that declaration through the same `ToolSpec -> ToolPolicyView -> ActionValidator -> ToolExecutor` path. `assistant_agent.tools.cli validate` checks declaration shape and policy requirements; `simulate` executes one explicitly loaded tool through validator/executor for local verification.
 
+Agent-Service realtime video 使用一个私有 observation registry，但不会缩短治理链：入口只负责 H.264 校验、解码与本地选帧，选中的当前单帧被包装为 `AssistantDecision`，依次经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding -> QwenRealtimeVisionAdapter`。该工具不进入前台 DeepSeek 的 `RunToolSet`；前台只消费已发布的 `realtime_video_context`。`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 只在这个专用 factory 中选择 persistent realtime WebSocket；普通图片与上传视频仍走各自 HTTP adapter，显式 `VIDEO_UNDERSTANDING_*` 配置选择通用 HTTP 上传服务。
+
 默认副作用分类：
 
 - `vision_understanding`、`video_understanding`、`web_search`、`shopping_search`、`product_search`、`price_compare`: `external_read`。

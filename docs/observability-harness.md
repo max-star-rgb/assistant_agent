@@ -145,11 +145,13 @@ prompt-safe sources:
 - `recent_frame_fallback`: semantic memory was absent, not ready, or latest
   failed, so the ordinary recent-frame Provider path ran.
 
-Safe diagnostic fields are source, opaque video/output reference, snapshot
-sequence, observed timestamp, keyframe count, queue counts, status, reason code,
-provider/model name, and latency. Raw H.264, JPEG bytes, grayscale fingerprints,
-absolute keyframe paths, Provider raw payloads, phone numbers, and user-visible
-response text must not appear in trace summaries or delivery audit records.
+允许记录的视频字段仅限 prompt-safe scalar 或有限枚举：source、opaque video/output
+reference、snapshot/target/completed sequence、sequence gap、observed timestamp、
+keyframe/queue count、status、reason code、provider/model、transport、session generation、
+connection reused、reconnect count、first delta latency、total observation latency、
+capture/publish age 和 freshness wait/result。trace、日志、delivery audit 与 context report
+一律禁止记录绝对或相对帧路径、Base64/Hex、PCM、JPEG/H.264 bytes、灰度指纹、Qwen 原文、
+Provider 请求/响应、raw event body、phone number 或用户可见回答文本。
 
 `videoResponse(code=0)` is an ingestion signal: H.264 validation, JPEG and
 fingerprint decode, context registration, and local selection scheduling
@@ -172,7 +174,7 @@ bottleneck.
 `context.build.finished` reports only presence, state, snapshot/target sequence,
 sequence gap, capture/publish ages, freshness wait duration/result, observation
 latency, provider/model, and queue state. A current-camera turn waits at most
-4.0 seconds for `snapshot_sequence >= target_sequence`; the same observer keeps
+1.5 seconds for `snapshot_sequence >= target_sequence`; the same observer keeps
 one Qwen in flight plus one latest-wins pending frame. It must
 not contain the Qwen summary, raw conversation, frame path, Base64, or media
 payload. Agent-Service packet-level received/sent lines are DEBUG; disconnect

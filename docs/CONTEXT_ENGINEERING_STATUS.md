@@ -15,6 +15,7 @@ Last updated: 2026-07-15
 - 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
 - 预算现状：全局压缩控制仍以字符预算为准；recent transcript 选择已使用本地 token 估算；Memory context 有单独 token-aware 注入边界；其余 token 字段仍主要用于报告。
 - memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期读取由 `MemoryReadPolicy` gate，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
+- realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket；每轮只理解当前单帧并携带裁剪后的上一语义摘要，前台模型只消费独立的 `realtime_video_context`，不获得 `video_understanding` 工具。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
 - 按需补读：给人解释机制时读 `docs/context-engineering-walkthrough.md`；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`。
@@ -160,9 +161,11 @@ Last updated: 2026-07-15
 - Agent-Service 的后台 observer 继续通过工具治理链执行 Qwen；“后台受治理工具执行”和“前台模型可见工具目录”是两个边界。`video_understanding` 不进入该入口的前台 `RunToolSet`。
 - `AgentGraphRuntime` 在每次模型 context build 前按请求中最后一个 `video_id` 重新投影共享 `RealtimeVideoMemoryStore`，生成 `ready`、`refreshing`、`pending`、`stale`、`failed` 或 `unavailable` 状态。
 - 可信 Agent-Service 入口把 `video_ids` 渲染为“当前通话的实时镜头”而不是上传式“附带视频 ID”；`realtime_phone` prompt 要求自然使用“我看到……”等共享镜头措辞，禁止“你刚发送的视频”、视频 ID、快照、后台观察、上下文注入或 Provider 等实现细节。普通上传/API 仍保留上传语义。
-- 明确当前画面问题以最近已解码帧 sequence 为 `target_sequence`。成功快照落后时，入口复用或提升同一 observer 的 latest-wins 候选，并最多等待 4.0 秒；仍只允许一个 Qwen in-flight 和一个 pending，且不向前台模型暴露或启动 `video_understanding`。问候/闲聊不触发屏障。
-- 投影只包含裁剪后的 summary、objects、people、actions、events、scene、`snapshot_sequence`、`target_sequence`、`sequence_gap`、观察耗时、provider/model 和 pending/in-flight 状态，序列化上限约 2,000 字符；不含帧路径、媒体数据或 provider 原始错误。
-- `snapshot_age_ms` 与 `frame_capture_age_ms` 以成功语义对应帧的采集时间为主，`snapshot_publish_age_ms` 独立表示结果发布时间年龄；缺失或未来采集时间返回空值，不伪造年龄。4 秒未满足时，正 gap 投影为 `stale`（仍有任务时为 `refreshing`），prompt 不得把旧观察断言成当前事实。
+- observer 首帧必选、明显变化立即候选、静态画面最长 2 秒产生一次候选；队列保持一个 Qwen in-flight 和一个 latest-wins pending。每轮 Provider 请求只含当前单帧和最多 2,000 字符的上一成功语义摘要，不重发多帧历史。
+- 明确当前画面问题以最近已解码帧 sequence 为 `target_sequence`。成功快照落后时，入口复用或提升同一 observer 的 latest-wins 候选，并在 promotion 与 sequence wait 共用的 1.5 秒总预算内等待；不向前台模型暴露或启动 `video_understanding`。问候/闲聊不触发屏障。
+- 每个 `video_id` 复用一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后轮换，断线按 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；关闭或切换 video id 会关闭 Provider session 并清理 pending、语义状态和帧文件。
+- 投影只包含裁剪后的 summary、objects、people、actions、events、scene、`snapshot_sequence`、`target_sequence`、`completed_sequence`、`sequence_gap`、观察耗时、provider/model、`transport`、`session_generation`、`connection_reused`、`reconnect_count` 和 pending/in-flight 状态，序列化上限约 2,000 字符；不含帧路径、媒体数据、Qwen 原文、raw event 或 provider 原始错误。
+- `snapshot_age_ms` 与 `frame_capture_age_ms` 以成功语义对应帧的采集时间为主，`snapshot_publish_age_ms` 独立表示结果发布时间年龄；缺失或未来采集时间返回空值，不伪造年龄。1.5 秒未满足时，正 gap 投影为 `stale`（仍有任务时为 `refreshing`），prompt 不得把旧观察断言成当前事实。
 - renderer 把它标注为被动外部观察数据。只有当前请求明确涉及眼前画面或任务确实需要视觉事实时才使用；问候和闲聊不得主动提及。
 - `ContextBudgetReport`、token estimate、`ContextReport.sections.realtime_video_context` 和 `context.build.finished.realtime_video` 独立记账，不并入 conversation、memory、realtime task state 或普通 tool observation。
 
