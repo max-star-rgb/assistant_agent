@@ -39,6 +39,7 @@ services:
       - "127.0.0.1:8890:8000"
     environment:
       AUTH_DISABLED: "true"
+      MEM0_TELEMETRY: "False"
       OPENAI_API_KEY: ${MEMORY_BAKEOFF_CHAT_API_KEY:?set MEMORY_BAKEOFF_CHAT_API_KEY}
       OPENAI_BASE_URL: ${MEMORY_BAKEOFF_CHAT_BASE_URL:?set MEMORY_BAKEOFF_CHAT_BASE_URL}
       OPENAI_MODEL: ${MEMORY_BAKEOFF_CHAT_MODEL:?set MEMORY_BAKEOFF_CHAT_MODEL}
@@ -54,7 +55,7 @@ services:
       qdrant:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
       interval: 10s
       timeout: 3s
       retries: 12

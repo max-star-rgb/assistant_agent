@@ -193,3 +193,59 @@ def test_hindsight_lifecycle_builds_the_derived_image_before_start(monkeypatch) 
 
     assert calls[0] == (("down", "--volumes", "--remove-orphans"), "hindsight")
     assert calls[1] == (("up", "-d", "--build", "hindsight"), "hindsight")
+
+
+def test_mem0_lifecycle_uses_pinned_image_without_build_during_start(monkeypatch) -> None:
+    spec = spec_from_file_location("collect_memory_framework_bakeoff_mem0_start", REPO_ROOT / SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    lifecycle = module.DockerComposeLifecycle(framework="mem0", api_key="not-written")
+    calls = []
+    monkeypatch.setattr(
+        lifecycle,
+        "_compose",
+        lambda *args, profile=None: calls.append((args, profile)),
+    )
+    monkeypatch.setattr(lifecycle, "_wait_healthy", lambda: None)
+
+    lifecycle.reset_and_start()
+
+    assert calls[0] == (("down", "--volumes", "--remove-orphans"), "mem0")
+    assert calls[1] == (("up", "-d", "--no-build", "mem0"), "mem0")
+
+
+def test_mem0_health_wait_uses_readiness_endpoint_with_long_inflight_timeout(monkeypatch) -> None:
+    spec = spec_from_file_location("collect_memory_framework_bakeoff_mem0_ready", REPO_ROOT / SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    lifecycle = module.DockerComposeLifecycle.__new__(module.DockerComposeLifecycle)
+    lifecycle.framework = "mem0"
+    lifecycle.service = "mem0"
+    lifecycle.base_url = "http://127.0.0.1:8890"
+    observed = {}
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(lifecycle, "_container_id", lambda service: "container-id")
+    monkeypatch.setattr(lifecycle, "_container_running", lambda container_id: True)
+
+    def fake_urlopen(url: str, timeout: float):
+        observed["url"] = url
+        observed["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    lifecycle._wait_healthy(timeout_seconds=600)
+
+    assert observed["url"] == "http://127.0.0.1:8890/ready"
+    assert observed["timeout"] >= 30

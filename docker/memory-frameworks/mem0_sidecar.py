@@ -7,6 +7,9 @@ from threading import Lock
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
+
+os.environ.setdefault("MEM0_TELEMETRY", "False")
+
 from mem0 import Memory
 
 
@@ -58,8 +61,19 @@ def _build_memory() -> Memory:
     )
 
 
-@app.get("/")
+@app.get("/health")
 def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "framework": "mem0",
+        "version": "2.0.11",
+        "ready": _MEMORY is not None,
+    }
+
+
+@app.get("/")
+@app.get("/ready")
+def ready() -> dict[str, Any]:
     _ = memory()
     return {"status": "ok", "framework": "mem0", "version": "2.0.11"}
 

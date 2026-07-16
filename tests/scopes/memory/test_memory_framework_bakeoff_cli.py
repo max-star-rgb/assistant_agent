@@ -105,8 +105,10 @@ def test_compose_uses_pinned_images_local_ports_and_persistent_volumes() -> None
     assert "Lock()" in sidecar
     assert "with _MEMORY_LOCK:" in sidecar
     assert 'def health()' in sidecar
-    assert '_ = memory()' in sidecar
-    assert "urlopen('http://127.0.0.1:8000/'" in compose
+    assert 'def ready()' in sidecar
+    assert 'MEM0_TELEMETRY: "False"' in compose
+    assert "urlopen('http://127.0.0.1:8000/health'" in compose
+    assert "urlopen('http://127.0.0.1:8000/'" not in compose
     hindsight_dockerfile = (
         REPO_ROOT / "docker/memory-frameworks/Hindsight.Dockerfile"
     ).read_text(encoding="utf-8")

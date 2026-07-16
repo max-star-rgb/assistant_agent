@@ -56,9 +56,14 @@ in a temporary runtime directory. Manual sidecar startup and framework backend
 environment switching are not required for evidence collection. Hindsight is
 given a 900-second first-start budget because initializing pg0 from an empty
 volume can exceed the image's default five-minute startup window; Mem0 keeps a
-600-second budget because its readiness endpoint initializes both the primary
-and migration Qdrant collections before quality cases begin. The Mem0 sidecar
-serializes singleton initialization so health retries cannot race each other.
+600-second budget because its readiness endpoint initializes the primary
+Qdrant collection before quality cases begin. The Mem0 sidecar exposes a
+lightweight liveness endpoint for Docker health checks, uses a separate
+readiness endpoint for `Memory.from_config(...)`, disables Mem0 telemetry so no
+extra migration collection is created during the bake-off, and serializes
+singleton initialization so readiness retries cannot race each other. The
+collector starts Mem0 from the pinned sidecar image instead of rebuilding it on
+every measured run.
 
 ## Collect evidence
 

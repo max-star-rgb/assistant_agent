@@ -78,7 +78,7 @@ class DockerComposeLifecycle(BakeoffLifecycleController):
     def reset_and_start(self) -> None:
         self._compose("down", "--volumes", "--remove-orphans", profile=self.framework)
         started = time.perf_counter()
-        args = ["up", "-d", "--build"]
+        args = ["up", "-d", "--build" if self.framework == "hindsight" else "--no-build"]
         args.append(self.service)
         self._compose(*args, profile=self.framework)
         self._wait_healthy()
@@ -150,13 +150,17 @@ class DockerComposeLifecycle(BakeoffLifecycleController):
     def _wait_healthy(self, *, timeout_seconds: float | None = None) -> None:
         timeout_seconds = timeout_seconds or _startup_timeout_seconds(self.framework)
         deadline = time.monotonic() + timeout_seconds
-        health_url = f"{self.base_url}/health" if self.framework == "hindsight" else f"{self.base_url}/"
+        health_url = f"{self.base_url}{_health_path(self.framework)}"
         container_id = self._container_id(self.service)
         while time.monotonic() < deadline:
             if not self._container_running(container_id):
                 raise BakeoffCliError("memory_bakeoff_sidecar_exited")
+            remaining = max(1.0, deadline - time.monotonic())
             try:
-                with urllib.request.urlopen(health_url, timeout=2) as response:
+                with urllib.request.urlopen(
+                    health_url,
+                    timeout=_health_request_timeout_seconds(self.framework, remaining),
+                ) as response:
                     if 200 <= response.status < 300:
                         return
             except Exception:
@@ -255,6 +259,16 @@ def _validate_runtime(*, version: str, expected_version: str) -> None:
 
 def _startup_timeout_seconds(framework: str) -> float:
     return 900.0 if framework == "hindsight" else 600.0
+
+
+def _health_path(framework: str) -> str:
+    return "/health" if framework == "hindsight" else "/ready"
+
+
+def _health_request_timeout_seconds(framework: str, remaining_seconds: float) -> float:
+    if framework == "mem0":
+        return min(120.0, max(30.0, remaining_seconds))
+    return 2.0
 
 
 def _size_to_mb(value: str) -> float:
