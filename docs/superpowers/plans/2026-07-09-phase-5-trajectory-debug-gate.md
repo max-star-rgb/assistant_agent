@@ -141,7 +141,7 @@ Expected: PASS.
 
 **Files:**
 - Modify: `docs/observability-harness.md`
-- Modify: `docs/personal-realtime-ai-assistant-roadmap.md`
+- Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 
 **Interfaces:**
 - Consumes: Phase 5 roadmap gate and observability authority.
@@ -172,7 +172,7 @@ Keep RL pipeline, production self-modification, and private-data training explic
 Run:
 
 ```bash
-git diff --check -- docs/observability-harness.md docs/personal-realtime-ai-assistant-roadmap.md
+git diff --check -- docs/observability-harness.md docs/roadmaps/personal-realtime-ai-assistant-roadmap.md
 ```
 
 Expected: no output and exit code 0.
@@ -221,6 +221,6 @@ git diff --check -- AGENTS.md docs src tests scripts skills
 - [x] **Step 6: Commit**
 
 ```bash
-git add docs/observability-harness.md docs/personal-realtime-ai-assistant-roadmap.md docs/superpowers/plans/2026-07-09-phase-5-trajectory-debug-gate.md src/assistant_agent/services/trajectory_debug.py tests/test_phase5_trajectory_debug_gate.py
+git add docs/observability-harness.md docs/roadmaps/personal-realtime-ai-assistant-roadmap.md docs/superpowers/plans/2026-07-09-phase-5-trajectory-debug-gate.md src/assistant_agent/services/trajectory_debug.py tests/test_phase5_trajectory_debug_gate.py
 git commit -m "参考hermes的长期个人助手:phase5"
 ```

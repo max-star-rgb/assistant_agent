@@ -55,7 +55,7 @@ git diff --check -- src/assistant_agent/services/context/skill_loader.py src/ass
 - Create: `tests/test_phase3_skill_system_gate.py`
 - Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
 - Modify: `docs/tool-calling-architecture.md`
-- Modify: `docs/personal-realtime-ai-assistant-roadmap.md`
+- Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 
 **Acceptance:**
 - Gate proves repo-local skill manifests can declare permissions and tool mappings.

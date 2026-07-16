@@ -114,7 +114,7 @@ git diff --check -- src/assistant_agent/gateway/bridge.py src/assistant_agent/ga
 **Status:** Completed.
 
 **Files:**
-- Modify: `docs/personal-realtime-ai-assistant-roadmap.md`
+- Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 
 **Acceptance:**
 - Roadmap Phase 1 Gate says this repository owns text realtime orchestration only; ASR/TTS remain media service responsibilities.

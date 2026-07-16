@@ -149,7 +149,7 @@ Expected: PASS.
 
 **Files:**
 - Modify: `docs/agent-communication-routing.md`
-- Modify: `docs/personal-realtime-ai-assistant-roadmap.md`
+- Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 
 **Interfaces:**
 - Consumes: Phase 4 roadmap gate and existing multi-agent authority.
@@ -165,7 +165,7 @@ In `docs/agent-communication-routing.md`, update current status and routing rule
 
 - [x] **Step 2: Update roadmap Phase 4 gate**
 
-In `docs/personal-realtime-ai-assistant-roadmap.md`, update Phase 4 Gate:
+In `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`, update Phase 4 Gate:
 
 - child agent raw parent memory/context isolation covered by delegation context tests.
 - durable delegation trace covered by explicit JSONL control-plane store tests.
@@ -177,7 +177,7 @@ In `docs/personal-realtime-ai-assistant-roadmap.md`, update Phase 4 Gate:
 Run:
 
 ```bash
-git diff --check -- docs/agent-communication-routing.md docs/personal-realtime-ai-assistant-roadmap.md
+git diff --check -- docs/agent-communication-routing.md docs/roadmaps/personal-realtime-ai-assistant-roadmap.md
 ```
 
 Expected: no output and exit code 0.
@@ -220,6 +220,6 @@ git diff --check -- AGENTS.md docs src tests scripts skills
 - [x] **Step 5: Commit**
 
 ```bash
-git add docs/agent-communication-routing.md docs/personal-realtime-ai-assistant-roadmap.md docs/superpowers/plans/2026-07-09-phase-4-multi-agent-readiness.md src/assistant_agent/services/agent_control_plane.py tests/test_phase4_multi_agent_readiness_gate.py
+git add docs/agent-communication-routing.md docs/roadmaps/personal-realtime-ai-assistant-roadmap.md docs/superpowers/plans/2026-07-09-phase-4-multi-agent-readiness.md src/assistant_agent/services/agent_control_plane.py tests/test_phase4_multi_agent_readiness_gate.py
 git commit -m "参考hermes的长期个人助手:phase4"
 ```

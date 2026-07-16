@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是 Codex / coding agent 的仓库级入口。开始仓库内任何非纯问答、非单条无副作用命令任务前，以本文件为准。README 只做人类快速导航；专项架构细节保留在少量 `docs/` 权威文档中。
+本文件是 Codex / coding agent 的仓库级入口。开始仓库内任何非纯问答、非单条无副作用命令任务前，以本文件为准。README 只做人类快速导航；专项架构细节保留在少量 `docs/*.md` 权威文档中。
 
 ## 1. 项目与入口
 
@@ -9,6 +9,8 @@
 项目实现一个本地优先的助理 Agent。当前核心运行时以 LangGraph/ReAct assistant loop 为主，同时保留 mock/local/offline 路径用于稳定测试和演示。真实外部 Provider 必须通过 `provider_smoke` 或 `pilot` profile 和本机未跟踪配置显式启用。
 
 按任务范围优先使用项目内 `.codex/skills/**`；skill 负责路由到对应权威 docs、源码和测试，AGENTS 不复制 skill 内部补充阅读清单。
+
+`docs/*.md` 是当前权威文档层，只保留当前架构、接口或状态权威。路线图、runbook、历史计划、走读说明、题库和 workflow 材料必须放在 `docs/<subdir>/`，不得作为默认架构权威。
 
 | scope | entry |
 | --- | --- |
@@ -24,7 +26,7 @@
 | 用户显式请求的全仓文档同步、漂移审计、权威对齐或失效文档清理 | `.codex/skills/assistant-agent-documentation-sync`；不得因普通代码变更隐式触发 |
 | 用户显式请求的测试审计、去重、分层、marker 治理或测试清理 | `.codex/skills/assistant-agent-test-governance`；`tests/README.md`；不得因普通功能开发隐式触发 |
 
-`docs/development/**` 只保留仍有现实用途的操作 runbook 或用户明确点名的执行材料，不作为默认设计权威。不要把旧 roadmap 或阶段计划当作当前架构。
+`docs/development/**` 只保留仍有现实用途的操作 runbook 或用户明确点名的执行材料，不作为默认设计权威。`docs/roadmaps/**` 只保留长期方向和 north star，不替代当前权威文档。`docs/superpowers/**` 是设计/实施记录，`docs/interview/**` 是面试训练材料；它们都不作为普通开发默认权威。不要把旧 roadmap、阶段计划或走读说明当作当前架构。
 
 ## 2. 架构边界
 
@@ -115,7 +117,8 @@ User / CLI / API / Web UI
 | `src/assistant_agent/services/realtime_task_state.py`, `realtime_video_*`, `video_context.py`, `agent_service_latency.py` | realtime task/call 状态、视频观察上下文与 turn latency 诊断；只保存 prompt-safe 状态/引用/统计 |
 | `src/assistant_agent/tools/`, `memory/`, `providers/`, `eval/` | Tool registry/工具实现、记忆服务、provider adapter、离线评测 |
 | `tests/`, `scripts/` | pytest 测试、本地验证、服务、demo、eval、smoke 脚本 |
-| `docs/` | 当前权威文档、走读文档、API/runbook、面试资料 |
+| `docs/*.md` | 当前架构、接口和状态权威文档 |
+| `docs/development/`, `docs/roadmaps/`, `docs/superpowers/`, `docs/interview/` | 非默认权威材料：runbook、长期路线图、历史计划/spec、面试资料 |
 | `.codex/skills/` | 项目专用 workflow 和入口路由，不复制长篇架构细节 |
 
 修改行为时同步维护相关测试和文档。若用户设定更严格 scope，例如“不要修改 `src/**`”或“不要修改 `tests/**`”，以用户当前约束为准。
@@ -138,8 +141,8 @@ User / CLI / API / Web UI
 ## 7. 文档与工作模式
 
 - `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`README.md` 是人类轻导航入口。
-- 当前架构权威文档是 `docs/gateway-architecture.md`、`docs/media-agent-service-websocket.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`、`docs/observability-harness.md`、`docs/memory-service-architecture.md`、`docs/memory_server_api_spec.md`、`docs/CONTEXT_ENGINEERING_STATUS.md` 和 `docs/agent-communication-routing.md`。
-- 走读文档只解释已沉淀机制，不替代权威文档；`docs/interview/**` 只用于面试训练；新增文档必须有明确长期用途。
+- 当前架构权威文档只保留在 `docs/*.md`，包括 `docs/gateway-architecture.md`、`docs/media-agent-service-websocket.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`、`docs/observability-harness.md`、`docs/memory-service-architecture.md`、`docs/memory_server_api_spec.md`、`docs/CONTEXT_ENGINEERING_STATUS.md` 和 `docs/agent-communication-routing.md`。
+- 走读文档只解释已沉淀机制，不替代权威文档；`docs/development/**`、`docs/roadmaps/**`、`docs/superpowers/**` 和 `docs/interview/**` 不作为普通开发默认权威；新增文档必须有明确长期用途。
 - 开始任务时说明“我将处理 / 我会先阅读 / 计划”；执行中先读相关代码和文档，保持 scope 小而明确。
 - 手工新建或修改文件默认使用 `apply_patch`；搜索优先用 `rg` / `rg --files`。
 - 不回滚用户已有改动；遇到 dirty worktree 时先识别来源，无关改动保持不动。

@@ -49,7 +49,7 @@
 - `src/assistant_agent/gateway/__init__.py`: export no new proactive type; keep Gateway aggregate stable unless tests require the existing manager class import.
 - `docs/gateway-architecture.md`: document the read-only active-run query and non-interruption boundary.
 - `docs/tool-calling-architecture.md`: document proactive read-only probes through the existing governance chain.
-- `docs/personal-realtime-ai-assistant-roadmap.md`: mark only the deterministic Phase 1 slice implemented; keep complex scheduler/real delivery deferred.
+- `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`: mark only the deterministic Phase 1 slice implemented; keep complex scheduler/real delivery deferred.
 
 ### New tests
 
@@ -1257,7 +1257,7 @@ git commit -m "Add durable proactive notification delivery"
 - Create: `tests/test_proactive_wake_demo.py`
 - Modify: `docs/gateway-architecture.md`
 - Modify: `docs/tool-calling-architecture.md`
-- Modify: `docs/personal-realtime-ai-assistant-roadmap.md`
+- Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 
 **Interfaces:**
 - Consumes: the complete Phase 1 service package.
@@ -1317,7 +1317,7 @@ Add concise sections stating:
 
 - `docs/gateway-architecture.md`: `GatewaySessionService.has_active_run()` and `GatewaySessionManager.has_active_run(user_id)` are read-only snapshots used to defer proactive delivery; they do not create sessions or let proactive work interrupt a run.
 - `docs/tool-calling-architecture.md`: Proactive Phase 1 probes are explicit-rule, explicit-allowlist read-only calls that still pass ToolPolicyInterpreter, ActionValidator, ToolExecutor and ToolRegistry; no LLM chooses the tool.
-- `docs/personal-realtime-ai-assistant-roadmap.md`: deterministic Phase 1 is a narrow local slice; semantic wake, real event ingest, real notification transport and generic scheduler remain deferred.
+- `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`: deterministic Phase 1 is a narrow local slice; semantic wake, real event ingest, real notification transport and generic scheduler remain deferred.
 
 Do not describe Phase 2/3 as implemented.
 
@@ -1379,7 +1379,7 @@ Expected: JSON reports `offline=true`, `llm_calls=0`, baseline established, one 
 - [ ] **Step 9: Commit final Phase 1 integration and docs**
 
 ```bash
-git add scripts/run_proactive_wake_demo.py tests/test_proactive_wake_demo.py docs/gateway-architecture.md docs/tool-calling-architecture.md docs/personal-realtime-ai-assistant-roadmap.md
+git add scripts/run_proactive_wake_demo.py tests/test_proactive_wake_demo.py docs/gateway-architecture.md docs/tool-calling-architecture.md docs/roadmaps/personal-realtime-ai-assistant-roadmap.md
 git commit -m "Document deterministic proactive wake phase one"
 ```
 

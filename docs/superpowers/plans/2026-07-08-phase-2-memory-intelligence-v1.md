@@ -28,7 +28,7 @@
 **Files:**
 - Create: `tests/test_phase2_memory_intelligence_gate.py`
 - Modify: `docs/memory-service-architecture.md`
-- Modify: `docs/personal-realtime-ai-assistant-roadmap.md`
+- Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 
 **Interfaces:**
 - Consumes: `MemoryManager`, `InMemoryStore`, `MemoryWritePolicy`, `RequestIdentity`, `MemoryQuery`, existing memory eval helpers.
@@ -47,7 +47,7 @@
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase2_memory_intelligence_gate.py -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_memory_manager.py tests/test_memory_retrieval_eval.py tests/test_memory_audit_api.py tests/test_native_tool_call_handoff.py -q
-git diff --check -- docs/memory-service-architecture.md docs/personal-realtime-ai-assistant-roadmap.md tests/test_phase2_memory_intelligence_gate.py
+git diff --check -- docs/memory-service-architecture.md docs/roadmaps/personal-realtime-ai-assistant-roadmap.md tests/test_phase2_memory_intelligence_gate.py
 ```
 
 ## Task 2: Add Phase 2 Gate Command Set
@@ -55,7 +55,7 @@ git diff --check -- docs/memory-service-architecture.md docs/personal-realtime-a
 **Status:** Planned.
 
 **Files:**
-- Modify: `docs/personal-realtime-ai-assistant-roadmap.md`
+- Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 
 **Acceptance:**
 - Roadmap Phase 2 Gate lists Memory Intelligence v1 invariants, not generic future Memory Brain work.

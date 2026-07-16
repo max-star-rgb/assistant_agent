@@ -4,28 +4,34 @@
 
 ## Start Here
 
-- Coding-agent rules and repository boundaries: [AGENTS.md](AGENTS.md)
-- Gateway and realtime lifecycle: `docs/gateway-architecture.md`
-- Runtime and provider event streaming: `docs/runtime-event-stream-architecture.md`
-- Tool calling governance: `docs/tool-calling-architecture.md`
-- Observability and trace harness: `docs/observability-harness.md`
-- Local memory service architecture: `docs/memory-service-architecture.md`
-- External Memory Service interface: `docs/memory_server_api_spec.md`
-- Context engineering status: `docs/CONTEXT_ENGINEERING_STATUS.md`
-- Durable structured execution is documented across the Gateway, tool-calling, and context authority documents above; its task API is under `/tasks/{task_id}` and is disabled by default.
-- Multi-agent routing: `docs/agent-communication-routing.md`
-- Media-Agent WebSocket contract: `docs/media-agent-service-websocket.md`
+Current authority documents live directly under `docs/`:
+
+- Gateway and realtime lifecycle: [docs/gateway-architecture.md](docs/gateway-architecture.md)
+- Runtime and provider event streaming: [docs/runtime-event-stream-architecture.md](docs/runtime-event-stream-architecture.md)
+- Tool calling governance: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
+- Observability and trace harness: [docs/observability-harness.md](docs/observability-harness.md)
+- Local memory service architecture: [docs/memory-service-architecture.md](docs/memory-service-architecture.md)
+- External Memory Service interface: [docs/memory_server_api_spec.md](docs/memory_server_api_spec.md)
+- Context engineering status: [docs/CONTEXT_ENGINEERING_STATUS.md](docs/CONTEXT_ENGINEERING_STATUS.md)
+- Multi-agent routing: [docs/agent-communication-routing.md](docs/agent-communication-routing.md)
+- Media-Agent WebSocket contract: [docs/media-agent-service-websocket.md](docs/media-agent-service-websocket.md)
+
+Coding-agent rules and repository boundaries: [AGENTS.md](AGENTS.md)
 
 Memory operation runbooks (not authority):
 
-- `docs/development/memory-dual-core-operator-runbook.md`
-- `docs/development/memory-sqlite-operator-runbook.md`
-- `docs/development/memory-framework-bakeoff-runbook.md`
+- [docs/development/memory-dual-core-operator-runbook.md](docs/development/memory-dual-core-operator-runbook.md)
+- [docs/development/memory-sqlite-operator-runbook.md](docs/development/memory-sqlite-operator-runbook.md)
+- [docs/development/memory-framework-bakeoff-runbook.md](docs/development/memory-framework-bakeoff-runbook.md)
 
-Pilot and realtime operation runbooks:
+Pilot and realtime operation runbooks (not authority):
 
-- `docs/development/agent-pilot-operator-runbook.md`
-- `docs/development/realtime-runtime-operator-runbook.md`
+- [docs/development/agent-pilot-operator-runbook.md](docs/development/agent-pilot-operator-runbook.md)
+- [docs/development/realtime-runtime-operator-runbook.md](docs/development/realtime-runtime-operator-runbook.md)
+
+Roadmaps (not authority):
+
+- [docs/roadmaps/personal-realtime-ai-assistant-roadmap.md](docs/roadmaps/personal-realtime-ai-assistant-roadmap.md)
 
 Interview training material lives under `docs/interview/` and is separate from normal development routing.
 
@@ -52,4 +58,4 @@ Full offline validation:
 
 ## Documentation Policy
 
-`AGENTS.md` is the coding-agent entrypoint. README is only a human navigation page. Current architecture decisions belong in the focused authority docs listed above. `docs/development/` is not a default starting point; it should contain only retained operational runbooks or explicitly named execution material.
+`AGENTS.md` is the coding-agent entrypoint. README is only a human navigation page. Current architecture decisions belong in the focused `docs/*.md` authority files listed above. Non-authority material lives under subdirectories such as `docs/development/**`, `docs/roadmaps/**`, `docs/superpowers/**`, and `docs/interview/**`; these directories are not default architecture authority.

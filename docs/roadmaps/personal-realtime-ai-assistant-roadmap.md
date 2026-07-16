@@ -1,7 +1,7 @@
 # Personal Realtime AI Assistant Architecture Roadmap
 
 > 本文档定义 `assistant_agent` 未来 1 到 3 年作为 Personal Realtime AI Assistant 的演进路线。
-> 它不是单个功能计划，也不替代 Gateway、Runtime Streaming、Tool、Memory、Context、Observability 等权威架构文档。
+> 它是非权威长期路线图，不是单个功能计划，也不替代 Gateway、Runtime Streaming、Tool、Memory、Context、Observability 等 `docs/*.md` 权威架构文档。
 
 ## 文档定位
 

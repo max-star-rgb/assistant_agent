@@ -503,7 +503,7 @@ Expected: all selected tests pass; trace/API summaries remain redacted.
 
 **Files:**
 - Create: `tests/test_phase0_service_boundary_contracts.py`
-- Modify: `docs/personal-realtime-ai-assistant-roadmap.md`
+- Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 
 **Interfaces:**
 - Consumes: source files and existing tests for memory/context/delegation boundaries.
@@ -574,7 +574,7 @@ Expected: all selected tests pass.
 
 - [ ] **Step 3: Mark Phase 0 gate in the roadmap**
 
-In `docs/personal-realtime-ai-assistant-roadmap.md`, under "Phase 0 Gate", add these acceptance lines:
+In `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`, under "Phase 0 Gate", add these acceptance lines:
 
 ```markdown
 - Product text/realtime entries have static contract tests proving Gateway-first routing.
@@ -589,7 +589,7 @@ Run:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/test_phase0_service_boundary_contracts.py tests/test_memory_tool_boundary.py tests/test_memory_manager.py tests/test_memory_read_policy.py tests/test_assistant_context_renderer.py tests/test_agent_communication_routing.py tests/test_agent_router.py -q
-git diff --check -- docs/personal-realtime-ai-assistant-roadmap.md tests/test_phase0_service_boundary_contracts.py
+git diff --check -- docs/roadmaps/personal-realtime-ai-assistant-roadmap.md tests/test_phase0_service_boundary_contracts.py
 ```
 
 Expected: all selected tests pass.
@@ -599,7 +599,7 @@ Expected: all selected tests pass.
 ### Task 5: Add The Phase 0 Architecture Gate Command Set
 
 **Files:**
-- Modify: `docs/personal-realtime-ai-assistant-roadmap.md`
+- Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 - Modify: `docs/gateway-architecture.md`
 - Modify: `docs/tool-calling-architecture.md`
 - Modify: `docs/observability-harness.md`
@@ -610,7 +610,7 @@ Expected: all selected tests pass.
 
 - [ ] **Step 1: Add the command set to the roadmap**
 
-In `docs/personal-realtime-ai-assistant-roadmap.md`, add a "Phase 0 Architecture Gate Commands" subsection under "Phase 0 Gate":
+In `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`, add a "Phase 0 Architecture Gate Commands" subsection under "Phase 0 Gate":
 
 ````markdown
 Run before starting Phase 1:
@@ -652,7 +652,7 @@ Expected:
 Use a single commit for Phase 0 stabilization:
 
 ```bash
-git add docs/gateway-architecture.md docs/tool-calling-architecture.md docs/observability-harness.md docs/personal-realtime-ai-assistant-roadmap.md src/assistant_agent/agent/runtime.py tests/test_phase0_entrypoint_contracts.py tests/test_phase0_tool_governance_contracts.py tests/test_phase0_trace_invariant_gate.py tests/test_phase0_service_boundary_contracts.py
+git add docs/gateway-architecture.md docs/tool-calling-architecture.md docs/observability-harness.md docs/roadmaps/personal-realtime-ai-assistant-roadmap.md src/assistant_agent/agent/runtime.py tests/test_phase0_entrypoint_contracts.py tests/test_phase0_tool_governance_contracts.py tests/test_phase0_trace_invariant_gate.py tests/test_phase0_service_boundary_contracts.py
 git commit -m "test: add phase 0 architecture gates"
 ```
 
