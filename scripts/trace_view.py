@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from ipaddress import ip_address
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
@@ -25,10 +26,11 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from assistant_agent.services.trace_store import JsonlTraceStore, TraceEvent, trace_debug_summary
+from assistant_agent.services.trace_store import TraceEvent, trace_debug_summary
 
 
 DEFAULT_TRACE_PATH = ".data/graph_trace.jsonl"
+LATEST_IDENTIFIERS = {"last", "latest", "@last"}
 DETAIL_ATTRIBUTE_KEYS = (
     "decision_type",
     "tool_call_id",
@@ -85,12 +87,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fetch current-turn content from an explicitly enabled loopback server.",
     )
     parser.add_argument("--json", dest="json_output", action="store_true", help="Print a JSON summary.")
+    parser.add_argument(
+        "--follow",
+        action="store_true",
+        help="Watch the local trace file and print updates until interrupted.",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=1.0,
+        help="Seconds between local --follow polls. Defaults to 1.0.",
+    )
+    parser.add_argument(
+        "--follow-limit",
+        type=int,
+        help="Stop after this many printed updates. Mainly useful for tests and scripted checks.",
+    )
+    parser.add_argument(
+        "--follow-timeout",
+        type=float,
+        help="Stop following after this many seconds. By default --follow runs until interrupted.",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.follow and args.server:
+        parser.error("--follow requires a local --trace-path")
+    if args.follow and args.json_output:
+        parser.error("--json cannot be combined with --follow")
+    if args.follow and args.poll_interval <= 0:
+        parser.error("--poll-interval must be greater than 0")
+    if args.follow_limit is not None and args.follow_limit <= 0:
+        parser.error("--follow-limit must be greater than 0")
+    if args.follow_timeout is not None and args.follow_timeout < 0:
+        parser.error("--follow-timeout must be greater than or equal to 0")
+    if args.server and _is_latest_identifier(args.identifier):
+        parser.error("last/latest lookup is only supported with a local --trace-path")
     if args.include_conversation:
         if not args.server:
             parser.error("--include-conversation requires --server")
@@ -121,8 +156,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(_format_human(payload, show_errors=args.errors))
         return 0
 
-    store = JsonlTraceStore(args.trace_path)
-    events = _find_events(store, args.identifier)
+    if args.follow:
+        return _follow_local_trace(args)
+
+    events = _find_local_events(args.trace_path, args.identifier)
     if not events:
         print(f"trace/run not found: {args.identifier}", file=sys.stderr)
         return 1
@@ -136,11 +173,87 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _find_events(store: JsonlTraceStore, identifier: str) -> list[TraceEvent]:
-    by_run = store.list_by_run(identifier)
+def _is_latest_identifier(identifier: str) -> bool:
+    return identifier.lower() in LATEST_IDENTIFIERS
+
+
+def _find_local_events(trace_path: str | Path, identifier: str) -> list[TraceEvent]:
+    events = _load_local_events(trace_path)
+    if _is_latest_identifier(identifier):
+        return _latest_run_events(events)
+    return _events_for_identifier(events, identifier)
+
+
+def _load_local_events(trace_path: str | Path) -> list[TraceEvent]:
+    path = Path(trace_path)
+    if not path.exists():
+        return []
+    events: list[TraceEvent] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            if line.strip():
+                events.append(TraceEvent.model_validate_json(line))
+    return events
+
+
+def _latest_run_events(events: list[TraceEvent]) -> list[TraceEvent]:
+    if not events:
+        return []
+    latest = events[-1]
+    return [event for event in events if event.run_id == latest.run_id]
+
+
+def _events_for_identifier(events: list[TraceEvent], identifier: str) -> list[TraceEvent]:
+    by_run = [event for event in events if event.run_id == identifier]
     if by_run:
         return by_run
-    return store.list_by_trace(identifier)
+    return [event for event in events if event.trace_id == identifier]
+
+
+def _follow_local_trace(args: argparse.Namespace) -> int:
+    deadline = None if args.follow_timeout is None else monotonic() + args.follow_timeout
+    previous_signature: tuple[tuple[Any, ...], ...] | None = None
+    printed_any = False
+    printed_updates = 0
+    while True:
+        events = _find_local_events(args.trace_path, args.identifier)
+        if events:
+            signature = _events_signature(events)
+            if signature != previous_signature:
+                if printed_any:
+                    print()
+                    print("--- trace update ---")
+                print(_format_human(_summary_payload(events), show_errors=args.errors), flush=True)
+                previous_signature = signature
+                printed_any = True
+                printed_updates += 1
+                if args.follow_limit is not None and printed_updates >= args.follow_limit:
+                    return 0
+        if deadline is not None and monotonic() >= deadline:
+            if printed_any:
+                return 0
+            print(f"trace/run not found: {args.identifier}", file=sys.stderr)
+            return 1
+        sleep(args.poll_interval)
+
+
+def _events_signature(events: list[TraceEvent]) -> tuple[tuple[Any, ...], ...]:
+    return tuple(
+        (
+            event.trace_id,
+            event.run_id,
+            event.canonical_event,
+            event.event_type,
+            event.status,
+            event.tool_name,
+            event.provider,
+            event.model,
+            event.latency_ms,
+            event.error_code,
+            event.created_at.isoformat(),
+        )
+        for event in events
+    )
 
 
 def _fetch_server_trace(server: str, identifier: str) -> dict[str, Any] | None:

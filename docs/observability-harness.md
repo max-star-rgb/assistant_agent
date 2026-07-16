@@ -125,7 +125,9 @@ tool/provider/model、latency、error code 与关联 ID；prompt、response、me
 `--log-level` 仍作为同时覆盖 console/file level 的兼容 shorthand。共享 PyCharm 配置
 `.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器和 mock Provider 启动：
 Run console 是 Combined 页签，Gateway 与 AgentRuntime 页签分别跟随上述两个文件。
-配置不启用 `--allow-local-trace-content`，也不保存密钥或 `.env` 路径。
+`.run/Trace Last.run.xml` 一次性展示 `.data/graph_trace.jsonl` 中最后活跃的 run；
+`.run/Trace Follow.run.xml` 常驻跟随同一 trace 文件，适合作为第三个开发观察页签。
+这些配置不启用 `--allow-local-trace-content`，也不保存密钥或 `.env` 路径。
 
 ## Realtime Video Observation
 
@@ -372,6 +374,9 @@ GET /traces/{trace_id}/conversation  # explicit loopback debug only
 Local CLI:
 
 ```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --errors
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --json
@@ -379,6 +384,11 @@ Local CLI:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py --trace-path .data/graph_trace.jsonl
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py --json
 ```
+
+`last`、`latest` 和 `@last` 都解析为本地 JSONL 文件中最后活跃的 run，避免从
+控制台复制 `run_id` / `trace_id` 才能打开详情。`--follow` 只读本地 trace 文件，
+不连接 server、不改变 runtime 参数；它会在新事件写入时重新输出当前匹配 run 的摘要。
+这满足大多数“看 runtime 阶段、耗时、ReAct 流程”的场景，不需要重启服务。
 
 The server-backed view renders `turn_latency`, stage rows, bottleneck, ACK
 state, and consumed-video diagnostics before the event timeline. Conversation
