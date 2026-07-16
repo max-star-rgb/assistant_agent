@@ -134,6 +134,11 @@ The scorer is deterministic and omits timestamps so identical inputs produce ide
 
 ## Selection and rollback
 
-Only remove the losing runtime adapter after the report names an eligible winner. A winner remains explicit opt-in; CI and default profiles stay mock/local/offline. If neither framework passes every hard gate, leave v2 as the recommendation and keep framework mode disabled.
+Mem0 is the preferred framework pilot engine for new opt-in framework work.
+If `memory_backend=framework` is enabled without a concrete
+`MULTIMODAL_AGENT_MEMORY_FRAMEWORK`, runtime configuration resolves to Mem0
+OSS `2.0.11`. Hindsight remains available as an explicit comparison target.
+
+Only remove the losing runtime adapter after the report names an eligible winner. A winner remains explicit opt-in; CI and default profiles stay mock/local/offline. If neither framework passes every hard gate, leave v2 as the default recommendation while allowing explicitly requested Mem0 pilot work to continue behind the framework flag.
 
 Before a production switch, stop writes, back up the v2 database, start the winner from an empty framework volume, and retain the old database as the rollback point. Rollback changes only runtime configuration back to `sqlite` or the previous v2 backend; it does not merge framework and v2 data.

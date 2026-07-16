@@ -46,6 +46,26 @@ def test_hindsight_framework_config_is_explicit_and_versioned() -> None:
     assert config.memory_framework_identity_namespace == "pilot-a"
 
 
+def test_framework_opt_in_defaults_to_mem0_pilot_engine(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(memory_factory, "REPO_ROOT", tmp_path)
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_MEMORY_BACKEND": "framework",
+            "MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED": "true",
+            "MEMORY_FRAMEWORK_BASE_URL": "http://mem0.local",
+            "MEMORY_FRAMEWORK_LEDGER_PATH": "ledger.sqlite3",
+        }
+    )
+
+    store = create_memory_store(config)
+
+    assert config.memory_backend == "framework"
+    assert config.memory_framework == "mem0"
+    assert config.memory_framework_version == "2.0.11"
+    assert isinstance(store, FrameworkMemoryStore)
+    assert isinstance(store.adapter, Mem0MemoryEngineAdapter)
+
+
 def test_factory_builds_mem0_with_read_only_sqlite_fallback(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(memory_factory, "REPO_ROOT", tmp_path)
     store = create_memory_store(

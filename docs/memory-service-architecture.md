@@ -51,6 +51,13 @@ The runtime modes are:
 - External lifecycle owner: `remote_service`; lifecycle operations are delegated to an `ExternalMemoryServiceAdapter`, with no silent local-write fallback.
 - Framework lifecycle owner: `framework`; an explicitly selected Hindsight or Mem0 local sidecar owns extraction, organization, indexing, recall, consolidation, and engine-side profile/mental-model behavior. `MemoryManager` continues to own identity, read/write policy, confirmation, audit, prompt safety, context budgets, and tool governance.
 
+Mem0 is the preferred framework pilot engine. When framework mode is explicitly
+enabled and no concrete framework is specified, configuration resolves to Mem0
+OSS `2.0.11`. Hindsight `0.8.4` remains a supported explicit comparison target
+for bake-off and fallback investigation. This preference does not change the
+default local memory backend, does not migrate existing v2 data, and does not
+transfer control-plane authority to the framework.
+
 Framework mode does not install Hindsight or Mem0 in the main Python environment. The main process uses the dependency-free HTTP adapters under `memory/framework/`; pinned sidecars and persistent volumes are isolated by Docker. LangGraph remains the only Agent runtime, and framework-provided Agent/LLM wrappers are not registered.
 
 Memory observability exposes a prompt-safe `core_status` object through memory
@@ -267,7 +274,7 @@ Configured by `ProviderConfig`:
 - `memory_backend="dual_core"`: opt-in `HybridMemoryStore` with a configurable built-in local core plus external Memory Server query augmentation. This backend is selected from environment only when `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true` or a runtime profile that allows real/network providers is active.
 - `memory_backend="hybrid_remote"`: legacy alias for the same retrieval-augmentation shape as `dual_core`; kept for compatibility.
 - `memory_backend="remote_service"`: opt-in `RemoteServiceMemoryStore` with an external adapter as lifecycle owner. This mode is selected only when remote memory is explicitly enabled and never falls back to local lifecycle writes by default.
-- `memory_backend="framework"`: opt-in `FrameworkMemoryStore` with `memory_framework="hindsight"` or `"mem0"`. Environment loading requires `MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED=true`; credentials alone and normal offline profiles cannot enable it. A configured legacy local fallback is read-only and is consulted only after framework recall failure.
+- `memory_backend="framework"`: opt-in `FrameworkMemoryStore` with `memory_framework="mem0"` by default, or explicit `"hindsight"` when requested. Environment loading requires `MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED=true`; credentials alone and normal offline profiles cannot enable it. A configured legacy local fallback is read-only and is consulted only after framework recall failure.
 - `memory_local_backend`: local core used by `dual_core` / `hybrid_remote`; allowed values are `memory`, `jsonl`, and `sqlite`. Default is `jsonl` for dual-core modes.
 - `memory_path`: default `.local/memory/long_term_memories.jsonl`; when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite`, or a dual-core mode uses `MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND=sqlite`, the default is `.local/memory/long_term_memories.sqlite3`.
 
@@ -301,7 +308,7 @@ Framework writes still pass `MemoryWritePolicy` and confirmation before `Framewo
 
 Framework recall failures return stable `memory_framework_recall_failed` errors. The Agent run continues with an empty result or the explicitly configured read-only v2 fallback. Runtime debug metadata and audit may expose stable error codes and engine names, but never sidecar URLs, raw exception messages, credentials, raw framework responses, or memory content.
 
-When `FrameworkMemoryStore.framework_managed_algorithms` is active, `MemoryManager` skips built-in duplicate/conflict resolution and local `user_profile` projection. This hands extraction, update integration, ranking, and profile/mental-model algorithms to the selected framework while retaining project governance, confirmation, audit, identity, safety, and context-budget boundaries.
+When `FrameworkMemoryStore.framework_managed_algorithms` is active, `MemoryManager` skips built-in duplicate/conflict resolution and local `user_profile` projection. This hands extraction, update integration, ranking, and profile/mental-model algorithms to the selected framework while retaining project governance, confirmation, audit, identity, safety, and context-budget boundaries. New investment should prefer hardening the Mem0 framework path over expanding local v2 memory-intelligence algorithms, unless the work is required for governance, rollback, tests, or offline defaults.
 
 ### Framework bake-off gate
 

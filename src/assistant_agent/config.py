@@ -100,7 +100,7 @@ class ProviderConfig:
     memory_server_direct_answer: bool = False
     memory_server_include_media_chunks: bool = False
     memory_remote_service_adapter: RemoteMemoryServiceAdapterKind = "unavailable"
-    memory_framework: MemoryFrameworkName = "hindsight"
+    memory_framework: MemoryFrameworkName = "mem0"
     memory_framework_version: str = ""
     memory_framework_base_url: str | None = None
     memory_framework_api_key: str | None = None
@@ -648,7 +648,9 @@ def _memory_backend(
 
 
 def _memory_framework_name(value: str | None) -> MemoryFrameworkName:
-    return "mem0" if value and value.strip().lower() == "mem0" else "hindsight"
+    if value and value.strip().lower() == "hindsight":
+        return "hindsight"
+    return "mem0"
 
 
 def _memory_framework_fallback_backend(value: str | None) -> MemoryFrameworkFallbackBackend:
