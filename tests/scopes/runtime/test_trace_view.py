@@ -46,6 +46,52 @@ def test_trace_view_follow_outputs_current_latest_run_once(tmp_path: Path) -> No
     assert "run_old" not in result.stdout
 
 
+def test_trace_view_follow_without_session_id_prints_session_separator(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_session_sample_trace(trace_path)
+
+    result = _run_trace_view(
+        "last",
+        "--trace-path",
+        str(trace_path),
+        "--follow",
+        "--follow-limit",
+        "1",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.startswith(
+        "================================================================================\n"
+        "SESSION other-session\n"
+        "run=run_global_latest trace=trace_global_latest\n"
+        "================================================================================\n"
+        "run run_global_latest trace trace_global_latest status=completed events=2"
+    )
+
+
+def test_trace_view_follow_session_id_filters_without_session_separator(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_session_sample_trace(trace_path)
+
+    result = _run_trace_view(
+        "last",
+        "--trace-path",
+        str(trace_path),
+        "--session-id",
+        "debug-session",
+        "--follow",
+        "--follow-limit",
+        "1",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.startswith("run run_debug trace trace_debug status=completed events=2")
+    assert "SESSION " not in result.stdout
+    assert "run_global_latest" not in result.stdout
+
+
 def test_trace_view_last_session_id_selects_latest_matching_session_run(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_session_sample_trace(trace_path)

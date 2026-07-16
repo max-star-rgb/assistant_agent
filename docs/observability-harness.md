@@ -128,9 +128,10 @@ Run console 是 Combined 页签，Gateway 与 AgentRuntime 页签分别跟随上
 `.run/Gateway Debug Turn.run.xml` 使用固定 `pycharm-debug-session` 发起一轮 Gateway
 调试请求；`.run/Trace Last.run.xml` 一次性展示同一 session 在
 `.data/graph_trace.jsonl` 中最后活跃的 run；`.run/Trace Follow.run.xml` 常驻跟随同一
-trace 文件，适合作为第三个开发观察页签。
+session 的 trace 文件，适合作为第三个开发观察页签。
 `.run/Trace Full.run.xml` 连接本地 server，按 Conversation、Timeline、ReAct detail
-三层查看最后一轮；`.run/Trace Full Follow.run.xml` 则常驻跟随同一 session 的完整三层视图。
+三层查看最后一轮；`.run/Trace Full Follow.run.xml` 则常驻全局跟随完整三层视图。
+当全局 latest 切换到不同 session 时，trace viewer 会打印醒目的 `SESSION` 分隔块。
 Conversation 层要求 server 已显式启用 `--allow-local-trace-content`。
 这些配置不启用 `--allow-local-trace-content`，也不保存密钥或 `.env` 路径。
 
@@ -383,7 +384,7 @@ Local CLI:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --sections timeline,react
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --session-id pycharm-debug-session --sections conversation,timeline,react --errors --follow
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline,react --errors --follow
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --json
@@ -394,9 +395,9 @@ Local CLI:
 
 `last`、`latest` 和 `@last` 都解析为本地 JSONL 文件中最后活跃的 run，避免从
 控制台复制 `run_id` / `trace_id` 才能打开详情。`--session-id` 会先过滤本地
-JSONL，再解析 `last` 或驱动 `--follow`，避免多个调试客户端共用同一个 trace 文件时看串
-session；客户端和 trace viewer 必须使用同一个 `session_id`。如果不传
-`--session-id`，`last` 仍表示全局最后活跃的 run。
+JSONL，再解析 `last` 或驱动 `--follow`，适合明确只看某个调试会话。若不传
+`--session-id`，`last` 表示全局最后活跃的 run；`--follow` 每次切换到不同
+session 时都会输出 80 字符 `SESSION` 分隔块，避免 session 切换悄悄发生。
 
 server 参数和 trace viewer 参数分开理解：`scripts/run_server.py` 的参数负责启动
 runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关；
@@ -406,6 +407,7 @@ runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关�
 loopback server 拉 `/traces/{trace_id}`；包含 `conversation` 时，再拉
 `/traces/{trace_id}/conversation`。server 查不到 trace 时降级使用本地 summary；
 conversation 查不到时标记 unavailable，仍继续输出 Timeline 和 ReAct detail。
+需要强隔离时再加 `--session-id <session>`。
 
 `--sections` 控制输出层级：`conversation` 需要 `--server` 且 server 已用
 `--allow-local-trace-content` 启动；`timeline` 是默认事件线；`react` 展示
@@ -419,8 +421,8 @@ consumed-video diagnostics。Conversation text 不会写入 trace events 或 JSO
    `--allow-local-trace-content`。
 2. 运行 `.run/Gateway Debug Turn.run.xml`，它固定使用
    `--session-id pycharm-debug-session`。
-3. 运行 `.run/Trace Full Follow.run.xml`，它用同一个 session 常驻输出
-   Conversation -> Timeline -> ReAct detail。
+3. 运行 `.run/Trace Full Follow.run.xml`，它全局常驻输出
+   Conversation -> Timeline -> ReAct detail，并在 session 切换时打印分隔块。
 
 共享 `.run` 配置保持 `http://127.0.0.1:8000`。实际通话测试如果本机 server 跑在
 `8089`，复制对应 PyCharm 配置到个人配置后，把 `--server http://127.0.0.1:8000`

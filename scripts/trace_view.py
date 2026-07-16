@@ -36,6 +36,7 @@ TRACE_SECTION_ALIASES = {
     "all": TRACE_SECTION_ORDER,
     "full": TRACE_SECTION_ORDER,
 }
+FOLLOW_SESSION_SEPARATOR = "=" * 80
 REACT_DETAIL_EVENTS = {
     "llm.chat.finished",
     "react.decision",
@@ -287,6 +288,7 @@ def _events_for_identifier(events: list[TraceEvent], identifier: str) -> list[Tr
 def _follow_local_trace(args: argparse.Namespace, sections: tuple[str, ...]) -> int:
     deadline = None if args.follow_timeout is None else monotonic() + args.follow_timeout
     previous_signature: tuple[tuple[Any, ...], ...] | None = None
+    previous_session_id: str | None = None
     printed_any = False
     printed_updates = 0
     while True:
@@ -294,10 +296,15 @@ def _follow_local_trace(args: argparse.Namespace, sections: tuple[str, ...]) -> 
         if events:
             signature = _events_signature(events)
             if signature != previous_signature:
+                payload = _follow_payload(args, events, sections)
                 if printed_any:
                     print()
                     print("--- trace update ---")
-                print(_format_human(_follow_payload(args, events, sections), show_errors=args.errors, sections=sections), flush=True)
+                current_session_id = _follow_session_id(payload, events)
+                if args.session_id is None and current_session_id != previous_session_id:
+                    print(_format_follow_session_separator(payload, current_session_id))
+                    previous_session_id = current_session_id
+                print(_format_human(payload, show_errors=args.errors, sections=sections), flush=True)
                 previous_signature = signature
                 printed_any = True
                 printed_updates += 1
@@ -360,6 +367,27 @@ def _conversation_unavailable_payload(trace_id: str) -> dict[str, Any]:
         "unavailable": True,
         "reason": "conversation endpoint returned 404",
     }
+
+
+def _follow_session_id(payload: dict[str, Any], events: list[TraceEvent]) -> str | None:
+    session_id = payload.get("session_id")
+    if isinstance(session_id, str) and session_id:
+        return session_id
+    return events[0].session_id
+
+
+def _format_follow_session_separator(payload: dict[str, Any], session_id: str | None) -> str:
+    session_text = session_id or "(none)"
+    run_id = _plain_value(payload.get("run_id"))
+    trace_id = _plain_value(payload.get("trace_id"))
+    return "\n".join(
+        (
+            FOLLOW_SESSION_SEPARATOR,
+            f"SESSION {session_text}",
+            f"run={run_id} trace={trace_id}",
+            FOLLOW_SESSION_SEPARATOR,
+        )
+    )
 
 
 def _fetch_server_trace(server: str, identifier: str) -> dict[str, Any] | None:
