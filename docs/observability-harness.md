@@ -131,7 +131,7 @@ Run console 是 Combined 页签，Gateway 与 AgentRuntime 页签分别跟随上
 session 的 trace 文件，适合作为第三个开发观察页签。
 `.run/Trace Full.run.xml` 连接本地 server，按 Conversation、Timeline、ReAct detail
 三层查看最后一轮；`.run/Trace Full Follow.run.xml` 则常驻全局跟随完整三层视图。
-当全局 latest 切换到不同 session 时，trace viewer 会打印醒目的 `SESSION` 分隔块。
+当全局 latest 切换到不同 session 时，trace viewer 会打印醒目的单行 `SESSION` banner。
 Conversation 层要求 server 已显式启用 `--allow-local-trace-content`。
 这些配置不启用 `--allow-local-trace-content`，也不保存密钥或 `.env` 路径。
 
@@ -397,7 +397,7 @@ Local CLI:
 控制台复制 `run_id` / `trace_id` 才能打开详情。`--session-id` 会先过滤本地
 JSONL，再解析 `last` 或驱动 `--follow`，适合明确只看某个调试会话。若不传
 `--session-id`，`last` 表示全局最后活跃的 run；`--follow` 每次切换到不同
-session 时都会输出 80 字符 `SESSION` 分隔块，避免 session 切换悄悄发生。
+session 时都会输出单行 `SESSION` banner，避免 session 切换悄悄发生。
 
 server 参数和 trace viewer 参数分开理解：`scripts/run_server.py` 的参数负责启动
 runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关；
@@ -422,7 +422,7 @@ consumed-video diagnostics。Conversation text 不会写入 trace events 或 JSO
 2. 运行 `.run/Gateway Debug Turn.run.xml`，它固定使用
    `--session-id pycharm-debug-session`。
 3. 运行 `.run/Trace Full Follow.run.xml`，它全局常驻输出
-   Conversation -> Timeline -> ReAct detail，并在 session 切换时打印分隔块。
+   Conversation -> Timeline -> ReAct detail，并在 session 切换时打印单行 banner。
 
 共享 `.run` 配置保持 `http://127.0.0.1:8000`。实际通话测试如果本机 server 跑在
 `8089`，复制对应 PyCharm 配置到个人配置后，把 `--server http://127.0.0.1:8000`

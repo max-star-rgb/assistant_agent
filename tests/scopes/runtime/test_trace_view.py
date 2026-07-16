@@ -62,10 +62,7 @@ def test_trace_view_follow_without_session_id_prints_session_separator(tmp_path:
     assert result.returncode == 0
     assert result.stderr == ""
     assert result.stdout.startswith(
-        "================================================================================\n"
-        "SESSION other-session\n"
-        "run=run_global_latest trace=trace_global_latest\n"
-        "================================================================================\n"
+        "================ SESSION other-session ================\n"
         "run run_global_latest trace trace_global_latest status=completed events=2"
     )
 

@@ -36,7 +36,7 @@ TRACE_SECTION_ALIASES = {
     "all": TRACE_SECTION_ORDER,
     "full": TRACE_SECTION_ORDER,
 }
-FOLLOW_SESSION_SEPARATOR = "=" * 80
+FOLLOW_SESSION_SEPARATOR = "=" * 16
 REACT_DETAIL_EVENTS = {
     "llm.chat.finished",
     "react.decision",
@@ -378,16 +378,7 @@ def _follow_session_id(payload: dict[str, Any], events: list[TraceEvent]) -> str
 
 def _format_follow_session_separator(payload: dict[str, Any], session_id: str | None) -> str:
     session_text = session_id or "(none)"
-    run_id = _plain_value(payload.get("run_id"))
-    trace_id = _plain_value(payload.get("trace_id"))
-    return "\n".join(
-        (
-            FOLLOW_SESSION_SEPARATOR,
-            f"SESSION {session_text}",
-            f"run={run_id} trace={trace_id}",
-            FOLLOW_SESSION_SEPARATOR,
-        )
-    )
+    return f"{FOLLOW_SESSION_SEPARATOR} SESSION {session_text} {FOLLOW_SESSION_SEPARATOR}"
 
 
 def _fetch_server_trace(server: str, identifier: str) -> dict[str, Any] | None:
