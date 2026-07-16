@@ -37,6 +37,9 @@ TRACE_SECTION_ALIASES = {
     "full": TRACE_SECTION_ORDER,
 }
 FOLLOW_SESSION_SEPARATOR = "=" * 16
+RUN_TERMINAL_EVENTS = frozenset({"run.completed", "run.failed", "run.cancelled"})
+AGENT_SERVICE_TERMINAL_EVENTS = frozenset({"agent_service.turn.finished"})
+AGENT_SERVICE_SESSION_PREFIX = "agent-service-"
 REACT_DETAIL_EVENTS = {
     "llm.chat.finished",
     "react.decision",
@@ -131,6 +134,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Watch the local trace file and print updates until interrupted.",
     )
     parser.add_argument(
+        "--follow-include-existing",
+        action="store_true",
+        help=(
+            "With last/latest/@last --follow, print the currently matching run "
+            "before waiting for newer trace updates."
+        ),
+    )
+    parser.add_argument(
+        "--follow-live-updates",
+        action="store_true",
+        help="Print non-terminal trace updates while a run is still in progress.",
+    )
+    parser.add_argument(
         "--poll-interval",
         type=float,
         default=1.0,
@@ -161,7 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.follow_timeout is not None and args.follow_timeout < 0:
         parser.error("--follow-timeout must be greater than or equal to 0")
     sections = _parse_sections(parser, args.sections, include_conversation=args.include_conversation, react_detail=args.react_detail)
-    include_conversation = args.include_conversation
+    include_conversation = "conversation" in sections
     if include_conversation:
         if not args.server:
             parser.error("conversation output requires --server")
@@ -194,8 +210,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"/traces/{quote(trace_id, safe='')}/conversation",
             )
             if conversation is None:
-                print(f"conversation not found for trace: {trace_id}", file=sys.stderr)
-                return 1
+                conversation = _conversation_unavailable_payload(trace_id)
             payload["conversation"] = conversation
         payload = _server_summary_payload(payload)
         if args.json_output:
@@ -292,23 +307,39 @@ def _events_for_identifier(events: list[TraceEvent], identifier: str) -> list[Tr
 
 def _follow_local_trace(args: argparse.Namespace, sections: tuple[str, ...]) -> int:
     deadline = None if args.follow_timeout is None else monotonic() + args.follow_timeout
-    previous_signature: tuple[tuple[Any, ...], ...] | None = None
+    skip_existing_latest = _is_latest_identifier(args.identifier) and not args.follow_include_existing
+    baseline_events = _find_local_events(args.trace_path, args.identifier, session_id=args.session_id)
+    previous_signature: tuple[tuple[Any, ...], ...] | None = (
+        _events_signature(baseline_events) if skip_existing_latest and baseline_events else None
+    )
     previous_session_id: str | None = None
     printed_any = False
     printed_updates = 0
+    printed_run_ids: set[str] = set()
+    saw_matching_events = bool(baseline_events)
     while True:
         events = _find_local_events(args.trace_path, args.identifier, session_id=args.session_id)
         if events:
+            saw_matching_events = True
             signature = _events_signature(events)
             if signature != previous_signature:
+                run_id = events[0].run_id
+                if not args.follow_live_updates and run_id in printed_run_ids:
+                    previous_signature = signature
+                    continue
+                if not args.follow_live_updates and not _follow_update_ready(events):
+                    previous_signature = signature
+                    continue
                 payload = _follow_payload(args, events, sections)
-                if printed_any:
-                    print()
-                    print("--- trace update ---")
                 current_session_id = _follow_session_id(payload, events)
-                if args.session_id is None and current_session_id != previous_session_id:
+                session_changed = args.session_id is None and current_session_id != previous_session_id
+                if session_changed:
+                    print()
                     print(_format_follow_session_separator(payload, current_session_id))
                     previous_session_id = current_session_id
+                elif printed_any:
+                    print()
+                    print("--- trace update ---")
                 print(
                     _format_human(
                         payload,
@@ -320,11 +351,14 @@ def _follow_local_trace(args: argparse.Namespace, sections: tuple[str, ...]) -> 
                 )
                 previous_signature = signature
                 printed_any = True
+                printed_run_ids.add(run_id)
                 printed_updates += 1
                 if args.follow_limit is not None and printed_updates >= args.follow_limit:
                     return 0
         if deadline is not None and monotonic() >= deadline:
             if printed_any:
+                return 0
+            if saw_matching_events:
                 return 0
             print(f"trace/run not found: {args.identifier}", file=sys.stderr)
             return 1
@@ -351,6 +385,28 @@ def _events_signature(events: list[TraceEvent]) -> tuple[tuple[Any, ...], ...]:
     )
 
 
+def _follow_update_ready(events: list[TraceEvent]) -> bool:
+    event_names = {_trace_event_name(event) for event in events}
+    if event_names & AGENT_SERVICE_TERMINAL_EVENTS:
+        return True
+    if _is_agent_service_trace(events):
+        return False
+    return bool(event_names & RUN_TERMINAL_EVENTS)
+
+
+def _trace_event_name(event: TraceEvent) -> str:
+    return str(event.canonical_event or event.event_type or event.node_name or "event")
+
+
+def _is_agent_service_trace(events: list[TraceEvent]) -> bool:
+    return any(
+        (event.session_id or "").startswith(AGENT_SERVICE_SESSION_PREFIX)
+        or event.node_name == "agent_service"
+        or _trace_event_name(event).startswith("agent_service.")
+        for event in events
+    )
+
+
 def _follow_payload(args: argparse.Namespace, events: list[TraceEvent], sections: tuple[str, ...]) -> dict[str, Any]:
     if not args.server:
         return _summary_payload(events)
@@ -359,7 +415,7 @@ def _follow_payload(args: argparse.Namespace, events: list[TraceEvent], sections
     payload = _fetch_server_trace(args.server, trace_id)
     if payload is None:
         payload = _summary_payload(events)
-    if args.include_conversation:
+    if "conversation" in sections:
         conversation_trace_id = payload.get("trace_id")
         if not isinstance(conversation_trace_id, str) or not conversation_trace_id:
             conversation_trace_id = trace_id

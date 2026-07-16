@@ -382,6 +382,8 @@ Local CLI:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow --follow-include-existing
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow --follow-live-updates
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --sections timeline,react
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline,react --errors --follow
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline --latency-stages
@@ -393,11 +395,17 @@ Local CLI:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py --json
 ```
 
-`last`、`latest` 和 `@last` 都解析为本地 JSONL 文件中最后活跃的 run，避免从
-控制台复制 `run_id` / `trace_id` 才能打开详情。`--session-id` 会先过滤本地
+`last`、`latest` 和 `@last` 在一次性查看时解析为本地 JSONL 文件中最后活跃的 run，
+避免从控制台复制 `run_id` / `trace_id` 才能打开详情。`--session-id` 会先过滤本地
 JSONL，再解析 `last` 或驱动 `--follow`，适合明确只看某个调试会话。若不传
-`--session-id`，`last` 表示全局最后活跃的 run；`--follow` 每次切换到不同
-session 时都会输出单行 `SESSION` banner，避免 session 切换悄悄发生。
+`--session-id`，`last --follow` 表示全局 latest stream；它默认从启动时已有记录之后
+开始等待新 trace，不会首屏打印旧 run，也不会把同一 turn 的中间 trace 快照打印成多块。
+默认只在 run 达到终态时输出一次；Agent-Service trace 会等待
+`agent_service.turn.finished`，确保 Conversation、Turn latency、Timeline 和 ReAct detail
+在同一块里尽量完整。需要立即打印当前 latest 再继续跟随时，显式加
+`--follow-include-existing`；需要逐事件观察中间态时，显式加 `--follow-live-updates`。
+`--follow` 每次切换到不同 session 时都会在 `SESSION` banner 前留一个空行，避免
+session 切换悄悄发生。
 
 server 参数和 trace viewer 参数分开理解：`scripts/run_server.py` 的参数负责启动
 runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关；
@@ -444,13 +452,14 @@ request only the matching turn:
   --errors
 ```
 
+显式请求 `--sections conversation,...` 会触发 conversation lookup；
 `--include-conversation` remains as a compatibility shortcut for adding the
-conversation section. Conversation lookup rejects non-loopback server URLs. The
-server endpoint is disabled by default, checks the socket peer, joins the
-existing `ConversationStore` by trace identity, returns only the current
-user/final-assistant pair, and clips each side to 1000 Unicode characters with
-an explicit truncation marker. Do not enable this gate on a shared or production
-process.
+conversation section when `--sections` is omitted. Conversation lookup rejects
+non-loopback server URLs. The server endpoint is disabled by default, checks the
+socket peer, joins the existing `ConversationStore` by trace identity, returns
+only the current user/final-assistant pair, and clips each side to 1000 Unicode
+characters with an explicit truncation marker. Do not enable this gate on a
+shared or production process.
 
 Human-readable output should show:
 

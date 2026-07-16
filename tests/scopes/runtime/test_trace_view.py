@@ -1,3 +1,4 @@
+import importlib.util
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -28,7 +29,7 @@ def test_trace_view_last_outputs_latest_local_run(tmp_path: Path) -> None:
     assert "run_old" not in result.stdout
 
 
-def test_trace_view_follow_outputs_current_latest_run_once(tmp_path: Path) -> None:
+def test_trace_view_follow_latest_waits_for_new_trace_by_default(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
 
@@ -37,6 +38,25 @@ def test_trace_view_follow_outputs_current_latest_run_once(tmp_path: Path) -> No
         "--trace-path",
         str(trace_path),
         "--follow",
+        "--follow-timeout",
+        "0",
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_trace_view_follow_can_include_existing_latest_run(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_sample_trace(trace_path)
+
+    result = _run_trace_view(
+        "last",
+        "--trace-path",
+        str(trace_path),
+        "--follow",
+        "--follow-include-existing",
         "--follow-limit",
         "1",
     )
@@ -44,6 +64,54 @@ def test_trace_view_follow_outputs_current_latest_run_once(tmp_path: Path) -> No
     assert result.returncode == 0
     assert "run run_new trace trace_new status=completed events=4" in result.stdout
     assert "run_old" not in result.stdout
+
+
+def test_trace_view_follow_include_existing_does_not_print_partial_agent_service_run(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_agent_service_partial_trace(trace_path)
+
+    result = _run_trace_view(
+        "last",
+        "--trace-path",
+        str(trace_path),
+        "--follow",
+        "--follow-include-existing",
+        "--follow-timeout",
+        "0",
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_trace_view_follow_readiness_waits_for_agent_service_turn_finished() -> None:
+    module = _load_trace_view_module()
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    partial = [
+        _event(
+            "trace_agent_service",
+            "run_agent_service",
+            "run.completed",
+            status="completed",
+            session_id="agent-service-live",
+            created_at=base_time,
+        )
+    ]
+    complete = [
+        *partial,
+        _event(
+            "trace_agent_service",
+            "run_agent_service",
+            "agent_service.turn.finished",
+            status="sent",
+            session_id="agent-service-live",
+            created_at=base_time + timedelta(milliseconds=1),
+        ),
+    ]
+
+    assert module._follow_update_ready(partial) is False
+    assert module._follow_update_ready(complete) is True
 
 
 def test_trace_view_follow_without_session_id_prints_session_separator(tmp_path: Path) -> None:
@@ -55,6 +123,7 @@ def test_trace_view_follow_without_session_id_prints_session_separator(tmp_path:
         "--trace-path",
         str(trace_path),
         "--follow",
+        "--follow-include-existing",
         "--follow-limit",
         "1",
     )
@@ -62,7 +131,7 @@ def test_trace_view_follow_without_session_id_prints_session_separator(tmp_path:
     assert result.returncode == 0
     assert result.stderr == ""
     assert result.stdout.startswith(
-        "================ SESSION other-session ================\n"
+        "\n================ SESSION other-session ================\n"
         "run run_global_latest trace trace_global_latest status=completed events=2"
     )
 
@@ -78,6 +147,7 @@ def test_trace_view_follow_session_id_filters_without_session_separator(tmp_path
         "--session-id",
         "debug-session",
         "--follow",
+        "--follow-include-existing",
         "--follow-limit",
         "1",
     )
@@ -108,7 +178,7 @@ def test_trace_view_last_session_id_selects_latest_matching_session_run(tmp_path
     assert "run_global_latest" not in result.stdout
 
 
-def test_trace_view_full_sections_resolve_last_and_render_conversation_timeline_react(tmp_path: Path) -> None:
+def test_trace_view_full_sections_fetch_and_render_conversation_timeline_react(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
     server = _TraceViewServer(
@@ -132,7 +202,6 @@ def test_trace_view_full_sections_resolve_last_and_render_conversation_timeline_
             server.url,
             "--sections",
             "conversation,timeline,react",
-            "--include-conversation",
             "--errors",
         )
     finally:
@@ -176,9 +245,9 @@ def test_trace_view_follow_server_outputs_conversation_timeline_react(tmp_path: 
             server.url,
             "--sections",
             "conversation,timeline,react",
-            "--include-conversation",
             "--errors",
             "--follow",
+            "--follow-include-existing",
             "--follow-limit",
             "1",
         )
@@ -196,7 +265,7 @@ def test_trace_view_follow_server_outputs_conversation_timeline_react(tmp_path: 
     assert "tool=product_search" in result.stdout
 
 
-def test_trace_view_full_sections_do_not_fetch_or_render_missing_conversation_by_default(tmp_path: Path) -> None:
+def test_trace_view_full_sections_render_unavailable_conversation_when_endpoint_missing(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
     server = _TraceViewServer({"/traces/trace_new": _server_trace_payload()})
@@ -217,11 +286,11 @@ def test_trace_view_full_sections_do_not_fetch_or_render_missing_conversation_by
 
     assert result.returncode == 0
     assert result.stderr == ""
+    assert "Conversation" in result.stdout
+    assert "unavailable" in result.stdout
+    assert "conversation endpoint returned 404" in result.stdout
     assert "Timeline" in result.stdout
     assert "ReAct detail" in result.stdout
-    assert "Conversation" not in result.stdout
-    assert "unavailable" not in result.stdout
-    assert "conversation endpoint returned 404" not in result.stdout
     assert "decision=tool_call" in result.stdout
 
 
@@ -316,6 +385,15 @@ def _run_trace_view(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
     )
+
+
+def _load_trace_view_module():
+    spec = importlib.util.spec_from_file_location("trace_view_test_module", REPO_ROOT / SCRIPT_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class _TraceViewServer:
@@ -601,6 +679,37 @@ def _write_session_sample_trace(path: Path) -> None:
             status="completed",
             session_id="other-session",
             created_at=base_time + timedelta(seconds=1, milliseconds=10),
+        ),
+    ):
+        store.append(event)
+
+
+def _write_agent_service_partial_trace(path: Path) -> None:
+    store = JsonlTraceStore(path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    for event in (
+        _event(
+            "trace_agent_service",
+            "run_agent_service",
+            "conversation.prepare.finished",
+            status="succeeded",
+            session_id="agent-service-live",
+            created_at=base_time,
+        ),
+        _event(
+            "trace_agent_service",
+            "run_agent_service",
+            "run.started",
+            session_id="agent-service-live",
+            created_at=base_time + timedelta(milliseconds=1),
+        ),
+        _event(
+            "trace_agent_service",
+            "run_agent_service",
+            "context.report",
+            status="succeeded",
+            session_id="agent-service-live",
+            created_at=base_time + timedelta(milliseconds=2),
         ),
     ):
         store.append(event)
