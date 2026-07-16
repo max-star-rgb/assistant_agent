@@ -1,8 +1,12 @@
-# Memory Service Architecture
+# Local Memory Service Architecture
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
-This document is the current canonical entry for memory service architecture. Update it whenever `MemoryManager`, memory stores, retrieval, write policy, user profile behavior, memory tools, memory APIs, or memory context boundaries change.
+This document is the current authority for assistant_agent's local/project-side memory service architecture. Update it whenever `MemoryManager`, built-in memory stores, local retrieval, write policy, user profile behavior, memory tools, local memory APIs, or memory context boundaries change.
+
+The external Memory Service HTTP interface has its own authority document:
+`docs/memory_server_api_spec.md`. Keep endpoint shapes, request/response
+fields, and external service compatibility details there instead of here.
 
 Older Phase 8 memory documents remain background references. They are not the current design source when this file and code disagree.
 
@@ -34,7 +38,7 @@ Conversation history is related but separate. Session conversation context, incl
 The memory architecture has two cores behind the same governed runtime contract:
 
 - Built-in local core: `InMemoryStore`, `JsonlMemoryStore`, or `SQLiteMemoryStore`. This core is a real memory service boundary for local/offline runs, tests, demos, and deployments that do not need an external service.
-- External Memory Service core: opt-in network-backed memory capability exposed through adapters. It can augment local retrieval or own the full memory lifecycle, depending on backend mode.
+- External Memory Service core: opt-in network-backed memory capability exposed through adapters. It can augment local retrieval or own the full memory lifecycle, depending on backend mode. This document owns the project-side adapter/governance boundary; the external HTTP contract is owned by `docs/memory_server_api_spec.md`.
 
 The current Memory Intelligence v2 implementation is deliberately local-core focused. Its typed facts, conflict resolver, active-state projection, SQLite FTS5 candidate search, and offline eval gates do not require or modify the external core. External adapters retain their existing boundary but are not part of this phase's acceptance criteria.
 
@@ -666,7 +670,8 @@ metadata, not a counter and not a remote health probe.
 
 ## Design Rules
 
-- Read this document before designing or changing memory service behavior.
+- Read this document before designing or changing local/project-side memory service behavior.
+- Read `docs/memory_server_api_spec.md` before changing the external Memory Service HTTP contract or remote adapter compatibility.
 - Keep Agent/API/MCP code behind `MemoryManager`, `MemoryAuditService`, `MemorySnapshotService`, `ToolExecutor`, or memory tools.
 - Do not let assistant nodes or API routes directly instantiate or query concrete stores.
 - Keep memory tools thin. Tool code may adapt tool input/output, but service behavior belongs in `MemoryManager`, `memory/`, or `services/memory_*`.

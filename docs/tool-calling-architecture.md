@@ -474,6 +474,9 @@ Memory Server media ingestion uses separate tools:
 - `ActionValidator` only accepts `memory_media_ingest` when the user request explicitly asks to upload/import media into memory; ordinary image/video analysis should use `vision_understanding` or `video_understanding`.
 - Default local/mock runs register these tools but keep them unconfigured unless `dual_core` / `hybrid_remote` plus a Memory Server URL is explicitly enabled.
 
+The external HTTP contract for these Memory Server endpoints is owned by
+`docs/memory_server_api_spec.md`.
+
 ## MCP 和外部入口
 
 `OfflineMCPServer` 提供四个 MCP wrapper 工具：

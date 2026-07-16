@@ -9,18 +9,14 @@
 - Runtime and provider event streaming: `docs/runtime-event-stream-architecture.md`
 - Tool calling governance: `docs/tool-calling-architecture.md`
 - Observability and trace harness: `docs/observability-harness.md`
-- Memory service architecture: `docs/memory-service-architecture.md`
+- Local memory service architecture: `docs/memory-service-architecture.md`
+- External Memory Service interface: `docs/memory_server_api_spec.md`
 - Context engineering status: `docs/CONTEXT_ENGINEERING_STATUS.md`
 - Durable structured execution is documented across the Gateway, tool-calling, and context authority documents above; its task API is under `/tasks/{task_id}` and is disabled by default.
 - Multi-agent routing: `docs/agent-communication-routing.md`
 - Media-Agent WebSocket contract: `docs/media-agent-service-websocket.md`
 
-External Memory Server contract/reference material:
-
-- `docs/memory_server_api_spec.md`
-- `docs/memory_server_software_implementation_design.md`
-
-Memory operation runbooks:
+Memory operation runbooks (not authority):
 
 - `docs/development/memory-dual-core-operator-runbook.md`
 - `docs/development/memory-sqlite-operator-runbook.md`
@@ -34,7 +30,6 @@ Pilot and realtime operation runbooks:
 Walkthroughs for project-owner explanations:
 
 - `docs/context-engineering-walkthrough.md`
-- `docs/memory-module-walkthrough.md`
 - `docs/agent-collaboration-walkthrough.md`
 
 Interview training material lives under `docs/interview/` and is separate from normal development routing.

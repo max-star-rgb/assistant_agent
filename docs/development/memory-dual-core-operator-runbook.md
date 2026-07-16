@@ -2,8 +2,10 @@
 
 This runbook covers practical configuration for the built-in local memory core,
 dual-core retrieval with an external Memory Server, and the external lifecycle
-owner adapter mode. The architecture authority remains
-`docs/memory-service-architecture.md`; this file is an operator checklist.
+owner adapter mode. The authority docs are `docs/memory-service-architecture.md`
+for local/project-side memory boundaries and `docs/memory_server_api_spec.md`
+for the external Memory Service HTTP interface; this file is an operator
+checklist.
 
 Use the project Python:
 

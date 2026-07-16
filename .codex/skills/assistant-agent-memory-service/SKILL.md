@@ -13,11 +13,12 @@ Use this skill as the execution wrapper for memory-service work in the `assistan
    - Prefer the current working directory when it contains `AGENTS.md` and `src/assistant_agent/`.
    - If those files are absent, ask for the `assistant_agent` repository path before editing.
 2. Read `AGENTS.md`.
-3. Read `docs/memory-service-architecture.md` completely enough for the task.
-4. If the task explicitly concerns SQLite backup, restore, integrity check, or index rebuild operations, read `docs/development/memory-sqlite-operator-runbook.md` as operational guidance.
-5. If the task concerns external/local backend selection or framework lifecycle ownership, read `docs/development/memory-dual-core-operator-runbook.md` or `docs/development/memory-framework-bakeoff-runbook.md` as applicable.
-6. Search relevant source and tests before changing behavior.
-7. Treat other `docs/development/**` files as historical only unless the user explicitly asks for historical decisions.
+3. Read `docs/memory-service-architecture.md` completely enough for local/project-side memory boundaries.
+4. If the task concerns the external Memory Service HTTP contract, remote adapter, media ingestion, task status, or query/session endpoints, also read `docs/memory_server_api_spec.md`.
+5. If the task explicitly concerns SQLite backup, restore, integrity check, or index rebuild operations, read `docs/development/memory-sqlite-operator-runbook.md` as operational guidance.
+6. If the task concerns external/local backend selection or framework lifecycle ownership, read `docs/development/memory-dual-core-operator-runbook.md` or `docs/development/memory-framework-bakeoff-runbook.md` as applicable.
+7. Search relevant source and tests before changing behavior.
+8. Treat other `docs/development/**` files as historical only unless the user explicitly asks for historical decisions.
 
 ## Source Map
 
@@ -39,7 +40,7 @@ Inspect these areas as relevant:
 - Preserve LLM-first memory tool selection; do not replace it with keyword or vector override routing.
 - Keep all writes behind `MemoryWritePolicy` and explicit `source_intent` where required.
 - Do not store secrets, raw provider responses or real user data in tracked files.
-- Update the authority document when memory boundaries, APIs or routing rules change.
+- Update `docs/memory-service-architecture.md` for local/project-side memory boundaries and `docs/memory_server_api_spec.md` for external Memory Service interface changes.
 
 ## Validation
 
@@ -50,7 +51,7 @@ Choose the smallest validation that covers the change:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest <targeted tests>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/memory/test_memory_fact_contract.py tests/scopes/memory/test_memory_conflict_resolver.py tests/scopes/memory/test_memory_manager_fact_conflicts.py tests/scopes/memory/test_memory_fact_status.py tests/scopes/memory/test_memory_retrieval_ranking.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest tests/scopes/memory/test_memory_framework_adapters.py tests/scopes/memory/test_framework_memory_store.py tests/scopes/memory/test_memory_framework_config.py tests/scopes/memory/test_memory_framework_bakeoff.py tests/scopes/memory/test_memory_framework_bakeoff_cli.py
-git diff --check -- AGENTS.md docs/memory-service-architecture.md src tests .codex/skills
+git diff --check -- AGENTS.md README.md docs/memory-service-architecture.md docs/memory_server_api_spec.md src tests .codex/skills
 ```
 
 Only run broader evals or demos when the change affects shared runtime behavior.
