@@ -127,6 +127,8 @@ tool/provider/model、latency、error code 与关联 ID；prompt、response、me
 Run console 是 Combined 页签，Gateway 与 AgentRuntime 页签分别跟随上述两个文件。
 `.run/Trace Last.run.xml` 一次性展示 `.data/graph_trace.jsonl` 中最后活跃的 run；
 `.run/Trace Follow.run.xml` 常驻跟随同一 trace 文件，适合作为第三个开发观察页签。
+`.run/Trace Full.run.xml` 连接本地 server，按 Conversation、Timeline、ReAct detail
+三层查看最后一轮，要求 server 已显式启用 `--allow-local-trace-content`。
 这些配置不启用 `--allow-local-trace-content`，也不保存密钥或 `.env` 路径。
 
 ## Realtime Video Observation
@@ -377,6 +379,8 @@ Local CLI:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --sections timeline,react
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline,react --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --json
@@ -389,6 +393,9 @@ Local CLI:
 控制台复制 `run_id` / `trace_id` 才能打开详情。`--follow` 只读本地 trace 文件，
 不连接 server、不改变 runtime 参数；它会在新事件写入时重新输出当前匹配 run 的摘要。
 这满足大多数“看 runtime 阶段、耗时、ReAct 流程”的场景，不需要重启服务。
+`--sections` 控制输出层级：`conversation` 需要 `--server` 且 server 已用
+`--allow-local-trace-content` 启动；`timeline` 是默认事件线；`react` 展示
+prompt-safe 的 LLM 决策、validator、tool 调用、耗时、错误和恢复动作证据。
 
 The server-backed view renders `turn_latency`, stage rows, bottleneck, ACK
 state, and consumed-video diagnostics before the event timeline. Conversation
@@ -398,16 +405,20 @@ restart the server with the explicit gate and request only the matching turn:
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
   --provider mock --image-provider mock --allow-local-trace-content
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py trace_xxx \
-  --server http://127.0.0.1:8000 --include-conversation
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last \
+  --trace-path .data/graph_trace.jsonl \
+  --server http://127.0.0.1:8000 \
+  --sections conversation,timeline,react \
+  --errors
 ```
 
-`--include-conversation` rejects non-loopback server URLs and cannot be used
-with a local trace file. The server endpoint is disabled by default, checks the
-socket peer, joins the existing `ConversationStore` by trace identity, returns
-only the current user/final-assistant pair, and clips each side to 1000 Unicode
-characters with an explicit truncation marker. Do not enable this gate on a
-shared or production process.
+`--include-conversation` remains as a compatibility shortcut for adding the
+conversation section. Conversation lookup rejects non-loopback server URLs. The
+server endpoint is disabled by default, checks the socket peer, joins the
+existing `ConversationStore` by trace identity, returns only the current
+user/final-assistant pair, and clips each side to 1000 Unicode characters with
+an explicit truncation marker. Do not enable this gate on a shared or production
+process.
 
 Human-readable output should show:
 

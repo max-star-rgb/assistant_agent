@@ -31,6 +31,21 @@ from assistant_agent.services.trace_store import TraceEvent, trace_debug_summary
 
 DEFAULT_TRACE_PATH = ".data/graph_trace.jsonl"
 LATEST_IDENTIFIERS = {"last", "latest", "@last"}
+TRACE_SECTION_ORDER = ("conversation", "timeline", "react")
+TRACE_SECTION_ALIASES = {
+    "all": TRACE_SECTION_ORDER,
+    "full": TRACE_SECTION_ORDER,
+}
+REACT_DETAIL_EVENTS = {
+    "llm.chat.finished",
+    "react.decision",
+    "action.validation.finished",
+    "tool.started",
+    "tool.finished",
+    "tool.failed",
+    "tool.observation",
+    "loop_guard.triggered",
+}
 DETAIL_ATTRIBUTE_KEYS = (
     "decision_type",
     "tool_call_id",
@@ -86,6 +101,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fetch current-turn content from an explicitly enabled loopback server.",
     )
+    parser.add_argument(
+        "--sections",
+        help=(
+            "Comma-separated output sections: conversation,timeline,react. "
+            "Use full/all for all sections. Defaults to timeline."
+        ),
+    )
+    parser.add_argument(
+        "--react-detail",
+        action="store_true",
+        help="Add a ReAct detail section with prompt-safe decision/tool evidence.",
+    )
     parser.add_argument("--json", dest="json_output", action="store_true", help="Print a JSON summary.")
     parser.add_argument(
         "--follow",
@@ -124,19 +151,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--follow-limit must be greater than 0")
     if args.follow_timeout is not None and args.follow_timeout < 0:
         parser.error("--follow-timeout must be greater than or equal to 0")
-    if args.server and _is_latest_identifier(args.identifier):
-        parser.error("last/latest lookup is only supported with a local --trace-path")
-    if args.include_conversation:
+    sections = _parse_sections(parser, args.sections, include_conversation=args.include_conversation, react_detail=args.react_detail)
+    include_conversation = args.include_conversation or "conversation" in sections
+    if include_conversation:
         if not args.server:
-            parser.error("--include-conversation requires --server")
+            parser.error("conversation output requires --server")
         if not _is_loopback_server(args.server):
-            parser.error("--include-conversation requires a loopback --server URL")
+            parser.error("conversation output requires a loopback --server URL")
+    if "conversation" in sections and args.follow:
+        parser.error("conversation output cannot be combined with --follow")
     if args.server:
-        payload = _fetch_server_trace(args.server, args.identifier)
+        identifier = args.identifier
+        local_events: list[TraceEvent] = []
+        if _is_latest_identifier(identifier):
+            local_events = _find_local_events(args.trace_path, identifier)
+            if not local_events:
+                print(f"trace/run not found: {identifier}", file=sys.stderr)
+                return 1
+            identifier = local_events[0].trace_id
+        payload = _fetch_server_trace(args.server, identifier)
+        if payload is None and local_events:
+            payload = _summary_payload(local_events)
         if payload is None:
             print(f"trace/run not found on server: {args.identifier}", file=sys.stderr)
             return 1
-        if args.include_conversation:
+        if include_conversation:
             trace_id = payload.get("trace_id")
             if not isinstance(trace_id, str) or not trace_id:
                 print("trace id is unavailable for conversation lookup", file=sys.stderr)
@@ -153,7 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.json_output:
             print(json.dumps(_json_ready(payload), ensure_ascii=False, indent=2))
             return 0
-        print(_format_human(payload, show_errors=args.errors))
+        print(_format_human(payload, show_errors=args.errors, sections=sections))
         return 0
 
     if args.follow:
@@ -169,8 +208,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(_json_ready(payload), ensure_ascii=False, indent=2))
         return 0
 
-    print(_format_human(payload, show_errors=args.errors))
+    print(_format_human(payload, show_errors=args.errors, sections=sections))
     return 0
+
+
+def _parse_sections(
+    parser: argparse.ArgumentParser,
+    value: str | None,
+    *,
+    include_conversation: bool,
+    react_detail: bool,
+) -> tuple[str, ...]:
+    requested: list[str]
+    if value is None:
+        requested = ["timeline"]
+        if include_conversation:
+            requested.append("conversation")
+        if react_detail:
+            requested.append("react")
+    else:
+        requested = []
+        for raw_item in value.split(","):
+            item = raw_item.strip().lower()
+            if not item:
+                continue
+            if item in TRACE_SECTION_ALIASES:
+                requested.extend(TRACE_SECTION_ALIASES[item])
+            elif item in TRACE_SECTION_ORDER:
+                requested.append(item)
+            else:
+                parser.error(
+                    "--sections must contain only conversation,timeline,react,full,all"
+                )
+    if not requested:
+        parser.error("--sections must not be empty")
+    return tuple(section for section in TRACE_SECTION_ORDER if section in set(requested))
 
 
 def _is_latest_identifier(identifier: str) -> bool:
@@ -215,6 +287,12 @@ def _follow_local_trace(args: argparse.Namespace) -> int:
     previous_signature: tuple[tuple[Any, ...], ...] | None = None
     printed_any = False
     printed_updates = 0
+    sections = _parse_sections(
+        build_parser(),
+        args.sections,
+        include_conversation=args.include_conversation,
+        react_detail=args.react_detail,
+    )
     while True:
         events = _find_local_events(args.trace_path, args.identifier)
         if events:
@@ -223,7 +301,7 @@ def _follow_local_trace(args: argparse.Namespace) -> int:
                 if printed_any:
                     print()
                     print("--- trace update ---")
-                print(_format_human(_summary_payload(events), show_errors=args.errors), flush=True)
+                print(_format_human(_summary_payload(events), show_errors=args.errors, sections=sections), flush=True)
                 previous_signature = signature
                 printed_any = True
                 printed_updates += 1
@@ -382,9 +460,12 @@ def _duration_ms(events: list[TraceEvent]) -> int | None:
     return max(0, round((finished_at - started_at).total_seconds() * 1000))
 
 
-def _format_human(payload: dict[str, Any], *, show_errors: bool) -> str:
+def _format_human(payload: dict[str, Any], *, show_errors: bool, sections: tuple[str, ...] = ("timeline",)) -> str:
     lines = [_format_header(payload)]
     events = payload.get("events", [])
+    conversation = payload.get("conversation")
+    if "conversation" in sections and isinstance(conversation, dict):
+        lines.extend(("", *_format_conversation(conversation)))
     if show_errors:
         lines.append("")
         lines.append("Errors")
@@ -394,17 +475,108 @@ def _format_human(payload: dict[str, Any], *, show_errors: bool) -> str:
                 lines.append(_format_error_line(index, event))
         else:
             lines.append("  (none)")
-    turn_latency = payload.get("turn_latency")
-    if isinstance(turn_latency, dict):
-        lines.extend(("", *_format_turn_latency(turn_latency)))
-    conversation = payload.get("conversation")
-    if isinstance(conversation, dict):
-        lines.extend(("", *_format_conversation(conversation)))
-    if show_errors or isinstance(turn_latency, dict) or isinstance(conversation, dict):
-        lines.extend(("", "Timeline"))
-    for index, event in enumerate(events, start=1):
-        lines.append(_format_event_line(index, event))
+    if "timeline" in sections:
+        turn_latency = payload.get("turn_latency")
+        if isinstance(turn_latency, dict):
+            lines.extend(("", *_format_turn_latency(turn_latency)))
+        if show_errors or isinstance(turn_latency, dict) or ("conversation" in sections and isinstance(conversation, dict)):
+            lines.extend(("", "Timeline"))
+        for index, event in enumerate(events, start=1):
+            lines.append(_format_event_line(index, event))
+    if "react" in sections:
+        lines.extend(("", *_format_react_detail(events)))
     return "\n".join(lines)
+
+
+def _format_react_detail(events: list[dict[str, Any]]) -> list[str]:
+    lines = ["ReAct detail"]
+    react_events = [
+        (index, event)
+        for index, event in enumerate(events, start=1)
+        if _event_name(event) in REACT_DETAIL_EVENTS
+    ]
+    if not react_events:
+        lines.append("  (none)")
+        return lines
+    for index, event in react_events:
+        details = _react_event_details(event)
+        suffix = f" {' '.join(details)}" if details else ""
+        lines.append(f"  {index:02d} {_event_name(event)}{suffix}")
+    return lines
+
+
+def _react_event_details(event: dict[str, Any]) -> list[str]:
+    name = _event_name(event)
+    details: list[str] = []
+    attributes = event.get("attributes")
+    output_summary = event.get("output_summary")
+    if isinstance(attributes, dict):
+        _append_named(details, "iteration", attributes.get("iteration"))
+        _append_named(details, "batch", _batch_value(attributes))
+    latency_ms = event.get("latency_ms")
+    if isinstance(latency_ms, int):
+        details.append(f"latency={latency_ms}ms")
+    _append_named(details, "status", event.get("status"))
+    _append_named(details, "tool", event.get("tool_name"))
+    _append_named(details, "provider", event.get("provider"))
+    _append_named(details, "model", event.get("model"))
+    if name == "react.decision" and isinstance(output_summary, dict):
+        _append_named(details, "decision", output_summary.get("decision_type") or event.get("status"))
+        _append_named(details, "why", output_summary.get("reason"))
+        _append_named(details, "confidence", output_summary.get("confidence"))
+        _append_context_evidence(details, output_summary.get("context"))
+    elif name == "action.validation.finished":
+        _append_named(details, "validation", event.get("status"))
+        if isinstance(output_summary, dict):
+            validator = output_summary.get("validator_result")
+            if isinstance(validator, dict):
+                _append_named(details, "code", validator.get("code"))
+                _append_named(details, "message", validator.get("message"))
+        if isinstance(attributes, dict):
+            _append_named(details, "risk", attributes.get("risk"))
+            _append_named(details, "side_effect", attributes.get("side_effect"))
+            _append_named(details, "confirmation", attributes.get("confirmation_state"))
+    elif name.startswith("tool."):
+        _append_named(details, "error", event.get("error_code"))
+        if isinstance(attributes, dict):
+            _append_named(details, "tool_call_id", attributes.get("tool_call_id"))
+            _append_named(details, "recovery", attributes.get("recovery_action"))
+        if isinstance(output_summary, dict):
+            _append_named(details, "output_ref", output_summary.get("output_ref"))
+            _append_named(details, "artifact", output_summary.get("artifact_ref") or output_summary.get("artifact_id"))
+            _append_named(details, "results", output_summary.get("result_count") or output_summary.get("item_count"))
+    else:
+        _append_named(details, "error", event.get("error_code"))
+    return details
+
+
+def _batch_value(attributes: dict[str, Any]) -> str | None:
+    index = attributes.get("batch_index")
+    size = attributes.get("batch_size")
+    if isinstance(index, int) and isinstance(size, int):
+        return f"{index}/{size}"
+    return None
+
+
+def _append_context_evidence(details: list[str], context: Any) -> None:
+    if not isinstance(context, dict):
+        return
+    budget = context.get("budget")
+    if isinstance(budget, dict):
+        _append_named(details, "context_usage", budget.get("context_usage_ratio"))
+        total = budget.get("total_tokens")
+        maximum = budget.get("max_tokens")
+        if isinstance(total, int) and isinstance(maximum, int):
+            details.append(f"context_tokens={total}/{maximum}")
+    source_counts = context.get("source_counts")
+    if isinstance(source_counts, dict):
+        compact_counts = {
+            key: value
+            for key, value in source_counts.items()
+            if key in {"conversation_turns", "memory_items", "tool_observations", "realtime_video_context"}
+        }
+        if compact_counts:
+            details.append(f"sources={_compact_value(compact_counts)}")
 
 
 def _format_turn_latency(summary: dict[str, Any]) -> list[str]:
