@@ -19,7 +19,7 @@ def test_provider_config_allows_empty_environment() -> None:
     assert config.price_compare_provider == "mock"
     assert config.haodanku_enabled_platforms == ("taobao",)
     assert config.render_provider == "mock"
-    assert config.video_provider == "mock"
+    assert not hasattr(config, "video_provider")
     assert config.intent_router == "rule"
     assert config.conversation_history_backend == "memory"
     assert config.langgraph_checkpointer_backend == "memory"
@@ -97,9 +97,6 @@ def test_provider_config_reads_environment_values() -> None:
             "RENDER_BASE_URL": "http://localhost:7003",
             "RENDER_API_KEY": "test-render-key",
             "RENDER_TIMEOUT_SECONDS": "5.5",
-            "VIDEO_UNDERSTANDING_BASE_URL": "http://localhost:7004",
-            "VIDEO_UNDERSTANDING_API_KEY": "test-video-key",
-            "VIDEO_UNDERSTANDING_MODEL": "video-test-model",
             "VIDEO_UNDERSTANDING_TIMEOUT_SECONDS": "6.5",
             "MULTIMODAL_AGENT_MAX_VIDEO_BYTES": "1024",
             "MULTIMODAL_AGENT_MAX_VIDEO_SECONDS": "12.5",
@@ -158,10 +155,7 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.render_base_url == "http://localhost:7003"
     assert config.render_api_key == "test-render-key"
     assert config.render_timeout_seconds == 5.5
-    assert config.video_provider == "http"
-    assert config.video_understanding_base_url == "http://localhost:7004"
-    assert config.video_understanding_api_key == "test-video-key"
-    assert config.video_understanding_model == "video-test-model"
+    assert not hasattr(config, "video_provider")
     assert config.video_understanding_timeout_seconds == 6.5
     assert config.max_video_bytes == 1024
     assert config.max_video_seconds == 12.5
@@ -184,10 +178,10 @@ def test_provider_config_offline_eval_defaults_to_mock_local_providers() -> None
     assert config.product_search_provider == "mock"
     assert config.price_compare_provider == "mock"
     assert config.render_provider == "mock"
-    assert config.video_provider == "mock"
+    assert not hasattr(config, "video_provider")
 
 
-def test_provider_config_selects_qwen_video_from_qwen_vision_settings() -> None:
+def test_provider_config_uses_qwen_vision_settings_for_realtime_video() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
@@ -199,10 +193,9 @@ def test_provider_config_selects_qwen_video_from_qwen_vision_settings() -> None:
     )
 
     assert config.vision_provider == "qwen"
-    assert config.video_provider == "qwen"
-    assert config.video_understanding_api_key == "test-qwen-video-key"
-    assert config.video_understanding_base_url == "https://qwen.local/v1"
-    assert config.video_understanding_model == "qwen-vl-test"
+    assert not hasattr(config, "video_provider")
+    assert config.qwen_realtime_vision_api_key == "test-qwen-video-key"
+    assert config.qwen_realtime_vision_model == "qwen3.5-omni-flash-realtime"
 
 
 def test_provider_config_reads_qwen_realtime_vision_settings_and_prefers_vision_key() -> None:
@@ -261,7 +254,7 @@ def test_provider_smoke_allows_explicit_provider_selection() -> None:
     assert config.vision_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert config.vision_model == "qwen-vl-plus"
     assert config.vision_adapter_kind == "openai_compatible"
-    assert config.video_provider == "qwen"
+    assert not hasattr(config, "video_provider")
 
 
 def test_provider_config_reads_deepseek_chat_provider() -> None:
@@ -371,10 +364,8 @@ def test_provider_config_reads_qwen_vision_provider_from_spec() -> None:
     assert config.vision_base_url == "https://qwen.local/v1"
     assert config.vision_model == "qwen-vl-test"
     assert config.vision_adapter_kind == "openai_compatible"
-    assert config.video_provider == "qwen"
-    assert config.video_understanding_api_key == "test-qwen-key"
-    assert config.video_understanding_base_url == "https://qwen.local/v1"
-    assert config.video_understanding_model == "qwen-vl-test"
+    assert not hasattr(config, "video_provider")
+    assert config.qwen_realtime_vision_api_key == "test-qwen-key"
     assert config.resolved_vision_provider().missing_required_env() == []
 
 
@@ -396,10 +387,7 @@ def test_provider_config_reads_ark_vision_provider_from_spec() -> None:
     assert config.vision_adapter_kind == "ark_responses"
     assert config.ark_vision_base_url == "https://ark.local/api/v3"
     assert config.ark_vision_model == "ark-vision-test"
-    assert config.video_provider == "ark"
-    assert config.video_understanding_api_key == "test-ark-key"
-    assert config.video_understanding_base_url == "https://ark.local/api/v3"
-    assert config.video_understanding_model == "ark-vision-test"
+    assert not hasattr(config, "video_provider")
     assert config.resolved_vision_provider().missing_required_env() == []
 
 
@@ -416,7 +404,7 @@ def test_provider_config_cleans_mismatched_trailing_quotes() -> None:
 
     assert config.vision_base_url == "https://ark.local/api/v3"
     assert config.ark_vision_base_url == "https://ark.local/api/v3"
-    assert config.video_understanding_base_url == "https://ark.local/api/v3"
+    assert not hasattr(config, "video_provider")
 
 
 def test_provider_config_reads_openai_image_generation_provider_from_spec() -> None:

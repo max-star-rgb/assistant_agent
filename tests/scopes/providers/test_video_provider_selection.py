@@ -1,16 +1,14 @@
+import importlib.util
 import tomllib
 from pathlib import Path
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.services.video_adapter import (
-    HttpVideoUnderstandingAdapter,
     MockVideoUnderstandingAdapter,
     create_realtime_video_understanding_adapter,
     create_video_understanding_adapter,
 )
 from assistant_agent.providers.qwen_realtime_vision import QwenRealtimeVisionAdapter
-from assistant_agent.providers.ark_video_understanding import ArkVideoUnderstandingAdapter
-from assistant_agent.providers.qwen_video_understanding import QwenVideoUnderstandingAdapter
 from assistant_agent.tools.registry import (
     create_default_registry,
     create_realtime_video_observation_registry,
@@ -33,54 +31,60 @@ def test_create_video_adapter_defaults_to_mock() -> None:
     assert isinstance(adapter, MockVideoUnderstandingAdapter)
 
 
-def test_create_video_adapter_returns_http_skeleton_when_selected() -> None:
-    adapter = create_video_understanding_adapter(ProviderConfig(video_provider="http"))
-
-    assert isinstance(adapter, HttpVideoUnderstandingAdapter)
-
-
-def test_create_video_adapter_returns_ark_adapter_when_selected() -> None:
-    adapter = create_video_understanding_adapter(
-        ProviderConfig(
-            video_provider="ark",
-            video_understanding_api_key="ark-video-key",
-            video_understanding_base_url="https://ark.local/api/v3",
-            video_understanding_model="ark-video-model",
-        )
+def test_provider_config_has_no_separate_video_provider_selector() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "QWEN_VISION_API_KEY": "realtime-key",
+        }
     )
 
-    assert isinstance(adapter, ArkVideoUnderstandingAdapter)
+    assert config.vision_provider == "qwen"
+    assert not hasattr(config, "video_provider")
 
 
-def test_create_video_adapter_returns_qwen_adapter_when_selected() -> None:
-    adapter = create_video_understanding_adapter(
-        ProviderConfig(
-            video_provider="qwen",
-            video_understanding_api_key="qwen-video-key",
-            video_understanding_base_url="https://qwen.local/v1",
-            video_understanding_model="qwen-vl-test",
-        )
-    )
-
-    assert isinstance(adapter, QwenVideoUnderstandingAdapter)
+def test_old_real_video_vlm_adapter_modules_are_removed() -> None:
+    assert importlib.util.find_spec("assistant_agent.providers.qwen_video_understanding") is None
+    assert importlib.util.find_spec("assistant_agent.providers.ark_video_understanding") is None
+    assert importlib.util.find_spec("assistant_agent.video_ai.qwen.vision_client") is None
 
 
-def test_realtime_qwen_selection_uses_vision_provider_without_changing_upload_adapter() -> None:
+def test_qwen_video_adapter_selection_uses_vision_provider() -> None:
     config = ProviderConfig(
         vision_provider="qwen",
         qwen_realtime_vision_api_key="realtime-key",
         qwen_realtime_vision_base_url="wss://qwen.local/realtime",
         qwen_realtime_vision_model="qwen-realtime-test",
-        video_provider="http",
-        video_understanding_base_url="https://upload.local/v1",
     )
 
     realtime = create_realtime_video_understanding_adapter(config)
-    upload = create_video_understanding_adapter(config)
+    default = create_video_understanding_adapter(config)
 
     assert isinstance(realtime, QwenRealtimeVisionAdapter)
     assert realtime.config.api_key == "realtime-key"
-    assert isinstance(upload, HttpVideoUnderstandingAdapter)
+    assert isinstance(default, QwenRealtimeVisionAdapter)
+    assert default.config.api_key == "realtime-key"
+
+
+def test_provider_config_qwen_vision_selects_only_realtime_video_not_upload_vlm() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "QWEN_VISION_API_KEY": "realtime-key",
+        }
+    )
+
+    realtime = create_realtime_video_understanding_adapter(config)
+    default = create_video_understanding_adapter(config)
+
+    assert config.vision_provider == "qwen"
+    assert not hasattr(config, "video_provider")
+    assert isinstance(realtime, QwenRealtimeVisionAdapter)
+    assert realtime.config.api_key == "realtime-key"
+    assert realtime.config.model == "qwen3.5-omni-flash-realtime"
+    assert isinstance(default, QwenRealtimeVisionAdapter)
 
 
 def test_realtime_observation_registry_uses_realtime_qwen_adapter() -> None:
@@ -97,23 +101,17 @@ def test_realtime_observation_registry_uses_realtime_qwen_adapter() -> None:
     assert isinstance(tool.adapter, QwenRealtimeVisionAdapter)
 
 
-def test_provider_config_reads_video_provider_environment() -> None:
+def test_provider_config_reads_video_capability_limits_without_provider_selector() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "VIDEO_UNDERSTANDING_BASE_URL": "http://video.local",
-            "VIDEO_UNDERSTANDING_API_KEY": "test-video-key",
-            "VIDEO_UNDERSTANDING_MODEL": "video-model",
             "VIDEO_UNDERSTANDING_TIMEOUT_SECONDS": "7.5",
             "MULTIMODAL_AGENT_MAX_VIDEO_BYTES": "2048",
             "MULTIMODAL_AGENT_MAX_VIDEO_SECONDS": "9.5",
         }
     )
 
-    assert config.video_provider == "http"
-    assert config.video_understanding_base_url == "http://video.local"
-    assert config.video_understanding_api_key == "test-video-key"
-    assert config.video_understanding_model == "video-model"
+    assert not hasattr(config, "video_provider")
     assert config.video_understanding_timeout_seconds == 7.5
     assert config.max_video_bytes == 2048
     assert config.max_video_seconds == 9.5
@@ -129,10 +127,11 @@ def test_vision_provider_without_video_adapter_keeps_video_mocked() -> None:
     )
 
     assert config.vision_provider == "openai"
-    assert config.video_provider == "mock"
+    assert not hasattr(config, "video_provider")
+    assert isinstance(create_video_understanding_adapter(config), MockVideoUnderstandingAdapter)
 
 
-def test_provider_config_reads_ark_video_provider_environment() -> None:
+def test_ark_vision_provider_does_not_select_old_video_adapter() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
@@ -143,13 +142,12 @@ def test_provider_config_reads_ark_video_provider_environment() -> None:
         }
     )
 
-    assert config.video_provider == "ark"
-    assert config.video_understanding_api_key == "test-ark-video-key"
-    assert config.video_understanding_base_url == "https://ark.local/api/v3"
-    assert config.video_understanding_model == "ark-video-model"
+    assert config.vision_provider == "ark"
+    assert not hasattr(config, "video_provider")
+    assert isinstance(create_video_understanding_adapter(config), MockVideoUnderstandingAdapter)
 
 
-def test_provider_config_reuses_ark_vision_key_for_video_when_video_key_absent() -> None:
+def test_provider_config_does_not_reuse_ark_vision_key_for_video() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
@@ -158,52 +156,25 @@ def test_provider_config_reuses_ark_vision_key_for_video_when_video_key_absent()
         }
     )
 
-    assert config.video_provider == "ark"
-    assert config.video_understanding_api_key == "test-ark-vision-key"
-    assert config.video_understanding_base_url == "https://ark.cn-beijing.volces.com/api/v3"
-    assert config.video_understanding_model == "doubao-seed-2-0-lite-260215"
+    assert config.vision_provider == "ark"
+    assert not hasattr(config, "video_provider")
+    assert isinstance(create_video_understanding_adapter(config), MockVideoUnderstandingAdapter)
 
 
-def test_default_registry_uses_selected_video_adapter() -> None:
-    registry = create_default_registry(ProviderConfig(video_provider="http"))
-    tool = registry.get("video_understanding")
-
-    assert isinstance(tool, VideoUnderstandingTool)
-    assert isinstance(tool.adapter, HttpVideoUnderstandingAdapter)
-
-
-def test_default_registry_uses_selected_ark_video_adapter() -> None:
+def test_default_registry_uses_qwen_video_adapter_from_vision_provider() -> None:
     registry = create_default_registry(
         ProviderConfig(
-            video_provider="ark",
-            video_understanding_api_key="ark-video-key",
-            video_understanding_base_url="https://ark.local/api/v3",
-            video_understanding_model="ark-video-model",
+            vision_provider="qwen",
+            qwen_realtime_vision_api_key="realtime-key",
         )
     )
     tool = registry.get("video_understanding")
 
     assert isinstance(tool, VideoUnderstandingTool)
-    assert isinstance(tool.adapter, ArkVideoUnderstandingAdapter)
+    assert isinstance(tool.adapter, QwenRealtimeVisionAdapter)
 
 
-def test_default_registry_uses_selected_qwen_video_adapter() -> None:
-    registry = create_default_registry(
-        ProviderConfig(
-            video_provider="qwen",
-            video_understanding_api_key="qwen-video-key",
-            video_understanding_base_url="https://qwen.local/v1",
-            video_understanding_model="qwen-vl-test",
-        )
-    )
-    tool = registry.get("video_understanding")
-
-    assert isinstance(tool, VideoUnderstandingTool)
-    assert isinstance(tool.adapter, QwenVideoUnderstandingAdapter)
-    assert not isinstance(tool.adapter, MockVideoUnderstandingAdapter)
-
-
-def test_default_registry_uses_ark_video_adapter_from_env_config() -> None:
+def test_default_registry_keeps_ark_vision_env_on_mock_video_adapter() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
@@ -216,7 +187,6 @@ def test_default_registry_uses_ark_video_adapter_from_env_config() -> None:
     registry = create_default_registry(config)
     tool = registry.get("video_understanding")
 
-    assert config.video_provider == "ark"
+    assert not hasattr(config, "video_provider")
     assert isinstance(tool, VideoUnderstandingTool)
-    assert isinstance(tool.adapter, ArkVideoUnderstandingAdapter)
-    assert not isinstance(tool.adapter, MockVideoUnderstandingAdapter)
+    assert isinstance(tool.adapter, MockVideoUnderstandingAdapter)

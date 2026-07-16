@@ -118,4 +118,4 @@ def test_no_real_external_api_calls_in_tests() -> None:
     assert config.product_search_provider == "mock"
     assert config.price_compare_provider == "mock"
     assert config.render_provider == "mock"
-    assert config.video_provider == "mock"
+    assert not hasattr(config, "video_provider")

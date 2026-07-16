@@ -11,6 +11,7 @@ from assistant_agent.schemas.tools import (
     ToolResult,
     ToolSideEffectPolicy,
     ToolSpec,
+    VisibilityPolicy,
 )
 from assistant_agent.tools.base import BaseTool, ToolContext
 from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
@@ -94,6 +95,7 @@ class ToolRegistry:
             runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
             side_effect=tool_side_effect_policy(tool.name),
             execution=tool_execution_metadata(tool) or tool_execution_policy(tool.name),
+            visibility=tool_visibility_policy(tool.name),
             policy=tool_policy_metadata(tool),
         )
 
@@ -161,6 +163,16 @@ def _close_object_schemas(value: Any) -> Any:
 
 
 def _hide_runtime_identity_field(tool_name: str | None, field_name: str) -> bool:
+    if tool_name == "video_understanding" and field_name in {
+        "frame_refs",
+        "context_id",
+        "metadata",
+        "memory_context",
+        "sample_strategy",
+        "user_id",
+        "session_id",
+    }:
+        return True
     return tool_name in {
         "memory_retrieval",
         "memory_save",
@@ -204,6 +216,17 @@ def tool_execution_policy(tool_name: str) -> ToolExecutionPolicy:
     if isinstance(payload, dict):
         return ToolExecutionPolicy.model_validate(payload)
     return ToolExecutionPolicy()
+
+
+def tool_visibility_policy(tool_name: str) -> VisibilityPolicy:
+    """Return static catalog visibility policy for a tool name."""
+
+    payload = _ACTION_USAGE.get(tool_name, {}).get("visibility")
+    if isinstance(payload, VisibilityPolicy):
+        return payload
+    if isinstance(payload, dict):
+        return VisibilityPolicy.model_validate(payload)
+    return VisibilityPolicy()
 
 
 def tool_policy_metadata(tool: BaseTool) -> ToolPolicyMetadata | None:
@@ -251,9 +274,22 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
         },
     },
     "video_understanding": {
-        "when_to_use": ["Summarize or analyze video content.", "User provided video_ids and asks what happens in the video."],
-        "when_not_to_use": ["User only asks for image generation.", "User asks for 3D rendering without video context."],
-        "runtime_constraints": ["Requires video_ref or video_ids."],
+        "when_to_use": [
+            "Answer visual-fact questions about the current realtime camera when this tool is exposed for an active-video turn.",
+            "Summarize or analyze an explicit video_ref or video_ids supplied by the current request.",
+            "Call when the current answer needs fresh visual facts rather than relying only on passive realtime_video_context.",
+        ],
+        "when_not_to_use": [
+            "User only asks for image generation.",
+            "User asks for 3D rendering without video context.",
+            "No active realtime camera or explicit video reference exists in the current turn.",
+        ],
+        "runtime_constraints": [
+            "Requires current active video from the request, video_ref, or video_ids.",
+            "Do not pass internal frame paths, JPEG/base64 payloads, local media paths, or provider fields.",
+            "Use the current turn's video reference; runtime binds trusted active-video turns.",
+            "If evidence is insufficient, stale, or uncertain, report that uncertainty from the tool result.",
+        ],
         "side_effect": {
             "level": "external_read",
             "requires_confirmation": False,
@@ -265,6 +301,10 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "realtime_safety": "safe",
             "artifact_reuse": "reusable",
             "progress_message": "我分析一下。",
+        },
+        "visibility": {
+            "allowed_entry_profiles": ["agent_service"],
+            "requires_media": ["video"],
         },
     },
     "image_generation": {
@@ -341,6 +381,9 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "reusable",
             "progress_message": "我查一下并比一下价格。",
         },
+        "visibility": {
+            "allowed_entry_profiles": ["agent_service"],
+        },
     },
     "price_compare": {
         "when_to_use": ["Compare prices, offers, or cheapest options."],
@@ -386,6 +429,9 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "reusable",
             "progress_message": "我联网查一下。",
         },
+        "visibility": {
+            "allowed_entry_profiles": ["agent_service"],
+        },
     },
     "memory": {
         "when_to_use": ["Legacy memory retrieve/save compatibility tool."],
@@ -427,6 +473,9 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "realtime_safety": "safe",
             "artifact_reuse": "reusable",
         },
+        "visibility": {
+            "allowed_entry_profiles": ["agent_service"],
+        },
     },
     "memory_save": {
         "when_to_use": [
@@ -456,6 +505,9 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "resource_writes": ["memory"],
             "realtime_safety": "needs_confirmation",
             "artifact_reuse": "do_not_reuse",
+        },
+        "visibility": {
+            "allowed_entry_profiles": ["agent_service"],
         },
     },
     "memory_media_ingest": {

@@ -12,16 +12,7 @@ from typing import Any
 
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
-
-
-AGENT_SERVICE_BASE_TOOL_NAMES = frozenset(
-    {
-        "web_search",
-        "shopping_search",
-        "memory_retrieval",
-        "memory_save",
-    }
-)
+from assistant_agent.services.tool_policy import ToolPolicyView
 
 
 @dataclass(frozen=True)
@@ -30,20 +21,24 @@ class ToolExposureFacts:
 
     trusted_agent_service: bool
     entry_profile: str | None
+    active_image_ids: tuple[str, ...] = ()
     active_video_ids: tuple[str, ...] = ()
+    active_audio_id: str | None = None
 
     @property
     def has_active_video(self) -> bool:
         return bool(self.active_video_ids)
 
-
-@dataclass(frozen=True)
-class ToolExposureRule:
-    """Declarative dynamic exposure rule for one tool."""
-
-    tool_name: str
-    agent_service: bool = False
-    requires_active_video: bool = False
+    @property
+    def active_media_types(self) -> frozenset[str]:
+        active: set[str] = set()
+        if self.active_image_ids:
+            active.add("image")
+        if self.active_video_ids:
+            active.add("video")
+        if self.active_audio_id:
+            active.add("audio")
+        return frozenset(active)
 
 
 @dataclass(frozen=True)
@@ -56,30 +51,23 @@ class ToolExposureDecision:
     facts: ToolExposureFacts | None = None
 
 
-AGENT_SERVICE_DYNAMIC_RULES: dict[str, ToolExposureRule] = {
-    "video_understanding": ToolExposureRule(
-        tool_name="video_understanding",
-        agent_service=True,
-        requires_active_video=True,
-    ),
-}
-
-
 def tool_exposure_facts(request: UserRequest) -> ToolExposureFacts:
     """Extract bounded structured facts for tool exposure."""
 
     return ToolExposureFacts(
         trusted_agent_service=is_trusted_agent_service_request(request),
         entry_profile=_entry_profile(request.metadata),
+        active_image_ids=tuple(_string_list(request.image_ids)),
         active_video_ids=tuple(_string_list(request.video_ids)),
+        active_audio_id=_string_value(request.audio_id),
     )
 
 
 def entry_profile_tool_exposure(
     request: UserRequest,
-    tool_name: str,
+    policy: ToolPolicyView,
 ) -> ToolExposureDecision:
-    """Return whether ``tool_name`` is exposed by the current entry profile."""
+    """Return whether one tool is exposed by the current entry profile."""
 
     facts = tool_exposure_facts(request)
     if not facts.trusted_agent_service:
@@ -88,32 +76,30 @@ def entry_profile_tool_exposure(
             reasons=("default_entry_profile",),
             facts=facts,
         )
-    if tool_name in AGENT_SERVICE_BASE_TOOL_NAMES:
+    if facts.entry_profile not in policy.allowed_entry_profiles:
         return ToolExposureDecision(
-            exposed=True,
-            reasons=("agent_service_base_tool",),
+            exposed=False,
+            excluded_reasons=("entry_profile_not_exposed",),
             facts=facts,
         )
-    rule = AGENT_SERVICE_DYNAMIC_RULES.get(tool_name)
-    if rule is not None and _matches_rule(rule, facts):
+    if not _has_required_media(policy, facts):
         return ToolExposureDecision(
-            exposed=True,
-            reasons=("agent_service_dynamic_tool",),
+            exposed=False,
+            excluded_reasons=("entry_profile_not_exposed",),
             facts=facts,
         )
     return ToolExposureDecision(
-        exposed=False,
-        excluded_reasons=("entry_profile_not_exposed",),
+        exposed=True,
+        reasons=(f"entry_profile_allowed:{facts.entry_profile}",),
         facts=facts,
     )
 
 
-def _matches_rule(rule: ToolExposureRule, facts: ToolExposureFacts) -> bool:
-    if rule.agent_service and not facts.trusted_agent_service:
-        return False
-    if rule.requires_active_video and not facts.has_active_video:
-        return False
-    return True
+def _has_required_media(policy: ToolPolicyView, facts: ToolExposureFacts) -> bool:
+    required = set(policy.requires_media)
+    if not required:
+        return True
+    return required.issubset(facts.active_media_types)
 
 
 def _entry_profile(metadata: dict[str, Any]) -> str | None:
@@ -129,3 +115,9 @@ def _entry_profile(metadata: dict[str, Any]) -> str | None:
 
 def _string_list(value: list[str]) -> list[str]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _string_value(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None

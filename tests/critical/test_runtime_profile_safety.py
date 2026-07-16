@@ -34,8 +34,6 @@ def test_offline_eval_blocks_real_provider_selectors_from_environment() -> None:
             "PRICE_COMPARE_API_KEY": "sk-runtime-profile-test",
             "RENDER_BASE_URL": "http://provider.local",
             "RENDER_API_KEY": "sk-runtime-profile-test",
-            "VIDEO_UNDERSTANDING_BASE_URL": "http://provider.local",
-            "VIDEO_UNDERSTANDING_API_KEY": "sk-runtime-profile-test",
         }
     )
 
@@ -47,7 +45,7 @@ def test_offline_eval_blocks_real_provider_selectors_from_environment() -> None:
     assert config.product_search_provider == "mock"
     assert config.price_compare_provider == "mock"
     assert config.render_provider == "mock"
-    assert config.video_provider == "mock"
+    assert not hasattr(config, "video_provider")
     assert isinstance(create_vision_adapter(config), MockVisionUnderstandingAdapter)
 
 

@@ -41,6 +41,7 @@ SMOKE_CASES = [
         ["--video-ref", "mock://video/demo"],
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
             "VIDEO_UNDERSTANDING_API_KEY": "sk-provider-safety-test",
         },
     ),

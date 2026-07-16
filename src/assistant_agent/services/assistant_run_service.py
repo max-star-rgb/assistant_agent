@@ -795,7 +795,6 @@ def runtime_info(config: ProviderConfig) -> dict[str, Any]:
             "price_compare": config.price_compare_provider,
             "image_generation": config.image_generation_provider,
             "render": config.render_provider,
-            "video": config.video_provider,
         },
         "offline_default": not config.runtime_profile.allows_real_providers,
     }

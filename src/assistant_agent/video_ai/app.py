@@ -13,14 +13,14 @@ from assistant_agent.video_ai.detection.ssim_detector import SSIMChangeDetector
 from assistant_agent.video_ai.keyframe.collector import AdaptiveKeyframeCollector
 from assistant_agent.video_ai.keyframe.selector import KeyframeSelectorConfig
 from assistant_agent.video_ai.keyframe.storage import FileKeyframeStorage, KeyframeStorage
+from assistant_agent.video_ai.local_vision_client import MockRealtimeVisionClient, VisionUnderstandingClient
 from assistant_agent.video_ai.memory.state_manager import VideoMemoryStateManager
-from assistant_agent.video_ai.qwen.vision_client import MockQwenVisionClient, VisionUnderstandingClient
 from assistant_agent.video_ai.sampling.adaptive_sampler import AdaptiveSamplerConfig
 from assistant_agent.video_ai.types import FrameProcessingResult, QueryAnswer, VideoFrame
 
 
 class RealtimeVideoUnderstandingApp:
-    """Adaptive observer that only calls Qwen-VL for selected keyframes."""
+    """Adaptive observer that only calls the local vision client for selected keyframes."""
 
     def __init__(
         self,
@@ -35,7 +35,7 @@ class RealtimeVideoUnderstandingApp:
         keyframe_storage: KeyframeStorage | None = None,
         config: ProviderConfig | None = None,
     ) -> None:
-        self.qwen_client = qwen_client or MockQwenVisionClient()
+        self.qwen_client = qwen_client or MockRealtimeVisionClient()
         self.memory = memory or VideoMemoryStateManager()
         self.collector = AdaptiveKeyframeCollector(
             sampler_config=sampler_config,

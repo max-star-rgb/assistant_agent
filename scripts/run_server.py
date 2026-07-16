@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--file-log-level",
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
         default="DEBUG",
-        help="Minimum level written to gateway.log and runtime.log (default: DEBUG).",
+        help="Minimum level written to gateway.log (default: DEBUG).",
     )
     parser.add_argument(
         "--console-mode",
@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--log-dir",
         default=".data/logs",
-        help="Directory for rotating gateway.log and runtime.log files.",
+        help="Directory for rotating gateway.log.",
     )
     parser.add_argument(
         "--allow-local-trace-content",
@@ -187,7 +187,6 @@ def _print_runtime_summary(config: ProviderConfig, *, loaded_env_keys: list[str]
     print(f"  product_search_provider: {providers['product_search']}")
     print(f"  price_compare_provider: {providers['price_compare']}")
     print(f"  render_provider: {providers['render']}")
-    print(f"  video_provider: {providers['video']}")
     print(f"  memory_backend: {config.memory_backend}")
     if config.memory_backend == "jsonl":
         print(f"  memory_path: {config.memory_path}")
@@ -265,7 +264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  operational_log_level: {args.log_level} (legacy override)")
     else:
         print(f"  console_log: {args.console_level} / {args.console_mode}")
-        print(f"  file_log_level: {args.file_log_level}")
+        print(f"  gateway_file_log_level: {args.file_log_level}")
     print(f"  operational_log_dir: {log_dir}")
     _print_runtime_summary(config, loaded_env_keys=sorted(loaded_env))
     if args.public_url:

@@ -119,7 +119,7 @@ def test_run_server_suppresses_uvicorn_info_access_noise(monkeypatch, tmp_path) 
     assert captured["log_level"] == "warning"
 
 
-def test_operational_logging_is_idempotent_and_separates_component_files(
+def test_operational_logging_is_idempotent_and_writes_gateway_file_only(
     tmp_path,
     capsys,
 ) -> None:
@@ -150,7 +150,7 @@ def test_operational_logging_is_idempotent_and_separates_component_files(
             },
         )
         runtime_logger.info(
-            "runtime event",
+            "runtime event should stay in trace_view only",
             extra={
                 "component": "runtime",
                 "event": "llm.chat.finished",
@@ -160,7 +160,7 @@ def test_operational_logging_is_idempotent_and_separates_component_files(
             },
         )
         runtime_logger.debug(
-            "runtime debug detail",
+            "runtime debug detail should stay in trace_view only",
             extra={
                 "component": "runtime",
                 "event": "context.build.started",
@@ -170,21 +170,16 @@ def test_operational_logging_is_idempotent_and_separates_component_files(
             },
         )
         logging.getLogger("assistant_agent.api.sample").info("ordinary package secret")
-        for logger in (gateway_logger, runtime_logger):
+        for logger in (gateway_logger, runtime_logger, logging.getLogger("assistant_agent")):
             for handler in logger.handlers:
                 handler.flush()
 
         gateway_raw = (tmp_path / "gateway.log").read_text(encoding="utf-8")
-        runtime_raw = (tmp_path / "runtime.log").read_text(encoding="utf-8")
         assert len(gateway_raw.splitlines()) == 1
         assert "gateway event" in gateway_raw
         assert "runtime event" not in gateway_raw
-        assert len(runtime_raw.splitlines()) == 2
-        assert "runtime event" in runtime_raw
-        assert "runtime debug detail" in runtime_raw
-        assert "gateway event" not in runtime_raw
+        assert not (tmp_path / "runtime.log").exists()
         assert "component=gateway" in gateway_raw
-        assert "event=llm.chat.finished" in runtime_raw
         captured = capsys.readouterr()
         assert "ordinary package secret" not in captured.out
         assert "runtime debug detail" not in captured.out
@@ -265,12 +260,12 @@ def test_operational_console_splits_severity_and_concise_mode_hides_runtime_deta
         assert "operator attention" not in captured.out
         assert "operator attention" not in captured.err
         assert "WARNING assistant_agent.api.sample" in captured.err
-        assert "llm.chat.finished" in (tmp_path / "runtime.log").read_text(encoding="utf-8")
+        assert not (tmp_path / "runtime.log").exists()
     finally:
         operational_logging.reset_operational_logging_for_tests()
 
 
-def test_operational_console_verbose_mode_shows_runtime_detail(tmp_path, capsys) -> None:
+def test_operational_console_verbose_mode_keeps_runtime_trace_detail_in_trace_view(tmp_path, capsys) -> None:
     operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
     try:
         operational_logging.configure_operational_logging(
@@ -294,8 +289,8 @@ def test_operational_console_verbose_mode_shows_runtime_detail(tmp_path, capsys)
         )
 
         captured = capsys.readouterr()
-        assert "llm.chat.finished" in captured.out
-        assert "provider=mock" in captured.out
+        assert "llm.chat.finished" not in captured.out
+        assert "provider=mock" not in captured.out
         assert "assistant_agent.api.sample" in captured.out
         assert "verbose-secret-session-value" not in captured.out
         assert captured.err == ""

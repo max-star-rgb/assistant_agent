@@ -77,8 +77,8 @@ def test_provider_smoke_validation_reports_missing_explicit_real_config() -> Non
     assert result.valid is False
     assert {(issue.capability, issue.provider) for issue in result.issues} == {
         ("image_understanding", "qwen"),
-        ("product_search", "http"),
         ("video_understanding", "qwen"),
+        ("product_search", "http"),
     }
     missing = {name for issue in result.issues for name in issue.missing}
     assert {"QWEN_VISION_API_KEY", "PRODUCT_SEARCH_BASE_URL", "PRODUCT_SEARCH_API_KEY"}.issubset(missing)

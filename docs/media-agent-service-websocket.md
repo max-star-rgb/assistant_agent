@@ -485,12 +485,11 @@ MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
 ```
 
 Qwen realtime 视频适配器优先使用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_API_KEY`），
-并读取 `QWEN_REALTIME_VISION_BASE_URL` 和 `QWEN_REALTIME_VISION_MODEL`。普通图片和上传视频
-继续使用 `QWEN_VISION_BASE_URL` / `QWEN_VISION_MODEL` 对应的 HTTP adapter；设置
-`VIDEO_UNDERSTANDING_BASE_URL`、`VIDEO_UNDERSTANDING_API_KEY` 和可选 model 时，普通上传视频
-改走该显式 HTTP service，不会误入 realtime WebSocket。启动前应确认 chat 与
-`video_understanding` readiness 均为 `ready`，并确认解析出的
-`video_provider=qwen`；显式选择 Qwen 失败时不会静默回退到 Ark、Doubao 或 mock。
+并读取 `QWEN_REALTIME_VISION_BASE_URL` 和 `QWEN_REALTIME_VISION_MODEL`。普通图片仍使用
+`QWEN_VISION_BASE_URL` / `QWEN_VISION_MODEL` 对应的图片 HTTP adapter；视频理解不再有独立
+`video_provider` selector，实时视频和视频工具都以 `MULTIMODAL_AGENT_VISION_PROVIDER` 为唯一
+provider 选择入口。启动前应确认 chat readiness 和 `video_understanding` 的 vision provider
+配置；显式选择 Qwen 失败时不会静默回退到 Ark、Doubao 或 mock。
 
 真实联调只记录脱敏证据：runtime profile、chat/video provider、Qwen model、
 后台观察状态和 latency、工具结果的 `source`、用户可见最终回复、

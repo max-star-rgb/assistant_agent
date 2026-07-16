@@ -83,8 +83,8 @@ def validate_provider_config(config: ProviderConfig) -> ProviderConfigValidation
     _add_issue_if_missing(
         issues,
         capability="video_understanding",
-        provider=config.video_provider,
-        missing=_video_missing(config),
+        provider=config.vision_provider,
+        missing=_vision_missing(config),
     )
 
     return ProviderConfigValidationResult(
@@ -166,19 +166,6 @@ def _render_missing(config: ProviderConfig) -> list[str]:
             ("RENDER_BASE_URL", config.render_base_url),
             ("RENDER_API_KEY", config.render_api_key),
         )
-    return []
-
-
-def _video_missing(config: ProviderConfig) -> list[str]:
-    if config.video_provider == "http":
-        return _missing(
-            ("VIDEO_UNDERSTANDING_BASE_URL", config.video_understanding_base_url),
-            ("VIDEO_UNDERSTANDING_API_KEY", config.video_understanding_api_key),
-        )
-    if config.video_provider == "ark":
-        return _missing(("ARK_VISION_API_KEY", config.video_understanding_api_key))
-    if config.video_provider == "qwen":
-        return _missing(("QWEN_VISION_API_KEY", config.video_understanding_api_key))
     return []
 
 

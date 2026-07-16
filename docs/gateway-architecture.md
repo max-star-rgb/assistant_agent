@@ -136,7 +136,9 @@ history from an older call. Its Gateway session uses the trusted
 `realtime_phone` profile
 and a trusted AgentRuntime tool set: `web_search`, `shopping_search`,
 `memory_retrieval`, `memory_save`, plus dynamically exposed `video_understanding`
-when active-video state makes it valid. `shopping_search` is the only
+when active-video state makes it valid. These tools enter the Agent-Service
+catalog through their own visibility metadata, not through catalog-side
+business-tool name rules. `shopping_search` is the only
 AgentRuntime shopping entry for this phone profile and internally performs product
 search plus price comparison. Tool qualification is derived from trusted session
 config and structured request media, never user text. `assistantControl`

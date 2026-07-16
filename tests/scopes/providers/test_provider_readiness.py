@@ -49,7 +49,7 @@ def test_provider_smoke_configured_qwen_vision_is_ready_without_calling_provider
     assert vision.real_provider_allowed is True
 
 
-def test_provider_smoke_missing_qwen_video_key_is_not_ready() -> None:
+def test_provider_smoke_missing_qwen_vision_marks_video_understanding_not_ready() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
@@ -65,7 +65,7 @@ def test_provider_smoke_missing_qwen_video_key_is_not_ready() -> None:
     assert video.issues[0].missing == ["QWEN_VISION_API_KEY"]
 
 
-def test_provider_smoke_configured_qwen_video_is_ready_without_calling_provider() -> None:
+def test_provider_smoke_configured_qwen_vision_marks_video_understanding_ready() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",

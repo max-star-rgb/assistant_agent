@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import threading
 import time
 
@@ -108,77 +107,11 @@ def test_server_trace_store_persists_redacted_events(tmp_path) -> None:
     assert "private response" not in raw
 
 
-def test_operational_trace_log_store_projects_only_allowlisted_fields(tmp_path) -> None:
-    from assistant_agent.services.operational_logging import (
-        OperationalTraceLogStore,
-        configure_operational_logging,
-        reset_operational_logging_for_tests,
-    )
-
-    log_dir = tmp_path / "logs"
-    try:
-        configure_operational_logging(log_dir, "INFO")
-        store = OperationalTraceLogStore()
-        store.append(
-            TraceEvent(
-                trace_id="trace-safe",
-                run_id="run-safe",
-                user_id="raw-user-secret",
-                session_id="raw-session-secret",
-                node_name="runtime",
-                event_type="observability",
-                canonical_event="tool.failed",
-                status="failed",
-                tool_name="web_search",
-                provider="mock",
-                model="mock-model",
-                latency_ms=23,
-                error_code="PROVIDER_TIMEOUT",
-                before_state_summary={"prompt": "raw prompt secret"},
-                after_state_summary={"response": "raw response secret"},
-                input_summary={"memory": "raw memory secret"},
-                output_summary={"secret": "raw output secret"},
-                attributes={
-                    "turn_id": "turn-safe",
-                    "authorization": "Bearer raw-token-secret",
-                },
-                error={"message": "raw provider error secret"},
-            )
-        )
-        for handler in logging.getLogger("assistant_agent.runtime.trace").handlers:
-            handler.flush()
-
-        raw = (log_dir / "runtime.log").read_text(encoding="utf-8")
-        assert "event=tool.failed" in raw
-        assert "run_id=run-safe" in raw
-        assert "turn_id=turn-safe" in raw
-        assert "trace_id=trace-safe" in raw
-        assert "tool=web_search" in raw
-        assert "provider=mock" in raw
-        assert "model=mock-model" in raw
-        assert "latency_ms=23" in raw
-        assert "error_code=PROVIDER_TIMEOUT" in raw
-        for secret in (
-            "raw-user-secret",
-            "raw-session-secret",
-            "raw prompt secret",
-            "raw response secret",
-            "raw memory secret",
-            "raw output secret",
-            "raw-token-secret",
-            "raw provider error secret",
-        ):
-            assert secret not in raw
-    finally:
-        reset_operational_logging_for_tests()
-
-
-def test_server_trace_store_keeps_operational_log_as_write_only_secondary(tmp_path) -> None:
-    from assistant_agent.services.operational_logging import OperationalTraceLogStore
-
+def test_server_trace_store_keeps_runtime_developer_view_on_canonical_trace_only(tmp_path) -> None:
     store = create_server_trace_store(path=tmp_path / "trace.jsonl")
 
-    assert any(isinstance(item, OperationalTraceLogStore) for item in store.secondaries)
+    assert len(store.secondaries) == 1
+    assert isinstance(store.secondaries[0], BufferedJsonlTraceStore)
 
 
 def test_composite_trace_store_closes_secondaries_before_primary() -> None:

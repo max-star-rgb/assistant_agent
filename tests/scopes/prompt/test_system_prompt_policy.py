@@ -170,6 +170,17 @@ def test_realtime_phone_profile_uses_natural_live_camera_wording_when_enabled() 
     assert "双方正在共享的当前镜头" in prompt
     assert "你刚发送的视频" in prompt
     assert "不得" in prompt
+    assert "video_understanding" not in prompt
+    assert "工具目录" not in prompt
+    assert "当前画面事实，调用" not in prompt
+    assert "调用该工具" not in prompt
+    assert "不要自己执行视觉分析" not in prompt
+    assert "realtime_video_context" not in prompt
+    assert "Qwen" not in prompt
+    assert "Provider" not in prompt
+    assert "角色: 实时视觉理解器" not in prompt
+    assert "按从左到右" not in prompt
+    assert "品牌、商标" not in prompt
 
 
 def test_final_only_profile_forbids_tools_and_realtime_fabrication() -> None:

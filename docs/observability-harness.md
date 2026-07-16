@@ -88,19 +88,20 @@ not a delivery authority.
 
 ## Operational Logging
 
-本地 server 在不改变 FastAPI 单进程结构的前提下提供三层开发视图：控制台是
-面向开发者阅读的 Combined 摘要，`.data/logs/gateway.log` 只接收 Gateway lifecycle，
-`.data/logs/runtime.log` 只接收 Assistant runtime trace 投影。Combined 默认采用
-`concise` 模式，只显示关键 Gateway lifecycle、runtime 失败/取消摘要以及普通应用
-WARNING/ERROR 的 logger 名；节点级 runtime 细节仍持续写入文件页签。未经过安全投影的
-普通应用 message 不在 Combined 原样显示，即使 `verbose` 也只显示其 logger 元数据。
+本地 server 在不改变 FastAPI 单进程结构的前提下提供 Gateway operational logging；
+Assistant runtime 开发视图统一通过 `scripts/trace_view.py --follow` 读取 canonical
+trace。控制台是面向开发者阅读的 Combined 摘要，`.data/logs/gateway.log` 只接收
+Gateway lifecycle。Combined 默认采用 `concise` 模式，只显示关键 Gateway lifecycle
+以及普通应用 WARNING/ERROR 的 logger 名；`component=runtime` 的文本日志不进入
+Combined，即使 `verbose` 也不作为 runtime 观察入口。未经过安全投影的普通应用
+message 不在 Combined 原样显示，即使 `verbose` 也只显示其 logger 元数据。
 控制台 INFO/DEBUG 写 stdout，WARNING/ERROR 写
 stderr，避免 PyCharm 将所有正常事件渲染为红色；控制台只显示短关联 ID，不显示稳定
 身份摘要或密集 payload。Uvicorn 内建 INFO 默认降噪，避免 WebSocket 握手 query value
-绕过安全投影进入控制台；只有显式 `--access-log` 时才恢复其 INFO/access 输出。两个文件
-继续使用 UTC `key=value` 格式并保留完整可用的
-`run_id`、`turn_id`、`trace_id`，用于从入口 lifecycle 串联到 runtime trace。
-两个文件均通过标准库 `RotatingFileHandler` 轮转，
+绕过安全投影进入控制台；只有显式 `--access-log` 时才恢复其 INFO/access 输出。
+Gateway 文件继续使用 UTC `key=value` 格式并保留完整可用的 `run_id`、`turn_id`、
+`trace_id`，用于从入口 lifecycle 串联到 runtime trace。该文件通过标准库
+`RotatingFileHandler` 轮转，
 单文件上限 5 MiB，保留 3 个备份；重复配置或 reload 不得重复安装 handler。
 launcher 通过显式进程环境把 level/path 传给 `create_app()`，因此 reload 后的实际
 server 子进程会重新执行同一幂等配置。文件目录或 handler 打开失败时保留 Combined
@@ -112,23 +113,21 @@ admission、run、cancel、interrupt 和 terminal 边界。它保留 `run_id` / 
 `session_id` 使用稳定短摘要，不记录用户文本。Agent-Service 连接日志同样只记录
 query key、session 摘要和聚合计数，不记录 query value、原始 session ID 或媒体内容。
 
-Runtime 日志由 `OperationalTraceLogStore` 作为 server `CompositeTraceStore` 的只写
-secondary 生成。输入先经过现有 trace redaction，再只投影 canonical event、status、
-tool/provider/model、latency、error code 与关联 ID；prompt、response、memory、
-`attributes` 整体、input/output summary 和 Provider raw payload 均不进入文本日志。
-该视图只用于实时开发排障，`.data/graph_trace.jsonl`、trace query API 与
-`scripts/trace_view.py` 仍是机器查询和调试重建权威。
+Assistant runtime 不再投影到 operational text log，也不再创建 `.data/logs/runtime.log`。
+server `CompositeTraceStore` 只保留进程内 primary 与后台 JSONL persistence；`.data/graph_trace.jsonl`
+和 trace query API 是机器查询与调试重建权威，`scripts/trace_view.py --follow`
+是唯一 runtime 开发观察视图。
 
 `scripts/run_server.py` 提供 `--console-level`、`--file-log-level`、
 `--console-mode {concise,verbose}` 与 `--log-dir PATH`，默认分别为 `INFO`、`DEBUG`、
-`concise` 和 `.data/logs`。需要临时逐事件观察时使用 `--console-mode verbose`；旧
+`concise` 和 `.data/logs`；`--file-log-level` 只控制 `gateway.log`。旧
 `--log-level` 仍作为同时覆盖 console/file level 的兼容 shorthand。共享 PyCharm 配置
 `.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器和 mock Provider 启动：
-Run console 是 Combined 页签，Gateway 与 AgentRuntime 页签分别跟随上述两个文件。
+Run console 是 Combined 页签，Gateway 页签跟随 `.data/logs/gateway.log`。
 `.run/Gateway Debug Turn.run.xml` 使用固定 `pycharm-debug-session` 发起一轮 Gateway
 调试请求；`.run/Trace Last.run.xml` 一次性展示同一 session 在
 `.data/graph_trace.jsonl` 中最后活跃的 run；`.run/Trace Follow.run.xml` 常驻跟随同一
-session 的 trace 文件，适合作为第三个开发观察页签。
+session 的 trace 文件，适合作为 runtime 开发观察页签。
 `.run/Trace Full.run.xml` 连接本地 server，按 Conversation、Timeline、ReAct detail
 三层查看最后一轮；`.run/Trace Full Follow.run.xml` 则常驻全局跟随完整三层视图。
 当全局 latest 切换到不同 session 时，trace viewer 会打印醒目的单行 `SESSION` banner。
@@ -209,7 +208,7 @@ require an external APM stack for normal development.
 | `AgentState` | runtime | In-memory fact record for one run: status, tool calls, results, errors, and response. |
 | `AgentEvent` / `EventSink` | runtime and entry layers | Real-time event stream for WebSocket, Gateway, realtime, CLI, and tests. |
 | `TraceStore` / `TraceQueryService` | services | Redacted run and trace summaries for `/runs/{run_id}`, `/traces/{trace_id}`, and tool-call debug views. |
-| Operational text logs | services / gateway | Combined console plus isolated rotating Gateway and AgentRuntime developer views; never replace canonical trace JSONL. |
+| Operational text logs | services / gateway | Combined console plus isolated rotating Gateway lifecycle logs; runtime development uses `trace_view.py --follow` over canonical trace JSONL. |
 | `react_steps` / `decision_trace` | API response metadata | Compact per-response ReAct timeline for developer UI and CLI output. |
 | `RunHistoryStore` / `ToolHistoryStore` / `SessionStore` | services | Local JSONL/session indexes and lifecycle ledgers. |
 | Gateway frames | gateway | Realtime wire lifecycle: `run.started`, `event.progress`, `stream.chunk`, `run.end`, `run.cancel`, call hangup, and config updates. |

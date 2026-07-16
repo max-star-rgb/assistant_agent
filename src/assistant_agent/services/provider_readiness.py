@@ -62,7 +62,7 @@ def build_provider_readiness_report(config: ProviderConfig) -> ProviderReadiness
         _check("product_search", config.product_search_provider, config, issues_by_key),
         _check("price_compare", config.price_compare_provider, config, issues_by_key),
         _check("render_3d", config.render_provider, config, issues_by_key),
-        _check("video_understanding", config.video_provider, config, issues_by_key),
+        _check("video_understanding", config.vision_provider, config, issues_by_key),
     ]
 
     return ProviderReadinessReport(

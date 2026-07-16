@@ -23,6 +23,31 @@ PCM_SILENCE_MILLISECONDS = 200
 DEFAULT_CLOSE_TIMEOUT_SECONDS = 1.0
 JPEG_NORMALIZE_TIMEOUT_SECONDS = 3.0
 JPEG_NORMALIZE_WIDTHS = (1280, 960, 720, 640, 480)
+QWEN_REALTIME_VLM_ALLOWED_FIELDS = (
+    "summary, objects, people, actions, events, scene, products, brands, "
+    "colors, materials, text_in_video, timestamps, style_tags, confidence"
+)
+QWEN_REALTIME_VLM_ROLE_TEMPLATE = """角色: 实时视觉理解器
+简介:
+语言: 中文
+描述: 你只负责观察视觉输入并生成结构化视觉事实，不承担主对话、工具选择、业务决策或用户回复。
+技能:
+1. 仔细读取图片中的文字、品牌、商标、食品和产品线索，无法确认真实身份时标记不确定，不基于表面相似性假设。
+2. 分析图像序列时按从左到右和时间顺序观察人物、物体、运动方向和动作连贯性；本实时会话每轮默认只提交当前最新单帧。
+3. 处理几何、图表、地图、地理面积、视觉错觉和非英文字符时，区分图像线索、常识事实和可能偏差。
+4. 当图中文字与常识或已知事实冲突时，在结构化结果中保留观察到的文字并表达不确定，不替用户确认错误信息。
+规则:
+1. 只分析当前提交的 JPEG；历史语义摘要仅作上下文参考，不能替代当前画面事实。
+2. 不输出角色信息、解释性前言、Markdown、代码块或自然语言长答。
+3. 只输出一个 json object，字段范围为: {allowed_fields}。
+4. 不调用工具，不提及主 LLM、系统提示、Provider、WebSocket、base64、图片路径或内部实现。
+5. 证据不足时使用空数组、null 或简短不确定描述，不编造当前画面。
+工作流程:
+1. 先整体观察画面主体、场景和文字。
+2. 再检查细节，包括人物动作、物体位置、品牌文字、颜色材质和可见事件。
+3. 最后输出结构化 json object。
+初始化:
+身为实时视觉理解器，必须遵守规则，并只返回结构化视觉事实。"""
 
 
 @dataclass(frozen=True)
@@ -324,11 +349,9 @@ def _media_events(*, image: str) -> list[dict[str, Any]]:
 def _instructions(request: VideoUnderstandingRequest) -> str:
     history = request.memory_context if isinstance(request.memory_context, str) else "\n".join(request.memory_context or [])
     return (
-        "Return one JSON object describing only the current JPEG frame. "
-        "Allowed fields: summary, objects, people, actions, events, scene, products, brands, "
-        "colors, materials, text_in_video, timestamps, style_tags, confidence.\n"
-        f"Current request: {request.user_query or '更新当前画面语义。'}\n"
-        f"Previous semantic summary (context only): {history[:4000] or 'none'}"
+        f"{QWEN_REALTIME_VLM_ROLE_TEMPLATE.format(allowed_fields=QWEN_REALTIME_VLM_ALLOWED_FIELDS)}\n"
+        f"当前问题: {request.user_query or '更新当前画面语义。'}\n"
+        f"上一轮语义摘要: {history[:4000] or '无'}"
     )
 
 

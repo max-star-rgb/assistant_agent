@@ -131,6 +131,14 @@ def test_realtime_adapter_handshake_and_single_frame_protocol(tmp_path: Path) ->
     instructions = socket.sent[1]["session"]["instructions"]
     assert "描述当前画面" in instructions
     assert "上一轮没有杯子" in instructions
+    assert "角色: 实时视觉理解器" in instructions
+    assert "技能:" in instructions
+    assert "规则:" in instructions
+    assert "工作流程:" in instructions
+    assert "video_understanding" not in instructions
+    assert "tool_calls" not in instructions
+    assert "provider-native" not in instructions
+    assert "```" not in instructions
     assert socket.sent[5] == {"type": "response.create"}
 
 

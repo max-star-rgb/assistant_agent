@@ -1,3 +1,5 @@
+import json
+
 from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
 from assistant_agent.services.video_adapter import MockVideoUnderstandingAdapter
 from assistant_agent.services.realtime_video_memory import (
@@ -49,6 +51,20 @@ def test_default_registry_contains_video_understanding_tool_with_mock_adapter() 
 
     assert isinstance(tool, VideoUnderstandingTool)
     assert isinstance(tool.adapter, MockVideoUnderstandingAdapter)
+
+
+def test_video_understanding_tool_spec_carries_realtime_camera_call_policy() -> None:
+    spec = create_default_registry().get_spec("video_understanding")
+    rendered = json.dumps(spec.model_dump(mode="json"), ensure_ascii=False)
+
+    assert "当前实时镜头" in rendered
+    assert "显式视频引用" in rendered
+    assert "当前画面" in rendered
+    assert "视觉事实" in rendered
+    assert "不要传内部帧路径" in rendered
+    assert "当前 turn 的视频引用" in rendered
+    assert "证据不足" in rendered
+    assert "video_ref or video_ids" in rendered
 
 
 def test_video_understanding_tool_does_not_call_http_or_sdk() -> None:

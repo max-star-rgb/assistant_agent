@@ -10,7 +10,11 @@ from assistant_agent.video_ai.detection.vision_embedding_provider import VisionE
 from assistant_agent.video_ai.keyframe.selector import KeyframeSelectorConfig
 from assistant_agent.video_ai.keyframe.storage import FileKeyframeStorage, NoopKeyframeStorage
 from assistant_agent.video_ai.memory.state_manager import KeyframeMemoryRecord
-from assistant_agent.video_ai.qwen.vision_client import MockQwenVisionClient, VisionObservation, _keyframe_prompt
+from assistant_agent.video_ai.local_vision_client import (
+    MockRealtimeVisionClient,
+    VisionObservation,
+    _keyframe_prompt,
+)
 from assistant_agent.video_ai.sampling.adaptive_sampler import AdaptiveSamplerConfig
 from assistant_agent.video_ai.types import VideoFrame
 
@@ -18,13 +22,13 @@ from assistant_agent.video_ai.types import VideoFrame
 pytestmark = pytest.mark.fast
 
 
-def test_qwen_realtime_prompt_contains_lowercase_json_for_dashscope_response_format() -> None:
+def test_local_realtime_prompt_contains_lowercase_json_for_response_format() -> None:
     prompt = _keyframe_prompt("", [])
 
     assert "json" in prompt
 
 
-def test_qwen_keyframe_prompt_does_not_include_local_image_uri(tmp_path: Path) -> None:
+def test_local_keyframe_prompt_does_not_include_local_image_uri(tmp_path: Path) -> None:
     local_uri = str(tmp_path / "private-frame.jpg")
     record = KeyframeMemoryRecord(
         frame_id="frame-1",
@@ -66,8 +70,8 @@ def test_adaptive_collector_selects_without_mllm_call() -> None:
     assert still.selected_frame is None
 
 
-def test_static_room_throttles_qwen_calls_and_logs_sampling_rate() -> None:
-    client = MockQwenVisionClient()
+def test_static_room_throttles_vision_calls_and_logs_sampling_rate() -> None:
+    client = MockRealtimeVisionClient()
     app = _app(client, max_interval_seconds=5.0)
 
     results = [
@@ -85,7 +89,7 @@ def test_static_room_throttles_qwen_calls_and_logs_sampling_rate() -> None:
 
 
 def test_person_entering_room_creates_keyframe_and_updates_state() -> None:
-    client = MockQwenVisionClient()
+    client = MockRealtimeVisionClient()
     app = _app(client)
 
     for index in range(5):
@@ -112,7 +116,7 @@ def test_person_entering_room_creates_keyframe_and_updates_state() -> None:
 
 
 def test_semantic_object_change_selects_keyframe_even_when_pixel_delta_is_small() -> None:
-    client = MockQwenVisionClient()
+    client = MockRealtimeVisionClient()
     app = _app(client, threshold=0.45)
 
     app.process_frame(_frame("empty_table", 0.0, 20, embedding=[1.0, 0.0]))
@@ -137,7 +141,7 @@ def test_semantic_object_change_selects_keyframe_even_when_pixel_delta_is_small(
 
 
 def test_query_answering_uses_memory_and_recent_keyframes_without_rescanning_video() -> None:
-    client = MockQwenVisionClient()
+    client = MockRealtimeVisionClient()
     app = _app(client)
 
     app.process_frame(
@@ -168,7 +172,7 @@ def test_query_answering_uses_memory_and_recent_keyframes_without_rescanning_vid
 
 
 def test_selected_keyframe_is_persisted_when_frame_uri_is_not_usable(tmp_path: Path) -> None:
-    client = MockQwenVisionClient()
+    client = MockRealtimeVisionClient()
     app = RealtimeVideoUnderstandingApp(
         qwen_client=client,
         semantic_detector=SemanticChangeDetector(MetadataEmbeddingModel()),
@@ -185,7 +189,7 @@ def test_selected_keyframe_is_persisted_when_frame_uri_is_not_usable(tmp_path: P
 
 
 def test_static_scene_does_not_trigger_gated_vision_embedding_provider() -> None:
-    client = MockQwenVisionClient()
+    client = MockRealtimeVisionClient()
     embeddings = RecordingEmbeddingProvider(
         {
             "first": [1.0, 0.0],
@@ -209,7 +213,7 @@ def test_static_scene_does_not_trigger_gated_vision_embedding_provider() -> None
 
 
 def test_visual_candidate_triggers_embedding_and_low_similarity_selects_keyframe() -> None:
-    client = MockQwenVisionClient()
+    client = MockRealtimeVisionClient()
     embeddings = RecordingEmbeddingProvider(
         {
             "empty": [1.0, 0.0],
@@ -233,7 +237,7 @@ def test_visual_candidate_triggers_embedding_and_low_similarity_selects_keyframe
 
 
 def test_selected_keyframe_embedding_is_cached_for_next_semantic_comparison() -> None:
-    client = MockQwenVisionClient()
+    client = MockRealtimeVisionClient()
     embeddings = RecordingEmbeddingProvider(
         {
             "empty": [1.0, 0.0],
@@ -258,7 +262,7 @@ def test_selected_keyframe_embedding_is_cached_for_next_semantic_comparison() ->
 
 
 def test_embedding_failure_records_error_and_falls_back_to_visual_scores() -> None:
-    client = MockQwenVisionClient()
+    client = MockRealtimeVisionClient()
     embeddings = RecordingEmbeddingProvider(
         {"empty": [1.0, 0.0]},
         failures={
@@ -285,7 +289,7 @@ def test_embedding_failure_records_error_and_falls_back_to_visual_scores() -> No
 
 
 def _app(
-    client: MockQwenVisionClient,
+    client: MockRealtimeVisionClient,
     *,
     threshold: float = 0.35,
     max_interval_seconds: float = 5.0,

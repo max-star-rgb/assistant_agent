@@ -1,4 +1,4 @@
-"""Prompt-safe operational logs for Gateway and assistant runtime activity."""
+"""Prompt-safe operational logs for Gateway lifecycle activity."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from assistant_agent.gateway.observability import GatewayLifecycleEvent
 
 
 GATEWAY_LOGGER_NAME = "assistant_agent.gateway.lifecycle"
-RUNTIME_LOGGER_NAME = "assistant_agent.runtime.trace"
+_LEGACY_RUNTIME_LOGGER_NAME = "assistant_agent.runtime.trace"
 DEFAULT_OPERATIONAL_LOG_DIR = Path(".data/logs")
 DEFAULT_OPERATIONAL_LOG_LEVEL = "INFO"
 DEFAULT_OPERATIONAL_CONSOLE_LEVEL = "INFO"
@@ -50,7 +50,6 @@ _CONCISE_GATEWAY_EVENTS = frozenset(
         "gateway.session.hangup_marked",
     }
 )
-_CONCISE_RUNTIME_EVENTS = frozenset({"run.failed", "run.cancelled"})
 _GATEWAY_PAYLOAD_FIELDS = frozenset(
     {
         "active_count",
@@ -136,14 +135,14 @@ class _ConsoleRecordFilter(logging.Filter):
             return False
         if self._maximum_level is not None and record.levelno >= self._maximum_level:
             return False
+        component = str(getattr(record, "component", "application"))
+        if component == "runtime":
+            return False
         if self._mode == "verbose" or record.levelno >= logging.WARNING:
             return True
-        component = str(getattr(record, "component", "application"))
         event = str(getattr(record, "event", "log"))
         if component == "gateway":
             return event in _CONCISE_GATEWAY_EVENTS
-        if component == "runtime":
-            return event in _CONCISE_RUNTIME_EVENTS
         return record.levelno >= logging.WARNING
 
 
@@ -157,7 +156,7 @@ class _HumanConsoleFormatter(_UtcOperationalFormatter):
         component = str(getattr(record, "component", "application"))
         event = str(getattr(record, "event", "log"))
         label = _console_label(record.levelname, event)
-        if component not in {"gateway", "runtime"}:
+        if component != "gateway":
             return f"{timestamp} {label:<7} {record.name}"
         identifiers = _console_identifiers(record)
         suffix = f" {identifiers}" if identifiers else ""
@@ -234,10 +233,7 @@ def configure_operational_logging(
             package_logger.warning("operational file logging unavailable")
             return
 
-        for logger_name, filename in (
-            (GATEWAY_LOGGER_NAME, "gateway.log"),
-            (RUNTIME_LOGGER_NAME, "runtime.log"),
-        ):
+        for logger_name, filename in ((GATEWAY_LOGGER_NAME, "gateway.log"),):
             component_logger = logging.getLogger(logger_name)
             component_logger.setLevel(min(resolved_console_level, resolved_file_level))
             component_logger.propagate = True
@@ -304,7 +300,7 @@ def reset_operational_logging_for_tests() -> None:
         for logger_name in (
             _PACKAGE_LOGGER_NAME,
             GATEWAY_LOGGER_NAME,
-            RUNTIME_LOGGER_NAME,
+            _LEGACY_RUNTIME_LOGGER_NAME,
         ):
             logger = logging.getLogger(logger_name)
             for handler in list(logger.handlers):
@@ -350,54 +346,6 @@ def log_gateway_lifecycle(event: GatewayLifecycleEvent) -> None:
         )
     except Exception:  # noqa: BLE001 - operational logging is fail-open.
         return
-
-
-class OperationalTraceLogStore:
-    """Write-only prompt-safe projection of redacted trace events."""
-
-    def append(self, event: Any) -> None:
-        from assistant_agent.services.trace_store import redact_trace_event
-
-        redacted = redact_trace_event(event)
-        turn_id = _safe_identifier(redacted.attributes.get("turn_id"))
-        fields = {
-            "user_id": digest_identifier(redacted.user_id),
-            "session_id": digest_identifier(redacted.session_id),
-            "status": redacted.status,
-            "tool": redacted.tool_name,
-            "provider": redacted.provider,
-            "model": redacted.model,
-            "latency_ms": redacted.latency_ms,
-            "error_code": redacted.error_code,
-        }
-        logging.getLogger(RUNTIME_LOGGER_NAME).info(
-            _key_value_text(fields),
-            extra=_record_context(
-                component="runtime",
-                event=redacted.canonical_event or redacted.event_type,
-                run_id=redacted.run_id,
-                turn_id=turn_id,
-                trace_id=redacted.trace_id,
-            ),
-        )
-
-    def list_by_run(self, run_id: str) -> list[Any]:
-        return []
-
-    def list_by_trace(self, trace_id: str) -> list[Any]:
-        return []
-
-    def node_path(self, run_id: str) -> list[str]:
-        return []
-
-    def list_by_user(self, user_id: str) -> list[Any]:
-        return []
-
-    def delete_by_user(self, user_id: str) -> int:
-        return 0
-
-    def close(self, *, timeout: float) -> bool:
-        return timeout >= 0
 
 
 def _resolve_level(level: str) -> int:

@@ -79,6 +79,8 @@ def test_render_request_context_uses_live_camera_only_for_trusted_agent_service_
     assert "附带视频 ID" not in rendered
     assert "agent-service-video" not in rendered
     assert "当前通话的实时镜头" in rendered
+    assert "只有用户问题需要视觉事实时才使用" not in rendered
+    assert "video_understanding" not in rendered
 
     upload_request = UserRequest(
         user_id="u1",
@@ -129,7 +131,10 @@ def test_realtime_video_context_is_rendered_budgeted_and_reported_separately() -
     assert pack.realtime_video_context == video
     assert "被动外部观察数据" in message
     assert "A person is holding a red cup." in message
-    assert "问候和闲聊不得主动提及" in message
+    assert "问候和闲聊不得主动提及" not in message
+    assert "只有当前请求明确涉及眼前画面" not in message
+    assert "video_understanding" not in message
+    assert "工具调用策略" in message
     assert pack.budget.realtime_video_context_chars > 0
     assert report.sections["realtime_video_context"].included is True
     assert report.sections["realtime_video_context"].source == "RealtimeVideoMemoryStore"

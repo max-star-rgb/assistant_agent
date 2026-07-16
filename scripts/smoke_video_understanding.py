@@ -39,7 +39,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     args = build_parser().parse_args(argv)
     source = os.environ if env is None else env
     config = ProviderConfig.from_env(source)
-    provider = config.video_provider
+    provider = config.vision_provider
 
     missing = _missing_provider_config(config)
     if missing:
@@ -73,19 +73,10 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
 
 
 def _missing_provider_config(config: ProviderConfig) -> str | None:
-    if config.video_provider == "http":
-        missing = []
-        if not config.video_understanding_base_url:
-            missing.append("VIDEO_UNDERSTANDING_BASE_URL")
-        if not config.video_understanding_api_key:
-            missing.append("VIDEO_UNDERSTANDING_API_KEY")
+    if config.vision_provider != "mock":
+        missing = config.resolved_vision_provider().missing_required_env()
         if missing:
             return f"missing {', '.join(missing)}"
-    if config.video_provider == "ark":
-        if not config.video_understanding_api_key:
-            return "missing ARK_VISION_API_KEY"
-    if config.video_provider == "qwen" and not config.video_understanding_api_key:
-        return "missing QWEN_VISION_API_KEY or DASHSCOPE_API_KEY"
     return None
 
 
@@ -112,7 +103,7 @@ def _api_error_payload(error: Any) -> dict[str, Any]:
 def _print_provider_unconfigured(reason: str) -> None:
     print("provider_unconfigured")
     print(reason)
-    print("Please select a vision provider or set the required HTTP video provider configuration.")
+    print("Select a configured vision provider, or use the default mock adapter.")
 
 
 def _sanitize_payload(value: Any) -> Any:

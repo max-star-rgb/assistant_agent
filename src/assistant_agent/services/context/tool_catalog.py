@@ -10,12 +10,14 @@ from typing import Any
 from assistant_agent.schemas.context import ToolCatalogSummary
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import RunToolSet, ToolSpec
-from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.context.skill_loader import (
     SkillCatalog,
     load_repo_skill_descriptors,
 )
-from assistant_agent.services.context.tool_exposure import entry_profile_tool_exposure
+from assistant_agent.services.context.tool_exposure import (
+    entry_profile_tool_exposure,
+    tool_exposure_facts,
+)
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 
 
@@ -110,16 +112,17 @@ def qualify_tool_specs(
     )
     qualified_specs: list[ToolSpec] = []
     excluded_reasons: dict[str, list[str]] = {}
-    agent_service_profile = is_trusted_agent_service_request(request)
+    exposure_facts = tool_exposure_facts(request)
+    interpreter = ToolPolicyInterpreter()
     for spec in tool_specs:
-        if agent_service_profile:
-            exposure = entry_profile_tool_exposure(request, spec.name)
+        policy = interpreter.view_for_spec(spec)
+        if exposure_facts.trusted_agent_service:
+            exposure = entry_profile_tool_exposure(request, policy)
             if not exposure.exposed:
                 excluded_reasons[spec.name] = list(exposure.excluded_reasons)
                 if not excluded_reasons[spec.name]:
                     excluded_reasons[spec.name] = ["entry_profile_not_exposed"]
                 continue
-        policy = ToolPolicyInterpreter().view_for_spec(spec)
         missing_env = [name for name in policy.requires_env if not os.environ.get(name)]
         if missing_env:
             excluded_reasons[spec.name] = [

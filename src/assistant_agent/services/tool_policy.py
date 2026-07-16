@@ -16,6 +16,7 @@ from assistant_agent.schemas.tools import (
     ToolSideEffectLevel,
     ToolSideEffectPolicy,
     ToolSpec,
+    VisibilityPolicy,
 )
 from assistant_agent.tools.registry import tool_execution_policy, tool_side_effect_policy
 
@@ -67,6 +68,8 @@ class ToolPolicyView(BaseModel):
     requires_env: list[str] = Field(default_factory=list)
     enabled_by_default: bool = True
     skill_only: bool = False
+    allowed_entry_profiles: list[str] = Field(default_factory=list)
+    requires_media: list[str] = Field(default_factory=list)
 
 
 class ToolPolicyInterpreter:
@@ -76,15 +79,19 @@ class ToolPolicyInterpreter:
         """Return the current policy view for an explicit tool spec."""
 
         if spec.policy is not None:
-            return self.view_for_metadata(
+            view = self.view_for_metadata(
                 tool_name=spec.name,
                 metadata=spec.policy,
                 execution=spec.execution,
             )
+            if _has_visibility_declarations(spec.visibility):
+                return _with_visibility(view, spec.visibility)
+            return view
         return self.view_for_policy(
             tool_name=spec.name,
             policy=spec.side_effect,
             execution=spec.execution,
+            visibility=spec.visibility,
         )
 
     def view_for_metadata(
@@ -145,6 +152,8 @@ class ToolPolicyInterpreter:
             requires_env=list(metadata.visibility.requires_env),
             enabled_by_default=metadata.visibility.enabled_by_default,
             skill_only=metadata.visibility.skill_only,
+            allowed_entry_profiles=list(metadata.visibility.allowed_entry_profiles),
+            requires_media=list(metadata.visibility.requires_media),
         )
 
     def view_for_tool_name(self, tool_name: str) -> ToolPolicyView:
@@ -162,10 +171,12 @@ class ToolPolicyInterpreter:
         tool_name: str,
         policy: ToolSideEffectPolicy,
         execution: ToolExecutionPolicy | None = None,
+        visibility: VisibilityPolicy | None = None,
     ) -> ToolPolicyView:
         """Return the current policy view for a policy payload."""
 
         execution_policy = execution or ToolExecutionPolicy()
+        visibility_policy = visibility or VisibilityPolicy()
         risk_gate_level = risk_gate_level_for_policy(policy)
         tool_owned_confirmation = policy.requires_confirmation and tool_owns_confirmation(
             tool_name
@@ -192,6 +203,13 @@ class ToolPolicyInterpreter:
             idempotency_required=risk_gate_level == "soft_gate",
             description=policy.description,
             compensation_hint=policy.compensation_hint,
+            toolset=visibility_policy.toolset,
+            tags=list(visibility_policy.tags),
+            requires_env=list(visibility_policy.requires_env),
+            enabled_by_default=visibility_policy.enabled_by_default,
+            skill_only=visibility_policy.skill_only,
+            allowed_entry_profiles=list(visibility_policy.allowed_entry_profiles),
+            requires_media=list(visibility_policy.requires_media),
         )
 
 
@@ -253,6 +271,28 @@ def _requires_confirmation(metadata: ToolPolicyMetadata) -> bool:
         "transactional",
         "destructive",
     }
+
+
+def _has_visibility_declarations(visibility: VisibilityPolicy) -> bool:
+    default = VisibilityPolicy()
+    return visibility != default
+
+
+def _with_visibility(
+    view: ToolPolicyView,
+    visibility: VisibilityPolicy,
+) -> ToolPolicyView:
+    return view.model_copy(
+        update={
+            "toolset": visibility.toolset,
+            "tags": list(visibility.tags),
+            "requires_env": list(visibility.requires_env),
+            "enabled_by_default": visibility.enabled_by_default,
+            "skill_only": visibility.skill_only,
+            "allowed_entry_profiles": list(visibility.allowed_entry_profiles),
+            "requires_media": list(visibility.requires_media),
+        }
+    )
 
 
 def _confirmation_owner(

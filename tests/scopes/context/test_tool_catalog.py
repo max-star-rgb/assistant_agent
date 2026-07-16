@@ -40,7 +40,10 @@ def test_trusted_agent_service_predicate_rejects_profile_only() -> None:
 
 
 def test_tool_catalog_uses_trusted_agent_service_entry_to_narrow_tools() -> None:
-    specs = [ToolSpec(name="web_search"), ToolSpec(name="video_understanding")]
+    specs = [
+        _agent_service_tool_spec("web_search"),
+        _agent_service_tool_spec("video_understanding", requires_media=["video"]),
+    ]
     trusted_request = UserRequest(
         user_id="u1",
         session_id="s1",
@@ -71,7 +74,10 @@ def test_tool_catalog_uses_trusted_agent_service_entry_to_narrow_tools() -> None
 
 
 def test_tool_catalog_exposes_video_understanding_for_agent_service_when_video_is_active() -> None:
-    specs = [ToolSpec(name="web_search"), ToolSpec(name="video_understanding")]
+    specs = [
+        _agent_service_tool_spec("web_search"),
+        _agent_service_tool_spec("video_understanding", requires_media=["video"]),
+    ]
     request = UserRequest(
         user_id="u1",
         session_id="s1",
@@ -97,7 +103,10 @@ def test_tool_catalog_exposes_video_understanding_for_agent_service_when_video_i
 
 
 def test_tool_catalog_agent_service_video_exposure_uses_structured_media_not_text() -> None:
-    specs = [ToolSpec(name="web_search"), ToolSpec(name="video_understanding")]
+    specs = [
+        _agent_service_tool_spec("web_search"),
+        _agent_service_tool_spec("video_understanding", requires_media=["video"]),
+    ]
     no_video_request = UserRequest(
         user_id="u1",
         session_id="s1",
@@ -133,12 +142,12 @@ def test_tool_catalog_agent_service_video_exposure_uses_structured_media_not_tex
 
 def test_tool_catalog_exposes_unified_shopping_tool_for_agent_service() -> None:
     specs = [
-        ToolSpec(name="web_search"),
-        ToolSpec(name="shopping_search"),
+        _agent_service_tool_spec("web_search"),
+        _agent_service_tool_spec("shopping_search"),
         ToolSpec(name="product_search"),
         ToolSpec(name="price_compare"),
-        ToolSpec(name="memory_retrieval"),
-        ToolSpec(name="memory_save"),
+        _agent_service_tool_spec("memory_retrieval"),
+        _agent_service_tool_spec("memory_save"),
     ]
     request = UserRequest(
         user_id="u1",
@@ -168,6 +177,80 @@ def test_tool_catalog_exposes_unified_shopping_tool_for_agent_service() -> None:
         "product_search": ["entry_profile_not_exposed"],
         "price_compare": ["entry_profile_not_exposed"],
     }
+
+
+def test_agent_service_exposure_uses_visibility_metadata_not_tool_name() -> None:
+    specs = [
+        _agent_service_tool_spec("custom.current_weather"),
+        ToolSpec(name="custom.private_billing"),
+    ]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下天气",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+
+    selection = select_prompt_tool_specs(request, specs)
+
+    assert selection.run_tool_set.qualified_tool_names == ["custom.current_weather"]
+    assert selection.run_tool_set.excluded_reasons == {
+        "custom.private_billing": ["entry_profile_not_exposed"]
+    }
+
+
+def test_agent_service_visibility_requires_declared_active_media() -> None:
+    specs = [
+        _agent_service_tool_spec("custom.live_camera", requires_media=["video"]),
+    ]
+    metadata = {
+        "transport": "agent_service_websocket",
+        "gateway": {"session_config": {"entry_profile": "agent_service"}},
+    }
+
+    no_video = select_prompt_tool_specs(
+        UserRequest(user_id="u1", session_id="s1", text="眼前是什么？", metadata=metadata),
+        specs,
+    )
+    with_video = select_prompt_tool_specs(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="你好",
+            video_ids=["agent-service-video"],
+            metadata=metadata,
+        ),
+        specs,
+    )
+
+    assert no_video.run_tool_set.qualified_tool_names == []
+    assert no_video.run_tool_set.excluded_reasons == {
+        "custom.live_camera": ["entry_profile_not_exposed"]
+    }
+    assert with_video.run_tool_set.qualified_tool_names == ["custom.live_camera"]
+    assert with_video.run_tool_set.excluded_reasons == {}
+
+
+def test_default_registry_declares_agent_service_visibility_metadata() -> None:
+    specs = {spec.name: spec for spec in create_default_registry().list_specs()}
+
+    for tool_name in {
+        "web_search",
+        "shopping_search",
+        "memory_retrieval",
+        "memory_save",
+    }:
+        assert specs[tool_name].visibility.allowed_entry_profiles == ["agent_service"]
+        assert specs[tool_name].visibility.requires_media == []
+
+    video = specs["video_understanding"]
+    assert video.visibility.allowed_entry_profiles == ["agent_service"]
+    assert video.visibility.requires_media == ["video"]
+    assert specs["product_search"].visibility.allowed_entry_profiles == []
+    assert specs["price_compare"].visibility.allowed_entry_profiles == []
 
 
 def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text() -> None:
@@ -720,3 +803,19 @@ def _write_skill(root: Path, name: str, content: str) -> None:
     skill_dir = root / "skills" / name
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(content.strip() + "\n", encoding="utf-8")
+
+
+def _agent_service_tool_spec(
+    name: str,
+    *,
+    requires_media: list[str] | None = None,
+) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        policy=ToolPolicyMetadata(
+            visibility=VisibilityPolicy(
+                allowed_entry_profiles=["agent_service"],
+                requires_media=requires_media or [],
+            ),
+        ),
+    )

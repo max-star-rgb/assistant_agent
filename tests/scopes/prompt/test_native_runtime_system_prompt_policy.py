@@ -149,6 +149,9 @@ def test_native_runtime_enables_live_camera_prompt_only_for_trusted_agent_servic
 
     prompt = adapter.requests[0].messages[0]["content"]
     assert "双方正在共享的当前镜头" in prompt
+    assert "video_understanding" not in prompt
+    assert "realtime_video_context" not in prompt
+    assert "工具目录" not in prompt
     assert prompt == render_system_instruction(
         SystemPromptProfile.REALTIME_PHONE,
         options=SystemPromptOptions(

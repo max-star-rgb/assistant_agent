@@ -193,6 +193,7 @@ excluded_reasons
 - provider-native tools 发送完整 ToolSpec，并把 `terminal` / `requires_prior_observation` 等执行约束追加成简短 prompt-safe 描述；旧 prompt-facing ToolSpec 子集只服务历史 renderer 测试和离线兼容材料，不是生产决策路径。
 - `side_effect` 包含 `level`、`requires_confirmation`、`description`、可选 `confirmation_kind` 和 `compensation_hint`；provider-native/MCP 描述也会包含该信息。
 - `execution` 包含 `dependency_mode`、可选 `concurrency_group`、`resource_reads`、`resource_writes`、`realtime_safety`、`artifact_reuse` 和可选 `progress_message`。它只表达调度/依赖/资源事实、realtime artifact 复用提示和等待提示，不表达“允许并发”命令。
+- `visibility` 是工具目录装配元数据，包含 `requires_env`、`enabled_by_default`、`skill_only`、`allowed_entry_profiles` 和 `requires_media`。可信 Agent-Service 入口只暴露显式声明 `allowed_entry_profiles=["agent_service"]` 且满足 `requires_media` 的工具；没有该声明的默认工具不会因工具名或用户文本进入通话前台目录。
 - 未分类工具使用保守默认：`level=pending_confirmation`、`requires_confirmation=true`、`dependency_mode=requires_prior_observation`、`realtime_safety=needs_confirmation` 且 `artifact_reuse=requires_validation`。
 - MCP 工具 schema 通过 `tool_spec_to_mcp_tool()` 支持，但当前 `OfflineMCPServer.list_tools()` 暴露的是 MCP wrapper 工具；registry ToolSpec 通过 `tool_list` 返回。
 
@@ -240,7 +241,7 @@ Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are capa
 
 Repo/user-local Python tools use the explicit `@tool` decorator plus `load_local_tools()` / `register_local_tools()`. They are not import-time global registrations. A local tool may declare `ToolPolicyMetadata` and `ToolExecutionPolicy`; when present, runtime risk gate, boundary summaries, scheduler metadata, trace/history summaries, and `tools simulate` consume that declaration through the same `ToolSpec -> ToolPolicyView -> ActionValidator -> ToolExecutor` path. `assistant_agent.tools.cli validate` checks declaration shape and policy requirements; `simulate` executes one explicitly loaded tool through validator/executor for local verification.
 
-Agent-Service realtime video 使用一个私有 observation registry 预热 rolling 语义，但不会缩短治理链：入口只负责 H.264 校验、解码与本地选帧，选中的当前单帧被包装为 `AssistantDecision`，依次经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding -> QwenRealtimeVisionAdapter`。可信 Agent-Service 前台 `RunToolSet` 不暴露 `video_understanding`，避免 DeepSeek 在回答阶段启动第二条上传式 Provider/Qwen 请求；DeepSeek 只看到实时镜头可用和被动 `realtime_video_context` 文本 snapshot，不看到视频帧、JPEG 路径、base64 或 provider raw response。当前台文本明确指代眼前/摄像头/画面时，入口复用同一个 observer 对最新帧执行最多 1.5 秒 freshness barrier：若目标帧已在 in-flight/pending 中则只等待，不再 promote；超时仅注入 `refreshing`/`stale` 投影。`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 选择实时视觉 Provider；普通图片与上传视频仍走各自 adapter，显式 `VIDEO_UNDERSTANDING_*` 配置只用于通用上传式视频理解。
+Agent-Service realtime video 使用一个受治理的 observation registry 预热 rolling 语义，但不会缩短治理链：入口只负责 H.264 校验、解码与本地选帧，选中的当前单帧被包装为 `AssistantDecision`，依次经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding -> QwenRealtimeVisionAdapter`。VLM 使用独立视觉角色模板，只负责观察当前帧/关键帧并输出结构化 json；该 prompt 不复用主 LLM 系统提示，也不会进入 DeepSeek 上下文。AgentRuntime 主 LLM 只知道本轮动态工具 schema 中是否提供 `video_understanding`，不包含 VLM 的观察流程、品牌/OCR/图像序列等视觉分析提示词；它也看不到视频帧、JPEG 路径、base64 或 provider raw response。`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 是实时视频和视频工具的唯一 Provider 选择入口；不再保留独立 `video_provider`，也不再映射到旧 Qwen-VL/Ark 视频 adapter。
 
 默认副作用分类：
 
@@ -402,7 +403,7 @@ assistant loop 有本地保护，不依赖模型自律：
 - unknown tool、invalid input、missing required input、render intent 缺失等会触发 rejection guard。
 - 同一工具失败达到阈值会停止重复调用。
 - `image_generation` 和 `render_3d` 是 terminal tools；成功后再次请求同一工具会被阻止并转为 final answer。
-- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词把 `final_answer`、重复搜索或其他模型动作强制改写成 `price_compare`。Agent-Service 通话前台只暴露 `shopping_search` 作为购物入口，由该工具内部完成搜索和比价；普通非通话路径仍保留 `product_search` / `price_compare` 供显式多步使用。当模型已经选择 `price_compare` 时，runtime 可从本轮成功的 `product_search` 结果修复被压缩的完整商品对象与成功平台；`price_compare` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
+- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词把 `final_answer`、重复搜索或其他模型动作强制改写成 `price_compare`。AgentRuntime 通话工具目录只暴露 `shopping_search` 作为购物入口，由该工具内部完成搜索和比价；普通非通话路径仍保留 `product_search` / `price_compare` 供显式多步使用。当模型已经选择 `price_compare` 时，runtime 可从本轮成功的 `product_search` 结果修复被压缩的完整商品对象与成功平台；`price_compare` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
 
 计划状态是本地治理结构，不是生产 runtime 的独立 planner/controller 调用：
 

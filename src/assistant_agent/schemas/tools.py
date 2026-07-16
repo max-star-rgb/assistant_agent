@@ -30,6 +30,7 @@ ToolIdempotencyPolicy = Literal["none", "optional", "required"]
 ToolDependencyMode = Literal["independent", "requires_prior_observation", "terminal"]
 RealtimeToolSafety = Literal["safe", "needs_progress", "needs_confirmation", "unsafe"]
 ToolArtifactReusePolicy = Literal["reusable", "requires_validation", "do_not_reuse"]
+ToolMediaRequirement = Literal["video", "image", "audio"]
 
 
 class ToolSideEffectPolicy(BaseModel):
@@ -96,6 +97,8 @@ class VisibilityPolicy(BaseModel):
     requires_env: list[str] = Field(default_factory=list)
     enabled_by_default: bool = True
     skill_only: bool = False
+    allowed_entry_profiles: list[str] = Field(default_factory=list)
+    requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
 
 
 class ToolPolicyMetadata(BaseModel):
@@ -147,6 +150,7 @@ class ToolSpec(BaseModel):
     runtime_constraints: list[str] = Field(default_factory=list)
     side_effect: ToolSideEffectPolicy = Field(default_factory=ToolSideEffectPolicy)
     execution: ToolExecutionPolicy = Field(default_factory=ToolExecutionPolicy)
+    visibility: VisibilityPolicy = Field(default_factory=VisibilityPolicy, exclude=True)
     policy: ToolPolicyMetadata | None = None
 
 

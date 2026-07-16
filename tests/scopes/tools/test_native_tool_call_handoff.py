@@ -133,7 +133,7 @@ def plain_final_result(message: str) -> ChatResult:
     )
 
 
-def test_agent_service_live_camera_first_llm_call_uses_context_without_exposing_video_tool_or_id() -> None:
+def test_agent_service_live_camera_first_llm_call_exposes_video_tool_without_id() -> None:
     memory = RealtimeVideoMemoryStore()
     memory.record_success(
         "video-live",
@@ -198,7 +198,10 @@ def test_agent_service_live_camera_first_llm_call_uses_context_without_exposing_
         "web_search",
         "memory_retrieval",
         "memory_save",
+        "video_understanding",
     }
+    video_tool = next(tool for tool in first.tools if tool["function"]["name"] == "video_understanding")
+    assert "video-live" not in json.dumps(video_tool, ensure_ascii=False)
     assert "vision_understanding" not in tool_names
     assert first.stream_callback is None
     response_deltas = [event for event in sink.events if event.type == "response_delta"]
@@ -755,27 +758,12 @@ def test_native_video_tool_call_uses_non_agent_service_frame_context(tmp_path: P
     assert state.response.message == "眼前是一个白色水杯。"
 
 
-def test_agent_service_rejects_foreground_video_tool_call_without_query_time_provider(
-    tmp_path: Path,
-) -> None:
-    video_id = "agent-service-video-test"
-    store = InMemoryVideoContextStore(window_size=3)
-    frame_path = tmp_path / "frame-1.jpg"
-    frame_path.write_bytes(b"\xff\xd8jpeg\xff\xd9")
-    store.append_frame(
-        VideoFrame(
-            video_id=video_id,
-            frame_id="frame-1",
-            uri=str(frame_path),
-            sequence=1,
-        )
-    )
-
+def test_agent_service_rejects_video_tool_call_without_active_video() -> None:
     class FailingIfCalledVideoAdapter:
         def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
             raise AssertionError(f"query-time provider called for {request.video_ref}")
 
-    registry = create_default_registry(video_context_store=store)
+    registry = create_default_registry()
     registry.get("video_understanding").adapter = FailingIfCalledVideoAdapter()
     adapter = NativeToolChatAdapter(
         [
@@ -787,7 +775,6 @@ def test_agent_service_rejects_foreground_video_tool_call_without_query_time_pro
     )
     runtime = AgentGraphRuntime(
         registry=registry,
-        video_context_store=store,
         chat_adapter=adapter,
     )
 
@@ -796,7 +783,6 @@ def test_agent_service_rejects_foreground_video_tool_call_without_query_time_pro
             user_id="10086",
             session_id="10086",
             text="识别眼前物体",
-            video_ids=[video_id],
             metadata={
                 "transport": "agent_service_websocket",
                 "gateway": {"session_config": {"entry_profile": "agent_service"}},

@@ -1,5 +1,6 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="Assistant Server" type="PythonConfigurationType" factoryName="Python">
+    <log_file alias="Gateway" path="$PROJECT_DIR$/.data/logs/gateway.log" />
     <module name="hello_agent" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -7,20 +8,19 @@
     <envs>
       <env name="PYTHONUNBUFFERED" value="1" />
     </envs>
-    <option name="SDK_HOME" value="/home/lenovo1/miniconda3/envs/hello_agent/bin/python" />
+    <option name="SDK_HOME" value="$USER_HOME$/miniconda3/envs/hello_agent/bin/python" />
+    <option name="SDK_NAME" value="hello_agent" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
     <option name="IS_MODULE_SDK" value="false" />
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/scripts/run_server.py" />
-    <option name="PARAMETERS" value="--provider mock --image-provider mock --console-level INFO --file-log-level DEBUG --console-mode concise --log-dir .data/logs" />
+    <option name="PARAMETERS" value="--host 0.0.0.0 --port 8089 --console-level INFO --file-log-level DEBUG --console-mode concise --log-dir .data/logs --allow-local-trace-content" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
     <option name="REDIRECT_INPUT" value="false" />
     <option name="INPUT_FILE" value="" />
-    <log_file alias="Gateway" path="$PROJECT_DIR$/.data/logs/gateway.log" />
-    <log_file alias="AgentRuntime" path="$PROJECT_DIR$/.data/logs/runtime.log" />
     <method v="2" />
   </configuration>
 </component>

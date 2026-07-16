@@ -113,6 +113,21 @@ def test_registry_copies_tool_policy_metadata_to_specs() -> None:
     assert max_result_chars_for_registered_tool(registry, spec.name) == 800
 
 
+def test_visibility_policy_exposes_entry_profile_and_media_requirements() -> None:
+    spec = ToolSpec(
+        name="custom.live_camera",
+        visibility=VisibilityPolicy(
+            allowed_entry_profiles=["agent_service"],
+            requires_media=["video"],
+        ),
+    )
+
+    view = ToolPolicyInterpreter().view_for_spec(spec)
+
+    assert view.allowed_entry_profiles == ["agent_service"]
+    assert view.requires_media == ["video"]
+
+
 def test_default_registry_policy_views_still_fall_back_to_side_effect() -> None:
     for spec in create_default_registry().list_specs():
         view = ToolPolicyInterpreter().view_for_spec(spec)
