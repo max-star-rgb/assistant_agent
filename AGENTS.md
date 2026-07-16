@@ -8,23 +8,23 @@
 
 项目实现一个本地优先的助理 Agent。当前核心运行时以 LangGraph/ReAct assistant loop 为主，同时保留 mock/local/offline 路径用于稳定测试和演示。真实外部 Provider 必须通过 `provider_smoke` 或 `pilot` profile 和本机未跟踪配置显式启用。
 
-按任务范围优先使用项目内 `.codex/skills/**`；skill 负责路由到对应权威 docs、源码和测试，AGENTS 不复制 skill 内部补充阅读清单。
+按任务范围先读对应 `docs/*.md` 权威文档，再按需要使用项目内 `.codex/skills/**`。skill 是专项 workflow、检查清单、脚本和补充阅读路由；它不能替代权威文档，也不作为架构事实来源。AGENTS 只保留高层路由，不复制权威文档或 skill 内部补充清单。
 
 `docs/*.md` 是当前权威文档层，只保留当前架构、接口或状态权威。路线图、runbook、历史计划、走读说明、题库和 workflow 材料必须放在 `docs/<subdir>/`，不得作为默认架构权威。
 
-| scope | entry |
-| --- | --- |
-| Gateway、realtime frame、session/run/cancel/interrupt、WebSocket bridge、`/agent-service/v1` Media-Agent 协议、旧 `runTime` 参考边界 | `.codex/skills/assistant-runtime-reference`；`docs/gateway-architecture.md`；`docs/media-agent-service-websocket.md` |
-| runtime/provider streaming、`LLMEvent`、`AgentEvent`、`AgentRunStream`、stream/result、线程桥接 | `.codex/skills/assistant-agent-runtime-streaming`；`docs/runtime-event-stream-architecture.md` |
-| tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、MCP `tool_run`、工具 observation/retry/budget | `.codex/skills/assistant-agent-tool-calling`；`docs/tool-calling-architecture.md` |
-| 记忆服务、MemoryManager、local memory store/retrieval/write policy、外部 Memory Service 接口、user profile、audit、retention | `.codex/skills/assistant-agent-memory-service`；`docs/memory-service-architecture.md`；`docs/memory_server_api_spec.md` |
-| context engineering、prompt/context rendering、conversation history、memory context、tool observation compaction、context budget | `.codex/skills/assistant-agent-context-engineering`；`docs/CONTEXT_ENGINEERING_STATUS.md` |
-| 多 agent、`assistant_agent.agent_routing`、AgentRouter、AgentDirectory、A2A/JSON-RPC、`delegate_to_agent`、pilot readiness | `.codex/skills/assistant-agent-collaboration`；`docs/agent-communication-routing.md` |
-| trace、运行监控、ReAct 关键节点观测、redaction | `docs/observability-harness.md` |
-| 面试训练、题库、回答点评、标准答案、面试文档更新 | `.codex/skills/assistant-agent-interview-trainer`；`docs/interview/README.md` |
-| 功能实现、缺陷修复或行为重构中的测试决策、阶段验收和测试保留 | `.codex/skills/assistant-agent-development-testing`；普通行为开发自动触发 |
-| 用户显式请求的全仓文档同步、漂移审计、权威对齐或失效文档清理 | `.codex/skills/assistant-agent-documentation-sync`；不得因普通代码变更隐式触发 |
-| 用户显式请求的测试审计、去重、分层、marker 治理或测试清理 | `.codex/skills/assistant-agent-test-governance`；`tests/README.md`；不得因普通功能开发隐式触发 |
+| scope | authority first | workflow skill when needed |
+| --- | --- | --- |
+| Gateway、realtime frame、session/run/cancel/interrupt、WebSocket bridge、`/agent-service/v1` Media-Agent 协议、旧 `runTime` 参考边界 | `docs/gateway-architecture.md`；`docs/media-agent-service-websocket.md` | `.codex/skills/assistant-runtime-reference` 用于 Gateway 实施、迁移、测试或 legacy `runTime` 对照 |
+| runtime/provider streaming、`LLMEvent`、`AgentEvent`、`AgentRunStream`、stream/result、线程桥接 | `docs/runtime-event-stream-architecture.md` | `.codex/skills/assistant-agent-runtime-streaming` 用于 streaming 行为修改、调试或评审 |
+| tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、MCP `tool_run`、工具 observation/retry/budget | `docs/tool-calling-architecture.md` | `.codex/skills/assistant-agent-tool-calling` 用于工具链实施、调试或评审 |
+| 记忆服务、MemoryManager、local memory store/retrieval/write policy、外部 Memory Service 接口、user profile、audit、retention | `docs/memory-service-architecture.md`；`docs/memory_server_api_spec.md` | `.codex/skills/assistant-agent-memory-service` 用于 memory 行为修改、专项验证或 operator runbook 路由 |
+| context engineering、prompt/context rendering、conversation history、memory context、tool observation compaction、context budget | `docs/CONTEXT_ENGINEERING_STATUS.md` | `.codex/skills/assistant-agent-context-engineering` 用于 context/prompt 行为修改、调试或评审 |
+| 多 agent、`assistant_agent.agent_routing`、AgentRouter、AgentDirectory、A2A/JSON-RPC、`delegate_to_agent`、pilot readiness | `docs/agent-communication-routing.md` | `.codex/skills/assistant-agent-collaboration` 用于多 agent 实施、pilot evidence 或 OpenClaw 参考映射 |
+| trace、运行监控、ReAct 关键节点观测、redaction | `docs/observability-harness.md` | 当前无专项 skill，直接读权威文档和相关源码/测试 |
+| 面试训练、题库、回答点评、标准答案、面试文档更新 | `docs/interview/README.md` | `.codex/skills/assistant-agent-interview-trainer` 用于运行面试循环或更新面试材料 |
+| 功能实现、缺陷修复或行为重构中的测试决策、阶段验收和测试保留 | 相关 `docs/*.md`；`tests/README.md`；`tests/scope-map.toml` | `.codex/skills/assistant-agent-development-testing` 用于 ADD/EXTEND/REUSE/STAGE/NO-TEST 决策 |
+| 用户显式请求的全仓文档同步、漂移审计、权威对齐或失效文档清理 | `AGENTS.md`；`README.md`；相关 `docs/*.md` | `.codex/skills/assistant-agent-documentation-sync`；不得因普通代码变更隐式触发 |
+| 用户显式请求的测试审计、去重、分层、marker 治理或测试清理 | `tests/README.md`；`tests/scope-map.toml` | `.codex/skills/assistant-agent-test-governance`；不得因普通功能开发隐式触发 |
 
 `docs/development/**` 只保留仍有现实用途的操作 runbook 或用户明确点名的执行材料，不作为默认设计权威。`docs/roadmaps/**` 只保留长期方向和 north star，不替代当前权威文档。`docs/superpowers/**` 是设计/实施记录，`docs/interview/**` 是面试训练材料；它们都不作为普通开发默认权威。不要把旧 roadmap、阶段计划或走读说明当作当前架构。
 
@@ -90,7 +90,7 @@ User / CLI / API / Web UI
 
 测试反馈按层级执行，避免普通开发反复承担全量套件成本：
 
-日常行为开发先使用 `.codex/skills/assistant-agent-development-testing` 决定新增、扩展、复用、阶段暂存或不新增测试；不得把“使用 TDD”理解为无条件新建测试文件。
+日常行为开发的测试分层以 `tests/README.md` 和 `tests/scope-map.toml` 为权威；需要决定新增、扩展、复用、阶段暂存或不新增测试时，使用 `.codex/skills/assistant-agent-development-testing` 作为工作流检查清单。不得把“使用 TDD”理解为无条件新建测试文件。
 
 1. 开发循环运行新增测试和直接相关回归；阶段结束使用 `run_scoped_tests.py --scope ...`，已提交范围可使用 `--changed BASE..HEAD`。
 2. 涉及跨层功能且窄层无法证明 wiring 时，在提交前补充并运行一条离线端到端测试，贯穿真实仓库调用链，但使用 scripted/fake Provider，禁止默认联网。
@@ -119,7 +119,7 @@ User / CLI / API / Web UI
 | `tests/`, `scripts/` | pytest 测试、本地验证、服务、demo、eval、smoke 脚本 |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
 | `docs/development/`, `docs/roadmaps/`, `docs/superpowers/`, `docs/interview/` | 非默认权威材料：runbook、长期路线图、历史计划/spec、面试资料 |
-| `.codex/skills/` | 项目专用 workflow 和入口路由，不复制长篇架构细节 |
+| `.codex/skills/` | 项目专用 workflow、检查清单和脚本；不作为事实权威，不复制长篇架构细节 |
 
 修改行为时同步维护相关测试和文档。若用户设定更严格 scope，例如“不要修改 `src/**`”或“不要修改 `tests/**`”，以用户当前约束为准。
 
