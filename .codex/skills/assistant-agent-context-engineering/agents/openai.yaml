@@ -1,4 +1,0 @@
-interface:
-  display_name: "Assistant Agent Context Engineering"
-  short_description: "Context engineering workflow for assistant_agent"
-  default_prompt: "Use $assistant-agent-context-engineering to modify or review assistant_agent context behavior."

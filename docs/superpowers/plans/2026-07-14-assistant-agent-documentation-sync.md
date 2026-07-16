@@ -28,7 +28,6 @@ python .codex/skills/assistant-agent-documentation-sync/scripts/collect_document
 新增显式项目 skills：
 
 - `$assistant-agent-documentation-sync`
-- `$assistant-agent-runtime-streaming`
 
 不改变 FastAPI、Gateway、tool、memory、provider 或 runtime 的 Python/API 契约。
 

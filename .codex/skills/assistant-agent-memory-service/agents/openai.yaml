@@ -1,4 +1,0 @@
-interface:
-  display_name: "Assistant Agent Memory Service"
-  short_description: "Memory service workflow for assistant_agent"
-  default_prompt: "Use $assistant-agent-memory-service to modify or review assistant_agent memory behavior."

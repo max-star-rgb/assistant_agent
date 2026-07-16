@@ -1,4 +1,0 @@
-interface:
-  display_name: "Assistant Agent Runtime Streaming"
-  short_description: "Runtime and provider streaming workflow"
-  default_prompt: "Use $assistant-agent-runtime-streaming to review or change assistant_agent runtime streaming."

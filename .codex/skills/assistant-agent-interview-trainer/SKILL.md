@@ -1,7 +1,6 @@
 ---
 name: assistant-agent-interview-trainer
 description: Agent-development interview trainer for assistant_agent and general LLM/AI Agent roles. Use when the user asks to continue an interview, receive Agent interview questions, practice module-specific questions, grade answers, get standard answers, produce interview golden sentences, or optionally update docs/interview notes.
-version: "2.0.0"
 ---
 
 # Assistant Agent Interview Trainer

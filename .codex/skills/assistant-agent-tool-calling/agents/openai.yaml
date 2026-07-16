@@ -1,4 +1,0 @@
-interface:
-  display_name: "Assistant Agent Tool Calling"
-  short_description: "Tool calling workflow for assistant_agent"
-  default_prompt: "Use $assistant-agent-tool-calling to modify or review assistant_agent tool calling behavior."

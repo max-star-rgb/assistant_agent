@@ -4,6 +4,8 @@
 
 **Status:** Approved direction; implementation pending written-spec review
 
+Historical note: repository routing later moved to authority-first docs in `AGENTS.md`, and the pure context-engineering workflow skill was removed. Treat skill-specific steps below as superseded implementation notes, not current routing authority.
+
 ## 1. Goal
 
 Create a stable repository authority for prompt engineering and make Codex read it automatically for the right tasks, without creating an overlapping prompt-specific skill.
@@ -11,22 +13,22 @@ Create a stable repository authority for prompt engineering and make Codex read 
 The change will:
 
 - add `docs/prompt-engineering-architecture.md` as the long-lived prompt-engineering authority;
-- keep `.codex/skills/assistant-agent-context-engineering` as the shared workflow entry for prompt and context work;
-- add explicit conditional routing in that skill so prompt work reads the prompt authority and context work reads the context authority;
-- split the prompt-engineering scope from the context-engineering scope in `AGENTS.md` while pointing both scopes at the same workflow skill;
+- keep a shared routing entry for prompt and context work;
+- add explicit conditional routing so prompt work reads the prompt authority and context work reads the context authority;
+- split the prompt-engineering scope from the context-engineering scope in `AGENTS.md`;
 - reduce `docs/CONTEXT_ENGINEERING_STATUS.md` to a concise cross-boundary pointer for prompt compilation instead of duplicating prompt architecture.
 
 This is an information-architecture and agent-routing change. It does not change runtime prompt text, Provider requests, tool permissions, memory policy, context budgets, or user-visible behavior.
 
 ## 2. Current Problem
 
-The repository already routes `prompt/context rendering` work through `.codex/skills/assistant-agent-context-engineering`, and `docs/CONTEXT_ENGINEERING_STATUS.md` contains a short Prompt Rendering section. The production request path now also has a concrete `PromptCompiler` boundary.
+The repository previously routed `prompt/context rendering` work through a context-engineering workflow skill, and `docs/CONTEXT_ENGINEERING_STATUS.md` contains a short Prompt Rendering section. The production request path now also has a concrete `PromptCompiler` boundary.
 
 However, the current arrangement has three weaknesses:
 
 1. `docs/CONTEXT_ENGINEERING_STATUS.md` owns conversation history, memory injection, compaction, context budgets, observability, and prompt rendering. Prompt engineering is becoming a distinct concern inside an already broad authority document.
 2. `docs/superpowers/specs/2026-07-13-prompt-compiler-design.md` records the implementation-stage design, but a dated design spec is not the long-lived repository authority for future prompt changes.
-3. `AGENTS.md` and the context-engineering skill can trigger the correct broad workflow, but they do not tell Codex when it must read a prompt-specific authority covering profiles, compilation modes, message layout, final-only behavior, and future prompt modules.
+3. `AGENTS.md` and the old context-engineering workflow could trigger the correct broad workflow, but they did not tell Codex when it must read a prompt-specific authority covering profiles, compilation modes, message layout, final-only behavior, and future prompt modules.
 
 The result is a risk that future work updates one runtime call site, one system-prompt profile, or one Markdown prompt module without checking the complete provider-request contract.
 
@@ -240,13 +242,13 @@ Record current limitations without turning them into an active roadmap:
 
 ## 6. Skill Routing Design
 
-Modify `.codex/skills/assistant-agent-context-engineering/SKILL.md` rather than adding a new skill.
+Current repository direction is to route directly through `AGENTS.md` and authority documents rather than a pure wrapper skill.
 
 Add a `Task Routing` section immediately after the repository start checks.
 
 ### 6.1 Prompt Route
 
-The skill must read `docs/prompt-engineering-architecture.md` for tasks involving any of:
+The routing layer must read `docs/prompt-engineering-architecture.md` for tasks involving any of:
 
 - `PromptCompiler`, `PromptCompileRequest`, `PromptCompileResult`, or `PromptCompileMode`;
 - `SystemPromptProfile`, `SystemPromptOptions`, or system instruction rendering;
@@ -258,7 +260,7 @@ The skill must read `docs/prompt-engineering-architecture.md` for tasks involvin
 
 ### 6.2 Context Route
 
-The skill must read `docs/CONTEXT_ENGINEERING_STATUS.md` for tasks involving:
+The routing layer must read `docs/CONTEXT_ENGINEERING_STATUS.md` for tasks involving:
 
 - conversation history or session summaries;
 - memory context injection as prompt data;
@@ -272,7 +274,7 @@ The skill must read `docs/CONTEXT_ENGINEERING_STATUS.md` for tasks involving:
 
 Read both authorities when a task changes what enters `AssistantContextPack` and how that data is rendered or compiled into `ChatRequest`.
 
-Read the tool-calling or memory skill and authority in addition when a task changes the owning tool or memory behavior. The context skill must not reinterpret those policies.
+Read the tool-calling or memory authority in addition when a task changes the owning tool or memory behavior. The context route must not reinterpret those policies.
 
 ### 6.4 Skill Source Map And Validation
 
@@ -284,16 +286,16 @@ Extend the skill source map with:
 - production compiler call sites in `assistant_loop_nodes.py` and `runtime.py`;
 - `tests/test_prompt_compiler.py` and native runtime prompt-policy tests.
 
-Extend validation paths to include `docs/prompt-engineering-architecture.md`. The skill remains concise and routes to the authority instead of reproducing its contents.
+Extend validation paths to include `docs/prompt-engineering-architecture.md`. Any retained workflow remains concise and routes to the authority instead of reproducing its contents.
 
 ## 7. AGENTS.md Routing Design
 
-Split the current combined context/prompt row into two rows that reuse the same skill:
+Split the current combined context/prompt row into direct authority rows:
 
 | scope | entry |
 | --- | --- |
-| prompt engineering, `PromptCompiler`, system prompt profiles/options, prompt renderers, persona/spoken style, final-only behavior, Provider `ChatRequest` message/tool assembly | `.codex/skills/assistant-agent-context-engineering`; `docs/prompt-engineering-architecture.md` |
-| context engineering, conversation history, memory context injection, realtime task-state context, compaction, context budget and report | `.codex/skills/assistant-agent-context-engineering`; `docs/CONTEXT_ENGINEERING_STATUS.md` |
+| prompt engineering, `PromptCompiler`, system prompt profiles/options, prompt renderers, persona/spoken style, final-only behavior, Provider `ChatRequest` message/tool assembly | `docs/prompt-engineering-architecture.md` |
+| context engineering, conversation history, memory context injection, realtime task-state context, compaction, context budget and report | `docs/CONTEXT_ENGINEERING_STATUS.md` |
 
 Also add `docs/prompt-engineering-architecture.md` to the repository's authority-document list in the documentation section.
 
@@ -317,7 +319,7 @@ This change introduces no runtime error path. Documentation consistency is enfor
 
 - explicit ownership and cross-document precedence;
 - conditional skill reading rules;
-- direct links from `AGENTS.md`, the context skill, and the context status document;
+- direct links from `AGENTS.md` and the context status document;
 - no duplicated profile/mode contract outside the prompt authority except short summaries needed at boundaries;
 - a repository search during validation to detect stale claims that the context status document is the sole prompt authority.
 
@@ -327,12 +329,11 @@ Implementation validation will include:
 
 ```bash
 rg -n "prompt-engineering-architecture|PromptCompiler|prompt engineering" \
-  AGENTS.md .codex/skills/assistant-agent-context-engineering/SKILL.md \
+  AGENTS.md \
   docs/CONTEXT_ENGINEERING_STATUS.md docs/prompt-engineering-architecture.md
 
 git diff --check -- \
   AGENTS.md \
-  .codex/skills/assistant-agent-context-engineering/SKILL.md \
   docs/CONTEXT_ENGINEERING_STATUS.md \
   docs/prompt-engineering-architecture.md \
   docs/superpowers/specs/2026-07-13-prompt-engineering-authority-routing-design.md
@@ -346,7 +347,7 @@ The work is complete when:
 
 1. `docs/prompt-engineering-architecture.md` exists and describes current production prompt architecture, boundaries, invariants, extension rules, and validation expectations.
 2. `AGENTS.md` has separate prompt and context routing rows and lists the new authority document.
-3. The existing context-engineering skill conditionally reads the prompt authority, context authority, or both based on task scope.
+3. The repository routing conditionally points Codex at the prompt authority, context authority, or both based on task scope.
 4. The context status document points to the prompt authority and no longer acts as the detailed owner of Provider request compilation.
 5. No new prompt-specific skill is added.
 6. No runtime source, prompt text, tools, memory policy, Provider configuration, or user-visible behavior changes.
@@ -362,7 +363,6 @@ Create:
 Modify:
 
 - `AGENTS.md`
-- `.codex/skills/assistant-agent-context-engineering/SKILL.md`
 - `docs/CONTEXT_ENGINEERING_STATUS.md`
 
 Retain as design evidence:
