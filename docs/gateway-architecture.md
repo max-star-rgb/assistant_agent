@@ -183,8 +183,9 @@ decision can use completed Qwen observations or call dynamically exposed
 `video_understanding` when it needs current visual facts. For Agent-Service,
 query-time `video_understanding` consumes only rolling semantic memory produced
 by the background observer; if no semantic text is available yet, the tool
-returns a prompt-safe `pending` / `failed` / `unavailable` observation for the
-LLM to explain instead of calling the video Provider with raw frames. Frame
+returns a prompt-safe descriptive observation, including
+`pending` / `failed` / `unavailable` state, that the LLM can directly use to
+explain the situation instead of calling the video Provider with raw frames. Frame
 freshness uses capture age; snapshot publication age remains a separate
 diagnostic. Ordinary non-Agent-Service video/API requests retain the explicit
 `video_understanding` tool and `recent_frame_fallback` behavior.

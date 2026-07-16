@@ -290,7 +290,7 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 选中关键帧的后台视觉理解复用 `video_understanding`，并经过 `ActionValidator -> ToolExecutor -> ToolRegistry`；WebSocket 入口不直接调用 Provider。默认 `local_demo` / `offline_eval` 不联网，真实连续 MLLM 只允许显式 `provider_smoke` / `pilot` 配置。
 - 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。有 active video 时，AgentRuntime 可基于可信 entry profile 和结构化媒体引用动态暴露 `video_understanding`，不根据用户文本关键词暴露或调用工具。DeepSeek 只知道可以调用该视觉理解 tool，并看到实时镜头可用和被动 `realtime_video_context` 文本 snapshot；它看不到视频帧、JPEG 路径、base64、VLM 角色模板、Qwen 原文或 provider raw response。
 - 可信 Agent-Service 请求把它表述为双方共享的当前实时镜头，不把 opaque `video_id` 渲染成上传视频，也不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
-- 后台观察器仍作为预热缓存运行；需要当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `video_understanding` 表达需求。Agent-Service 的查询时工具调用只读取后台已经产出的滚动语义文本；若文本尚未就绪或最新观察失败，工具返回可解释的 `pending` / `failed` / `unavailable` observation 给 LLM，不临时发送原始帧给视觉 Provider。普通问候不应主动提及视觉。
+- 后台观察器仍作为预热缓存运行；需要当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `video_understanding` 表达需求。Agent-Service 的查询时工具调用只读取后台已经产出的滚动语义文本；若文本尚未就绪或最新观察失败，工具返回一段可直接转述给用户的说明，并附带 `pending` / `failed` / `unavailable` 状态，不临时发送原始帧给视觉 Provider。普通问候不应主动提及视觉。
 - 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；只有后台 observer 负责提交帧到 Qwen，不能绕开 observer 启动第二个 Qwen。
 - 每个 `video_id` 只维护一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后主动轮换，断线使用 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；切换 video id、连接关闭或 observer close 会关闭 Provider session 并清理 pending、快照、retained/raw JPEG 和临时文件。
 - 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；采集时间缺失或在未来时不伪造采集年龄。
@@ -397,7 +397,7 @@ ffprobe -show_streams -select_streams v sample.h264
 | `source` | 含义 |
 | --- | --- |
 | `rolling_video_memory` | Agent-Service 或普通上传/API 查询读取滚动语义记忆，未发生查询时视觉 Provider 调用 |
-| `realtime_video_memory_unavailable` | Agent-Service 查询时没有可用语义文本；工具把待就绪/失败/不可用状态返回给 LLM，不调用视觉 Provider |
+| `realtime_video_memory_unavailable` | Agent-Service 查询时没有可用语义文本；工具把可转述说明和待就绪/失败/不可用状态返回给 LLM，不调用视觉 Provider |
 | `recent_frame_fallback` | 普通上传/API 在记忆未就绪或最新观察失败时使用最近原始帧调用 Provider |
 | `background_keyframe_observation` | 持续观察器对选中关键帧执行的受治理后台分析 |
 

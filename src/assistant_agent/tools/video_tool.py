@@ -106,9 +106,12 @@ class VideoUnderstandingTool(MockTool):
 
     def _memory_result(self, snapshot: RealtimeVideoSnapshot) -> ToolResult:
         output_ref = f"memory://realtime-video/{_safe_ref(snapshot.video_id)}"
+        status = _snapshot_status(snapshot)
+        description = _memory_description(snapshot, status=status)
         payload = {
-            "status": _snapshot_status(snapshot),
+            "status": status,
             "summary": snapshot.current_state,
+            "description": description,
             "objects": list(snapshot.objects),
             "people": list(snapshot.people),
             "actions": list(snapshot.actions),
@@ -171,9 +174,17 @@ class VideoUnderstandingTool(MockTool):
         status = _snapshot_status(snapshot)
         pending_count = snapshot.pending_count if snapshot is not None else 0
         in_flight = snapshot.in_flight if snapshot is not None else False
+        error_code = _snapshot_error_code(snapshot)
+        description = _memory_unavailable_description(
+            status,
+            pending_count=pending_count,
+            in_flight=in_flight,
+            error_code=error_code,
+        )
         payload = {
             "status": status,
-            "summary": "实时视频理解文本还未就绪。",
+            "summary": description,
+            "description": description,
             "objects": [],
             "people": [],
             "actions": [],
@@ -201,7 +212,19 @@ class VideoUnderstandingTool(MockTool):
             ),
             "pending_count": pending_count,
             "in_flight": in_flight,
-            "error_code": _snapshot_error_code(snapshot),
+            "error_code": error_code,
+            "usable_visual_text": False,
+        }
+        model_observation = {
+            "status": status,
+            "summary": description,
+            "description": description,
+            "source": "realtime_video_memory_unavailable",
+            "snapshot_sequence": payload["snapshot_sequence"],
+            "pending_count": pending_count,
+            "in_flight": in_flight,
+            "error_code": error_code,
+            "usable_visual_text": False,
         }
         contract = build_capability_output_contract(
             capability="video_understanding",
@@ -222,6 +245,8 @@ class VideoUnderstandingTool(MockTool):
             tool_name=self.name,
             success=True,
             data=payload,
+            voice_summary=description,
+            model_observation=model_observation,
             output_ref=output_ref,
             latency_ms=0,
             contract=contract,
@@ -324,6 +349,59 @@ def _snapshot_error_code(snapshot: RealtimeVideoSnapshot | None) -> str | None:
         return None
     code = snapshot.last_error.get("code")
     return str(code) if code else None
+
+
+def _memory_description(snapshot: RealtimeVideoSnapshot, *, status: str) -> str:
+    state = snapshot.current_state.strip()
+    if status == "ready":
+        return f"后台视觉理解已返回可用文本：{state}" if state else "后台视觉理解已返回可用文本。"
+    if status == "refreshing":
+        return (
+            f"后台视觉理解已有一段可用文本，但最新画面仍在刷新：{state}"
+            if state
+            else "后台视觉理解已有可用文本，但最新画面仍在刷新。"
+        )
+    if status == "stale":
+        return (
+            f"后台视觉理解已有一段旧文本，最新观察没有成功更新；回答时需要说明可能不是当前画面：{state}"
+            if state
+            else "后台视觉理解已有旧文本，最新观察没有成功更新；回答时需要说明可能不是当前画面。"
+        )
+    return f"后台视觉理解文本状态为 {status}：{state}" if state else f"后台视觉理解文本状态为 {status}。"
+
+
+def _memory_unavailable_description(
+    status: str,
+    *,
+    pending_count: int,
+    in_flight: bool,
+    error_code: str | None,
+) -> str:
+    if status == "pending":
+        if in_flight or pending_count > 0:
+            return (
+                "后台视觉理解正在处理当前画面，还没有产出可用的文字描述。"
+                "请告诉用户正在获取画面信息，暂时不能确认画面内容。"
+            )
+        return (
+            "后台视觉理解还没有产出可用的文字描述。"
+            "请告诉用户暂时不能确认画面内容。"
+        )
+    if status == "failed":
+        suffix = f"错误类型：{error_code}。" if error_code else ""
+        return (
+            "后台视觉理解没有成功返回可用文本，当前没有可靠的画面描述。"
+            f"{suffix}请告诉用户暂时不能确认画面内容，可以稍后再试。"
+        )
+    if status == "unavailable":
+        return (
+            "当前还没有收到后台视觉理解文本，无法可靠判断画面内容。"
+            "请告诉用户暂时没有可用画面信息。"
+        )
+    return (
+        f"后台视觉理解当前状态为 {status}，没有可用的画面文字描述。"
+        "请告诉用户暂时不能确认画面内容。"
+    )
 
 
 def _safe_ref(value: str) -> str:

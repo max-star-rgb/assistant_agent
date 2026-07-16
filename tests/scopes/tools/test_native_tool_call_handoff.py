@@ -814,11 +814,88 @@ def test_agent_service_video_tool_call_waits_for_background_snapshot_instead_of_
     assert result.trace_summary is not None
     assert result.trace_summary["source"] == "realtime_video_memory_unavailable"
     assert result.trace_summary["fallback_used"] is False
+    assert result.model_observation is not None
+    assert "后台视觉理解正在处理当前画面" in result.model_observation["summary"]
     tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
     assert '"status": "pending"' in tool_messages[0]["content"]
+    assert "后台视觉理解正在处理当前画面" in tool_messages[0]["content"]
     assert "query-time provider called" not in str(state.errors)
     assert state.response is not None
     assert state.response.message == "我还在获取画面信息，稍等一下。"
+
+
+def test_agent_service_video_tool_call_describes_failed_background_vlm_without_frame_fallback(
+    tmp_path: Path,
+) -> None:
+    video_id = "agent-service-video-failed"
+    store = InMemoryVideoContextStore(window_size=3)
+    current_frame = tmp_path / "current.jpg"
+    current_frame.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+    store.append_frame(
+        VideoFrame(
+            video_id=video_id,
+            frame_id="frame-current",
+            uri=str(current_frame),
+            sequence=1,
+        )
+    )
+    memory = RealtimeVideoMemoryStore()
+    memory.record_failure(
+        video_id,
+        SemanticKeyframeRecord(
+            frame_id="frame-current",
+            uri=str(current_frame),
+            sequence=1,
+            timestamp_ms=1000,
+        ),
+        {"code": "provider_bad_response", "message": "Qwen returned no usable text."},
+    )
+
+    class FailingIfCalledVideoAdapter:
+        def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+            raise AssertionError(f"query-time provider called for {request.video_ref}")
+
+    registry = create_default_registry(video_context_store=store)
+    registry.get("video_understanding").adapter = FailingIfCalledVideoAdapter()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("video_understanding", {"user_query": "识别眼前物体"}),
+            final_result("我现在没有拿到可靠的画面描述，暂时不能确认这是什么。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        video_context_store=store,
+        realtime_video_memory_store=memory,
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="10086",
+            session_id="10086",
+            text="这是什么？",
+            video_ids=[video_id],
+            metadata={
+                "transport": "agent_service_websocket",
+                "gateway": {"session_config": {"entry_profile": "agent_service"}},
+            },
+        )
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["video_understanding"]
+    assert state.tool_calls[0].status == "succeeded"
+    result = state.tool_results[0]
+    assert result.model_observation is not None
+    assert result.model_observation["status"] == "failed"
+    assert "后台视觉理解没有成功返回可用文本" in result.model_observation["summary"]
+    assert result.model_observation["error_code"] == "provider_bad_response"
+    tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
+    assert '"status": "failed"' in tool_messages[0]["content"]
+    assert "后台视觉理解没有成功返回可用文本" in tool_messages[0]["content"]
+    assert "query-time provider called" not in str(state.errors)
+    assert state.response is not None
+    assert state.response.message == "我现在没有拿到可靠的画面描述，暂时不能确认这是什么。"
 
 
 def test_agent_service_rejects_video_tool_call_without_active_video() -> None:
