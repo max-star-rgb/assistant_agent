@@ -243,11 +243,110 @@ def test_app_shopping_detail_accepts_unified_shopping_search_result() -> None:
     assert result.response_text == "推荐这款蓝牙耳机。"
 
 
+def test_agent_service_shopping_detail_accepts_unified_shopping_search_result() -> None:
+    def fake_stream(request: UserRequest, **kwargs) -> AgentRunStream[SimpleNamespace]:
+        loop = asyncio.get_running_loop()
+        stream: AgentRunStream[SimpleNamespace] = AgentRunStream(loop=loop)
+
+        async def publish() -> None:
+            stream.emit(AgentEvent(type="response_delta", session_id=request.session_id, text="不要展示这段"))
+            stream.emit(
+                AgentEvent(
+                    type="tool_finished",
+                    session_id=request.session_id,
+                    tool_name="shopping_search",
+                    payload={"post_tool_call": {"status": "succeeded"}},
+                )
+            )
+            artifacts = _completed_artifacts(request, message="推荐这款蓝牙耳机。")
+            offer = {
+                "offer_id": "taobao:1",
+                "product_id": "taobao:1",
+                "title": "蓝牙耳机",
+                "platform": "taobao",
+                "price": 29.9,
+                "total_price": 29.9,
+                "product_url": "https://item.taobao.com/item.htm?id=1",
+                "image_url": "https://img.alicdn.com/1.jpg",
+                "url_status": "unverified",
+            }
+            artifacts.state.tool_results.append(
+                ToolResult(
+                    tool_name="shopping_search",
+                    success=True,
+                    data={
+                        "query": "蓝牙耳机",
+                        "search": {
+                            "items": [],
+                            "provider": "haodanku",
+                            "query_used": "蓝牙耳机",
+                            "total": 1,
+                        },
+                        "comparison": {
+                            "query": "蓝牙耳机",
+                            "summary": "推荐这款蓝牙耳机。",
+                            "offers": [offer],
+                            "best_offer": offer,
+                            "provider": "haodanku",
+                        },
+                        "items": [],
+                        "offers": [offer],
+                        "best_offer": offer,
+                        "summary": "推荐这款蓝牙耳机。",
+                        "provider": "haodanku",
+                    },
+                )
+            )
+            stream.set_result(artifacts)
+
+        asyncio.create_task(publish())
+        return stream
+
+    events: list[RealtimeAgentEvent] = []
+
+    async def collect(event: RealtimeAgentEvent) -> None:
+        events.append(event)
+
+    backend = AgentGraphRealtimeBackend(run_request_stream=fake_stream)
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(
+                user_id="10086",
+                session_id="agent-service-session",
+                text="我想买蓝牙耳机",
+                metadata={
+                    "transport": "agent_service_websocket",
+                    "gateway": {
+                        "entry_capabilities": {"supports_shopping_detail_v1": True},
+                        "session_config": {"entry_profile": "agent_service"},
+                    },
+                },
+            ),
+            event_sink=collect,
+        )
+    )
+
+    chunks = [event.text for event in events if event.type == "response.chunk"]
+    assert chunks == [
+        "推荐这款蓝牙耳机。\n<detail>\n1. 淘宝 - 蓝牙耳机 29.9元 "
+        "<link>https://item.taobao.com/item.htm?id=1</link> "
+        "<pic>https://img.alicdn.com/1.jpg</pic>\n</detail>"
+    ]
+    assert result.response_text == "推荐这款蓝牙耳机。"
+
+
 def test_untrusted_shopping_capability_does_not_change_streaming() -> None:
-    assert not __import__(
+    module = __import__(
         "assistant_agent.realtime.agent_graph_backend", fromlist=["shopping_detail_enabled"]
-    ).shopping_detail_enabled(
+    )
+    assert not module.shopping_detail_enabled(
         {"gateway": {"entry_capabilities": {"supports_shopping_detail_v1": True}}}
+    )
+    assert not module.shopping_detail_enabled(
+        {
+            "transport": "agent_service_websocket",
+            "gateway": {"entry_capabilities": {"supports_shopping_detail_v1": True}},
+        }
     )
 
 

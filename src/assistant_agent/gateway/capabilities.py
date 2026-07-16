@@ -60,4 +60,5 @@ AGENT_SERVICE_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
     supports_realtime_task_state=True,
     supports_video_refs=True,
     supports_raw_media=True,
+    supports_shopping_detail_v1=True,
 )

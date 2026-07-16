@@ -265,7 +265,7 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
         "supports_raw_media": True,
         "supports_tts_edge_events": False,
         "supports_semantic_interrupt": False,
-        "supports_shopping_detail_v1": False,
+        "supports_shopping_detail_v1": True,
     }
 
 
@@ -1033,6 +1033,37 @@ def test_agent_service_stream_false_sends_one_terminal_packet(tmp_path: Path) ->
     assert _body(packets[0])["final"] is True
     assert _body(packets[0])["sequence"] == 1
     assert _body(packets[0])["deliveryId"] == delivery.delivery_id
+
+
+def test_agent_service_shopping_detail_is_sent_in_terminal_chat_response(tmp_path: Path) -> None:
+    detail_text = (
+        "推荐这款蓝牙耳机。\n<detail>\n1. 淘宝 - 蓝牙耳机 29.9元 "
+        "<link>https://item.taobao.com/item.htm?id=1</link> "
+        "<pic>https://img.alicdn.com/1.jpg</pic>\n</detail>"
+    )
+
+    class ShoppingDetailFacade:
+        async def run_turn(self, request):
+            assert request.config["response_streaming"] is False
+            assert request.metadata["gateway"]["entry_capabilities"]["supports_shopping_detail_v1"] is True
+            assert request.metadata["transport"] == "agent_service_websocket"
+            return _completed_turn(detail_text)
+
+    packets, delivery = asyncio.run(
+        _run_prepared_chat_delivery(
+            tmp_path=tmp_path,
+            facade=ShoppingDetailFacade(),
+            stream=False,
+        )
+    )
+
+    body = _body(packets[0])
+    assert body["message"]["content"]["intentResult"]["description"] == detail_text
+    assert body["message"]["content"]["intentResult"]["status"] == "SUCCESS"
+    assert body["final"] is True
+    assert body["display_only"] is False
+    assert body["displayOnly"] is False
+    assert body["deliveryId"] == delivery.delivery_id
 
 
 def test_agent_service_stream_true_with_no_token_delta_sends_one_terminal_packet(

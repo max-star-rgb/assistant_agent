@@ -29,6 +29,7 @@ from assistant_agent.schemas.realtime_cancellation import (
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.products import PriceCompareResult, ShoppingSearchResult
+from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.assistant_run_service import (
     run_assistant_request,
     run_assistant_request_stream,
@@ -61,20 +62,24 @@ _RUN_EVENT_TYPES = {
 
 
 def shopping_detail_enabled(metadata: dict[str, Any]) -> bool:
-    """Accept the App format only from trusted Gateway WebSocket metadata."""
+    """Accept App shopping cards only from trusted entries that declare support."""
 
-    if metadata.get("source") != "gateway_websocket" or metadata.get("transport") != "websocket":
-        return False
-    if not isinstance(metadata.get("request_identity"), dict):
-        return False
     gateway = metadata.get("gateway")
     if not isinstance(gateway, dict):
         return False
     capabilities = gateway.get("entry_capabilities")
-    return bool(
+    if not (
         isinstance(capabilities, dict)
         and capabilities.get("supports_shopping_detail_v1") is True
-    )
+    ):
+        return False
+    if (
+        metadata.get("source") == "gateway_websocket"
+        and metadata.get("transport") == "websocket"
+        and isinstance(metadata.get("request_identity"), dict)
+    ):
+        return True
+    return is_trusted_agent_service_request(metadata)
 
 
 ShoppingDetailResult = PriceCompareResult | ShoppingSearchResult

@@ -150,6 +150,7 @@ Agent 兼容说明：
 - 若本轮正文已经全部通过中间包发送，成功终包的 `description` 为空字符串。媒体/App 可以继续按增量追加处理，不会重复追加完整答案。
 - 若本轮已经发送过中间包，成功终包仍会同时携带 `display_only=true` 和 camelCase 兼容字段 `displayOnly=true`，供支持该标记的客户端识别终包。
 - 只有真实 Provider token delta 产生中间包；Provider 不支持或未产生 token delta 时，即使 `stream=true` 也只发送一个完整终包，不伪造流式能力。
+- 购物推荐/比价成功时，Agent 侧由 deterministic presenter 根据 `shopping_search` / `price_compare` 结构化结果生成 App 购物协议；成功终包的 `description` 可以包含自然语言摘要和唯一 `<detail>...</detail>` 块，媒体侧按文本透传，App 侧按协议渲染。LLM 不应手写 `<detail>` 字段。
 - `deliveryId` 和 `chatResponseAck` 只属于成功终包；中间包和失败终包都不进入应用层 ACK 状态。
 - Provider 的工具调用前导文本受 runtime commit barrier 保护；会被工具调用取代的 provisional 文本不会发送给 Media/App。
 
