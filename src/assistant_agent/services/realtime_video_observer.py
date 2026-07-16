@@ -10,6 +10,8 @@ from pathlib import Path
 from time import perf_counter_ns, time
 from typing import Any
 
+from pydantic import ValidationError
+
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
@@ -335,8 +337,8 @@ class RealtimeVideoObserver:
                 if self.closed:
                     self._delete_record(item)
                     continue
-                if result.success and result.data:
-                    observation = VideoUnderstandingResult.model_validate(result.data)
+                observation = _usable_background_observation(result)
+                if observation is not None:
                     diagnostics = self._observation_diagnostics(
                         item=item,
                         dequeued_ns=dequeued_ns,
@@ -609,11 +611,42 @@ def _result_error(result: ToolResult) -> dict[str, Any]:
             "message": sanitize_error_message(first.get("message") or result.error or "Video observation failed."),
             "recoverable": bool(first.get("recoverable", True)),
         }
+    data_errors = result.data.get("errors") if isinstance(result.data, dict) else None
+    if isinstance(data_errors, list) and data_errors:
+        first_data_error = data_errors[0]
+        if isinstance(first_data_error, dict):
+            return {
+                "code": str(first_data_error.get("code") or "video_observation_failed"),
+                "message": sanitize_error_message(
+                    first_data_error.get("message") or result.error or "Video observation failed."
+                ),
+                "recoverable": bool(first_data_error.get("recoverable", True)),
+            }
+    if result.success:
+        return {
+            "code": "video_observation_unusable",
+            "message": "Video observation did not return usable background VLM text.",
+            "recoverable": True,
+        }
     return {
         "code": "video_observation_failed",
         "message": sanitize_error_message(result.error or "Video observation failed."),
         "recoverable": True,
     }
+
+
+def _usable_background_observation(result: ToolResult) -> VideoUnderstandingResult | None:
+    if not result.success or not isinstance(result.data, dict):
+        return None
+    if result.data.get("source") != "background_keyframe_observation":
+        return None
+    try:
+        observation = VideoUnderstandingResult.model_validate(result.data)
+    except ValidationError:
+        return None
+    if observation.errors:
+        return None
+    return observation
 
 
 def _safe_name(value: str) -> str:

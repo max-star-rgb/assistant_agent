@@ -170,6 +170,10 @@ adaptive sampling, pixel difference, SSIM, and local histogram change detection;
 Provider 发送当前选中的一张 JPEG；历史画面不作为多帧请求重发，只把上次成功语义摘要
 裁剪后作为文本上下文。Background understanding
 still runs through `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding`.
+The rolling semantic snapshot is published only from a successful
+`background_keyframe_observation` tool result whose structured VLM payload has no
+errors; failure, partial, or harness explanatory results update failure state and
+must not become `current_state`.
 When a later chat turn has active video, AgentRuntime may expose the
 `video_understanding` tool. The main LLM sees the live-camera availability, tool
 schema, and projected `realtime_video_context`, not frame bytes, frame paths, VLM

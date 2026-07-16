@@ -113,6 +113,54 @@ class FailingVideoAdapter:
         )
 
 
+class MisclassifiedFailureTool(VideoUnderstandingTool):
+    def __init__(self) -> None:
+        super().__init__(adapter=MockVideoUnderstandingAdapter())
+
+    def _run(self, input: VideoUnderstandingRequest, context: ToolContext) -> ToolResult:
+        _ = input, context
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data={
+                "summary": "后台视觉理解没有成功返回可用文本。",
+                "provider": "qwen",
+                "model": "qwen-test",
+                "output_ref": "provider://video/qwen-realtime/error",
+                "errors": [
+                    {
+                        "code": "provider_bad_response",
+                        "message": "Qwen returned no usable text.",
+                        "recoverable": True,
+                    }
+                ],
+                "source": "background_keyframe_observation",
+            },
+        )
+
+
+class ExplanatoryUnavailableTool(VideoUnderstandingTool):
+    def __init__(self) -> None:
+        super().__init__(adapter=MockVideoUnderstandingAdapter())
+
+    def _run(self, input: VideoUnderstandingRequest, context: ToolContext) -> ToolResult:
+        _ = input, context
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data={
+                "summary": "后台视觉理解没有成功返回可用文本，当前没有可靠的画面描述。",
+                "provider": "rolling_video_memory",
+                "model": None,
+                "output_ref": "memory://realtime-video/video/pending",
+                "errors": [],
+                "source": "realtime_video_memory_unavailable",
+                "status": "failed",
+                "usable_visual_text": False,
+            },
+        )
+
+
 class SummaryRecordingAdapter:
     def __init__(self) -> None:
         self.requests: list[VideoUnderstandingRequest] = []
@@ -919,6 +967,68 @@ def test_failed_observation_records_failure_and_deletes_selected_artifact(tmp_pa
         assert snapshot.healthy is False
         assert snapshot.last_error["code"] == "provider_bad_response"
         assert "private" not in snapshot.last_error["message"]
+        assert list(keyframe_root.rglob("*.jpg")) == []
+        await observer.close()
+
+    asyncio.run(scenario())
+
+
+def test_misclassified_vlm_failure_does_not_publish_success_snapshot(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        registry = ToolRegistry()
+        registry.register(MisclassifiedFailureTool())
+        memory = RealtimeVideoMemoryStore()
+        keyframe_root = tmp_path / "keyframes"
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=memory,
+            keyframe_root=keyframe_root,
+            collector=AlwaysSelectCollector(),
+        )
+
+        await observer.submit(_decoded_frame(tmp_path, sequence=1))
+        await observer.wait_idle()
+
+        snapshot = memory.snapshot(VIDEO_ID)
+        assert snapshot is not None
+        assert snapshot.healthy is False
+        assert snapshot.last_success_sequence is None
+        assert snapshot.current_state == ""
+        assert snapshot.last_error["code"] == "provider_bad_response"
+        assert list(keyframe_root.rglob("*.jpg")) == []
+        await observer.close()
+
+    asyncio.run(scenario())
+
+
+def test_explanatory_unavailable_result_does_not_publish_success_snapshot(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        module = importlib.import_module("assistant_agent.services.realtime_video_observer")
+        registry = ToolRegistry()
+        registry.register(ExplanatoryUnavailableTool())
+        memory = RealtimeVideoMemoryStore()
+        keyframe_root = tmp_path / "keyframes"
+        observer = module.RealtimeVideoObserver(
+            user_id="user-1",
+            session_id="session-1",
+            registry=registry,
+            memory_store=memory,
+            keyframe_root=keyframe_root,
+            collector=AlwaysSelectCollector(),
+        )
+
+        await observer.submit(_decoded_frame(tmp_path, sequence=1))
+        await observer.wait_idle()
+
+        snapshot = memory.snapshot(VIDEO_ID)
+        assert snapshot is not None
+        assert snapshot.healthy is False
+        assert snapshot.last_success_sequence is None
+        assert snapshot.current_state == ""
+        assert snapshot.last_error["code"] == "video_observation_unusable"
         assert list(keyframe_root.rglob("*.jpg")) == []
         await observer.close()
 
