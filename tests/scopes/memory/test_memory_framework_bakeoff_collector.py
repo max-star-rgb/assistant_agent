@@ -26,7 +26,7 @@ from assistant_agent.schemas.memory_framework import (
 from assistant_agent.schemas.identity import RequestIdentity
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_bakeoff_collector_module_exists() -> None:
