@@ -78,7 +78,7 @@ class DockerComposeLifecycle(BakeoffLifecycleController):
     def reset_and_start(self) -> None:
         self._compose("down", "--volumes", "--remove-orphans", profile=self.framework)
         started = time.perf_counter()
-        args = ["up", "-d", "--build" if self.framework == "hindsight" else "--no-build"]
+        args = ["up", "-d", "--build"]
         args.append(self.service)
         self._compose(*args, profile=self.framework)
         self._wait_healthy()

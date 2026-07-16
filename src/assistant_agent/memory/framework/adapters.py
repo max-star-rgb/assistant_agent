@@ -222,7 +222,7 @@ class Mem0MemoryEngineAdapter(_HttpEngineAdapter):
                 "messages": [{"role": "user", "content": request.text}],
                 **request.identity.mem0_filters,
                 "metadata": _safe_metadata(request.metadata, request),
-                "infer": True,
+                "infer": False,
             },
             headers=self._headers,
         )

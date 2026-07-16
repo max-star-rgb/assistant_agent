@@ -76,8 +76,9 @@ def test_compose_uses_pinned_images_local_ports_and_persistent_volumes() -> None
 
     assert "name: assistant-agent-memory-bakeoff" in compose
     assert "assistant-agent/hindsight-bakeoff:0.8.4" in compose
-    assert "dockerfile: docker/memory-frameworks/Hindsight.Dockerfile" in compose
+    assert "dockerfile: Hindsight.Dockerfile" in compose
     assert "assistant-agent/mem0-sidecar:2.0.11" in compose
+    assert "dockerfile: Mem0.Dockerfile" in compose
     assert "qdrant/qdrant:v1.15.4" in compose
     assert ":latest" not in compose
     assert '"127.0.0.1:8889:8888"' in compose
@@ -95,19 +96,26 @@ def test_compose_uses_pinned_images_local_ports_and_persistent_volumes() -> None
         encoding="utf-8"
     )
     assert "mem0ai==2.0.11" in dockerfile
+    assert "COPY mem0_sidecar.py /app/mem0_sidecar.py" in dockerfile
     assert ":latest" not in dockerfile
     sidecar = (REPO_ROOT / "docker/memory-frameworks/mem0_sidecar.py").read_text(
         encoding="utf-8"
     )
     assert '"embedding_dims": 1024' in sidecar
     assert '"embedding_model_dims": 1024' in sidecar
+    assert "QdrantClient(" in sidecar
+    assert 'QDRANT_TIMEOUT_SECONDS", "30"' in sidecar
     assert "limit=int(payload.get(\"top_k\")" in sidecar
     assert "Lock()" in sidecar
     assert "with _MEMORY_LOCK:" in sidecar
     assert 'def health()' in sidecar
+    assert 'detail="memory not ready"' in sidecar
     assert 'def ready()' in sidecar
+    assert 'except ValueError as exc' in sidecar
+    assert '"deleted": False' in sidecar
     assert 'MEM0_TELEMETRY: "False"' in compose
-    assert "urlopen('http://127.0.0.1:8000/health'" in compose
+    assert 'QDRANT_TIMEOUT_SECONDS: "30"' in compose
+    assert "urlopen('http://127.0.0.1:8000/ready', timeout=60)" in compose
     assert "urlopen('http://127.0.0.1:8000/'" not in compose
     hindsight_dockerfile = (
         REPO_ROOT / "docker/memory-frameworks/Hindsight.Dockerfile"

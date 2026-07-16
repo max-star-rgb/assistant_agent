@@ -7,6 +7,7 @@ from threading import Lock
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
+from qdrant_client import QdrantClient
 
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
@@ -50,8 +51,7 @@ def _build_memory() -> Memory:
             "vector_store": {
                 "provider": "qdrant",
                 "config": {
-                    "host": os.getenv("QDRANT_HOST", "qdrant"),
-                    "port": int(os.getenv("QDRANT_PORT", "6333")),
+                    "client": _qdrant_client(),
                     "collection_name": "assistant_agent_memory_bakeoff",
                     "embedding_model_dims": 1024,
                 },
@@ -63,11 +63,15 @@ def _build_memory() -> Memory:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    try:
+        _ = memory()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="memory not ready") from exc
     return {
         "status": "ok",
         "framework": "mem0",
         "version": "2.0.11",
-        "ready": _MEMORY is not None,
+        "ready": True,
     }
 
 
@@ -130,7 +134,12 @@ def update_memory(memory_id: str, payload: dict[str, Any] = Body(...)) -> dict[s
 
 @app.delete("/memories/{memory_id}")
 def delete_memory(memory_id: str) -> dict[str, Any]:
-    memory().delete(memory_id)
+    try:
+        memory().delete(memory_id)
+    except ValueError as exc:
+        if "not found" not in str(exc).lower():
+            raise
+        return {"success": True, "deleted": False}
     return {"success": True, "deleted": True}
 
 
@@ -147,6 +156,14 @@ def _required(name: str) -> str:
     if not value:
         raise RuntimeError(f"required sidecar environment variable is missing: {name}")
     return value
+
+
+def _qdrant_client() -> QdrantClient:
+    return QdrantClient(
+        host=os.getenv("QDRANT_HOST", "qdrant"),
+        port=int(os.getenv("QDRANT_PORT", "6333")),
+        timeout=float(os.getenv("QDRANT_TIMEOUT_SECONDS", "30")),
+    )
 
 
 def _entity_filters(payload: dict[str, Any]) -> dict[str, str]:

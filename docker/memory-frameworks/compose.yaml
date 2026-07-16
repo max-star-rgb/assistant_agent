@@ -4,8 +4,8 @@ services:
   hindsight:
     image: assistant-agent/hindsight-bakeoff:0.8.4
     build:
-      context: ../..
-      dockerfile: docker/memory-frameworks/Hindsight.Dockerfile
+      context: .
+      dockerfile: Hindsight.Dockerfile
     profiles: ["hindsight"]
     ports:
       - "127.0.0.1:8889:8888"
@@ -32,8 +32,8 @@ services:
   mem0:
     image: assistant-agent/mem0-sidecar:2.0.11
     build:
-      context: ../..
-      dockerfile: docker/memory-frameworks/Mem0.Dockerfile
+      context: .
+      dockerfile: Mem0.Dockerfile
     profiles: ["mem0"]
     ports:
       - "127.0.0.1:8890:8000"
@@ -48,6 +48,7 @@ services:
       EMBEDDING_MODEL: ${MEMORY_BAKEOFF_EMBEDDING_MODEL:?set MEMORY_BAKEOFF_EMBEDDING_MODEL}
       QDRANT_HOST: qdrant
       QDRANT_PORT: "6333"
+      QDRANT_TIMEOUT_SECONDS: "30"
       HISTORY_DB_PATH: /data/history/history.db
     volumes:
       - mem0_history:/data/history
@@ -55,9 +56,9 @@ services:
       qdrant:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
-      interval: 10s
-      timeout: 3s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=60)"]
+      interval: 15s
+      timeout: 65s
       retries: 12
 
   qdrant:

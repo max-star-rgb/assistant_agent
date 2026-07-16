@@ -187,6 +187,7 @@ def test_mem0_uses_filters_and_never_accepts_model_supplied_identity() -> None:
     assert retain_body["user_id"] == scope.user_id
     assert retain_body["agent_id"] == scope.agent_id
     assert retain_body["run_id"] == scope.run_id
+    assert retain_body["infer"] is False
     assert retain_body["metadata"]["project_memory_id"] == "memory-1"
     assert "user_id" not in retain_body["metadata"]
     assert requests[1].path == "/search"

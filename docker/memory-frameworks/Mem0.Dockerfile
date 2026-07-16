@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir \
     qdrant-client==1.15.1
 
 WORKDIR /app
-COPY docker/memory-frameworks/mem0_sidecar.py /app/mem0_sidecar.py
+COPY mem0_sidecar.py /app/mem0_sidecar.py
 
 EXPOSE 8000
 CMD ["uvicorn", "mem0_sidecar:app", "--host", "0.0.0.0", "--port", "8000"]

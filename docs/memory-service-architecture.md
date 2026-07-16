@@ -308,6 +308,27 @@ Framework writes still pass `MemoryWritePolicy` and confirmation before `Framewo
 
 Framework recall failures return stable `memory_framework_recall_failed` errors. The Agent run continues with an empty result or the explicitly configured read-only v2 fallback. Runtime debug metadata and audit may expose stable error codes and engine names, but never sidecar URLs, raw exception messages, credentials, raw framework responses, or memory content.
 
+Mem0 recall has a bounded read-after-write consistency wait. If a successful
+Mem0 retain was just recorded for the same governed identity and the first
+recall returns an empty result, `FrameworkMemoryStore` polls the same governed
+recall request for a short window before returning empty. This handles Mem0 /
+Qdrant indexing visibility after cold start without changing write policy,
+identity binding, audit, fallback, or prompt-context governance. Hindsight and
+ordinary recall failures do not use this wait path.
+
+If Mem0 accepted the retain request but the engine still cannot make it
+queryable inside that bounded window, `FrameworkMemoryStore` may use an
+in-process recent-retain item for the same governed identity for a short
+read-your-write window. This buffer is not durable truth, is not written to the
+governance ledger or v2 fallback, is removed on delete/clear, and exists only
+to mask Mem0/Qdrant insertion visibility lag immediately after a governed
+retain.
+
+Mem0 retain uses `infer=false`: memory selection, permissions, and write
+semantics remain owned by `MemoryManager` and policy; Mem0 is the framework
+execution unit for storage and vector recall, not the authority that decides
+what the assistant may remember.
+
 When `FrameworkMemoryStore.framework_managed_algorithms` is active, `MemoryManager` skips built-in duplicate/conflict resolution and local `user_profile` projection. This hands extraction, update integration, ranking, and profile/mental-model algorithms to the selected framework while retaining project governance, confirmation, audit, identity, safety, and context-budget boundaries. New investment should prefer hardening the Mem0 framework path over expanding local v2 memory-intelligence algorithms, unless the work is required for governance, rollback, tests, or offline defaults.
 
 ### Framework bake-off gate

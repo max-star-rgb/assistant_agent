@@ -195,7 +195,7 @@ def test_hindsight_lifecycle_builds_the_derived_image_before_start(monkeypatch) 
     assert calls[1] == (("up", "-d", "--build", "hindsight"), "hindsight")
 
 
-def test_mem0_lifecycle_uses_pinned_image_without_build_during_start(monkeypatch) -> None:
+def test_mem0_lifecycle_builds_pinned_sidecar_image_during_start(monkeypatch) -> None:
     spec = spec_from_file_location("collect_memory_framework_bakeoff_mem0_start", REPO_ROOT / SCRIPT)
     assert spec is not None and spec.loader is not None
     module = module_from_spec(spec)
@@ -212,7 +212,7 @@ def test_mem0_lifecycle_uses_pinned_image_without_build_during_start(monkeypatch
     lifecycle.reset_and_start()
 
     assert calls[0] == (("down", "--volumes", "--remove-orphans"), "mem0")
-    assert calls[1] == (("up", "-d", "--no-build", "mem0"), "mem0")
+    assert calls[1] == (("up", "-d", "--build", "mem0"), "mem0")
 
 
 def test_mem0_health_wait_uses_readiness_endpoint_with_long_inflight_timeout(monkeypatch) -> None:

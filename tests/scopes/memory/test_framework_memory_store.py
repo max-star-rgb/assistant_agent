@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from assistant_agent.memory.framework.ledger import FrameworkGovernanceLedger
 from assistant_agent.memory.framework.base import bind_engine_identity
+from assistant_agent.memory.framework import store as framework_store_module
 from assistant_agent.memory.framework.store import FrameworkMemoryStore
 from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.memory.remote import MemoryServiceOperationError
@@ -28,6 +29,7 @@ class ScriptedEngine:
     def __init__(self) -> None:
         self.fail_retain = False
         self.fail_recall = False
+        self.empty_recall_attempts = 0
         self.retained = []
         self.recalled = []
         self.deleted = []
@@ -45,6 +47,9 @@ class ScriptedEngine:
         if self.fail_recall:
             raise MemoryServiceOperationError("recall", "sidecar unavailable")
         self.recalled.append(request)
+        if self.empty_recall_attempts > 0:
+            self.empty_recall_attempts -= 1
+            return FrameworkRecallResult(records=[], total=0)
         return FrameworkRecallResult(
             records=[
                 FrameworkMemoryRecord(
@@ -252,6 +257,66 @@ def test_recall_resolves_engine_id_back_to_project_memory_id(tmp_path) -> None:
     assert result.items[0].memory_id == "m1"
     assert result.items[0].tenant_id == "t1"
     assert result.items[0].project_id == "p1"
+
+
+def test_mem0_recall_retries_recent_successful_retain_when_engine_is_eventually_consistent(tmp_path) -> None:
+    engine = ScriptedEngine()
+    engine.empty_recall_attempts = 1
+    store = FrameworkMemoryStore(
+        adapter=engine,
+        ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+        identity_namespace="test",
+    )
+    store.save(_item())
+
+    result = store.search(
+        MemoryQuery(user_id="u1", tenant_id="t1", project_id="p1", session_id="s1", query="深色")
+    )
+
+    assert [item.memory_id for item in result.items] == ["m1"]
+    assert len(engine.recalled) == 2
+
+
+def test_mem0_recall_uses_transient_recent_retain_when_engine_accepts_but_never_indexes(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(framework_store_module, "_MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS", 0.0)
+    engine = ScriptedEngine()
+    engine.empty_recall_attempts = 10
+    store = FrameworkMemoryStore(
+        adapter=engine,
+        ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+        identity_namespace="test",
+    )
+    store.save(_item())
+
+    result = store.search(
+        MemoryQuery(user_id="u1", tenant_id="t1", project_id="p1", session_id="s1", query="深色")
+    )
+
+    assert [item.memory_id for item in result.items] == ["m1"]
+    assert result.ranking_reason == "framework_mem0_recent_retain_consistency"
+    assert "用户喜欢深色极简" not in (tmp_path / "ledger.sqlite3").read_bytes().decode("utf-8", "ignore")
+
+
+def test_delete_removes_transient_recent_retain_cache(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(framework_store_module, "_MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS", 0.0)
+    engine = ScriptedEngine()
+    engine.empty_recall_attempts = 10
+    engine.retain = lambda request: FrameworkRetainResult(accepted=True, engine_ids=["uuid-mem0-engine-id"])
+    store = FrameworkMemoryStore(
+        adapter=engine,
+        ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+        identity_namespace="test",
+    )
+    store.save(_item())
+
+    assert store.delete("u1", "m1") is True
+    result = store.search(
+        MemoryQuery(user_id="u1", tenant_id="t1", project_id="p1", session_id="s1", query="深色")
+    )
+
+    assert result.items == []
 
 
 def test_delete_uses_mapping_and_keeps_tombstone_when_sidecar_fails(tmp_path) -> None:

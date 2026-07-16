@@ -19,10 +19,15 @@ from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearch
 from assistant_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
 from assistant_agent.schemas.memory_framework import (
     FrameworkMemoryRecord,
+    FrameworkRecallResult,
     FrameworkRecallRequest,
     FrameworkRetainRequest,
     FrameworkRetainResult,
 )
+
+_MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS = 5.0
+_MEM0_RECALL_CONSISTENCY_POLL_SECONDS = 0.25
+_MEM0_RECENT_RETAIN_CACHE_SECONDS = 60.0
 
 
 class FrameworkMemoryStore:
@@ -43,6 +48,8 @@ class FrameworkMemoryStore:
         self.ledger = ledger
         self.identity_namespace = identity_namespace
         self.read_fallback = read_fallback
+        self._recent_retain_scopes: dict[tuple[str, str, str, str, str], float] = {}
+        self._recent_retain_items: dict[tuple[str, str, str, str, str], list[tuple[float, MemoryItem]]] = {}
 
     def save(self, item: MemoryItem) -> MemoryItem:
         request = self._retain_request(item)
@@ -87,18 +94,20 @@ class FrameworkMemoryStore:
     def search(self, query: MemoryQuery) -> MemorySearchResult:
         identity = self._identity_for_query(query)
         try:
-            recalled = self._call(
-                "recall",
-                lambda: self.adapter.recall(
-                    FrameworkRecallRequest(
-                        identity=identity,
-                        query=query.query.strip() or "recent memories",
-                        top_k=query.top_k,
-                        memory_types=query.memory_types,
-                        since=query.since,
-                        max_tokens=max(64, min(8192, query.max_context_chars // 2)),
-                    )
-                ),
+            recall_request = FrameworkRecallRequest(
+                identity=identity,
+                query=query.query.strip() or "recent memories",
+                top_k=query.top_k,
+                memory_types=query.memory_types,
+                since=query.since,
+                max_tokens=max(64, min(8192, query.max_context_chars // 2)),
+            )
+            recalled = self._call("recall", lambda: self.adapter.recall(recall_request))
+            recalled = self._wait_for_mem0_recent_retain_visibility(
+                query=query,
+                identity=identity,
+                request=recall_request,
+                recalled=recalled,
             )
         except Exception:
             return self._fallback_search(query)
@@ -121,11 +130,16 @@ class FrameworkMemoryStore:
             for record in records
             if (item := self._item_from_record(record, query)) is not None
         ]
+        ranking_reason = f"framework_{self.adapter.name}_managed_recall"
+        if not items and not recalled.records:
+            items = self._recent_retain_items_for_query(query=query, identity=identity)
+            if items:
+                ranking_reason = "framework_mem0_recent_retain_consistency"
         return MemorySearchResult(
             items=items,
             query_used=query,
             total=len(items),
-            ranking_reason=f"framework_{self.adapter.name}_managed_recall",
+            ranking_reason=ranking_reason,
             memory_context=format_memory_context(items, max_chars=query.max_context_chars),
         )
 
@@ -188,6 +202,7 @@ class FrameworkMemoryStore:
                 identity=identity,
             )
             if cancelled:
+                self._drop_recent_retain(user_id=user_id, project_memory_id=memory_id, identity=identity)
                 self.ledger.record_tombstone(
                     user_id=user_id,
                     project_memory_id=memory_id,
@@ -195,6 +210,12 @@ class FrameworkMemoryStore:
                 )
                 return True
             return False
+        for mapping in mappings:
+            self._drop_recent_retain(
+                user_id=user_id,
+                project_memory_id=memory_id,
+                identity=mapping.identity,
+            )
         for mapping in mappings:
             self.ledger.record_tombstone(
                 user_id=user_id,
@@ -253,6 +274,7 @@ class FrameworkMemoryStore:
                 if isinstance(request, dict) and request.get("project_memory_id"):
                     self.delete(user_id, str(request["project_memory_id"]))
         self.ledger.clear_confirmations(user_id=user_id)
+        self._drop_recent_retain(user_id=user_id)
 
     def retry_outbox(self, *, limit: int = 100) -> FrameworkRetryReport:
         attempted = succeeded = failed = 0
@@ -377,6 +399,13 @@ class FrameworkMemoryStore:
                 engine_name=self.adapter.name,
                 identity=request.identity,
             )
+        self._mark_recent_retain(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            session_id=session_id,
+            request=request,
+        )
 
     def _identity_for_query(self, query: MemoryQuery):
         return bind_engine_identity(
@@ -389,6 +418,129 @@ class FrameworkMemoryStore:
             ),
             namespace=self.identity_namespace,
         )
+
+    def _mark_recent_retain(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None,
+        project_id: str | None,
+        session_id: str | None,
+        request: FrameworkRetainRequest,
+    ) -> None:
+        if self.adapter.name != "mem0":
+            return
+        key = self._recent_retain_key(user_id=user_id, identity=request.identity)
+        now = time.monotonic()
+        self._recent_retain_scopes[key] = now + _MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS
+        item = MemoryItem(
+            memory_id=request.project_memory_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            project_id=project_id,
+            session_id=session_id,
+            memory_type=request.memory_type,
+            summary=request.text,
+            content={"framework": self.adapter.name, "_framework_recent_retain_consistency": True},
+            source=request.source,
+            created_at=request.created_at,
+        )
+        item_expires_at = now + _MEM0_RECENT_RETAIN_CACHE_SECONDS
+        retained = self._recent_retain_items.setdefault(key, [])
+        retained.append((item_expires_at, item))
+        self._recent_retain_items[key] = retained[-10:]
+
+    def _wait_for_mem0_recent_retain_visibility(
+        self,
+        *,
+        query: MemoryQuery,
+        identity,
+        request: FrameworkRecallRequest,
+        recalled: FrameworkRecallResult,
+    ) -> FrameworkRecallResult:
+        if recalled.records or not self._has_recent_retain(user_id=query.user_id, identity=identity):
+            return recalled
+        deadline = time.monotonic() + _MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS
+        current = recalled
+        while time.monotonic() < deadline:
+            time.sleep(_MEM0_RECALL_CONSISTENCY_POLL_SECONDS)
+            current = self._call("recall", lambda: self.adapter.recall(request))
+            if current.records:
+                return current
+        return current
+
+    def _has_recent_retain(self, *, user_id: str, identity) -> bool:
+        if self.adapter.name != "mem0":
+            return False
+        now = self._prune_recent_retains()
+        return self._recent_retain_scopes.get(self._recent_retain_key(user_id=user_id, identity=identity), 0) > now
+
+    def _recent_retain_items_for_query(self, *, query: MemoryQuery, identity) -> list[MemoryItem]:
+        if self.adapter.name != "mem0":
+            return []
+        now = self._prune_recent_retains()
+        key = self._recent_retain_key(user_id=query.user_id, identity=identity)
+        items: list[MemoryItem] = []
+        for expires_at, item in self._recent_retain_items.get(key, []):
+            if expires_at <= now:
+                continue
+            if query.memory_types and item.memory_type not in query.memory_types:
+                continue
+            if query.since is not None and item.created_at < query.since:
+                continue
+            if self.ledger.is_tombstoned(
+                user_id=query.user_id,
+                project_memory_id=item.memory_id,
+                engine_id=f"eng-{item.memory_id}",
+            ):
+                continue
+            items.append(item)
+        return items[: query.top_k]
+
+    def _drop_recent_retain(
+        self,
+        *,
+        user_id: str,
+        project_memory_id: str | None = None,
+        identity=None,
+    ) -> None:
+        keys = list(self._recent_retain_items)
+        for key in keys:
+            if key[0] != user_id:
+                continue
+            if identity is not None and key != self._recent_retain_key(user_id=user_id, identity=identity):
+                continue
+            if project_memory_id is None:
+                self._recent_retain_items.pop(key, None)
+                self._recent_retain_scopes.pop(key, None)
+                continue
+            retained = [
+                (expires_at, item)
+                for expires_at, item in self._recent_retain_items.get(key, [])
+                if item.memory_id != project_memory_id
+            ]
+            if retained:
+                self._recent_retain_items[key] = retained
+            else:
+                self._recent_retain_items.pop(key, None)
+                self._recent_retain_scopes.pop(key, None)
+
+    def _prune_recent_retains(self) -> float:
+        now = time.monotonic()
+        expired = [key for key, expires_at in self._recent_retain_scopes.items() if expires_at <= now]
+        for key in expired:
+            self._recent_retain_scopes.pop(key, None)
+        for key, retained in list(self._recent_retain_items.items()):
+            current = [(expires_at, item) for expires_at, item in retained if expires_at > now]
+            if current:
+                self._recent_retain_items[key] = current
+            else:
+                self._recent_retain_items.pop(key, None)
+        return now
+
+    @staticmethod
+    def _recent_retain_key(*, user_id: str, identity) -> tuple[str, str, str, str, str]:
+        return (user_id, identity.user_id, identity.agent_id, identity.run_id, identity.tenant_tag)
 
     def _item_from_record(self, record: FrameworkMemoryRecord, query: MemoryQuery) -> MemoryItem | None:
         memory_id = record.project_memory_id or record.engine_id
