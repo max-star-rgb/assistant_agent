@@ -119,6 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Add a ReAct detail section with prompt-safe decision/tool evidence.",
     )
+    parser.add_argument(
+        "--latency-stages",
+        action="store_true",
+        help="Expand per-stage rows inside Turn latency. By default Timeline owns detailed stages.",
+    )
     parser.add_argument("--json", dest="json_output", action="store_true", help="Print a JSON summary.")
     parser.add_argument(
         "--follow",
@@ -196,7 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.json_output:
             print(json.dumps(_json_ready(payload), ensure_ascii=False, indent=2))
             return 0
-        print(_format_human(payload, show_errors=args.errors, sections=sections))
+        print(_format_human(payload, show_errors=args.errors, sections=sections, show_latency_stages=args.latency_stages))
         return 0
 
     events = _find_local_events(args.trace_path, args.identifier, session_id=args.session_id)
@@ -209,7 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(_json_ready(payload), ensure_ascii=False, indent=2))
         return 0
 
-    print(_format_human(payload, show_errors=args.errors, sections=sections))
+    print(_format_human(payload, show_errors=args.errors, sections=sections, show_latency_stages=args.latency_stages))
     return 0
 
 
@@ -304,7 +309,15 @@ def _follow_local_trace(args: argparse.Namespace, sections: tuple[str, ...]) -> 
                 if args.session_id is None and current_session_id != previous_session_id:
                     print(_format_follow_session_separator(payload, current_session_id))
                     previous_session_id = current_session_id
-                print(_format_human(payload, show_errors=args.errors, sections=sections), flush=True)
+                print(
+                    _format_human(
+                        payload,
+                        show_errors=args.errors,
+                        sections=sections,
+                        show_latency_stages=args.latency_stages,
+                    ),
+                    flush=True,
+                )
                 previous_signature = signature
                 printed_any = True
                 printed_updates += 1
@@ -507,7 +520,13 @@ def _duration_ms(events: list[TraceEvent]) -> int | None:
     return max(0, round((finished_at - started_at).total_seconds() * 1000))
 
 
-def _format_human(payload: dict[str, Any], *, show_errors: bool, sections: tuple[str, ...] = ("timeline",)) -> str:
+def _format_human(
+    payload: dict[str, Any],
+    *,
+    show_errors: bool,
+    sections: tuple[str, ...] = ("timeline",),
+    show_latency_stages: bool = False,
+) -> str:
     lines = [_format_header(payload)]
     events = payload.get("events", [])
     conversation = payload.get("conversation")
@@ -525,7 +544,7 @@ def _format_human(payload: dict[str, Any], *, show_errors: bool, sections: tuple
     if "timeline" in sections:
         turn_latency = payload.get("turn_latency")
         if isinstance(turn_latency, dict):
-            lines.extend(("", *_format_turn_latency(turn_latency)))
+            lines.extend(("", *_format_turn_latency(turn_latency, show_stages=show_latency_stages)))
         if show_errors or isinstance(turn_latency, dict) or ("conversation" in sections and isinstance(conversation, dict)):
             lines.extend(("", "Timeline"))
         for index, event in enumerate(events, start=1):
@@ -626,7 +645,7 @@ def _append_context_evidence(details: list[str], context: Any) -> None:
             details.append(f"sources={_compact_value(compact_counts)}")
 
 
-def _format_turn_latency(summary: dict[str, Any]) -> list[str]:
+def _format_turn_latency(summary: dict[str, Any], *, show_stages: bool = False) -> list[str]:
     status = _plain_value(summary.get("status"))
     delivery = _plain_value(summary.get("delivery_id"))
     session_turn = _plain_value(summary.get("session_turn"))
@@ -648,16 +667,17 @@ def _format_turn_latency(summary: dict[str, Any]) -> list[str]:
             f"{_milliseconds(summary.get('bottleneck_ms'))}{share_text}"
         )
 
-    stages = summary.get("stages")
-    stage_items = [item for item in stages if isinstance(item, dict)] if isinstance(stages, list) else []
-    unattributed_ms = summary.get("unattributed_ms")
-    if isinstance(unattributed_ms, int) and unattributed_ms > 0 and not any(
-        item.get("name") == "unattributed" for item in stage_items
-    ):
-        stage_items.append({"name": "unattributed", "duration_ms": unattributed_ms})
-    if stage_items:
-        lines.append("  Stages")
-        lines.extend(_format_latency_stage(item) for item in stage_items)
+    if show_stages:
+        stages = summary.get("stages")
+        stage_items = [item for item in stages if isinstance(item, dict)] if isinstance(stages, list) else []
+        unattributed_ms = summary.get("unattributed_ms")
+        if isinstance(unattributed_ms, int) and unattributed_ms > 0 and not any(
+            item.get("name") == "unattributed" for item in stage_items
+        ):
+            stage_items.append({"name": "unattributed", "duration_ms": unattributed_ms})
+        if stage_items:
+            lines.append("  Stages")
+            lines.extend(_format_latency_stage(item) for item in stage_items)
 
     ack_status = _plain_value(summary.get("ack_status"))
     ack_latency = summary.get("ack_latency_ms")

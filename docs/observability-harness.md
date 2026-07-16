@@ -385,6 +385,7 @@ Local CLI:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --sections timeline,react
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline,react --errors --follow
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline --latency-stages
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --json
@@ -412,8 +413,10 @@ conversation 查不到时标记 unavailable，仍继续输出 Timeline 和 ReAct
 `--sections` 控制输出层级：`conversation` 需要 `--server` 且 server 已用
 `--allow-local-trace-content` 启动；`timeline` 是默认事件线；`react` 展示
 prompt-safe 的 LLM 决策、validator、tool 调用、耗时、错误和恢复动作证据。server-backed
-view 会在事件 timeline 前渲染 `turn_latency`、stage rows、bottleneck、ACK state 和
-consumed-video diagnostics。Conversation text 不会写入 trace events 或 JSONL。
+view 会在事件 timeline 前渲染 `turn_latency` 摘要、bottleneck、ACK state 和
+consumed-video diagnostics；详细 stage 默认交给 `timeline`，需要在 `Turn latency`
+中展开旧版 stage rows 时再加 `--latency-stages`。Conversation text 不会写入 trace events
+或 JSONL。
 
 推荐 PyCharm 本地流程：
 

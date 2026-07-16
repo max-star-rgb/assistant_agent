@@ -225,6 +225,64 @@ def test_trace_view_follow_server_keeps_timeline_when_conversation_is_missing(tm
     assert "decision=tool_call" in result.stdout
 
 
+def test_trace_view_turn_latency_hides_stage_rows_by_default(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_sample_trace(trace_path)
+    server = _TraceViewServer({"/traces/trace_new": _server_trace_payload_with_turn_latency()})
+    server.start()
+    try:
+        result = _run_trace_view(
+            "last",
+            "--trace-path",
+            str(trace_path),
+            "--server",
+            server.url,
+            "--sections",
+            "timeline",
+        )
+    finally:
+        server.stop()
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "Turn latency" in result.stdout
+    assert "bottleneck=llm_chat[1] 6906ms (97.9%)" in result.stdout
+    assert "ACK: not_negotiated" in result.stdout
+    assert "Video: source=realtime_video_context pending=1 in_flight=true fallback=false" in result.stdout
+    assert "  Stages" not in result.stdout
+    assert "    llm_chat[1]" not in result.stdout
+    assert "Timeline" in result.stdout
+    assert "llm.chat.finished" in result.stdout
+
+
+def test_trace_view_latency_stages_flag_outputs_stage_rows(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_sample_trace(trace_path)
+    server = _TraceViewServer({"/traces/trace_new": _server_trace_payload_with_turn_latency()})
+    server.start()
+    try:
+        result = _run_trace_view(
+            "last",
+            "--trace-path",
+            str(trace_path),
+            "--server",
+            server.url,
+            "--sections",
+            "timeline",
+            "--latency-stages",
+        )
+    finally:
+        server.stop()
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "  Stages" in result.stdout
+    assert (
+        "    llm_chat[1] 6906ms iteration=1 provider=deepseek "
+        "model=deepseek-v4-flash provider_latency=218ms"
+    ) in result.stdout
+
+
 def _run_trace_view(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, SCRIPT_PATH, *args],
@@ -344,6 +402,42 @@ def _server_trace_payload() -> dict[str, Any]:
             ),
         ],
     }
+
+
+def _server_trace_payload_with_turn_latency() -> dict[str, Any]:
+    payload = _server_trace_payload()
+    payload["turn_latency"] = {
+        "schema_version": "agent_service_turn_latency_v1",
+        "status": "sent",
+        "delivery_id": "delivery_x",
+        "session_turn": 4,
+        "total_ms": 7052,
+        "trace_id": "trace_new",
+        "gateway_run_id": "gateway_run_x",
+        "assistant_run_id": "run_new",
+        "bottleneck": "llm_chat[1]",
+        "bottleneck_ms": 6906,
+        "bottleneck_share_pct": 97.9,
+        "ack_status": "not_negotiated",
+        "stages": [
+            {"name": "entry_parse", "duration_ms": 0},
+            {
+                "name": "llm_chat[1]",
+                "duration_ms": 6906,
+                "iteration": 1,
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "provider_latency_ms": 218,
+            },
+        ],
+        "video": {
+            "source": "realtime_video_context",
+            "pending_count": 1,
+            "in_flight": True,
+            "fallback_used": False,
+        },
+    }
+    return payload
 
 
 def _server_event(
