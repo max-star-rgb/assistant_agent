@@ -12,6 +12,7 @@ launch it without a module-based uvicorn run configuration.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -26,6 +27,7 @@ if str(SRC_ROOT) not in sys.path:
 from assistant_agent.config import ProviderConfig
 from assistant_agent.services.assistant_run_service import load_env_file, runtime_info
 from assistant_agent.services.operational_logging import (
+    GATEWAY_LOGGER_NAME,
     OPERATIONAL_CONSOLE_LEVEL_ENV,
     OPERATIONAL_CONSOLE_MODE_ENV,
     OPERATIONAL_FILE_LEVEL_ENV,
@@ -229,6 +231,22 @@ def _print_ignored_provider_hint(config: ProviderConfig) -> None:
         )
 
 
+def _log_gateway_server_starting(args: argparse.Namespace, log_dir: Path) -> None:
+    logging.getLogger(GATEWAY_LOGGER_NAME).info(
+        "server_starting host=%s port=%s log_dir=%s",
+        args.host,
+        args.port,
+        log_dir,
+        extra={
+            "component": "gateway",
+            "event": "gateway.server.starting",
+            "run_id": "-",
+            "turn_id": "-",
+            "trace_id": "-",
+        },
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     loaded_env = _prepare_environment(args)
@@ -247,6 +265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     os.environ[OPERATIONAL_FILE_LEVEL_ENV] = args.file_log_level
     os.environ[OPERATIONAL_CONSOLE_MODE_ENV] = args.console_mode
     configure_operational_logging_from_env()
+    _log_gateway_server_starting(args, log_dir)
 
     import uvicorn
 

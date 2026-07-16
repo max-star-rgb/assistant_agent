@@ -1,6 +1,6 @@
 # Observability Harness
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
 This document is the current entry for assistant run status, logs, monitoring,
 trace, and ReAct checkpoint observability. It defines the developer-facing
@@ -89,10 +89,12 @@ not a delivery authority.
 ## Operational Logging
 
 本地 server 在不改变 FastAPI 单进程结构的前提下提供 Gateway operational logging；
-Assistant runtime 开发视图统一通过 `scripts/trace_view.py --follow` 读取 canonical
-trace。控制台是面向开发者阅读的 Combined 摘要，`.data/logs/gateway.log` 只接收
-Gateway lifecycle。Combined 默认采用 `concise` 模式，只显示关键 Gateway lifecycle
-以及普通应用 WARNING/ERROR 的 logger 名；`component=runtime` 的文本日志不进入
+Gateway 开发视图通过 `scripts/gateway_view.py --follow` 读取 Gateway 机器日志，
+Assistant runtime 开发视图通过 `scripts/trace_view.py --follow` 读取 canonical
+trace。控制台是 Combined 摘要，`.data/logs/gateway.log` 接收 server 启动 marker
+与 Gateway lifecycle。Combined 默认采用 `concise` 模式，只显示关键 Gateway lifecycle
+以及普通应用 WARNING/ERROR 的 logger 名；Gateway 与 runtime 开发者 timeline
+都不依赖 Assistant Server 控制台分栏。`component=runtime` 的文本日志不进入
 Combined，即使 `verbose` 也不作为 runtime 观察入口。未经过安全投影的普通应用
 message 不在 Combined 原样显示，即使 `verbose` 也只显示其 logger 元数据。
 控制台 INFO/DEBUG 写 stdout，WARNING/ERROR 写
@@ -107,8 +109,10 @@ launcher 通过显式进程环境把 level/path 传给 `create_app()`，因此 r
 server 子进程会重新执行同一幂等配置。文件目录或 handler 打开失败时保留 Combined
 console 并 fail-open，不得阻止应用启动。
 
-Gateway 日志来自 `GatewayLifecycleEvent` 的 fail-open sink，覆盖 session、queue、
-admission、run、cancel、interrupt 和 terminal 边界。它保留 `run_id` / `turn_id`，
+Gateway 日志在 server 启动时先写一条 `gateway.server.starting` marker，便于
+`scripts/gateway_view.py --follow` 启动后立即显示内容；之后来自
+`GatewayLifecycleEvent` 的 fail-open sink，覆盖
+session、queue、admission、run、cancel、interrupt 和 terminal 边界。它保留 `run_id` / `turn_id`，
 但只记录 allowlist 内的状态、计数、reason/source 等 prompt-safe 字段；`user_id` 与
 `session_id` 使用稳定短摘要，不记录用户文本。Agent-Service 连接日志同样只记录
 query key、session 摘要和聚合计数，不记录 query value、原始 session ID 或媒体内容。
@@ -123,16 +127,25 @@ server `CompositeTraceStore` 只保留进程内 primary 与后台 JSONL persiste
 `concise` 和 `.data/logs`；`--file-log-level` 只控制 `gateway.log`。旧
 `--log-level` 仍作为同时覆盖 console/file level 的兼容 shorthand。共享 PyCharm 配置
 `.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器和 mock Provider 启动：
-Run console 是 Combined 页签，Gateway 页签跟随 `.data/logs/gateway.log`。
-`.run/Gateway Debug Turn.run.xml` 使用固定 `pycharm-debug-session` 发起一轮 Gateway
-调试请求；`.run/Trace Last.run.xml` 一次性展示同一 session 在
-`.data/graph_trace.jsonl` 中最后活跃的 run；`.run/Trace Follow.run.xml` 常驻跟随同一
-session 的 trace 文件，适合作为 runtime 开发观察页签。
-`.run/Trace Full.run.xml` 连接本地 server，按 Conversation、Timeline、ReAct detail
-三层查看最后一轮；`.run/Trace Full Follow.run.xml` 则常驻全局跟随完整三层视图。
+Run console 只保留 launcher 输出与 WARNING/ERROR。该配置显式设置 operational logging
+环境变量，确保 launcher 与 reload 后的 server 子进程写入同一 Gateway 文件，但不再
+声明 PyCharm `log_file` 页签。Gateway 开发观察统一运行 `.run/Gateway Follow.run.xml`，
+它执行 `scripts/gateway_view.py --log-path .data/logs/gateway.log --tail 50 --follow`。
+runtime 开发观察统一运行 `.run/Trace Follow.run.xml`，它常驻跟随
+`.data/graph_trace.jsonl`，连接本地 8089 server，按 Conversation、Timeline、ReAct
+detail 三层输出新的终态 run。
+
+对应关系保持明确：
+
+- Gateway 机器日志：`.data/logs/gateway.log`
+- Gateway 开发者视图：`scripts/gateway_view.py --follow`
+- AgentRuntime 机器 trace：`.data/graph_trace.jsonl`
+- AgentRuntime 开发者视图：`scripts/trace_view.py --follow`
+
 当全局 latest 切换到不同 session 时，trace viewer 会打印醒目的单行 `SESSION` banner。
-Conversation 层要求 server 已显式启用 `--allow-local-trace-content`。
-这些配置不启用 `--allow-local-trace-content`，也不保存密钥或 `.env` 路径。
+Conversation 层要求 server 已显式启用 `--allow-local-trace-content`；共享
+`.run/Assistant Server.run.xml` 已为本地调试启用该开关。Trace viewer 配置本身不保存
+密钥或 `.env` 路径。
 
 ## Realtime Video Observation
 
@@ -427,16 +440,16 @@ consumed-video diagnostics；详细 stage 默认交给 `timeline`，需要在 `T
 
 推荐 PyCharm 本地流程：
 
-1. 运行 `.run/Assistant Server.run.xml`。需要 Conversation 层时，临时给 server 参数增加
-   `--allow-local-trace-content`。
-2. 运行 `.run/Gateway Debug Turn.run.xml`，它固定使用
-   `--session-id pycharm-debug-session`。
-3. 运行 `.run/Trace Full Follow.run.xml`，它全局常驻输出
+1. 运行 `.run/Assistant Server.run.xml`。共享配置已带 `--allow-local-trace-content`，
+   并持续写 `.data/logs/gateway.log`；如果个人配置移除了内容开关，Conversation 层会不可用。
+2. 运行 `.run/Gateway Follow.run.xml`，它常驻输出 Gateway server、session、queue、
+   run、cancel 和 interrupt lifecycle。
+3. 运行 `.run/Trace Follow.run.xml`，它全局常驻输出
    Conversation -> Timeline -> ReAct detail，并在 session 切换时打印单行 banner。
 
-共享 `.run` 配置保持 `http://127.0.0.1:8000`。实际通话测试如果本机 server 跑在
-`8089`，复制对应 PyCharm 配置到个人配置后，把 `--server http://127.0.0.1:8000`
-改成 `--server http://127.0.0.1:8089`，不要把 `8089` 写回共享配置。
+共享 `.run` 配置与 `.run/Assistant Server.run.xml` 对齐为
+`http://127.0.0.1:8089`。实际通话测试如果本机 server 跑在其他端口，复制对应
+PyCharm 配置到个人配置后再修改 `--server`，不要把个人端口写回共享配置。
 
 For a one-off local debug view, restart the server with the explicit gate and
 request only the matching turn:

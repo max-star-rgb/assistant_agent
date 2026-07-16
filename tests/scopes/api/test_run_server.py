@@ -117,6 +117,9 @@ def test_run_server_suppresses_uvicorn_info_access_noise(monkeypatch, tmp_path) 
 
     assert captured["access_log"] is False
     assert captured["log_level"] == "warning"
+    gateway_raw = (tmp_path / "gateway.log").read_text(encoding="utf-8")
+    assert "event=gateway.server.starting" in gateway_raw
+    assert "server_starting host=127.0.0.1 port=8000" in gateway_raw
 
 
 def test_operational_logging_is_idempotent_and_writes_gateway_file_only(
