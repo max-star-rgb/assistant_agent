@@ -758,6 +758,69 @@ def test_native_video_tool_call_uses_non_agent_service_frame_context(tmp_path: P
     assert state.response.message == "眼前是一个白色水杯。"
 
 
+def test_agent_service_video_tool_call_waits_for_background_snapshot_instead_of_frame_fallback(
+    tmp_path: Path,
+) -> None:
+    video_id = "agent-service-video-live"
+    store = InMemoryVideoContextStore(window_size=3)
+    current_frame = tmp_path / "current.jpg"
+    current_frame.write_bytes(b"\xff\xd8jpeg\xff\xd9")
+    store.append_frame(
+        VideoFrame(
+            video_id=video_id,
+            frame_id="frame-current",
+            uri=str(current_frame),
+            sequence=1,
+        )
+    )
+    memory = RealtimeVideoMemoryStore()
+    memory.mark_pending(video_id, pending_count=1, in_flight=True)
+
+    class FailingIfCalledVideoAdapter:
+        def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+            raise AssertionError(f"query-time provider called for {request.video_ref}")
+
+    registry = create_default_registry(video_context_store=store)
+    registry.get("video_understanding").adapter = FailingIfCalledVideoAdapter()
+    adapter = NativeToolChatAdapter(
+        [
+            native_result("video_understanding", {"user_query": "识别眼前物体"}),
+            final_result("我还在获取画面信息，稍等一下。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        video_context_store=store,
+        realtime_video_memory_store=memory,
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="10086",
+            session_id="10086",
+            text="这是什么？",
+            video_ids=[video_id],
+            metadata={
+                "transport": "agent_service_websocket",
+                "gateway": {"session_config": {"entry_profile": "agent_service"}},
+            },
+        )
+    )
+
+    assert [call.tool_name for call in state.tool_calls] == ["video_understanding"]
+    assert state.tool_calls[0].status == "succeeded"
+    result = state.tool_results[0]
+    assert result.trace_summary is not None
+    assert result.trace_summary["source"] == "realtime_video_memory_unavailable"
+    assert result.trace_summary["fallback_used"] is False
+    tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
+    assert '"status": "pending"' in tool_messages[0]["content"]
+    assert "query-time provider called" not in str(state.errors)
+    assert state.response is not None
+    assert state.response.message == "我还在获取画面信息，稍等一下。"
+
+
 def test_agent_service_rejects_video_tool_call_without_active_video() -> None:
     class FailingIfCalledVideoAdapter:
         def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:

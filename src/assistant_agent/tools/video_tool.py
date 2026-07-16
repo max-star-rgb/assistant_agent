@@ -6,6 +6,7 @@ from time import time
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
 from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.video_adapter import (
     VideoUnderstandingAdapter,
     create_video_understanding_adapter,
@@ -45,11 +46,19 @@ class VideoUnderstandingTool(MockTool):
     def _run(self, input: VideoUnderstandingRequest, context: ToolContext) -> ToolResult:
         video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)
         observation_mode = context.metadata.get("realtime_video_observation") is True
+        agent_service_text_only = (
+            not observation_mode and _is_agent_service_realtime_video_tool_call(context)
+        )
         snapshot = None
         if video_ref and not observation_mode and self.memory_store is not None:
             snapshot = self.memory_store.snapshot(video_ref)
-            if snapshot is not None and snapshot.healthy:
+            if snapshot is not None and (
+                snapshot.healthy
+                or (agent_service_text_only and snapshot.last_success_sequence is not None)
+            ):
                 return self._memory_result(snapshot)
+        if agent_service_text_only:
+            return self._memory_unavailable_result(video_ref=video_ref, snapshot=snapshot)
 
         input = self._with_context_frames(input)
         try:
@@ -98,6 +107,7 @@ class VideoUnderstandingTool(MockTool):
     def _memory_result(self, snapshot: RealtimeVideoSnapshot) -> ToolResult:
         output_ref = f"memory://realtime-video/{_safe_ref(snapshot.video_id)}"
         payload = {
+            "status": _snapshot_status(snapshot),
             "summary": snapshot.current_state,
             "objects": list(snapshot.objects),
             "people": list(snapshot.people),
@@ -148,6 +158,78 @@ class VideoUnderstandingTool(MockTool):
                 snapshot=snapshot,
                 provider=snapshot.provider or "rolling_video_memory",
                 model=snapshot.model,
+            ),
+        )
+
+    def _memory_unavailable_result(
+        self,
+        *,
+        video_ref: str | None,
+        snapshot: RealtimeVideoSnapshot | None,
+    ) -> ToolResult:
+        output_ref = f"memory://realtime-video/{_safe_ref(video_ref or 'video')}/pending"
+        status = _snapshot_status(snapshot)
+        pending_count = snapshot.pending_count if snapshot is not None else 0
+        in_flight = snapshot.in_flight if snapshot is not None else False
+        payload = {
+            "status": status,
+            "summary": "实时视频理解文本还未就绪。",
+            "objects": [],
+            "people": [],
+            "actions": [],
+            "events": [],
+            "scene": None,
+            "products": [],
+            "brands": [],
+            "colors": [],
+            "materials": [],
+            "text_in_video": [],
+            "timestamps": [],
+            "style_tags": [],
+            "confidence": None,
+            "provider": "rolling_video_memory",
+            "model": None,
+            "output_ref": output_ref,
+            "errors": [],
+            "latency_ms": 0,
+            "source": "realtime_video_memory_unavailable",
+            "snapshot_sequence": (
+                snapshot.last_success_sequence if snapshot is not None else None
+            ),
+            "observed_timestamp_ms": (
+                snapshot.last_success_timestamp_ms if snapshot is not None else None
+            ),
+            "pending_count": pending_count,
+            "in_flight": in_flight,
+            "error_code": _snapshot_error_code(snapshot),
+        }
+        contract = build_capability_output_contract(
+            capability="video_understanding",
+            status="partial",
+            output_ref=output_ref,
+            data=payload,
+            metadata={
+                "provider": payload["provider"],
+                "model": payload["model"],
+                "latency_ms": 0,
+                "source": "realtime_video_memory_unavailable",
+                "status": status,
+                "pending_count": pending_count,
+                "in_flight": in_flight,
+            },
+        )
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data=payload,
+            output_ref=output_ref,
+            latency_ms=0,
+            contract=contract,
+            trace_summary=self._trace_summary(
+                source="realtime_video_memory_unavailable",
+                snapshot=snapshot,
+                provider="rolling_video_memory",
+                model=None,
             ),
         )
 
@@ -210,6 +292,38 @@ def _error_code(message: str) -> str:
     if ":" in message:
         return message.split(":", maxsplit=1)[0]
     return "video_understanding_failed"
+
+
+def _is_agent_service_realtime_video_tool_call(context: ToolContext) -> bool:
+    request_metadata = context.metadata.get("request_metadata")
+    if not isinstance(request_metadata, dict):
+        return False
+    return is_trusted_agent_service_request(request_metadata)
+
+
+def _snapshot_status(snapshot: RealtimeVideoSnapshot | None) -> str:
+    if snapshot is None:
+        return "unavailable"
+    has_success = snapshot.last_success_sequence is not None
+    pending = snapshot.in_flight or snapshot.pending_count > 0
+    if has_success and pending:
+        return "refreshing"
+    if has_success and snapshot.last_observation_status == "failed":
+        return "stale"
+    if has_success:
+        return "ready"
+    if pending:
+        return "pending"
+    if snapshot.last_observation_status == "failed":
+        return "failed"
+    return "unavailable"
+
+
+def _snapshot_error_code(snapshot: RealtimeVideoSnapshot | None) -> str | None:
+    if snapshot is None or not isinstance(snapshot.last_error, dict):
+        return None
+    code = snapshot.last_error.get("code")
+    return str(code) if code else None
 
 
 def _safe_ref(value: str) -> str:

@@ -180,8 +180,11 @@ The runtime owns a bounded semantic snapshot per opaque `video_id`. Immediately
 before every Agent-Service model context build it projects the latest snapshot
 into the independent `realtime_video_context` section. Thus the first DeepSeek
 decision can use completed Qwen observations or call dynamically exposed
-`video_understanding` when it needs current visual facts. Query-time video
-understanding consumes rolling memory or recent frames inside the tool. Frame
+`video_understanding` when it needs current visual facts. For Agent-Service,
+query-time `video_understanding` consumes only rolling semantic memory produced
+by the background observer; if no semantic text is available yet, the tool
+returns a prompt-safe `pending` / `failed` / `unavailable` observation for the
+LLM to explain instead of calling the video Provider with raw frames. Frame
 freshness uses capture age; snapshot publication age remains a separate
 diagnostic. Ordinary non-Agent-Service video/API requests retain the explicit
 `video_understanding` tool and `recent_frame_fallback` behavior.
