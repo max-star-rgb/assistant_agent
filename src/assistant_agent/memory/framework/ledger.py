@@ -9,8 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from assistant_agent.schemas.memory import MemoryScope
 from assistant_agent.schemas.memory_framework import MemoryEngineIdentity
 from assistant_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
+
+_PROJECT_ENGINE_SCOPES = {"project", "task", "video", "product"}
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,7 @@ class FrameworkMemoryMapping:
     tenant_id: str | None
     project_id: str | None
     session_id: str | None
+    scope: MemoryScope | None
     project_memory_id: str
     engine_id: str
     engine_name: str
@@ -65,6 +69,7 @@ class FrameworkGovernanceLedger:
                     tenant_id TEXT,
                     project_id TEXT,
                     session_id TEXT,
+                    scope TEXT,
                     project_memory_id TEXT NOT NULL,
                     engine_id TEXT NOT NULL,
                     engine_name TEXT NOT NULL,
@@ -122,7 +127,7 @@ class FrameworkGovernanceLedger:
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(framework_memory_mappings)").fetchall()
             }
-            for name in ("tenant_id", "project_id", "session_id"):
+            for name in ("tenant_id", "project_id", "session_id", "scope"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE framework_memory_mappings ADD COLUMN {name} TEXT")
 
@@ -133,6 +138,7 @@ class FrameworkGovernanceLedger:
         tenant_id: str | None,
         project_id: str | None,
         session_id: str | None,
+        scope: MemoryScope | None = None,
         project_memory_id: str,
         engine_id: str,
         engine_name: str,
@@ -141,14 +147,15 @@ class FrameworkGovernanceLedger:
         with self._connect() as connection:
             connection.execute(
                 """INSERT OR REPLACE INTO framework_memory_mappings
-                   (user_id, tenant_id, project_id, session_id, project_memory_id,
+                   (user_id, tenant_id, project_id, session_id, scope, project_memory_id,
                     engine_id, engine_name, identity_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     user_id,
                     tenant_id,
                     project_id,
                     session_id,
+                    scope,
                     project_memory_id,
                     engine_id,
                     engine_name,
@@ -172,6 +179,7 @@ class FrameworkGovernanceLedger:
                 tenant_id=row["tenant_id"],
                 project_id=row["project_id"],
                 session_id=row["session_id"],
+                scope=row["scope"],
                 project_memory_id=row["project_memory_id"],
                 engine_id=row["engine_id"],
                 engine_name=row["engine_name"],
@@ -251,10 +259,10 @@ class FrameworkGovernanceLedger:
             identity_matches = True
             if identity is not None and isinstance(request_identity, dict):
                 queued_identity = MemoryEngineIdentity.model_validate(request_identity)
-                identity_matches = (
-                    queued_identity.user_id == identity.user_id
-                    and queued_identity.agent_id == identity.agent_id
-                    and queued_identity.tenant_tag == identity.tenant_tag
+                identity_matches = _identity_matches_scope(
+                    queued_identity,
+                    identity,
+                    scope=request.get("scope") if isinstance(request, dict) else None,
                 )
             if (
                 entry.operation == "retain"
@@ -390,3 +398,20 @@ class FrameworkGovernanceLedger:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _identity_matches_scope(
+    queued_identity: MemoryEngineIdentity,
+    identity: MemoryEngineIdentity,
+    *,
+    scope: str | None,
+) -> bool:
+    if queued_identity.user_id != identity.user_id or queued_identity.tenant_tag != identity.tenant_tag:
+        return False
+    if scope is None:
+        return queued_identity.agent_id == identity.agent_id
+    if scope == "user_profile":
+        return True
+    if scope in _PROJECT_ENGINE_SCOPES:
+        return queued_identity.agent_id == identity.agent_id
+    return queued_identity.agent_id == identity.agent_id and queued_identity.run_id == identity.run_id

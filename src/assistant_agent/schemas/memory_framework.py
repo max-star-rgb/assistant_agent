@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from assistant_agent.schemas.memory import MemoryType
+from assistant_agent.schemas.memory import MemoryScope, MemoryType
 
 
 MemoryFrameworkName = Literal["hindsight", "mem0"]
@@ -33,6 +33,8 @@ _UNSAFE_KEYS = {
     "token",
 }
 
+_PROJECT_ENGINE_SCOPES = {"project", "task", "video", "product"}
+
 
 class MemoryEngineIdentity(BaseModel):
     """Opaque, stable identifiers bound from trusted RequestIdentity."""
@@ -50,9 +52,25 @@ class MemoryEngineIdentity(BaseModel):
     def hindsight_tags(self) -> list[str]:
         return [self.tenant_tag, self.user_tag, self.project_tag, self.session_tag]
 
+    def hindsight_tags_for_scope(self, scope: MemoryScope | str | None) -> list[str]:
+        resolved = scope or "session"
+        if resolved == "user_profile":
+            return [self.tenant_tag, self.user_tag]
+        if resolved in _PROJECT_ENGINE_SCOPES:
+            return [self.tenant_tag, self.user_tag, self.project_tag]
+        return self.hindsight_tags
+
     @property
     def mem0_filters(self) -> dict[str, str]:
         return {"user_id": self.user_id, "agent_id": self.agent_id, "run_id": self.run_id}
+
+    def mem0_filters_for_scope(self, scope: MemoryScope | str | None) -> dict[str, str]:
+        resolved = scope or "session"
+        if resolved == "user_profile":
+            return {"user_id": self.user_id}
+        if resolved in _PROJECT_ENGINE_SCOPES:
+            return {"user_id": self.user_id, "agent_id": self.agent_id}
+        return self.mem0_filters
 
 
 class FrameworkRetainRequest(BaseModel):
@@ -60,6 +78,7 @@ class FrameworkRetainRequest(BaseModel):
     project_memory_id: str = Field(min_length=1, max_length=256)
     text: str = Field(min_length=1, max_length=20_000)
     memory_type: MemoryType
+    scope: MemoryScope = "session"
     source: str = Field(min_length=1, max_length=128)
     created_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -75,6 +94,7 @@ class FrameworkRetainRequest(BaseModel):
 class FrameworkRecallRequest(BaseModel):
     identity: MemoryEngineIdentity
     query: str = Field(min_length=1, max_length=4000)
+    scope: MemoryScope = "session"
     top_k: int = Field(default=5, ge=1, le=50)
     memory_types: list[MemoryType] = Field(default_factory=list)
     since: datetime | None = None

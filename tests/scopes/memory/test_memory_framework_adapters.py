@@ -158,7 +158,19 @@ def test_hindsight_retain_rejects_success_without_a_queryable_memory() -> None:
     assert result.accepted is False
 
 
-def test_mem0_uses_filters_and_never_accepts_model_supplied_identity() -> None:
+@pytest.mark.parametrize(
+    ("scope_name", "expected_filter_keys"),
+    [
+        ("session", {"user_id", "agent_id", "run_id"}),
+        ("project", {"user_id", "agent_id"}),
+        ("task", {"user_id", "agent_id"}),
+        ("user_profile", {"user_id"}),
+    ],
+)
+def test_mem0_uses_scope_aware_filters_and_never_accepts_model_supplied_identity(
+    scope_name,
+    expected_filter_keys,
+) -> None:
     requests: list[FrameworkHttpRequest] = []
 
     def transport(request: FrameworkHttpRequest):
@@ -179,19 +191,20 @@ def test_mem0_uses_filters_and_never_accepts_model_supplied_identity() -> None:
             created_at=NOW,
             metadata={"user_id": "attacker", "project_id": "attacker"},
             idempotency_key="retain:memory-1",
+            scope=scope_name,
         )
     )
-    recalled = adapter.recall(FrameworkRecallRequest(identity=scope, query="偏好", top_k=3))
+    recalled = adapter.recall(FrameworkRecallRequest(identity=scope, query="偏好", top_k=3, scope=scope_name))
 
     retain_body = requests[0].body
-    assert retain_body["user_id"] == scope.user_id
-    assert retain_body["agent_id"] == scope.agent_id
-    assert retain_body["run_id"] == scope.run_id
+    expected_filters = scope.mem0_filters_for_scope(scope_name)
+    assert {key for key in retain_body if key in {"user_id", "agent_id", "run_id"}} == expected_filter_keys
+    assert {key: retain_body[key] for key in expected_filter_keys} == expected_filters
     assert retain_body["infer"] is False
     assert retain_body["metadata"]["project_memory_id"] == "memory-1"
     assert "user_id" not in retain_body["metadata"]
     assert requests[1].path == "/search"
-    assert requests[1].body["filters"] == scope.mem0_filters
+    assert requests[1].body["filters"] == expected_filters
     assert recalled.records[0].relevance == 0.91
 
 

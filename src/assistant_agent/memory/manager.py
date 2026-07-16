@@ -184,7 +184,9 @@ class MemoryManager:
         """Search memory for an identity, ignoring caller-supplied user_id."""
 
         scoped_query = _query_for_identity(identity, query)
-        if bool(getattr(self.store, "session_scoped_engine_identity", False)):
+        if bool(getattr(self.store, "requires_identity_session", False)) or bool(
+            getattr(self.store, "session_scoped_engine_identity", False)
+        ):
             scoped_query = scoped_query.model_copy(update={"session_id": identity.session_id})
         result = self.search(scoped_query)
         self._record_remote_search_event(identity=identity, result=result)

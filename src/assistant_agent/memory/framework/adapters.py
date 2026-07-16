@@ -113,7 +113,7 @@ class HindsightMemoryEngineAdapter(_HttpEngineAdapter):
                         "context": f"{request.memory_type}:{request.source}",
                         "timestamp": request.created_at.isoformat(),
                         "document_id": request.project_memory_id,
-                        "tags": request.identity.hindsight_tags,
+                        "tags": request.identity.hindsight_tags_for_scope(request.scope),
                         "metadata": _hindsight_metadata(request.metadata, request),
                     }
                 ],
@@ -142,7 +142,7 @@ class HindsightMemoryEngineAdapter(_HttpEngineAdapter):
                 "query": request.query,
                 "budget": "mid",
                 "max_tokens": request.max_tokens,
-                "tags": request.identity.hindsight_tags,
+                "tags": request.identity.hindsight_tags_for_scope(request.scope),
                 "tags_match": "all_strict",
                 "query_timestamp": request.since.isoformat() if request.since else None,
             },
@@ -158,7 +158,7 @@ class HindsightMemoryEngineAdapter(_HttpEngineAdapter):
                 "query": request.query,
                 "budget": "low",
                 "max_tokens": request.max_tokens,
-                "tags": request.identity.hindsight_tags,
+                "tags": request.identity.hindsight_tags_for_scope(request.scope),
                 "tags_match": "all_strict",
             },
         )
@@ -220,7 +220,7 @@ class Mem0MemoryEngineAdapter(_HttpEngineAdapter):
             "/memories",
             body={
                 "messages": [{"role": "user", "content": request.text}],
-                **request.identity.mem0_filters,
+                **request.identity.mem0_filters_for_scope(request.scope),
                 "metadata": _safe_metadata(request.metadata, request),
                 "infer": False,
             },
@@ -236,7 +236,11 @@ class Mem0MemoryEngineAdapter(_HttpEngineAdapter):
         payload = self._request(
             "POST",
             "/search",
-            body={"query": request.query, "filters": request.identity.mem0_filters, "top_k": request.top_k},
+            body={
+                "query": request.query,
+                "filters": request.identity.mem0_filters_for_scope(request.scope),
+                "top_k": request.top_k,
+            },
             headers=self._headers,
         )
         records = [_mem0_record(value) for value in _mapping_list(payload.get("results"))]
@@ -275,6 +279,7 @@ def _safe_metadata(metadata: Mapping[str, Any], request: FrameworkRetainRequest)
         **{str(key): value for key, value in metadata.items() if str(key).lower() not in reserved},
         "project_memory_id": request.project_memory_id,
         "memory_type": request.memory_type,
+        "scope": request.scope,
         "source": request.source,
         "idempotency_key": request.idempotency_key,
     }
@@ -300,7 +305,7 @@ def _hindsight_record(value: Mapping[str, Any]) -> FrameworkMemoryRecord:
         memory_type=_memory_type(metadata.get("memory_type")),
         source=str(metadata.get("source") or "hindsight"),
         created_at=_datetime(value.get("occurred_start") or value.get("date")),
-        metadata={key: metadata[key] for key in ("project_memory_id", "memory_type", "source") if key in metadata},
+        metadata={key: metadata[key] for key in ("project_memory_id", "memory_type", "scope", "source") if key in metadata},
     )
 
 
@@ -314,7 +319,7 @@ def _mem0_record(value: Mapping[str, Any]) -> FrameworkMemoryRecord:
         source=str(metadata.get("source") or "mem0"),
         created_at=_datetime(value.get("created_at") or value.get("updated_at")),
         relevance=_score(value.get("score")),
-        metadata={key: metadata[key] for key in ("project_memory_id", "memory_type", "source") if key in metadata},
+        metadata={key: metadata[key] for key in ("project_memory_id", "memory_type", "scope", "source") if key in metadata},
     )
 
 

@@ -9,13 +9,20 @@ from typing import Any
 from assistant_agent.memory.framework.base import MemoryEngineAdapter, bind_engine_identity
 from assistant_agent.memory.framework.ledger import (
     FrameworkGovernanceLedger,
+    FrameworkMemoryMapping,
     FrameworkRetryReport,
 )
 from assistant_agent.memory.remote import MemoryServiceOperationError
 from assistant_agent.memory.retrieval import format_memory_context
 from assistant_agent.memory.store import MemoryStore
 from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
+from assistant_agent.schemas.memory import (
+    MemoryItem,
+    MemoryQuery,
+    MemoryScope,
+    MemorySearchResult,
+    memory_scope_for_item,
+)
 from assistant_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
 from assistant_agent.schemas.memory_framework import (
     FrameworkMemoryRecord,
@@ -28,13 +35,15 @@ from assistant_agent.schemas.memory_framework import (
 _MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS = 5.0
 _MEM0_RECALL_CONSISTENCY_POLL_SECONDS = 0.25
 _MEM0_RECENT_RETAIN_CACHE_SECONDS = 60.0
+_PROJECT_ENGINE_SCOPES: set[MemoryScope] = {"project", "task", "video", "product"}
+_VALID_ENGINE_SCOPES: set[MemoryScope] = {"session", "project", "task", "user_profile", "video", "product"}
 
 
 class FrameworkMemoryStore:
     """Framework lifecycle owner; optional v2 store is read-only fallback."""
 
     framework_managed_algorithms = True
-    session_scoped_engine_identity = True
+    requires_identity_session = True
 
     def __init__(
         self,
@@ -48,8 +57,8 @@ class FrameworkMemoryStore:
         self.ledger = ledger
         self.identity_namespace = identity_namespace
         self.read_fallback = read_fallback
-        self._recent_retain_scopes: dict[tuple[str, str, str, str, str], float] = {}
-        self._recent_retain_items: dict[tuple[str, str, str, str, str], list[tuple[float, MemoryItem]]] = {}
+        self._recent_retain_scopes: dict[tuple[str, str, str, str, str, str], float] = {}
+        self._recent_retain_items: dict[tuple[str, str, str, str, str, str], list[tuple[float, MemoryItem]]] = {}
 
     def save(self, item: MemoryItem) -> MemoryItem:
         request = self._retain_request(item)
@@ -76,6 +85,7 @@ class FrameworkMemoryStore:
                     "tenant_id": item.tenant_id,
                     "project_id": item.project_id,
                     "session_id": item.session_id,
+                    "scope": request.scope,
                     "request": request.model_dump(mode="json"),
                 },
             )
@@ -93,46 +103,63 @@ class FrameworkMemoryStore:
 
     def search(self, query: MemoryQuery) -> MemorySearchResult:
         identity = self._identity_for_query(query)
+        recall_scopes = self._recall_scopes_for_query(query)
+        records_with_scope: list[tuple[FrameworkMemoryRecord, MemoryScope]] = []
         try:
-            recall_request = FrameworkRecallRequest(
-                identity=identity,
-                query=query.query.strip() or "recent memories",
-                top_k=query.top_k,
-                memory_types=query.memory_types,
-                since=query.since,
-                max_tokens=max(64, min(8192, query.max_context_chars // 2)),
-            )
-            recalled = self._call("recall", lambda: self.adapter.recall(recall_request))
-            recalled = self._wait_for_mem0_recent_retain_visibility(
-                query=query,
-                identity=identity,
-                request=recall_request,
-                recalled=recalled,
-            )
+            for recall_scope in recall_scopes:
+                recall_request = FrameworkRecallRequest(
+                    identity=identity,
+                    query=query.query.strip() or "recent memories",
+                    scope=recall_scope,
+                    top_k=query.top_k,
+                    memory_types=query.memory_types,
+                    since=query.since,
+                    max_tokens=max(64, min(8192, query.max_context_chars // 2)),
+                )
+                recalled = self._call("recall", lambda request=recall_request: self.adapter.recall(request))
+                recalled = self._wait_for_mem0_recent_retain_visibility(
+                    query=query,
+                    identity=identity,
+                    scope=recall_scope,
+                    request=recall_request,
+                    recalled=recalled,
+                )
+                records_with_scope.extend((record, recall_scope) for record in recalled.records)
         except Exception:
             return self._fallback_search(query)
-        mapped_ids = {
-            mapping.engine_id: mapping.project_memory_id
-            for mapping in self.ledger.list_mappings(user_id=query.user_id)
-            if (mapping.tenant_id is None or mapping.tenant_id == query.tenant_id)
-            and (mapping.project_id is None or mapping.project_id == query.project_id)
-        }
-        records = [
-            record.model_copy(
-                update={"project_memory_id": mapped_ids.get(record.engine_id)}
-            )
-            if record.project_memory_id is None and record.engine_id in mapped_ids
-            else record
-            for record in recalled.records
-        ]
+        mappings_by_engine_id = self._mappings_by_engine_id_for_query(
+            query=query,
+            recall_scopes=recall_scopes,
+        )
+        deduped_records: list[tuple[FrameworkMemoryRecord, MemoryScope]] = []
+        seen: set[str] = set()
+        for record, recall_scope in records_with_scope:
+            mapping = mappings_by_engine_id.get(record.engine_id)
+            memory_id = record.project_memory_id or (mapping.project_memory_id if mapping else None) or record.engine_id
+            if memory_id in seen:
+                continue
+            seen.add(memory_id)
+            deduped_records.append((record, recall_scope))
         items = [
             item
-            for record in records
-            if (item := self._item_from_record(record, query)) is not None
-        ]
+            for record, recall_scope in deduped_records
+            if (
+                item := self._item_from_record(
+                    record,
+                    query,
+                    mapping=mappings_by_engine_id.get(record.engine_id),
+                    recall_scope=recall_scope,
+                )
+            )
+            is not None
+        ][: query.top_k]
         ranking_reason = f"framework_{self.adapter.name}_managed_recall"
-        if not items and not recalled.records:
-            items = self._recent_retain_items_for_query(query=query, identity=identity)
+        if not items and not records_with_scope:
+            items = self._recent_retain_items_for_query(
+                query=query,
+                identity=identity,
+                recall_scopes=recall_scopes,
+            )
             if items:
                 ranking_reason = "framework_mem0_recent_retain_consistency"
         return MemorySearchResult(
@@ -169,7 +196,12 @@ class FrameworkMemoryStore:
                     query="",
                     top_k=50,
                 )
-                item = self._item_from_record(record, query)
+                item = self._item_from_record(
+                    record,
+                    query,
+                    mapping=mapping,
+                    recall_scope=mapping.scope or "project",
+                )
                 if item is not None:
                     items.append(item)
                     seen.add(item.memory_id)
@@ -191,9 +223,7 @@ class FrameworkMemoryStore:
         if identity is not None:
             mappings = [
                 mapping for mapping in mappings
-                if mapping.identity.user_id == identity.user_id
-                and mapping.identity.agent_id == identity.agent_id
-                and mapping.identity.tenant_tag == identity.tenant_tag
+                if _mapping_matches_identity_scope(mapping, identity)
             ]
         if not mappings:
             cancelled = self.ledger.cancel_pending_retain(
@@ -215,6 +245,7 @@ class FrameworkMemoryStore:
                 user_id=user_id,
                 project_memory_id=memory_id,
                 identity=mapping.identity,
+                scope=mapping.scope,
             )
         for mapping in mappings:
             self.ledger.record_tombstone(
@@ -357,6 +388,7 @@ class FrameworkMemoryStore:
         )
 
     def _retain_request(self, item: MemoryItem) -> FrameworkRetainRequest:
+        scope = memory_scope_for_item(item)
         identity = bind_engine_identity(
             RequestIdentity.for_user(
                 tenant_id=item.tenant_id,
@@ -371,9 +403,10 @@ class FrameworkMemoryStore:
             project_memory_id=item.memory_id,
             text=item.summary,
             memory_type=item.memory_type,
+            scope=scope,
             source=item.source,
             created_at=item.created_at,
-            metadata={"tags": item.tags, "scope": item.scope} if item.tags or item.scope else {},
+            metadata={"tags": item.tags, "scope": scope} if item.tags or scope else {},
             idempotency_key=f"retain:{self.adapter.name}:{item.user_id}:{item.memory_id}",
         )
 
@@ -394,6 +427,7 @@ class FrameworkMemoryStore:
                 tenant_id=tenant_id,
                 project_id=project_id,
                 session_id=session_id,
+                scope=request.scope,
                 project_memory_id=request.project_memory_id,
                 engine_id=engine_id,
                 engine_name=self.adapter.name,
@@ -419,6 +453,32 @@ class FrameworkMemoryStore:
             namespace=self.identity_namespace,
         )
 
+    def _recall_scopes_for_query(self, query: MemoryQuery) -> list[MemoryScope]:
+        allowed = set(query.allowed_scopes)
+        unrestricted = not allowed
+        scopes: list[MemoryScope] = []
+        if query.session_id and (unrestricted or "session" in allowed):
+            scopes.append("session")
+        if unrestricted or allowed.intersection(_PROJECT_ENGINE_SCOPES):
+            scopes.append("project")
+        if unrestricted or "user_profile" in allowed:
+            scopes.append("user_profile")
+        return scopes or ["project"]
+
+    def _mappings_by_engine_id_for_query(
+        self,
+        *,
+        query: MemoryQuery,
+        recall_scopes: list[MemoryScope],
+    ) -> dict[str, FrameworkMemoryMapping]:
+        recall_scope_set = set(recall_scopes)
+        mappings: dict[str, FrameworkMemoryMapping] = {}
+        for mapping in self.ledger.list_mappings(user_id=query.user_id):
+            if not _mapping_visible_for_query(mapping, query=query, recall_scopes=recall_scope_set):
+                continue
+            mappings[mapping.engine_id] = mapping
+        return mappings
+
     def _mark_recent_retain(
         self,
         *,
@@ -430,7 +490,7 @@ class FrameworkMemoryStore:
     ) -> None:
         if self.adapter.name != "mem0":
             return
-        key = self._recent_retain_key(user_id=user_id, identity=request.identity)
+        key = self._recent_retain_key(user_id=user_id, identity=request.identity, scope=request.scope)
         now = time.monotonic()
         self._recent_retain_scopes[key] = now + _MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS
         item = MemoryItem(
@@ -439,6 +499,7 @@ class FrameworkMemoryStore:
             user_id=user_id,
             project_id=project_id,
             session_id=session_id,
+            scope=request.scope,
             memory_type=request.memory_type,
             summary=request.text,
             content={"framework": self.adapter.name, "_framework_recent_retain_consistency": True},
@@ -455,10 +516,11 @@ class FrameworkMemoryStore:
         *,
         query: MemoryQuery,
         identity,
+        scope: MemoryScope,
         request: FrameworkRecallRequest,
         recalled: FrameworkRecallResult,
     ) -> FrameworkRecallResult:
-        if recalled.records or not self._has_recent_retain(user_id=query.user_id, identity=identity):
+        if recalled.records or not self._has_recent_retain(user_id=query.user_id, identity=identity, scope=scope):
             return recalled
         deadline = time.monotonic() + _MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS
         current = recalled
@@ -469,32 +531,44 @@ class FrameworkMemoryStore:
                 return current
         return current
 
-    def _has_recent_retain(self, *, user_id: str, identity) -> bool:
+    def _has_recent_retain(self, *, user_id: str, identity, scope: MemoryScope) -> bool:
         if self.adapter.name != "mem0":
             return False
         now = self._prune_recent_retains()
-        return self._recent_retain_scopes.get(self._recent_retain_key(user_id=user_id, identity=identity), 0) > now
+        return self._recent_retain_scopes.get(
+            self._recent_retain_key(user_id=user_id, identity=identity, scope=scope),
+            0,
+        ) > now
 
-    def _recent_retain_items_for_query(self, *, query: MemoryQuery, identity) -> list[MemoryItem]:
+    def _recent_retain_items_for_query(
+        self,
+        *,
+        query: MemoryQuery,
+        identity,
+        recall_scopes: list[MemoryScope],
+    ) -> list[MemoryItem]:
         if self.adapter.name != "mem0":
             return []
         now = self._prune_recent_retains()
-        key = self._recent_retain_key(user_id=query.user_id, identity=identity)
         items: list[MemoryItem] = []
-        for expires_at, item in self._recent_retain_items.get(key, []):
-            if expires_at <= now:
-                continue
-            if query.memory_types and item.memory_type not in query.memory_types:
-                continue
-            if query.since is not None and item.created_at < query.since:
-                continue
-            if self.ledger.is_tombstoned(
-                user_id=query.user_id,
-                project_memory_id=item.memory_id,
-                engine_id=f"eng-{item.memory_id}",
-            ):
-                continue
-            items.append(item)
+        for scope in recall_scopes:
+            key = self._recent_retain_key(user_id=query.user_id, identity=identity, scope=scope)
+            for expires_at, item in self._recent_retain_items.get(key, []):
+                if expires_at <= now:
+                    continue
+                if query.memory_types and item.memory_type not in query.memory_types:
+                    continue
+                if query.since is not None and item.created_at < query.since:
+                    continue
+                if not _recent_item_visible_for_query(item, query=query, scope=scope):
+                    continue
+                if self.ledger.is_tombstoned(
+                    user_id=query.user_id,
+                    project_memory_id=item.memory_id,
+                    engine_id=f"eng-{item.memory_id}",
+                ):
+                    continue
+                items.append(item)
         return items[: query.top_k]
 
     def _drop_recent_retain(
@@ -503,12 +577,18 @@ class FrameworkMemoryStore:
         user_id: str,
         project_memory_id: str | None = None,
         identity=None,
+        scope: MemoryScope | str | None = None,
     ) -> None:
         keys = list(self._recent_retain_items)
         for key in keys:
             if key[0] != user_id:
                 continue
-            if identity is not None and key != self._recent_retain_key(user_id=user_id, identity=identity):
+            if identity is not None and not self._recent_key_matches_identity(
+                key,
+                user_id=user_id,
+                identity=identity,
+                scope=scope,
+            ):
                 continue
             if project_memory_id is None:
                 self._recent_retain_items.pop(key, None)
@@ -539,26 +619,50 @@ class FrameworkMemoryStore:
         return now
 
     @staticmethod
-    def _recent_retain_key(*, user_id: str, identity) -> tuple[str, str, str, str, str]:
-        return (user_id, identity.user_id, identity.agent_id, identity.run_id, identity.tenant_tag)
+    def _recent_retain_key(*, user_id: str, identity, scope: MemoryScope | str | None) -> tuple[str, str, str, str, str, str]:
+        resolved_scope = _engine_scope_for_memory_scope(scope)
+        agent_id = identity.agent_id if resolved_scope in {"session", "project"} else ""
+        run_id = identity.run_id if resolved_scope == "session" else ""
+        return (user_id, identity.user_id, agent_id, run_id, identity.tenant_tag, resolved_scope)
 
-    def _item_from_record(self, record: FrameworkMemoryRecord, query: MemoryQuery) -> MemoryItem | None:
-        memory_id = record.project_memory_id or record.engine_id
+    def _recent_key_matches_identity(
+        self,
+        key: tuple[str, str, str, str, str, str],
+        *,
+        user_id: str,
+        identity,
+        scope: MemoryScope | str | None,
+    ) -> bool:
+        if scope is not None:
+            return key == self._recent_retain_key(user_id=user_id, identity=identity, scope=scope)
+        return key[0] == user_id and key[1] == identity.user_id and key[4] == identity.tenant_tag
+
+    def _item_from_record(
+        self,
+        record: FrameworkMemoryRecord,
+        query: MemoryQuery,
+        *,
+        mapping: FrameworkMemoryMapping | None,
+        recall_scope: MemoryScope,
+    ) -> MemoryItem | None:
+        memory_id = record.project_memory_id or (mapping.project_memory_id if mapping else None) or record.engine_id
         if self.ledger.is_tombstoned(
             user_id=query.user_id,
             project_memory_id=memory_id,
             engine_id=record.engine_id,
         ):
             return None
+        item_scope = mapping.scope if mapping and mapping.scope else recall_scope
         return MemoryItem(
             memory_id=memory_id,
-            tenant_id=query.tenant_id,
+            tenant_id=mapping.tenant_id if mapping else query.tenant_id,
             user_id=query.user_id,
-            project_id=query.project_id,
-            session_id=query.session_id,
+            project_id=mapping.project_id if mapping else (query.project_id if recall_scope != "user_profile" else None),
+            session_id=mapping.session_id if mapping else (query.session_id if recall_scope == "session" else None),
+            scope=item_scope,
             memory_type=record.memory_type,
             summary=record.text,
-            content={"framework": self.adapter.name, "engine_id": record.engine_id},
+            content={"framework": self.adapter.name, "engine_id": record.engine_id, "scope": item_scope},
             source=record.source,
             created_at=record.created_at or datetime.now(timezone.utc),
             relevance=record.relevance,
@@ -599,6 +703,65 @@ class FrameworkMemoryStore:
             latency_ms=(time.perf_counter() - started) * 1000,
         )
         return value
+
+
+def _engine_scope_for_memory_scope(scope: MemoryScope | str | None) -> str:
+    if scope == "user_profile":
+        return "user_profile"
+    if scope in _PROJECT_ENGINE_SCOPES:
+        return "project"
+    return "session"
+
+
+def _mapping_matches_identity_scope(mapping: FrameworkMemoryMapping, identity) -> bool:
+    if mapping.identity.user_id != identity.user_id or mapping.identity.tenant_tag != identity.tenant_tag:
+        return False
+    if mapping.scope is None:
+        return mapping.identity.agent_id == identity.agent_id
+    engine_scope = _engine_scope_for_memory_scope(mapping.scope)
+    if engine_scope == "user_profile":
+        return True
+    if mapping.identity.agent_id != identity.agent_id:
+        return False
+    if engine_scope == "session" and mapping.identity.run_id != identity.run_id:
+        return False
+    return True
+
+
+def _mapping_visible_for_query(
+    mapping: FrameworkMemoryMapping,
+    *,
+    query: MemoryQuery,
+    recall_scopes: set[MemoryScope],
+) -> bool:
+    if mapping.tenant_id is not None and mapping.tenant_id != query.tenant_id:
+        return False
+    scope = mapping.scope if mapping.scope in _VALID_ENGINE_SCOPES else None
+    if scope is not None and query.allowed_scopes and scope not in query.allowed_scopes:
+        return False
+    engine_scope = _engine_scope_for_memory_scope(scope) if scope is not None else "project"
+    if engine_scope not in {_engine_scope_for_memory_scope(recall_scope) for recall_scope in recall_scopes}:
+        return False
+    if engine_scope == "user_profile":
+        return True
+    if mapping.project_id is not None and mapping.project_id != query.project_id:
+        return False
+    if engine_scope == "session" and mapping.session_id is not None and mapping.session_id != query.session_id:
+        return False
+    return True
+
+
+def _recent_item_visible_for_query(item: MemoryItem, *, query: MemoryQuery, scope: MemoryScope) -> bool:
+    if item.tenant_id is not None and item.tenant_id != query.tenant_id:
+        return False
+    engine_scope = _engine_scope_for_memory_scope(scope)
+    if engine_scope == "user_profile":
+        return True
+    if item.project_id is not None and item.project_id != query.project_id:
+        return False
+    if engine_scope == "session" and item.session_id != query.session_id:
+        return False
+    return True
 
 
 def _record_from_payload(payload: dict[str, Any], engine_id: str, project_memory_id: str) -> FrameworkMemoryRecord:

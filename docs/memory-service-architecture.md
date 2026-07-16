@@ -190,10 +190,15 @@ RequestIdentity
 
 Current P0 behavior:
 
+- `tenant_id` is the highest safety boundary for framework and local memory
+  access. `user_id` is the personal long-term owner. `project_id` is the work
+  domain used for project/task memory. `session_id` identifies the current
+  short-term session and is provenance for long-term memories unless the memory
+  itself is `scope="session"`.
 - Local/mock paths derive identity from `UserRequest`, `ToolContext`, API path/query parameters, or inbound A2A metadata.
 - API routes resolve request-derived identity through `services/api_identity.py` before trial-access checks and memory service calls. `api/auth.py` provides the default FastAPI `AuthContext` dependency, which returns anonymous/no-auth context and ignores auth-like headers unless the explicit `MULTIMODAL_AGENT_AUTH_HEADER_ENABLED` pilot flag is enabled. In that pilot mode, only controlled `X-Multimodal-Agent-*` headers are converted into `AuthContext`; body/path/query user mismatch is rejected by the identity resolver. This centralizes provenance (`request_body`, `path`, `query`, `a2a_metadata`, `websocket_query`, `auth_context`) without treating it as production JWT/session authentication. `IdentityPolicy` can classify the resolved identity as auth-bound, request-derived warning, local bypass warning, or production-blocking failure.
 - `MemoryManager` exposes identity-aware methods such as `search_for_identity(...)`, `load_context_for_identity(...)`, `save_explicit_for_identity(...)`, `get_for_identity(...)`, `list_for_identity(...)`, and identity-scoped delete helpers.
-- Identity-aware search and context loading overwrite caller-controlled `user_id`, `tenant_id`, `project_id`, and allowed scopes from trusted `RequestIdentity`. Local long-term memory remains cross-session by default. A lifecycle-owner store that declares `session_scoped_engine_identity` additionally binds the trusted `session_id`; framework mode hashes it into the engine run scope, so dropping it there would address a different sidecar partition.
+- Identity-aware search and context loading overwrite caller-controlled `user_id`, `tenant_id`, `project_id`, and allowed scopes from trusted `RequestIdentity`. Local long-term memory remains cross-session by default. A lifecycle-owner store that declares `requires_identity_session` additionally receives the trusted `session_id` so it can query the current `scope="session"` layer without forcing project/user-profile memory into a session-only partition.
 - `MemoryAuditService` and `MemorySnapshotService` expose identity-aware methods and keep the legacy `user_id` methods as compatibility wrappers.
 - Memory tools bind identity from `ToolContext` before invoking `MemoryManager`, so model-supplied `user_id` cannot override runtime context.
 - `MemoryItem` and `MemoryQuery` carry optional `tenant_id`, `project_id`, and coarse `scope` fields. If a memory item has tenant/project/scope metadata, retrieval, list, get, and delete paths must filter it against `RequestIdentity`.
@@ -302,16 +307,27 @@ Environment variables:
 
 ### Framework governance ledger and recovery
 
-`FrameworkGovernanceLedger` stores governance state only: project-memory/engine-ID mappings, delete tombstones, redacted confirmations, prompt-safe audit events, coarse call latency/error status, and pending retain/delete outbox entries. Completed framework facts, embeddings, relationship graphs, recall indexes, and profile or mental-model content are not copied into the ledger. A pending retain necessarily contains the already-approved prompt-safe retain request until delivery; it leaves the active outbox after success or user deletion.
+`FrameworkGovernanceLedger` stores governance state only: project-memory/engine-ID mappings with their memory scope, delete tombstones, redacted confirmations, prompt-safe audit events, coarse call latency/error status, and pending retain/delete outbox entries. Completed framework facts, embeddings, relationship graphs, recall indexes, and profile or mental-model content are not copied into the ledger. A pending retain necessarily contains the already-approved prompt-safe retain request until delivery; it leaves the active outbox after success or user deletion.
 
 Framework writes still pass `MemoryWritePolicy` and confirmation before `FrameworkMemoryStore.retain`. A retain failure returns a structured `partial/queued` tool result with `written=false` and persists an idempotent outbox operation. It never writes the configured v2 fallback. Retry records the framework mapping only after the engine accepts the request. Deleting a pending write cancels it before retry and records a tenant/project-bound tombstone.
 
 Framework recall failures return stable `memory_framework_recall_failed` errors. The Agent run continues with an empty result or the explicitly configured read-only v2 fallback. Runtime debug metadata and audit may expose stable error codes and engine names, but never sidecar URLs, raw exception messages, credentials, raw framework responses, or memory content.
 
+Framework recall is scope-layered. `FrameworkMemoryStore` queries the current
+session layer first, then the current project/task layer, then the user-profile
+layer, and deduplicates before returning `top_k`. For Mem0, `scope="session"`
+uses `user_id + agent_id + run_id`; `scope in {"project", "task", "video",
+"product"}` uses `user_id + agent_id` and intentionally omits `run_id`;
+`scope="user_profile"` uses only `user_id` and can cross projects/sessions for
+the same tenant-bound user. If `project_id` is missing, project/task memory
+uses the user's `global` work domain. Delete/list/export still use the ledger
+mapping from project memory id to engine id, so cross-session recall does not
+make deletes fuzzy.
+
 Mem0 recall has a bounded read-after-write consistency wait. If a successful
-Mem0 retain was just recorded for the same governed identity and the first
-recall returns an empty result, `FrameworkMemoryStore` polls the same governed
-recall request for a short window before returning empty. This handles Mem0 /
+Mem0 retain was just recorded for the same governed identity and memory scope,
+and the first recall returns an empty result, `FrameworkMemoryStore` polls the
+same governed recall request for a short window before returning empty. This handles Mem0 /
 Qdrant indexing visibility after cold start without changing write policy,
 identity binding, audit, fallback, or prompt-context governance. Hindsight and
 ordinary recall failures do not use this wait path.
@@ -322,7 +338,9 @@ in-process recent-retain item for the same governed identity for a short
 read-your-write window. This buffer is not durable truth, is not written to the
 governance ledger or v2 fallback, is removed on delete/clear, and exists only
 to mask Mem0/Qdrant insertion visibility lag immediately after a governed
-retain.
+retain. The cache key is scope-aware: session entries include `run_id`,
+project/task entries omit `run_id`, and user-profile entries omit both
+`agent_id` and `run_id`.
 
 Mem0 retain uses `infer=false`: memory selection, permissions, and write
 semantics remain owned by `MemoryManager` and policy; Mem0 is the framework

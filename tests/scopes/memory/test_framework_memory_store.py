@@ -88,6 +88,80 @@ class ScriptedEngine:
         return []
 
 
+class ScopedScriptedEngine:
+    name = "mem0"
+
+    def __init__(self) -> None:
+        self.records_by_scope = {}
+        self.retained = []
+        self.recalled = []
+        self.deleted = []
+        self.always_empty_recall = False
+
+    def health(self):
+        return FrameworkHealthResult(status="ok", version="2.0.11")
+
+    def _key(self, request):
+        identity = request.identity
+        scope = request.scope
+        if scope == "user_profile":
+            return (identity.user_id, identity.tenant_tag, scope)
+        if scope in {"project", "task", "video", "product"}:
+            return (identity.user_id, identity.agent_id, identity.tenant_tag, "project")
+        return (identity.user_id, identity.agent_id, identity.run_id, identity.tenant_tag, "session")
+
+    def retain(self, request):
+        self.retained.append(request)
+        engine_id = f"eng-{request.project_memory_id}"
+        record = FrameworkMemoryRecord(
+            engine_id=engine_id,
+            project_memory_id=request.project_memory_id,
+            text=request.text,
+            memory_type=request.memory_type,
+            source=request.source,
+            created_at=request.created_at,
+            relevance=0.9,
+        )
+        self.records_by_scope.setdefault(self._key(request), []).append(record)
+        return FrameworkRetainResult(accepted=True, engine_ids=[engine_id])
+
+    def recall(self, request):
+        self.recalled.append(request)
+        if self.always_empty_recall:
+            return FrameworkRecallResult(records=[], total=0)
+        records = list(self.records_by_scope.get(self._key(request), []))
+        return FrameworkRecallResult(records=records[: request.top_k], total=len(records))
+
+    def get(self, **kwargs):
+        return None
+
+    def list(self, **kwargs):
+        return []
+
+    def history(self, **kwargs):
+        return []
+
+    def reflect(self, request):
+        return {}
+
+    def delete(self, **kwargs):
+        self.deleted.append(kwargs)
+        engine_id = kwargs["engine_id"]
+        for key, records in list(self.records_by_scope.items()):
+            current = [record for record in records if record.engine_id != engine_id]
+            if current:
+                self.records_by_scope[key] = current
+            else:
+                self.records_by_scope.pop(key, None)
+        return True
+
+    def clear(self, **kwargs):
+        return 0
+
+    def export(self, **kwargs):
+        return []
+
+
 def _item(memory_id: str = "m1", user_id: str = "u1") -> MemoryItem:
     return MemoryItem(
         memory_id=memory_id,
@@ -97,6 +171,31 @@ def _item(memory_id: str = "m1", user_id: str = "u1") -> MemoryItem:
         session_id="s1",
         memory_type="preference",
         summary="用户喜欢深色极简",
+        source="explicit_user_request",
+        created_at=NOW,
+    )
+
+
+def _scoped_item(
+    *,
+    memory_id: str,
+    user_id: str = "u1",
+    tenant_id: str = "t1",
+    project_id: str = "p1",
+    session_id: str = "s1",
+    scope: str = "project",
+    memory_type: str = "task",
+    summary: str = "项目使用浅色日系风格",
+) -> MemoryItem:
+    return MemoryItem(
+        memory_id=memory_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        project_id=project_id,
+        session_id=session_id,
+        scope=scope,
+        memory_type=memory_type,
+        summary=summary,
         source="explicit_user_request",
         created_at=NOW,
     )
@@ -227,7 +326,13 @@ def test_framework_recall_rebinds_result_identity_and_filters_tombstones(tmp_pat
     ledger.record_tombstone(user_id="u1", project_memory_id="m1", engine_id="eng-m1")
 
     result = store.search(
-        MemoryQuery(user_id="u1", tenant_id="t1", project_id="p1", session_id="s1", query="深色")
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="s1",
+            query="深色",
+        )
     )
 
     assert result.items == []
@@ -251,12 +356,252 @@ def test_recall_resolves_engine_id_back_to_project_memory_id(tmp_path) -> None:
     )
 
     result = store.search(
-        MemoryQuery(user_id="u1", tenant_id="t1", project_id="p1", session_id="s1", query="深色")
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="s1",
+            query="深色",
+        )
     )
 
     assert result.items[0].memory_id == "m1"
     assert result.items[0].tenant_id == "t1"
     assert result.items[0].project_id == "p1"
+
+
+def test_project_memory_is_recalled_across_sessions_for_same_user_and_project(tmp_path) -> None:
+    engine = ScopedScriptedEngine()
+    store = FrameworkMemoryStore(
+        adapter=engine,
+        ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+        identity_namespace="test",
+    )
+    store.save(_scoped_item(memory_id="project-memory", session_id="session-a"))
+
+    result = store.search(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="session-b",
+            query="日系风格",
+            allowed_scopes=["project"],
+            top_k=5,
+        )
+    )
+
+    assert [item.memory_id for item in result.items] == ["project-memory"]
+    assert result.items[0].session_id == "session-a"
+    assert engine.retained[0].scope == "project"
+    assert engine.recalled[0].scope == "project"
+
+
+def test_session_memory_is_only_recalled_in_current_session(tmp_path) -> None:
+    engine = ScopedScriptedEngine()
+    store = FrameworkMemoryStore(
+        adapter=engine,
+        ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+        identity_namespace="test",
+    )
+    store.save(
+        _scoped_item(
+            memory_id="session-memory",
+            session_id="session-a",
+            scope="session",
+            memory_type="conversation",
+            summary="当前会话临时结论",
+        )
+    )
+
+    same_session = store.search(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="session-a",
+            query="临时结论",
+            allowed_scopes=["session"],
+            top_k=5,
+        )
+    )
+    other_session = store.search(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="session-b",
+            query="临时结论",
+            allowed_scopes=["session"],
+            top_k=5,
+        )
+    )
+
+    assert [item.memory_id for item in same_session.items] == ["session-memory"]
+    assert other_session.items == []
+
+
+def test_user_profile_memory_crosses_project_and_session_but_not_user_or_tenant(tmp_path) -> None:
+    engine = ScopedScriptedEngine()
+    store = FrameworkMemoryStore(
+        adapter=engine,
+        ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+        identity_namespace="test",
+    )
+    store.save(
+        _scoped_item(
+            memory_id="profile-memory",
+            project_id="project-a",
+            session_id="session-a",
+            scope="user_profile",
+            memory_type="preference",
+            summary="用户喜欢短句回答",
+        )
+    )
+
+    same_user_other_project = store.search(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="project-b",
+            session_id="session-b",
+            query="回答偏好",
+            allowed_scopes=["user_profile"],
+            top_k=5,
+        )
+    )
+    other_user = store.search(
+        MemoryQuery(
+            user_id="u2",
+            tenant_id="t1",
+            project_id="project-b",
+            session_id="session-b",
+            query="回答偏好",
+            allowed_scopes=["user_profile"],
+            top_k=5,
+        )
+    )
+    other_tenant = store.search(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t2",
+            project_id="project-b",
+            session_id="session-b",
+            query="回答偏好",
+            allowed_scopes=["user_profile"],
+            top_k=5,
+        )
+    )
+
+    assert [item.memory_id for item in same_user_other_project.items] == ["profile-memory"]
+    assert other_user.items == []
+    assert other_tenant.items == []
+
+
+def test_project_memory_does_not_cross_projects_by_default(tmp_path) -> None:
+    engine = ScopedScriptedEngine()
+    store = FrameworkMemoryStore(
+        adapter=engine,
+        ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+        identity_namespace="test",
+    )
+    store.save(_scoped_item(memory_id="project-a-memory", project_id="project-a"))
+
+    result = store.search(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="project-b",
+            session_id="session-b",
+            query="日系风格",
+            allowed_scopes=["project"],
+            top_k=5,
+        )
+    )
+
+    assert result.items == []
+
+
+def test_delete_project_memory_uses_mapping_across_sessions(tmp_path) -> None:
+    engine = ScopedScriptedEngine()
+    store = FrameworkMemoryStore(
+        adapter=engine,
+        ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+        identity_namespace="test",
+    )
+    store.save(_scoped_item(memory_id="project-memory", session_id="session-a"))
+
+    deleted = store.delete_for_identity(
+        RequestIdentity.for_user(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="session-b",
+        ),
+        "project-memory",
+    )
+
+    assert deleted is True
+    assert engine.deleted[0]["engine_id"] == "eng-project-memory"
+
+
+def test_recent_retain_fallback_is_scope_aware(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(framework_store_module, "_MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS", 0.0)
+    engine = ScopedScriptedEngine()
+    engine.always_empty_recall = True
+    store = FrameworkMemoryStore(
+        adapter=engine,
+        ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
+        identity_namespace="test",
+    )
+    store.save(_scoped_item(memory_id="project-memory", session_id="session-a"))
+    store.save(
+        _scoped_item(
+            memory_id="session-memory",
+            session_id="session-a",
+            scope="session",
+            memory_type="conversation",
+            summary="当前会话临时结论",
+        )
+    )
+
+    same_project = store.search(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="session-b",
+            query="日系风格",
+            allowed_scopes=["project"],
+            top_k=5,
+        )
+    )
+    other_project = store.search(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p2",
+            session_id="session-b",
+            query="日系风格",
+            allowed_scopes=["project"],
+            top_k=5,
+        )
+    )
+    other_session = store.search(
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="session-b",
+            query="临时结论",
+            allowed_scopes=["session"],
+            top_k=5,
+        )
+    )
+
+    assert [item.memory_id for item in same_project.items] == ["project-memory"]
+    assert other_project.items == []
+    assert other_session.items == []
 
 
 def test_mem0_recall_retries_recent_successful_retain_when_engine_is_eventually_consistent(tmp_path) -> None:
@@ -270,7 +615,14 @@ def test_mem0_recall_retries_recent_successful_retain_when_engine_is_eventually_
     store.save(_item())
 
     result = store.search(
-        MemoryQuery(user_id="u1", tenant_id="t1", project_id="p1", session_id="s1", query="深色")
+        MemoryQuery(
+            user_id="u1",
+            tenant_id="t1",
+            project_id="p1",
+            session_id="s1",
+            query="深色",
+            allowed_scopes=["user_profile"],
+        )
     )
 
     assert [item.memory_id for item in result.items] == ["m1"]
