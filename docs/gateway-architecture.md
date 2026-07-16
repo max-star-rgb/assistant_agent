@@ -1,8 +1,8 @@
 # Gateway Architecture
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
-This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes.
+This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes. Media-Agent `/agent-service/v1` wire-field details, examples, and H.264 payload constraints live in `docs/media-agent-service-websocket.md`.
 
 ## Quick Handoff
 
@@ -18,7 +18,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - Durable structured tasks are a separate post-acceptance lifecycle owned by `DurableTaskService` and its worker. Gateway owns only the ingress turn that accepts and returns the task handle; it does not keep the durable task as an active Gateway run.
 - Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and local CLI `--scenario` through demo flows enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
-- The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, and treats raw `audio` / `interrupt` frames as entry-layer ACK traffic. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer updates rolling semantics and later `chat` turns inject that snapshot into the first foreground LLM context without exposing the video tool to that LLM.
+- The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, and treats raw `audio` / `interrupt` frames as entry-layer ACK traffic. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer updates rolling semantics and later `chat` turns inject that snapshot into the first foreground LLM context without exposing the video tool to that LLM. The exact Media-Agent wire contract is `docs/media-agent-service-websocket.md`.
 - The old browser Web Chat console, `/demo/console`, `/static/index.html`, `scripts/run_client.py`, and legacy `/ws/agent/{session_id}` event stream are removed from the product app. Do not reintroduce ordinary chat entrypoints before the realtime assistant runtime is stable.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
 

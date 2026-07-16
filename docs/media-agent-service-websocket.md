@@ -1,8 +1,10 @@
-# Media 到 Agent WebSocket 接口文档
+# Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
-本文档描述真实媒体服务与 `assistant_agent` 之间的 WebSocket 传输层协议。媒体侧协议为外部对接基准；Agent 侧负责兼容该协议，并在内部把 `chat` 文本请求转入 Gateway 和 assistant runtime。
+本文档是媒体服务与 `assistant_agent` 之间 `/agent-service/v1` WebSocket 传输层协议的唯一权威文档，合并了旧临时 Mock Agent 协议说明和旧 H.264 视频传输专项说明。媒体侧协议为外部对接基准；Agent 侧负责兼容该协议，并在内部把 `chat` 文本请求转入 Gateway 和 assistant runtime。
+
+不要再新增并行的 Media-Agent 接口文档；需要变更 wire 字段、流式语义、H.264 约束、联调命令或验收证据时，更新本文档，并按需同步 `docs/gateway-architecture.md` 中的 Gateway 边界摘要。
 
 ## 1. 连接信息
 
@@ -11,6 +13,7 @@ Last updated: 2026-07-15
 - URL：`ws://<agent_host>:8089/agent-service/v1`
 
 本仓库本地服务默认端口是 `8000`。联调媒体服务时可用 `scripts/run_server.py --port 8089` 对齐上述端口。
+该协议只要求遵循本文档的 JSON envelope，可由任意语言实现。
 
 ## 2. 消息格式
 
@@ -295,6 +298,98 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 连接关闭时先停止观察器、丢弃待处理帧并拒绝晚到结果，再移除滚动语义记忆、关键帧、原始帧上下文和 JPEG 运行时文件。
 
 成功响应中的 `video received` 表示该帧已经通过校验、成功解码、注册到视频上下文并完成本地选帧调度，不再只是传输层收到；它不表示后台视觉 MLLM 已完成。Hex、codec、NAL 起始码、大小或解码失败时返回 `videoResponse` 且 `body.code="FAIL"`；连接保持可用，失败帧不会附加到后续 chat。
+
+#### H.264 编码和格式要求
+
+媒体侧推荐从摄像头 I420/YUV 原始帧编码为独立 H.264 I-Frame，再把 H.264 bytes 转为小写 Hex 字符串放入 `videoContent`：
+
+```text
+摄像头 I420/YUV
+  -> FFmpeg/libx264 H.264 Annex-B NALU
+  -> videoData.toString("hex")
+  -> video.body.contents[].videoContent
+  -> Agent bytes.fromhex()
+  -> H.264 解码为视频帧
+  -> JPEG + 灰度指纹
+  -> 本地视频上下文和后台观察器
+```
+
+媒体侧 FFmpeg 编码参数应满足：
+
+```text
+-f rawvideo
+-video_size {width}x{height}
+-r {frameRate}
+-pix_fmt yuv420p
+-f h264
+-preset ultrafast
+-tune zerolatency
+-b:v {bitrate}
+-an
+-frames 1
+```
+
+关键约束：
+
+- 每条 `video` 消息必须是可独立解码的帧，不能依赖前后消息。
+- 每帧必须包含 Annex-B 起始码，通常为 `00 00 00 01`。
+- 每帧应包含 SPS、PPS 和 I-Frame，例如：
+
+```text
+00 00 00 01 67 ...  # SPS
+00 00 00 01 68 ...  # PPS
+00 00 00 01 65 ...  # IDR/I-Frame
+```
+
+媒体侧发送示例：
+
+```javascript
+const videoPackage = {
+  userNumber: userNumber,
+  videoIndex: videoIndexCounter.toString(),
+  contents: [{
+    speakerNumber: speakerNumber,
+    videoContent: videoData.toString("hex"),
+    time: timestampStr
+  }],
+  videoConfig: {
+    codec: "H264",
+    resolution: `${videoWidth}x${videoHeight}`,
+    frameRate: actualVideoFrameRate,
+    width: videoWidth,
+    height: videoHeight
+  }
+};
+```
+
+格式链路对照：
+
+| 阶段 | 格式 | 示例 |
+| --- | --- | --- |
+| 摄像头原始帧 | I420/YUV | `1280 * 720 * 1.5` bytes |
+| 媒体编码输出 | H.264 Annex-B bytes | `00 00 00 01 67 ...` |
+| WebSocket 传输 | Hex string | `"0000000167..."` |
+| Agent 解码输入 | bytes | `b"\x00\x00\x00\x01\x67..."` |
+| Agent 解码输出 | video frame | `av.VideoFrame` 或等价结构 |
+| Agent 本地上下文 | JPEG + grayscale fingerprint | Prompt-safe 引用和统计 |
+
+常见失败和排查：
+
+| 现象 | 常见原因 | 检查方式 |
+| --- | --- | --- |
+| H.264 解码失败 | 缺少 Annex-B 起始码 | 检查 Hex 解码后是否包含 `00 00 00 01` |
+| 解码后无帧 | Hex 截断或消息不完整 | 校验 `videoContent` 长度和 WebSocket 分包处理 |
+| 花屏或无法独立解码 | 非 I-Frame 或缺少 SPS/PPS | 确认媒体侧每帧独立编码并带 SPS/PPS |
+| `videoResponse` 为 `FAIL` | codec、大小、Hex 或解码校验失败 | 查看 `body.message`，连接可继续复用 |
+
+调试时可在媒体侧临时落盘 H.264 bytes，并用本机工具验证：
+
+```bash
+ffplay -f h264 -i sample.h264
+ffprobe -show_streams -select_streams v sample.h264
+```
+
+不要提交真实 `.h264`、JPEG、Base64 图片、Provider 请求或 Provider 原始响应。
 
 受治理后台观察与普通上传/API `video_understanding` 的结构化结果用 `source` 标明解析路径：
 

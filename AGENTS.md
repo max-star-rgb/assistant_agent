@@ -12,7 +12,7 @@
 
 | scope | entry |
 | --- | --- |
-| Gateway、realtime frame、session/run/cancel/interrupt、WebSocket bridge、旧 `runTime` 参考边界 | `.codex/skills/assistant-runtime-reference`；`docs/gateway-architecture.md` |
+| Gateway、realtime frame、session/run/cancel/interrupt、WebSocket bridge、`/agent-service/v1` Media-Agent 协议、旧 `runTime` 参考边界 | `.codex/skills/assistant-runtime-reference`；`docs/gateway-architecture.md`；`docs/media-agent-service-websocket.md` |
 | runtime/provider streaming、`LLMEvent`、`AgentEvent`、`AgentRunStream`、stream/result、线程桥接 | `.codex/skills/assistant-agent-runtime-streaming`；`docs/runtime-event-stream-architecture.md` |
 | tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、MCP `tool_run`、工具 observation/retry/budget | `.codex/skills/assistant-agent-tool-calling`；`docs/tool-calling-architecture.md` |
 | 记忆服务、MemoryManager、memory store/retrieval/write policy、memory API、user profile、audit、retention | `.codex/skills/assistant-agent-memory-service`；`docs/memory-service-architecture.md` |
@@ -138,7 +138,7 @@ User / CLI / API / Web UI
 ## 7. 文档与工作模式
 
 - `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`README.md` 是人类轻导航入口。
-- 当前架构权威文档是 `docs/gateway-architecture.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`、`docs/observability-harness.md`、`docs/memory-service-architecture.md`、`docs/CONTEXT_ENGINEERING_STATUS.md` 和 `docs/agent-communication-routing.md`。
+- 当前架构权威文档是 `docs/gateway-architecture.md`、`docs/media-agent-service-websocket.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`、`docs/observability-harness.md`、`docs/memory-service-architecture.md`、`docs/CONTEXT_ENGINEERING_STATUS.md` 和 `docs/agent-communication-routing.md`。
 - 走读文档只解释已沉淀机制，不替代权威文档；`docs/interview/**` 只用于面试训练；新增文档必须有明确长期用途。
 - 开始任务时说明“我将处理 / 我会先阅读 / 计划”；执行中先读相关代码和文档，保持 scope 小而明确。
 - 手工新建或修改文件默认使用 `apply_patch`；搜索优先用 `rg` / `rg --files`。

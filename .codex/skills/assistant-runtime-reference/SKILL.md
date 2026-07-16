@@ -13,6 +13,8 @@ Use this skill when Gateway behavior in `assistant_agent` must be designed, revi
 
 Read `docs/gateway-architecture.md` first for current `assistant_agent` Gateway responsibilities, entry-layer boundaries, realtime backend contract, code map, OpenClaw reference boundary, and update rules.
 
+When the task touches `/agent-service/v1`, media `assistantControl` / `chat` / `audio` / `video` / `interrupt`, `chatResponse`, `chatResponseAck`, H.264 Hex video, Media-Agent streaming semantics, or media-side compatibility examples, also read `docs/media-agent-service-websocket.md`. That file is the single authority for the Media-Agent wire protocol and replaces ad hoc temporary protocol notes.
+
 Use the legacy `runTime` files only after that current project entry, and only when protocol compatibility or behavior comparison is needed.
 
 ## When To Read runTime
@@ -82,5 +84,5 @@ cd /home/lenovo1/pycharm_project/runTime && conda run -n hello_agent env PYTHONP
 For skill/doc-only changes:
 
 ```bash
-git diff --check -- AGENTS.md docs/gateway-architecture.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway src/assistant_agent/api/gateway_runtime.py src/assistant_agent/api/gateway_websocket.py tests/critical/test_gateway.py tests/critical/test_gateway_session.py tests/scopes/gateway/test_gateway_api.py scripts/run_gateway_client.py
+git diff --check -- AGENTS.md docs/gateway-architecture.md docs/media-agent-service-websocket.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway src/assistant_agent/api/gateway_runtime.py src/assistant_agent/api/gateway_websocket.py tests/critical/test_gateway.py tests/critical/test_gateway_session.py tests/scopes/gateway/test_gateway_api.py scripts/run_gateway_client.py
 ```
