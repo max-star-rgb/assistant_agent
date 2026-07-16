@@ -1,78 +1,53 @@
 # AGENTS.md
 
-本文件是 Codex / coding agent 的仓库级入口。开始仓库内任何非纯问答、非单条无副作用命令任务前，以本文件为准。README 只做人类快速导航；专项架构细节保留在少量 `docs/*.md` 权威文档中。
+本文件是 Codex / coding agent 的仓库级入口。开始仓库内任何非纯问答、非单条无副作用命令任务前，以本文件为准。README 只做人类快速导航；专项架构细节在 `docs/*.md` 权威文档中；源码和测试优先于过期 prose。
 
 ## 1. 项目与入口
 
-项目名、展示名、发行名和 Python 包名均为 `assistant_agent`，包目录为 `src/assistant_agent/`。本地 conda 环境仍为 `hello_agent`，除非用户明确要求，不要重命名环境路径。
+项目名、发行名和 Python 包名均为 `assistant_agent`，源码在 `src/assistant_agent/`。默认 Python 使用本机 conda 环境 `hello_agent`，除非用户明确要求，不要重命名环境路径。
 
-项目实现一个本地优先的助理 Agent。当前核心运行时以 LangGraph/ReAct assistant loop 为主，同时保留 mock/local/offline 路径用于稳定测试和演示。真实外部 Provider 必须通过 `provider_smoke` 或 `pilot` profile 和本机未跟踪配置显式启用。
+本项目是本地优先的助理 Agent。默认运行、测试和 eval 只走 mock/local/offline；真实 Provider 必须通过 `provider_smoke` / `pilot` runtime profile 和本机未跟踪配置显式启用。
 
-按任务范围先读对应 `docs/*.md` 权威文档。项目内 `.codex/skills/**` 只保留有独立流程、脚本或非文档交互价值的 workflow；skill 不能替代权威文档，也不作为架构事实来源。AGENTS 只保留高层路由，不复制权威文档细节。
+开始任务时，先按任务类型读取对应 `docs/*.md` 权威文档；如果文档与当前源码不一致，以源码和测试为准，并在本次变更中回补文档。项目 skill 只作为 workflow 检查清单或脚本入口，不作为事实权威。
 
-`docs/*.md` 是当前权威文档层，只保留当前架构、接口或状态权威。路线图、runbook、历史计划、走读说明、题库和 workflow 材料必须放在 `docs/<subdir>/`，不得作为默认架构权威。
-
-| scope | authority |
+| task | read first |
 | --- | --- |
-| Gateway、realtime frame、session/run/cancel/interrupt、WebSocket bridge、`/agent-service/v1` Media-Agent 协议、旧 `runTime` 参考边界 | `docs/gateway-architecture.md`；`docs/media-agent-service-websocket.md` |
-| runtime/provider streaming、`LLMEvent`、`AgentEvent`、`AgentRunStream`、stream/result、线程桥接 | `docs/runtime-event-stream-architecture.md` |
-| tool calling、ToolSpec、ActionValidator、ToolExecutor、ToolRegistry、MCP `tool_run`、工具 observation/retry/budget | `docs/tool-calling-architecture.md` |
-| 记忆服务、MemoryManager、local memory store/retrieval/write policy、外部 Memory Service 接口、user profile、audit、retention | `docs/memory-service-architecture.md`；`docs/memory_server_api_spec.md` |
-| context engineering、prompt/context rendering、conversation history、memory context、tool observation compaction、context budget | `docs/CONTEXT_ENGINEERING_STATUS.md` |
-| 多 agent、`assistant_agent.agent_routing`、AgentRouter、AgentDirectory、A2A/JSON-RPC、`delegate_to_agent`、pilot readiness | `docs/agent-communication-routing.md` |
-| trace、运行监控、ReAct 关键节点观测、redaction | `docs/observability-harness.md` |
-| 面试训练、题库、回答点评、标准答案、面试文档更新 | `docs/interview/README.md` |
-| 功能实现、缺陷修复或行为重构中的测试分层、阶段验收和测试保留 | 相关 `docs/*.md`；`tests/README.md`；`tests/scope-map.toml` |
+| Gateway、realtime、WebSocket、Media-Agent | `docs/gateway-architecture.md`；`docs/media-agent-service-websocket.md` |
+| assistant loop、runtime stream、provider stream | `docs/runtime-event-stream-architecture.md` |
+| tool calling、MCP、durable task、provider 调用治理 | `docs/tool-calling-architecture.md` |
+| memory、本地/外部记忆服务、记忆读写策略 | `docs/memory-service-architecture.md`；`docs/memory_server_api_spec.md` |
+| context、prompt、conversation history、context budget | `docs/CONTEXT_ENGINEERING_STATUS.md` |
+| multi-agent、A2A、delegation | `docs/agent-communication-routing.md` |
+| trace、observability、redaction | `docs/observability-harness.md` |
+| 测试分层和 scope 选择 | `tests/README.md`；`tests/scope-map.toml` |
 
-保留的项目 workflow：
-
-- `.codex/skills/assistant-runtime-reference`：仅用于 Gateway 与 legacy `/home/lenovo1/pycharm_project/runTime` 兼容行为对照。
-- `.codex/skills/assistant-agent-development-testing`：用于普通开发的 ADD/EXTEND/REUSE/STAGE/NO-TEST 测试决策。
-- `.codex/skills/assistant-agent-documentation-sync`：仅在用户显式请求全仓文档同步、漂移审计、权威对齐或失效文档清理时使用。
-- `.codex/skills/assistant-agent-test-governance`：仅在用户显式请求测试审计、去重、分层、marker 治理或测试清理时使用。
-- `.codex/skills/assistant-agent-interview-trainer`：用于运行面试训练循环或更新 `docs/interview/**`。
-
-`docs/development/**` 只保留仍有现实用途的操作 runbook 或用户明确点名的执行材料，不作为默认设计权威。`docs/roadmaps/**` 只保留长期方向和 north star，不替代当前权威文档。`docs/superpowers/**` 是设计/实施记录，`docs/interview/**` 是面试训练材料；它们都不作为普通开发默认权威。不要把旧 roadmap、阶段计划或走读说明当作当前架构。
+`docs/development/**`、`docs/superpowers/**` 和 `docs/interview/**` 都不是普通开发默认权威；只有用户点名、运行 runbook 或做历史/面试任务时才读。
 
 ## 2. 架构边界
 
-核心调用链：
-
-```text
-User / CLI / API / Web UI
-  -> FastAPI routes or local runner
-  -> AgentGraphRuntime / assistant loop
-  -> AssistantDecision -> ActionValidator -> ToolExecutor
-  -> ToolRegistry -> tools -> provider adapters / memory / local services
-```
-
 硬边界：
 
-- Agent/graph 负责编排，不绕过工具治理边界直接调用外部能力。
-- 工具调用必须经过 validator、executor、tool registry、policy/audit 相关边界。
-- Provider adapter 负责真实或 mock 能力接入；默认 profile 必须是 mock/local/offline。
-- Memory 行为归 `MemoryManager`、`memory/` 或 `services/memory_*`；memory tools 只做 `ToolContext` 身份绑定、输入适配、调用服务和包装 `ToolResult`。
-- Memory 采用内置 local core 与可选外部 Memory Service core 的双核边界；两者都必须经过同一套 identity、read/write policy、manager/store、audit/snapshot/export 治理链路。
-- `memory_backend=framework` 是显式启用的本地 sidecar lifecycle-owner 模式；Hindsight/Mem0 只能通过 `MemoryManager -> FrameworkMemoryStore -> MemoryEngineAdapter` 接入，主环境不安装框架依赖，框架不得注册 Agent runtime 或绕过工具治理。
-- 多 agent / A2A 行为走 `assistant_agent.agent_routing`、AgentRouter、agent communication service、directory、transport adapter 和工具治理边界。
-- CLI、Web UI、App、HTTP、WebSocket、realtime call adapter 属于入口层；Gateway 是入口层之后的标准化消息、session/run 生命周期、cancel/interrupt、reconnect/hangup 和 stream frame 控制边界。
-- `assistant_agent.realtime` / `GatewayAgentAdapter` 是 Gateway 到当前主运行时的薄适配层，不承担主大脑职责。
-- 当前核心 runtime 和 Gateway 生命周期权威实现继续以 Python `assistant_agent` 为主。新增 Web UI、BFF、vendor WebSocket adapter、Media Relay adapter、边缘入口或电话/实时媒体 SDK 适配层可以使用 TypeScript、Go、Rust 等非 Python 语言，但只能做薄入口适配器。
-- 不要把 `runTime` 的旧 OpenClaw/Anthropic agent loop 引入本项目；当前 agent 内部执行器仍是 `AgentGraphRuntime` / assistant loop。
-- API、demo、eval、CLI 应复用同一套 runtime 行为，避免各自实现不一致的 Agent 逻辑。
+- 入口层只负责接入和归一化请求；主运行时仍是 `AgentGraphRuntime` / assistant loop。
+- Gateway 负责 session/run/cancel/interrupt/reconnect/stream frame 生命周期，不承担主大脑职责。
+- 所有工具调用和外部副作用必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
+- Provider 默认只能走 mock/local/offline；真实 Provider 必须由 `provider_smoke` / `pilot` profile 和显式配置启用，不能因为检测到 key 自动启用。
+- Memory 读写必须经过 `MemoryManager`、read/write policy、store/audit 边界；memory tool 保持薄适配。
+- MCP、durable task、A2A、API、CLI、demo、eval 都是入口或调度形态，不能绕过 runtime、tool、provider、memory 治理链路。
+- API、demo、eval、CLI 应复用同一套 runtime 行为，避免各自实现 Agent 逻辑。
+- 非 Python 的 Web UI、BFF、vendor adapter 或边缘入口只能做薄适配器；不要把旧 `runTime` agent loop 引入本项目。
 
 ## 3. 运行与安全
 
 默认规则不可随意放宽：
 
 - 仓库测试、eval、无 key 环境默认只允许 mock/local/offline 路径。
-- 用户本机任务可以使用真实 LLM，但不自动调用真实图片、视频、商品、通知、数据库或其他外部 Provider。
+- 用户本机任务可以在用户明确要求且 profile 允许时使用真实 LLM，但不自动调用真实图片、视频、商品、通知、数据库或其他外部 Provider。
 - 不因为检测到 API key 就启用真实 Provider。
 - 不写入 API key、token、真实 `.env`、真实用户数据或真实 provider raw response；key 只来自本机环境变量或用户已配置的安全位置，不能写入仓库。
 - 不提交真实媒体、生成物、大文件、缓存目录或外部服务原始返回。
 - 不安装新依赖，不联网拉取依赖，除非用户明确要求并允许。
 
-真实 Provider 调用必须同时满足：用户或任务明确要求真实 Provider，使用 `MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke` 或 `pilot`，并在最终报告说明调用范围和验证结果。
+真实 Provider 调用必须同时满足：用户或任务明确要求真实 Provider，使用 `MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke` 或 `pilot`，具体 provider 选择和凭据由本机未跟踪配置显式提供，并在最终报告说明调用范围和验证结果。
 
 ## 4. 本地命令
 
@@ -86,9 +61,9 @@ User / CLI / API / Web UI
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --scope tools -- -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --changed BASE..HEAD -- -q
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -m fast -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --full -- -q
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_demo_flows.py
@@ -117,14 +92,20 @@ User / CLI / API / Web UI
 
 | path | responsibility |
 | --- | --- |
-| `src/assistant_agent/api/`, `gateway/`, `realtime/` | FastAPI/API、Gateway lifecycle、Gateway 到 assistant runtime 的薄 adapter |
+| `src/assistant_agent/api/` | FastAPI routes、WebSocket、auth、task/trial/control-plane 入口 |
+| `src/assistant_agent/gateway/`, `realtime/` | Gateway lifecycle、realtime adapter、Gateway 到 assistant runtime 的薄 adapter |
 | `src/assistant_agent/agent/`, `services/` | LangGraph runtime、assistant loop、context、trace、session、agent communication、provider 管理 |
-| `src/assistant_agent/services/improvement/`, `proactive_wake/` | 离线人工评审改进候选；显式规则驱动的本地 proactive wake、SQLite outbox 与投递 |
+| `src/assistant_agent/services/context/` | context source、conversation、tool catalog、prompt compiler/renderer、budget/compaction |
+| `src/assistant_agent/services/durable_tasks/`, `api/routes_tasks.py` | durable task store/service/worker、confirmation/input/cancel API |
+| `src/assistant_agent/services/improvement/`, `services/proactive_wake/` | 离线人工评审改进候选；显式规则驱动的本地 proactive wake、SQLite outbox 与投递 |
 | `src/assistant_agent/services/realtime_task_state.py`, `realtime_video_*`, `video_context.py`, `agent_service_latency.py` | realtime task/call 状态、视频观察上下文与 turn latency 诊断；只保存 prompt-safe 状态/引用/统计 |
-| `src/assistant_agent/tools/`, `memory/`, `providers/`, `eval/` | Tool registry/工具实现、记忆服务、provider adapter、离线评测 |
+| `src/assistant_agent/tools/`, `mcp/` | Tool registry/工具实现、MCP wrapper 和显式工具入口 |
+| `src/assistant_agent/memory/`, `services/memory_*.py` | local/remote/framework memory core、policy、audit、snapshot、media ingestion |
+| `src/assistant_agent/providers/`, `video_ai/`, `services/provider_*.py`, `config.py`, `runtime_profile.py` | provider adapter、profile、provider selection/readiness/diagnostics/budget、实时视频本地处理 |
+| `src/assistant_agent/schemas/` | Pydantic/API/tool/provider/memory/gateway/runtime contract |
 | `tests/`, `scripts/` | pytest 测试、本地验证、服务、demo、eval、smoke 脚本 |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
-| `docs/development/`, `docs/roadmaps/`, `docs/superpowers/`, `docs/interview/` | 非默认权威材料：runbook、长期路线图、历史计划/spec、面试资料 |
+| `docs/development/`, `docs/superpowers/`, `docs/interview/` | 非默认权威材料：runbook、历史计划/spec、面试资料 |
 | `.codex/skills/` | 少量项目 workflow、检查清单和脚本；不作为事实权威，不复制长篇架构细节 |
 
 修改行为时同步维护相关测试和文档。若用户设定更严格 scope，例如“不要修改 `src/**`”或“不要修改 `tests/**`”，以用户当前约束为准。
@@ -133,12 +114,13 @@ User / CLI / API / Web UI
 
 - 新代码优先放入 `src/assistant_agent/` 既有分层；公共数据结构优先使用 Pydantic model。
 - 工具调用结果必须结构化，不允许只返回散乱字符串；工具执行失败必须返回可解释错误，不能直接抛出未处理异常给 Agent。
-- 外部模型/API 先维护 adapter interface 和 mock implementation，不直接绑定具体供应商。
+- 外部模型/API 先维护 adapter interface、resolved provider spec 和 mock/unconfigured implementation，不直接把入口层绑定到具体供应商。
 - 多 agent 通信先维护内部 message/task/artifact contract 和 transport adapter；A2A JSON-RPC 只作为协议适配层。
 - Memory tool 保持薄层，不在 `tools/memory_tool.py` 新增检索排序、写入策略、画像合并、TTL、审计或直接 store 访问。
 - Memory 工具选择采用 LLM-first：assistant loop 由 LLM 语义判断是否调用 `memory_save` / `memory_retrieval`，`memory_save` 声明 `source_intent`，当前不以 keyword/vector 规则覆盖 `source_intent` 来决定选择，任何写入仍必须经过 `MemoryWritePolicy`。
 - 长期记忆读取和自动注入必须经过 `MemoryReadPolicy`；普通首次文案、建议、搜索、生成或推荐不自动查长期记忆，`memory_retrieval` / legacy retrieve 也必须先过 `ActionValidator` 读取意图 gate。
-- Phase 8 之后的 assistant loop 方向是真实 LLM 自主决策、追问、工具调用和最终回答；真实 LLM 路径不要依赖旧 intent/router/plan 来选择工具。
+- 真实 LLM 路径以 provider-native content/tool calls 主循环为准；不要依赖旧 intent/router/plan 强制选择工具或最终答案。
+- Durable task worker/resume 只能执行当前 task binding 允许的 ready step；不能把任务恢复路径做成绕过工具治理的后台脚本。
 - 工具系统设计收敛以 `docs/tool-calling-architecture.md` 的“设计收敛原则”为准；不要整体照搬 Hermes、LangChain、OpenClaw 或 Claude Code 的工具系统。
 - mock/offline 路径只作为稳定测试与本地演示兼容层，不把 mock 行为伪装成真实 LLM 能力。
 - 新增核心 ReAct/assistant loop 测试优先覆盖非 mock LLM 决策路径，例如 scripted/fake real chat adapter；真实外部网络调用只放在显式 opt-in 的 smoke/integration 测试中。
@@ -147,8 +129,8 @@ User / CLI / API / Web UI
 ## 7. 文档与工作模式
 
 - `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`README.md` 是人类轻导航入口。
-- 当前架构权威文档只保留在 `docs/*.md`，包括 `docs/gateway-architecture.md`、`docs/media-agent-service-websocket.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`、`docs/observability-harness.md`、`docs/memory-service-architecture.md`、`docs/memory_server_api_spec.md`、`docs/CONTEXT_ENGINEERING_STATUS.md` 和 `docs/agent-communication-routing.md`。
-- 走读文档只解释已沉淀机制，不替代权威文档；`docs/development/**`、`docs/roadmaps/**`、`docs/superpowers/**` 和 `docs/interview/**` 不作为普通开发默认权威；新增文档必须有明确长期用途。
+- 当前架构权威文档只保留在 `docs/*.md`；新增、删除或重命名 root authority 时，同步更新第 1 节路由表和 README。
+- 走读文档只解释已沉淀机制，不替代权威文档；`docs/development/**`、`docs/superpowers/**` 和 `docs/interview/**` 不作为普通开发默认权威；新增文档必须有明确长期用途。
 - 开始任务时说明“我将处理 / 我会先阅读 / 计划”；执行中先读相关代码和文档，保持 scope 小而明确。
 - 手工新建或修改文件默认使用 `apply_patch`；搜索优先用 `rg` / `rg --files`。
 - 不回滚用户已有改动；遇到 dirty worktree 时先识别来源，无关改动保持不动。

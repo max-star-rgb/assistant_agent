@@ -29,10 +29,6 @@ Pilot and realtime operation runbooks (not authority):
 - [docs/development/agent-pilot-operator-runbook.md](docs/development/agent-pilot-operator-runbook.md)
 - [docs/development/realtime-runtime-operator-runbook.md](docs/development/realtime-runtime-operator-runbook.md)
 
-Roadmaps (not authority):
-
-- [docs/roadmaps/personal-realtime-ai-assistant-roadmap.md](docs/roadmaps/personal-realtime-ai-assistant-roadmap.md)
-
 Interview training material lives under `docs/interview/` and is separate from normal development routing.
 
 ## Local Environment
@@ -45,7 +41,7 @@ Basic checks:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -m fast -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
 Full offline validation:
@@ -58,4 +54,4 @@ Full offline validation:
 
 ## Documentation Policy
 
-`AGENTS.md` is the coding-agent entrypoint. README is only a human navigation page. Current architecture decisions belong in the focused `docs/*.md` authority files listed above. Non-authority material lives under subdirectories such as `docs/development/**`, `docs/roadmaps/**`, `docs/superpowers/**`, and `docs/interview/**`; these directories are not default architecture authority.
+`AGENTS.md` is the coding-agent entrypoint. README is only a human navigation page. Current architecture decisions belong in the focused `docs/*.md` authority files listed above. Non-authority material lives under subdirectories such as `docs/development/**`, `docs/superpowers/**`, and `docs/interview/**`; these directories are not default architecture authority.
