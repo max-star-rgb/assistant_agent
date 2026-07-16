@@ -125,10 +125,13 @@ tool/provider/model、latency、error code 与关联 ID；prompt、response、me
 `--log-level` 仍作为同时覆盖 console/file level 的兼容 shorthand。共享 PyCharm 配置
 `.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器和 mock Provider 启动：
 Run console 是 Combined 页签，Gateway 与 AgentRuntime 页签分别跟随上述两个文件。
-`.run/Trace Last.run.xml` 一次性展示 `.data/graph_trace.jsonl` 中最后活跃的 run；
-`.run/Trace Follow.run.xml` 常驻跟随同一 trace 文件，适合作为第三个开发观察页签。
+`.run/Gateway Debug Turn.run.xml` 使用固定 `pycharm-debug-session` 发起一轮 Gateway
+调试请求；`.run/Trace Last.run.xml` 一次性展示同一 session 在
+`.data/graph_trace.jsonl` 中最后活跃的 run；`.run/Trace Follow.run.xml` 常驻跟随同一
+trace 文件，适合作为第三个开发观察页签。
 `.run/Trace Full.run.xml` 连接本地 server，按 Conversation、Timeline、ReAct detail
-三层查看最后一轮，要求 server 已显式启用 `--allow-local-trace-content`。
+三层查看最后一轮；`.run/Trace Full Follow.run.xml` 则常驻跟随同一 session 的完整三层视图。
+Conversation 层要求 server 已显式启用 `--allow-local-trace-content`。
 这些配置不启用 `--allow-local-trace-content`，也不保存密钥或 `.env` 路径。
 
 ## Realtime Video Observation
@@ -380,7 +383,7 @@ Local CLI:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --sections timeline,react
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline,react --errors
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --session-id pycharm-debug-session --sections conversation,timeline,react --errors --follow
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --json
@@ -390,17 +393,41 @@ Local CLI:
 ```
 
 `last`、`latest` 和 `@last` 都解析为本地 JSONL 文件中最后活跃的 run，避免从
-控制台复制 `run_id` / `trace_id` 才能打开详情。`--follow` 只读本地 trace 文件，
-不连接 server、不改变 runtime 参数；它会在新事件写入时重新输出当前匹配 run 的摘要。
-这满足大多数“看 runtime 阶段、耗时、ReAct 流程”的场景，不需要重启服务。
+控制台复制 `run_id` / `trace_id` 才能打开详情。`--session-id` 会先过滤本地
+JSONL，再解析 `last` 或驱动 `--follow`，避免多个调试客户端共用同一个 trace 文件时看串
+session；客户端和 trace viewer 必须使用同一个 `session_id`。如果不传
+`--session-id`，`last` 仍表示全局最后活跃的 run。
+
+server 参数和 trace viewer 参数分开理解：`scripts/run_server.py` 的参数负责启动
+runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关；
+`scripts/trace_view.py` 的 `--trace-path`、`--server`、`--sections`、`--follow` 和
+`--session-id` 只负责查询与展示。`--follow --server` 的数据流是：本地
+`.data/graph_trace.jsonl` 发现当前 session 最新 trace 或变化，再用 `trace_id` 向
+loopback server 拉 `/traces/{trace_id}`；包含 `conversation` 时，再拉
+`/traces/{trace_id}/conversation`。server 查不到 trace 时降级使用本地 summary；
+conversation 查不到时标记 unavailable，仍继续输出 Timeline 和 ReAct detail。
+
 `--sections` 控制输出层级：`conversation` 需要 `--server` 且 server 已用
 `--allow-local-trace-content` 启动；`timeline` 是默认事件线；`react` 展示
-prompt-safe 的 LLM 决策、validator、tool 调用、耗时、错误和恢复动作证据。
+prompt-safe 的 LLM 决策、validator、tool 调用、耗时、错误和恢复动作证据。server-backed
+view 会在事件 timeline 前渲染 `turn_latency`、stage rows、bottleneck、ACK state 和
+consumed-video diagnostics。Conversation text 不会写入 trace events 或 JSONL。
 
-The server-backed view renders `turn_latency`, stage rows, bottleneck, ACK
-state, and consumed-video diagnostics before the event timeline. Conversation
-text is never copied into trace events or JSONL. For a one-off local debug view,
-restart the server with the explicit gate and request only the matching turn:
+推荐 PyCharm 本地流程：
+
+1. 运行 `.run/Assistant Server.run.xml`。需要 Conversation 层时，临时给 server 参数增加
+   `--allow-local-trace-content`。
+2. 运行 `.run/Gateway Debug Turn.run.xml`，它固定使用
+   `--session-id pycharm-debug-session`。
+3. 运行 `.run/Trace Full Follow.run.xml`，它用同一个 session 常驻输出
+   Conversation -> Timeline -> ReAct detail。
+
+共享 `.run` 配置保持 `http://127.0.0.1:8000`。实际通话测试如果本机 server 跑在
+`8089`，复制对应 PyCharm 配置到个人配置后，把 `--server http://127.0.0.1:8000`
+改成 `--server http://127.0.0.1:8089`，不要把 `8089` 写回共享配置。
+
+For a one-off local debug view, restart the server with the explicit gate and
+request only the matching turn:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
@@ -408,6 +435,7 @@ restart the server with the explicit gate and request only the matching turn:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last \
   --trace-path .data/graph_trace.jsonl \
   --server http://127.0.0.1:8000 \
+  --session-id pycharm-debug-session \
   --sections conversation,timeline,react \
   --errors
 ```

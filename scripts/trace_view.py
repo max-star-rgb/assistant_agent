@@ -87,13 +87,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--server",
         help=(
             "Assistant server base URL, for example http://127.0.0.1:8000. "
-            "When set, query the running server instead of the local JSONL trace file."
+            "When set, query the running server for trace detail. "
+            "The local JSONL file is still used to resolve latest/follow targets."
         ),
     )
     parser.add_argument(
         "--trace-path",
         default=DEFAULT_TRACE_PATH,
-        help=f"Local JSONL trace store path. Ignored when --server is set. Defaults to {DEFAULT_TRACE_PATH}.",
+        help=f"Local JSONL trace store path. Defaults to {DEFAULT_TRACE_PATH}.",
+    )
+    parser.add_argument(
+        "--session-id",
+        help="Filter local JSONL lookup to one session id, useful with last/latest/@last and --follow.",
     )
     parser.add_argument("--errors", action="store_true", help="Show error events before the full timeline.")
     parser.add_argument(
@@ -141,8 +146,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.follow and args.server:
-        parser.error("--follow requires a local --trace-path")
     if args.follow and args.json_output:
         parser.error("--json cannot be combined with --follow")
     if args.follow and args.poll_interval <= 0:
@@ -158,13 +161,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("conversation output requires --server")
         if not _is_loopback_server(args.server):
             parser.error("conversation output requires a loopback --server URL")
-    if "conversation" in sections and args.follow:
-        parser.error("conversation output cannot be combined with --follow")
+    if args.follow:
+        return _follow_local_trace(args, sections)
     if args.server:
         identifier = args.identifier
         local_events: list[TraceEvent] = []
         if _is_latest_identifier(identifier):
-            local_events = _find_local_events(args.trace_path, identifier)
+            local_events = _find_local_events(args.trace_path, identifier, session_id=args.session_id)
             if not local_events:
                 print(f"trace/run not found: {identifier}", file=sys.stderr)
                 return 1
@@ -195,10 +198,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(_format_human(payload, show_errors=args.errors, sections=sections))
         return 0
 
-    if args.follow:
-        return _follow_local_trace(args)
-
-    events = _find_local_events(args.trace_path, args.identifier)
+    events = _find_local_events(args.trace_path, args.identifier, session_id=args.session_id)
     if not events:
         print(f"trace/run not found: {args.identifier}", file=sys.stderr)
         return 1
@@ -249,8 +249,10 @@ def _is_latest_identifier(identifier: str) -> bool:
     return identifier.lower() in LATEST_IDENTIFIERS
 
 
-def _find_local_events(trace_path: str | Path, identifier: str) -> list[TraceEvent]:
+def _find_local_events(trace_path: str | Path, identifier: str, *, session_id: str | None = None) -> list[TraceEvent]:
     events = _load_local_events(trace_path)
+    if session_id:
+        events = [event for event in events if event.session_id == session_id]
     if _is_latest_identifier(identifier):
         return _latest_run_events(events)
     return _events_for_identifier(events, identifier)
@@ -282,26 +284,20 @@ def _events_for_identifier(events: list[TraceEvent], identifier: str) -> list[Tr
     return [event for event in events if event.trace_id == identifier]
 
 
-def _follow_local_trace(args: argparse.Namespace) -> int:
+def _follow_local_trace(args: argparse.Namespace, sections: tuple[str, ...]) -> int:
     deadline = None if args.follow_timeout is None else monotonic() + args.follow_timeout
     previous_signature: tuple[tuple[Any, ...], ...] | None = None
     printed_any = False
     printed_updates = 0
-    sections = _parse_sections(
-        build_parser(),
-        args.sections,
-        include_conversation=args.include_conversation,
-        react_detail=args.react_detail,
-    )
     while True:
-        events = _find_local_events(args.trace_path, args.identifier)
+        events = _find_local_events(args.trace_path, args.identifier, session_id=args.session_id)
         if events:
             signature = _events_signature(events)
             if signature != previous_signature:
                 if printed_any:
                     print()
                     print("--- trace update ---")
-                print(_format_human(_summary_payload(events), show_errors=args.errors, sections=sections), flush=True)
+                print(_format_human(_follow_payload(args, events, sections), show_errors=args.errors, sections=sections), flush=True)
                 previous_signature = signature
                 printed_any = True
                 printed_updates += 1
@@ -320,6 +316,7 @@ def _events_signature(events: list[TraceEvent]) -> tuple[tuple[Any, ...], ...]:
         (
             event.trace_id,
             event.run_id,
+            event.session_id,
             event.canonical_event,
             event.event_type,
             event.status,
@@ -332,6 +329,37 @@ def _events_signature(events: list[TraceEvent]) -> tuple[tuple[Any, ...], ...]:
         )
         for event in events
     )
+
+
+def _follow_payload(args: argparse.Namespace, events: list[TraceEvent], sections: tuple[str, ...]) -> dict[str, Any]:
+    if not args.server:
+        return _summary_payload(events)
+
+    trace_id = events[0].trace_id
+    payload = _fetch_server_trace(args.server, trace_id)
+    if payload is None:
+        payload = _summary_payload(events)
+    if "conversation" in sections:
+        conversation_trace_id = payload.get("trace_id")
+        if not isinstance(conversation_trace_id, str) or not conversation_trace_id:
+            conversation_trace_id = trace_id
+        conversation = _get_server_json(
+            args.server,
+            f"/traces/{quote(conversation_trace_id, safe='')}/conversation",
+        )
+        if conversation is None:
+            conversation = _conversation_unavailable_payload(conversation_trace_id)
+        payload["conversation"] = conversation
+    return _server_summary_payload(payload)
+
+
+def _conversation_unavailable_payload(trace_id: str) -> dict[str, Any]:
+    return {
+        "schema_version": "trace_conversation_unavailable_v1",
+        "trace_id": trace_id,
+        "unavailable": True,
+        "reason": "conversation endpoint returned 404",
+    }
 
 
 def _fetch_server_trace(server: str, identifier: str) -> dict[str, Any] | None:
@@ -660,6 +688,11 @@ def _format_video_latency(video: dict[str, Any]) -> str:
 
 
 def _format_conversation(conversation: dict[str, Any]) -> list[str]:
+    if conversation.get("unavailable") is True:
+        return [
+            "Conversation",
+            f"  (unavailable: {_plain_value(conversation.get('reason'))})",
+        ]
     return [
         "Conversation",
         _format_conversation_side("User", conversation.get("user")),

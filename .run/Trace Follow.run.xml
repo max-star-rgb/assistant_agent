@@ -13,7 +13,7 @@
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/scripts/trace_view.py" />
-    <option name="PARAMETERS" value="last --trace-path .data/graph_trace.jsonl --errors --follow" />
+    <option name="PARAMETERS" value="last --trace-path .data/graph_trace.jsonl --session-id pycharm-debug-session --errors --follow" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

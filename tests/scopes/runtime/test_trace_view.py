@@ -46,6 +46,25 @@ def test_trace_view_follow_outputs_current_latest_run_once(tmp_path: Path) -> No
     assert "run_old" not in result.stdout
 
 
+def test_trace_view_last_session_id_selects_latest_matching_session_run(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_session_sample_trace(trace_path)
+
+    result = _run_trace_view(
+        "last",
+        "--trace-path",
+        str(trace_path),
+        "--session-id",
+        "debug-session",
+        "--errors",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.startswith("run run_debug trace trace_debug status=completed events=2")
+    assert "run_global_latest" not in result.stdout
+
+
 def test_trace_view_full_sections_resolve_last_and_render_conversation_timeline_react(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
@@ -87,6 +106,80 @@ def test_trace_view_full_sections_resolve_last_and_render_conversation_timeline_
     assert "why=needs product search evidence before continuing" in result.stdout
     assert "validation=accepted" in result.stdout
     assert "tool=product_search" in result.stdout
+
+
+def test_trace_view_follow_server_outputs_conversation_timeline_react(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_sample_trace(trace_path)
+    server = _TraceViewServer(
+        {
+            "/traces/trace_new": _server_trace_payload(),
+            "/traces/trace_new/conversation": {
+                "schema_version": "trace_conversation_view_v1",
+                "trace_id": "trace_new",
+                "user": {"text": "用户原文：帮我找一双白色板鞋", "truncated": False, "chars": 16},
+                "assistant": {"text": "助手原文：我会先搜索可选商品。", "truncated": False, "chars": 15},
+            },
+        }
+    )
+    server.start()
+    try:
+        result = _run_trace_view(
+            "last",
+            "--trace-path",
+            str(trace_path),
+            "--server",
+            server.url,
+            "--sections",
+            "conversation,timeline,react",
+            "--errors",
+            "--follow",
+            "--follow-limit",
+            "1",
+        )
+    finally:
+        server.stop()
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    conversation_index = result.stdout.index("Conversation")
+    timeline_index = result.stdout.index("Timeline")
+    react_index = result.stdout.index("ReAct detail")
+    assert conversation_index < timeline_index < react_index
+    assert "User: 用户原文：帮我找一双白色板鞋" in result.stdout
+    assert "decision=tool_call" in result.stdout
+    assert "tool=product_search" in result.stdout
+
+
+def test_trace_view_follow_server_keeps_timeline_when_conversation_is_missing(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_sample_trace(trace_path)
+    server = _TraceViewServer({"/traces/trace_new": _server_trace_payload()})
+    server.start()
+    try:
+        result = _run_trace_view(
+            "last",
+            "--trace-path",
+            str(trace_path),
+            "--server",
+            server.url,
+            "--sections",
+            "conversation,timeline,react",
+            "--errors",
+            "--follow",
+            "--follow-limit",
+            "1",
+        )
+    finally:
+        server.stop()
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "Conversation" in result.stdout
+    assert "unavailable" in result.stdout
+    assert "Timeline" in result.stdout
+    assert "ReAct detail" in result.stdout
+    assert "decision=tool_call" in result.stdout
 
 
 def _run_trace_view(*args: str) -> subprocess.CompletedProcess[str]:
@@ -287,6 +380,44 @@ def _write_sample_trace(path: Path) -> None:
         store.append(event)
 
 
+def _write_session_sample_trace(path: Path) -> None:
+    store = JsonlTraceStore(path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    for event in (
+        _event(
+            "trace_debug",
+            "run_debug",
+            "run.started",
+            session_id="debug-session",
+            created_at=base_time,
+        ),
+        _event(
+            "trace_debug",
+            "run_debug",
+            "run.completed",
+            status="completed",
+            session_id="debug-session",
+            created_at=base_time + timedelta(milliseconds=10),
+        ),
+        _event(
+            "trace_global_latest",
+            "run_global_latest",
+            "run.started",
+            session_id="other-session",
+            created_at=base_time + timedelta(seconds=1),
+        ),
+        _event(
+            "trace_global_latest",
+            "run_global_latest",
+            "run.completed",
+            status="completed",
+            session_id="other-session",
+            created_at=base_time + timedelta(seconds=1, milliseconds=10),
+        ),
+    ):
+        store.append(event)
+
+
 def _event(
     trace_id: str,
     run_id: str,
@@ -296,12 +427,14 @@ def _event(
     provider: str | None = None,
     model: str | None = None,
     latency_ms: int | None = None,
+    session_id: str | None = None,
     created_at: datetime,
     attributes: dict[str, object] | None = None,
 ) -> TraceEvent:
     return TraceEvent(
         trace_id=trace_id,
         run_id=run_id,
+        session_id=session_id,
         node_name="runtime",
         event_type="observability",
         canonical_event=canonical_event,
