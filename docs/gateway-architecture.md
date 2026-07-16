@@ -18,7 +18,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - Durable structured tasks are a separate post-acceptance lifecycle owned by `DurableTaskService` and its worker. Gateway owns only the ingress turn that accepts and returns the task handle; it does not keep the durable task as an active Gateway run.
 - Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and local CLI `--scenario` through demo flows enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
-- The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, and treats raw `audio` / `interrupt` frames as entry-layer ACK traffic. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer may pre-warm rolling semantics, while active-video `chat` turns expose `video_understanding` so the foreground LLM can decide when visual facts are needed. The LLM never receives frames, JPEG paths, base64 media, or provider raw responses; only the governed visual tool consumes frames and returns structured text observations. The exact Media-Agent wire contract is `docs/media-agent-service-websocket.md`.
+- The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, and treats raw `audio` / `interrupt` frames as entry-layer ACK traffic. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer pre-warms rolling semantics, while AgentRuntime may dynamically expose `video_understanding` for active-video turns. The main LLM only knows that the tool can be called; it never receives VLM role instructions, frames, JPEG paths, base64 media, or provider raw responses. The exact Media-Agent wire contract is `docs/media-agent-service-websocket.md`.
 - The old browser Web Chat console, `/demo/console`, `/static/index.html`, `scripts/run_client.py`, and legacy `/ws/agent/{session_id}` event stream are removed from the product app. Do not reintroduce ordinary chat entrypoints before the realtime assistant runtime is stable.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
 
@@ -134,10 +134,10 @@ Agent/Gateway `session_id`; the vendor `sessionId` remains only the protocol
 correlation value returned to the media side and cannot resume conversation
 history from an older call. Its Gateway session uses the trusted
 `realtime_phone` profile
-and a trusted foreground tool set: `web_search`, `shopping_search`,
-`memory_retrieval`, `memory_save`, plus `video_understanding` only when the
-turn carries an active session video reference. `shopping_search` is the only
-foreground shopping entry for this phone profile and internally performs product
+and a trusted AgentRuntime tool set: `web_search`, `shopping_search`,
+`memory_retrieval`, `memory_save`, plus dynamically exposed `video_understanding`
+when active-video state makes it valid. `shopping_search` is the only
+AgentRuntime shopping entry for this phone profile and internally performs product
 search plus price comparison. Tool qualification is derived from trusted session
 config and structured request media, never user text. `assistantControl`
 validates and records media control state,
@@ -168,19 +168,18 @@ adaptive sampling, pixel difference, SSIM, and local histogram change detection;
 Provider 发送当前选中的一张 JPEG；历史画面不作为多帧请求重发，只把上次成功语义摘要
 裁剪后作为文本上下文。Background understanding
 still runs through `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding`.
-When a later chat turn has active video, the foreground Agent-Service model may
-also call the governed `video_understanding` tool. The model sees the live-camera
-availability and the tool schema, not the frame bytes or frame paths; runtime
-binds the session video reference at the tool boundary. The entry adapter does
-not call the video provider directly.
+When a later chat turn has active video, AgentRuntime may expose the
+`video_understanding` tool. The main LLM sees the live-camera availability, tool
+schema, and projected `realtime_video_context`, not frame bytes, frame paths, VLM
+role prompt, or Provider payloads. The entry adapter does not call the video
+provider directly.
 
 The runtime owns a bounded semantic snapshot per opaque `video_id`. Immediately
 before every Agent-Service model context build it projects the latest snapshot
 into the independent `realtime_video_context` section. Thus the first DeepSeek
-decision can use completed Qwen observations, or choose `video_understanding`
-when it needs fresh visual facts. Query-time video understanding reuses the same
-governed tool boundary and consumes rolling memory or recent frames inside the
-tool; the LLM only receives the resulting structured observation. Frame
+decision can use completed Qwen observations or call dynamically exposed
+`video_understanding` when it needs current visual facts. Query-time video
+understanding consumes rolling memory or recent frames inside the tool. Frame
 freshness uses capture age; snapshot publication age remains a separate
 diagnostic. Ordinary non-Agent-Service video/API requests retain the explicit
 `video_understanding` tool and `recent_frame_fallback` behavior.

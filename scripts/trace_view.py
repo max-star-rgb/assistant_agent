@@ -161,7 +161,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.follow_timeout is not None and args.follow_timeout < 0:
         parser.error("--follow-timeout must be greater than or equal to 0")
     sections = _parse_sections(parser, args.sections, include_conversation=args.include_conversation, react_detail=args.react_detail)
-    include_conversation = args.include_conversation or "conversation" in sections
+    include_conversation = args.include_conversation
     if include_conversation:
         if not args.server:
             parser.error("conversation output requires --server")
@@ -359,7 +359,7 @@ def _follow_payload(args: argparse.Namespace, events: list[TraceEvent], sections
     payload = _fetch_server_trace(args.server, trace_id)
     if payload is None:
         payload = _summary_payload(events)
-    if "conversation" in sections:
+    if args.include_conversation:
         conversation_trace_id = payload.get("trace_id")
         if not isinstance(conversation_trace_id, str) or not conversation_trace_id:
             conversation_trace_id = trace_id
@@ -795,6 +795,7 @@ def _event_name(event: dict[str, Any]) -> str:
 
 def _event_details(event: dict[str, Any]) -> list[str]:
     details: list[str] = []
+    name = _event_name(event)
     latency_ms = event.get("latency_ms")
     if isinstance(latency_ms, int):
         details.append(f"{latency_ms}ms")
@@ -809,9 +810,29 @@ def _event_details(event: dict[str, Any]) -> list[str]:
     _append_named(details, "provider", event.get("provider"))
     _append_named(details, "model", event.get("model"))
     _append_named(details, "error", event.get("error_code"))
+    if name == "context.build.finished":
+        _append_context_tool_exposure(details, event.get("output_summary"))
     _append_selected(details, event.get("output_summary"), DETAIL_OUTPUT_KEYS)
     _append_selected(details, event.get("attributes"), DETAIL_ATTRIBUTE_KEYS)
     return details
+
+
+def _append_context_tool_exposure(details: list[str], output_summary: Any) -> None:
+    if not isinstance(output_summary, dict):
+        return
+    context = output_summary.get("context")
+    if not isinstance(context, dict):
+        return
+    tool_catalog = context.get("tool_catalog")
+    if isinstance(tool_catalog, dict):
+        selected = tool_catalog.get("selected_tool_names")
+        if isinstance(selected, list) and selected:
+            details.append(f"selected_tools={_compact_value(selected)}")
+    run_tool_set = context.get("run_tool_set")
+    if isinstance(run_tool_set, dict):
+        excluded = run_tool_set.get("excluded_reasons")
+        if isinstance(excluded, dict) and excluded:
+            details.append(f"excluded_tools={_compact_value(excluded)}")
 
 
 def _append_named(details: list[str], name: str, value: Any) -> None:

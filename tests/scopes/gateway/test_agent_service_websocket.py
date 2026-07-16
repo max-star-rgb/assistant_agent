@@ -1405,17 +1405,8 @@ def test_agent_service_video_chat_allows_provider_timeout_budget() -> None:
 
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "眼前是什么？",
-        "摄像头里看到什么？",
-        "屏幕里面有什么？",
-    ],
-)
-def test_agent_service_visual_text_promotes_latest_frame_before_llm_tool_choice(
-    text: str,
-) -> None:
+def test_agent_service_chat_does_not_promote_video_from_text_before_llm_tool_choice() -> None:
+    text = "帮我识别画面"
     captured = {}
 
     class Observer:
@@ -1468,17 +1459,15 @@ def test_agent_service_visual_text_promotes_latest_frame_before_llm_tool_choice(
     )
 
     metadata = captured["request"].metadata
-    assert observer.promoted == [7]
-    assert observer.waited == [7]
-    assert metadata["realtime_video_target_sequence"] == 7
-    assert metadata["realtime_video_freshness_satisfied"] is True
-    assert isinstance(metadata["realtime_video_freshness_waited_ms"], int)
+    assert observer.promoted == []
+    assert observer.waited == []
+    assert "realtime_video_target_sequence" not in metadata
+    assert "realtime_video_freshness_satisfied" not in metadata
+    assert "realtime_video_freshness_waited_ms" not in metadata
     assert captured["request"].video_ids == ["agent-service-video-test"]
 
 
-def test_agent_service_visual_freshness_timeout_does_not_start_second_qwen(
-    monkeypatch,
-) -> None:
+def test_agent_service_chat_does_not_wait_for_video_freshness_before_llm_tool_choice() -> None:
     captured = {}
 
     class Observer:
@@ -1499,7 +1488,6 @@ def test_agent_service_visual_freshness_timeout_does_not_start_second_qwen(
             captured["request"] = request
             return object()
 
-    monkeypatch.setattr(agent_service_ws, "VIDEO_FRESHNESS_WAIT_SECONDS", 0.01)
     state = agent_service_ws.AgentServiceConnectionState(
         session_id="s1",
         query_params={},
@@ -1528,9 +1516,9 @@ def test_agent_service_visual_freshness_timeout_does_not_start_second_qwen(
     )
 
     metadata = captured["request"].metadata
-    assert metadata["realtime_video_target_sequence"] == 7
-    assert metadata["realtime_video_freshness_satisfied"] is False
-    assert isinstance(metadata["realtime_video_freshness_waited_ms"], int)
+    assert "realtime_video_target_sequence" not in metadata
+    assert "realtime_video_freshness_satisfied" not in metadata
+    assert "realtime_video_freshness_waited_ms" not in metadata
 
 
 def test_agent_service_visual_chat_without_decoded_frame_uses_trusted_profile() -> None:

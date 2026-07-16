@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from time import perf_counter_ns
@@ -49,10 +48,6 @@ FAIL_CODE = "FAIL"
 POLICY_VIOLATION_CLOSE_CODE = 1008
 VIDEO_TURN_TIMEOUT_SECONDS = 90.0
 CHAT_PROGRESS_INTERVAL_SECONDS = 15.0
-VIDEO_FRESHNESS_WAIT_SECONDS = 1.5
-_REALTIME_VISUAL_REFERENCE = re.compile(
-    r"(眼前|摄像头|镜头|画面|屏幕|视频|看见|看到|识别.+(?:物体|东西|画面|图片|视频)|当前.+(?:场景|画面|物体|东西))"
-)
 
 
 @dataclass
@@ -1221,11 +1216,6 @@ async def _run_agent_service_chat_turn(
     if state.gateway_facade is None:
         raise RuntimeError("agent-service Gateway facade is not initialized")
     active_video_ids = _active_chat_video_ids(state=state, prepared_video_ids=video_ids)
-    freshness_metadata = await _realtime_video_freshness_metadata(
-        state=state,
-        text=latest_speech,
-        active_video_ids=active_video_ids,
-    )
     try:
         request = GatewayTurnRequest(
             user_id=user_number,
@@ -1238,7 +1228,6 @@ async def _run_agent_service_chat_turn(
                 user_number=user_number,
                 chat_index=chat_index,
                 content_count=len(contents),
-                freshness_metadata=freshness_metadata,
             ),
             config={
                 "system_prompt_profile": "realtime_phone",
@@ -1279,79 +1268,12 @@ def _active_chat_video_ids(
     return requested
 
 
-async def _realtime_video_freshness_metadata(
-    *,
-    state: AgentServiceConnectionState,
-    text: str,
-    active_video_ids: list[str],
-) -> dict[str, Any]:
-    """Best-effort current-frame freshness barrier for explicit visual requests."""
-
-    if not active_video_ids or not _asks_about_current_visual_scene(text):
-        return {}
-    observer = state.video_observer
-    if observer is None:
-        return {}
-    frame = _latest_realtime_video_frame(state, active_video_ids)
-    if frame is None:
-        return {}
-    target_sequence = frame.sequence
-    metadata: dict[str, Any] = {
-        "realtime_video_target_sequence": target_sequence,
-    }
-    started_ns = state.clock_ns()
-    try:
-        represented = getattr(observer, "represented_sequence", None)
-        if callable(represented):
-            represented = represented()
-        if isinstance(represented, bool) or not isinstance(represented, int):
-            represented = None
-        if represented is None or represented < target_sequence:
-            await observer.promote(frame)
-        await asyncio.wait_for(
-            observer.wait_for_snapshot_sequence(target_sequence),
-            timeout=VIDEO_FRESHNESS_WAIT_SECONDS,
-        )
-        metadata["realtime_video_freshness_satisfied"] = True
-    except TimeoutError:
-        metadata["realtime_video_freshness_satisfied"] = False
-    except (RuntimeError, ValueError):
-        metadata["realtime_video_freshness_satisfied"] = False
-    finally:
-        metadata["realtime_video_freshness_waited_ms"] = _elapsed_ms(started_ns, state.clock_ns())
-    return metadata
-
-
-def _asks_about_current_visual_scene(text: str) -> bool:
-    return _REALTIME_VISUAL_REFERENCE.search(text) is not None
-
-
-def _latest_realtime_video_frame(
-    state: AgentServiceConnectionState,
-    active_video_ids: list[str],
-) -> VideoFrame | None:
-    for video_id in reversed(active_video_ids):
-        frame = state.latest_video_frames.get(video_id)
-        if frame is not None:
-            return frame
-        if state.video_ingestion is None:
-            continue
-        try:
-            frames = state.video_ingestion.store.get_recent_frames(video_id, limit=1)
-        except AttributeError:
-            continue
-        if frames:
-            return frames[-1]
-    return None
-
-
 def _agent_service_gateway_metadata(
     *,
     state: AgentServiceConnectionState,
     user_number: str,
     chat_index: Any,
     content_count: int,
-    freshness_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = {
         "transport": "agent_service_websocket",
@@ -1366,8 +1288,6 @@ def _agent_service_gateway_metadata(
             "entry_capabilities": AGENT_SERVICE_ENTRY_CAPABILITIES.to_metadata(),
         },
     }
-    if freshness_metadata:
-        metadata.update(freshness_metadata)
     return metadata
 
 

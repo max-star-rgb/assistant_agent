@@ -15,16 +15,11 @@ from assistant_agent.services.context.skill_loader import (
     SkillCatalog,
     load_repo_skill_descriptors,
 )
+from assistant_agent.services.context.tool_exposure import entry_profile_tool_exposure
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 
 
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
-_AGENT_SERVICE_TOOL_NAMES = {
-    "web_search",
-    "shopping_search",
-    "memory_retrieval",
-    "memory_save",
-}
 
 
 @dataclass(frozen=True)
@@ -117,9 +112,13 @@ def qualify_tool_specs(
     excluded_reasons: dict[str, list[str]] = {}
     agent_service_profile = is_trusted_agent_service_request(request)
     for spec in tool_specs:
-        if agent_service_profile and not _agent_service_tool_exposed(request, spec.name):
-            excluded_reasons[spec.name] = ["entry_profile_not_exposed"]
-            continue
+        if agent_service_profile:
+            exposure = entry_profile_tool_exposure(request, spec.name)
+            if not exposure.exposed:
+                excluded_reasons[spec.name] = list(exposure.excluded_reasons)
+                if not excluded_reasons[spec.name]:
+                    excluded_reasons[spec.name] = ["entry_profile_not_exposed"]
+                continue
         policy = ToolPolicyInterpreter().view_for_spec(spec)
         missing_env = [name for name in policy.requires_env if not os.environ.get(name)]
         if missing_env:
@@ -144,12 +143,6 @@ def qualify_tool_specs(
         active_skill_ids=active_skill_ids,
         excluded_reasons=excluded_reasons,
     )
-
-
-def _agent_service_tool_exposed(request: UserRequest, tool_name: str) -> bool:
-    if tool_name in _AGENT_SERVICE_TOOL_NAMES:
-        return True
-    return False
 
 
 def recall_qualified_tool_specs(

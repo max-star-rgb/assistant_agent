@@ -288,14 +288,14 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 原始视频上下文只保留最近 3 帧；成功理解的语义关键帧独立保留最多 8 帧。它们是本地 fallback/语义记忆，不作为 Qwen 多帧历史发送。每轮 Qwen 请求只含当前选中的一张 JPEG 和最多 2,000 字符的上一成功语义摘要。后台队列最多包含 1 个执行中帧和 1 个待处理帧，积压时用最新候选替换旧候选。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解复用 `video_understanding`，并经过 `ActionValidator -> ToolExecutor -> ToolRegistry`；WebSocket 入口不直接调用 Provider。默认 `local_demo` / `offline_eval` 不联网，真实连续 MLLM 只允许显式 `provider_smoke` / `pilot` 配置。
-- 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。有 active video 时，Agent-Service 前台 LLM 的工具集合不包含 `video_understanding`，避免回答阶段绕过 observer 启动第二条上传式视觉 Provider 请求。DeepSeek 只看到实时镜头可用和被动 `realtime_video_context` 文本 snapshot；它看不到视频帧、JPEG 路径、base64、Qwen 原文或 provider raw response。
+- 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。有 active video 时，AgentRuntime 可基于可信 entry profile 和结构化媒体引用动态暴露 `video_understanding`，不根据用户文本关键词暴露或调用工具。DeepSeek 只知道可以调用该视觉理解 tool，并看到实时镜头可用和被动 `realtime_video_context` 文本 snapshot；它看不到视频帧、JPEG 路径、base64、VLM 角色模板、Qwen 原文或 provider raw response。
 - 可信 Agent-Service 请求把它表述为双方共享的当前实时镜头，不把 opaque `video_id` 渲染成上传视频，也不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
-- 后台观察器仍作为预热缓存运行；当前台文本明确指代眼前、摄像头、镜头、画面、屏幕或视频时，入口用最新解码帧复用同一个 observer 执行 freshness barrier。普通问候不等待、不提及视觉。
-- 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；查询驱动提升也复用这条队列与工具治理链。若目标帧已经由 in-flight/pending 代表，入口只等待目标序号，不能启动第二个 Qwen。
+- 后台观察器仍作为预热缓存运行；需要新的当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `video_understanding` 表达，而不是在主 LLM prompt 中放入视觉观察流程。普通问候不应主动提及视觉。
+- 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；工具触发的视觉刷新也应复用这条队列与工具治理链，不能绕开 observer 启动第二个 Qwen。
 - 每个 `video_id` 只维护一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后主动轮换，断线使用 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；切换 video id、连接关闭或 observer close 会关闭 Provider session 并清理 pending、快照、retained/raw JPEG 和临时文件。
 - 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；采集时间缺失或在未来时不伪造采集年龄。
 - 普通上传/API（非 Agent-Service）仍可显式调用 `video_understanding`：最新观察成功时读取滚动语义记忆，记忆未就绪或最新观察失败时使用最近 3 帧走 Provider 回退。
-- Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖 Gateway、前台 LLM 执行以及 LLM 自主选择后的视觉工具调用；它不表示入口层会调用视频 Provider，也不表示前台一定会调用视频工具。普通 chat 使用 30 秒。
+- Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖 Gateway、AgentRuntime 主 LLM 执行、动态视觉工具调用以及可能较慢的上下文刷新；普通 chat 使用 30 秒。
 - 连接关闭时先停止观察器、丢弃待处理帧并拒绝晚到结果，再移除滚动语义记忆、关键帧、原始帧上下文和 JPEG 运行时文件。
 
 成功响应中的 `video received` 表示该帧已经通过校验、成功解码、注册到视频上下文并完成本地选帧调度，不再只是传输层收到；它不表示后台视觉 MLLM 已完成。Hex、codec、NAL 起始码、大小或解码失败时返回 `videoResponse` 且 `body.code="FAIL"`；连接保持可用，失败帧不会附加到后续 chat。
@@ -519,12 +519,11 @@ MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
 ### 7.1 单轮耗时诊断
 
 `scripts/run_server.py` 默认启用非阻塞 trace 持久化。收到安全 INFO 日志中的
-`trace` 后，可在服务运行期间查询该轮完整耗时；`gateway_run` 是 Gateway 包装
-run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
+`trace` 后，默认直接从本地机器级 JSONL trace 生成视图；`gateway_run` 是 Gateway
+包装 run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py trace_xxx \
-  --server http://127.0.0.1:8089
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py trace_xxx
 ```
 
 输出中的 `bottleneck` 是本轮最大关键路径阶段。常见慢点映射如下：
@@ -534,7 +533,7 @@ run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 | `chat_queue_wait` | 同一 session 的上一轮仍在执行，本轮等待串行锁。 |
 | `conversation_prepare` | 会话历史读取、上下文请求准备较慢。 |
 | `llm_chat[1]` | 首次 LLM 工具选择/直接回答调用较慢。 |
-| `tool_execute[video_understanding]` | 普通上传/API 显式调用视觉工具，或 Agent-Service 后台 observer 通过私有 registry 执行 Qwen observation。Agent-Service 前台工具目录不暴露该工具。 |
+| `tool_execute[video_understanding]` | 普通上传/API 显式调用视觉工具，Agent-Service 后台 observer 执行 Qwen observation，或 AgentRuntime 动态暴露后由主 LLM 调用视觉理解工具。 |
 | `llm_chat[2]` | 工具观察后的最终回答 LLM 调用较慢。 |
 | `websocket_send` | socket/媒体接收端产生传输背压。 |
 | `ACK pending` | 最终响应已发送，但媒体应用确认尚未到达。 |
@@ -544,9 +543,9 @@ run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 | `unattributed` | 端到端耗时中尚未被叶子阶段解释的剩余部分。 |
 
 视频诊断中的后台观察 latency 不直接计入 chat 关键路径。普通上传/API 的
-`recent_frame_fallback` 会体现在 `tool_execute[video_understanding]`；Agent-Service
-前台视觉新鲜度等待通过 `freshness_waited_ms`、`freshness_satisfied` 和
-`sequence_gap` 体现。
+`recent_frame_fallback` 和 AgentRuntime 动态视觉工具调用会体现在
+`tool_execute[video_understanding]`；画面陈旧度主要通过
+`frame_capture_age_ms`、`snapshot_publish_age_ms` 和 `sequence_gap` 体现。
 `videoResponse(code=0)` 仍仅是帧校验、
 解码、注册与调度成功的证据，不是 MLLM 完成证据。
 

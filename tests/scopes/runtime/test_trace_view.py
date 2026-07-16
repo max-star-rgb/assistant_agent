@@ -132,6 +132,7 @@ def test_trace_view_full_sections_resolve_last_and_render_conversation_timeline_
             server.url,
             "--sections",
             "conversation,timeline,react",
+            "--include-conversation",
             "--errors",
         )
     finally:
@@ -175,6 +176,7 @@ def test_trace_view_follow_server_outputs_conversation_timeline_react(tmp_path: 
             server.url,
             "--sections",
             "conversation,timeline,react",
+            "--include-conversation",
             "--errors",
             "--follow",
             "--follow-limit",
@@ -194,7 +196,7 @@ def test_trace_view_follow_server_outputs_conversation_timeline_react(tmp_path: 
     assert "tool=product_search" in result.stdout
 
 
-def test_trace_view_follow_server_keeps_timeline_when_conversation_is_missing(tmp_path: Path) -> None:
+def test_trace_view_full_sections_do_not_fetch_or_render_missing_conversation_by_default(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
     server = _TraceViewServer({"/traces/trace_new": _server_trace_payload()})
@@ -209,19 +211,17 @@ def test_trace_view_follow_server_keeps_timeline_when_conversation_is_missing(tm
             "--sections",
             "conversation,timeline,react",
             "--errors",
-            "--follow",
-            "--follow-limit",
-            "1",
         )
     finally:
         server.stop()
 
     assert result.returncode == 0
     assert result.stderr == ""
-    assert "Conversation" in result.stdout
-    assert "unavailable" in result.stdout
     assert "Timeline" in result.stdout
     assert "ReAct detail" in result.stdout
+    assert "Conversation" not in result.stdout
+    assert "unavailable" not in result.stdout
+    assert "conversation endpoint returned 404" not in result.stdout
     assert "decision=tool_call" in result.stdout
 
 
@@ -281,6 +281,31 @@ def test_trace_view_latency_stages_flag_outputs_stage_rows(tmp_path: Path) -> No
         "    llm_chat[1] 6906ms iteration=1 provider=deepseek "
         "model=deepseek-v4-flash provider_latency=218ms"
     ) in result.stdout
+
+
+def test_trace_view_renders_tool_exposure_from_context_machine_log(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_sample_trace(trace_path)
+    server = _TraceViewServer({"/traces/trace_new": _server_trace_payload_with_tool_exposure()})
+    server.start()
+    try:
+        result = _run_trace_view(
+            "last",
+            "--trace-path",
+            str(trace_path),
+            "--server",
+            server.url,
+            "--sections",
+            "timeline",
+        )
+    finally:
+        server.stop()
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "context.build.finished" in result.stdout
+    assert 'selected_tools=["web_search", "video_understanding"]' in result.stdout
+    assert 'excluded_tools={"price_compare": ["entry_profile_not_exposed"]}' in result.stdout
 
 
 def _run_trace_view(*args: str) -> subprocess.CompletedProcess[str]:
@@ -437,6 +462,32 @@ def _server_trace_payload_with_turn_latency() -> dict[str, Any]:
             "fallback_used": False,
         },
     }
+    return payload
+
+
+def _server_trace_payload_with_tool_exposure() -> dict[str, Any]:
+    payload = _server_trace_payload()
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    payload["events"].insert(
+        1,
+        _server_event(
+            "context.build.finished",
+            status="succeeded",
+            created_at=base_time + timedelta(milliseconds=20),
+            output_summary={
+                "context": {
+                    "tool_catalog": {
+                        "selected_tool_names": ["web_search", "video_understanding"],
+                    },
+                    "run_tool_set": {
+                        "excluded_reasons": {
+                            "price_compare": ["entry_profile_not_exposed"],
+                        },
+                    },
+                },
+            },
+        ),
+    )
     return payload
 
 

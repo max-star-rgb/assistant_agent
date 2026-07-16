@@ -70,7 +70,7 @@ def test_tool_catalog_uses_trusted_agent_service_entry_to_narrow_tools() -> None
     ]
 
 
-def test_tool_catalog_hides_video_understanding_for_agent_service_when_video_is_active() -> None:
+def test_tool_catalog_exposes_video_understanding_for_agent_service_when_video_is_active() -> None:
     specs = [ToolSpec(name="web_search"), ToolSpec(name="video_understanding")]
     request = UserRequest(
         user_id="u1",
@@ -85,10 +85,50 @@ def test_tool_catalog_hides_video_understanding_for_agent_service_when_video_is_
 
     selected = select_prompt_tool_specs(request, specs)
 
-    assert selected.run_tool_set.qualified_tool_names == ["web_search"]
-    assert selected.run_tool_set.excluded_reasons == {
+    assert selected.run_tool_set.qualified_tool_names == [
+        "web_search",
+        "video_understanding",
+    ]
+    assert selected.run_tool_set.executable_tool_names == [
+        "web_search",
+        "video_understanding",
+    ]
+    assert selected.run_tool_set.excluded_reasons == {}
+
+
+def test_tool_catalog_agent_service_video_exposure_uses_structured_media_not_text() -> None:
+    specs = [ToolSpec(name="web_search"), ToolSpec(name="video_understanding")]
+    no_video_request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="眼前是什么？",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+    active_video_request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="你好",
+        video_ids=["agent-service-video"],
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+
+    without_video = select_prompt_tool_specs(no_video_request, specs)
+    with_video = select_prompt_tool_specs(active_video_request, specs)
+
+    assert without_video.run_tool_set.qualified_tool_names == ["web_search"]
+    assert without_video.run_tool_set.excluded_reasons == {
         "video_understanding": ["entry_profile_not_exposed"]
     }
+    assert with_video.run_tool_set.qualified_tool_names == [
+        "web_search",
+        "video_understanding",
+    ]
 
 
 def test_tool_catalog_exposes_unified_shopping_tool_for_agent_service() -> None:
