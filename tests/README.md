@@ -18,13 +18,15 @@ tests/
     providers/
     api/
   integration/    # 显式 opt-in；不属于默认 offline suite
+  evals/          # 离线 eval case 数据；不是 pytest scope
   conftest.py
   scope-map.toml
 ```
 
 critical 覆盖 Provider/offline 安全、Tool 治理、Memory read/write policy、Gateway 生命周期、
 runtime 恢复、redaction 和测试路由。普通领域行为只进入一个权威 scope。高延迟、多进程或需要
-外部环境的证据进入 integration。
+外部环境的证据进入 integration。`tests/evals` 只保存离线 eval 数据，运行入口是 eval 脚本，
+不要作为 pytest scope 或旧式 eval 测试汇总目录使用。
 
 ## 命令
 
@@ -58,7 +60,11 @@ scope、发布/合并门槛或用户明确要求。两个 scope 的普通功能�
 - `contract`：adapter、tool 或协议边界契约。
 - `api`：HTTP、WebSocket、CLI 或入口层行为。
 - `runtime`：assistant loop、graph、gateway、realtime 或 routing 行为。
+- `eval`：离线 eval 用例或 eval 脚本检查，不代表 pytest scope。
+- `smoke`：operator-facing smoke 脚本或 smoke 检查。
+- `slow`：不属于小改动快速路径的较宽回归检查。
 - `integration`：显式 opt-in 的高延迟、多进程或外部环境检查。
+- `e2e`：demo 或多层 workflow 检查；默认仍必须离线，真实 Provider 另走 opt-in。
 - `regression`：必须说明具体历史缺陷或兼容目的的保护。
 
 scope 决定“改了什么要跑什么”，marker 描述成本和层级，两者不能互相替代。默认测试不得联网

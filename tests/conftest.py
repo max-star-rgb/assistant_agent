@@ -54,11 +54,6 @@ def _apply_test_layer_markers(item) -> None:
         item.add_marker(pytest.mark.integration)
         return
 
-    if _path_is_under_tests_dir(normalized_path, "e2e"):
-        item.add_marker(pytest.mark.e2e)
-        item.add_marker(pytest.mark.slow)
-        return
-
     if "eval" in filename:
         item.add_marker(pytest.mark.eval)
         item.add_marker(pytest.mark.slow)

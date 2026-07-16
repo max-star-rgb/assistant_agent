@@ -312,6 +312,8 @@ def test_test_documentation_routes_scoped_and_full_commands() -> None:
 
     assert "run_scoped_tests.py --changed" in readme
     assert "run_scoped_tests.py --full " in readme
+    assert "tests/evals" in readme
+    assert "不是 pytest scope" in readme
     assert "普通开发" in agents and "run_scoped_tests.py" in agents
     assert "assistant-agent-development-testing" in agents
     assert "窄层无法证明 wiring" in agents
@@ -322,6 +324,8 @@ def test_test_documentation_routes_scoped_and_full_commands() -> None:
     assert "tests/README.md" in governance_skill
     assert "$assistant-agent-test-governance" in development_skill
     assert "最终报告" in development_skill
+    for marker in ("eval", "smoke", "slow", "e2e"):
+        assert f"`{marker}`" in readme
     assert "allow_implicit_invocation: true" in development_metadata
     assert "allow_implicit_invocation: false" in governance_metadata
     assert "--full" in governance_skill
@@ -353,6 +357,8 @@ def test_final_repository_layout_uses_only_critical_and_scope_directories() -> N
     legacy_phase_rules = {
         "phase-level regression marker": "phase-level behavior guards" in pyproject,
         "test_phase filename hook": 'filename.startswith("test_phase")' in conftest,
+        "legacy e2e directory hook": '_path_is_under_tests_dir(normalized_path, "e2e")'
+        in conftest,
     }
     assert not any(legacy_phase_rules.values()), legacy_phase_rules
     assert (
