@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ ATTACHED_IMAGE_1 = Path("/home/lenovo1/图片/0717619c-e0de-4fe7-b21c-50b6754eb8
 DOWNSAMPLED_IMAGE_1_JPEG = REPO_ROOT / ".local" / "integration" / "tools" / "image-1-cake-480p.jpg"
 
 
-def _configured_qwen_tool() -> tuple[VideoUnderstandingTool, QwenRealtimeVisionAdapter]:
+def _configured_qwen_tool() -> tuple[VideoUnderstandingTool, QwenRealtimeVisionAdapter, ProviderConfig]:
     if not _real_provider_tool_selected():
         pytest.skip("run this file directly, or set RUN_REAL_VLM_IMAGE_TEST=1")
     env = {
@@ -41,7 +42,7 @@ def _configured_qwen_tool() -> tuple[VideoUnderstandingTool, QwenRealtimeVisionA
         pytest.skip("set QWEN_VISION_API_KEY or DASHSCOPE_API_KEY")
     adapter = create_realtime_video_understanding_adapter(config)
     assert isinstance(adapter, QwenRealtimeVisionAdapter)
-    return VideoUnderstandingTool(adapter=adapter), adapter
+    return VideoUnderstandingTool(adapter=adapter), adapter, config
 
 
 def _real_provider_tool_selected() -> bool:
@@ -95,7 +96,7 @@ def _is_jpeg(path: Path) -> bool:
 def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
     capsys,
 ) -> None:
-    tool, adapter = _configured_qwen_tool()
+    tool, adapter, config = _configured_qwen_tool()
     frame = _attached_image_as_jpeg()
     try:
         result = tool.run(
@@ -111,6 +112,8 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
         adapter.close()
 
     with capsys.disabled():
+        print("\n=== VLM PROVIDER CONFIG ===", flush=True)
+        print(json.dumps(_provider_config_diagnostics(config), ensure_ascii=False, indent=2), flush=True)
         print("\n=== VLM RAW OUTPUT ===", flush=True)
         print(adapter.last_raw_response_text or "<no raw VLM text received>", flush=True)
         print("=== TOOL RESULT ===", flush=True)
@@ -159,3 +162,33 @@ def _success_layers(result, adapter: QwenRealtimeVisionAdapter) -> dict[str, obj
         "observation_phase": adapter.last_observation_phase,
         "diagnostics": adapter.last_observation_diagnostics,
     }
+
+
+def _provider_config_diagnostics(config: ProviderConfig) -> dict[str, object]:
+    return {
+        "python": sys.executable,
+        "cwd": str(Path.cwd()),
+        "runtime_profile": config.runtime_profile.name,
+        "vision_provider": config.vision_provider,
+        "base_url": config.qwen_realtime_vision_base_url,
+        "model": config.qwen_realtime_vision_model,
+        "timeout_seconds": config.video_understanding_timeout_seconds,
+        "credential_source": _credential_source(),
+        "proxy_env_names": _proxy_env_names(),
+    }
+
+
+def _credential_source() -> str | None:
+    if os.environ.get("QWEN_VISION_API_KEY"):
+        return "QWEN_VISION_API_KEY"
+    if os.environ.get("DASHSCOPE_API_KEY"):
+        return "DASHSCOPE_API_KEY"
+    return None
+
+
+def _proxy_env_names() -> list[str]:
+    return sorted(
+        key
+        for key in os.environ
+        if key.lower() in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+    )

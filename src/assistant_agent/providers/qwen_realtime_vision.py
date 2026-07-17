@@ -223,7 +223,7 @@ class QwenRealtimeVisionAdapter:
             self._remaining(deadline)
         socket: Any | None = None
         try:
-            self._last_observation_phase = "connecting"
+            self._last_observation_phase = "websocket_connecting"
             if self._connect_attempts > 0:
                 self._reconnect_count += 1
             self._connect_attempts += 1
@@ -232,6 +232,7 @@ class QwenRealtimeVisionAdapter:
                 additional_headers={"Authorization": f"Bearer {self.config.api_key}"},
                 open_timeout=self._remaining(deadline),
             )
+            self._last_observation_phase = "websocket_connected_waiting_session_created"
             created = _receive_json(socket, self._remaining(deadline))
             self._last_provider_event_type = str(created.get("type") or "")
             if created.get("type") != "session.created":

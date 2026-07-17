@@ -143,6 +143,30 @@ def test_realtime_adapter_handshake_and_single_frame_protocol(tmp_path: Path) ->
     assert socket.sent[5] == {"type": "response.create"}
 
 
+def test_realtime_adapter_reports_waiting_for_session_created_timeout(tmp_path: Path) -> None:
+    frame = _frame(tmp_path)
+
+    class SessionCreatedTimeoutSocket(FakeWebSocket):
+        def recv(self, timeout: float | None = None) -> str:
+            _ = timeout
+            raise TimeoutError("waiting for session.created")
+
+    socket = SessionCreatedTimeoutSocket([])
+    adapter = QwenRealtimeVisionAdapter(
+        QwenRealtimeVisionConfig(api_key="test-key"),
+        connect=lambda *_args, **_kwargs: socket,
+    )
+
+    result = adapter.understand_video(VideoUnderstandingRequest(video_ref="v", frame_refs=[str(frame)]))
+    diagnostics = adapter.last_observation_diagnostics
+
+    assert result.errors[0]["code"] == "provider_timeout"
+    assert diagnostics["session_generation"] is None
+    assert diagnostics["observation_phase"] == "websocket_connected_waiting_session_created"
+    assert diagnostics["last_provider_event_type"] is None
+    assert socket.closed is True
+
+
 def test_realtime_adapter_reports_prompt_safe_session_and_sequence_diagnostics(
     tmp_path: Path,
 ) -> None:
@@ -556,11 +580,11 @@ def test_realtime_adapter_counts_failed_reconnect_attempts_independently_from_se
     assert first_failure.errors[0]["code"] == "provider_connection_failed"
     assert first_diagnostics["session_generation"] is None
     assert first_diagnostics["reconnect_count"] == 0
-    assert first_diagnostics["observation_phase"] == "connecting"
+    assert first_diagnostics["observation_phase"] == "websocket_connecting"
     assert second_failure.errors[0]["code"] == "provider_connection_failed"
     assert second_diagnostics["session_generation"] is None
     assert second_diagnostics["reconnect_count"] == 1
-    assert second_diagnostics["observation_phase"] == "connecting"
+    assert second_diagnostics["observation_phase"] == "websocket_connecting"
     assert success.errors == []
     assert success_diagnostics["session_generation"] == 1
     assert success_diagnostics["reconnect_count"] == 2
