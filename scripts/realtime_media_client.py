@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 SCENARIOS = ("basic", "ping", "cancel", "hangup", "all")
 DEFAULT_TEXT = "Reply exactly REAL_LLM_OK and do not call tools."
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TRACE_VIEW_SCRIPT = REPO_ROOT / "scripts" / "trace_view.py"
+AGENTRUNTIME_VIEW_SCRIPT = REPO_ROOT / "scripts" / "agentruntime_view.py"
 
 
 class MediaSmokeError(RuntimeError):
@@ -340,11 +340,11 @@ def parse_operator_command(line: str) -> OperatorCommand:
     return OperatorCommand(kind="invalid", text=f"unknown operator command: {stripped}")
 
 
-def format_trace_view_command(trace_id: str, *, server: str) -> str:
+def format_agentruntime_view_command(trace_id: str, *, server: str) -> str:
     return shlex.join(
         [
             sys.executable,
-            "scripts/trace_view.py",
+            "scripts/agentruntime_view.py",
             trace_id,
             "--server",
             server,
@@ -734,8 +734,8 @@ async def _run_trace_last(state: OperatorSessionState, *, server: str) -> None:
     if not state.last_trace_id:
         print("operator> no trace_id captured yet")
         return
-    command = [sys.executable, str(TRACE_VIEW_SCRIPT), state.last_trace_id, "--server", server]
-    print("operator> " + format_trace_view_command(state.last_trace_id, server=server))
+    command = [sys.executable, str(AGENTRUNTIME_VIEW_SCRIPT), state.last_trace_id, "--server", server]
+    print("operator> " + format_agentruntime_view_command(state.last_trace_id, server=server))
     await asyncio.to_thread(subprocess.run, command, cwd=str(REPO_ROOT), check=False)
 
 
@@ -747,7 +747,7 @@ def _operator_help() -> str:
             "/cancel            cancel active run",
             "/hangup            end session",
             "/report            print session summary",
-            "/trace last        inspect last trace with trace_view.py",
+            "/trace last        inspect last trace with agentruntime_view.py",
             "/ping              send ping",
             "/quit              end session",
         ]

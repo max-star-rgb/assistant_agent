@@ -4,20 +4,33 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shlex
+import sys
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from time import monotonic, sleep
+from typing import Any
 
 
 DEFAULT_GATEWAY_EVENT_PATH = ".data/gateway_events.jsonl"
 DEFAULT_TAIL_LINES = 50
 DEFAULT_POLL_INTERVAL = 1.0
 RAW_LINE_LIMIT = 240
+LATEST_IDENTIFIERS = {"last", "latest", "@last"}
+FOLLOW_SESSION_SEPARATOR = "=" * 16
+GATEWAY_TERMINAL_EVENTS = frozenset(
+    {
+        "gateway.run.completed",
+        "gateway.run.cancelled",
+        "gateway.run.errored",
+        "gateway.run.queue_rejected",
+        "gateway.run.queue_expired",
+    }
+)
 
 MACHINE_KEYS = {
     "level",
@@ -133,6 +146,7 @@ class GatewayLogEntry:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="View Gateway lifecycle events as a timeline.")
+    parser.add_argument("identifier", nargs="?", default="last", help="Run id, trace id, or last/latest/@last.")
     parser.add_argument(
         "--event-path",
         default=DEFAULT_GATEWAY_EVENT_PATH,
@@ -143,15 +157,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Legacy Gateway key=value log path. When set, --event-path is ignored.",
     )
     parser.add_argument(
+        "--session-id",
+        help="Filter Gateway JSONL lookup to one raw session id.",
+    )
+    parser.add_argument(
         "--tail",
         type=int,
-        default=DEFAULT_TAIL_LINES,
-        help=f"Print the last N lines before exiting or following. Defaults to {DEFAULT_TAIL_LINES}.",
+        default=None,
+        help=f"Print the last N raw events instead of resolving an identifier. Typical value: {DEFAULT_TAIL_LINES}.",
     )
     parser.add_argument(
         "--follow",
         action="store_true",
-        help="Continue watching the Gateway log after printing the requested tail.",
+        help="Watch the local Gateway event file and print matching updates until interrupted.",
+    )
+    parser.add_argument(
+        "--follow-include-existing",
+        action="store_true",
+        help="With last/latest/@last --follow, print the currently matching Gateway run before waiting.",
+    )
+    parser.add_argument(
+        "--follow-live-updates",
+        action="store_true",
+        help="Print non-terminal Gateway run updates while a run is still in progress.",
     )
     parser.add_argument(
         "--poll-interval",
@@ -175,7 +203,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.tail < 0:
+    if args.follow and args.log_path and args.session_id:
+        parser.error("--session-id is not supported with legacy --log-path follow mode")
+    if args.follow and args.tail is not None:
+        parser.error("--tail cannot be combined with --follow; use --follow-include-existing to print current latest before following")
+    if args.tail is not None and args.tail < 0:
         parser.error("--tail must be greater than or equal to 0")
     if args.poll_interval <= 0:
         parser.error("--poll-interval must be greater than 0")
@@ -185,27 +217,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--follow-timeout must be greater than or equal to 0")
 
     source_path, source_format, line_parser = _source(args)
+    if args.follow:
+        return _follow_gateway_events(args, source_path, line_parser=line_parser)
+    if args.tail is not None:
+        return _print_tail_view(source_path, source_format, args.tail, line_parser=line_parser)
+    events = _find_gateway_events(
+        source_path,
+        args.identifier,
+        line_parser=line_parser,
+        session_id=args.session_id,
+    )
+    if not events:
+        print(f"gateway run/event not found: {args.identifier}", file=sys.stderr)
+        return 1
+    print(_format_gateway_payload(events), flush=True)
+    return 0
+
+
+def _print_tail_view(
+    source_path: Path,
+    source_format: str,
+    tail: int,
+    *,
+    line_parser: Callable[[str], GatewayLogEntry | None],
+) -> int:
     print(
-        _format_header(source_path, source_format=source_format, follow=args.follow, tail=args.tail),
+        _format_header(source_path, source_format=source_format, follow=False, tail=tail),
         flush=True,
     )
-
-    printed_entries = _print_tail(source_path, args.tail, line_parser=line_parser)
-    if args.follow_limit is not None and printed_entries >= args.follow_limit:
-        return 0
-    if not args.follow:
-        if printed_entries == 0:
-            print("  (no gateway log entries)", flush=True)
-        return 0
-    return _follow_log(
-        source_path,
-        initial_offset=_file_size(source_path),
-        line_parser=line_parser,
-        poll_interval=args.poll_interval,
-        already_printed=printed_entries,
-        follow_limit=args.follow_limit,
-        follow_timeout=args.follow_timeout,
-    )
+    printed_entries = _print_tail(source_path, tail, line_parser=line_parser)
+    if printed_entries == 0:
+        print("  (no gateway log entries)", flush=True)
+    return 0
 
 
 def _source(args: argparse.Namespace) -> tuple[Path, str, Callable[[str], GatewayLogEntry | None]]:
@@ -250,47 +293,249 @@ def _tail_lines(source_path: Path, tail: int) -> list[str]:
     return list(window)
 
 
-def _follow_log(
+def _find_gateway_events(
+    source_path: str | Path,
+    identifier: str,
+    *,
+    line_parser: Callable[[str], GatewayLogEntry | None],
+    session_id: str | None = None,
+) -> list[GatewayLogEntry]:
+    entries = _load_gateway_entries(source_path, line_parser=line_parser)
+    if session_id:
+        expected_session_id = _session_id_filter_value(session_id)
+        entries = [
+            entry
+            for entry in entries
+            if str(entry.fields.get("session_id") or "") == expected_session_id
+        ]
+    if _is_latest_identifier(identifier):
+        return _latest_gateway_events(entries)
+    return _gateway_events_for_identifier(entries, identifier)
+
+
+def _load_gateway_entries(
+    source_path: str | Path,
+    *,
+    line_parser: Callable[[str], GatewayLogEntry | None],
+) -> list[GatewayLogEntry]:
+    path = Path(source_path)
+    if not path.exists():
+        return []
+    entries: list[GatewayLogEntry] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            entry = line_parser(line)
+            if entry is not None and entry.parsed:
+                entries.append(entry)
+    return entries
+
+
+def _is_latest_identifier(identifier: str) -> bool:
+    return identifier.lower() in LATEST_IDENTIFIERS
+
+
+def _latest_gateway_events(entries: list[GatewayLogEntry]) -> list[GatewayLogEntry]:
+    if not entries:
+        return []
+    latest = entries[-1]
+    run_id = _entry_run_id(latest)
+    if run_id:
+        return [entry for entry in entries if _entry_run_id(entry) == run_id]
+    trace_id = _entry_trace_id(latest)
+    if trace_id:
+        return [entry for entry in entries if _entry_trace_id(entry) == trace_id]
+    return [latest]
+
+
+def _gateway_events_for_identifier(entries: list[GatewayLogEntry], identifier: str) -> list[GatewayLogEntry]:
+    by_run = [entry for entry in entries if _entry_run_id(entry) == identifier]
+    if by_run:
+        return by_run
+    by_trace = [entry for entry in entries if _entry_trace_id(entry) == identifier]
+    if by_trace:
+        return by_trace
+    return [entry for entry in entries if _entry_event_name(entry) == identifier]
+
+
+def _session_id_filter_value(value: str) -> str:
+    if value.startswith("sha256:"):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"sha256:{digest}"
+
+
+def _follow_gateway_events(
+    args: argparse.Namespace,
     source_path: Path,
     *,
-    initial_offset: int,
     line_parser: Callable[[str], GatewayLogEntry | None],
-    poll_interval: float,
-    already_printed: int,
-    follow_limit: int | None,
-    follow_timeout: float | None,
 ) -> int:
-    offset = initial_offset
-    printed_entries = already_printed
-    deadline = None if follow_timeout is None else monotonic() + follow_timeout
+    deadline = None if args.follow_timeout is None else monotonic() + args.follow_timeout
+    skip_existing_latest = _is_latest_identifier(args.identifier) and not args.follow_include_existing
+    baseline_events = _find_gateway_events(
+        source_path,
+        args.identifier,
+        line_parser=line_parser,
+        session_id=args.session_id,
+    )
+    previous_signature: tuple[tuple[Any, ...], ...] | None = (
+        _events_signature(baseline_events) if skip_existing_latest and baseline_events else None
+    )
+    previous_session_id: str | None = None
+    printed_any = False
+    printed_updates = 0
+    printed_group_ids: set[str] = set()
+    saw_matching_events = bool(baseline_events)
     while True:
-        new_lines, offset = _read_new_lines(source_path, offset)
-        if new_lines:
-            printed_entries += _print_entries(new_lines, line_parser=line_parser)
-            if follow_limit is not None and printed_entries >= follow_limit:
-                return 0
+        events = _find_gateway_events(
+            source_path,
+            args.identifier,
+            line_parser=line_parser,
+            session_id=args.session_id,
+        )
+        if events:
+            saw_matching_events = True
+            signature = _events_signature(events)
+            if signature != previous_signature:
+                group_id = _follow_group_id(events)
+                if not args.follow_live_updates and group_id in printed_group_ids:
+                    previous_signature = signature
+                    continue
+                if not args.follow_live_updates and not _follow_update_ready(events):
+                    previous_signature = signature
+                    continue
+                current_session_id = _gateway_session_id(events)
+                session_changed = args.session_id is None and current_session_id != previous_session_id
+                if session_changed:
+                    print()
+                    print(_format_follow_session_separator(current_session_id))
+                    previous_session_id = current_session_id
+                elif printed_any:
+                    print()
+                    print("--- gateway update ---")
+                print(_format_gateway_payload(events), flush=True)
+                previous_signature = signature
+                printed_any = True
+                printed_group_ids.add(group_id)
+                printed_updates += 1
+                if args.follow_limit is not None and printed_updates >= args.follow_limit:
+                    return 0
         if deadline is not None and monotonic() >= deadline:
-            return 0
-        sleep(poll_interval)
+            if printed_any:
+                return 0
+            if saw_matching_events:
+                return 0
+            print(f"gateway run/event not found: {args.identifier}", file=sys.stderr)
+            return 1
+        sleep(args.poll_interval)
 
 
-def _read_new_lines(source_path: Path, offset: int) -> tuple[list[str], int]:
-    if not source_path.exists():
-        return [], 0
-    size = _file_size(source_path)
-    if size < offset:
-        offset = 0
-    with source_path.open("r", encoding="utf-8") as file:
-        file.seek(offset)
-        lines = [line for line in file if line.strip()]
-        return lines, file.tell()
+def _events_signature(events: list[GatewayLogEntry]) -> tuple[tuple[Any, ...], ...]:
+    return tuple(
+        (
+            entry.timestamp,
+            entry.fields.get("event"),
+            entry.fields.get("run_id"),
+            entry.fields.get("turn_id"),
+            entry.fields.get("trace_id"),
+            entry.fields.get("session_id"),
+            entry.raw,
+        )
+        for entry in events
+    )
 
 
-def _file_size(source_path: Path) -> int:
-    try:
-        return source_path.stat().st_size
-    except OSError:
-        return 0
+def _follow_group_id(events: list[GatewayLogEntry]) -> str:
+    for entry in events:
+        run_id = _entry_run_id(entry)
+        if run_id:
+            return f"run:{run_id}"
+    for entry in events:
+        trace_id = _entry_trace_id(entry)
+        if trace_id:
+            return f"trace:{trace_id}"
+    if events:
+        event_name = _entry_event_name(events[-1])
+        return f"event:{event_name}:{events[-1].timestamp}"
+    return "empty"
+
+
+def _follow_update_ready(events: list[GatewayLogEntry]) -> bool:
+    has_run = any(_entry_run_id(entry) for entry in events)
+    if not has_run:
+        return bool(events)
+    event_names = {_entry_event_name(entry) for entry in events}
+    return bool(event_names & GATEWAY_TERMINAL_EVENTS)
+
+
+def _format_gateway_payload(events: list[GatewayLogEntry]) -> str:
+    lines = [_format_gateway_payload_header(events)]
+    lines.extend(_format_entry(entry) for entry in events)
+    return "\n".join(lines)
+
+
+def _format_gateway_payload_header(events: list[GatewayLogEntry]) -> str:
+    run_id = next((_entry_run_id(entry) for entry in events if _entry_run_id(entry)), None)
+    trace_id = next((_entry_trace_id(entry) for entry in events if _entry_trace_id(entry)), None)
+    status = _infer_gateway_status(events)
+    if run_id:
+        return f"gateway run {run_id} trace {trace_id or '-'} status={status} events={len(events)}"
+    event_name = _entry_event_name(events[-1]) if events else "event"
+    return f"gateway event {event_name} trace {trace_id or '-'} status={status} events={len(events)}"
+
+
+def _infer_gateway_status(events: list[GatewayLogEntry]) -> str:
+    for entry in reversed(events):
+        event_name = _entry_event_name(entry)
+        if event_name == "gateway.run.completed":
+            status = entry.fields.get("status")
+            return str(status) if status else "completed"
+        if event_name == "gateway.run.cancelled":
+            return "cancelled"
+        if event_name == "gateway.run.errored":
+            status = entry.fields.get("status")
+            return str(status) if status else "errored"
+        if event_name == "gateway.run.queue_rejected":
+            return "queue_rejected"
+        if event_name == "gateway.run.queue_expired":
+            return "queue_expired"
+    for entry in reversed(events):
+        status = entry.fields.get("status")
+        if isinstance(status, str) and status:
+            return status
+    if any(_entry_run_id(entry) for entry in events):
+        return "running"
+    return "observed" if events else "unknown"
+
+
+def _gateway_session_id(events: list[GatewayLogEntry]) -> str | None:
+    for entry in events:
+        value = entry.fields.get("session_id")
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _format_follow_session_separator(session_id: str | None) -> str:
+    session_text = session_id or "(none)"
+    return f"{FOLLOW_SESSION_SEPARATOR} SESSION {session_text} {FOLLOW_SESSION_SEPARATOR}"
+
+
+def _entry_run_id(entry: GatewayLogEntry) -> str | None:
+    value = entry.fields.get("run_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _entry_trace_id(entry: GatewayLogEntry) -> str | None:
+    value = entry.fields.get("trace_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _entry_event_name(entry: GatewayLogEntry) -> str:
+    value = entry.fields.get("event")
+    return str(value) if value else "event"
 
 
 def _print_entries(

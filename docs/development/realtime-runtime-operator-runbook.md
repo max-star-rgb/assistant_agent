@@ -89,7 +89,7 @@ call> /hangup
 The operator writes JSONL send/receive frame logs to
 `.data/realtime_sessions/<session_id>.jsonl` when `--log-dir` is set. It also
 prints the last `trace_id` from `run.end`, and `/trace last` shells out to
-`scripts/trace_view.py --server http://127.0.0.1:8000` for the current trace.
+`scripts/agentruntime_view.py --server http://127.0.0.1:8000` for the current trace.
 
 ## Gateway Debug Smoke
 

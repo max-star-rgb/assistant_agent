@@ -28,7 +28,7 @@ These are useful, but they are not the main product path:
 - `scripts/check_env.py`: environment sanity check.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.
-- `scripts/memory_audit.py`, `scripts/trace_view.py`, and
+- `scripts/memory_audit.py`, `scripts/agentruntime_view.py`, and
   `scripts/trace_metrics.py`: operator inspection utilities.
 - `scripts/smoke_*.py`, `scripts/measure_deepseek_latency.py`, and
   `scripts/haodanku_order_query.mjs`: opt-in provider or domain smoke probes.

@@ -1,6 +1,7 @@
+import hashlib
+import json
 import subprocess
 import sys
-import json
 from pathlib import Path
 
 
@@ -114,32 +115,8 @@ def test_gateway_view_tail_renders_jsonl_timeline(tmp_path: Path) -> None:
     assert "queue_depth=2" in result.stdout
 
 
-def test_gateway_view_follow_limit_prints_appended_jsonl_event(tmp_path: Path) -> None:
+def test_gateway_view_last_outputs_latest_terminal_run(tmp_path: Path) -> None:
     event_path = tmp_path / "gateway_events.jsonl"
-    event_path.write_text("", encoding="utf-8")
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            SCRIPT_PATH,
-            "--event-path",
-            str(event_path),
-            "--tail",
-            "0",
-            "--follow",
-            "--poll-interval",
-            "0.05",
-            "--follow-limit",
-            "1",
-            "--follow-timeout",
-            "5",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    assert process.stdout is not None
-    header = process.stdout.readline()
-    assert "Gateway timeline" in header
     _write_jsonl(
         event_path,
         [
@@ -147,24 +124,148 @@ def test_gateway_view_follow_limit_prints_appended_jsonl_event(tmp_path: Path) -
                 "schema_version": "gateway_lifecycle_event_v1",
                 "created_at": "2026-07-16T12:01:00.000Z",
                 "component": "gateway",
-                "event": "gateway.run.cancel_requested",
+                "event": "gateway.run.completed",
                 "run_id": "run_cancel",
                 "turn_id": "turn_cancel",
                 "trace_id": "trace_cancel",
                 "user_id": "sha256:user",
                 "session_id": "sha256:session",
-                "attributes": {"source": "client", "phase": "active"},
+                "attributes": {"status": "completed"},
             }
         ],
     )
 
-    remaining_stdout, stderr = process.communicate(timeout=10)
-    stdout = header + remaining_stdout
+    result = _run_gateway_view("last", "--event-path", str(event_path))
 
-    assert process.returncode == 0, stderr
-    assert "gateway.run.cancel_requested" in stdout
-    assert "cancel requested source=client phase=active" in stdout
-    assert "run=run_cancel" in stdout
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("gateway run run_cancel trace trace_cancel status=completed events=1")
+    assert "gateway.run.completed" in result.stdout
+    assert "run=run_cancel" in result.stdout
+
+
+def test_gateway_view_follow_latest_waits_for_new_gateway_run_by_default(tmp_path: Path) -> None:
+    event_path = tmp_path / "gateway_events.jsonl"
+    _write_gateway_session_sample_events(event_path)
+
+    result = _run_gateway_view(
+        "last",
+        "--event-path",
+        str(event_path),
+        "--follow",
+        "--follow-timeout",
+        "0",
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_gateway_view_follow_can_include_existing_latest_run(tmp_path: Path) -> None:
+    event_path = tmp_path / "gateway_events.jsonl"
+    _write_gateway_session_sample_events(event_path)
+
+    result = _run_gateway_view(
+        "last",
+        "--event-path",
+        str(event_path),
+        "--follow",
+        "--follow-include-existing",
+        "--follow-limit",
+        "1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith(
+        f"\n================ SESSION {_digest('other-session')} ================\n"
+        "gateway run run_global_latest trace trace_global_latest status=completed events=2"
+    )
+    assert "gateway.run.started" in result.stdout
+    assert "gateway.run.completed" in result.stdout
+    assert "run_debug" not in result.stdout
+
+
+def test_gateway_view_follow_session_id_filters_without_session_separator(tmp_path: Path) -> None:
+    event_path = tmp_path / "gateway_events.jsonl"
+    _write_gateway_session_sample_events(event_path)
+
+    result = _run_gateway_view(
+        "last",
+        "--event-path",
+        str(event_path),
+        "--session-id",
+        "debug-session",
+        "--follow",
+        "--follow-include-existing",
+        "--follow-limit",
+        "1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith(
+        "gateway run run_debug trace trace_debug status=completed events=2"
+    )
+    assert "SESSION " not in result.stdout
+    assert "run_global_latest" not in result.stdout
+
+
+def test_gateway_view_follow_include_existing_waits_for_terminal_run(tmp_path: Path) -> None:
+    event_path = tmp_path / "gateway_events.jsonl"
+    _write_jsonl(
+        event_path,
+        [
+            _gateway_record(
+                "gateway.run.started",
+                run_id="run_partial",
+                trace_id="trace_partial",
+                session_id="debug-session",
+            ),
+        ],
+    )
+
+    result = _run_gateway_view(
+        "last",
+        "--event-path",
+        str(event_path),
+        "--follow",
+        "--follow-include-existing",
+        "--follow-timeout",
+        "0",
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_gateway_view_follow_live_updates_prints_partial_run(tmp_path: Path) -> None:
+    event_path = tmp_path / "gateway_events.jsonl"
+    _write_jsonl(
+        event_path,
+        [
+            _gateway_record(
+                "gateway.run.started",
+                run_id="run_partial",
+                trace_id="trace_partial",
+                session_id="debug-session",
+            ),
+        ],
+    )
+
+    result = _run_gateway_view(
+        "last",
+        "--event-path",
+        str(event_path),
+        "--follow",
+        "--follow-include-existing",
+        "--follow-live-updates",
+        "--follow-limit",
+        "1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "gateway run run_partial trace trace_partial status=running events=1" in result.stdout
+    assert "gateway.run.started" in result.stdout
 
 
 def test_gateway_view_bad_jsonl_line_falls_back_to_raw_summary(tmp_path: Path) -> None:
@@ -211,3 +312,68 @@ def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
         "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
         encoding="utf-8",
     )
+
+
+def _write_gateway_session_sample_events(path: Path) -> None:
+    _write_jsonl(
+        path,
+        [
+            _gateway_record(
+                "gateway.run.started",
+                run_id="run_debug",
+                trace_id="trace_debug",
+                session_id="debug-session",
+                created_at="2026-07-16T12:00:00.000Z",
+            ),
+            _gateway_record(
+                "gateway.run.completed",
+                run_id="run_debug",
+                trace_id="trace_debug",
+                session_id="debug-session",
+                created_at="2026-07-16T12:00:01.000Z",
+                attributes={"status": "completed"},
+            ),
+            _gateway_record(
+                "gateway.run.started",
+                run_id="run_global_latest",
+                trace_id="trace_global_latest",
+                session_id="other-session",
+                created_at="2026-07-16T12:00:02.000Z",
+            ),
+            _gateway_record(
+                "gateway.run.completed",
+                run_id="run_global_latest",
+                trace_id="trace_global_latest",
+                session_id="other-session",
+                created_at="2026-07-16T12:00:03.000Z",
+                attributes={"status": "completed"},
+            ),
+        ],
+    )
+
+
+def _gateway_record(
+    event: str,
+    *,
+    run_id: str,
+    trace_id: str,
+    session_id: str,
+    created_at: str = "2026-07-16T12:00:00.000Z",
+    attributes: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_version": "gateway_lifecycle_event_v1",
+        "created_at": created_at,
+        "component": "gateway",
+        "event": event,
+        "run_id": run_id,
+        "turn_id": f"turn_{run_id}",
+        "trace_id": trace_id,
+        "user_id": _digest("user"),
+        "session_id": _digest(session_id),
+        "attributes": attributes or {},
+    }
+
+
+def _digest(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:12]}"

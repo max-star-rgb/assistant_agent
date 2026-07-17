@@ -44,7 +44,7 @@ The correlation identifiers are deliberately distinct:
 - `gateway_run_id` identifies the Gateway lifecycle wrapper;
 - `assistant_run_id` identifies the Assistant runtime execution whose trace
   contains LLM/tool stages;
-- `trace_id` is the common lookup key used by trace queries and `trace_view.py`.
+- `trace_id` is the common lookup key used by trace queries and `agentruntime_view.py`.
 
 The latency summary is a non-overlapping critical-path view where possible:
 
@@ -89,8 +89,8 @@ not a delivery authority.
 ## Operational Logging
 
 本地 server 在不改变 FastAPI 单进程结构的前提下提供 Gateway operational logging；
-Gateway 开发视图通过 `scripts/gateway_view.py --follow` 读取 Gateway lifecycle JSONL，
-Assistant runtime 开发视图通过 `scripts/trace_view.py --follow` 读取 canonical
+Gateway 开发视图通过 `scripts/gateway_view.py last --follow` 读取 Gateway lifecycle JSONL，
+Assistant runtime 开发视图通过 `scripts/agentruntime_view.py last --follow` 读取 canonical
 trace。控制台是 Combined 摘要，`.data/gateway_events.jsonl` 接收 server 启动 marker
 与 Gateway lifecycle，`.data/logs/gateway.log` 只保留兼容的 key=value text projection。
 Combined 默认采用 `concise` 模式，只显示关键 Gateway lifecycle
@@ -111,7 +111,7 @@ server 子进程会重新执行同一幂等配置。JSONL 或 text handler 打�
 console 并 fail-open，不得阻止应用启动。
 
 Gateway lifecycle sink 在 server 启动时先写一条 `gateway.server.starting` marker，便于
-`scripts/gateway_view.py --follow` 启动后立即显示内容；之后覆盖
+`scripts/gateway_view.py last` 或 `--follow-include-existing` 回看当前入口状态；之后覆盖
 session、queue、admission、run、cancel、interrupt 和 terminal 边界。它保留 `run_id` / `turn_id`，
 但只记录 allowlist 内的状态、计数、reason/source 等 prompt-safe 字段；`user_id` 与
 `session_id` 使用稳定短摘要，不记录用户文本。Agent-Service 连接日志同样只记录
@@ -119,7 +119,7 @@ query key、session 摘要和聚合计数，不记录 query value、原始 sessi
 
 Assistant runtime 不再投影到 operational text log，也不再创建 `.data/logs/runtime.log`。
 server `CompositeTraceStore` 只保留进程内 primary 与后台 JSONL persistence；`.data/graph_trace.jsonl`
-和 trace query API 是机器查询与调试重建权威，`scripts/trace_view.py --follow`
+和 trace query API 是机器查询与调试重建权威，`scripts/agentruntime_view.py last --follow`
 是唯一 runtime 开发观察视图。
 
 `scripts/run_server.py` 提供 `--console-level`、`--file-log-level`、
@@ -131,22 +131,22 @@ server `CompositeTraceStore` 只保留进程内 primary 与后台 JSONL persiste
 Run console 只保留 launcher 输出与 WARNING/ERROR。该配置显式设置 operational logging
 环境变量，确保 launcher 与 reload 后的 server 子进程写入同一 Gateway JSONL/text 文件，但不再
 声明 PyCharm `log_file` 页签。Gateway 开发观察统一运行 `.run/Gateway Follow.run.xml`，
-它执行 `scripts/gateway_view.py --event-path .data/gateway_events.jsonl --tail 50 --follow`。
-runtime 开发观察统一运行 `.run/Trace Follow.run.xml`，它常驻跟随
+它执行 `scripts/gateway_view.py last --event-path .data/gateway_events.jsonl --follow`。
+runtime 开发观察统一运行 `.run/AgentRuntime Follow.run.xml`，它常驻跟随
 `.data/graph_trace.jsonl`，连接本地 8089 server，按 Conversation、Timeline、ReAct
 detail 三层输出新的终态 run。
 
 对应关系保持明确：
 
 - Gateway 机器事件：`.data/gateway_events.jsonl`
-- Gateway 开发者视图：`scripts/gateway_view.py --follow`
+- Gateway 开发者视图：`scripts/gateway_view.py last --follow`
 - Gateway 兼容 text projection：`.data/logs/gateway.log`
 - AgentRuntime 机器 trace：`.data/graph_trace.jsonl`
-- AgentRuntime 开发者视图：`scripts/trace_view.py --follow`
+- AgentRuntime 开发者视图：`scripts/agentruntime_view.py last --follow`
 
-当全局 latest 切换到不同 session 时，trace viewer 会打印醒目的单行 `SESSION` banner。
+当全局 latest 切换到不同 session 时，Gateway viewer 和 AgentRuntime viewer 都会打印醒目的单行 `SESSION` banner。
 Conversation 层要求 server 已显式启用 `--allow-local-trace-content`；共享
-`.run/Assistant Server.run.xml` 已为本地调试启用该开关。Trace viewer 配置本身不保存
+`.run/Assistant Server.run.xml` 已为本地调试启用该开关。AgentRuntime viewer 配置本身不保存
 密钥或 `.env` 路径。
 
 ## Realtime Video Observation
@@ -223,7 +223,7 @@ require an external APM stack for normal development.
 | `AgentState` | runtime | In-memory fact record for one run: status, tool calls, results, errors, and response. |
 | `AgentEvent` / `EventSink` | runtime and entry layers | Real-time event stream for WebSocket, Gateway, realtime, CLI, and tests. |
 | `TraceStore` / `TraceQueryService` | services | Redacted run and trace summaries for `/runs/{run_id}`, `/traces/{trace_id}`, and tool-call debug views. |
-| Operational text logs | services / gateway | Combined console plus isolated rotating Gateway lifecycle logs; runtime development uses `trace_view.py --follow` over canonical trace JSONL. |
+| Operational text logs | services / gateway | Combined console plus isolated rotating Gateway lifecycle logs; runtime development uses `agentruntime_view.py last --follow` over canonical trace JSONL. |
 | `react_steps` / `decision_trace` | API response metadata | Compact per-response ReAct timeline for developer UI and CLI output. |
 | `RunHistoryStore` / `ToolHistoryStore` / `SessionStore` | services | Local JSONL/session indexes and lifecycle ledgers. |
 | Gateway frames | gateway | Realtime wire lifecycle: `run.started`, `event.progress`, `stream.chunk`, `run.end`, `run.cancel`, call hangup, and config updates. |
@@ -394,18 +394,18 @@ GET /traces/{trace_id}/conversation  # explicit loopback debug only
 Local CLI:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --errors
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow --follow-include-existing
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --follow --follow-live-updates
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --sections timeline,react
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline,react --errors --follow
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline --latency-stages
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id>
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --errors
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --json
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py <run_id-or-trace_id> --server http://127.0.0.1:8000
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --errors
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --follow
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --follow --follow-include-existing
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --follow --follow-live-updates
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --sections timeline,react
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline,react --errors --follow
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline --latency-stages
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py <run_id-or-trace_id>
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py <run_id-or-trace_id> --errors
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py <run_id-or-trace_id> --json
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py <run_id-or-trace_id> --server http://127.0.0.1:8000
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py --trace-path .data/graph_trace.jsonl
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py --json
 ```
@@ -422,9 +422,9 @@ JSONL，再解析 `last` 或驱动 `--follow`，适合明确只看某个调试�
 `--follow` 每次切换到不同 session 时都会在 `SESSION` banner 前留一个空行，避免
 session 切换悄悄发生。
 
-server 参数和 trace viewer 参数分开理解：`scripts/run_server.py` 的参数负责启动
+server 参数和 AgentRuntime viewer 参数分开理解：`scripts/run_server.py` 的参数负责启动
 runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关；
-`scripts/trace_view.py` 的 `--trace-path`、`--server`、`--sections`、`--follow` 和
+`scripts/agentruntime_view.py` 的 `--trace-path`、`--server`、`--sections`、`--follow` 和
 `--session-id` 只负责查询与展示。`--follow --server` 的数据流是：本地
 `.data/graph_trace.jsonl` 发现当前 session 最新 trace 或变化，再用 `trace_id` 向
 loopback server 拉 `/traces/{trace_id}`；包含 `conversation` 时，再拉
@@ -446,7 +446,7 @@ consumed-video diagnostics；详细 stage 默认交给 `timeline`，需要在 `T
    并持续写 `.data/gateway_events.jsonl`；如果个人配置移除了内容开关，Conversation 层会不可用。
 2. 运行 `.run/Gateway Follow.run.xml`，它常驻输出 Gateway server、session、queue、
    run、cancel 和 interrupt lifecycle。
-3. 运行 `.run/Trace Follow.run.xml`，它全局常驻输出
+3. 运行 `.run/AgentRuntime Follow.run.xml`，它全局常驻输出
    Conversation -> Timeline -> ReAct detail，并在 session 切换时打印单行 banner。
 
 共享 `.run` 配置与 `.run/Assistant Server.run.xml` 对齐为
@@ -459,7 +459,7 @@ request only the matching turn:
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
   --provider mock --image-provider mock --allow-local-trace-content
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py last \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last \
   --trace-path .data/graph_trace.jsonl \
   --server http://127.0.0.1:8000 \
   --session-id pycharm-debug-session \
@@ -630,9 +630,9 @@ Regression tests should enforce these invariants:
   the canonical timeline.
 - Add invariant tests for native and mock/offline runtime paths.
 
-### Phase 2: Developer Trace Viewer
+### Phase 2: Developer AgentRuntime Viewer
 
-- Add `scripts/trace_view.py`.
+- Add `scripts/agentruntime_view.py`.
 - Support lookup by `run_id` or `trace_id`.
 - Provide default, `--errors`, and `--json` output modes.
 - Keep output redacted and paste-friendly.

@@ -169,7 +169,7 @@ def test_operational_logging_is_idempotent_and_writes_gateway_file_only(
             },
         )
         runtime_logger.info(
-            "runtime event should stay in trace_view only",
+            "runtime event should stay in agentruntime_view only",
             extra={
                 "component": "runtime",
                 "event": "llm.chat.finished",
@@ -179,7 +179,7 @@ def test_operational_logging_is_idempotent_and_writes_gateway_file_only(
             },
         )
         runtime_logger.debug(
-            "runtime debug detail should stay in trace_view only",
+            "runtime debug detail should stay in agentruntime_view only",
             extra={
                 "component": "runtime",
                 "event": "context.build.started",
@@ -284,7 +284,7 @@ def test_operational_console_splits_severity_and_concise_mode_hides_runtime_deta
         operational_logging.reset_operational_logging_for_tests()
 
 
-def test_operational_console_verbose_mode_keeps_runtime_trace_detail_in_trace_view(tmp_path, capsys) -> None:
+def test_operational_console_verbose_mode_keeps_runtime_trace_detail_in_agentruntime_view(tmp_path, capsys) -> None:
     operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
     try:
         operational_logging.configure_operational_logging(

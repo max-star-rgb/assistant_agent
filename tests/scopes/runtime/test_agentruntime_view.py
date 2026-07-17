@@ -12,14 +12,14 @@ from assistant_agent.services.trace_store import JsonlTraceStore, TraceEvent
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPT_PATH = "scripts/trace_view.py"
+SCRIPT_PATH = "scripts/agentruntime_view.py"
 
 
-def test_trace_view_last_outputs_latest_local_run(tmp_path: Path) -> None:
+def test_agentruntime_view_last_outputs_latest_local_run(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
 
-    result = _run_trace_view("last", "--trace-path", str(trace_path), "--errors")
+    result = _run_agentruntime_view("last", "--trace-path", str(trace_path), "--errors")
 
     assert result.returncode == 0
     assert result.stderr == ""
@@ -29,11 +29,11 @@ def test_trace_view_last_outputs_latest_local_run(tmp_path: Path) -> None:
     assert "run_old" not in result.stdout
 
 
-def test_trace_view_follow_latest_waits_for_new_trace_by_default(tmp_path: Path) -> None:
+def test_agentruntime_view_follow_latest_waits_for_new_trace_by_default(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
 
-    result = _run_trace_view(
+    result = _run_agentruntime_view(
         "last",
         "--trace-path",
         str(trace_path),
@@ -47,11 +47,11 @@ def test_trace_view_follow_latest_waits_for_new_trace_by_default(tmp_path: Path)
     assert result.stderr == ""
 
 
-def test_trace_view_follow_can_include_existing_latest_run(tmp_path: Path) -> None:
+def test_agentruntime_view_follow_can_include_existing_latest_run(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
 
-    result = _run_trace_view(
+    result = _run_agentruntime_view(
         "last",
         "--trace-path",
         str(trace_path),
@@ -66,11 +66,11 @@ def test_trace_view_follow_can_include_existing_latest_run(tmp_path: Path) -> No
     assert "run_old" not in result.stdout
 
 
-def test_trace_view_follow_include_existing_does_not_print_partial_agent_service_run(tmp_path: Path) -> None:
+def test_agentruntime_view_follow_include_existing_does_not_print_partial_agent_service_run(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_agent_service_partial_trace(trace_path)
 
-    result = _run_trace_view(
+    result = _run_agentruntime_view(
         "last",
         "--trace-path",
         str(trace_path),
@@ -85,8 +85,8 @@ def test_trace_view_follow_include_existing_does_not_print_partial_agent_service
     assert result.stderr == ""
 
 
-def test_trace_view_follow_readiness_waits_for_agent_service_turn_finished() -> None:
-    module = _load_trace_view_module()
+def test_agentruntime_view_follow_readiness_waits_for_agent_service_turn_finished() -> None:
+    module = _load_agentruntime_view_module()
     base_time = datetime(2026, 1, 1, tzinfo=UTC)
     partial = [
         _event(
@@ -114,11 +114,11 @@ def test_trace_view_follow_readiness_waits_for_agent_service_turn_finished() -> 
     assert module._follow_update_ready(complete) is True
 
 
-def test_trace_view_follow_without_session_id_prints_session_separator(tmp_path: Path) -> None:
+def test_agentruntime_view_follow_without_session_id_prints_session_separator(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_session_sample_trace(trace_path)
 
-    result = _run_trace_view(
+    result = _run_agentruntime_view(
         "last",
         "--trace-path",
         str(trace_path),
@@ -136,11 +136,11 @@ def test_trace_view_follow_without_session_id_prints_session_separator(tmp_path:
     )
 
 
-def test_trace_view_follow_session_id_filters_without_session_separator(tmp_path: Path) -> None:
+def test_agentruntime_view_follow_session_id_filters_without_session_separator(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_session_sample_trace(trace_path)
 
-    result = _run_trace_view(
+    result = _run_agentruntime_view(
         "last",
         "--trace-path",
         str(trace_path),
@@ -159,11 +159,11 @@ def test_trace_view_follow_session_id_filters_without_session_separator(tmp_path
     assert "run_global_latest" not in result.stdout
 
 
-def test_trace_view_last_session_id_selects_latest_matching_session_run(tmp_path: Path) -> None:
+def test_agentruntime_view_last_session_id_selects_latest_matching_session_run(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_session_sample_trace(trace_path)
 
-    result = _run_trace_view(
+    result = _run_agentruntime_view(
         "last",
         "--trace-path",
         str(trace_path),
@@ -178,10 +178,10 @@ def test_trace_view_last_session_id_selects_latest_matching_session_run(tmp_path
     assert "run_global_latest" not in result.stdout
 
 
-def test_trace_view_full_sections_fetch_and_render_conversation_timeline_react(tmp_path: Path) -> None:
+def test_agentruntime_view_full_sections_fetch_and_render_conversation_timeline_react(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
-    server = _TraceViewServer(
+    server = _AgentRuntimeViewServer(
         {
             "/traces/trace_new": _server_trace_payload(),
             "/traces/trace_new/conversation": {
@@ -194,7 +194,7 @@ def test_trace_view_full_sections_fetch_and_render_conversation_timeline_react(t
     )
     server.start()
     try:
-        result = _run_trace_view(
+        result = _run_agentruntime_view(
             "last",
             "--trace-path",
             str(trace_path),
@@ -221,10 +221,10 @@ def test_trace_view_full_sections_fetch_and_render_conversation_timeline_react(t
     assert "tool=product_search" in result.stdout
 
 
-def test_trace_view_follow_server_outputs_conversation_timeline_react(tmp_path: Path) -> None:
+def test_agentruntime_view_follow_server_outputs_conversation_timeline_react(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
-    server = _TraceViewServer(
+    server = _AgentRuntimeViewServer(
         {
             "/traces/trace_new": _server_trace_payload(),
             "/traces/trace_new/conversation": {
@@ -237,7 +237,7 @@ def test_trace_view_follow_server_outputs_conversation_timeline_react(tmp_path: 
     )
     server.start()
     try:
-        result = _run_trace_view(
+        result = _run_agentruntime_view(
             "last",
             "--trace-path",
             str(trace_path),
@@ -265,13 +265,13 @@ def test_trace_view_follow_server_outputs_conversation_timeline_react(tmp_path: 
     assert "tool=product_search" in result.stdout
 
 
-def test_trace_view_full_sections_render_unavailable_conversation_when_endpoint_missing(tmp_path: Path) -> None:
+def test_agentruntime_view_full_sections_render_unavailable_conversation_when_endpoint_missing(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
-    server = _TraceViewServer({"/traces/trace_new": _server_trace_payload()})
+    server = _AgentRuntimeViewServer({"/traces/trace_new": _server_trace_payload()})
     server.start()
     try:
-        result = _run_trace_view(
+        result = _run_agentruntime_view(
             "last",
             "--trace-path",
             str(trace_path),
@@ -294,13 +294,13 @@ def test_trace_view_full_sections_render_unavailable_conversation_when_endpoint_
     assert "decision=tool_call" in result.stdout
 
 
-def test_trace_view_turn_latency_hides_stage_rows_by_default(tmp_path: Path) -> None:
+def test_agentruntime_view_turn_latency_hides_stage_rows_by_default(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
-    server = _TraceViewServer({"/traces/trace_new": _server_trace_payload_with_turn_latency()})
+    server = _AgentRuntimeViewServer({"/traces/trace_new": _server_trace_payload_with_turn_latency()})
     server.start()
     try:
-        result = _run_trace_view(
+        result = _run_agentruntime_view(
             "last",
             "--trace-path",
             str(trace_path),
@@ -324,13 +324,13 @@ def test_trace_view_turn_latency_hides_stage_rows_by_default(tmp_path: Path) -> 
     assert "llm.chat.finished" in result.stdout
 
 
-def test_trace_view_latency_stages_flag_outputs_stage_rows(tmp_path: Path) -> None:
+def test_agentruntime_view_latency_stages_flag_outputs_stage_rows(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
-    server = _TraceViewServer({"/traces/trace_new": _server_trace_payload_with_turn_latency()})
+    server = _AgentRuntimeViewServer({"/traces/trace_new": _server_trace_payload_with_turn_latency()})
     server.start()
     try:
-        result = _run_trace_view(
+        result = _run_agentruntime_view(
             "last",
             "--trace-path",
             str(trace_path),
@@ -352,13 +352,13 @@ def test_trace_view_latency_stages_flag_outputs_stage_rows(tmp_path: Path) -> No
     ) in result.stdout
 
 
-def test_trace_view_renders_tool_exposure_from_context_machine_log(tmp_path: Path) -> None:
+def test_agentruntime_view_renders_tool_exposure_from_context_machine_log(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
-    server = _TraceViewServer({"/traces/trace_new": _server_trace_payload_with_tool_exposure()})
+    server = _AgentRuntimeViewServer({"/traces/trace_new": _server_trace_payload_with_tool_exposure()})
     server.start()
     try:
-        result = _run_trace_view(
+        result = _run_agentruntime_view(
             "last",
             "--trace-path",
             str(trace_path),
@@ -377,7 +377,7 @@ def test_trace_view_renders_tool_exposure_from_context_machine_log(tmp_path: Pat
     assert 'excluded_tools={"price_compare": ["entry_profile_not_exposed"]}' in result.stdout
 
 
-def _run_trace_view(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_agentruntime_view(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, SCRIPT_PATH, *args],
         cwd=REPO_ROOT,
@@ -387,8 +387,8 @@ def _run_trace_view(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _load_trace_view_module():
-    spec = importlib.util.spec_from_file_location("trace_view_test_module", REPO_ROOT / SCRIPT_PATH)
+def _load_agentruntime_view_module():
+    spec = importlib.util.spec_from_file_location("agentruntime_view_test_module", REPO_ROOT / SCRIPT_PATH)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -396,7 +396,7 @@ def _load_trace_view_module():
     return module
 
 
-class _TraceViewServer:
+class _AgentRuntimeViewServer:
     def __init__(self, routes: dict[str, dict[str, Any]]) -> None:
         self.routes = routes
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())

@@ -528,7 +528,7 @@ MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
 包装 run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py trace_xxx
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py trace_xxx
 ```
 
 输出中的 `bottleneck` 是本轮最大关键路径阶段。常见慢点映射如下：
@@ -561,7 +561,7 @@ MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
   --provider mock --image-provider mock --host 127.0.0.1 --port 8089 \
   --allow-local-trace-content
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_view.py trace_xxx \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py trace_xxx \
   --server http://127.0.0.1:8089 --include-conversation
 ```
 
