@@ -206,13 +206,49 @@ def test_provider_config_reads_qwen_realtime_vision_settings_and_prefers_vision_
             "QWEN_VISION_API_KEY": "vision-key",
             "DASHSCOPE_API_KEY": "dashscope-key",
             "QWEN_REALTIME_VISION_BASE_URL": "wss://qwen.local/realtime",
+            "QWEN_REALTIME_VISION_WORKSPACE_ID": "workspace-ignored",
+            "QWEN_REALTIME_VISION_REGION": "ap-southeast-1",
             "QWEN_REALTIME_VISION_MODEL": "qwen-realtime-test",
         }
     )
 
     assert config.qwen_realtime_vision_api_key == "vision-key"
     assert config.qwen_realtime_vision_base_url == "wss://qwen.local/realtime"
+    assert config.qwen_realtime_vision_workspace_id == "workspace-ignored"
+    assert config.qwen_realtime_vision_region == "ap-southeast-1"
     assert config.qwen_realtime_vision_model == "qwen-realtime-test"
+
+
+def test_provider_config_builds_qwen_realtime_workspace_endpoint_for_default_region() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "QWEN_REALTIME_VISION_WORKSPACE_ID": "ws-test",
+        }
+    )
+
+    assert config.qwen_realtime_vision_workspace_id == "ws-test"
+    assert config.qwen_realtime_vision_region == "cn-beijing"
+    assert config.qwen_realtime_vision_base_url == (
+        "wss://ws-test.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime"
+    )
+
+
+def test_provider_config_builds_qwen_realtime_workspace_endpoint_for_singapore() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "QWEN_REALTIME_VISION_WORKSPACE_ID": "ws-test",
+            "QWEN_REALTIME_VISION_REGION": "ap-southeast-1",
+        }
+    )
+
+    assert config.qwen_realtime_vision_region == "ap-southeast-1"
+    assert config.qwen_realtime_vision_base_url == (
+        "wss://ws-test.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime"
+    )
 
 
 def test_provider_config_qwen_realtime_vision_key_falls_back_to_dashscope() -> None:
@@ -222,6 +258,8 @@ def test_provider_config_qwen_realtime_vision_key_falls_back_to_dashscope() -> N
     assert config.qwen_realtime_vision_base_url == (
         "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
     )
+    assert config.qwen_realtime_vision_workspace_id is None
+    assert config.qwen_realtime_vision_region == "cn-beijing"
     assert config.qwen_realtime_vision_model == "qwen3.5-omni-flash-realtime"
 
 

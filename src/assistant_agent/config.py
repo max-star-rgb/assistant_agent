@@ -31,6 +31,9 @@ RemoteMemoryServiceAdapterKind = Literal["unavailable", "http"]
 DEFAULT_JSONL_MEMORY_PATH = ".local/memory/long_term_memories.jsonl"
 DEFAULT_SQLITE_MEMORY_PATH = ".local/memory/long_term_memories.sqlite3"
 DEFAULT_FRAMEWORK_LEDGER_PATH = ".local/memory/framework_governance.sqlite3"
+DEFAULT_QWEN_REALTIME_VISION_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+DEFAULT_QWEN_REALTIME_VISION_REGION = "cn-beijing"
+SUPPORTED_QWEN_REALTIME_VISION_REGIONS = {"cn-beijing", "ap-southeast-1"}
 
 
 VisionProviderName = str
@@ -84,8 +87,10 @@ class ProviderConfig:
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_vision_model: str = "qwen-vl-plus"
-    qwen_realtime_vision_base_url: str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+    qwen_realtime_vision_base_url: str = DEFAULT_QWEN_REALTIME_VISION_BASE_URL
     qwen_realtime_vision_model: str = "qwen3.5-omni-flash-realtime"
+    qwen_realtime_vision_workspace_id: str | None = None
+    qwen_realtime_vision_region: str = DEFAULT_QWEN_REALTIME_VISION_REGION
     ark_vision_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     ark_vision_model: str = "doubao-seed-2-0-lite-260215"
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
@@ -217,6 +222,10 @@ class ProviderConfig:
             allow_real=allow_real_providers,
         )
         image_generation_settings = resolve_image_generation_provider(image_generation_provider, source)
+        qwen_realtime_vision_workspace_id = _qwen_realtime_vision_workspace_id(source)
+        qwen_realtime_vision_region = _qwen_realtime_vision_region(
+            source.get("QWEN_REALTIME_VISION_REGION")
+        )
         memory_remote_enabled = _bool_env(source.get("MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED"), False)
         memory_framework_enabled = _bool_env(
             source.get("MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED"),
@@ -290,14 +299,17 @@ class ProviderConfig:
                 "https://dashscope.aliyuncs.com/compatible-mode/v1",
             ),
             qwen_vision_model=source.get("QWEN_VISION_MODEL", "qwen-vl-plus"),
-            qwen_realtime_vision_base_url=source.get(
-                "QWEN_REALTIME_VISION_BASE_URL",
-                "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+            qwen_realtime_vision_base_url=_qwen_realtime_vision_base_url(
+                source,
+                workspace_id=qwen_realtime_vision_workspace_id,
+                region=qwen_realtime_vision_region,
             ),
             qwen_realtime_vision_model=source.get(
                 "QWEN_REALTIME_VISION_MODEL",
                 "qwen3.5-omni-flash-realtime",
             ),
+            qwen_realtime_vision_workspace_id=qwen_realtime_vision_workspace_id,
+            qwen_realtime_vision_region=qwen_realtime_vision_region,
             ark_vision_base_url=source.get("ARK_VISION_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
             ark_vision_model=source.get("ARK_VISION_MODEL", "doubao-seed-2-0-lite-260215"),
             seed_vision_base_url=source.get("SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"),
@@ -712,6 +724,35 @@ def _vision_embedding_provider(value: str | None, *, allow_real: bool = True) ->
 
 def _vision_embedding_api_key(source: Mapping[str, str]) -> str | None:
     return source.get("DASHSCOPE_API_KEY") or source.get("QWEN_VISION_API_KEY")
+
+
+def _qwen_realtime_vision_workspace_id(source: Mapping[str, str]) -> str | None:
+    value = source.get("QWEN_REALTIME_VISION_WORKSPACE_ID")
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _qwen_realtime_vision_region(value: str | None) -> str:
+    normalized = (value or DEFAULT_QWEN_REALTIME_VISION_REGION).strip().lower()
+    if normalized in SUPPORTED_QWEN_REALTIME_VISION_REGIONS:
+        return normalized
+    return DEFAULT_QWEN_REALTIME_VISION_REGION
+
+
+def _qwen_realtime_vision_base_url(
+    source: Mapping[str, str],
+    *,
+    workspace_id: str | None,
+    region: str,
+) -> str:
+    explicit = source.get("QWEN_REALTIME_VISION_BASE_URL")
+    if explicit:
+        return explicit
+    if workspace_id:
+        return f"wss://{workspace_id}.{region}.maas.aliyuncs.com/api-ws/v1/realtime"
+    return DEFAULT_QWEN_REALTIME_VISION_BASE_URL
 
 
 def _chat_provider(value: str | None, *, allow_real: bool = True) -> ChatProviderName:

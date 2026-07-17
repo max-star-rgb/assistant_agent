@@ -176,12 +176,23 @@ def _provider_config_diagnostics(config: ProviderConfig) -> dict[str, object]:
         "vision_provider": config.vision_provider,
         "base_url": config.qwen_realtime_vision_base_url,
         "model": config.qwen_realtime_vision_model,
+        "workspace_id_configured": config.qwen_realtime_vision_workspace_id is not None,
+        "region": config.qwen_realtime_vision_region,
+        "endpoint_style": _endpoint_style(config),
         "timeout_seconds": config.video_understanding_timeout_seconds,
         "tcp_connect_timeout_cap_seconds": DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS,
         "direct_ipv4_default": DEFAULT_FORCE_IPV4_DIRECT_CONNECTION,
         "credential_source": _credential_source(),
         "proxy_env_names": _proxy_env_names(),
     }
+
+
+def _endpoint_style(config: ProviderConfig) -> str:
+    if os.environ.get("QWEN_REALTIME_VISION_BASE_URL"):
+        return "explicit_base_url"
+    if config.qwen_realtime_vision_workspace_id is not None:
+        return "workspace_region"
+    return "legacy_dashscope_default"
 
 
 def _credential_source() -> str | None:

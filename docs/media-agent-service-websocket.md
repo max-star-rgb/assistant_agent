@@ -490,8 +490,12 @@ MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
   --port 8089
 ```
 
-Qwen realtime 视频适配器优先使用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_API_KEY`），
-并读取 `QWEN_REALTIME_VISION_BASE_URL` 和 `QWEN_REALTIME_VISION_MODEL`。普通图片仍使用
+Qwen realtime 视频适配器优先使用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_API_KEY`）。
+推荐配置百炼业务空间专属 WebSocket endpoint：设置 `QWEN_REALTIME_VISION_WORKSPACE_ID`
+和 `QWEN_REALTIME_VISION_REGION`（默认 `cn-beijing`；可选 `ap-southeast-1`）后，运行时会生成
+`wss://{WorkspaceId}.{region}.maas.aliyuncs.com/api-ws/v1/realtime`。显式
+`QWEN_REALTIME_VISION_BASE_URL` 优先级最高，可用于覆盖 workspace endpoint；未配置 workspace
+时仍保留旧 `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` 默认以兼容现有环境。普通图片仍使用
 `QWEN_VISION_BASE_URL` / `QWEN_VISION_MODEL` 对应的图片 HTTP adapter；视频理解不再有独立
 `video_provider` selector，实时视频和视频工具都以 `MULTIMODAL_AGENT_VISION_PROVIDER` 为唯一
 provider 选择入口。启动前应确认 chat readiness 和 `video_understanding` 的 vision provider
