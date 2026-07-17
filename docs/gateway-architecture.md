@@ -11,6 +11,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - Gateway owns normalized message, session, run, cancel, interrupt, reconnect, hangup, and stream-frame semantics between entry layers and the assistant realtime backend.
 - Every accepted `message.user` receives stable Gateway-owned `turn_id` and `run_id` values at ingress. A queued turn is a cancellable lifecycle object, not an anonymous pending payload.
 - Ordinary same-session turns use bounded FIFO followup queues. Session heads compete through one process-local admission controller, which bounds total queued turns and active backend runs without allowing same-session backend overlap.
+- For normalized Gateway WebSocket and realtime-media WebSocket entries, one live bridge owner is allowed per `user_id` in a process. A newer connection supersedes older same-user bridges, including idle bridges that have not opened a runtime endpoint yet. Superseding a bridge is not treated as client disconnect for run lifecycle: the active Gateway run is not cancelled, and later runtime frames are delivered to the newest owner.
 - Realtime media may opt into a separate bounded semantic-interrupt control plane. Explicit media control still interrupts immediately; implicit utterances are classified in parallel while the active backend continues, and only a matching `expected_run_id` decision may change Gateway lifecycle.
 - `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default adapter is `GatewayAgentAdapter`, a semantic alias of the compatibility class name `AgentGraphRealtimeBackend`.
 - The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
@@ -237,6 +238,7 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Cancel active runs immediately on `call.hangup` / media `session.end`, then return `call.hangup_ack`.
 - Treat cancel/interrupt as a first-class realtime turn outcome. After cancel, old run output is not speakable or user-visible; late backend/tool results may be retained only as trace or stale artifacts.
 - Manage per-user session reuse, reconnect, hangup grace, idle eviction, and live session config.
+- Resolve same-user multi-connection competition at the bridge layer: the newest bridge owns outbound delivery for that user, stale bridges stop consuming runtime frames, and only a true remaining-owner disconnect sends `gateway_disconnect` cancellation.
 - Treat user-message `metadata` as untrusted for system-prompt/profile selection. `system_prompt_profile`, profile-driving `channel`, and profile-driving `source` are stripped from message payload metadata; realtime phone profile selection must come from trusted Gateway/session config, not ordinary user text or arbitrary payload metadata.
 - Keep external connection lifecycle separate from the assistant runtime internals.
 

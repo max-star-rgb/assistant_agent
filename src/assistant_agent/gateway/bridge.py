@@ -44,6 +44,7 @@ class ClientConn:
     user_id: Optional[str] = None
     active_run_id: Optional[str] = None
     _cancel_event: Optional[asyncio.Event] = None
+    generation: int = 0
 
 
 class GatewayBridge:
@@ -56,6 +57,8 @@ class GatewayBridge:
 
     def __init__(self, *, session_manager: GatewaySessionManager | None = None) -> None:
         self._clients: dict[str, ClientConn] = {}
+        self._owner_by_user: dict[str, str] = {}
+        self._next_generation = 0
         self._lock = asyncio.Lock()
         self._session_manager = session_manager
 
@@ -75,11 +78,15 @@ class GatewayBridge:
             runtime_ready.set()
 
         async with self._lock:
+            self._next_generation += 1
             self._clients[client_id] = ClientConn(
                 user_id=user_id,
                 session_id=session_id,
                 _cancel_event=cancel_event,
+                generation=self._next_generation,
             )
+            if user_id:
+                self._claim_user_locked(client_id=client_id, user_id=user_id)
 
         async def ensure_runtime_endpoint(
             uid: str | None,
@@ -90,14 +97,16 @@ class GatewayBridge:
             if self._session_manager is None:
                 return None
             target_uid = uid or user_id or "default"
+            if not await self._claim_user(client_id=client_id, user_id=target_uid):
+                return None
             handle = await self._session_manager.acquire(user_id=target_uid, config=config)
             runtime_ep_ref["endpoint"] = handle.endpoint
-            runtime_ready.set()
             await self._replace_stale_user_bridge(
                 client_id=client_id,
                 user_id=target_uid,
                 runtime_ep=handle.endpoint,
             )
+            runtime_ready.set()
             return handle.endpoint
 
         if user_id and runtime_ep is not None:
@@ -112,6 +121,8 @@ class GatewayBridge:
 
         async def _client_to_session() -> None:
             async for incoming in client_ep:
+                if cancel_event.is_set():
+                    return
                 endpoint = await self._handle_client_frame(
                     client_id=client_id,
                     client_ep=client_ep,
@@ -120,6 +131,8 @@ class GatewayBridge:
                     ensure_runtime_endpoint=ensure_runtime_endpoint,
                     current_runtime_endpoint=current_runtime_endpoint,
                 )
+                if cancel_event.is_set():
+                    return
                 if endpoint is not None:
                     runtime_ep_ref["endpoint"] = endpoint
                     runtime_ready.set()
@@ -131,6 +144,7 @@ class GatewayBridge:
                 return
             async for outbound in endpoint:
                 if cancel_event.is_set():
+                    _best_effort_reinject(endpoint, outbound)
                     return
                 await self._handle_session_frame(
                     client_id=client_id,
@@ -141,9 +155,10 @@ class GatewayBridge:
 
         t1 = asyncio.create_task(_client_to_session())
         t2 = asyncio.create_task(_session_to_client())
+        t3 = asyncio.create_task(cancel_event.wait())
 
         try:
-            _, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+            _, pending = await asyncio.wait({t1, t2, t3}, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
 
@@ -151,6 +166,8 @@ class GatewayBridge:
                 conn = self._clients.get(client_id)
                 run_id = conn.active_run_id if conn else None
                 sid = conn.session_id if conn else None
+                if conn and conn.user_id and self._owner_by_user.get(conn.user_id) == client_id:
+                    self._owner_by_user.pop(conn.user_id, None)
                 self._clients.pop(client_id, None)
 
             endpoint = runtime_ep_ref["endpoint"]
@@ -170,6 +187,7 @@ class GatewayBridge:
         finally:
             t1.cancel()
             t2.cancel()
+            t3.cancel()
 
     async def _replace_stale_user_bridge(
         self,
@@ -178,14 +196,39 @@ class GatewayBridge:
         user_id: str,
         runtime_ep: Endpoint,
     ) -> None:
+        _ = runtime_ep
+        await self._claim_user(client_id=client_id, user_id=user_id)
+
+    async def _claim_user(self, *, client_id: str, user_id: str) -> bool:
         async with self._lock:
-            for cid, conn in list(self._clients.items()):
-                if conn.user_id == user_id and cid != client_id and conn._cancel_event:
-                    conn._cancel_event.set()
-        try:
-            runtime_ep._inject(frame(type="_evict", user_id=user_id))  # type: ignore[attr-defined]
-        except Exception:  # pragma: no cover - transport may not support injection.
-            pass
+            return self._claim_user_locked(client_id=client_id, user_id=user_id)
+
+    async def _client_cancelled(self, client_id: str) -> bool:
+        async with self._lock:
+            conn = self._clients.get(client_id)
+            return bool(conn and conn._cancel_event and conn._cancel_event.is_set())
+
+    def _claim_user_locked(self, *, client_id: str, user_id: str) -> bool:
+        conn = self._clients.get(client_id)
+        if conn is None or conn._cancel_event is None:
+            return False
+        if conn._cancel_event.is_set():
+            return False
+
+        conn.user_id = user_id
+        owner_id = self._owner_by_user.get(user_id)
+        owner = self._clients.get(owner_id) if owner_id else None
+        if owner_id == client_id:
+            return not conn._cancel_event.is_set()
+        if owner is not None and owner.generation > conn.generation:
+            conn._cancel_event.set()
+            return False
+
+        self._owner_by_user[user_id] = client_id
+        for cid, other in list(self._clients.items()):
+            if cid != client_id and other.user_id == user_id and other._cancel_event:
+                other._cancel_event.set()
+        return not conn._cancel_event.is_set()
 
     async def _handle_client_frame(
         self,
@@ -207,6 +250,8 @@ class GatewayBridge:
                 _optional_string(uid),
                 _config_from_payload(payload),
             )
+            if await self._client_cancelled(client_id):
+                return None
             async with self._lock:
                 conn = self._clients.get(client_id)
                 if conn:
@@ -383,6 +428,13 @@ def _optional_string(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _best_effort_reinject(endpoint: Endpoint, outbound: Frame) -> None:
+    try:
+        endpoint._inject(outbound)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def _config_from_payload(payload: dict[str, Any]) -> dict[str, Any]:

@@ -87,6 +87,143 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(bridge_task, return_exceptions=True)
             await manager.close()
 
+    async def test_new_same_user_bridge_evicts_idle_stale_connection(self) -> None:
+        manager = GatewaySessionManager(start_reaper=False)
+        bridge = GatewayBridge(session_manager=manager)
+        stale_client_ep, stale_bridge_ep = InMemoryDuplex.create_pair()
+        current_client_ep, current_bridge_ep = InMemoryDuplex.create_pair()
+        stale_task = asyncio.create_task(
+            bridge.bridge(
+                client_id="same-user-stale",
+                client_ep=stale_bridge_ep,
+                user_id="same-user",
+                session_id="same-session",
+            )
+        )
+        current_task = asyncio.create_task(
+            bridge.bridge(
+                client_id="same-user-current",
+                client_ep=current_bridge_ep,
+                user_id="same-user",
+                session_id="same-session",
+            )
+        )
+
+        try:
+            await asyncio.wait_for(stale_task, timeout=1.0)
+
+            await stale_client_ep.send(
+                frame(type=CALL_INCOMING, user_id="same-user", session_id="same-session")
+            )
+            await current_client_ep.send(
+                frame(type=CALL_INCOMING, user_id="same-user", session_id="same-session")
+            )
+
+            ready = await _read_until(current_client_ep, CALL_READY)
+            assert ready["user_id"] == "same-user"
+            assert ready["session_id"] == "same-session"
+
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(_read_until(stale_client_ep, CALL_READY), timeout=0.05)
+        finally:
+            await _close_bridge(current_client_ep, current_bridge_ep, current_task)
+            await stale_client_ep.close()
+            await stale_bridge_ep.close()
+            if not stale_task.done():
+                stale_task.cancel()
+                await asyncio.gather(stale_task, return_exceptions=True)
+            await manager.close()
+
+    async def test_same_user_bridge_handoff_preserves_active_run_for_new_owner(self) -> None:
+        class HandoffBackend:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+                self.cancel_seen = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.started.set()
+                await self.release.wait()
+                if cancel_token.is_cancelled():
+                    self.cancel_seen.set()
+                    return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+                assert event_sink is not None
+                await event_sink(RealtimeAgentEvent(type="response.chunk", text="handoff response"))
+                return RealtimeAgentResult(
+                    status="completed",
+                    run_id=request.run_id,
+                    response_text="handoff response",
+                )
+
+        backend = HandoffBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            start_reaper=False,
+        )
+        bridge = GatewayBridge(session_manager=manager)
+        stale_client_ep, stale_bridge_ep = InMemoryDuplex.create_pair()
+        current_client_ep, current_bridge_ep = InMemoryDuplex.create_pair()
+        stale_task = asyncio.create_task(
+            bridge.bridge(
+                client_id="active-stale",
+                client_ep=stale_bridge_ep,
+                user_id="handoff-user",
+                session_id="handoff-session",
+            )
+        )
+        current_task: asyncio.Task | None = None
+
+        try:
+            await stale_client_ep.send(
+                frame(type=CALL_INCOMING, user_id="handoff-user", session_id="handoff-session")
+            )
+            await _read_until(stale_client_ep, CALL_READY)
+            await stale_client_ep.send(
+                frame(
+                    type="message.user",
+                    user_id="handoff-user",
+                    session_id="handoff-session",
+                    payload={"text": "wait for handoff"},
+                )
+            )
+            await _read_until(stale_client_ep, "run.started")
+            await asyncio.wait_for(backend.started.wait(), timeout=1.0)
+
+            current_task = asyncio.create_task(
+                bridge.bridge(
+                    client_id="active-current",
+                    client_ep=current_bridge_ep,
+                    user_id="handoff-user",
+                    session_id="handoff-session",
+                )
+            )
+            await asyncio.wait_for(stale_task, timeout=1.0)
+            await current_client_ep.send(
+                frame(type=CALL_INCOMING, user_id="handoff-user", session_id="handoff-session")
+            )
+            await _read_until(current_client_ep, CALL_READY)
+
+            backend.release.set()
+            chunk = await _read_until(current_client_ep, "stream.chunk")
+            run_end = await _read_until(current_client_ep, "run.end")
+
+            assert chunk["payload"]["text"] == "handoff response"
+            assert run_end["reason"] == "completed"
+            assert not backend.cancel_seen.is_set()
+        finally:
+            backend.release.set()
+            if current_task is not None:
+                await _close_bridge(current_client_ep, current_bridge_ep, current_task)
+            else:
+                await current_client_ep.close()
+                await current_bridge_ep.close()
+            await stale_client_ep.close()
+            await stale_bridge_ep.close()
+            if not stale_task.done():
+                stale_task.cancel()
+                await asyncio.gather(stale_task, return_exceptions=True)
+            await manager.close()
+
     async def test_destroy_cancels_active_and_releases_all_queue_capacity(self) -> None:
         class CancellableBackend:
             def __init__(self) -> None:
