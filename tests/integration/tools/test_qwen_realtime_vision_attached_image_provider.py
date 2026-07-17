@@ -116,9 +116,16 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
         print("=== TOOL RESULT ===", flush=True)
         print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2), flush=True)
         print("=== SUCCESS LAYERS ===", flush=True)
-        print(json.dumps(_success_layers(result, adapter.last_raw_response_text), ensure_ascii=False, indent=2), flush=True)
+        print(
+            json.dumps(
+                _success_layers(result, adapter),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            flush=True,
+        )
 
-    layers = _success_layers(result, adapter.last_raw_response_text)
+    layers = _success_layers(result, adapter)
     assert layers["execution_success"] is True, layers
     assert layers["semantic_success"] is True, layers
     assert layers["snapshot_publishable"] is True, layers
@@ -130,7 +137,7 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
     )
 
 
-def _success_layers(result, raw_response_text: str | None) -> dict[str, object]:
+def _success_layers(result, adapter: QwenRealtimeVisionAdapter) -> dict[str, object]:
     data = result.data if isinstance(result.data, dict) else {}
     errors = data.get("errors")
     data_errors = errors if isinstance(errors, list) else []
@@ -148,5 +155,7 @@ def _success_layers(result, raw_response_text: str | None) -> dict[str, object]:
         "source": source,
         "error": result.error,
         "data_errors": data_errors,
-        "raw_text_received": bool(raw_response_text),
+        "raw_text_received": bool(adapter.last_raw_response_text),
+        "observation_phase": adapter.last_observation_phase,
+        "diagnostics": adapter.last_observation_diagnostics,
     }

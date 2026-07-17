@@ -88,6 +88,8 @@ class QwenRealtimeVisionAdapter:
         self._target_sequence: int | None = None
         self._last_observation_diagnostics: dict[str, Any] = {}
         self._last_raw_response_text: str | None = None
+        self._last_observation_phase: str = "idle"
+        self._last_provider_event_type: str | None = None
         self._closed = False
 
     @property
@@ -106,8 +108,14 @@ class QwenRealtimeVisionAdapter:
     def last_raw_response_text(self) -> str | None:
         return self._last_raw_response_text
 
+    @property
+    def last_observation_phase(self) -> str:
+        return self._last_observation_phase
+
     def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
         started_at = perf_counter()
+        self._last_observation_phase = "starting"
+        self._last_provider_event_type = None
         self._observation_started_at = started_at
         self._first_delta_latency_ms = None
         self._target_sequence = _safe_sequence(request.metadata.get("frame_sequence"))
@@ -128,16 +136,25 @@ class QwenRealtimeVisionAdapter:
             except (OSError, ValueError) as exc:
                 code = "frame_too_large" if "256KB" in str(exc) else "invalid_frame"
                 return self._failure(code, str(exc), started_at)
+            self._last_observation_phase = "frame_encoded"
             socket = self._ensure_connection(deadline)
+            self._last_observation_phase = "connection_ready"
             socket.send(json.dumps(_session_update(instructions=_instructions(request)), ensure_ascii=False))
+            self._last_observation_phase = "observation_session_update_sent"
             self._expect_event(socket, "session.updated", deadline)
+            self._last_observation_phase = "observation_session_updated"
             for event in _media_events(image=image):
                 socket.send(json.dumps(event))
+            self._last_observation_phase = "media_sent"
             self._expect_event(socket, "input_audio_buffer.committed", deadline)
+            self._last_observation_phase = "media_committed"
             socket.send(json.dumps({"type": "response.create"}))
+            self._last_observation_phase = "response_requested"
             text = self._receive_response(socket, deadline)
             self._last_raw_response_text = text
+            self._last_observation_phase = "response_received"
             payload = _normalize_result_payload(_parse_response_payload(text))
+            self._last_observation_phase = "response_parsed"
             result = VideoUnderstandingResult.model_validate(
                 {
                     **payload,
@@ -177,6 +194,7 @@ class QwenRealtimeVisionAdapter:
             return self._failure("provider_bad_response", "Qwen realtime vision request failed.", started_at)
         self._successful_observations += 1
         self._connection_failures = 0
+        self._last_observation_phase = "succeeded"
         self._publish_diagnostics(started_at, completed_sequence=self._target_sequence)
         return result
 
@@ -205,6 +223,7 @@ class QwenRealtimeVisionAdapter:
             self._remaining(deadline)
         socket: Any | None = None
         try:
+            self._last_observation_phase = "connecting"
             if self._connect_attempts > 0:
                 self._reconnect_count += 1
             self._connect_attempts += 1
@@ -214,12 +233,17 @@ class QwenRealtimeVisionAdapter:
                 open_timeout=self._remaining(deadline),
             )
             created = _receive_json(socket, self._remaining(deadline))
+            self._last_provider_event_type = str(created.get("type") or "")
             if created.get("type") != "session.created":
                 raise ValueError("Expected session.created.")
+            self._last_observation_phase = "session_created"
             socket.send(json.dumps(_session_update()))
+            self._last_observation_phase = "base_session_update_sent"
             updated = _receive_json(socket, self._remaining(deadline))
+            self._last_provider_event_type = str(updated.get("type") or "")
             if updated.get("type") != "session.updated":
                 raise ValueError("Expected session.updated.")
+            self._last_observation_phase = "base_session_updated"
         except TimeoutError:
             self._connection_failures += 1
             if socket is not None:
@@ -247,6 +271,7 @@ class QwenRealtimeVisionAdapter:
         while True:
             event = _receive_json(socket, self._remaining(deadline))
             event_type = event.get("type")
+            self._last_provider_event_type = str(event_type or "")
             if event_type == expected_type:
                 return event
             if event_type == "error":
@@ -255,12 +280,15 @@ class QwenRealtimeVisionAdapter:
     def _receive_response(self, socket: Any, deadline: float) -> str:
         deltas: list[str] = []
         self._last_raw_response_text = ""
+        self._last_observation_phase = "waiting_response"
         while True:
             event = _receive_json(socket, self._remaining(deadline))
             event_type = event.get("type")
+            self._last_provider_event_type = str(event_type or "")
             if event_type in {"response.text.delta", "response.output_text.delta"}:
                 delta = event.get("delta")
                 if isinstance(delta, str):
+                    self._last_observation_phase = "response_delta"
                     if self._first_delta_latency_ms is None:
                         self._first_delta_latency_ms = max(
                             0,
@@ -271,6 +299,7 @@ class QwenRealtimeVisionAdapter:
             elif event_type == "error":
                 raise RuntimeError("Provider returned an error.")
             elif event_type == "response.done":
+                self._last_observation_phase = "response_done"
                 response = event.get("response")
                 if not isinstance(response, dict) or response.get("status") != "completed":
                     raise _IncompleteResponse
@@ -316,6 +345,8 @@ class QwenRealtimeVisionAdapter:
             "completed_sequence": completed_sequence,
             "first_delta_latency_ms": self._first_delta_latency_ms,
             "total_observation_latency_ms": max(0, int((perf_counter() - started_at) * 1000)),
+            "observation_phase": self._last_observation_phase,
+            "last_provider_event_type": self._last_provider_event_type,
         }
 
 

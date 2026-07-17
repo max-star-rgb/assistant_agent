@@ -190,6 +190,8 @@ def test_realtime_adapter_reports_prompt_safe_session_and_sequence_diagnostics(
         "completed_sequence": 8,
         "first_delta_latency_ms": diagnostics["first_delta_latency_ms"],
         "total_observation_latency_ms": diagnostics["total_observation_latency_ms"],
+        "observation_phase": "succeeded",
+        "last_provider_event_type": "response.done",
     }
     assert isinstance(diagnostics["first_delta_latency_ms"], int)
     assert diagnostics["first_delta_latency_ms"] >= 0
@@ -554,13 +556,16 @@ def test_realtime_adapter_counts_failed_reconnect_attempts_independently_from_se
     assert first_failure.errors[0]["code"] == "provider_connection_failed"
     assert first_diagnostics["session_generation"] is None
     assert first_diagnostics["reconnect_count"] == 0
+    assert first_diagnostics["observation_phase"] == "connecting"
     assert second_failure.errors[0]["code"] == "provider_connection_failed"
     assert second_diagnostics["session_generation"] is None
     assert second_diagnostics["reconnect_count"] == 1
+    assert second_diagnostics["observation_phase"] == "connecting"
     assert success.errors == []
     assert success_diagnostics["session_generation"] == 1
     assert success_diagnostics["reconnect_count"] == 2
     assert success_diagnostics["completed_sequence"] == 9
+    assert success_diagnostics["observation_phase"] == "succeeded"
 
 
 def test_realtime_adapter_resets_backoff_after_handshake_even_if_round_fails(tmp_path: Path) -> None:
