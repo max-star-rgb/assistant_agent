@@ -313,16 +313,33 @@ Framework writes still pass `MemoryWritePolicy` and confirmation before `Framewo
 
 Framework recall failures return stable `memory_framework_recall_failed` errors. The Agent run continues with an empty result or the explicitly configured read-only v2 fallback. Runtime debug metadata and audit may expose stable error codes and engine names, but never sidecar URLs, raw exception messages, credentials, raw framework responses, or memory content.
 
-Framework recall is scope-layered. `FrameworkMemoryStore` queries the current
-session layer first, then the current project/task layer, then the user-profile
-layer, and deduplicates before returning `top_k`. For Mem0, `scope="session"`
-uses `user_id + agent_id + run_id`; `scope in {"project", "task", "video",
-"product"}` uses `user_id + agent_id` and intentionally omits `run_id`;
-`scope="user_profile"` uses only `user_id` and can cross projects/sessions for
-the same tenant-bound user. If `project_id` is missing, project/task memory
-uses the user's `global` work domain. Delete/list/export still use the ledger
-mapping from project memory id to engine id, so cross-session recall does not
-make deletes fuzzy.
+Framework recall 是分层的。`FrameworkMemoryStore` 先查当前 session
+layer，再查当前 project/task layer，最后查 user-profile layer，并在返回
+`top_k` 前去重。
+
+#### Mem0 identity/filter mapping
+
+Mem0 framework 边界只使用 Mem0 engine 原生的三层 identity filter：
+`user_id`、`agent_id`、`run_id`。assistant_agent 内部治理模型仍保留
+`tenant_id`、`user_id`、`project_id`、`session_id`：
+
+| assistant_agent field | Mem0 engine field | notes |
+| --- | --- | --- |
+| `user_id` | `user_id` | 个人长期记忆 owner，进入 Mem0 前会被哈希成 opaque id。 |
+| `project_id` | `agent_id` | 工作域 filter；不是 assistant_agent 多 Agent 的 agent。缺失时使用 `global` 工作域。 |
+| `session_id` | `run_id` | 当前会话 filter，只用于 session layer。 |
+| `tenant_id` | none | 不作为 Mem0 字段传递；参与 `user_id`、`agent_id`、`run_id` 哈希种子，保证跨 tenant 不碰撞。 |
+
+Mem0 的身份过滤只有 `user_id / agent_id / run_id` 这三层。
+`memory_id`、`project_memory_id`、`metadata` 以及 ledger 中的 engine mapping
+都是治理、溯源、删除和导出辅助数据，不是 Mem0 identity scope id。
+
+Mem0 scope 规则保持不变：`scope="session"` 使用
+`user_id + agent_id + run_id`；`scope in {"project", "task", "video",
+"product"}` 使用 `user_id + agent_id` 并故意省略 `run_id`；
+`scope="user_profile"` 只使用 `user_id`，可在同一 tenant-bound user 下跨
+projects/sessions 召回。Delete/list/export 仍使用 ledger 从
+`project_memory_id` 映射到 engine id，因此跨 session recall 不会让删除语义变模糊。
 
 Mem0 recall has a bounded read-after-write consistency wait. If a successful
 Mem0 retain was just recorded for the same governed identity and memory scope,

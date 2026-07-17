@@ -33,11 +33,16 @@ _UNSAFE_KEYS = {
     "token",
 }
 
-_PROJECT_ENGINE_SCOPES = {"project", "task", "video", "product"}
+_ENGINE_AGENT_SCOPES = {"project", "task", "video", "product"}
 
 
 class MemoryEngineIdentity(BaseModel):
-    """Opaque, stable identifiers bound from trusted RequestIdentity."""
+    """Opaque, stable identifiers bound from trusted RequestIdentity.
+
+    Mem0 exposes only `user_id`, `agent_id`, and `run_id` as identity filters.
+    `agent_id` is the framework work-domain id derived from assistant_agent
+    `project_id`; it is not an assistant_agent multi-agent identifier.
+    """
 
     bank_id: str = Field(pattern=r"^bank_[0-9a-f]{32}$")
     user_id: str = Field(pattern=r"^usr_[0-9a-f]{32}$")
@@ -56,7 +61,7 @@ class MemoryEngineIdentity(BaseModel):
         resolved = scope or "session"
         if resolved == "user_profile":
             return [self.tenant_tag, self.user_tag]
-        if resolved in _PROJECT_ENGINE_SCOPES:
+        if resolved in _ENGINE_AGENT_SCOPES:
             return [self.tenant_tag, self.user_tag, self.project_tag]
         return self.hindsight_tags
 
@@ -65,10 +70,12 @@ class MemoryEngineIdentity(BaseModel):
         return {"user_id": self.user_id, "agent_id": self.agent_id, "run_id": self.run_id}
 
     def mem0_filters_for_scope(self, scope: MemoryScope | str | None) -> dict[str, str]:
+        """Return only Mem0-native identity filters for the requested memory scope."""
+
         resolved = scope or "session"
         if resolved == "user_profile":
             return {"user_id": self.user_id}
-        if resolved in _PROJECT_ENGINE_SCOPES:
+        if resolved in _ENGINE_AGENT_SCOPES:
             return {"user_id": self.user_id, "agent_id": self.agent_id}
         return self.mem0_filters
 

@@ -35,7 +35,7 @@ from assistant_agent.schemas.memory_framework import (
 _MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS = 5.0
 _MEM0_RECALL_CONSISTENCY_POLL_SECONDS = 0.25
 _MEM0_RECENT_RETAIN_CACHE_SECONDS = 60.0
-_PROJECT_ENGINE_SCOPES: set[MemoryScope] = {"project", "task", "video", "product"}
+_ENGINE_AGENT_SCOPES: set[MemoryScope] = {"project", "task", "video", "product"}
 _VALID_ENGINE_SCOPES: set[MemoryScope] = {"session", "project", "task", "user_profile", "video", "product"}
 
 
@@ -459,7 +459,7 @@ class FrameworkMemoryStore:
         scopes: list[MemoryScope] = []
         if query.session_id and (unrestricted or "session" in allowed):
             scopes.append("session")
-        if unrestricted or allowed.intersection(_PROJECT_ENGINE_SCOPES):
+        if unrestricted or allowed.intersection(_ENGINE_AGENT_SCOPES):
             scopes.append("project")
         if unrestricted or "user_profile" in allowed:
             scopes.append("user_profile")
@@ -621,9 +621,9 @@ class FrameworkMemoryStore:
     @staticmethod
     def _recent_retain_key(*, user_id: str, identity, scope: MemoryScope | str | None) -> tuple[str, str, str, str, str, str]:
         resolved_scope = _engine_scope_for_memory_scope(scope)
-        agent_id = identity.agent_id if resolved_scope in {"session", "project"} else ""
-        run_id = identity.run_id if resolved_scope == "session" else ""
-        return (user_id, identity.user_id, agent_id, run_id, identity.tenant_tag, resolved_scope)
+        mem0_agent_id = identity.agent_id if resolved_scope in {"session", "project"} else ""
+        mem0_run_id = identity.run_id if resolved_scope == "session" else ""
+        return (user_id, identity.user_id, mem0_agent_id, mem0_run_id, identity.tenant_tag, resolved_scope)
 
     def _recent_key_matches_identity(
         self,
@@ -708,7 +708,7 @@ class FrameworkMemoryStore:
 def _engine_scope_for_memory_scope(scope: MemoryScope | str | None) -> str:
     if scope == "user_profile":
         return "user_profile"
-    if scope in _PROJECT_ENGINE_SCOPES:
+    if scope in _ENGINE_AGENT_SCOPES:
         return "project"
     return "session"
 

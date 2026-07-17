@@ -39,6 +39,7 @@ def test_engine_identity_is_stable_and_contains_no_raw_identity() -> None:
     assert first.user_id.startswith("usr_")
     assert first.agent_id.startswith("agt_")
     assert first.run_id.startswith("run_")
+    assert set(first.mem0_filters) == {"user_id", "agent_id", "run_id"}
 
 
 def test_hindsight_maps_retain_and_recall_to_versioned_bank_api() -> None:
@@ -159,7 +160,7 @@ def test_hindsight_retain_rejects_success_without_a_queryable_memory() -> None:
 
 
 @pytest.mark.parametrize(
-    ("scope_name", "expected_filter_keys"),
+    ("scope_name", "expected_mem0_filter_keys"),
     [
         ("session", {"user_id", "agent_id", "run_id"}),
         ("project", {"user_id", "agent_id"}),
@@ -167,9 +168,9 @@ def test_hindsight_retain_rejects_success_without_a_queryable_memory() -> None:
         ("user_profile", {"user_id"}),
     ],
 )
-def test_mem0_uses_scope_aware_filters_and_never_accepts_model_supplied_identity(
+def test_mem0_uses_engine_identity_filters_and_never_accepts_model_supplied_identity(
     scope_name,
-    expected_filter_keys,
+    expected_mem0_filter_keys,
 ) -> None:
     requests: list[FrameworkHttpRequest] = []
 
@@ -180,31 +181,42 @@ def test_mem0_uses_scope_aware_filters_and_never_accepts_model_supplied_identity
         return {"results": [{"id": "mem0-1", "memory": "偏好深色", "score": 0.91}]}
 
     adapter = Mem0MemoryEngineAdapter(base_url="http://mem0.local", transport=transport)
-    scope = bind_engine_identity(_identity(), namespace="test")
+    engine_identity = bind_engine_identity(_identity(), namespace="test")
     adapter.retain(
         FrameworkRetainRequest(
-            identity=scope,
+            identity=engine_identity,
             project_memory_id="memory-1",
             text="偏好深色",
             memory_type="preference",
             source="explicit_user_request",
             created_at=NOW,
-            metadata={"user_id": "attacker", "project_id": "attacker"},
+            metadata={
+                "user_id": "attacker",
+                "agent_id": "attacker",
+                "run_id": "attacker",
+                "tenant_id": "attacker",
+                "project_id": "attacker",
+                "session_id": "attacker",
+            },
             idempotency_key="retain:memory-1",
             scope=scope_name,
         )
     )
-    recalled = adapter.recall(FrameworkRecallRequest(identity=scope, query="偏好", top_k=3, scope=scope_name))
+    recalled = adapter.recall(
+        FrameworkRecallRequest(identity=engine_identity, query="偏好", top_k=3, scope=scope_name)
+    )
 
     retain_body = requests[0].body
-    expected_filters = scope.mem0_filters_for_scope(scope_name)
-    assert {key for key in retain_body if key in {"user_id", "agent_id", "run_id"}} == expected_filter_keys
-    assert {key: retain_body[key] for key in expected_filter_keys} == expected_filters
+    expected_mem0_filters = engine_identity.mem0_filters_for_scope(scope_name)
+    assert {key for key in retain_body if key in {"user_id", "agent_id", "run_id"}} == expected_mem0_filter_keys
+    assert {key: retain_body[key] for key in expected_mem0_filter_keys} == expected_mem0_filters
     assert retain_body["infer"] is False
     assert retain_body["metadata"]["project_memory_id"] == "memory-1"
-    assert "user_id" not in retain_body["metadata"]
+    assert not set(retain_body["metadata"]).intersection(
+        {"user_id", "agent_id", "run_id", "tenant_id", "project_id", "session_id"}
+    )
     assert requests[1].path == "/search"
-    assert requests[1].body["filters"] == expected_filters
+    assert requests[1].body["filters"] == expected_mem0_filters
     assert recalled.records[0].relevance == 0.91
 
 

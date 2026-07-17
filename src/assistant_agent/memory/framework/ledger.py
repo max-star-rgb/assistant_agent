@@ -13,7 +13,7 @@ from assistant_agent.schemas.memory import MemoryScope
 from assistant_agent.schemas.memory_framework import MemoryEngineIdentity
 from assistant_agent.schemas.memory_audit import MemoryAuditEvent, MemoryPendingConfirmation
 
-_PROJECT_ENGINE_SCOPES = {"project", "task", "video", "product"}
+_ENGINE_AGENT_SCOPES = {"project", "task", "video", "product"}
 
 
 @dataclass(frozen=True)
@@ -412,6 +412,6 @@ def _identity_matches_scope(
         return queued_identity.agent_id == identity.agent_id
     if scope == "user_profile":
         return True
-    if scope in _PROJECT_ENGINE_SCOPES:
+    if scope in _ENGINE_AGENT_SCOPES:
         return queued_identity.agent_id == identity.agent_id
     return queued_identity.agent_id == identity.agent_id and queued_identity.run_id == identity.run_id

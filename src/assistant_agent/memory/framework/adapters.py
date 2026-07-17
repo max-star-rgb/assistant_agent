@@ -274,6 +274,8 @@ class Mem0MemoryEngineAdapter(_HttpEngineAdapter):
 
 
 def _safe_metadata(metadata: Mapping[str, Any], request: FrameworkRetainRequest) -> dict[str, Any]:
+    # Metadata is provenance only. Mem0 identity scope is carried exclusively by
+    # user_id/agent_id/run_id filters selected from trusted RequestIdentity.
     reserved = {"user_id", "agent_id", "run_id", "tenant_id", "project_id", "session_id"}
     return {
         **{str(key): value for key, value in metadata.items() if str(key).lower() not in reserved},

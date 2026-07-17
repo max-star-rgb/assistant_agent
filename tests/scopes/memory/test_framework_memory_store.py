@@ -88,7 +88,7 @@ class ScriptedEngine:
         return []
 
 
-class ScopedScriptedEngine:
+class Mem0ScopedScriptedEngine:
     name = "mem0"
 
     def __init__(self) -> None:
@@ -102,13 +102,19 @@ class ScopedScriptedEngine:
         return FrameworkHealthResult(status="ok", version="2.0.11")
 
     def _key(self, request):
-        identity = request.identity
+        mem0_identity = request.identity
         scope = request.scope
         if scope == "user_profile":
-            return (identity.user_id, identity.tenant_tag, scope)
+            return (mem0_identity.user_id, mem0_identity.tenant_tag, "user_filter")
         if scope in {"project", "task", "video", "product"}:
-            return (identity.user_id, identity.agent_id, identity.tenant_tag, "project")
-        return (identity.user_id, identity.agent_id, identity.run_id, identity.tenant_tag, "session")
+            return (mem0_identity.user_id, mem0_identity.agent_id, mem0_identity.tenant_tag, "agent_filter")
+        return (
+            mem0_identity.user_id,
+            mem0_identity.agent_id,
+            mem0_identity.run_id,
+            mem0_identity.tenant_tag,
+            "run_filter",
+        )
 
     def retain(self, request):
         self.retained.append(request)
@@ -371,7 +377,7 @@ def test_recall_resolves_engine_id_back_to_project_memory_id(tmp_path) -> None:
 
 
 def test_project_memory_is_recalled_across_sessions_for_same_user_and_project(tmp_path) -> None:
-    engine = ScopedScriptedEngine()
+    engine = Mem0ScopedScriptedEngine()
     store = FrameworkMemoryStore(
         adapter=engine,
         ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
@@ -398,7 +404,7 @@ def test_project_memory_is_recalled_across_sessions_for_same_user_and_project(tm
 
 
 def test_session_memory_is_only_recalled_in_current_session(tmp_path) -> None:
-    engine = ScopedScriptedEngine()
+    engine = Mem0ScopedScriptedEngine()
     store = FrameworkMemoryStore(
         adapter=engine,
         ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
@@ -442,7 +448,7 @@ def test_session_memory_is_only_recalled_in_current_session(tmp_path) -> None:
 
 
 def test_user_profile_memory_crosses_project_and_session_but_not_user_or_tenant(tmp_path) -> None:
-    engine = ScopedScriptedEngine()
+    engine = Mem0ScopedScriptedEngine()
     store = FrameworkMemoryStore(
         adapter=engine,
         ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
@@ -499,7 +505,7 @@ def test_user_profile_memory_crosses_project_and_session_but_not_user_or_tenant(
 
 
 def test_project_memory_does_not_cross_projects_by_default(tmp_path) -> None:
-    engine = ScopedScriptedEngine()
+    engine = Mem0ScopedScriptedEngine()
     store = FrameworkMemoryStore(
         adapter=engine,
         ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
@@ -523,7 +529,7 @@ def test_project_memory_does_not_cross_projects_by_default(tmp_path) -> None:
 
 
 def test_delete_project_memory_uses_mapping_across_sessions(tmp_path) -> None:
-    engine = ScopedScriptedEngine()
+    engine = Mem0ScopedScriptedEngine()
     store = FrameworkMemoryStore(
         adapter=engine,
         ledger=FrameworkGovernanceLedger(tmp_path / "ledger.sqlite3"),
@@ -547,7 +553,7 @@ def test_delete_project_memory_uses_mapping_across_sessions(tmp_path) -> None:
 
 def test_recent_retain_fallback_is_scope_aware(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(framework_store_module, "_MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS", 0.0)
-    engine = ScopedScriptedEngine()
+    engine = Mem0ScopedScriptedEngine()
     engine.always_empty_recall = True
     store = FrameworkMemoryStore(
         adapter=engine,
