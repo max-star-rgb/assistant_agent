@@ -18,6 +18,7 @@ tests/
     providers/
     api/
   integration/    # 显式 opt-in；不属于默认 offline suite
+    tools/        # tool-level 真实 Provider smoke；普通开发阶段不运行
   evals/          # 离线 eval case 数据；不是 pytest scope
   conftest.py
   scope-map.toml
@@ -25,8 +26,9 @@ tests/
 
 critical 覆盖 Provider/offline 安全、Tool 治理、Memory read/write policy、Gateway 生命周期、
 runtime 恢复、redaction 和测试路由。普通领域行为只进入一个权威 scope。高延迟、多进程或需要
-外部环境的证据进入 integration。`tests/evals` 只保存离线 eval 数据，运行入口是 eval 脚本，
-不要作为 pytest scope 或旧式 eval 测试汇总目录使用。
+外部环境的证据进入 integration。需要真实 Provider 的工具级 smoke 放在
+`tests/integration/tools/`，仍按 integration 管理，普通开发阶段不运行。`tests/evals` 只保存离线
+eval 数据，运行入口是 eval 脚本，不要作为 pytest scope 或旧式 eval 测试汇总目录使用。
 
 ## 命令
 
