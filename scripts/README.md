@@ -18,6 +18,9 @@ Use these when validating the realtime assistant loop:
   for `basic`, `interrupt`, `hangup`, `cancel`, and `tool_interrupt` lifecycle
   scenarios.
 
+For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
+`scripts/run_server.py` under `supervisord` and restart it after crashes.
+
 ## Not primary product entries
 
 These are useful, but they are not the main product path:

@@ -38,6 +38,36 @@ Start the backend in mock/local mode:
 
 Expected operator hints should point to realtime and Gateway smoke clients.
 
+## Supervisord Process Keepalive
+
+Use `deploy/supervisord/assistant-agent.conf` when the local server should stay
+up under `supervisord`. The config runs the same launcher as the manual command,
+so `.env` loading, Gateway operational logs, runtime summary output, and
+`scripts/run_server.py` defaults stay in one place.
+
+Install or include the config according to the host's supervisor layout, then
+reload supervisor:
+
+```bash
+sudo cp deploy/supervisord/assistant-agent.conf /etc/supervisor/conf.d/assistant-agent.conf
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl status assistant-agent
+```
+
+Common operations:
+
+```bash
+sudo supervisorctl restart assistant-agent
+sudo supervisorctl tail -f assistant-agent
+sudo supervisorctl stop assistant-agent
+```
+
+This is process-level keepalive only: if the agent server exits or crashes,
+`supervisord` restarts it. It does not replace Gateway session/run cancellation,
+WebSocket disconnect handling, or an active `/health` watchdog for a process
+that is alive but stuck.
+
 ## In-Process Gate
 
 Run the complete text-only lifecycle gate without a server:

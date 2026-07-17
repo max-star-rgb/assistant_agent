@@ -14,6 +14,7 @@ from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
 SCRIPT_PATH = Path("scripts/run_server.py")
+SUPERVISOR_CONFIG_PATH = Path("deploy/supervisord/assistant-agent.conf")
 
 
 def _load_module(name: str = "run_server_test"):
@@ -30,6 +31,31 @@ def test_run_server_script_import_is_safe() -> None:
     module = _load_module()
 
     assert hasattr(module, "main")
+
+
+def test_supervisord_config_keeps_run_server_process_alive() -> None:
+    config = SUPERVISOR_CONFIG_PATH.read_text(encoding="utf-8")
+
+    assert "[program:assistant-agent]" in config
+    assert "directory=/home/lenovo1/pycharm_project/assistant_agent" in config
+    assert (
+        "command=/home/lenovo1/miniconda3/envs/hello_agent/bin/python "
+        "scripts/run_server.py --host 0.0.0.0 --port 8000"
+    ) in config
+    for expected in (
+        "autostart=true",
+        "autorestart=true",
+        "startsecs=10",
+        "startretries=3",
+        "stopsignal=TERM",
+        "stopasgroup=true",
+        "killasgroup=true",
+        "stopwaitsecs=30",
+        "redirect_stderr=true",
+        "environment=PYTHONUNBUFFERED=\"1\"",
+    ):
+        assert expected in config
+    assert ".data/logs/supervisor-assistant-agent.log" in config
 
 
 def test_run_server_parser_defaults() -> None:
