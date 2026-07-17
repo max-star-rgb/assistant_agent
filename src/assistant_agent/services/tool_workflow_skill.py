@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -16,6 +19,8 @@ from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
 from assistant_agent.tools.registry import ToolRegistry
 
+
+logger = logging.getLogger("assistant_agent.services.tool_workflow_skill")
 
 WorkflowSkillRunStatus = Literal[
     "succeeded",
@@ -227,26 +232,101 @@ class InMemoryWorkflowSkillRunStore:
     ) -> WorkflowSkillRunRecord:
         """Persist a workflow run result as a checkpointable record."""
 
-        created_at = existing.created_at if existing is not None else datetime.now(timezone.utc)
-        record = WorkflowSkillRunRecord(
-            workflow_id=result.workflow_id,
-            run_id=state.run_id,
-            status=result.status,
-            attempts=list(result.attempts),
-            step_results=dict(result.step_results),
-            issues=list(result.issues),
-            completed_step_ids=_completed_step_ids(result.attempts),
-            next_step_id=_next_step_id(result),
-            created_at=created_at,
-            updated_at=datetime.now(timezone.utc),
-        )
-        return self.save(record)
+        return self.save(_record_from_result(result, state=state, existing=existing))
+
+
+class JsonlWorkflowSkillRunStore:
+    """JSONL-backed workflow skill run store for explicit local durability."""
+
+    def __init__(self, path: Path | str = ".local/workflow_skill_runs.jsonl") -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def save(self, record: WorkflowSkillRunRecord) -> WorkflowSkillRunRecord:
+        """Append one workflow run record snapshot."""
+
+        with self.path.open("a", encoding="utf-8") as file:
+            file.write(
+                json.dumps(
+                    {
+                        "kind": "workflow_skill_run_record",
+                        "payload": record.model_dump(mode="json"),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        return record
+
+    def get(self, run_id: str) -> WorkflowSkillRunRecord | None:
+        """Return the latest workflow run record by run id."""
+
+        for record in reversed(self._read_records()):
+            if record.run_id == run_id:
+                return record
+        return None
+
+    def list_by_workflow(self, workflow_id: str) -> list[WorkflowSkillRunRecord]:
+        """Return latest records for one workflow id in insertion order."""
+
+        return [
+            record
+            for record in self._latest_records()
+            if record.workflow_id == workflow_id
+        ]
+
+    def save_result(
+        self,
+        result: WorkflowSkillRunResult,
+        *,
+        state: AgentState,
+        existing: WorkflowSkillRunRecord | None = None,
+    ) -> WorkflowSkillRunRecord:
+        """Persist a workflow run result as a checkpointable record."""
+
+        return self.save(_record_from_result(result, state=state, existing=existing))
+
+    def _latest_records(self) -> list[WorkflowSkillRunRecord]:
+        latest: dict[str, WorkflowSkillRunRecord] = {}
+        for record in self._read_records():
+            latest[record.run_id] = record
+        return list(latest.values())
+
+    def _read_records(self) -> list[WorkflowSkillRunRecord]:
+        if not self.path.exists():
+            return []
+        records: list[WorkflowSkillRunRecord] = []
+        with self.path.open("r", encoding="utf-8") as file:
+            for lineno, line in enumerate(file, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    envelope = json.loads(stripped)
+                    if not isinstance(envelope, dict):
+                        continue
+                    if envelope.get("kind") != "workflow_skill_run_record":
+                        continue
+                    payload = envelope.get("payload")
+                    if isinstance(payload, dict):
+                        records.append(WorkflowSkillRunRecord.model_validate(payload))
+                except (json.JSONDecodeError, ValidationError):
+                    logger.warning(
+                        "Skipping invalid workflow skill run record in %s at line %s",
+                        self.path,
+                        lineno,
+                    )
+        return records
 
 
 class WorkflowSkillRunQueryService:
     """Prompt-safe workflow run query service."""
 
-    def __init__(self, *, store: InMemoryWorkflowSkillRunStore) -> None:
+    def __init__(
+        self,
+        *,
+        store: InMemoryWorkflowSkillRunStore | JsonlWorkflowSkillRunStore,
+    ) -> None:
         self.store = store
 
     def get_run_summary(self, run_id: str) -> WorkflowSkillRunSummary | None:
@@ -488,7 +568,7 @@ class WorkflowSkillLauncher:
         *,
         catalog: WorkflowSkillCatalog,
         runner: WorkflowSkillRunner | None = None,
-        run_store: InMemoryWorkflowSkillRunStore | None = None,
+        run_store: InMemoryWorkflowSkillRunStore | JsonlWorkflowSkillRunStore | None = None,
     ) -> None:
         self.catalog = catalog
         self.runner = runner or WorkflowSkillRunner(registry=catalog.registry)
@@ -645,6 +725,27 @@ def _resume_can_skip_step(
     step_results: dict[str, ToolResult],
 ) -> bool:
     return step.checkpoint and step.id in completed_step_ids and step.id in step_results
+
+
+def _record_from_result(
+    result: WorkflowSkillRunResult,
+    *,
+    state: AgentState,
+    existing: WorkflowSkillRunRecord | None = None,
+) -> WorkflowSkillRunRecord:
+    created_at = existing.created_at if existing is not None else datetime.now(timezone.utc)
+    return WorkflowSkillRunRecord(
+        workflow_id=result.workflow_id,
+        run_id=state.run_id,
+        status=result.status,
+        attempts=list(result.attempts),
+        step_results=dict(result.step_results),
+        issues=list(result.issues),
+        completed_step_ids=_completed_step_ids(result.attempts),
+        next_step_id=_next_step_id(result),
+        created_at=created_at,
+        updated_at=datetime.now(timezone.utc),
+    )
 
 
 def _completed_step_ids(attempts: list[WorkflowSkillAttemptRecord]) -> list[str]:

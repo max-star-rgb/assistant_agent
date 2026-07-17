@@ -5,6 +5,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ApprovalPolicy, ExecutionPolicy, ToolPolicyMetadata, ToolResult
 from assistant_agent.services.tool_workflow_skill import (
     InMemoryWorkflowSkillRunStore,
+    JsonlWorkflowSkillRunStore,
     WorkflowSkillCatalog,
     WorkflowSkillLauncher,
     WorkflowSkillRunQueryService,
@@ -475,3 +476,61 @@ def test_workflow_skill_run_query_service_returns_prompt_safe_summary() -> None:
     payload = summary.model_dump(mode="json")
     assert "step_results" not in payload
     assert "data" not in payload
+
+
+def test_jsonl_workflow_skill_run_store_persists_records(tmp_path) -> None:
+    lookup = LookupTool()
+    recoverable = FailThenSuccessTool()
+    registry = ToolRegistry()
+    registry.register(lookup)
+    registry.register(recoverable)
+    catalog = WorkflowSkillCatalog(registry=registry)
+    catalog.register(
+        {
+            "schema_version": "workflow_skill_v1",
+            "name": "recover_flow",
+            "type": "workflow",
+            "permissions": [
+                "tool:workflow.lookup",
+                "tool:workflow.fail_then_success",
+            ],
+            "steps": [
+                {
+                    "id": "lookup",
+                    "tool": "workflow.lookup",
+                    "checkpoint": True,
+                    "input": {"query": "{{ user.request }}"},
+                },
+                {
+                    "id": "recover",
+                    "tool": "workflow.fail_then_success",
+                    "input": {"query": "{{ steps.lookup.data.summary }}"},
+                },
+            ],
+        }
+    )
+    path = tmp_path / "workflow_runs.jsonl"
+    launcher = WorkflowSkillLauncher(
+        catalog=catalog,
+        run_store=JsonlWorkflowSkillRunStore(path),
+    )
+
+    launcher.launch(
+        "recover_flow",
+        AgentState.from_request(
+            UserRequest(user_id="u1", session_id="s1", text="news"),
+            run_id="run-jsonl",
+        ),
+    )
+
+    restarted_store = JsonlWorkflowSkillRunStore(path)
+    record = restarted_store.get("run-jsonl")
+    summary = WorkflowSkillRunQueryService(store=restarted_store).get_run_summary("run-jsonl")
+
+    assert record is not None
+    assert record.status == "failed"
+    assert record.completed_step_ids == ["lookup"]
+    assert "lookup" in record.step_results
+    assert summary is not None
+    assert summary.status == "failed"
+    assert summary.next_step_id == "recover"
