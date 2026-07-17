@@ -1098,7 +1098,7 @@ def test_agent_service_main_llm_no_answer_fallback_is_success_terminal_packet(
     class FallbackFacade:
         async def run_turn(self, request):
             assert request.config["response_streaming"] is False
-            return _completed_turn("我刚才没有听清，请再说一遍。")
+            return _completed_turn("抱歉，刚才主模型没有及时响应，请再说一遍。")
 
     packets, delivery = asyncio.run(
         _run_prepared_chat_delivery(
@@ -1112,7 +1112,7 @@ def test_agent_service_main_llm_no_answer_fallback_is_success_terminal_packet(
     body = _body(packets[0])
     assert body["message"]["content"]["intentResult"] == {
         "status": "SUCCESS",
-        "description": "我刚才没有听清，请再说一遍。",
+        "description": "抱歉，刚才主模型没有及时响应，请再说一遍。",
     }
     assert body["final"] is True
     assert body["deliveryId"] == delivery.delivery_id

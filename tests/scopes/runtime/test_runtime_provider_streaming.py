@@ -428,7 +428,7 @@ def test_runtime_streaming_tool_call_runs_through_tool_chain_without_argument_de
 
 
 @pytest.mark.parametrize(
-    ("events", "expected_code"),
+    ("events", "expected_code", "expected_message"),
     [
         (
             [
@@ -444,6 +444,7 @@ def test_runtime_streaming_tool_call_runs_through_tool_chain_without_argument_de
                 )
             ],
             "provider_timeout",
+            "抱歉，刚才主模型没有及时响应，请再说一遍。",
         ),
         (
             [
@@ -455,12 +456,14 @@ def test_runtime_streaming_tool_call_runs_through_tool_chain_without_argument_de
                 )
             ],
             "provider_empty_response",
+            "抱歉，刚才主模型返回为空，请再说一遍。",
         ),
     ],
 )
 def test_runtime_streaming_recoverable_main_llm_no_answer_returns_retry_prompt(
     events: list[LLMEvent],
     expected_code: str,
+    expected_message: str,
 ) -> None:
     adapter = StreamingAndSyncChatAdapter(
         [events],
@@ -482,17 +485,17 @@ def test_runtime_streaming_recoverable_main_llm_no_answer_returns_retry_prompt(
     assert adapter.chat_calls == 0
     assert state.status == "completed"
     assert state.response is not None
-    assert state.response.message == "我刚才没有听清，请再说一遍。"
+    assert state.response.message == expected_message
     assert state.response.data["main_llm_no_answer_fallback"] is True
     assert state.response.data["errors"][0]["code"] == expected_code
     assert state.errors[-1].details["code"] == expected_code
     assert state.errors[-1].details["recoverable"] is True
     assert all(event.type != "task_failed" for event in sink.events)
     assert [event.text for event in sink.events if event.type == "response_delta"] == [
-        "我刚才没有听清，请再说一遍。"
+        expected_message
     ]
     assert [event.text for event in sink.events if event.type == "final_response"] == [
-        "我刚才没有听清，请再说一遍。"
+        expected_message
     ]
 
 
@@ -524,7 +527,7 @@ def test_runtime_sync_recoverable_main_llm_no_answer_returns_retry_prompt() -> N
     assert adapter.chat_calls == 1
     assert state.status == "completed"
     assert state.response is not None
-    assert state.response.message == "我刚才没有听清，请再说一遍。"
+    assert state.response.message == "抱歉，刚才主模型返回为空，请再说一遍。"
     assert state.response.data["fallback_reason"] == "provider_empty_response"
     assert state.response.data["errors"][0]["recoverable"] is True
     assert all(event.type != "task_failed" for event in sink.events)

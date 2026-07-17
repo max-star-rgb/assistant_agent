@@ -57,9 +57,11 @@ For the main foreground chat LLM only, `provider_timeout` and
 `provider_empty_response` with no usable text/tool/refusal are treated as a
 recoverable no-answer condition. The runtime records the structured provider
 diagnostic in state metadata, response data, and trace events, but completes the
-run with the user-visible fallback `我刚才没有听清，请再说一遍。` instead of emitting
-`task_failed`. Tool providers, vision/search providers, durable-task provider
-calls, and cancellation paths do not use this fallback.
+run with an honest user-visible retry prompt instead of emitting `task_failed`:
+`provider_timeout` reports `抱歉，刚才主模型没有及时响应，请再说一遍。`, and
+`provider_empty_response` reports `抱歉，刚才主模型返回为空，请再说一遍。`.
+Tool providers, vision/search providers, durable-task provider calls, and
+cancellation paths do not use this fallback.
 
 Native provider-stream consumption is selective and opt-in through
 `ProviderConfig.native_provider_streaming`. When enabled and the adapter exposes

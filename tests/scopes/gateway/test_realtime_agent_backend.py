@@ -1430,7 +1430,7 @@ def test_agent_graph_realtime_backend_maps_main_llm_no_answer_fallback_as_comple
         )
         state.set_response(
             AgentResponse(
-                message="我刚才没有听清，请再说一遍。",
+                message="抱歉，刚才主模型没有及时响应，请再说一遍。",
                 data={
                     "native_runtime": True,
                     "main_llm_no_answer_fallback": True,
@@ -1458,12 +1458,12 @@ def test_agent_graph_realtime_backend_maps_main_llm_no_answer_fallback_as_comple
     )
 
     assert result.status == "completed"
-    assert result.response_text == "我刚才没有听清，请再说一遍。"
+    assert result.response_text == "抱歉，刚才主模型没有及时响应，请再说一遍。"
     assert [event.text for event in events if event.type == "response.chunk"] == [
-        "我刚才没有听清，请再说一遍。"
+        "抱歉，刚才主模型没有及时响应，请再说一遍。"
     ]
     assert [event.text for event in events if event.type == "response.final"] == [
-        "我刚才没有听清，请再说一遍。"
+        "抱歉，刚才主模型没有及时响应，请再说一遍。"
     ]
     assert all(event.type != "error" for event in events)
 

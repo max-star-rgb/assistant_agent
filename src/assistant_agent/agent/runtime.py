@@ -112,8 +112,11 @@ PROGRESS_MESSAGES = {
     "image_generation": "我开始生成，可能需要一点时间。",
 }
 
-MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGE = "我刚才没有听清，请再说一遍。"
 _MAIN_LLM_NO_ANSWER_ERROR_CODES = frozenset({"provider_timeout", "provider_empty_response"})
+_MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGES = {
+    "provider_timeout": "抱歉，刚才主模型没有及时响应，请再说一遍。",
+    "provider_empty_response": "抱歉，刚才主模型返回为空，请再说一遍。",
+}
 
 
 def progress_message_for_tool(tool_name: str, *, tool_spec: ToolSpec | None = None) -> str:
@@ -1555,6 +1558,7 @@ class AgentGraphRuntime:
         error = _main_llm_no_answer_error(result)
         errors = [_chat_error_dump(item) for item in getattr(result, "errors", [])]
         code = getattr(error, "code", "provider_unknown_error")
+        fallback_message = _main_llm_no_answer_fallback_message(code)
         recoverable = True
         metadata = state.request.metadata
         metadata["native_runtime_main_llm_no_answer_fallback"] = True
@@ -1575,7 +1579,7 @@ class AgentGraphRuntime:
         )
         decision = AssistantDecision(
             type="final_answer",
-            message=MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGE,
+            message=fallback_message,
             reason="main_llm_no_answer_fallback",
             safety_notes=["main_llm_no_answer_fallback"],
         )
@@ -1603,7 +1607,7 @@ class AgentGraphRuntime:
         )
         state.set_response(
             AgentResponse(
-                message=MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGE,
+                message=fallback_message,
                 data={
                     "native_runtime": True,
                     "main_llm_no_answer_fallback": True,
@@ -1967,6 +1971,13 @@ def _main_llm_no_answer_error(result: Any) -> Any | None:
     if getattr(result, "refusal", None):
         return None
     return first
+
+
+def _main_llm_no_answer_fallback_message(code: str) -> str:
+    return _MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGES.get(
+        code,
+        "抱歉，刚才主模型没有返回可用回答，请再说一遍。",
+    )
 
 
 def _chat_error_dump(error: Any) -> dict[str, Any]:
