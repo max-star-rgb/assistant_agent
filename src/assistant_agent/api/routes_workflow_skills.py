@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from assistant_agent.api import routes_agent
+from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
+from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.services.api_identity import (
+    ApiIdentitySource,
+    AuthContext,
+    IdentityPolicyError,
+    enforce_identity_policy,
+    resolve_request_identity,
+)
 from assistant_agent.services.tool_workflow_skill import WorkflowSkillRunSummary
 from assistant_agent.services.tool_workflow_skill_runtime_app import (
     WorkflowSkillInfo,
@@ -21,8 +33,8 @@ class WorkflowSkillRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(default="", max_length=10_000)
-    user_id: str = Field(default="workflow-api", min_length=1, max_length=200)
-    session_id: str = Field(default="workflow-api", min_length=1, max_length=200)
+    user_id: str | None = Field(default=None, min_length=1, max_length=200)
+    session_id: str | None = Field(default=None, min_length=1, max_length=200)
     run_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
@@ -30,8 +42,8 @@ class WorkflowSkillResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(default="", max_length=10_000)
-    user_id: str = Field(default="workflow-api", min_length=1, max_length=200)
-    session_id: str = Field(default="workflow-api", min_length=1, max_length=200)
+    user_id: str | None = Field(default=None, min_length=1, max_length=200)
+    session_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class WorkflowSkillListResponse(BaseModel):
@@ -69,10 +81,25 @@ def require_workflow_skill_app(
     return runtime_app
 
 
+def workflow_request_identity(
+    auth_context: AuthContext = Depends(get_auth_context),
+    user_id: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    session_id: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+) -> RequestIdentity:
+    return _resolve_workflow_identity(
+        auth_context=auth_context,
+        user_id=user_id,
+        session_id=session_id,
+        source="query",
+    )
+
+
 @router.get("/workflow-skills", response_model=WorkflowSkillListResponse)
 def list_workflow_skills(
     runtime_app: WorkflowSkillRuntimeApp = Depends(require_workflow_skill_app),
+    identity: RequestIdentity = Depends(workflow_request_identity),
 ) -> WorkflowSkillListResponse:
+    _ = identity
     return WorkflowSkillListResponse(
         enabled=runtime_app.enabled,
         workflows=runtime_app.list_workflows(),
@@ -88,14 +115,23 @@ def launch_workflow_skill(
     workflow_id: str,
     body: WorkflowSkillRunRequest,
     runtime_app: WorkflowSkillRuntimeApp = Depends(require_workflow_skill_app),
+    auth_context: AuthContext = Depends(get_auth_context),
 ) -> WorkflowSkillOperationResult:
     if not runtime_app.has_workflow(workflow_id):
         raise _workflow_not_found(workflow_id)
+    if body.run_id and runtime_app.has_run(body.run_id):
+        raise _workflow_run_conflict(body.run_id)
+    identity = _resolve_workflow_identity(
+        auth_context=auth_context,
+        user_id=body.user_id,
+        session_id=body.session_id,
+        source="request_body",
+    )
     return runtime_app.launch(
         workflow_id,
         text=body.text,
-        user_id=body.user_id,
-        session_id=body.session_id,
+        user_id=identity.user_id,
+        session_id=identity.session_id or "workflow-api",
         run_id=body.run_id,
     )
 
@@ -108,14 +144,21 @@ def resume_workflow_skill_run(
     run_id: str,
     body: WorkflowSkillResumeRequest,
     runtime_app: WorkflowSkillRuntimeApp = Depends(require_workflow_skill_app),
+    auth_context: AuthContext = Depends(get_auth_context),
 ) -> WorkflowSkillOperationResult:
     if runtime_app.summary(run_id) is None:
         raise _workflow_run_not_found(run_id)
+    identity = _resolve_workflow_identity(
+        auth_context=auth_context,
+        user_id=body.user_id,
+        session_id=body.session_id,
+        source="request_body",
+    )
     return runtime_app.resume(
         run_id,
         text=body.text,
-        user_id=body.user_id,
-        session_id=body.session_id,
+        user_id=identity.user_id,
+        session_id=identity.session_id or "workflow-api",
     )
 
 
@@ -123,7 +166,9 @@ def resume_workflow_skill_run(
 def get_workflow_skill_run(
     run_id: str,
     runtime_app: WorkflowSkillRuntimeApp = Depends(require_workflow_skill_app),
+    identity: RequestIdentity = Depends(workflow_request_identity),
 ) -> WorkflowSkillSummaryResponse:
+    _ = identity
     summary = runtime_app.summary(run_id)
     if summary is None:
         raise _workflow_run_not_found(run_id)
@@ -137,7 +182,9 @@ def get_workflow_skill_run(
 def list_workflow_skill_runs(
     workflow_id: str,
     runtime_app: WorkflowSkillRuntimeApp = Depends(require_workflow_skill_app),
+    identity: RequestIdentity = Depends(workflow_request_identity),
 ) -> WorkflowSkillRunListResponse:
+    _ = identity
     if not runtime_app.has_workflow(workflow_id):
         raise _workflow_not_found(workflow_id)
     return WorkflowSkillRunListResponse(
@@ -162,6 +209,44 @@ def _workflow_run_not_found(run_id: str) -> HTTPException:
         "Workflow skill run was not found.",
         detail={"run_id": run_id},
     )
+
+
+def _workflow_run_conflict(run_id: str) -> HTTPException:
+    return _http_error(
+        409,
+        "WORKFLOW_RUN_CONFLICT",
+        "Workflow skill run id already exists.",
+        detail={"run_id": run_id},
+    )
+
+
+def _resolve_workflow_identity(
+    *,
+    auth_context: AuthContext,
+    user_id: str | None,
+    session_id: str | None,
+    source: ApiIdentitySource,
+) -> RequestIdentity:
+    requested_user_id = user_id or auth_context.user_id or "workflow-api"
+    requested_session_id = session_id or auth_context.session_id or "workflow-api"
+    try:
+        resolution = resolve_request_identity(
+            user_id=requested_user_id,
+            session_id=requested_session_id,
+            source=source,
+            auth_context=auth_context,
+        )
+        enforce_identity_policy(
+            resolution,
+            production_required=require_auth_bound_identity(),
+        )
+    except (ValueError, IdentityPolicyError) as exc:
+        detail = exc.detail() if isinstance(exc, IdentityPolicyError) else str(exc)
+        raise HTTPException(status_code=403, detail=detail) from exc
+    trial = resolution.trial_access(routes_agent.get_trial_access_gate())
+    if not trial.allowed:
+        raise _http_error(403, "TRIAL_ACCESS_DENIED", trial.reason or "Trial access denied.")
+    return resolution.identity
 
 
 def _http_error(

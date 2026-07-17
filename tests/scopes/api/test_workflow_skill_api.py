@@ -4,6 +4,13 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from assistant_agent.api.app import create_app
+from assistant_agent.api.auth import (
+    AUTH_HEADER_ENABLED_ENV,
+    AUTH_REQUIRE_BOUND_IDENTITY_ENV,
+    AUTH_SESSION_ID_HEADER,
+    AUTH_USER_ID_HEADER,
+)
+from assistant_agent.services.trial_access import TRIAL_USER_IDS_ENV
 
 
 def test_workflow_skill_api_returns_disabled_response_by_default(monkeypatch) -> None:
@@ -82,6 +89,79 @@ def test_workflow_skill_api_rejects_unknown_workflow(
     assert response.json()["detail"]["code"] == "WORKFLOW_NOT_FOUND"
 
 
+def test_workflow_skill_api_requires_auth_bound_identity_when_configured(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_workflow_api(tmp_path, monkeypatch)
+    monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "1")
+
+    response = TestClient(create_app()).get("/workflow-skills")
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "IDENTITY_NOT_AUTH_BOUND"
+
+
+def test_workflow_skill_api_enforces_trial_access(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_workflow_api(tmp_path, monkeypatch)
+    monkeypatch.setenv(TRIAL_USER_IDS_ENV, "allowed-user")
+
+    response = TestClient(create_app()).get("/workflow-skills")
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "TRIAL_ACCESS_DENIED"
+
+
+def test_workflow_skill_api_rejects_auth_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_workflow_api(tmp_path, monkeypatch)
+    monkeypatch.setenv(AUTH_HEADER_ENABLED_ENV, "1")
+    monkeypatch.setenv(AUTH_REQUIRE_BOUND_IDENTITY_ENV, "1")
+
+    response = TestClient(create_app()).post(
+        "/workflow-skills/lookup_flow/runs",
+        headers={
+            AUTH_USER_ID_HEADER: "auth-user",
+            AUTH_SESSION_ID_HEADER: "auth-session",
+        },
+        json={
+            "text": "forecast",
+            "user_id": "other-user",
+            "session_id": "other-session",
+            "run_id": "run-mismatch",
+        },
+    )
+
+    assert response.status_code == 403
+    assert "auth context" in response.json()["detail"]
+
+
+def test_workflow_skill_api_rejects_duplicate_run_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_workflow_api(tmp_path, monkeypatch)
+    client = TestClient(create_app())
+    body = {
+        "text": "forecast",
+        "user_id": "u1",
+        "session_id": "s1",
+        "run_id": "duplicate-run",
+    }
+
+    first = client.post("/workflow-skills/lookup_flow/runs", json=body)
+    duplicate = client.post("/workflow-skills/lookup_flow/runs", json=body)
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "WORKFLOW_RUN_CONFLICT"
+
+
 def _write_manifest(path: Path) -> None:
     path.write_text(
         json.dumps(
@@ -134,3 +214,15 @@ __assistant_tools__ = [lookup]
 '''.lstrip(),
         encoding="utf-8",
     )
+
+
+def _configure_workflow_api(tmp_path: Path, monkeypatch) -> None:
+    manifest_dir = tmp_path / "workflows"
+    manifest_dir.mkdir()
+    _write_manifest(manifest_dir / "lookup_flow.json")
+    _write_tool_module(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED", "1")
+    monkeypatch.setenv("MULTIMODAL_AGENT_WORKFLOW_SKILL_MANIFEST_DIR", str(manifest_dir))
+    monkeypatch.setenv("MULTIMODAL_AGENT_WORKFLOW_SKILL_TOOL_MODULES", "workflow_api_tools")
+    monkeypatch.setenv("MULTIMODAL_AGENT_WORKFLOW_SKILL_RUN_STORE", str(tmp_path / "runs.jsonl"))

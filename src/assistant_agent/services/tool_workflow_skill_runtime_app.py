@@ -189,6 +189,9 @@ class WorkflowSkillRuntimeApp:
     def has_workflow(self, workflow_id: str) -> bool:
         return self.catalog.get(workflow_id) is not None
 
+    def has_run(self, run_id: str) -> bool:
+        return self.launcher.get_run(run_id) is not None
+
     def launch(
         self,
         workflow_id: str,
