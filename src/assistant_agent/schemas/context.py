@@ -221,11 +221,14 @@ class SkillExposureReport(BaseModel):
 
     schema_version: str = "skill_report_v1"
     loaded_skill_ids: list[str] = Field(default_factory=list)
+    explicit_skill_ids: list[str] = Field(default_factory=list)
+    auto_candidate_skill_ids: list[str] = Field(default_factory=list)
     selected_skill_ids: list[str] = Field(default_factory=list)
     skipped: list[SkillExposureSkip] = Field(default_factory=list)
     builtin_fallback_skill_ids: list[str] = Field(default_factory=list)
     override_skill_ids: list[str] = Field(default_factory=list)
     governed_tool_names: list[str] = Field(default_factory=list)
+    auto_recall_reasons: dict[str, list[str]] = Field(default_factory=dict)
     permission_issue_count: int = Field(default=0, ge=0)
     unavailable_tool_count: int = Field(default=0, ge=0)
 

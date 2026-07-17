@@ -18,6 +18,7 @@ from assistant_agent.services.context.skill_loader import (
     SkillDescriptor,
     load_repo_skill_descriptors,
 )
+from assistant_agent.services.context.skill_recall import recall_skill_descriptors
 
 _TOOL_EXECUTOR_CONSTRAINT = "Selection context only; execute governed tools only through ToolExecutor."
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -58,7 +59,7 @@ def select_tool_capability_descriptors(
     repo_root: Path | None = None,
     skill_catalog: SkillCatalog | None = None,
 ) -> ToolCapabilityCatalogSelection:
-    """Expose capability descriptors only for explicitly active skills."""
+    """Expose capability descriptors for explicit and auto-recalled skills."""
 
     if not qualified_tool_specs:
         return ToolCapabilityCatalogSelection(
@@ -72,7 +73,7 @@ def select_tool_capability_descriptors(
             skill_report=SkillExposureReport(),
         )
 
-    active_ids = (
+    explicit_ids = (
         _explicit_skill_ids(request)
         if active_skill_ids is None
         else active_skill_ids
@@ -84,8 +85,16 @@ def select_tool_capability_descriptors(
         repo_root=repo_root,
         skill_catalog=skill_catalog,
     )
+    recall = recall_skill_descriptors(request, catalog_descriptors)
+    auto_ids = set(recall.candidate_skill_ids)
+    active_ids = set(explicit_ids) | auto_ids
+    report.explicit_skill_ids = _unique(sorted(explicit_ids))
+    report.auto_candidate_skill_ids = list(recall.candidate_skill_ids)
+    report.auto_recall_reasons = dict(recall.reasons_by_skill)
 
     for descriptor in catalog_descriptors:
+        if descriptor.name in auto_ids:
+            reasons.append(f"capability_catalog_auto_recalled:{descriptor.name}")
         if descriptor.name not in active_ids:
             report.skipped.append(
                 SkillExposureSkip(
@@ -132,7 +141,12 @@ def select_tool_capability_descriptors(
         reasons.append(f"capability_catalog_selected:{descriptor.name}")
 
     if not capabilities:
-        reasons.append("capability_catalog_skipped: no_explicitly_active_qualified_skills")
+        if active_ids:
+            reasons.append("capability_catalog_skipped: no_selected_qualified_skills")
+        else:
+            reasons.append(
+                "capability_catalog_skipped: no_explicitly_active_qualified_skills"
+            )
 
     return ToolCapabilityCatalogSelection(
         capabilities=capabilities,

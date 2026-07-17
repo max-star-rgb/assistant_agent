@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -29,7 +29,7 @@ Last updated: 2026-07-16
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、realtime video、plan state、tool observations、tool specs、source counts 和 budget。
 - `AgentGraphRuntime` 可在 run 入口通过 `ContextSourceCoordinator` 加载一次显式 owner-bound 的 `SOUL.md`，把验证后的 `ContextSourceResult` 冻结到 `AgentState`；同一 run 的多次 assistant iteration 不重复读文件，下一 run 才观察合法更新。
 - 生产 provider-native `ChatRequest` 现在统一通过无副作用 `PromptCompiler` 编译；native tool、native-context final-only 和 summary final-only 使用显式 mode，保留各自既有 renderer、tool choice、tool-call evidence 和生成参数。legacy prompt-json renderer 仍只用于离线兼容与测试。
-- `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
+- `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，并可基于当前请求文本做确定性 descriptor 召回，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
 - Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，并以非累加的 `context_source_report_v1` 报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数；不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。
 
 ### Durable Task Context
@@ -126,7 +126,7 @@ Last updated: 2026-07-16
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
 - native/legacy context 可渲染 prompt-safe capability catalog；实际执行契约仍是 `ToolSpec`，工具调用仍必须通过 `ToolExecutor`。
 - Provider-native `ChatRequest.tools` 使用 `AssistantContextPack.prompt_tool_specs` 中已治理的 schema。context builder 同时生成 prompt-safe `RunToolSet`，记录 registered、qualified、exposed、executable 工具及排除原因，并写入 `AgentState` 供后续 `ActionValidator` 执行 allowlist。qualification 只消费环境依赖、默认启用、显式 tool/toolset/skill 等结构化事实，不读取 `request.text` 做意图路由；当前 recall 为 identity，按原顺序暴露全部 qualified ToolSpec，并记录 `recall_identity`。治理后明确为空的集合不会回退完整 registry；未来语义召回必须另行设计高召回率与漏召回恢复机制。
-- Skill capability descriptor 只为 `tool_visibility.enabled_skills` 中显式启用、manifest/permission 有效且 governed tools 已 qualified/exposed 的 skill 渲染；skill tag、`when_to_use` 和请求文本不自动激活 skill。
+- Skill capability descriptor 会为 `tool_visibility.enabled_skills` 中显式启用的 skill，以及由 `skill_recall` 根据 prompt-safe `name`/`description`/`when_to_use`/`safe_examples` 自动召回的 skill 渲染；前提仍是 manifest/permission 有效且 governed tools 已 qualified/exposed。自动召回只影响 descriptor 是否进入上下文，不会激活 `skill_only` 工具或扩大 `RunToolSet.executable_tool_names`。
 - Repo-local business skills follow `skills/<skill_id>/SKILL.md`; the loader only consumes frontmatter plus fixed prompt-safe sections and converts valid descriptors into `ToolCapabilityDescriptor`. Skill System v1 requires each governed tool to have a matching `tool:<name>` permission in the `## Permissions` section, rejects unknown permission vocabulary such as `shell:*`, and suppresses same-name built-in fallback when a repo-local skill is disabled, manual-only, invalid, or under-permissioned. It ignores `.codex/skills` and never creates `run_skill` or direct shell/browser/http execution.
 - `render_final_only_prompt` 用于工具调用上限附近，禁止继续工具调用并要求最终回答。
 - session summary renderer 会把 `handoff_v2` 标注为当前会话上下文数据，不作为长期记忆或系统指令。
@@ -172,7 +172,7 @@ Last updated: 2026-07-16
 ### Context Budget And Observability
 
 - `ContextBudgetReport` 统计 request、conversation、memory、realtime video、plan、observations、tool specs、`owner_persona_chars` 和 total chars，并报告 `context_usage_ratio`、`compaction_triggered`；启用本地 token 估算时，最终实际注入的 persona 同时计入 `owner_persona_tokens` 和 `total_tokens`。
-- `ContextBudgetReport` also tracks `tool_capability_chars` so the skill-style capability catalog is visible in budget/debug output. `AssistantContextPack` and `ContextReport` carry prompt-safe `skill_report_v1` fields for loaded, selected, skipped, fallback, override, governed-tool, and permission issue visibility.
+- `ContextBudgetReport` also tracks `tool_capability_chars` so the skill-style capability catalog is visible in budget/debug output. `AssistantContextPack` and `ContextReport` carry prompt-safe `skill_report_v1` fields for loaded, explicit, auto-candidate, selected, skipped, fallback, override, governed-tool, auto-recall reason, and permission issue visibility.
 - 默认动态 context 字符预算是 12000 chars；identity recall 的固定 qualified tool/capability schema 在未显式配置硬预算时使用独立 headroom，不挤占 conversation/memory/observation 的默认预算。测试或特定调用通过 request metadata `context_budget_max_chars` 设置的值仍是包含工具 schema 在内的硬上限。
 - 可选 token budget 字段包括 section token estimates、`total_tokens`、`max_tokens`、`token_usage_ratio`、`token_budget_source` 和 provider usage counters；它们只用于报告，不替代 char budget control path。
 - 本地 token 估算通过 `context_budget_estimate_tokens=True` 或 `context_budget_max_tokens` 启用；provider usage metadata 如 `context_token_usage` / `provider_token_usage` / `last_chat_usage` 优先于估算。

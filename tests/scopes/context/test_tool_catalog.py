@@ -542,6 +542,32 @@ def test_capability_catalog_selects_realtime_web_search_descriptor() -> None:
     assert any("ToolExecutor" in item for item in descriptor.runtime_constraints)
 
 
+def test_capability_catalog_auto_recalls_realtime_web_search_descriptor() -> None:
+    specs = create_default_registry().list_specs()
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+    )
+    tool_selection = select_prompt_tool_specs(request, specs)
+
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        qualified_tool_specs=tool_selection.qualified_tool_specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+    )
+
+    assert [item.name for item in capability_selection.capabilities] == ["realtime_web_search"]
+    assert capability_selection.skill_report.explicit_skill_ids == []
+    assert capability_selection.skill_report.auto_candidate_skill_ids == ["realtime_web_search"]
+    assert "realtime_web_search" in capability_selection.skill_report.auto_recall_reasons
+    assert any(
+        reason == "capability_catalog_auto_recalled:realtime_web_search"
+        for reason in capability_selection.selection_reasons
+    )
+
+
 def test_capability_catalog_omits_descriptor_when_governed_tool_missing() -> None:
     specs = [spec for spec in create_default_registry().list_specs() if spec.name != "web_search"]
     request = UserRequest(
@@ -562,6 +588,32 @@ def test_capability_catalog_omits_descriptor_when_governed_tool_missing() -> Non
     )
 
     assert capability_selection.capabilities == []
+
+
+def test_capability_catalog_auto_recall_does_not_expose_missing_governed_tool() -> None:
+    specs = [spec for spec in create_default_registry().list_specs() if spec.name != "web_search"]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+    )
+    tool_selection = select_prompt_tool_specs(request, specs)
+
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        qualified_tool_specs=tool_selection.qualified_tool_specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+    )
+
+    assert capability_selection.capabilities == []
+    assert capability_selection.skill_report.auto_candidate_skill_ids == ["realtime_web_search"]
+    assert any(
+        item.skill_id == "realtime_web_search"
+        and item.reason == "governed_tool_unqualified"
+        and item.tool_name == "web_search"
+        for item in capability_selection.skill_report.skipped
+    )
 
 
 def test_capability_catalog_prefers_repo_skill_over_builtin(tmp_path: Path) -> None:
@@ -615,6 +667,71 @@ description: Repo-local search guidance.
     assert capability_selection.skill_report.override_skill_ids == ["realtime_web_search"]
     assert capability_selection.skill_report.builtin_fallback_skill_ids == []
     assert capability_selection.skill_report.governed_tool_names == ["web_search"]
+
+
+def test_auto_recalled_skill_does_not_qualify_skill_only_tool(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        "private_search",
+        """
+---
+name: private_search
+description: Private lookup guidance.
+---
+## Governed Tools
+- private.lookup
+
+## Permissions
+- tool:private.lookup
+
+## When To Use
+- User asks for private lookup.
+""",
+    )
+    catalog = load_repo_skill_descriptors(tmp_path)
+    private_spec = ToolSpec(
+        name="private.lookup",
+        policy=ToolPolicyMetadata(
+            visibility=VisibilityPolicy(
+                enabled_by_default=False,
+                skill_only=True,
+            )
+        ),
+    )
+    public_spec = ToolSpec(name="web_search", required_inputs=["query"])
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="please do a private lookup",
+    )
+
+    tool_selection = select_prompt_tool_specs(
+        request,
+        [private_spec, public_spec],
+        skill_catalog=catalog,
+    )
+    capability_selection = select_tool_capability_descriptors(
+        request=request,
+        qualified_tool_specs=tool_selection.qualified_tool_specs,
+        prompt_tool_specs=tool_selection.prompt_tool_specs,
+        tool_catalog_summary=tool_selection.summary,
+        repo_root=tmp_path,
+        skill_catalog=catalog,
+    )
+
+    assert tool_selection.run_tool_set.qualified_tool_names == ["web_search"]
+    assert tool_selection.run_tool_set.executable_tool_names == ["web_search"]
+    assert tool_selection.run_tool_set.excluded_reasons == {
+        "private.lookup": ["skill_activation_required"]
+    }
+    assert capability_selection.capabilities == []
+    assert capability_selection.skill_report.auto_candidate_skill_ids == ["private_search"]
+    assert any(
+        item.skill_id == "private_search"
+        and item.reason == "governed_tool_unqualified"
+        and item.tool_name == "private.lookup"
+        for item in capability_selection.skill_report.skipped
+    )
 
 
 def test_capability_catalog_disabled_repo_skill_suppresses_builtin_fallback(

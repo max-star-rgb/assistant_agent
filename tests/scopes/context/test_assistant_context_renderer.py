@@ -1415,6 +1415,31 @@ def test_context_pack_and_report_include_skill_exposure_report() -> None:
     assert report.skill_report.governed_tool_names == ["web_search"]
 
 
+def test_context_pack_and_report_include_auto_recalled_skill() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="查一下今天 AI 行业最新消息",
+    )
+    state = AgentState.from_request(request)
+    pack = build_assistant_context_pack(
+        state=state,
+        observations=[],
+        tool_specs=create_default_registry().list_specs(),
+        iteration=0,
+        max_iterations=5,
+    )
+
+    message = render_native_tool_context(pack).native_user_message or ""
+    report = build_context_report(pack)
+
+    assert [item.name for item in pack.tool_capabilities] == ["realtime_web_search"]
+    assert '"name": "realtime_web_search"' in message
+    assert pack.skill_report.auto_candidate_skill_ids == ["realtime_web_search"]
+    assert report.skill_report.auto_candidate_skill_ids == ["realtime_web_search"]
+    assert report.skill_report.explicit_skill_ids == []
+
+
 def test_native_context_does_not_render_unallowed_raw_skill_body(tmp_path: Path) -> None:
     _write_skill(
         tmp_path,
