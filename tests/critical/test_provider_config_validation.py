@@ -132,6 +132,23 @@ def test_chat_validation_uses_provider_spec_defaults_for_deepseek() -> None:
     assert config.chat_model == "deepseek-chat"
 
 
+def test_chat_validation_requires_explicit_ark_model() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
+            "ARK_CHAT_API_KEY": "test-ark-key",
+        }
+    )
+
+    result = validate_provider_config(config)
+
+    assert result.valid is False
+    assert result.issues[0].capability == "direct_chat"
+    assert result.issues[0].provider == "ark"
+    assert result.issues[0].missing == ["ARK_CHAT_MODEL"]
+
+
 def test_seed_validation_requires_explicit_base_url_not_placeholder() -> None:
     config = ProviderConfig.from_env(
         {

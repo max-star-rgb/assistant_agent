@@ -56,7 +56,14 @@ export MULTIMODAL_AGENT_AUTH_MODE=header_pilot
 export MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY=true
 export MULTIMODAL_AGENT_CHAT_PROVIDER=qwen
 export QWEN_API_KEY="<set-in-local-shell>"
+# Optional for Alibaba Cloud Model Studio workspace endpoints:
+export QWEN_CHAT_WORKSPACE_ID="<bailian-workspace-id>"
 ```
+
+`DASHSCOPE_API_KEY` can be used instead of `QWEN_API_KEY` for Qwen chat. For
+Ark chat, use `MULTIMODAL_AGENT_CHAT_PROVIDER=ark`,
+`ARK_CHAT_API_KEY` (or `ARK_API_KEY`), and explicit `ARK_CHAT_MODEL`; the
+default Ark base URL is `https://ark.cn-beijing.volces.com/api/v3`.
 
 Then run readiness with explicit identity and budget gates:
 

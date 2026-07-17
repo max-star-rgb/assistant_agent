@@ -146,6 +146,7 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.qwen_vision_api_key == "test-qwen-vision-key"
     assert config.qwen_image_api_key == "test-qwen-image-key"
     assert config.dashscope_api_key is None
+    assert config.ark_chat_api_key is None
     assert config.seed_api_key == "test-seed-key"
     assert config.seed_vision_base_url == "https://seed.local/vision"
     assert config.seed_vision_model == "seed-test-model"
@@ -157,6 +158,7 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.chat_base_url == "https://qwen.local/v1"
     assert config.chat_model == "qwen-test-chat"
     assert config.chat_adapter_kind == "openai_compatible"
+    assert config.qwen_chat_workspace_id is None
     assert config.qwen_chat_base_url == "https://qwen.local/v1"
     assert config.qwen_chat_model == "qwen-test-chat"
     assert config.deepseek_api_key == "test-deepseek-key"
@@ -345,6 +347,83 @@ def test_provider_config_reads_deepseek_chat_provider() -> None:
     assert config.deepseek_chat_base_url == "https://api.deepseek.com/v1"
     assert config.deepseek_chat_model == "deepseek-chat"
     assert config.chat_stream is True
+
+
+def test_provider_config_builds_qwen_chat_workspace_endpoint() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "DASHSCOPE_API_KEY": "dashscope-chat-key",
+            "QWEN_CHAT_WORKSPACE_ID": "ws-chat",
+        }
+    )
+
+    assert config.chat_provider == "qwen"
+    assert config.qwen_api_key == "dashscope-chat-key"
+    assert config.dashscope_api_key == "dashscope-chat-key"
+    assert config.chat_api_key == "dashscope-chat-key"
+    assert config.qwen_chat_workspace_id == "ws-chat"
+    assert config.qwen_chat_base_url == (
+        "https://ws-chat.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    )
+    assert config.chat_base_url == "https://ws-chat.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    assert config.chat_model == "qwen-plus"
+    assert config.resolved_chat_provider().missing_required_env() == []
+
+
+def test_provider_config_explicit_qwen_chat_base_url_overrides_workspace_endpoint() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "QWEN_API_KEY": "test-qwen-key",
+            "QWEN_CHAT_WORKSPACE_ID": "ws-chat",
+            "QWEN_CHAT_BASE_URL": "https://qwen.local/compatible-mode/v1",
+        }
+    )
+
+    assert config.qwen_chat_workspace_id == "ws-chat"
+    assert config.qwen_chat_base_url == "https://qwen.local/compatible-mode/v1"
+    assert config.chat_base_url == "https://qwen.local/compatible-mode/v1"
+
+
+def test_provider_config_reads_ark_chat_provider() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
+            "ARK_CHAT_API_KEY": "test-ark-chat-key",
+            "ARK_CHAT_BASE_URL": "https://ark.local/api/v3",
+            "ARK_CHAT_MODEL": "ark-chat-test",
+        }
+    )
+
+    assert config.chat_provider == "ark"
+    assert config.ark_chat_api_key == "test-ark-chat-key"
+    assert config.chat_api_key == "test-ark-chat-key"
+    assert config.chat_base_url == "https://ark.local/api/v3"
+    assert config.chat_model == "ark-chat-test"
+    assert config.chat_adapter_kind == "openai_compatible"
+    assert config.ark_chat_base_url == "https://ark.local/api/v3"
+    assert config.ark_chat_model == "ark-chat-test"
+    assert config.resolved_chat_provider().missing_required_env() == []
+
+
+def test_provider_config_accepts_legacy_ark_api_key_for_chat() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
+            "ARK_API_KEY": "legacy-ark-key",
+            "ARK_CHAT_MODEL": "ark-chat-test",
+        }
+    )
+
+    assert config.ark_chat_api_key == "legacy-ark-key"
+    assert config.chat_api_key == "legacy-ark-key"
+    assert config.chat_base_url == "https://ark.cn-beijing.volces.com/api/v3"
+    assert config.resolved_chat_provider().missing_required_env() == []
 
 
 def test_provider_config_reads_common_chat_stream_switch() -> None:

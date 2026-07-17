@@ -18,6 +18,8 @@ def test_offline_eval_blocks_real_provider_selectors_from_environment() -> None:
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "offline_eval",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "openai",
+            "ARK_CHAT_API_KEY": "sk-runtime-profile-test",
+            "ARK_CHAT_MODEL": "ark-chat-test",
             "MULTIMODAL_AGENT_IMAGE_PROVIDER": "comfyui",
             "MULTIMODAL_AGENT_SEARCH_PROVIDER": "http",
             "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http",
@@ -74,7 +76,13 @@ def test_provider_smoke_missing_real_provider_config_does_not_fallback_to_mock()
 
 
 def test_default_runtime_entry_remains_offline_even_with_provider_keys() -> None:
-    config = ProviderConfig.from_env({"OPENAI_API_KEY": "sk-runtime-profile-test"})
+    config = ProviderConfig.from_env(
+        {
+            "OPENAI_API_KEY": "sk-runtime-profile-test",
+            "ARK_CHAT_API_KEY": "sk-runtime-profile-test",
+            "ARK_CHAT_MODEL": "ark-chat-test",
+        }
+    )
     runtime = AgentGraphRuntime(config=config)
 
     state = runtime.run_state(

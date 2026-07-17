@@ -121,3 +121,21 @@ def test_smoke_contract_failed_shape_is_stable_and_structured() -> None:
     assert payload["runtime_profile"] == "provider_smoke"
     assert payload["readiness"] == "not_ready"
     assert payload["errors"][0]["code"] == "provider_unconfigured"
+
+
+def test_provider_smoke_missing_ark_chat_model_is_not_ready() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
+            "ARK_CHAT_API_KEY": "test-ark-key",
+        }
+    )
+
+    report = build_provider_readiness_report(config)
+    chat = next(check for check in report.checks if check.capability == "direct_chat")
+
+    assert report.ready is False
+    assert chat.provider == "ark"
+    assert chat.status == "not_ready"
+    assert chat.issues[0].missing == ["ARK_CHAT_MODEL"]

@@ -39,10 +39,12 @@ def test_vision_tool_calls_adapter_and_returns_tool_result() -> None:
 
     assert result.success is True
     assert result.data is not None
-    assert result.data["objects"] == ["白色低帮运动鞋"]
+    assert result.data["objects"] == ["白色低帮运动鞋", "桌面"]
     assert result.data["style_tags"] == ["简约", "日系"]
-    assert result.data["scene"] == "室内展示场景"
-    assert result.output_ref == "mock://vision/white-low-top-sneaker"
+    assert result.data["scene"] == "室内商品展示场景"
+    assert result.output_ref == "mock://video/understanding/video1"
+    assert result.contract is not None
+    assert result.contract.capability == "video_understanding"
 
 
 def test_vision_tool_uses_provider_output_ref_for_real_adapter() -> None:

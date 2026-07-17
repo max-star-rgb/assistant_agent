@@ -249,7 +249,7 @@ The workflow skill CLI helper is an explicit operator entrypoint for local valid
 
 Repo/user-local Python tools use the explicit `@tool` decorator plus `load_local_tools()` / `register_local_tools()`. They are not import-time global registrations. A local tool may declare `ToolPolicyMetadata` and `ToolExecutionPolicy`; when present, runtime risk gate, boundary summaries, scheduler metadata, trace/history summaries, and `tools simulate` consume that declaration through the same `ToolSpec -> ToolPolicyView -> ActionValidator -> ToolExecutor` path. `assistant_agent.tools.cli validate` checks declaration shape and policy requirements; `simulate` executes one explicitly loaded tool through validator/executor for local verification.
 
-Agent-Service realtime video 使用一个受治理的 observation registry 预热 rolling 语义，但不会缩短治理链：入口只负责 H.264 校验、解码与本地选帧，选中的当前单帧被包装为 `AssistantDecision`，依次经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding -> QwenRealtimeVisionAdapter`。VLM 使用独立视觉角色模板，只负责观察当前帧/关键帧并输出结构化 json；该 prompt 不复用主 LLM 系统提示，也不会进入 DeepSeek 上下文。AgentRuntime 主 LLM 只知道本轮动态工具 schema 中是否提供 `video_understanding`，不包含 VLM 的观察流程、品牌/OCR/图像序列等视觉分析提示词；它也看不到视频帧、JPEG 路径、base64 或 provider raw response。`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 是实时视频和视频工具的唯一 Provider 选择入口；不再保留独立 `video_provider`，也不再映射到旧 Qwen-VL/Ark 视频 adapter。
+Agent-Service realtime video 使用一个受治理的 observation registry 预热 rolling 语义，但不会缩短治理链：入口只负责 H.264 校验、解码与本地选帧，选中的当前单帧被包装为 `AssistantDecision`，依次经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding -> unified vision client -> provider adapter`。`vision_understanding` 是图片和显式视频理解的主工具名；`video_understanding` 保留为 Agent-Service/realtime 可见性受控的兼容别名，并共享同一个 unified vision client。VLM 使用独立视觉角色模板，只负责观察当前帧/关键帧并输出结构化 json；该 prompt 不复用主 LLM 系统提示，也不会进入 DeepSeek 上下文。AgentRuntime 主 LLM 只知道本轮动态工具 schema 中是否提供 `video_understanding`，不包含 VLM 的观察流程、品牌/OCR/图像序列等视觉分析提示词；它也看不到视频帧、JPEG 路径、base64 或 provider raw response。`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 继续选择 Qwen realtime adapter；`fake_realtime` 是离线可替换 wiring provider，不调用真实网络；不再保留独立 `video_provider`，也不再映射到旧 Qwen-VL/Ark 视频 adapter。
 
 默认副作用分类：
 
@@ -306,7 +306,7 @@ Provider 边界：
 - 必须有 `tool_name`，`tool_input` 必须是 JSON object。
 - `tool_name` 必须存在于当前 registry。
 - 当 `AgentState.run_tool_set` 存在时，`tool_name` 还必须属于本轮 `executable_tool_names`；未 qualified、未获本轮执行资格、依赖缺失、默认禁用或缺少显式 skill 激活的工具返回 `tool_not_allowed_for_run`，不会进入 executor。
-- `vision_understanding` 必须有 `image_ids`，`video_understanding` 必须有 `video_ref` 或 `video_ids`。
+- `vision_understanding` 必须有 `image_ids`、`video_ref`、`video_ids` 或可信 active video 引用；`video_understanding` 作为兼容别名必须有 `video_ref`、`video_ids` 或由运行时绑定可信 active video。
 - `image_generation` 必须有 prompt 或 product information。
 - `web_search` 必须有非空 query；`limit` 等范围由工具 Pydantic schema 校验。
 - `shopping_search` 必须有 query、visual summary、video summary 或商品描述字段；该工具一次执行商品搜索和比价，不下单、不付款。

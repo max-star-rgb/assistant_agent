@@ -17,6 +17,12 @@ from assistant_agent.services.video_adapter import (
     VideoUnderstandingAdapter,
     create_video_understanding_adapter,
 )
+from assistant_agent.services.vision_client import (
+    AdapterVisionUnderstandingClient,
+    VisionUnderstandingClient,
+    video_result_from_vision_result,
+    vision_request_from_video_request,
+)
 from assistant_agent.services.video_context import (
     DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
     VideoContextStore,
@@ -44,12 +50,18 @@ class VideoUnderstandingTool(MockTool):
         self,
         adapter: VideoUnderstandingAdapter | None = None,
         *,
+        client: VisionUnderstandingClient | None = None,
         context_store: VideoContextStore | None = None,
         memory_store: RealtimeVideoMemoryStore | None = None,
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
         wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
-        self.adapter = adapter or create_video_understanding_adapter()
+        self.adapter = (
+            adapter
+            or getattr(client, "video_adapter", None)
+            or create_video_understanding_adapter()
+        )
+        self.client = client or AdapterVisionUnderstandingClient(video_adapter=self.adapter)
         self.context_store = context_store
         self.memory_store = memory_store
         self.context_window_size = context_window_size
@@ -80,8 +92,11 @@ class VideoUnderstandingTool(MockTool):
             )
 
         input = self._with_context_frames(input)
+        self._sync_client_video_adapter()
         try:
-            result = self.adapter.understand_video(input)
+            result = video_result_from_vision_result(
+                self.client.understand(vision_request_from_video_request(input))
+            )
         except ValueError as exc:
             contract = build_capability_output_contract(
                 capability="video_understanding",
@@ -135,6 +150,13 @@ class VideoUnderstandingTool(MockTool):
                 model=result.model,
             ),
         )
+
+    def _sync_client_video_adapter(self) -> None:
+        if (
+            isinstance(self.client, AdapterVisionUnderstandingClient)
+            and self.client.video_adapter is not self.adapter
+        ):
+            self.client.video_adapter = self.adapter
 
     def _memory_result(self, snapshot: RealtimeVideoSnapshot) -> ToolResult:
         output_ref = f"memory://realtime-video/{_safe_ref(snapshot.video_id)}"
@@ -484,6 +506,21 @@ def _video_model_observation(payload: dict[str, Any]) -> dict[str, Any]:
         "usable_visual_text",
         "errors",
     )
-    return {
+    observation = {
         key: payload[key] for key in keys if payload.get(key) not in (None, "", [], {})
+    }
+    if "timestamps" in observation:
+        observation["timestamps"] = [
+            _timestamp_model_observation(item)
+            for item in observation["timestamps"]
+            if isinstance(item, dict)
+        ]
+    return observation
+
+
+def _timestamp_model_observation(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item[key]
+        for key in ("start_ms", "end_ms", "description")
+        if item.get(key) not in (None, "", [], {})
     }

@@ -3,7 +3,9 @@ import tomllib
 from pathlib import Path
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.perception import VideoUnderstandingRequest
 from assistant_agent.services.video_adapter import (
+    FakeRealtimeVisionAdapter,
     MockVideoUnderstandingAdapter,
     create_realtime_video_understanding_adapter,
     create_video_understanding_adapter,
@@ -65,6 +67,33 @@ def test_qwen_video_adapter_selection_uses_vision_provider() -> None:
     assert realtime.config.api_key == "realtime-key"
     assert isinstance(default, QwenRealtimeVisionAdapter)
     assert default.config.api_key == "realtime-key"
+
+
+def test_fake_realtime_vision_provider_can_replace_qwen_without_network() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "fake_realtime",
+            "FAKE_REALTIME_VISION_MODEL": "fake-vision-v2",
+        }
+    )
+
+    adapter = create_realtime_video_understanding_adapter(config)
+    result = adapter.understand_video(
+        VideoUnderstandingRequest(
+            video_ref="agent-service-video-1",
+            frame_refs=["/tmp/frame-000001.jpg"],
+            user_query="描述当前画面",
+            metadata={"frame_sequence": 1},
+        )
+    )
+
+    assert config.vision_provider == "fake_realtime"
+    assert isinstance(adapter, FakeRealtimeVisionAdapter)
+    assert result.provider == "fake_realtime"
+    assert result.model == "fake-vision-v2"
+    assert result.output_ref == "fake://realtime-video/agent-service-video-1/1"
+    assert result.errors == []
 
 
 def test_provider_config_qwen_vision_selects_only_realtime_video_not_upload_vlm() -> None:

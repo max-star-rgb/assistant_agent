@@ -1,6 +1,13 @@
 import json
 
 from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
+from assistant_agent.schemas.tool_observation import observation_from_tool_result
+from assistant_agent.services.vision_client import (
+    MockVisionUnderstandingClient,
+    VisionUnderstandingClient,
+    VisionUnderstandingRequest,
+    VisionUnderstandingResult,
+)
 from assistant_agent.services.video_adapter import MockVideoUnderstandingAdapter
 from assistant_agent.services.realtime_video_memory import (
     RealtimeVideoMemoryStore,
@@ -9,6 +16,7 @@ from assistant_agent.services.realtime_video_memory import (
 )
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoFrame
 from assistant_agent.tools.registry import create_default_registry
+from assistant_agent.tools.vision_tool import VisionUnderstandingTool
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
@@ -23,6 +31,69 @@ def test_video_understanding_tool_returns_structured_result() -> None:
     assert result.data is not None
     assert result.data["provider"] == "mock"
     assert result.data["summary"]
+
+
+def test_vision_understanding_main_tool_handles_explicit_video_inputs() -> None:
+    result = VisionUnderstandingTool(client=MockVisionUnderstandingClient()).run(
+        {
+            "video_ref": "mock://video/demo",
+            "frame_refs": ["/tmp/private-frame.jpg"],
+            "user_query": "视频里有什么",
+            "memory_context": "上一帧看到一只杯子",
+        }
+    )
+
+    observation = observation_from_tool_result(result)
+
+    assert result.success is True
+    assert result.tool_name == "vision_understanding"
+    assert result.data is not None
+    assert result.data["provider"] == "mock"
+    assert result.data["source"] == "recent_frame_fallback"
+    assert result.contract is not None
+    assert result.contract.capability == "video_understanding"
+    assert observation.structured_output is not None
+    assert observation.structured_output["summary"]
+    assert "provider" not in observation.structured_output
+    assert "model" not in observation.structured_output
+    assert "latency_ms" not in observation.structured_output
+    assert "private-frame" not in json.dumps(observation.structured_output, ensure_ascii=False)
+
+
+def test_video_understanding_alias_and_main_tool_share_unified_client() -> None:
+    class RecordingVisionClient:
+        def __init__(self) -> None:
+            self.requests: list[VisionUnderstandingRequest] = []
+
+        def understand(self, request: VisionUnderstandingRequest) -> VisionUnderstandingResult:
+            self.requests.append(request)
+            return VisionUnderstandingResult(
+                summary=f"统一视觉结果：{request.video_ref}",
+                objects=["杯子"],
+                provider="fake_realtime",
+                model="fake-realtime-vision",
+                output_ref=f"fake://vision/{len(self.requests)}",
+                latency_ms=2,
+            )
+
+    client: VisionUnderstandingClient = RecordingVisionClient()
+
+    main = VisionUnderstandingTool(client=client)
+    alias = VideoUnderstandingTool(client=client)
+
+    main_result = main.run({"video_ref": "mock://video/main", "user_query": "看一下"})
+    alias_result = alias.run({"video_ref": "mock://video/alias", "user_query": "看一下"})
+
+    assert [request.video_ref for request in client.requests] == [
+        "mock://video/main",
+        "mock://video/alias",
+    ]
+    assert main_result.tool_name == "vision_understanding"
+    assert alias_result.tool_name == "video_understanding"
+    assert main_result.data is not None
+    assert alias_result.data is not None
+    assert main_result.data["provider"] == "fake_realtime"
+    assert alias_result.data["provider"] == "fake_realtime"
 
 
 def test_video_understanding_tool_accepts_request_model() -> None:

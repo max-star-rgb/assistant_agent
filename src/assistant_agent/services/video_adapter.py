@@ -52,10 +52,51 @@ class MockVideoUnderstandingAdapter:
         )
 
 
+class FakeRealtimeVisionAdapter:
+    """Deterministic fake realtime provider used to verify provider replaceability."""
+
+    provider = "fake_realtime"
+
+    def __init__(self, *, model: str = "fake-realtime-vision") -> None:
+        self.model = model
+        self.last_observation_diagnostics: dict[str, object] = {}
+
+    def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
+        video_ref = request.video_ref or (request.video_ids[0] if request.video_ids else None)
+        if not video_ref:
+            raise ValueError("video_missing_input: VideoUnderstandingRequest requires video_ref.")
+        sequence = _request_sequence(request)
+        self.last_observation_diagnostics = {
+            "transport": "fake_realtime",
+            "session_generation": 1,
+            "connection_reused": True,
+            "reconnect_count": 0,
+            "target_sequence": sequence,
+            "completed_sequence": sequence,
+            "first_delta_latency_ms": 0,
+            "total_observation_latency_ms": 1,
+        }
+        return VideoUnderstandingResult(
+            summary=f"fake realtime provider observed {video_ref} at keyframe {sequence}.",
+            objects=["fake realtime object"],
+            actions=["keyframe observation"],
+            events=["realtime keyframe processed"],
+            scene="fake realtime scene",
+            provider=self.provider,
+            model=self.model,
+            output_ref=f"fake://realtime-video/{_safe_ref_suffix(video_ref)}/{sequence}",
+            errors=[],
+            latency_ms=1,
+        )
+
+
 def create_video_understanding_adapter(config: ProviderConfig | None = None) -> VideoUnderstandingAdapter:
     """Create a video understanding adapter from the selected vision provider."""
 
     resolved = config or ProviderConfig.from_env()
+    provider = resolved.resolved_vision_provider()
+    if provider.adapter_kind == "fake_realtime_vision":
+        return FakeRealtimeVisionAdapter(model=provider.model or "fake-realtime-vision")
     if resolved.vision_provider == "qwen":
         return _create_qwen_realtime_adapter(resolved)
     return MockVideoUnderstandingAdapter()
@@ -104,3 +145,16 @@ def _mock_timestamps(frame_refs: list[str]) -> list[dict]:
         for index, frame_ref in enumerate(frame_refs)
     ]
 
+
+def _request_sequence(request: VideoUnderstandingRequest) -> int:
+    sequence = request.metadata.get("frame_sequence")
+    if isinstance(sequence, int):
+        return sequence
+    if isinstance(sequence, str) and sequence.isdigit():
+        return int(sequence)
+    if request.frame_refs:
+        stem = Path(request.frame_refs[-1]).stem
+        suffix = stem.rsplit("-", maxsplit=1)[-1]
+        if suffix.isdigit():
+            return int(suffix)
+    return 1

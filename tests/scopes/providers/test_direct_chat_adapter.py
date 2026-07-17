@@ -157,6 +157,17 @@ def test_deepseek_chat_provider_without_key_returns_provider_unconfigured() -> N
     assert "DEEPSEEK_CHAT_API_KEY" in result.errors[0].message
 
 
+def test_ark_chat_provider_without_model_returns_provider_unconfigured() -> None:
+    adapter = create_chat_adapter(ProviderConfig(chat_provider="ark", ark_chat_api_key="test-ark-key"))
+
+    result = adapter.chat(chat_request())
+
+    assert result.success is False
+    assert result.provider == "ark"
+    assert result.errors[0].code == "provider_unconfigured"
+    assert "ARK_CHAT_MODEL" in result.errors[0].message
+
+
 def test_deepseek_chat_provider_uses_openai_sdk(monkeypatch) -> None:
     adapter, completions, captured = sdk_adapter(
         monkeypatch,
@@ -184,6 +195,49 @@ def test_deepseek_chat_provider_uses_openai_sdk(monkeypatch) -> None:
     assert completions.calls[0]["model"] == "deepseek-chat"
     assert completions.calls[0]["messages"][-1]["content"] == "请用一句话介绍项目"
     assert "stream" not in completions.calls[0]
+
+
+def test_ark_chat_provider_uses_openai_sdk(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    completions = FakeCompletions(
+        response={
+            "model": "ep-ark-chat",
+            "choices": [{"message": {"content": "真实 Ark 回复"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+        }
+    )
+
+    def fake_openai(**kwargs):
+        captured["init_kwargs"] = kwargs
+        client = FakeSDKClient(completions)
+        captured["client"] = client
+        return client
+
+    monkeypatch.setattr(chat_adapter_module, "OpenAI", fake_openai)
+    adapter = create_chat_adapter(
+        ProviderConfig(
+            chat_provider="ark",
+            ark_chat_api_key="test-ark-key",
+            ark_chat_base_url="https://ark.local/api/v3",
+            ark_chat_model="ep-ark-chat",
+        )
+    )
+    assert isinstance(adapter, OpenAICompatibleChatAdapter)
+
+    result = adapter.chat(chat_request("请用一句话介绍项目"))
+
+    assert result.success is True
+    assert result.provider == "ark"
+    assert result.model == "ep-ark-chat"
+    assert result.response_text == "真实 Ark 回复"
+    assert result.output_ref == "provider://chat/ark"
+    assert captured["init_kwargs"] == {
+        "api_key": "test-ark-key",
+        "base_url": "https://ark.local/api/v3",
+        "timeout": 30.0,
+    }
+    assert completions.calls[0]["model"] == "ep-ark-chat"
+    assert completions.calls[0]["messages"][-1]["content"] == "请用一句话介绍项目"
 
 
 def test_openai_compatible_chat_hides_unsupported_socks_proxy_during_client_init(monkeypatch) -> None:

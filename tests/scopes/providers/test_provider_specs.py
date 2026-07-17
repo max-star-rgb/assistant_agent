@@ -16,7 +16,19 @@ from assistant_agent.services.chat_adapter import chat_capabilities_for_provider
 
 
 def test_chat_provider_specs_include_openai_compatible_providers() -> None:
-    assert {"mock", "openai", "qwen", "deepseek", "local"}.issubset(supported_chat_providers())
+    assert {"mock", "openai", "qwen", "ark", "deepseek", "local"}.issubset(supported_chat_providers())
+    assert CHAT_PROVIDER_SPECS["qwen"].adapter_kind == "openai_compatible"
+    assert CHAT_PROVIDER_SPECS["qwen"].api_key_env == "QWEN_API_KEY"
+    assert CHAT_PROVIDER_SPECS["qwen"].base_url_env == "QWEN_CHAT_BASE_URL"
+    assert CHAT_PROVIDER_SPECS["qwen"].model_env == "QWEN_CHAT_MODEL"
+    assert CHAT_PROVIDER_SPECS["qwen"].default_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert CHAT_PROVIDER_SPECS["qwen"].default_model == "qwen-plus"
+    assert CHAT_PROVIDER_SPECS["ark"].adapter_kind == "openai_compatible"
+    assert CHAT_PROVIDER_SPECS["ark"].api_key_env == "ARK_CHAT_API_KEY"
+    assert CHAT_PROVIDER_SPECS["ark"].base_url_env == "ARK_CHAT_BASE_URL"
+    assert CHAT_PROVIDER_SPECS["ark"].model_env == "ARK_CHAT_MODEL"
+    assert CHAT_PROVIDER_SPECS["ark"].default_base_url == "https://ark.cn-beijing.volces.com/api/v3"
+    assert CHAT_PROVIDER_SPECS["ark"].default_model is None
     assert CHAT_PROVIDER_SPECS["deepseek"].adapter_kind == "openai_compatible"
     assert CHAT_PROVIDER_SPECS["deepseek"].api_key_env == "DEEPSEEK_CHAT_API_KEY"
     assert CHAT_PROVIDER_SPECS["deepseek"].base_url_env == "DEEPSEEK_CHAT_BASE_URL"
@@ -26,7 +38,7 @@ def test_chat_provider_specs_include_openai_compatible_providers() -> None:
 
 
 def test_chat_provider_specs_expose_native_tool_capabilities() -> None:
-    for provider in ("openai", "qwen", "deepseek"):
+    for provider in ("openai", "qwen", "ark", "deepseek"):
         capabilities = CHAT_PROVIDER_SPECS[provider].capabilities
 
         assert capabilities.supports_native_tools is True
@@ -41,11 +53,14 @@ def test_chat_provider_specs_expose_native_tool_capabilities() -> None:
 
 def test_chat_adapter_capabilities_are_read_from_provider_specs() -> None:
     assert chat_capabilities_for_provider("deepseek") == CHAT_PROVIDER_SPECS["deepseek"].capabilities
+    assert chat_capabilities_for_provider("ark") == CHAT_PROVIDER_SPECS["ark"].capabilities
 
 
 def test_select_chat_provider_obeys_runtime_profile_guard() -> None:
     assert select_chat_provider("deepseek", allow_real=False) == "mock"
     assert select_chat_provider("deepseek", allow_real=True) == "deepseek"
+    assert select_chat_provider("ark", allow_real=False) == "mock"
+    assert select_chat_provider("ark", allow_real=True) == "ark"
     assert select_chat_provider("unknown", allow_real=True) == "mock"
 
 
@@ -74,6 +89,64 @@ def test_resolve_chat_provider_accepts_explicit_deepseek_config() -> None:
     assert resolved.base_url == "https://deepseek.local/v1"
     assert resolved.model == "deepseek-test"
     assert resolved.missing_required_env() == []
+
+
+def test_resolve_chat_provider_accepts_explicit_ark_config() -> None:
+    resolved = resolve_chat_provider(
+        "ark",
+        {
+            "ARK_CHAT_API_KEY": "test-ark-key",
+            "ARK_CHAT_BASE_URL": "https://ark.local/api/v3",
+            "ARK_CHAT_MODEL": "ark-chat-test",
+        },
+    )
+
+    assert resolved.provider == "ark"
+    assert resolved.api_key == "test-ark-key"
+    assert resolved.base_url == "https://ark.local/api/v3"
+    assert resolved.model == "ark-chat-test"
+    assert resolved.missing_required_env() == []
+
+
+def test_resolve_chat_provider_accepts_qwen_dashscope_key_and_workspace() -> None:
+    resolved = resolve_chat_provider(
+        "qwen",
+        {
+            "DASHSCOPE_API_KEY": "dashscope-key",
+            "QWEN_CHAT_WORKSPACE_ID": "ws-chat",
+        },
+    )
+
+    assert resolved.provider == "qwen"
+    assert resolved.api_key == "dashscope-key"
+    assert resolved.base_url == "https://ws-chat.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    assert resolved.model == "qwen-plus"
+    assert resolved.missing_required_env() == []
+
+
+def test_resolve_chat_provider_accepts_ark_api_key_alias() -> None:
+    resolved = resolve_chat_provider(
+        "ark",
+        {
+            "ARK_API_KEY": "legacy-ark-key",
+            "ARK_CHAT_MODEL": "ark-chat-test",
+        },
+    )
+
+    assert resolved.provider == "ark"
+    assert resolved.api_key == "legacy-ark-key"
+    assert resolved.base_url == "https://ark.cn-beijing.volces.com/api/v3"
+    assert resolved.model == "ark-chat-test"
+    assert resolved.missing_required_env() == []
+
+
+def test_resolve_chat_provider_requires_explicit_ark_model() -> None:
+    resolved = resolve_chat_provider("ark", {"ARK_CHAT_API_KEY": "test-ark-key"})
+
+    assert resolved.provider == "ark"
+    assert resolved.base_url == "https://ark.cn-beijing.volces.com/api/v3"
+    assert resolved.model is None
+    assert resolved.missing_required_env() == ["ARK_CHAT_MODEL"]
 
 
 def test_vision_provider_specs_include_openai_compatible_providers() -> None:

@@ -132,10 +132,14 @@ class ProviderConfig:
     openai_chat_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
     qwen_chat_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qwen_chat_workspace_id: str | None = None
     qwen_chat_model: str = "qwen-plus"
     deepseek_api_key: str | None = None
     deepseek_chat_base_url: str = "https://api.deepseek.com/v1"
     deepseek_chat_model: str = "deepseek-chat"
+    ark_chat_api_key: str | None = None
+    ark_chat_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    ark_chat_model: str | None = None
     local_chat_base_url: str | None = None
     local_chat_model: str = "local-chat"
     image_generation_provider: ImageGenerationProviderName = "mock"
@@ -203,8 +207,17 @@ class ProviderConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
         source = _clean_env_source(os.environ if env is None else env)
+        if not source.get("QWEN_API_KEY") and source.get("DASHSCOPE_API_KEY"):
+            source["QWEN_API_KEY"] = source["DASHSCOPE_API_KEY"]
         if not source.get("DEEPSEEK_CHAT_API_KEY") and source.get("DEEPSEEK_API_KEY"):
             source["DEEPSEEK_CHAT_API_KEY"] = source["DEEPSEEK_API_KEY"]
+        if not source.get("ARK_CHAT_API_KEY") and source.get("ARK_API_KEY"):
+            source["ARK_CHAT_API_KEY"] = source["ARK_API_KEY"]
+        qwen_chat_workspace_id = _qwen_chat_workspace_id(source)
+        source["QWEN_CHAT_BASE_URL"] = _qwen_chat_base_url(
+            source,
+            workspace_id=qwen_chat_workspace_id,
+        )
         runtime_profile = RuntimeProfile.from_env(source)
         allow_real_providers = runtime_profile.allows_real_providers
         chat_provider = _chat_provider(
@@ -273,6 +286,7 @@ class ProviderConfig:
             qwen_image_api_key=source.get("QWEN_IMAGE_API_KEY"),
             ark_vision_api_key=source.get("ARK_VISION_API_KEY"),
             ark_image_api_key=source.get("ARK_IMAGE_API_KEY"),
+            ark_chat_api_key=source.get("ARK_CHAT_API_KEY"),
             seed_api_key=source.get("SEED_API_KEY"),
             deepseek_api_key=source.get("DEEPSEEK_CHAT_API_KEY") or source.get("DEEPSEEK_API_KEY"),
             comfyui_base_url=source.get("COMFYUI_BASE_URL"),
@@ -406,9 +420,12 @@ class ProviderConfig:
             openai_chat_base_url=source.get("OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"),
             openai_chat_model=source.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
             qwen_chat_base_url=source.get("QWEN_CHAT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            qwen_chat_workspace_id=qwen_chat_workspace_id,
             qwen_chat_model=source.get("QWEN_CHAT_MODEL", "qwen-plus"),
             deepseek_chat_base_url=source.get("DEEPSEEK_CHAT_BASE_URL", "https://api.deepseek.com/v1"),
             deepseek_chat_model=source.get("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+            ark_chat_base_url=source.get("ARK_CHAT_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+            ark_chat_model=source.get("ARK_CHAT_MODEL"),
             local_chat_base_url=source.get("LOCAL_CHAT_BASE_URL"),
             local_chat_model=source.get("LOCAL_CHAT_MODEL", "local-chat"),
             image_generation_provider=image_generation_provider,
@@ -495,6 +512,7 @@ class ProviderConfig:
                 self.qwen_image_api_key,
                 self.ark_vision_api_key,
                 self.ark_image_api_key,
+                self.ark_chat_api_key,
                 self.deepseek_api_key,
                 self.seed_api_key,
                 self.comfyui_base_url,
@@ -522,6 +540,10 @@ class ProviderConfig:
                     "QWEN_API_KEY": self.chat_api_key or "",
                     "QWEN_CHAT_BASE_URL": self.chat_base_url or "",
                     "QWEN_CHAT_MODEL": self.chat_model or "",
+                    "ARK_CHAT_API_KEY": self.chat_api_key or "",
+                    "ARK_API_KEY": self.chat_api_key or "",
+                    "ARK_CHAT_BASE_URL": self.chat_base_url or "",
+                    "ARK_CHAT_MODEL": self.chat_model or "",
                     "DEEPSEEK_CHAT_API_KEY": self.chat_api_key or "",
                     "DEEPSEEK_API_KEY": self.chat_api_key or "",
                     "DEEPSEEK_CHAT_BASE_URL": self.chat_base_url or "",
@@ -539,6 +561,10 @@ class ProviderConfig:
                 "QWEN_API_KEY": self.qwen_api_key or "",
                 "QWEN_CHAT_BASE_URL": self.qwen_chat_base_url,
                 "QWEN_CHAT_MODEL": self.qwen_chat_model,
+                "ARK_CHAT_API_KEY": self.ark_chat_api_key or self.ark_api_key or "",
+                "ARK_API_KEY": self.ark_chat_api_key or self.ark_api_key or "",
+                "ARK_CHAT_BASE_URL": self.ark_chat_base_url,
+                "ARK_CHAT_MODEL": self.ark_chat_model or "",
                 "DEEPSEEK_CHAT_API_KEY": self.deepseek_api_key or "",
                 "DEEPSEEK_API_KEY": self.deepseek_api_key or "",
                 "DEEPSEEK_CHAT_BASE_URL": self.deepseek_chat_base_url,
@@ -569,6 +595,7 @@ class ProviderConfig:
                     "SEED_API_KEY": self.vision_api_key or "",
                     "SEED_VISION_BASE_URL": self.vision_base_url or "",
                     "SEED_VISION_MODEL": self.vision_model or "",
+                    "FAKE_REALTIME_VISION_MODEL": self.vision_model or "",
                 },
             )
         return resolve_vision_provider(
@@ -588,6 +615,7 @@ class ProviderConfig:
                 "SEED_API_KEY": self.seed_api_key or "",
                 "SEED_VISION_BASE_URL": self.seed_vision_base_url,
                 "SEED_VISION_MODEL": self.seed_vision_model,
+                "FAKE_REALTIME_VISION_MODEL": self.vision_model or "",
             },
         )
 
@@ -732,6 +760,23 @@ def _vision_embedding_provider(value: str | None, *, allow_real: bool = True) ->
 
 def _vision_embedding_api_key(source: Mapping[str, str]) -> str | None:
     return source.get("DASHSCOPE_API_KEY") or source.get("QWEN_VISION_API_KEY")
+
+
+def _qwen_chat_workspace_id(source: Mapping[str, str]) -> str | None:
+    value = source.get("QWEN_CHAT_WORKSPACE_ID")
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _qwen_chat_base_url(source: Mapping[str, str], *, workspace_id: str | None) -> str:
+    explicit = source.get("QWEN_CHAT_BASE_URL")
+    if explicit:
+        return explicit
+    if workspace_id:
+        return f"https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    return "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 def _qwen_realtime_vision_workspace_id(source: Mapping[str, str]) -> str | None:

@@ -170,8 +170,10 @@ session video reference to later chat turns. A per-connection observer applies
 adaptive sampling, pixel difference, SSIM, and local histogram change detection;
 首帧、明显变化帧和最长静态 2 秒到期帧进入 latest-wins 后台队列。每轮后台理解只向
 Provider 发送当前选中的一张 JPEG；历史画面不作为多帧请求重发，只把上次成功语义摘要
-裁剪后作为文本上下文。Background understanding
-still runs through `ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding`.
+裁剪后作为文本上下文。Background understanding still runs through
+`ActionValidator -> ToolExecutor -> ToolRegistry -> video_understanding`;
+`video_understanding` is a compatibility alias backed by the unified
+`vision_understanding` client boundary, not a separate provider path.
 这里的成功分三层：Execution Success 只表示 `ToolResult.success is True`；
 Semantic Success 表示 `VideoUnderstandingResult` 可验证且 `errors` 为空；
 Publishability 还要求 `source == "background_keyframe_observation"`。Rolling
@@ -180,10 +182,11 @@ harness explanatory results，以及 query-time
 `realtime_video_memory_unavailable` 说明性结果都只更新失败/可解释状态，不能成为
 `current_state`。
 When a later chat turn has active video, AgentRuntime may expose the
-`video_understanding` tool. The main LLM sees the live-camera availability, tool
-schema, and projected `realtime_video_context`, not frame bytes, frame paths, VLM
-role prompt, or Provider payloads. The entry adapter does not call the video
-provider directly.
+`video_understanding` compatibility tool while ordinary image/explicit-video
+flows use `vision_understanding` as the primary visual tool. The main LLM sees
+the live-camera availability, tool schema, and projected
+`realtime_video_context`, not frame bytes, frame paths, VLM role prompt, or
+Provider payloads. The entry adapter does not call the video provider directly.
 
 The runtime owns a bounded semantic snapshot per opaque `video_id`. Immediately
 before every Agent-Service model context build it projects the latest snapshot

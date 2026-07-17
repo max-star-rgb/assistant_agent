@@ -26,7 +26,7 @@ from assistant_agent.services.provider_errors import ProviderAdapterError, build
 from assistant_agent.services.provider_http import without_unsupported_socks_proxy_env
 
 
-ChatProviderName = Literal["mock", "openai", "qwen", "deepseek", "local"]
+ChatProviderName = Literal["mock", "openai", "qwen", "ark", "deepseek", "local"]
 ChatStreamCallback = Callable[[str, dict[str, Any]], None]
 
 

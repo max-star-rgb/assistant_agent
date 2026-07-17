@@ -74,6 +74,17 @@ VISION_TEXT_IMAGE_CAPABILITIES = ProviderCapabilities(
     output_modalities=("text",),
 )
 
+VISION_TEXT_IMAGE_VIDEO_CAPABILITIES = ProviderCapabilities(
+    supports_response_format=False,
+    supports_native_tools=False,
+    supports_tool_choice=False,
+    supports_streaming=False,
+    supports_async_streaming=False,
+    max_tokens_param=None,
+    input_modalities=("text", "image", "video"),
+    output_modalities=("text",),
+)
+
 IMAGE_GENERATION_CAPABILITIES = ProviderCapabilities(
     supports_response_format=False,
     supports_native_tools=False,
@@ -187,6 +198,21 @@ CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
         requires_base_url=True,
         requires_model=True,
     ),
+    "ark": ProviderSpec(
+        name="ark",
+        capability="direct_chat",
+        provider_env=CHAT_PROVIDER_ENV,
+        adapter_kind="openai_compatible",
+        capabilities=OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
+        api_key_env="ARK_CHAT_API_KEY",
+        base_url_env="ARK_CHAT_BASE_URL",
+        model_env="ARK_CHAT_MODEL",
+        default_base_url="https://ark.cn-beijing.volces.com/api/v3",
+        default_model=None,
+        requires_api_key=True,
+        requires_base_url=True,
+        requires_model=True,
+    ),
     "deepseek": ProviderSpec(
         name="deepseek",
         capability="direct_chat",
@@ -288,6 +314,18 @@ VISION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
         requires_api_key=True,
         requires_base_url=True,
         requires_model=True,
+    ),
+    "fake_realtime": ProviderSpec(
+        name="fake_realtime",
+        capability="vision_understanding",
+        provider_env=VISION_PROVIDER_ENV,
+        adapter_kind="fake_realtime_vision",
+        capabilities=VISION_TEXT_IMAGE_VIDEO_CAPABILITIES,
+        model_env="FAKE_REALTIME_VISION_MODEL",
+        default_model="fake-realtime-vision",
+        requires_api_key=False,
+        requires_base_url=False,
+        requires_model=False,
     ),
 }
 
@@ -423,7 +461,29 @@ def select_chat_provider(value: str | None, *, allow_real: bool) -> str:
 def resolve_chat_provider(provider: str, env: Mapping[str, str]) -> ResolvedProviderSpec:
     """Resolve selected chat provider values from environment-like data."""
 
-    return resolve_provider(provider, env, CHAT_PROVIDER_SPECS)
+    return resolve_provider(provider, _chat_provider_env_with_aliases(provider, env), CHAT_PROVIDER_SPECS)
+
+
+def _chat_provider_env_with_aliases(provider: str, env: Mapping[str, str]) -> Mapping[str, str]:
+    if provider not in {"qwen", "ark", "deepseek"}:
+        return env
+    normalized = dict(env)
+    if provider == "qwen":
+        if not normalized.get("QWEN_API_KEY") and normalized.get("DASHSCOPE_API_KEY"):
+            normalized["QWEN_API_KEY"] = normalized["DASHSCOPE_API_KEY"]
+        if not normalized.get("QWEN_CHAT_BASE_URL"):
+            workspace_id = (normalized.get("QWEN_CHAT_WORKSPACE_ID") or "").strip()
+            if workspace_id:
+                normalized["QWEN_CHAT_BASE_URL"] = (
+                    f"https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                )
+    elif provider == "ark":
+        if not normalized.get("ARK_CHAT_API_KEY") and normalized.get("ARK_API_KEY"):
+            normalized["ARK_CHAT_API_KEY"] = normalized["ARK_API_KEY"]
+    elif provider == "deepseek":
+        if not normalized.get("DEEPSEEK_CHAT_API_KEY") and normalized.get("DEEPSEEK_API_KEY"):
+            normalized["DEEPSEEK_CHAT_API_KEY"] = normalized["DEEPSEEK_API_KEY"]
+    return normalized
 
 
 def supported_vision_providers() -> tuple[str, ...]:

@@ -2,37 +2,79 @@
 
 from typing import Any
 
-from assistant_agent.schemas.perception import VisualUnderstandingResult
-from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.schemas.capability_output import build_capability_output_contract
+from assistant_agent.schemas.perception import (
+    VisionUnderstandingRequest,
+    VisionUnderstandingResult,
+)
+from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.services.video_adapter import VideoUnderstandingAdapter
+from assistant_agent.services.video_context import (
+    DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
+    VideoContextStore,
+)
 from assistant_agent.services.vision_adapter import (
     MockVisionUnderstandingAdapter,
     VisionUnderstandingAdapter,
-    VisionUnderstandingInput,
+)
+from assistant_agent.services.vision_client import (
+    AdapterVisionUnderstandingClient,
+    VisionUnderstandingClient,
+    video_request_from_vision_request,
+    vision_request_has_video,
 )
 from assistant_agent.services.provider_errors import (
     ProviderAdapterError,
     build_provider_error,
 )
 from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
 class VisionUnderstandingTool(MockTool):
     name = "vision_understanding"
     description = "Image and video understanding through a vision adapter."
-    input_schema = VisionUnderstandingInput
-    output_schema = VisualUnderstandingResult
+    input_schema = VisionUnderstandingRequest
+    output_schema = VisionUnderstandingResult
 
-    def __init__(self, adapter: VisionUnderstandingAdapter | None = None) -> None:
-        self.adapter = adapter or MockVisionUnderstandingAdapter()
+    def __init__(
+        self,
+        adapter: VisionUnderstandingAdapter | None = None,
+        *,
+        client: VisionUnderstandingClient | None = None,
+        video_adapter: VideoUnderstandingAdapter | None = None,
+        context_store: VideoContextStore | None = None,
+        memory_store: RealtimeVideoMemoryStore | None = None,
+        context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
+    ) -> None:
+        self.adapter = (
+            adapter
+            or getattr(client, "image_adapter", None)
+            or MockVisionUnderstandingAdapter()
+        )
+        self.client = client or AdapterVisionUnderstandingClient(
+            image_adapter=self.adapter,
+            video_adapter=video_adapter,
+        )
+        self._video_tool = VideoUnderstandingTool(
+            client=self.client,
+            adapter=video_adapter,
+            context_store=context_store,
+            memory_store=memory_store,
+            context_window_size=context_window_size,
+        )
 
-    def _run(self, input: VisionUnderstandingInput, context: ToolContext) -> ToolResult:
-        try:
-            result = self.adapter.understand(input)
-        except ProviderAdapterError as exc:
-            capability = (
-                "video_understanding" if input.video_ids else "image_understanding"
+    def _run(self, input: VisionUnderstandingRequest, context: ToolContext) -> ToolResult:
+        if vision_request_has_video(input):
+            result = self._video_tool.run(
+                video_request_from_vision_request(input), context
             )
+            return result.model_copy(update={"tool_name": self.name})
+        try:
+            result = self.client.understand(input)
+        except ProviderAdapterError as exc:
+            capability = "image_understanding"
             provider = getattr(
                 getattr(self.adapter, "config", None), "provider", "unknown"
             )
@@ -58,9 +100,7 @@ class VisionUnderstandingTool(MockTool):
                 "provider_request_invalid", str(exc), recoverable=True
             ).message
             contract = build_capability_output_contract(
-                capability="video_understanding"
-                if input.video_ids
-                else "image_understanding",
+                capability="image_understanding",
                 status="failed",
                 errors=[
                     {
@@ -87,8 +127,8 @@ class VisionUnderstandingTool(MockTool):
                 contract=contract,
             )
 
-        output_ref = _vision_output_ref(self.adapter)
-        capability = "video_understanding" if input.video_ids else "image_understanding"
+        output_ref = result.output_ref
+        capability = "image_understanding"
         data = result.model_dump(mode="json")
         contract = build_capability_output_contract(
             capability=capability,
@@ -96,10 +136,9 @@ class VisionUnderstandingTool(MockTool):
             output_ref=output_ref,
             data=data,
             metadata={
-                "provider": getattr(
-                    getattr(self.adapter, "config", None), "provider", "mock"
-                ),
-                "latency_ms": 1,
+                "provider": result.provider,
+                "model": result.model,
+                "latency_ms": result.latency_ms,
             },
         )
         return ToolResult(
@@ -108,28 +147,29 @@ class VisionUnderstandingTool(MockTool):
             data=data,
             model_observation=_vision_model_observation(data),
             output_ref=output_ref,
-            latency_ms=1,
+            latency_ms=result.latency_ms,
             contract=contract,
         )
-
-
-def _vision_output_ref(adapter: VisionUnderstandingAdapter) -> str:
-    config = getattr(adapter, "config", None)
-    provider = getattr(config, "provider", None)
-    if provider:
-        return f"provider://vision/{provider}"
-    return "mock://vision/white-low-top-sneaker"
 
 
 def _vision_model_observation(data: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "summary",
         "objects",
+        "people",
+        "actions",
+        "events",
         "colors",
         "materials",
         "scene",
+        "products",
+        "brands",
         "style_tags",
         "text_in_media",
+        "text_in_video",
+        "confidence",
+        "source",
+        "errors",
     )
     return {key: data[key] for key in keys if data.get(key) not in (None, "", [], {})}
 

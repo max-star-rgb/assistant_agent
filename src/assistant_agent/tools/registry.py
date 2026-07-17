@@ -26,11 +26,10 @@ from assistant_agent.services.web_search_adapter import create_web_search_adapte
 from assistant_agent.services.image_generation_adapter import create_image_generation_adapter
 from assistant_agent.services.memory_media_ingestion import create_memory_media_ingestion_service
 from assistant_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
-from assistant_agent.services.provider_selection import create_vision_adapter
 from assistant_agent.services.render_adapter import create_render_adapter
-from assistant_agent.services.video_adapter import (
-    create_realtime_video_understanding_adapter,
-    create_video_understanding_adapter,
+from assistant_agent.services.vision_client import (
+    create_realtime_vision_understanding_client,
+    create_vision_understanding_client,
 )
 from assistant_agent.services.video_context import VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
@@ -163,7 +162,7 @@ def _close_object_schemas(value: Any) -> Any:
 
 
 def _hide_runtime_identity_field(tool_name: str | None, field_name: str) -> bool:
-    if tool_name == "video_understanding" and field_name in {
+    if tool_name in {"vision_understanding", "video_understanding"} and field_name in {
         "frame_refs",
         "context_id",
         "metadata",
@@ -257,9 +256,21 @@ def tool_execution_metadata(tool: BaseTool) -> ToolExecutionPolicy | None:
 
 _ACTION_USAGE: dict[str, dict[str, Any]] = {
     "vision_understanding": {
-        "when_to_use": ["Describe, analyze, or identify image content.", "User provided image_ids and asks what is in the image."],
-        "when_not_to_use": ["User asks to generate a new image.", "User asks to render or build a 3D scene."],
-        "runtime_constraints": ["Requires image_ids.", "Do not use for video-only requests."],
+        "when_to_use": [
+            "Describe, analyze, or identify image content.",
+            "Summarize or analyze an explicit video_ref or video_ids supplied by the current request.",
+            "Use as the primary visual understanding tool for image or explicit video inputs.",
+        ],
+        "when_not_to_use": [
+            "User asks to generate a new image.",
+            "User asks to render or build a 3D scene.",
+            "No image, active video, or explicit video reference exists in the current turn.",
+        ],
+        "runtime_constraints": [
+            "Requires image_ids, video_ref, video_ids, or a trusted active video reference.",
+            "Do not pass internal frame paths, JPEG/base64 payloads, local media paths, metadata, or provider fields.",
+            "If evidence is insufficient, stale, or uncertain, report that uncertainty from the tool result.",
+        ],
         "side_effect": {
             "level": "external_read",
             "requires_confirmation": False,
@@ -267,7 +278,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
         },
         "execution": {
             "dependency_mode": "independent",
-            "resource_reads": ["media:image"],
+            "resource_reads": ["media:image", "media:video"],
             "realtime_safety": "safe",
             "artifact_reuse": "reusable",
             "progress_message": "我看一下。",
@@ -635,10 +646,15 @@ def create_default_registry(
     memory_media_service = create_memory_media_ingestion_service(config)
     product_search_adapter = create_product_search_adapter(config)
     price_compare_adapter = create_price_compare_adapter(config)
+    vision_client = create_vision_understanding_client(config)
     for tool in (
-        VisionUnderstandingTool(adapter=create_vision_adapter(config)),
+        VisionUnderstandingTool(
+            client=vision_client,
+            context_store=video_context_store,
+            memory_store=realtime_video_memory_store,
+        ),
         VideoUnderstandingTool(
-            adapter=create_video_understanding_adapter(config),
+            client=vision_client,
             context_store=video_context_store,
             memory_store=realtime_video_memory_store,
         ),
@@ -678,7 +694,7 @@ def create_realtime_video_observation_registry(
     registry = ToolRegistry()
     registry.register(
         VideoUnderstandingTool(
-            adapter=create_realtime_video_understanding_adapter(config),
+            client=create_realtime_vision_understanding_client(config),
             memory_store=realtime_video_memory_store,
         )
     )
