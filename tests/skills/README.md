@@ -4,6 +4,12 @@
 Provider 的 skill package contract 检查，不属于 `tests/integration`，也不进入默认裸
 `pytest` 路径。
 
+`skills/` 下有两类产品 skill：
+
+- `skills/<skill_id>/SKILL.md`：LLM-driven capability descriptor，只影响 prompt-safe 能力目录；
+- `skills/workflows/*.json`：deterministic `workflow_skill_v1` manifest，只能由显式 workflow
+  launcher/API/CLI 加载。
+
 推荐命令：
 
 ```bash
@@ -13,6 +19,8 @@ Provider 的 skill package contract 检查，不属于 `tests/integration`，也
 适合放在这里的测试：
 
 - `skills/*/SKILL.md` front matter、名称、描述和正文结构检查；
+- `skills/workflows/` 作为 workflow manifest 目录的保留边界；
+- `skills/workflows/*.json` 的 `workflow_skill_v1` schema 检查；
 - skill 引用的本地脚本、模板、fixtures 或 assets 是否存在；
 - skill descriptor 的离线 fixture 校验；
 - workflow skill manifest 的离线 validate。

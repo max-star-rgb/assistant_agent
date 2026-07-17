@@ -17,7 +17,7 @@ tests/
     memory/
     providers/
     api/
-  skills/         # 根目录 skills/ 的离线 skill package contract 检查
+  skills/         # 根目录 skills/ 的离线 skill package / workflow manifest contract 检查
   integration/    # 显式 opt-in；不属于默认 offline suite
     tools/        # tool-level 真实 Provider smoke；普通开发阶段不运行
   evals/          # 离线 eval case 数据；不是 pytest scope
@@ -27,7 +27,8 @@ tests/
 
 critical 覆盖 Provider/offline 安全、Tool 治理、Memory read/write policy、Gateway 生命周期、
 runtime 恢复、redaction 和测试路由。普通领域行为只进入一个权威 scope。根目录 `skills/` 的
-skill package 离线契约检查放在 `tests/skills/`；它不属于 integration，也不默认运行。高延迟、
+LLM-driven `SKILL.md` 与 `skills/workflows/*.json` workflow manifest 离线契约检查放在
+`tests/skills/`；它不属于 integration，也不默认运行。高延迟、
 多进程或需要外部环境的证据进入 integration。需要真实 Provider 的工具级 smoke 放在
 `tests/integration/tools/`，仍按 integration 管理，普通开发阶段不运行；这些用例偏开发者手动
 验证，优先直接运行单个文件或单个 node，目录内运行方式和 opt-in 规则见对应目录的
@@ -49,7 +50,7 @@ skill package 离线契约检查放在 `tests/skills/`；它不属于 integratio
 # critical 与全部 scope 的完整离线套件
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --full -- -q
 
-# 手动验证根目录 skills/ 的离线 skill package contract
+# 手动验证根目录 skills/ 的离线 skill package / workflow manifest contract
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/skills
 ```
 

@@ -1,6 +1,6 @@
 ---
 name: realtime_web_search
-description: Look up current or web-backed information through the governed web_search tool.
+description: Look up current, latest, today, news, or web-backed information through the governed web_search tool.
 enabled: true
 disable-model-invocation: false
 ---
@@ -21,7 +21,8 @@ disable-model-invocation: false
 
 ## When Not To Use
 - User asks for stored personal memory; use memory tools instead.
-- User asks to buy or compare products; use product tools instead.
+- User asks to buy, compare, or inspect products; use product tools instead.
+- User asks for image, video, or generated visual output.
 
 ## Safe Examples
 - latest AI industry news

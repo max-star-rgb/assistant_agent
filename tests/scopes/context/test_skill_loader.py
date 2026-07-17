@@ -73,6 +73,29 @@ description: This is a Codex workflow skill, not a product runtime skill.
     assert catalog.issues == []
 
 
+def test_load_repo_skill_descriptors_ignores_workflow_manifest_directory(
+    tmp_path: Path,
+) -> None:
+    workflow_dir = tmp_path / "skills" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    workflow_dir.joinpath("example.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "workflow_skill_v1",
+                "name": "example",
+                "type": "workflow",
+                "steps": [{"id": "lookup", "tool": "web_search"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    catalog = load_repo_skill_descriptors(tmp_path)
+
+    assert catalog.descriptors == []
+    assert catalog.issues == []
+
+
 def test_load_repo_skill_descriptors_skips_name_mismatch(tmp_path: Path) -> None:
     _write_skill(
         tmp_path,

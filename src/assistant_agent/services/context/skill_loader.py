@@ -64,6 +64,7 @@ _ALLOWED_SECTION_TITLES = {
     "visibility": "visibility",
     "tests": "tests",
 }
+_RESERVED_SKILL_DIRECTORIES = {"workflows"}
 
 
 def load_repo_skill_descriptors(root: Path) -> SkillCatalog:
@@ -77,6 +78,8 @@ def load_repo_skill_descriptors(root: Path) -> SkillCatalog:
     descriptors: list[SkillDescriptor] = []
     issues: list[SkillLoadIssue] = []
     for skill_dir in sorted(path for path in skills_dir.iterdir() if path.is_dir()):
+        if skill_dir.name in _RESERVED_SKILL_DIRECTORIES:
+            continue
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.is_file():
             issues.append(
