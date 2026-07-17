@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -162,6 +163,72 @@ class WorkflowSkillRunResult(BaseModel):
     issues: list[WorkflowSkillValidationIssue] = Field(default_factory=list)
 
 
+class WorkflowSkillRunRecord(BaseModel):
+    """Checkpointable workflow run record."""
+
+    workflow_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    status: WorkflowSkillRunStatus
+    attempts: list[WorkflowSkillAttemptRecord] = Field(default_factory=list)
+    step_results: dict[str, ToolResult] = Field(default_factory=dict)
+    issues: list[WorkflowSkillValidationIssue] = Field(default_factory=list)
+    completed_step_ids: list[str] = Field(default_factory=list)
+    next_step_id: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class InMemoryWorkflowSkillRunStore:
+    """Process-local workflow skill run store for deterministic resume tests."""
+
+    def __init__(self) -> None:
+        self._records: dict[str, WorkflowSkillRunRecord] = {}
+
+    def save(self, record: WorkflowSkillRunRecord) -> WorkflowSkillRunRecord:
+        """Store or replace one workflow run record."""
+
+        self._records[record.run_id] = record
+        return record
+
+    def get(self, run_id: str) -> WorkflowSkillRunRecord | None:
+        """Return one workflow run record by run id."""
+
+        return self._records.get(run_id)
+
+    def list_by_workflow(self, workflow_id: str) -> list[WorkflowSkillRunRecord]:
+        """Return records for one workflow id in insertion order."""
+
+        return [
+            record
+            for record in self._records.values()
+            if record.workflow_id == workflow_id
+        ]
+
+    def save_result(
+        self,
+        result: WorkflowSkillRunResult,
+        *,
+        state: AgentState,
+        existing: WorkflowSkillRunRecord | None = None,
+    ) -> WorkflowSkillRunRecord:
+        """Persist a workflow run result as a checkpointable record."""
+
+        created_at = existing.created_at if existing is not None else datetime.now(timezone.utc)
+        record = WorkflowSkillRunRecord(
+            workflow_id=result.workflow_id,
+            run_id=state.run_id,
+            status=result.status,
+            attempts=list(result.attempts),
+            step_results=dict(result.step_results),
+            issues=list(result.issues),
+            completed_step_ids=_completed_step_ids(result.attempts),
+            next_step_id=_next_step_id(result),
+            created_at=created_at,
+            updated_at=datetime.now(timezone.utc),
+        )
+        return self.save(record)
+
+
 def validate_workflow_skill_manifest(
     payload: Mapping[str, Any],
     *,
@@ -213,6 +280,8 @@ class WorkflowSkillRunner:
         self,
         payload: Mapping[str, Any] | WorkflowSkillManifest,
         state: AgentState,
+        *,
+        resume_record: WorkflowSkillRunRecord | None = None,
     ) -> WorkflowSkillRunResult:
         manifest = _manifest_from_payload(payload)
         if manifest is None:
@@ -238,9 +307,22 @@ class WorkflowSkillRunner:
                 issues=validation.issues,
             )
 
-        attempts: list[WorkflowSkillAttemptRecord] = []
-        step_results: dict[str, ToolResult] = {}
+        attempts: list[WorkflowSkillAttemptRecord] = (
+            list(resume_record.attempts) if resume_record is not None else []
+        )
+        step_results: dict[str, ToolResult] = (
+            dict(resume_record.step_results) if resume_record is not None else {}
+        )
+        completed_step_ids = (
+            set(resume_record.completed_step_ids) if resume_record is not None else set()
+        )
         for step in manifest.steps:
+            if _resume_can_skip_step(
+                step,
+                completed_step_ids=completed_step_ids,
+                step_results=step_results,
+            ):
+                continue
             step_result = self._run_step(
                 manifest=manifest,
                 step=step,
@@ -369,9 +451,11 @@ class WorkflowSkillLauncher:
         *,
         catalog: WorkflowSkillCatalog,
         runner: WorkflowSkillRunner | None = None,
+        run_store: InMemoryWorkflowSkillRunStore | None = None,
     ) -> None:
         self.catalog = catalog
         self.runner = runner or WorkflowSkillRunner(registry=catalog.registry)
+        self.run_store = run_store or InMemoryWorkflowSkillRunStore()
         if self.runner.registry is not catalog.registry:
             raise ValueError(
                 "WorkflowSkillLauncher and WorkflowSkillCatalog must use the same registry"
@@ -394,7 +478,50 @@ class WorkflowSkillLauncher:
                     )
                 ],
             )
-        return self.runner.run(manifest, state)
+        result = self.runner.run(manifest, state)
+        self.run_store.save_result(result, state=state)
+        return result
+
+    def resume(self, run_id: str, state: AgentState) -> WorkflowSkillRunResult:
+        """Resume a workflow run from its latest checkpointable record."""
+
+        record = self.run_store.get(run_id)
+        if record is None:
+            return WorkflowSkillRunResult(
+                success=False,
+                status="validation_failed",
+                workflow_id="unknown",
+                issues=[
+                    WorkflowSkillValidationIssue(
+                        code="workflow_run_not_found",
+                        message="Workflow skill run record was not found.",
+                    )
+                ],
+            )
+        manifest = self.catalog.get(record.workflow_id)
+        if manifest is None:
+            return WorkflowSkillRunResult(
+                success=False,
+                status="validation_failed",
+                workflow_id=record.workflow_id,
+                attempts=list(record.attempts),
+                step_results=dict(record.step_results),
+                issues=[
+                    WorkflowSkillValidationIssue(
+                        code="workflow_not_registered",
+                        message="Workflow skill manifest is not explicitly registered.",
+                    )
+                ],
+            )
+        state.run_id = record.run_id
+        result = self.runner.run(manifest, state, resume_record=record)
+        self.run_store.save_result(result, state=state, existing=record)
+        return result
+
+    def get_run(self, run_id: str) -> WorkflowSkillRunRecord | None:
+        """Return one workflow run record by run id."""
+
+        return self.run_store.get(run_id)
 
 
 def _pre_validation_issues(payload: Mapping[str, Any]) -> list[WorkflowSkillValidationIssue]:
@@ -472,6 +599,35 @@ def _policy_replay_safe(policy_view: ToolPolicyView, *, step: WorkflowSkillStep)
     if policy_view.side_effect_level in _READ_ONLY_LEVELS:
         return True
     return step.idempotency == "required"
+
+
+def _resume_can_skip_step(
+    step: WorkflowSkillStep,
+    *,
+    completed_step_ids: set[str],
+    step_results: dict[str, ToolResult],
+) -> bool:
+    return step.checkpoint and step.id in completed_step_ids and step.id in step_results
+
+
+def _completed_step_ids(attempts: list[WorkflowSkillAttemptRecord]) -> list[str]:
+    completed: list[str] = []
+    for attempt in attempts:
+        if attempt.status == "succeeded" and attempt.step_id not in completed:
+            completed.append(attempt.step_id)
+    return completed
+
+
+def _next_step_id(result: WorkflowSkillRunResult) -> str | None:
+    if result.status == "waiting_confirmation":
+        for attempt in reversed(result.attempts):
+            if attempt.status == "waiting_confirmation":
+                return attempt.step_id
+    if result.status in {"failed", "rejected"}:
+        for attempt in reversed(result.attempts):
+            if attempt.status in {"failed", "rejected"}:
+                return attempt.step_id
+    return None
 
 
 def _manifest_from_payload(payload: Mapping[str, Any] | WorkflowSkillManifest) -> WorkflowSkillManifest | None:

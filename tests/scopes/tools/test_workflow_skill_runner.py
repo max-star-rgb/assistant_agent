@@ -4,6 +4,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ApprovalPolicy, ExecutionPolicy, ToolPolicyMetadata, ToolResult
 from assistant_agent.services.tool_workflow_skill import (
+    InMemoryWorkflowSkillRunStore,
     WorkflowSkillCatalog,
     WorkflowSkillLauncher,
     WorkflowSkillRunner,
@@ -65,6 +66,42 @@ class WriteTool(LookupTool):
         approval=ApprovalPolicy(mode="always"),
         execution=ExecutionPolicy(retry_count=0, idempotency="none"),
     )
+
+
+class PendingThenSuccessTool(LookupTool):
+    name = "workflow.pending_then_success"
+
+    def _run(self, input: LookupInput, context: ToolContext) -> ToolResult:
+        self.calls += 1
+        if self.calls == 1:
+            return ToolResult(
+                tool_name=self.name,
+                success=True,
+                data={"status": "confirmation_required", "query": input.query},
+            )
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data={"query": input.query, "summary": "confirmed"},
+        )
+
+
+class FailThenSuccessTool(LookupTool):
+    name = "workflow.fail_then_success"
+
+    def _run(self, input: LookupInput, context: ToolContext) -> ToolResult:
+        self.calls += 1
+        if self.calls == 1:
+            return ToolResult(
+                tool_name=self.name,
+                success=False,
+                error="provider_timeout: transient timeout",
+            )
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data={"query": input.query, "summary": "recovered"},
+        )
 
 
 def test_workflow_skill_runner_executes_governed_tool_through_executor() -> None:
@@ -257,3 +294,127 @@ def test_workflow_skill_catalog_rejects_invalid_manifest_without_registering_it(
 
     assert registration.accepted is False
     assert catalog.get("unsafe_flow") is None
+
+
+def test_workflow_skill_launcher_records_and_resumes_waiting_run_from_checkpoint() -> None:
+    lookup = LookupTool()
+    pending = PendingThenSuccessTool()
+    registry = ToolRegistry()
+    registry.register(lookup)
+    registry.register(pending)
+    catalog = WorkflowSkillCatalog(registry=registry)
+    catalog.register(
+        {
+            "schema_version": "workflow_skill_v1",
+            "name": "confirm_flow",
+            "type": "workflow",
+            "permissions": [
+                "tool:workflow.lookup",
+                "tool:workflow.pending_then_success",
+            ],
+            "steps": [
+                {
+                    "id": "lookup",
+                    "tool": "workflow.lookup",
+                    "checkpoint": True,
+                    "input": {"query": "{{ user.request }}"},
+                },
+                {
+                    "id": "confirm",
+                    "tool": "workflow.pending_then_success",
+                    "input": {"query": "{{ steps.lookup.data.summary }}"},
+                },
+            ],
+        }
+    )
+    store = InMemoryWorkflowSkillRunStore()
+    launcher = WorkflowSkillLauncher(catalog=catalog, run_store=store)
+    state = AgentState.from_request(
+        UserRequest(user_id="u1", session_id="s1", text="forecast"),
+        run_id="run-1",
+    )
+
+    first = launcher.launch("confirm_flow", state)
+
+    record = launcher.get_run("run-1")
+    assert first.status == "waiting_confirmation"
+    assert record is not None
+    assert record.status == "waiting_confirmation"
+    assert record.next_step_id == "confirm"
+    assert record.completed_step_ids == ["lookup"]
+    assert lookup.calls == 1
+    assert pending.calls == 1
+
+    resumed_state = AgentState.from_request(
+        UserRequest(user_id="u1", session_id="s1", text="confirmed"),
+        run_id="resume-run",
+    )
+    resumed = launcher.resume("run-1", resumed_state)
+
+    assert resumed.success is True
+    assert resumed.status == "succeeded"
+    assert resumed_state.run_id == "run-1"
+    assert lookup.calls == 1
+    assert pending.calls == 2
+    assert [attempt.step_id for attempt in resumed.attempts] == [
+        "lookup",
+        "confirm",
+        "confirm",
+    ]
+    assert launcher.get_run("run-1").status == "succeeded"
+
+
+def test_workflow_skill_launcher_recovers_failed_run_from_checkpoint() -> None:
+    lookup = LookupTool()
+    recoverable = FailThenSuccessTool()
+    registry = ToolRegistry()
+    registry.register(lookup)
+    registry.register(recoverable)
+    catalog = WorkflowSkillCatalog(registry=registry)
+    catalog.register(
+        {
+            "schema_version": "workflow_skill_v1",
+            "name": "recover_flow",
+            "type": "workflow",
+            "permissions": [
+                "tool:workflow.lookup",
+                "tool:workflow.fail_then_success",
+            ],
+            "steps": [
+                {
+                    "id": "lookup",
+                    "tool": "workflow.lookup",
+                    "checkpoint": True,
+                    "input": {"query": "{{ user.request }}"},
+                },
+                {
+                    "id": "recover",
+                    "tool": "workflow.fail_then_success",
+                    "input": {"query": "{{ steps.lookup.data.summary }}"},
+                },
+            ],
+        }
+    )
+    store = InMemoryWorkflowSkillRunStore()
+    launcher = WorkflowSkillLauncher(catalog=catalog, run_store=store)
+    state = AgentState.from_request(
+        UserRequest(user_id="u1", session_id="s1", text="news"),
+        run_id="run-2",
+    )
+
+    first = launcher.launch("recover_flow", state)
+
+    assert first.status == "failed"
+    assert launcher.get_run("run-2").next_step_id == "recover"
+    assert lookup.calls == 1
+    assert recoverable.calls == 1
+
+    resumed = launcher.resume(
+        "run-2",
+        AgentState.from_request(UserRequest(user_id="u1", session_id="s1", text="retry")),
+    )
+
+    assert resumed.status == "succeeded"
+    assert lookup.calls == 1
+    assert recoverable.calls == 2
+    assert launcher.get_run("run-2").completed_step_ids == ["lookup", "recover"]
