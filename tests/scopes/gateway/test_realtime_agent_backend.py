@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from assistant_agent.agent.event_stream import AgentRunStream
 from assistant_agent.agent.runtime import AgentGraphRuntime
-from assistant_agent.agent.state import AgentState
+from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.agent_routing import WORKER_AGENT_ID
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
@@ -1410,6 +1410,62 @@ def test_agent_graph_realtime_backend_uses_assistant_run_id_when_external_run_id
 
     assert result.run_id == "assistant-run-1"
     assert result.metadata["assistant_run_id"] == "assistant-run-1"
+
+
+def test_agent_graph_realtime_backend_maps_main_llm_no_answer_fallback_as_completed() -> None:
+    events = []
+
+    def fake_run_assistant_request(request: UserRequest, **kwargs) -> SimpleNamespace:
+        state = AgentState.from_request(request, run_id="assistant-run-1")
+        state.errors.append(
+            AgentError(
+                message="主 LLM 未返回可用回答。",
+                source="native_runtime",
+                details={
+                    "code": "provider_timeout",
+                    "recoverable": True,
+                    "main_llm_no_answer_fallback": True,
+                },
+            )
+        )
+        state.set_response(
+            AgentResponse(
+                message="我刚才没有听清，请再说一遍。",
+                data={
+                    "native_runtime": True,
+                    "main_llm_no_answer_fallback": True,
+                    "errors": [
+                        {
+                            "code": "provider_timeout",
+                            "message": "Chat provider request timed out.",
+                            "recoverable": True,
+                        }
+                    ],
+                },
+            )
+        )
+        return SimpleNamespace(state=state)
+
+    async def collect(event) -> None:
+        events.append(event)
+
+    backend = AgentGraphRealtimeBackend(run_request=fake_run_assistant_request)
+    result = asyncio.run(
+        backend.run_turn(
+            RealtimeAgentRequest(user_id="user-1", session_id="session-1", text="hello"),
+            event_sink=collect,
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.response_text == "我刚才没有听清，请再说一遍。"
+    assert [event.text for event in events if event.type == "response.chunk"] == [
+        "我刚才没有听清，请再说一遍。"
+    ]
+    assert [event.text for event in events if event.type == "response.final"] == [
+        "我刚才没有听清，请再说一遍。"
+    ]
+    assert all(event.type != "error" for event in events)
 
 
 def test_agent_graph_realtime_backend_forwards_runtime_tool_trace_and_error_events() -> None:

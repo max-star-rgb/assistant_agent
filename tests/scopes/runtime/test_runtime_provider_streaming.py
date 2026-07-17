@@ -12,7 +12,7 @@ from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.llm_events import LLMEvent, LLMProviderError, LLMToolCallDelta
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.chat_adapter import ChatProviderError, ChatRequest, ChatResult
 from assistant_agent.services.event_sink import ListEventSink
 
 
@@ -226,6 +226,29 @@ def test_provider_stream_runner_converts_terminal_provider_error() -> None:
     assert result.errors[0].recoverable is True
 
 
+def test_provider_stream_runner_converts_empty_terminal_response() -> None:
+    adapter = ScriptedStreamingChatAdapter(
+        [
+            [
+                LLMEvent(
+                    event_type="completed",
+                    provider="scripted-stream",
+                    model="stream-model",
+                    finish_reason="stop",
+                )
+            ]
+        ]
+    )
+
+    result = ProviderStreamingTurnRunner().run_turn(adapter, chat_request())
+
+    assert result.success is False
+    assert result.provider == "scripted-stream"
+    assert result.model == "stream-model"
+    assert result.errors[0].code == "provider_empty_response"
+    assert result.errors[0].recoverable is True
+
+
 class CancellingStreamingChatAdapter(ScriptedStreamingChatAdapter):
     def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
         async def stream() -> AsyncIterator[LLMEvent]:
@@ -404,9 +427,10 @@ def test_runtime_streaming_tool_call_runs_through_tool_chain_without_argument_de
     assert state.response.message == "已找到"
 
 
-def test_runtime_streaming_provider_error_maps_to_task_failed_agent_event() -> None:
-    adapter = StreamingAndSyncChatAdapter(
-        [
+@pytest.mark.parametrize(
+    ("events", "expected_code"),
+    [
+        (
             [
                 LLMEvent(
                     event_type="error",
@@ -418,8 +442,28 @@ def test_runtime_streaming_provider_error_maps_to_task_failed_agent_event() -> N
                         recoverable=True,
                     ),
                 )
-            ]
-        ],
+            ],
+            "provider_timeout",
+        ),
+        (
+            [
+                LLMEvent(
+                    event_type="completed",
+                    provider="scripted-stream",
+                    model="stream-model",
+                    finish_reason="stop",
+                )
+            ],
+            "provider_empty_response",
+        ),
+    ],
+)
+def test_runtime_streaming_recoverable_main_llm_no_answer_returns_retry_prompt(
+    events: list[LLMEvent],
+    expected_code: str,
+) -> None:
+    adapter = StreamingAndSyncChatAdapter(
+        [events],
         ChatResult(
             response_text="sync answer",
             finish_reason="stop",
@@ -436,17 +480,54 @@ def test_runtime_streaming_provider_error_maps_to_task_failed_agent_event() -> N
     ).run_state(UserRequest(user_id="u1", session_id="s1", text="hello"), event_sink=sink)
 
     assert adapter.chat_calls == 0
-    assert state.status == "failed"
-    assert state.errors[-1].details["code"] == "provider_timeout"
-    failed_events = [event for event in sink.events if event.type == "task_failed"]
-    assert len(failed_events) == 1
-    assert failed_events[0].error == {
-        "code": "PROVIDER_TIMEOUT",
-        "message": "处理失败：provider_timeout: Chat provider request timed out.",
-        "detail": {"source": "native_runtime", "retryable": True},
-        "recoverable": True,
-    }
-    assert all(event.type != "final_response" for event in sink.events)
+    assert state.status == "completed"
+    assert state.response is not None
+    assert state.response.message == "我刚才没有听清，请再说一遍。"
+    assert state.response.data["main_llm_no_answer_fallback"] is True
+    assert state.response.data["errors"][0]["code"] == expected_code
+    assert state.errors[-1].details["code"] == expected_code
+    assert state.errors[-1].details["recoverable"] is True
+    assert all(event.type != "task_failed" for event in sink.events)
+    assert [event.text for event in sink.events if event.type == "response_delta"] == [
+        "我刚才没有听清，请再说一遍。"
+    ]
+    assert [event.text for event in sink.events if event.type == "final_response"] == [
+        "我刚才没有听清，请再说一遍。"
+    ]
+
+
+def test_runtime_sync_recoverable_main_llm_no_answer_returns_retry_prompt() -> None:
+    adapter = StreamingAndSyncChatAdapter(
+        [],
+        ChatResult(
+            response_text="",
+            finish_reason="stop",
+            message_kind="empty",
+            provider="scripted-sync",
+            model="sync-model",
+            errors=[
+                ChatProviderError(
+                    code="provider_empty_response",
+                    message="chat provider returned empty content",
+                    recoverable=False,
+                )
+            ],
+        ),
+    )
+    sink = ListEventSink()
+
+    state = AgentGraphRuntime(
+        config=ProviderConfig(native_provider_streaming=False),
+        chat_adapter=adapter,
+    ).run_state(UserRequest(user_id="u1", session_id="s1", text="hello"), event_sink=sink)
+
+    assert adapter.chat_calls == 1
+    assert state.status == "completed"
+    assert state.response is not None
+    assert state.response.message == "我刚才没有听清，请再说一遍。"
+    assert state.response.data["fallback_reason"] == "provider_empty_response"
+    assert state.response.data["errors"][0]["recoverable"] is True
+    assert all(event.type != "task_failed" for event in sink.events)
 
 
 def test_runtime_streaming_cancelled_error_propagates_without_task_failed_event() -> None:

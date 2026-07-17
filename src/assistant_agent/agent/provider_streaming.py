@@ -75,12 +75,32 @@ class ProviderStreamingTurnRunner:
         response_text = accumulator.response_text
         tool_calls = accumulator.finalize_tool_calls(provider_format="openai_compatible")
         result_provider = accumulator.provider or provider
+        message_kind = _message_kind(tool_calls=tool_calls, refusal=refusal, content=response_text)
+        if message_kind == "empty":
+            return ChatResult(
+                response_text="",
+                tool_calls=[],
+                finish_reason=accumulator.finish_reason,
+                message_kind="empty",
+                provider=result_provider,
+                model=accumulator.model or model,
+                usage=accumulator.usage,
+                latency_ms=_elapsed_ms(started_at),
+                errors=[
+                    ChatProviderError(
+                        code="provider_empty_response",
+                        message="chat provider returned empty content",
+                        recoverable=True,
+                    )
+                ],
+                output_ref=f"provider://chat/{result_provider}",
+            )
         return ChatResult(
             response_text=response_text,
             tool_calls=tool_calls,
             finish_reason=accumulator.finish_reason,
             refusal=refusal,
-            message_kind=_message_kind(tool_calls=tool_calls, refusal=refusal, content=response_text),
+            message_kind=message_kind,
             provider=result_provider,
             model=accumulator.model or model,
             usage=accumulator.usage,

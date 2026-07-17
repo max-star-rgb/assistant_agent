@@ -1092,6 +1092,32 @@ def test_agent_service_stream_false_sends_one_terminal_packet(tmp_path: Path) ->
     assert _body(packets[0])["deliveryId"] == delivery.delivery_id
 
 
+def test_agent_service_main_llm_no_answer_fallback_is_success_terminal_packet(
+    tmp_path: Path,
+) -> None:
+    class FallbackFacade:
+        async def run_turn(self, request):
+            assert request.config["response_streaming"] is False
+            return _completed_turn("我刚才没有听清，请再说一遍。")
+
+    packets, delivery = asyncio.run(
+        _run_prepared_chat_delivery(
+            tmp_path=tmp_path,
+            facade=FallbackFacade(),
+            stream=False,
+        )
+    )
+
+    assert len(packets) == 1
+    body = _body(packets[0])
+    assert body["message"]["content"]["intentResult"] == {
+        "status": "SUCCESS",
+        "description": "我刚才没有听清，请再说一遍。",
+    }
+    assert body["final"] is True
+    assert body["deliveryId"] == delivery.delivery_id
+
+
 def test_agent_service_shopping_detail_is_sent_in_terminal_chat_response(tmp_path: Path) -> None:
     detail_text = (
         "推荐这款蓝牙耳机。\n<detail>\n1. 淘宝 - 蓝牙耳机 29.9元 "

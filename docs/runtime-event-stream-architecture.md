@@ -49,6 +49,17 @@ usage, provider, and model into the existing terminal `ChatResult` contract.
 Tool-call argument deltas are not exposed as user-visible response events.
 Provider errors become structured `ChatResult.errors`; cancellation exceptions
 remain cancellation signals rather than provider errors.
+If a provider stream ends with `completed` but no text, tool calls, or refusal,
+the runner normalizes it to `provider_empty_response` so sync and streaming chat
+paths share the same empty-output contract.
+
+For the main foreground chat LLM only, `provider_timeout` and
+`provider_empty_response` with no usable text/tool/refusal are treated as a
+recoverable no-answer condition. The runtime records the structured provider
+diagnostic in state metadata, response data, and trace events, but completes the
+run with the user-visible fallback `我刚才没有听清，请再说一遍。` instead of emitting
+`task_failed`. Tool providers, vision/search providers, durable-task provider
+calls, and cancellation paths do not use this fallback.
 
 Native provider-stream consumption is selective and opt-in through
 `ProviderConfig.native_provider_streaming`. When enabled and the adapter exposes

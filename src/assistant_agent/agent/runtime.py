@@ -112,6 +112,9 @@ PROGRESS_MESSAGES = {
     "image_generation": "我开始生成，可能需要一点时间。",
 }
 
+MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGE = "我刚才没有听清，请再说一遍。"
+_MAIN_LLM_NO_ANSWER_ERROR_CODES = frozenset({"provider_timeout", "provider_empty_response"})
+
 
 def progress_message_for_tool(tool_name: str, *, tool_spec: ToolSpec | None = None) -> str:
     """Return the deterministic user-visible wait message for a tool."""
@@ -1028,6 +1031,17 @@ class AgentGraphRuntime:
                 },
                 error=_chat_result_error(result),
             )
+            if _main_llm_no_answer_error(result) is not None:
+                if stream_buffer is not None:
+                    stream_buffer.discard()
+                self._set_native_runtime_no_answer_fallback_response(
+                    state,
+                    result,
+                    observations=observations,
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                )
+                return state
             if result.success:
                 proposed_call = result.tool_calls[0] if len(result.tool_calls) == 1 else None
                 proposed_decision = (
@@ -1408,6 +1422,15 @@ class AgentGraphRuntime:
             },
             error=_chat_result_error(result),
         )
+        if _main_llm_no_answer_error(result) is not None:
+            self._set_native_runtime_no_answer_fallback_response(
+                state,
+                result,
+                observations=observations,
+                iteration=iteration + 1,
+                max_iterations=max_iterations,
+            )
+            return True
         if result.success and not result.tool_calls:
             self._set_native_runtime_response(state, result, observations)
             if state.response is not None:
@@ -1517,6 +1540,93 @@ class AgentGraphRuntime:
             input_size_bytes=len((request.text or "").encode("utf-8")),
             latency_ms=result.latency_ms,
             status="succeeded" if result.success else "failed",
+        )
+
+    def _set_native_runtime_no_answer_fallback_response(
+        self,
+        state: AgentState,
+        result: Any,
+        *,
+        observations: list[dict[str, Any]],
+        iteration: int,
+        max_iterations: int,
+    ) -> None:
+        response_started_at = perf_counter()
+        error = _main_llm_no_answer_error(result)
+        errors = [_chat_error_dump(item) for item in getattr(result, "errors", [])]
+        code = getattr(error, "code", "provider_unknown_error")
+        recoverable = True
+        metadata = state.request.metadata
+        metadata["native_runtime_main_llm_no_answer_fallback"] = True
+        metadata["native_runtime_main_llm_no_answer_error_code"] = code
+        details = {
+            "code": code,
+            "retryable": recoverable,
+            "recoverable": recoverable,
+            "main_llm_no_answer_fallback": True,
+            "errors": errors,
+        }
+        state.errors.append(
+            AgentError(
+                message="主 LLM 未返回可用回答，已提示用户重试。",
+                source="native_runtime",
+                details=details,
+            )
+        )
+        decision = AssistantDecision(
+            type="final_answer",
+            message=MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGE,
+            reason="main_llm_no_answer_fallback",
+            safety_notes=["main_llm_no_answer_fallback"],
+        )
+        _record_native_decision_metadata(
+            state,
+            request=state.request,
+            decision=decision,
+            iteration=iteration,
+            max_iterations=max_iterations,
+            safety_notes=decision.safety_notes,
+        )
+        self._append_observability_event(
+            state,
+            canonical_event="react.decision",
+            node_name="native_runtime",
+            status=decision.type,
+            attributes={
+                "iteration": iteration + 1,
+                "decision_type": decision.type,
+                "reason": decision.reason,
+                "message_present": True,
+                "safety_notes": decision.safety_notes,
+                "error_code": code,
+            },
+        )
+        state.set_response(
+            AgentResponse(
+                message=MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGE,
+                data={
+                    "native_runtime": True,
+                    "main_llm_no_answer_fallback": True,
+                    "fallback_reason": code,
+                    "provider": result.provider,
+                    "model": result.model,
+                    "usage": result.usage,
+                    "finish_reason": result.finish_reason,
+                    "message_kind": result.message_kind,
+                    "tool_count": len(state.tool_calls),
+                    "tool_observations": len(observations),
+                    "errors": errors,
+                    "provider_budget": state.provider_budget.summary(),
+                },
+            )
+        )
+        append_response_final_event(
+            trace_store=self.trace_store,
+            trace_id=state.trace_id,
+            node_name="native_runtime",
+            state=state,
+            source="native_runtime",
+            latency_ms=int((perf_counter() - response_started_at) * 1000),
         )
 
     def _set_native_runtime_response(
@@ -1834,10 +1944,43 @@ def _chat_result_error(result: Any) -> dict[str, Any] | None:
     if not errors:
         return None
     first = errors[0]
+    code = getattr(first, "code", "provider_unknown_error")
     return {
-        "code": getattr(first, "code", "provider_unknown_error"),
+        "code": code,
         "message": getattr(first, "message", "provider error"),
-        "recoverable": getattr(first, "recoverable", False),
+        "recoverable": True if code in _MAIN_LLM_NO_ANSWER_ERROR_CODES else getattr(first, "recoverable", False),
+    }
+
+
+def _main_llm_no_answer_error(result: Any) -> Any | None:
+    errors = getattr(result, "errors", None)
+    if not errors:
+        return None
+    first = errors[0]
+    code = getattr(first, "code", "")
+    if code not in _MAIN_LLM_NO_ANSWER_ERROR_CODES:
+        return None
+    if (getattr(result, "response_text", "") or "").strip():
+        return None
+    if getattr(result, "tool_calls", None):
+        return None
+    if getattr(result, "refusal", None):
+        return None
+    return first
+
+
+def _chat_error_dump(error: Any) -> dict[str, Any]:
+    if hasattr(error, "model_dump"):
+        dumped = error.model_dump(mode="json")
+        if isinstance(dumped, dict):
+            if dumped.get("code") in _MAIN_LLM_NO_ANSWER_ERROR_CODES:
+                dumped["recoverable"] = True
+            return dumped
+    code = getattr(error, "code", "provider_unknown_error")
+    return {
+        "code": code,
+        "message": getattr(error, "message", "provider error"),
+        "recoverable": True if code in _MAIN_LLM_NO_ANSWER_ERROR_CODES else getattr(error, "recoverable", False),
     }
 
 
