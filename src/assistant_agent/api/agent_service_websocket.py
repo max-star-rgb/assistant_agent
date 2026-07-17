@@ -49,6 +49,7 @@ FAIL_CODE = "FAIL"
 POLICY_VIOLATION_CLOSE_CODE = 1008
 VIDEO_TURN_TIMEOUT_SECONDS = 90.0
 CHAT_PROGRESS_INTERVAL_SECONDS = 15.0
+NORMAL_WEBSOCKET_CLOSE_CODES = frozenset({1000, 1001})
 
 
 @dataclass
@@ -541,6 +542,11 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             await _send_response(websocket, response, state=state)
     except WebSocketDisconnect as exc:
         close_code, close_reason = exc.code, exc.reason
+        _log_agent_service_abnormal_disconnect_if_needed(
+            state,
+            close_code=close_code,
+            close_reason=close_reason,
+        )
     except Exception:
         state.failure_count += 1
         raise
@@ -565,6 +571,29 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             state.sent_bytes,
             state.failure_count,
         )
+
+
+def _log_agent_service_abnormal_disconnect_if_needed(
+    state: AgentServiceConnectionState,
+    *,
+    close_code: int | None,
+    close_reason: str | None,
+) -> None:
+    if close_code is None or close_code in NORMAL_WEBSOCKET_CLOSE_CODES:
+        return
+    state.failure_count += 1
+    logger.error(
+        "agent-service websocket abnormal disconnect session_digest=%s code=%s "
+        "reason_present=%s messages_received=%s messages_sent=%s video_packets=%s "
+        "active_chat_tasks=%s",
+        digest_identifier(state.session_id),
+        close_code,
+        bool(close_reason),
+        state.received_message_count,
+        state.sent_message_count,
+        state.video_packet_count,
+        len(state.chat_tasks),
+    )
 
 
 async def _close_agent_service_connection(
@@ -1236,6 +1265,8 @@ async def _run_agent_service_chat_turn(
                 "entry_profile": "agent_service",
                 "response_streaming": stream_requested,
             },
+            cancel_source="gateway_disconnect",
+            cancel_reason="client_disconnected",
         )
         if on_stream_chunk is None:
             return await state.gateway_facade.run_turn(request)

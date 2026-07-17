@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes. Media-Agent `/agent-service/v1` wire-field details, examples, and H.264 payload constraints live in `docs/media-agent-service-websocket.md`.
 
@@ -210,9 +210,14 @@ acknowledged. Optional `clientCapabilities` negotiate prompt-free
 independently selects delta delivery; clients that send `stream=false` or omit
 it retain single-final-response behavior. Provider-token streaming is enabled
 for `stream=true`, while the runtime commit barrier continues to suppress
-tool-call preambles. Per-packet receive/send logs are DEBUG. Connection open/close,
-turn latency, ACK, and failures remain INFO/WARNING, with one close INFO carrying
-message/video/byte/failure counters.
+tool-call preambles. If the media WebSocket disconnects while a detached chat
+turn is active, the entry cleanup cancels that task and the facade sends
+`run.cancel` with `source=gateway_disconnect` and
+`reason=client_disconnected` for the current Gateway run. Abnormal WebSocket
+close codes are logged at ERROR with only prompt-safe counters, code, digest and
+reason-presence metadata; normal close remains INFO. Per-packet receive/send
+logs are DEBUG. Turn latency, ACK, and ordinary protocol failures remain
+INFO/WARNING, with one close INFO carrying message/video/byte/failure counters.
 
 ## Gateway Responsibilities
 

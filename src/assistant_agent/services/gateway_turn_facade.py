@@ -82,6 +82,8 @@ class GatewayTurnRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
     timeout_s: float = 30.0
+    cancel_source: str = "gateway_cancel"
+    cancel_reason: str = "caller_cancelled"
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,8 @@ class GatewayTurnFacade:
                 turn_id=turn_id,
                 run_id=run_id,
                 timeout_s=request.timeout_s,
+                cancel_source=request.cancel_source,
+                cancel_reason=request.cancel_reason,
                 on_stream_chunk=on_stream_chunk,
             )
         finally:
@@ -179,6 +183,8 @@ class GatewayTurnFacade:
         turn_id: str,
         run_id: str,
         timeout_s: float,
+        cancel_source: str,
+        cancel_reason: str,
         on_stream_chunk: GatewayStreamChunkConsumer | None,
     ) -> GatewayTurnResult:
         frames: list[Frame] = []
@@ -208,6 +214,7 @@ class GatewayTurnFacade:
                                 session_id=session_id,
                                 turn_id=turn_id,
                                 run_id=run_id,
+                                source=cancel_source,
                                 reason="stream_consumer_failed",
                             )
                             raise
@@ -223,11 +230,22 @@ class GatewayTurnFacade:
                 session_id=session_id,
                 turn_id=turn_id,
                 run_id=run_id,
+                source="gateway_cancel",
                 reason="facade_timeout",
             )
             raise GatewayTurnTimeout(
                 f"Gateway turn timed out after {timeout_s:.3g}s before run.end"
             ) from exc
+        except asyncio.CancelledError:
+            await _best_effort_cancel(
+                endpoint,
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                source=cancel_source,
+                reason=cancel_reason,
+            )
+            raise
 
 
 async def _best_effort_cancel(
@@ -236,6 +254,7 @@ async def _best_effort_cancel(
     session_id: str,
     turn_id: str,
     run_id: str,
+    source: str,
     reason: str,
 ) -> None:
     try:
@@ -245,7 +264,7 @@ async def _best_effort_cancel(
                 session_id=session_id,
                 turn_id=turn_id,
                 run_id=run_id,
-                payload={"source": "gateway_cancel", "reason": reason},
+                payload={"source": source, "reason": reason},
             )
         )
     except Exception:

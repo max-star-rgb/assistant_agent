@@ -154,6 +154,32 @@ def test_agent_service_connection_log_excludes_query_values_and_raw_session_id(
     assert "session_digest=" in output
 
 
+def test_agent_service_abnormal_disconnect_logs_error_without_raw_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="raw-session-secret",
+        query_params={},
+    )
+    state.received_message_count = 2
+    state.sent_message_count = 1
+
+    with caplog.at_level(logging.ERROR, logger="assistant_agent.api.agent_service_websocket"):
+        agent_service_ws._log_agent_service_abnormal_disconnect_if_needed(
+            state,
+            close_code=1006,
+            close_reason="contains private disconnect reason",
+        )
+
+    output = caplog.text
+    assert "agent-service websocket abnormal disconnect" in output
+    assert "code=1006" in output
+    assert "reason_present=True" in output
+    assert "raw-session-secret" not in output
+    assert "contains private disconnect reason" not in output
+    assert state.failure_count == 1
+
+
 def test_agent_service_start_ack_accepts_media_envelope() -> None:
     client = TestClient(create_app())
 
@@ -267,6 +293,37 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
         "supports_semantic_interrupt": False,
         "supports_shopping_detail_v1": True,
     }
+
+
+def test_agent_service_chat_turn_uses_disconnect_cancel_metadata_for_facade() -> None:
+    captured = {}
+
+    class CapturingFacade:
+        async def run_turn(self, request, *, on_stream_chunk=None):
+            captured["request"] = request
+            return _completed_turn("ok")
+
+    state = agent_service_ws.AgentServiceConnectionState(
+        session_id="s1",
+        query_params={},
+        gateway_facade=CapturingFacade(),
+    )
+
+    turn = asyncio.run(
+        agent_service_ws._run_agent_service_chat_turn(
+            state=state,
+            session_id="s1",
+            user_number="10086",
+            chat_index="chat-disconnect-cancel",
+            latest_speech="你好",
+            contents=[{"speechContent": "你好"}],
+        )
+    )
+
+    request = captured["request"]
+    assert turn.status == "completed"
+    assert request.cancel_source == "gateway_disconnect"
+    assert request.cancel_reason == "client_disconnected"
 
 
 def test_agent_service_chat_appends_correlated_turn_latency_trace(

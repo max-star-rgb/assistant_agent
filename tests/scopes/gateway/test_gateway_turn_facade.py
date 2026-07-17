@@ -155,6 +155,61 @@ class GatewayTurnFacadeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await manager.close()
 
+    async def test_caller_cancellation_sends_configured_cancel_metadata(self) -> None:
+        class CancellableBackend:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.cancelled = asyncio.Event()
+                self.cancel_metadata = None
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.started.set()
+                await cancel_token.cancelled()
+                self.cancel_metadata = dict(cancel_token.cancel_metadata)
+                self.cancelled.set()
+                return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+
+        backend = CancellableBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            start_reaper=False,
+        )
+        facade = GatewayTurnFacade(manager=manager)
+        turn_task: asyncio.Task | None = None
+
+        try:
+            turn_task = asyncio.create_task(
+                facade.run_turn(
+                    GatewayTurnRequest(
+                        user_id="u1",
+                        session_id="s1",
+                        text="wait",
+                        timeout_s=5.0,
+                        cancel_source="gateway_disconnect",
+                        cancel_reason="client_disconnected",
+                    )
+                )
+            )
+            await asyncio.wait_for(backend.started.wait(), timeout=1.0)
+            turn_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await turn_task
+            await asyncio.wait_for(backend.cancelled.wait(), timeout=1.0)
+
+            assert backend.cancel_metadata["cancel_source"] == "gateway_disconnect"
+            assert backend.cancel_metadata["cancel_reason"] == "client_disconnected"
+
+            async def _wait_for_release() -> None:
+                while (await manager.admission_controller.snapshot()).active_runs:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_wait_for_release(), timeout=1.0)
+        finally:
+            if turn_task is not None and not turn_task.done():
+                turn_task.cancel()
+                await asyncio.gather(turn_task, return_exceptions=True)
+            await manager.close()
+
     async def test_stream_consumer_failure_cancels_and_releases_backend_run(self) -> None:
         class CancellableStreamingBackend:
             def __init__(self) -> None:
