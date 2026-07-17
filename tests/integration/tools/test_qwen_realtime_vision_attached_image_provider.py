@@ -15,17 +15,24 @@ from assistant_agent.providers.qwen_realtime_vision import (
     QwenRealtimeVisionAdapter,
 )
 from assistant_agent.schemas.perception import VideoUnderstandingRequest
-from assistant_agent.services.video_adapter import create_realtime_video_understanding_adapter
+from assistant_agent.schemas.tool_observation import observation_from_tool_result
+from assistant_agent.services.video_adapter import (
+    create_realtime_video_understanding_adapter,
+)
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ATTACHED_IMAGE_1 = Path("/home/lenovo1/图片/0717619c-e0de-4fe7-b21c-50b6754eb8b8.png")
-DOWNSAMPLED_IMAGE_1_JPEG = REPO_ROOT / ".local" / "integration" / "tools" / "image-1-cake-480p.jpg"
+DOWNSAMPLED_IMAGE_1_JPEG = (
+    REPO_ROOT / ".local" / "integration" / "tools" / "image-1-cake-480p.jpg"
+)
 
 
-def _configured_qwen_tool() -> tuple[VideoUnderstandingTool, QwenRealtimeVisionAdapter, ProviderConfig]:
+def _configured_qwen_tool() -> tuple[
+    VideoUnderstandingTool, QwenRealtimeVisionAdapter, ProviderConfig
+]:
     if not _real_provider_tool_selected():
         pytest.skip("run this file directly, or set RUN_REAL_VLM_IMAGE_TEST=1")
     env = {
@@ -83,7 +90,9 @@ def _attached_image_as_jpeg() -> Path:
     try:
         completed = subprocess.run(command, check=False, capture_output=True)
     except OSError:
-        pytest.skip("/usr/bin/ffmpeg is required to convert Image #1 to the JPEG VLM input")
+        pytest.skip(
+            "/usr/bin/ffmpeg is required to convert Image #1 to the JPEG VLM input"
+        )
     if completed.returncode != 0:
         message = completed.stderr.decode("utf-8", errors="replace")
         pytest.fail(f"failed to downsample Image #1 to 480p JPEG: {message}")
@@ -117,11 +126,30 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
 
     with capsys.disabled():
         print("\n=== VLM PROVIDER CONFIG ===", flush=True)
-        print(json.dumps(_provider_config_diagnostics(config), ensure_ascii=False, indent=2), flush=True)
+        print(
+            json.dumps(
+                _provider_config_diagnostics(config), ensure_ascii=False, indent=2
+            ),
+            flush=True,
+        )
         print("\n=== VLM RAW OUTPUT ===", flush=True)
-        print(adapter.last_raw_response_text or "<no raw VLM text received>", flush=True)
+        print(
+            adapter.last_raw_response_text or "<no raw VLM text received>", flush=True
+        )
         print("=== TOOL RESULT ===", flush=True)
-        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2), flush=True)
+        print(
+            json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            flush=True,
+        )
+        print("=== FILTERED TOOL RESULT (LLM-FACING) ===", flush=True)
+        print(
+            json.dumps(
+                _filtered_tool_result_for_llm(result),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            flush=True,
+        )
         print("=== SUCCESS LAYERS ===", flush=True)
         print(
             json.dumps(
@@ -144,6 +172,11 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
     )
 
 
+def _filtered_tool_result_for_llm(result) -> dict[str, object]:
+    observation = observation_from_tool_result(result)
+    return observation.model_dump(mode="json")
+
+
 def _success_layers(result, adapter: QwenRealtimeVisionAdapter) -> dict[str, object]:
     data = result.data if isinstance(result.data, dict) else {}
     errors = data.get("errors")
@@ -151,14 +184,23 @@ def _success_layers(result, adapter: QwenRealtimeVisionAdapter) -> dict[str, obj
     summary = data.get("summary")
     source = data.get("source")
     execution_success = result.success is True
-    semantic_success = execution_success and isinstance(summary, str) and bool(summary) and not data_errors
-    snapshot_publishable = semantic_success and source == "background_keyframe_observation"
+    semantic_success = (
+        execution_success
+        and isinstance(summary, str)
+        and bool(summary)
+        and not data_errors
+    )
+    snapshot_publishable = (
+        semantic_success and source == "background_keyframe_observation"
+    )
     return {
         "execution_success": execution_success,
         "semantic_success": semantic_success,
         "snapshot_publishable": snapshot_publishable,
         "tool_success": result.success,
-        "contract_status": result.contract.status if result.contract is not None else None,
+        "contract_status": result.contract.status
+        if result.contract is not None
+        else None,
         "source": source,
         "error": result.error,
         "data_errors": data_errors,
