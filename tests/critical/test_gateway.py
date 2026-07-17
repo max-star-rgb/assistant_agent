@@ -87,6 +87,100 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(bridge_task, return_exceptions=True)
             await manager.close()
 
+    async def test_reconnect_after_disconnect_cancel_can_start_new_run(self) -> None:
+        class ReconnectBackend:
+            def __init__(self) -> None:
+                self.requests = []
+                self.first_started = asyncio.Event()
+                self.cancel_seen = asyncio.Event()
+
+            async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+                self.requests.append(request)
+                if request.text == "first waits":
+                    self.first_started.set()
+                    await cancel_token.cancelled()
+                    self.cancel_seen.set()
+                    return RealtimeAgentResult(status="cancelled", run_id=request.run_id)
+                return RealtimeAgentResult(
+                    status="completed",
+                    run_id=request.run_id,
+                    response_text="second completed",
+                )
+
+        backend = ReconnectBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            start_reaper=False,
+        )
+        bridge = GatewayBridge(session_manager=manager)
+        first_client_ep, first_bridge_ep = InMemoryDuplex.create_pair()
+        first_task = asyncio.create_task(
+            bridge.bridge(client_id="reconnect-first", client_ep=first_bridge_ep)
+        )
+        second_client_ep, second_bridge_ep = InMemoryDuplex.create_pair()
+        second_task: asyncio.Task | None = None
+
+        try:
+            await first_client_ep.send(
+                frame(type=CALL_INCOMING, user_id="reconnect-user", session_id="reconnect-session")
+            )
+            await _read_until(first_client_ep, CALL_READY)
+            await first_client_ep.send(
+                frame(
+                    type="message.user",
+                    user_id="reconnect-user",
+                    session_id="reconnect-session",
+                    payload={"text": "first waits", "run_id": "run-before-disconnect"},
+                )
+            )
+            first_started = await _read_until(first_client_ep, "run.started")
+            await asyncio.wait_for(backend.first_started.wait(), timeout=1.0)
+
+            await first_client_ep.close()
+            await asyncio.wait_for(first_task, timeout=1.0)
+            await asyncio.wait_for(backend.cancel_seen.wait(), timeout=1.0)
+
+            second_task = asyncio.create_task(
+                bridge.bridge(client_id="reconnect-second", client_ep=second_bridge_ep)
+            )
+            await second_client_ep.send(
+                frame(type=CALL_INCOMING, user_id="reconnect-user", session_id="reconnect-session")
+            )
+            ready = await _read_until(second_client_ep, CALL_READY)
+            await second_client_ep.send(
+                frame(
+                    type="message.user",
+                    user_id="reconnect-user",
+                    session_id="reconnect-session",
+                    payload={"text": "second starts", "run_id": "run-after-reconnect"},
+                )
+            )
+            second_started = await _read_until(second_client_ep, "run.started")
+            second_end = await _read_until(second_client_ep, "run.end")
+
+            assert ready["session_id"] == "reconnect-session"
+            assert ready["payload"]["session_managed"] is True
+            assert first_started["run_id"] == "run-before-disconnect"
+            assert second_started["run_id"] == "run-after-reconnect"
+            assert second_started["run_id"] != first_started["run_id"]
+            assert second_end["run_id"] == "run-after-reconnect"
+            assert second_end["reason"] == "completed"
+            assert [request.text for request in backend.requests] == [
+                "first waits",
+                "second starts",
+            ]
+        finally:
+            await first_bridge_ep.close()
+            if not first_task.done():
+                first_task.cancel()
+                await asyncio.gather(first_task, return_exceptions=True)
+            if second_task is not None:
+                await _close_bridge(second_client_ep, second_bridge_ep, second_task)
+            else:
+                await second_client_ep.close()
+                await second_bridge_ep.close()
+            await manager.close()
+
     async def test_new_same_user_bridge_evicts_idle_stale_connection(self) -> None:
         manager = GatewaySessionManager(start_reaper=False)
         bridge = GatewayBridge(session_manager=manager)
