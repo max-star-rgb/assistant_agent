@@ -48,7 +48,9 @@ class MemoryMediaIngestTool(MockTool):
         self.service = service or MemoryMediaIngestionService(remote_client=None)
 
     def _run(self, input: MemoryMediaIngestInput, context: ToolContext) -> ToolResult:
-        identity = _identity_from_context_or_input(context, input.user_id, input.session_id)
+        identity = _identity_from_context_or_input(
+            context, input.user_id, input.session_id
+        )
         if identity is None:
             return _missing_identity_result(self.name, capability="memory_media_ingest")
         result = self.service.ingest(identity=identity, files=input.files)
@@ -65,9 +67,13 @@ class MemoryIngestStatusTool(MockTool):
         self.service = service or MemoryMediaIngestionService(remote_client=None)
 
     def _run(self, input: MemoryIngestStatusInput, context: ToolContext) -> ToolResult:
-        identity = _identity_from_context_or_input(context, input.user_id, input.session_id)
+        identity = _identity_from_context_or_input(
+            context, input.user_id, input.session_id
+        )
         if identity is None:
-            return _missing_identity_result(self.name, capability="memory_ingest_status")
+            return _missing_identity_result(
+                self.name, capability="memory_ingest_status"
+            )
         result = self.service.task_status(identity=identity, task_id=input.task_id)
         return _status_tool_result(result)
 
@@ -88,7 +94,10 @@ def _identity_from_context_or_input(
 
 def _ingest_tool_result(result: MemoryMediaIngestionResult) -> ToolResult:
     data = result.model_dump(mode="json")
-    success = not result.errors and result.status not in {"failed", "provider_unconfigured"}
+    success = not result.errors and result.status not in {
+        "failed",
+        "provider_unconfigured",
+    }
     contract = build_capability_output_contract(
         capability="memory_media_ingest",
         status="succeeded" if success else "failed",
@@ -101,6 +110,7 @@ def _ingest_tool_result(result: MemoryMediaIngestionResult) -> ToolResult:
         tool_name=MemoryMediaIngestTool.name,
         success=success,
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_memory_media_model_observation(data),
         error=_first_error(result.errors),
         output_ref=result.output_ref,
         contract=contract,
@@ -109,7 +119,11 @@ def _ingest_tool_result(result: MemoryMediaIngestionResult) -> ToolResult:
 
 def _status_tool_result(result: MemoryMediaTaskStatusResult) -> ToolResult:
     data = result.model_dump(mode="json")
-    success = not result.errors and result.status not in {"failed", "provider_unconfigured", "not_found"}
+    success = not result.errors and result.status not in {
+        "failed",
+        "provider_unconfigured",
+        "not_found",
+    }
     contract = build_capability_output_contract(
         capability="memory_ingest_status",
         status="succeeded" if success else "failed",
@@ -122,6 +136,7 @@ def _status_tool_result(result: MemoryMediaTaskStatusResult) -> ToolResult:
         tool_name=MemoryIngestStatusTool.name,
         success=success,
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_memory_media_model_observation(data),
         error=_first_error(result.errors),
         output_ref=result.output_ref,
         contract=contract,
@@ -139,7 +154,17 @@ def _missing_identity_result(tool_name: str, *, capability: str) -> ToolResult:
         tool_name=tool_name,
         success=False,
         error=message,
-        data={"status": "missing_identity", "contract": contract.model_dump(mode="json")},
+        data={
+            "status": "missing_identity",
+            "contract": contract.model_dump(mode="json"),
+        },
+        model_observation={
+            "status": "missing_identity",
+            "summary": message,
+            "errors": [
+                {"code": "missing_identity", "message": message, "recoverable": True}
+            ],
+        },
         contract=contract,
     )
 
@@ -151,3 +176,36 @@ def _first_error(errors: list[dict[str, Any]]) -> str | None:
     code = str(first.get("code") or "tool_failed")
     message = str(first.get("message") or "Tool failed.")
     return f"{code}: {message}"
+
+
+def _memory_media_model_observation(data: dict[str, Any]) -> dict[str, Any]:
+    file_count = data.get("file_count")
+    if file_count is None and isinstance(data.get("files"), list):
+        file_count = len(data["files"])
+    observation: dict[str, Any] = {
+        "status": data.get("status"),
+        "summary": data.get("summary")
+        or _memory_media_summary(data, file_count=file_count),
+        "task_id": data.get("task_id"),
+        "file_count": file_count,
+        "scope_warning": data.get("scope_warning"),
+        "output_ref": data.get("output_ref"),
+        "errors": data.get("errors"),
+    }
+    return {
+        key: value
+        for key, value in observation.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _memory_media_summary(data: dict[str, Any], *, file_count: Any) -> str:
+    status = data.get("status") or "unknown"
+    if status in {"failed", "provider_unconfigured", "not_found"}:
+        errors = data.get("errors")
+        if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+            return str(errors[0].get("message") or "Memory media ingestion failed.")
+        return "Memory media ingestion failed."
+    if file_count:
+        return f"Memory media ingestion status: {status}; files: {file_count}."
+    return f"Memory media ingestion status: {status}."

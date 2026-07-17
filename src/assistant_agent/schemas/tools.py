@@ -38,7 +38,9 @@ class ToolSideEffectPolicy(BaseModel):
 
     level: ToolSideEffectLevel = "pending_confirmation"
     requires_confirmation: bool = True
-    description: str = "Unclassified tool; treat as requiring confirmation before irreversible work."
+    description: str = (
+        "Unclassified tool; treat as requiring confirmation before irreversible work."
+    )
     confirmation_kind: str | None = None
     compensation_hint: str | None = None
 
@@ -122,7 +124,12 @@ class ToolSelection(BaseModel):
 
 
 class ToolResult(BaseModel):
-    """Structured output from a tool execution."""
+    """Structured output from a tool execution.
+
+    ``data`` is the full runtime/API/trace payload. ``model_observation`` is the
+    tool-owned projection that the assistant loop may expose back to the main
+    LLM for reasoning and final-answer synthesis.
+    """
 
     tool_name: str = Field(min_length=1)
     success: bool

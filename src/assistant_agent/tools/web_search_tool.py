@@ -1,5 +1,7 @@
 """Web search tool backed by a provider adapter."""
 
+from typing import Any
+
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.schemas.web_search import WebSearchInput, WebSearchResult
@@ -24,6 +26,7 @@ class WebSearchTool(MockTool):
     def _run(self, input: WebSearchInput, context: ToolContext) -> ToolResult:
         result = self.adapter.search(input)
         data = result.model_dump(mode="json")
+        model_observation = _web_search_model_observation(data)
         contract = build_capability_output_contract(
             capability="web_search",
             status="failed" if result.errors else "succeeded",
@@ -43,6 +46,7 @@ class WebSearchTool(MockTool):
                 tool_name=self.name,
                 success=False,
                 data=data,
+                model_observation=model_observation,
                 error=f"{first_error.code}: {first_error.message}",
                 output_ref=result.output_ref,
                 latency_ms=result.latency_ms,
@@ -53,7 +57,34 @@ class WebSearchTool(MockTool):
             tool_name=self.name,
             success=True,
             data=data,
+            model_observation=model_observation,
             output_ref=result.output_ref,
             latency_ms=result.latency_ms,
             contract=contract,
         )
+
+
+def _web_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
+    observation: dict[str, Any] = {
+        "query_used": data.get("query_used"),
+        "total": data.get("total"),
+        "results": [
+            _web_result_model_observation(item)
+            for item in data.get("results", [])
+            if isinstance(item, dict)
+        ],
+    }
+    errors = data.get("errors")
+    if errors:
+        observation["errors"] = errors
+    return {
+        key: value for key, value in observation.items() if value not in (None, [], {})
+    }
+
+
+def _web_result_model_observation(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item[key]
+        for key in ("title", "url", "snippet", "source", "published_at")
+        if item.get(key) not in (None, "", [], {})
+    }

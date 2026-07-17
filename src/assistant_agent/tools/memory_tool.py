@@ -1,12 +1,16 @@
 """Mock memory tool."""
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from assistant_agent.memory.manager import MemoryConfirmationRequired, MemoryManager, MemorySaveCandidateResult
+from assistant_agent.memory.manager import (
+    MemoryConfirmationRequired,
+    MemoryManager,
+    MemorySaveCandidateResult,
+)
 from assistant_agent.memory.read_policy import memory_usage_hint, trust_policy_metadata
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryItem
@@ -22,7 +26,9 @@ class MemoryInput(BaseModel):
     session_id: str | None = None
     query: str | None = None
     content: dict = Field(default_factory=dict)
-    source_intent: Literal["user_explicit", "assistant_candidate", "user_confirmed"] | None = None
+    source_intent: (
+        Literal["user_explicit", "assistant_candidate", "user_confirmed"] | None
+    ) = None
     source_reason: str | None = None
     future_use: str | None = None
     evidence: str | None = None
@@ -48,7 +54,9 @@ class MemorySaveInput(BaseModel):
     session_id: str | None = None
     query: str | None = None
     content: dict = Field(default_factory=dict)
-    source_intent: Literal["user_explicit", "assistant_candidate", "user_confirmed"] | None = None
+    source_intent: (
+        Literal["user_explicit", "assistant_candidate", "user_confirmed"] | None
+    ) = None
     source_reason: str | None = None
     future_use: str | None = None
     evidence: str | None = None
@@ -67,11 +75,21 @@ class MemoryTool(MockTool):
                 contract = build_capability_output_contract(
                     capability="memory_retrieval",
                     status="failed",
-                    errors=[{"code": "missing_required_input", "message": "缺少检索 query，无法检索记忆", "recoverable": True}],
+                    errors=[
+                        {
+                            "code": "missing_required_input",
+                            "message": "缺少检索 query，无法检索记忆",
+                            "recoverable": True,
+                        }
+                    ],
                 )
                 return ToolResult(
                     tool_name=self.name,
                     success=False,
+                    model_observation=_memory_error_model_observation(
+                        "缺少检索 query，无法检索记忆",
+                        code="missing_required_input",
+                    ),
                     error="缺少检索 query，无法检索记忆",
                     contract=contract,
                 )
@@ -95,13 +113,23 @@ class MemoryTool(MockTool):
                 capability="memory_retrieval",
                 status="succeeded",
                 output_ref="mock://memory/m1",
-                data={"items": [item.model_dump(mode="json")], "memory_context": item.summary},
+                data={
+                    "items": [item.model_dump(mode="json")],
+                    "memory_context": item.summary,
+                },
                 metadata={"provider": "mock", "source": "memory"},
             )
             return ToolResult(
                 tool_name=self.name,
                 success=True,
                 data={**data, "contract": contract.model_dump(mode="json")},
+                model_observation=_memory_retrieval_model_observation(
+                    {
+                        **data,
+                        "memory_context": item.summary,
+                        "total": 1,
+                    }
+                ),
                 output_ref="mock://memory/m1",
                 latency_ms=1,
                 contract=contract,
@@ -120,7 +148,8 @@ class MemoryTool(MockTool):
                 MemorySaveCandidateResult(
                     candidate_id=f"memory_candidate_{uuid4().hex}",
                     user_id=input.user_id,
-                    session_id=input.session_id or str(input.content.get("session_id") or "default"),
+                    session_id=input.session_id
+                    or str(input.content.get("session_id") or "default"),
                     summary=text,
                     source_reason=input.source_reason or "",
                     future_use=input.future_use or "",
@@ -172,7 +201,15 @@ def _dedicated_memory_input(
 ) -> MemoryInput | ToolResult:
     user_id = context.user_id or input.user_id
     if not user_id:
-        return ToolResult(tool_name=tool_name, success=False, error="缺少用户身份，无法访问记忆")
+        return ToolResult(
+            tool_name=tool_name,
+            success=False,
+            model_observation=_memory_error_model_observation(
+                "缺少用户身份，无法访问记忆",
+                code="missing_identity",
+            ),
+            error="缺少用户身份，无法访问记忆",
+        )
     return MemoryInput(
         action=action,
         user_id=user_id,
@@ -201,9 +238,15 @@ def _retrieve_with_manager(
     tool_name: str,
     context: ToolContext,
 ) -> ToolResult | None:
-    identity = RequestIdentity.for_user(user_id=input.user_id, session_id=input.session_id)
-    request_text = str(context.metadata.get("request_text") or input.content.get("request_text") or "").strip()
-    metadata = context.metadata.get("request_metadata") or input.content.get("request_metadata")
+    identity = RequestIdentity.for_user(
+        user_id=input.user_id, session_id=input.session_id
+    )
+    request_text = str(
+        context.metadata.get("request_text") or input.content.get("request_text") or ""
+    ).strip()
+    metadata = context.metadata.get("request_metadata") or input.content.get(
+        "request_metadata"
+    )
     metadata = metadata if isinstance(metadata, dict) else {}
     if request_text:
         decision = manager.read_policy.decide_tool_retrieval(
@@ -211,7 +254,9 @@ def _retrieve_with_manager(
             query_text=input.query or "",
             metadata=metadata,
             top_k=_int_content(input.content, "top_k", default=5),
-            max_context_chars=_int_content(input.content, "max_context_chars", default=500),
+            max_context_chars=_int_content(
+                input.content, "max_context_chars", default=500
+            ),
         )
     else:
         decision = manager.read_policy.decide_tool_retrieval(
@@ -219,7 +264,9 @@ def _retrieve_with_manager(
             query_text=input.query or "",
             metadata={"memory_read_intent": True},
             top_k=_int_content(input.content, "top_k", default=5),
-            max_context_chars=_int_content(input.content, "max_context_chars", default=500),
+            max_context_chars=_int_content(
+                input.content, "max_context_chars", default=500
+            ),
         )
     if not decision.allowed:
         return _memory_read_rejected_result(tool_name, decision.prompt_safe_metadata())
@@ -261,13 +308,16 @@ def _retrieve_with_manager(
         tool_name=tool_name,
         success=True,
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_memory_retrieval_model_observation(data),
         output_ref=output_ref,
         latency_ms=1,
         contract=contract,
     )
 
 
-def _memory_read_rejected_result(tool_name: str, decision: dict[str, object]) -> ToolResult:
+def _memory_read_rejected_result(
+    tool_name: str, decision: dict[str, object]
+) -> ToolResult:
     trust_policy = trust_policy_metadata()
     usage_hint = memory_usage_hint()
     data = {
@@ -290,12 +340,17 @@ def _memory_read_rejected_result(tool_name: str, decision: dict[str, object]) ->
                 "recoverable": True,
             }
         ],
-        metadata={"provider": "local", "source": "memory_manager", "trust_policy": trust_policy},
+        metadata={
+            "provider": "local",
+            "source": "memory_manager",
+            "trust_policy": trust_policy,
+        },
     )
     return ToolResult(
         tool_name=tool_name,
         success=False,
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_memory_retrieval_model_observation(data),
         error="memory retrieval requires an explicit request for prior memory.",
         latency_ms=1,
         contract=contract,
@@ -308,7 +363,11 @@ def _save_with_manager(
     manager: MemoryManager,
     tool_name: str,
 ) -> ToolResult:
-    session_id = input.session_id or context.session_id or str(input.content.get("session_id") or "default")
+    session_id = (
+        input.session_id
+        or context.session_id
+        or str(input.content.get("session_id") or "default")
+    )
     text = _explicit_save_text(input)
     if not text:
         return _missing_memory_save_content(tool_name)
@@ -380,13 +439,16 @@ def _save_with_manager(
         tool_name=tool_name,
         success=True,
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_memory_save_model_observation(data),
         output_ref=output_ref,
         latency_ms=1,
         contract=contract,
     )
 
 
-def _memory_confirmation_required_result(tool_name: str, exc: MemoryConfirmationRequired) -> ToolResult:
+def _memory_confirmation_required_result(
+    tool_name: str, exc: MemoryConfirmationRequired
+) -> ToolResult:
     confirmation = exc.confirmation
     data = {
         "status": "confirmation_required",
@@ -398,7 +460,9 @@ def _memory_confirmation_required_result(tool_name: str, exc: MemoryConfirmation
         "fact_key": confirmation.fact_key,
         "summary": confirmation.summary,
         "reason": confirmation.reason,
-        "expires_at": confirmation.expires_at.isoformat() if confirmation.expires_at else None,
+        "expires_at": confirmation.expires_at.isoformat()
+        if confirmation.expires_at
+        else None,
     }
     output_ref = f"local://memory/confirmations/{confirmation.confirmation_id}"
     contract = build_capability_output_contract(
@@ -413,12 +477,17 @@ def _memory_confirmation_required_result(tool_name: str, exc: MemoryConfirmation
                 "recoverable": True,
             }
         ],
-        metadata={"provider": "local", "source": "memory_manager", "requires_confirmation": True},
+        metadata={
+            "provider": "local",
+            "source": "memory_manager",
+            "requires_confirmation": True,
+        },
     )
     return ToolResult(
         tool_name=tool_name,
         success=False,
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_memory_save_model_observation(data),
         error="记忆包含需要用户确认的敏感内容，确认后才会保存。",
         output_ref=output_ref,
         latency_ms=1,
@@ -445,11 +514,24 @@ def _memory_save_rejected_result(tool_name: str, reason: str) -> ToolResult:
         error=reason or "记忆写入被策略拒绝。",
         latency_ms=1,
         contract=contract,
-        data={"status": "rejected", "written": False, "contract": contract.model_dump(mode="json")},
+        data={
+            "status": "rejected",
+            "written": False,
+            "contract": contract.model_dump(mode="json"),
+        },
+        model_observation=_memory_save_model_observation(
+            {
+                "status": "rejected",
+                "written": False,
+                "reason": reason or "记忆写入被策略拒绝。",
+            }
+        ),
     )
 
 
-def _mock_memory_saved_result(tool_name: str, input: MemoryInput, text: str) -> ToolResult:
+def _mock_memory_saved_result(
+    tool_name: str, input: MemoryInput, text: str
+) -> ToolResult:
     memory_id = "m_saved_1"
     session_id = input.session_id or str(input.content.get("session_id") or "default")
     data = {
@@ -479,19 +561,26 @@ def _mock_memory_saved_result(tool_name: str, input: MemoryInput, text: str) -> 
             "memory_type": data["memory_type"],
             "source_intent": data["source_intent"],
         },
-        metadata={"provider": "mock", "source": "memory_tool_fallback", "written": True},
+        metadata={
+            "provider": "mock",
+            "source": "memory_tool_fallback",
+            "written": True,
+        },
     )
     return ToolResult(
         tool_name=tool_name,
         success=True,
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_memory_save_model_observation(data),
         output_ref=f"mock://memory/{memory_id}",
         latency_ms=1,
         contract=contract,
     )
 
 
-def _candidate_recorded_result(tool_name: str, candidate: MemorySaveCandidateResult) -> ToolResult:
+def _candidate_recorded_result(
+    tool_name: str, candidate: MemorySaveCandidateResult
+) -> ToolResult:
     data = {
         "status": "candidate_recorded",
         "written": False,
@@ -516,6 +605,7 @@ def _candidate_recorded_result(tool_name: str, candidate: MemorySaveCandidateRes
         tool_name=tool_name,
         success=True,
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_memory_save_model_observation(data),
         output_ref=output_ref,
         latency_ms=1,
         contract=contract,
@@ -523,18 +613,30 @@ def _candidate_recorded_result(tool_name: str, candidate: MemorySaveCandidateRes
 
 
 def _explicit_save_text(input: MemoryInput) -> str:
-    return str(input.query or input.content.get("text") or input.content.get("summary") or "").strip()
+    return str(
+        input.query or input.content.get("text") or input.content.get("summary") or ""
+    ).strip()
 
 
 def _missing_memory_save_content(tool_name: str) -> ToolResult:
     contract = build_capability_output_contract(
         capability="memory_save",
         status="failed",
-        errors=[{"code": "missing_required_input", "message": "缺少保存内容，无法写入记忆", "recoverable": True}],
+        errors=[
+            {
+                "code": "missing_required_input",
+                "message": "缺少保存内容，无法写入记忆",
+                "recoverable": True,
+            }
+        ],
     )
     return ToolResult(
         tool_name=tool_name,
         success=False,
+        model_observation=_memory_error_model_observation(
+            "缺少保存内容，无法写入记忆",
+            code="missing_required_input",
+        ),
         error="缺少保存内容，无法写入记忆",
         contract=contract,
     )
@@ -545,3 +647,66 @@ def _int_content(content: dict, key: str, *, default: int) -> int:
     if isinstance(value, int):
         return value
     return default
+
+
+def _memory_retrieval_model_observation(data: dict[str, Any]) -> dict[str, Any]:
+    observation: dict[str, Any] = {
+        "status": data.get("status") or ("succeeded" if data.get("items") else "empty"),
+        "summary": data.get("memory_context")
+        or data.get("summary")
+        or "Memory retrieval completed.",
+        "memory_context": data.get("memory_context"),
+        "items": [
+            _memory_item_model_observation(item)
+            for item in data.get("items", [])
+            if isinstance(item, dict)
+        ],
+        "total": data.get("total"),
+        "trust_policy": data.get("trust_policy"),
+        "usage_hint": data.get("usage_hint"),
+        "read_policy": data.get("read_policy"),
+    }
+    return {
+        key: value
+        for key, value in observation.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _memory_item_model_observation(item: dict[str, Any]) -> dict[str, Any]:
+    keys = ("memory_type", "content", "summary", "relevance", "reason", "created_at")
+    return {key: item[key] for key in keys if item.get(key) not in (None, "", [], {})}
+
+
+def _memory_save_model_observation(data: dict[str, Any]) -> dict[str, Any]:
+    observation: dict[str, Any] = {
+        "status": data.get("status"),
+        "summary": data.get("summary")
+        or data.get("reason")
+        or "Memory save completed.",
+        "written": data.get("written"),
+        "requires_confirmation": data.get("requires_confirmation"),
+        "confirmation_status": data.get("confirmation_status"),
+        "confirmation_kind": data.get("confirmation_kind"),
+        "memory_type": data.get("memory_type"),
+        "source_intent": data.get("source_intent"),
+        "source_reason": data.get("source_reason"),
+        "future_use": data.get("future_use"),
+        "evidence": data.get("evidence"),
+        "durable_outbox": data.get("durable_outbox"),
+        "reason": data.get("reason"),
+        "expires_at": data.get("expires_at"),
+    }
+    return {
+        key: value
+        for key, value in observation.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _memory_error_model_observation(message: str, *, code: str) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "summary": message,
+        "errors": [{"code": code, "message": message, "recoverable": True}],
+    }

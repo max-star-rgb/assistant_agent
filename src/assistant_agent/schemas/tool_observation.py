@@ -9,7 +9,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+from assistant_agent.services.provider_errors import (
+    sanitize_error_detail,
+    sanitize_error_message,
+)
 
 
 ObservationStatus = Literal["succeeded", "failed", "rejected"]
@@ -38,10 +41,19 @@ def observation_from_tool_result(
     prior_observations: Sequence[Mapping[str, Any]] | None = None,
     max_result_chars: int | None = None,
 ) -> ToolObservation:
-    """Build a redacted observation from a ToolResult."""
+    """Build a redacted LLM-facing observation from a ToolResult.
+
+    Tools should populate ``model_observation`` with the fields useful for the
+    main model's next decision or final answer. ``data`` remains the full tool
+    result contract and is only used here as a compatibility fallback.
+    """
 
     status: ObservationStatus = "succeeded" if result.success else "failed"
-    data_source = result.model_observation if isinstance(result.model_observation, dict) else result.data
+    data_source = (
+        result.model_observation
+        if isinstance(result.model_observation, dict)
+        else result.data
+    )
     data = sanitize_error_detail(data_source or {})
     error_message = sanitize_error_message(result.error or "") if result.error else None
     observation = ToolObservation(
@@ -79,11 +91,14 @@ def rejected_observation(
         summary=f"Action rejected: {message}",
         error_code=error_code,
         error_message=message,
-        next_step_hint=next_step_hint or "Select a valid action or ask a follow-up question.",
+        next_step_hint=next_step_hint
+        or "Select a valid action or ask a follow-up question.",
     )
 
 
-def _summary_from_result(result: ToolResult, data: Any, error_message: str | None) -> str:
+def _summary_from_result(
+    result: ToolResult, data: Any, error_message: str | None
+) -> str:
     if not result.success:
         return error_message or "Tool execution failed."
     if isinstance(data, dict):
@@ -119,7 +134,9 @@ def _shopping_summary(tool_name: str, data: dict[str, Any]) -> str:
     if tool_name == "shopping_search":
         best_offer = data.get("best_offer")
         if isinstance(best_offer, dict) and best_offer:
-            return _format_product_item_summary(best_offer, prefix="Best shopping offer")
+            return _format_product_item_summary(
+                best_offer, prefix="Best shopping offer"
+            )
     return ""
 
 
@@ -141,10 +158,14 @@ def _web_search_summary(tool_name: str, data: dict[str, Any]) -> str:
     source_part = f", source {source}" if source else ""
     date_part = f", published_at {published_at}" if published_at else ""
     url_part = f", url {url}" if url else ", no result url"
-    return sanitize_error_message(f"Top web result{total_part}: {title}{source_part}{date_part}{url_part}.")
+    return sanitize_error_message(
+        f"Top web result{total_part}: {title}{source_part}{date_part}{url_part}."
+    )
 
 
-def _format_product_item_summary(item: dict[str, Any], *, total: Any = None, prefix: str = "Top product") -> str:
+def _format_product_item_summary(
+    item: dict[str, Any], *, total: Any = None, prefix: str = "Top product"
+) -> str:
     title = item.get("title") or "candidate"
     price = item.get("total_price") or item.get("price")
     currency = item.get("currency") or "CNY"
@@ -157,14 +178,20 @@ def _format_product_item_summary(item: dict[str, Any], *, total: Any = None, pre
         url_part = f", url {url}{status_part}"
     else:
         url_part = ", no direct product url"
-    return sanitize_error_message(f"{prefix}{total_part}: {title}{price_part}{url_part}.")
+    return sanitize_error_message(
+        f"{prefix}{total_part}: {title}{price_part}{url_part}."
+    )
 
 
 def _error_code(error: str | None) -> str | None:
     if not error:
         return None
     prefix = error.split(":", 1)[0].strip()
-    return prefix if prefix.startswith("provider_") or prefix.endswith("_error") else "tool_failed"
+    return (
+        prefix
+        if prefix.startswith("provider_") or prefix.endswith("_error")
+        else "tool_failed"
+    )
 
 
 def _next_step_hint(
@@ -183,12 +210,16 @@ def _next_step_hint(
             )
         return "Explain the failure, use a different action, or ask the user for clarification."
     if tool_name in {"vision_understanding", "video_understanding"}:
-        return "If the user only asked for a description, final_answer is likely enough."
+        return (
+            "If the user only asked for a description, final_answer is likely enough."
+        )
     if tool_name == "product_search":
         items = data.get("items")
         has_items = isinstance(items, list) and bool(items)
         if not has_items:
-            return "没有返回商品候选；可以换一个更具体的商品查询，或向用户追问关键信息。"
+            return (
+                "没有返回商品候选；可以换一个更具体的商品查询，或向用户追问关键信息。"
+            )
         return (
             "由当前用户请求决定是直接回答，还是继续选择另一个购物工具。"
             "如果模型选择 price_compare，请把 structured_output.items 里的完整商品对象作为 items 传入，"
@@ -212,7 +243,8 @@ def _has_prior_successful_observation(
     tool_name: str,
 ) -> bool:
     return any(
-        observation.get("tool_name") == tool_name and observation.get("status") == "succeeded"
+        observation.get("tool_name") == tool_name
+        and observation.get("status") == "succeeded"
         for observation in prior_observations
     )
 
@@ -249,7 +281,9 @@ def _bound_observation(
     bounded.next_step_hint = None
     overflow = _json_chars(bounded.model_dump(mode="json")) - max_result_chars
     if overflow > 0:
-        bounded.summary = _clip_to_chars(bounded.summary, max(1, len(bounded.summary) - overflow))
+        bounded.summary = _clip_to_chars(
+            bounded.summary, max(1, len(bounded.summary) - overflow)
+        )
     if _json_chars(bounded.model_dump(mode="json")) <= max_result_chars:
         return bounded
 

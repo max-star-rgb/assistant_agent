@@ -1,5 +1,7 @@
 """Unified shopping tool that searches products and compares prices."""
 
+from typing import Any
+
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.schemas.products import (
     PriceCompareInput,
@@ -37,7 +39,9 @@ class ShoppingSearchTool(MockTool):
         price_compare_adapter: PriceCompareAdapter | None = None,
     ) -> None:
         self.search_adapter = search_adapter or create_product_search_adapter()
-        self.price_compare_adapter = price_compare_adapter or create_price_compare_adapter()
+        self.price_compare_adapter = (
+            price_compare_adapter or create_price_compare_adapter()
+        )
 
     def _run(self, input: ProductSearchInput, context: ToolContext) -> ToolResult:
         search_result = self.search_adapter.search(input)
@@ -50,6 +54,7 @@ class ShoppingSearchTool(MockTool):
         result = _shopping_result(input, search_result, comparison_result)
         data = result.model_dump(mode="json")
         errors = [error.model_dump(mode="json") for error in result.errors]
+        model_observation = _shopping_search_model_observation(data)
         contract = build_capability_output_contract(
             capability="shopping_search",
             status="succeeded" if result.success else "failed",
@@ -60,9 +65,15 @@ class ShoppingSearchTool(MockTool):
                     "items": data.get("search", {}).get("items", []),
                     "query_used": data.get("search", {}).get("query_used"),
                     "total": data.get("search", {}).get("total"),
-                    "requested_platforms": data.get("search", {}).get("requested_platforms", []),
-                    "succeeded_platforms": data.get("search", {}).get("succeeded_platforms", []),
-                    "failed_platforms": data.get("search", {}).get("failed_platforms", []),
+                    "requested_platforms": data.get("search", {}).get(
+                        "requested_platforms", []
+                    ),
+                    "succeeded_platforms": data.get("search", {}).get(
+                        "succeeded_platforms", []
+                    ),
+                    "failed_platforms": data.get("search", {}).get(
+                        "failed_platforms", []
+                    ),
                 },
                 "comparison": data.get("comparison"),
                 "offers": data.get("offers", []),
@@ -79,6 +90,7 @@ class ShoppingSearchTool(MockTool):
                 tool_name=self.name,
                 success=False,
                 data=data,
+                model_observation=model_observation,
                 error=first_error,
                 output_ref=result.output_ref,
                 latency_ms=result.latency_ms,
@@ -89,6 +101,7 @@ class ShoppingSearchTool(MockTool):
             tool_name=self.name,
             success=True,
             data=data,
+            model_observation=model_observation,
             output_ref=result.output_ref,
             latency_ms=result.latency_ms,
             contract=contract,
@@ -125,7 +138,11 @@ def _shopping_result(
         or _query_text(input)
         or "shopping_search"
     )
-    items = comparison_result.items if comparison_result is not None else search_result.items
+    items = (
+        comparison_result.items
+        if comparison_result is not None
+        else search_result.items
+    )
     offers = comparison_result.offers if comparison_result is not None else []
     provider = _combined_provider(search_result, comparison_result)
     latency_ms = _combined_latency(search_result, comparison_result)
@@ -141,11 +158,17 @@ def _shopping_result(
         comparison=comparison_result,
         items=items,
         offers=offers,
-        best_offer=comparison_result.best_offer if comparison_result is not None else None,
+        best_offer=comparison_result.best_offer
+        if comparison_result is not None
+        else None,
         best_value_product_id=(
-            comparison_result.best_value_product_id if comparison_result is not None else None
+            comparison_result.best_value_product_id
+            if comparison_result is not None
+            else None
         ),
-        ranking_reason=comparison_result.ranking_reason if comparison_result is not None else None,
+        ranking_reason=comparison_result.ranking_reason
+        if comparison_result is not None
+        else None,
         summary=summary,
         provider=provider,
         errors=errors,
@@ -188,7 +211,10 @@ def _combined_provider(
     search_result: ProductSearchResult,
     comparison_result: PriceCompareResult | None,
 ) -> str:
-    if comparison_result is None or comparison_result.provider == search_result.provider:
+    if (
+        comparison_result is None
+        or comparison_result.provider == search_result.provider
+    ):
         return search_result.provider
     return f"{search_result.provider}+{comparison_result.provider}"
 
@@ -220,3 +246,116 @@ def _query_text(input: ProductSearchInput) -> str:
         input.category,
     ]
     return " ".join(part.strip() for part in parts if part and part.strip())
+
+
+def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
+    search = data.get("search") if isinstance(data.get("search"), dict) else {}
+    observation: dict[str, Any] = {
+        "summary": data.get("summary"),
+        "query": data.get("query"),
+        "search": {
+            "query_used": search.get("query_used"),
+            "total": search.get("total"),
+            "items": [
+                _shopping_item_model_observation(item)
+                for item in search.get("items", [])
+                if isinstance(item, dict)
+            ],
+            "requested_platforms": search.get("requested_platforms"),
+            "succeeded_platforms": search.get("succeeded_platforms"),
+            "failed_platforms": search.get("failed_platforms"),
+        },
+        "offers": [
+            _shopping_offer_model_observation(offer)
+            for offer in data.get("offers", [])
+            if isinstance(offer, dict)
+        ],
+        "best_offer": (
+            _shopping_offer_model_observation(data["best_offer"])
+            if isinstance(data.get("best_offer"), dict)
+            else None
+        ),
+        "best_value_product_id": data.get("best_value_product_id"),
+        "ranking_reason": data.get("ranking_reason"),
+    }
+    errors = data.get("errors")
+    if errors:
+        observation["errors"] = errors
+    observation["search"] = {
+        key: value
+        for key, value in observation["search"].items()
+        if value not in (None, [], {})
+    }
+    return {
+        key: value for key, value in observation.items() if value not in (None, [], {})
+    }
+
+
+def _shopping_item_model_observation(item: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "product_id",
+        "title",
+        "brand",
+        "category",
+        "price",
+        "original_price",
+        "coupon_amount",
+        "effective_price",
+        "unconditional_price",
+        "conditional_price",
+        "conditional_price_note",
+        "currency",
+        "platform",
+        "shop",
+        "url",
+        "product_url",
+        "url_status",
+        "availability",
+        "image_url",
+        "model",
+        "specifications",
+        "similarity",
+        "similarity_score",
+        "text_match_score",
+        "rating",
+        "sales",
+        "material",
+        "color",
+        "style_tags",
+        "reason",
+        "ranking_reason",
+    )
+    return {key: item[key] for key in keys if item.get(key) not in (None, "", [], {})}
+
+
+def _shopping_offer_model_observation(offer: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "offer_id",
+        "product_id",
+        "title",
+        "platform",
+        "shop",
+        "price",
+        "original_price",
+        "coupon_amount",
+        "effective_price",
+        "unconditional_price",
+        "conditional_price",
+        "conditional_price_note",
+        "currency",
+        "shipping_fee",
+        "total_price",
+        "product_url",
+        "image_url",
+        "url_status",
+        "availability",
+        "rating",
+        "sales",
+        "similarity_score",
+        "comparison_group",
+        "same_product_confidence",
+        "data_completeness",
+        "reason",
+        "ranking_reason",
+    )
+    return {key: offer[key] for key in keys if offer.get(key) not in (None, "", [], {})}

@@ -2,17 +2,29 @@
 
 from collections.abc import Callable
 from time import time
+from typing import Any
 
 from assistant_agent.schemas.capability_output import build_capability_output_contract
-from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
+from assistant_agent.schemas.perception import (
+    VideoUnderstandingRequest,
+    VideoUnderstandingResult,
+)
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
+from assistant_agent.services.agent_service_entry import (
+    is_trusted_agent_service_request,
+)
 from assistant_agent.services.video_adapter import (
     VideoUnderstandingAdapter,
     create_video_understanding_adapter,
 )
-from assistant_agent.services.video_context import DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE, VideoContextStore
-from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore, RealtimeVideoSnapshot
+from assistant_agent.services.video_context import (
+    DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
+    VideoContextStore,
+)
+from assistant_agent.services.realtime_video_memory import (
+    RealtimeVideoMemoryStore,
+    RealtimeVideoSnapshot,
+)
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
@@ -43,7 +55,9 @@ class VideoUnderstandingTool(MockTool):
         self.context_window_size = context_window_size
         self.wall_clock_ms = wall_clock_ms or (lambda: int(time() * 1000))
 
-    def _run(self, input: VideoUnderstandingRequest, context: ToolContext) -> ToolResult:
+    def _run(
+        self, input: VideoUnderstandingRequest, context: ToolContext
+    ) -> ToolResult:
         video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)
         observation_mode = context.metadata.get("realtime_video_observation") is True
         agent_service_text_only = (
@@ -54,11 +68,16 @@ class VideoUnderstandingTool(MockTool):
             snapshot = self.memory_store.snapshot(video_ref)
             if snapshot is not None and (
                 snapshot.healthy
-                or (agent_service_text_only and snapshot.last_success_sequence is not None)
+                or (
+                    agent_service_text_only
+                    and snapshot.last_success_sequence is not None
+                )
             ):
                 return self._memory_result(snapshot)
         if agent_service_text_only:
-            return self._memory_unavailable_result(video_ref=video_ref, snapshot=snapshot)
+            return self._memory_unavailable_result(
+                video_ref=video_ref, snapshot=snapshot
+            )
 
         input = self._with_context_frames(input)
         try:
@@ -67,11 +86,23 @@ class VideoUnderstandingTool(MockTool):
             contract = build_capability_output_contract(
                 capability="video_understanding",
                 status="failed",
-                errors=[{"code": _error_code(str(exc)), "message": str(exc), "recoverable": True}],
+                errors=[
+                    {
+                        "code": _error_code(str(exc)),
+                        "message": str(exc),
+                        "recoverable": True,
+                    }
+                ],
             )
-            return ToolResult(tool_name=self.name, success=False, error=str(exc), contract=contract)
+            return ToolResult(
+                tool_name=self.name, success=False, error=str(exc), contract=contract
+            )
 
-        source = "background_keyframe_observation" if observation_mode else "recent_frame_fallback"
+        source = (
+            "background_keyframe_observation"
+            if observation_mode
+            else "recent_frame_fallback"
+        )
         payload = {**result.model_dump(mode="json"), "source": source}
         output_ref = result.output_ref
         status = "failed" if result.errors else "succeeded"
@@ -92,6 +123,7 @@ class VideoUnderstandingTool(MockTool):
             tool_name=self.name,
             success=not result.errors,
             data=payload,
+            model_observation=_video_model_observation(payload),
             error=result.errors[0]["message"] if result.errors else None,
             output_ref=output_ref,
             latency_ms=result.latency_ms,
@@ -153,6 +185,7 @@ class VideoUnderstandingTool(MockTool):
             tool_name=self.name,
             success=True,
             data=payload,
+            model_observation=_video_model_observation(payload),
             output_ref=output_ref,
             latency_ms=0,
             contract=contract,
@@ -170,7 +203,9 @@ class VideoUnderstandingTool(MockTool):
         video_ref: str | None,
         snapshot: RealtimeVideoSnapshot | None,
     ) -> ToolResult:
-        output_ref = f"memory://realtime-video/{_safe_ref(video_ref or 'video')}/pending"
+        output_ref = (
+            f"memory://realtime-video/{_safe_ref(video_ref or 'video')}/pending"
+        )
         status = _snapshot_status(snapshot)
         pending_count = snapshot.pending_count if snapshot is not None else 0
         in_flight = snapshot.in_flight if snapshot is not None else False
@@ -267,7 +302,9 @@ class VideoUnderstandingTool(MockTool):
         model: str | None,
     ) -> dict[str, object]:
         diagnostics = snapshot.observation_diagnostics if snapshot is not None else None
-        published_at_ms = diagnostics.published_at_ms if diagnostics is not None else None
+        published_at_ms = (
+            diagnostics.published_at_ms if diagnostics is not None else None
+        )
         snapshot_age_ms = (
             max(0, self.wall_clock_ms() - published_at_ms)
             if published_at_ms is not None
@@ -282,12 +319,16 @@ class VideoUnderstandingTool(MockTool):
             "pending_count": snapshot.pending_count if snapshot is not None else 0,
             "in_flight": snapshot.in_flight if snapshot is not None else False,
             "fallback_used": source == "recent_frame_fallback",
-            "snapshot_sequence": snapshot.last_success_sequence if snapshot is not None else None,
+            "snapshot_sequence": snapshot.last_success_sequence
+            if snapshot is not None
+            else None,
             "provider": provider,
             "model": model,
         }
 
-    def _with_context_frames(self, input: VideoUnderstandingRequest) -> VideoUnderstandingRequest:
+    def _with_context_frames(
+        self, input: VideoUnderstandingRequest
+    ) -> VideoUnderstandingRequest:
         video_ref = input.video_ref or (input.video_ids[0] if input.video_ids else None)
         if not video_ref:
             return input
@@ -354,7 +395,11 @@ def _snapshot_error_code(snapshot: RealtimeVideoSnapshot | None) -> str | None:
 def _memory_description(snapshot: RealtimeVideoSnapshot, *, status: str) -> str:
     state = snapshot.current_state.strip()
     if status == "ready":
-        return f"后台视觉理解已返回可用文本：{state}" if state else "后台视觉理解已返回可用文本。"
+        return (
+            f"后台视觉理解已返回可用文本：{state}"
+            if state
+            else "后台视觉理解已返回可用文本。"
+        )
     if status == "refreshing":
         return (
             f"后台视觉理解已有一段可用文本，但最新画面仍在刷新：{state}"
@@ -367,7 +412,11 @@ def _memory_description(snapshot: RealtimeVideoSnapshot, *, status: str) -> str:
             if state
             else "后台视觉理解已有旧文本，最新观察没有成功更新；回答时需要说明可能不是当前画面。"
         )
-    return f"后台视觉理解文本状态为 {status}：{state}" if state else f"后台视觉理解文本状态为 {status}。"
+    return (
+        f"后台视觉理解文本状态为 {status}：{state}"
+        if state
+        else f"后台视觉理解文本状态为 {status}。"
+    )
 
 
 def _memory_unavailable_description(
@@ -383,10 +432,7 @@ def _memory_unavailable_description(
                 "后台视觉理解正在处理当前画面，还没有产出可用的文字描述。"
                 "请告诉用户正在获取画面信息，暂时不能确认画面内容。"
             )
-        return (
-            "后台视觉理解还没有产出可用的文字描述。"
-            "请告诉用户暂时不能确认画面内容。"
-        )
+        return "后台视觉理解还没有产出可用的文字描述。请告诉用户暂时不能确认画面内容。"
     if status == "failed":
         suffix = f"错误类型：{error_code}。" if error_code else ""
         return (
@@ -405,5 +451,39 @@ def _memory_unavailable_description(
 
 
 def _safe_ref(value: str) -> str:
-    normalized = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in value)
+    normalized = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "-" for char in value
+    )
     return normalized or "video"
+
+
+def _video_model_observation(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "status",
+        "summary",
+        "description",
+        "objects",
+        "people",
+        "actions",
+        "events",
+        "scene",
+        "products",
+        "brands",
+        "colors",
+        "materials",
+        "text_in_video",
+        "timestamps",
+        "style_tags",
+        "confidence",
+        "source",
+        "snapshot_sequence",
+        "observed_timestamp_ms",
+        "pending_count",
+        "in_flight",
+        "error_code",
+        "usable_visual_text",
+        "errors",
+    )
+    return {
+        key: payload[key] for key in keys if payload.get(key) not in (None, "", [], {})
+    }

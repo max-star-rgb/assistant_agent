@@ -82,7 +82,10 @@ class AgentDelegationTool(MockTool):
             return _failed_tool_result(
                 "agent_self_delegation_blocked",
                 "Agent delegation target must differ from the source agent.",
-                detail={"source_agent_id": source_agent_id, "target_agent_id": input.target_agent_id},
+                detail={
+                    "source_agent_id": source_agent_id,
+                    "target_agent_id": input.target_agent_id,
+                },
                 recoverable=True,
             )
         if not _has_message_payload(input):
@@ -141,7 +144,9 @@ def _context_correlation_id(context: ToolContext) -> str:
         value = metadata.get("correlation_id")
         if isinstance(value, str) and value:
             return value
-    return AgentSessionRef(user_id=context.user_id or "unknown", session_id=context.session_id or "unknown").correlation_id
+    return AgentSessionRef(
+        user_id=context.user_id or "unknown", session_id=context.session_id or "unknown"
+    ).correlation_id
 
 
 def _next_delegation_depth(context: ToolContext) -> int:
@@ -160,7 +165,9 @@ def _message_metadata(input: DelegateToAgentInput) -> dict[str, Any]:
     return metadata
 
 
-def _task_metadata(context: ToolContext, input: DelegateToAgentInput, tool_name: str) -> dict[str, Any]:
+def _task_metadata(
+    context: ToolContext, input: DelegateToAgentInput, tool_name: str
+) -> dict[str, Any]:
     metadata: dict[str, Any] = {"tool": tool_name}
     pairs = _delegation_pairs_from_context(context)
     if pairs:
@@ -217,6 +224,7 @@ def _tool_result_from_task(result: AgentTaskResult) -> ToolResult:
         tool_name=AgentDelegationTool.name,
         success=result.status == "completed",
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_agent_delegation_model_observation(data),
         error=error_message,
         output_ref=output_ref,
         contract=contract,
@@ -230,7 +238,12 @@ def _failed_tool_result(
     detail: dict[str, Any] | None = None,
     recoverable: bool = False,
 ) -> ToolResult:
-    error = {"code": code, "message": message, "detail": detail or {}, "recoverable": recoverable}
+    error = {
+        "code": code,
+        "message": message,
+        "detail": detail or {},
+        "recoverable": recoverable,
+    }
     data = {"status": "failed", "errors": [sanitize_error_detail(error)]}
     contract = build_capability_output_contract(
         capability="agent_delegation",
@@ -242,6 +255,7 @@ def _failed_tool_result(
         tool_name=AgentDelegationTool.name,
         success=False,
         data={**data, "contract": contract.model_dump(mode="json")},
+        model_observation=_agent_delegation_model_observation(data),
         error=message,
         contract=contract,
     )
@@ -253,10 +267,31 @@ def _task_result_payload(result: AgentTaskResult) -> dict[str, Any]:
             "task_id": result.task_id,
             "target_agent_id": result.target_agent_id,
             "status": result.status,
-            "artifacts": [artifact.model_dump(mode="json") for artifact in result.artifacts],
+            "artifacts": [
+                artifact.model_dump(mode="json") for artifact in result.artifacts
+            ],
             "run_id": result.run_id,
             "trace_id": result.trace_id,
             "errors": [error.model_dump(mode="json") for error in result.errors],
             "metadata": result.metadata,
         }
     )
+
+
+def _agent_delegation_model_observation(data: dict[str, Any]) -> dict[str, Any]:
+    observation: dict[str, Any] = {
+        "task_id": data.get("task_id"),
+        "target_agent_id": data.get("target_agent_id"),
+        "status": data.get("status"),
+        "artifacts": data.get("artifacts"),
+        "errors": data.get("errors"),
+    }
+    if data.get("status") == "failed" and not observation.get("errors"):
+        observation["errors"] = [
+            {"code": "agent_delegation_failed", "message": "Agent delegation failed."}
+        ]
+    return {
+        key: value
+        for key, value in observation.items()
+        if value not in (None, "", [], {})
+    }
