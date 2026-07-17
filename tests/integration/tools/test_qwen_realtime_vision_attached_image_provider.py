@@ -83,6 +83,7 @@ def _attached_image_as_jpeg(tmp_path: Path) -> Path:
 
 def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
     tmp_path: Path,
+    capsys,
 ) -> None:
     tool, adapter = _configured_qwen_tool()
     frame = _attached_image_as_jpeg(tmp_path)
@@ -99,6 +100,12 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
     finally:
         adapter.close()
 
+    with capsys.disabled():
+        print("\n=== VLM RAW OUTPUT ===", flush=True)
+        print(adapter.last_raw_response_text or "<no raw VLM text received>", flush=True)
+        print("=== TOOL RESULT ===", flush=True)
+        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2), flush=True)
+
     assert result.success is True
     assert result.data is not None
     assert result.data["source"] == "background_keyframe_observation"
@@ -110,7 +117,3 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
         token in serialized
         for token in ("蛋糕", "cake", "草莓", "strawberry", "蓝莓", "blueberry")
     )
-    print("\n=== VLM RAW OUTPUT ===")
-    print(adapter.last_raw_response_text)
-    print("=== TOOL RESULT ===")
-    print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))

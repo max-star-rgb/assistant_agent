@@ -254,6 +254,7 @@ class QwenRealtimeVisionAdapter:
 
     def _receive_response(self, socket: Any, deadline: float) -> str:
         deltas: list[str] = []
+        self._last_raw_response_text = ""
         while True:
             event = _receive_json(socket, self._remaining(deadline))
             event_type = event.get("type")
@@ -266,6 +267,7 @@ class QwenRealtimeVisionAdapter:
                             int((perf_counter() - self._observation_started_at) * 1000),
                         )
                     deltas.append(delta)
+                    self._last_raw_response_text = "".join(deltas)
             elif event_type == "error":
                 raise RuntimeError("Provider returned an error.")
             elif event_type == "response.done":

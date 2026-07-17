@@ -327,6 +327,7 @@ def test_realtime_adapter_sanitizes_invalid_json_and_closes_failed_connection(tm
         }
     ]
     assert "secret-provider-garbage" not in result.model_dump_json()
+    assert adapter.last_raw_response_text == "secret-provider-garbage"
     assert socket.closed is True
 
 
