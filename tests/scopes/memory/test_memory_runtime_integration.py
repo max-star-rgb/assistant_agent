@@ -41,6 +41,92 @@ def test_default_memory_backend_is_in_memory() -> None:
     assert isinstance(store, InMemoryStore)
 
 
+def test_create_memory_store_uses_registered_plugin_backend(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(memory_factory, "REPO_ROOT", tmp_path)
+
+    class PluginMemoryStore(InMemoryStore):
+        pass
+
+    created: list[tuple[str, str]] = []
+
+    def plugin_factory(context):
+        created.append(
+            (
+                context.config.memory_backend,
+                str(context.repo_relative_path("relative/memories.jsonl")),
+            )
+        )
+        return PluginMemoryStore()
+
+    memory_factory.register_memory_store_backend("plugin_memory", plugin_factory)
+    try:
+        store = create_memory_store(ProviderConfig(memory_backend="plugin_memory"))
+    finally:
+        memory_factory.unregister_memory_store_backend("plugin_memory")
+
+    assert isinstance(store, PluginMemoryStore)
+    assert created == [("plugin_memory", str(tmp_path / "relative" / "memories.jsonl"))]
+
+
+def test_create_memory_store_uses_registered_plugin_backend_from_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(memory_factory, "REPO_ROOT", tmp_path)
+
+    class MyMemoryStore(InMemoryStore):
+        pass
+
+    created: list[str] = []
+
+    def plugin_factory(context):
+        created.append(context.config.memory_backend)
+        return MyMemoryStore()
+
+    memory_factory.register_memory_store_backend("my_memory", plugin_factory)
+    try:
+        config = ProviderConfig.from_env(
+            {
+                "MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED": "true",
+                "MULTIMODAL_AGENT_MEMORY_BACKEND": "my_memory",
+            }
+        )
+        store = create_memory_store(config)
+    finally:
+        memory_factory.unregister_memory_store_backend("my_memory")
+
+    assert isinstance(store, MyMemoryStore)
+    assert created == ["my_memory"]
+
+
+def test_create_memory_store_fails_for_unregistered_plugin_backend_from_env() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED": "true",
+            "MULTIMODAL_AGENT_MEMORY_BACKEND": "my_memory",
+        }
+    )
+
+    with pytest.raises(ValueError, match="unregistered memory backend: my_memory"):
+        create_memory_store(config)
+
+
+def test_memory_store_backend_registration_requires_explicit_replace() -> None:
+    class ReplacementMemoryStore(InMemoryStore):
+        pass
+
+    def replacement_factory(context):
+        return ReplacementMemoryStore()
+
+    with pytest.raises(ValueError, match="already registered"):
+        memory_factory.register_memory_store_backend("memory", replacement_factory)
+
+    memory_factory.register_memory_store_backend("memory", replacement_factory, replace=True)
+    try:
+        store = create_memory_store(ProviderConfig(memory_backend="memory"))
+    finally:
+        memory_factory.unregister_memory_store_backend("memory")
+
+    assert isinstance(store, ReplacementMemoryStore)
+
+
 def test_hybrid_remote_memory_backend_requires_explicit_remote_opt_in() -> None:
     config = ProviderConfig.from_env({"MULTIMODAL_AGENT_MEMORY_BACKEND": "hybrid_remote"})
 

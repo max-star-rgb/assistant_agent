@@ -53,6 +53,38 @@ def test_provider_config_auto_persists_conversation_history_with_jsonl_memory() 
     assert config.conversation_history_path == ".local/memory/conversation_history.jsonl"
 
 
+def test_custom_memory_backend_env_requires_plugin_switch() -> None:
+    config = ProviderConfig.from_env({"MULTIMODAL_AGENT_MEMORY_BACKEND": "my_memory"})
+
+    assert config.memory_plugin_enabled is False
+    assert config.memory_backend == "memory"
+
+
+def test_custom_memory_backend_env_is_preserved_when_plugin_switch_is_enabled() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED": "true",
+            "MULTIMODAL_AGENT_MEMORY_BACKEND": "my_memory",
+        }
+    )
+
+    assert config.memory_plugin_enabled is True
+    assert config.memory_backend == "my_memory"
+
+
+def test_custom_memory_backend_env_rejects_invalid_names_even_when_plugin_switch_is_enabled() -> None:
+    for backend_name in ("bad-name", "../x"):
+        config = ProviderConfig.from_env(
+            {
+                "MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED": "true",
+                "MULTIMODAL_AGENT_MEMORY_BACKEND": backend_name,
+            }
+        )
+
+        assert config.memory_plugin_enabled is True
+        assert config.memory_backend == "memory"
+
+
 def test_provider_config_reads_environment_values() -> None:
     config = ProviderConfig.from_env(
         {

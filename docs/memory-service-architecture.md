@@ -148,6 +148,7 @@ Both assistant-loop and compatibility graph start with `load_memory` and finish 
 | module | responsibility |
 | --- | --- |
 | `src/assistant_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, pending confirmation flow, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
+| `src/assistant_agent/memory/factory.py` | 可插拔 `MemoryStore` backend registry 和运行时 store factory。内置 backend 与自定义替换实现都必须在 `MemoryManager` 后面返回 `MemoryStore`；替换内置名称必须显式声明。 |
 | `src/assistant_agent/memory/context_builder.py` | Token-aware, prompt-safe memory context selection and layer rendering. Produces injected items, rendered context, token count, omission count, rejection reasons, and retrieval version. |
 | `src/assistant_agent/memory/read_policy.py` | Deterministic long-term memory read gate and trust metadata. Decides automatic memory context injection and validates explicit retrieval intent before store access. |
 | `src/assistant_agent/memory/store.py` | `MemoryStore` protocol and process-local `InMemoryStore`, including soft-delete-compatible delete, hard-delete, and memory-confirmation methods. |
@@ -280,12 +281,15 @@ Configured by `ProviderConfig`:
 - `memory_backend="hybrid_remote"`: legacy alias for the same retrieval-augmentation shape as `dual_core`; kept for compatibility.
 - `memory_backend="remote_service"`: opt-in `RemoteServiceMemoryStore` with an external adapter as lifecycle owner. This mode is selected only when remote memory is explicitly enabled and never falls back to local lifecycle writes by default.
 - `memory_backend="framework"`: opt-in `FrameworkMemoryStore` with `memory_framework="mem0"` by default, or explicit `"hindsight"` when requested. Environment loading requires `MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED=true`; credentials alone and normal offline profiles cannot enable it. A configured legacy local fallback is read-only and is consulted only after framework recall failure.
+- `memory_backend="<custom_snake_case>"`: process-local custom `MemoryStore` backend selected from environment only when `MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED=true` and the backend name matches `^[a-z][a-z0-9_]*$`. Invalid names, unknown custom names without the plugin switch, and gated built-in modes without their own opt-in resolve back to `memory`.
+- `memory_plugin_enabled`: explicit custom-backend environment switch. It permits configuration to preserve a custom backend name; it does not discover, import, or register plugin code.
 - `memory_local_backend`: local core used by `dual_core` / `hybrid_remote`; allowed values are `memory`, `jsonl`, and `sqlite`. Default is `jsonl` for dual-core modes.
 - `memory_path`: default `.local/memory/long_term_memories.jsonl`; when `MULTIMODAL_AGENT_MEMORY_BACKEND=sqlite`, or a dual-core mode uses `MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND=sqlite`, the default is `.local/memory/long_term_memories.sqlite3`.
 
 Environment variables:
 
 - `MULTIMODAL_AGENT_MEMORY_BACKEND`
+- `MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED`
 - `MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND`
 - `MULTIMODAL_AGENT_MEMORY_PATH`
 - `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED`
@@ -397,6 +401,32 @@ Operational examples for local-only SQLite, `dual_core`, legacy
 `docs/development/memory-dual-core-operator-runbook.md`.
 
 Relative JSONL and SQLite paths resolve from the repository root. JSONL and SQLite are still local-first storage, not real external providers. Additional PostgreSQL, vector DB, or external memory service adapters must sit behind `MemoryStore` and `MemoryManager`.
+
+`memory/factory.py` 是进程内可替换记忆实现的插件入口，提供
+`register_memory_store_backend(name, factory, replace=False)`、
+`unregister_memory_store_backend(name)` 和 `list_memory_store_backends()`。
+注册的 factory 会收到 `MemoryStoreBackendContext`，其中包含
+`ProviderConfig`、仓库相对路径解析、SQLite 默认路径映射，以及组合内置
+local store 的 helper。自定义 factory 必须返回满足 `MemoryStore` 契约的
+对象，且不得绕过 `MemoryManager`、read/write policy、identity filtering、
+confirmation、audit、prompt-safety 或 delete/export 边界。内置 backend 名称
+（`memory`、`jsonl`、`sqlite`、`dual_core`、`hybrid_remote`、
+`remote_service` 和 `framework`）只有在 `replace=True` 时才允许替换；
+unregister 被替换的内置 backend 会恢复默认 factory。
+
+自定义 backend 的注册仍由启动代码显式完成。允许的环境变量形态是：
+
+```bash
+MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED=true
+MULTIMODAL_AGENT_MEMORY_BACKEND=my_memory
+```
+
+`ProviderConfig.from_env(...)` 只负责在显式开关开启时保留合法 custom backend
+名称。启动代码必须在 `create_memory_store(...)` 或 `AgentGraphRuntime(...)`
+之前调用 `register_memory_store_backend("my_memory", factory)`；如果配置选择了
+`my_memory` 但进程内没有注册，`create_memory_store(...)` 必须失败并抛出
+`ValueError("unregistered memory backend: my_memory")`。本项目不做 pip entry
+point 自动发现，也不会因为该开关改变默认离线行为。
 
 `dual_core` / `hybrid_remote` are retrieval augmentation, not full memory-service
 replacements. `HybridMemoryStore.search(...)` merges local search results with

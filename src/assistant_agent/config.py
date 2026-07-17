@@ -1,6 +1,7 @@
 """Application and provider configuration."""
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,7 @@ AgentGraphMode = Literal["conditional", "assistant_loop"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
 LocalMemoryBackend = Literal["memory", "jsonl", "sqlite"]
-MemoryBackend = Literal["memory", "jsonl", "sqlite", "hybrid_remote", "dual_core", "remote_service", "framework"]
+MemoryBackend = str
 MemoryFrameworkName = Literal["hindsight", "mem0"]
 MemoryFrameworkFallbackBackend = Literal["none", "memory", "jsonl", "sqlite"]
 RemoteMemoryServiceAdapterKind = Literal["unavailable", "http"]
@@ -34,6 +35,8 @@ DEFAULT_FRAMEWORK_LEDGER_PATH = ".local/memory/framework_governance.sqlite3"
 DEFAULT_QWEN_REALTIME_VISION_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 DEFAULT_QWEN_REALTIME_VISION_REGION = "cn-beijing"
 SUPPORTED_QWEN_REALTIME_VISION_REGIONS = {"cn-beijing", "ap-southeast-1"}
+_REMOTE_MEMORY_BACKENDS = {"hybrid_remote", "dual_core", "remote_service"}
+_MEMORY_BACKEND_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 VisionProviderName = str
@@ -96,6 +99,7 @@ class ProviderConfig:
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
     seed_vision_model: str = "seed-vision"
     memory_backend: MemoryBackend = "memory"
+    memory_plugin_enabled: bool = False
     memory_local_backend: LocalMemoryBackend = "jsonl"
     memory_path: str = DEFAULT_JSONL_MEMORY_PATH
     memory_server_base_url: str | None = None
@@ -231,10 +235,15 @@ class ProviderConfig:
             source.get("MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED"),
             False,
         )
+        memory_plugin_enabled = _bool_env(
+            source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED"),
+            False,
+        )
         memory_backend = _memory_backend(
             source.get("MULTIMODAL_AGENT_MEMORY_BACKEND"),
             allow_remote=allow_real_providers or memory_remote_enabled,
             allow_framework=memory_framework_enabled,
+            allow_plugin=memory_plugin_enabled,
         )
         memory_local_backend = _memory_local_backend(
             source.get("MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND"),
@@ -315,6 +324,7 @@ class ProviderConfig:
             seed_vision_base_url=source.get("SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"),
             seed_vision_model=source.get("SEED_VISION_MODEL", "seed-vision"),
             memory_backend=memory_backend,
+            memory_plugin_enabled=memory_plugin_enabled,
             memory_local_backend=memory_local_backend,
             memory_path=memory_path,
             memory_server_base_url=source.get("MEMORY_SERVER_BASE_URL")
@@ -628,19 +638,17 @@ def _memory_backend(
     *,
     allow_remote: bool = False,
     allow_framework: bool = False,
+    allow_plugin: bool = False,
 ) -> MemoryBackend:
-    if value == "framework" and allow_framework:
-        return "framework"
-    if value == "hybrid_remote" and allow_remote:
-        return "hybrid_remote"
-    if value == "dual_core" and allow_remote:
-        return "dual_core"
-    if value == "remote_service" and allow_remote:
-        return "remote_service"
-    if value == "sqlite":
-        return "sqlite"
-    if value == "jsonl":
-        return "jsonl"
+    backend_name = (value or "").strip().lower()
+    if backend_name in {"memory", "jsonl", "sqlite"}:
+        return backend_name
+    if backend_name in _REMOTE_MEMORY_BACKENDS:
+        return backend_name if allow_remote else "memory"
+    if backend_name == "framework":
+        return "framework" if allow_framework else "memory"
+    if allow_plugin and _MEMORY_BACKEND_NAME_PATTERN.fullmatch(backend_name):
+        return backend_name
     return "memory"
 
 
