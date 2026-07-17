@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ApprovalPolicy, ExecutionPolicy, ToolPolicyMetadata, ToolResult
+from assistant_agent.services.agent_control_plane import InMemoryAgentControlPlaneStore
 from assistant_agent.services.tool_workflow_skill import (
     InMemoryWorkflowSkillRunStore,
     JsonlWorkflowSkillRunStore,
@@ -534,3 +535,59 @@ def test_jsonl_workflow_skill_run_store_persists_records(tmp_path) -> None:
     assert summary is not None
     assert summary.status == "failed"
     assert summary.next_step_id == "recover"
+
+
+def test_workflow_skill_launcher_and_query_emit_prompt_safe_audit_events() -> None:
+    lookup = LookupTool()
+    registry = ToolRegistry()
+    registry.register(lookup)
+    catalog = WorkflowSkillCatalog(registry=registry)
+    catalog.register(
+        {
+            "schema_version": "workflow_skill_v1",
+            "name": "lookup_flow",
+            "type": "workflow",
+            "permissions": ["tool:workflow.lookup"],
+            "steps": [
+                {
+                    "id": "lookup",
+                    "tool": "workflow.lookup",
+                    "input": {"query": "{{ user.request }}"},
+                }
+            ],
+        }
+    )
+    store = InMemoryWorkflowSkillRunStore()
+    audit_store = InMemoryAgentControlPlaneStore()
+    launcher = WorkflowSkillLauncher(
+        catalog=catalog,
+        run_store=store,
+        audit_sink=audit_store,
+    )
+
+    launcher.launch(
+        "lookup_flow",
+        AgentState.from_request(
+            UserRequest(user_id="u1", session_id="s1", text="private forecast"),
+            run_id="run-audit",
+        ),
+    )
+    WorkflowSkillRunQueryService(
+        store=store,
+        audit_sink=audit_store,
+    ).get_run_summary("run-audit")
+
+    events = audit_store.list_audit_events(run_id="run-audit")
+    assert [event.action for event in events] == ["launch", "summary"]
+    assert events[0].event_type == "workflow_skill_run"
+    assert events[0].component == "workflow_skill"
+    assert events[0].outcome == "succeeded"
+    assert events[0].detail["workflow_id"] == "lookup_flow"
+    assert events[0].detail["attempt_count"] == 1
+    assert events[1].event_type == "workflow_skill_query"
+    assert events[1].outcome == "found"
+    serialized_detail = str([event.detail for event in events])
+    assert "step_results" not in serialized_detail
+    assert "private forecast" not in serialized_detail
+    assert "lookup:private forecast" not in serialized_detail
+    assert events[0].redaction["step_results_included"] is False

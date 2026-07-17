@@ -6,13 +6,14 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
+from assistant_agent.schemas.agent_control_plane import AgentAuditEvent
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
@@ -43,6 +44,19 @@ _WAITING_STATUSES = {
     "idempotency_key_required",
     "idempotency_key_required_after_confirmation",
 }
+_WORKFLOW_AUDIT_REDACTION = {
+    "raw_payloads_included": False,
+    "provider_raw_responses_included": False,
+    "step_results_included": False,
+    "conversation_history_included": False,
+}
+
+
+class WorkflowSkillAuditSink(Protocol):
+    """Audit sink boundary for workflow skill operator events."""
+
+    def append_audit_event(self, event: AgentAuditEvent) -> None:
+        """Store one redacted workflow audit event."""
 
 
 class WorkflowSkillRetryPolicy(BaseModel):
@@ -326,24 +340,52 @@ class WorkflowSkillRunQueryService:
         self,
         *,
         store: InMemoryWorkflowSkillRunStore | JsonlWorkflowSkillRunStore,
+        audit_sink: WorkflowSkillAuditSink | None = None,
     ) -> None:
         self.store = store
+        self.audit_sink = audit_sink
 
     def get_run_summary(self, run_id: str) -> WorkflowSkillRunSummary | None:
         """Return one prompt-safe workflow run summary."""
 
         record = self.store.get(run_id)
         if record is None:
+            _emit_workflow_audit(
+                self.audit_sink,
+                action="summary",
+                outcome="not_found",
+                workflow_id="unknown",
+                run_id=run_id,
+                detail={"run_id": run_id},
+            )
             return None
-        return _run_summary_from_record(record)
+        summary = _run_summary_from_record(record)
+        _emit_workflow_audit(
+            self.audit_sink,
+            action="summary",
+            outcome="found",
+            workflow_id=summary.workflow_id,
+            run_id=summary.run_id,
+            detail=_summary_audit_detail(summary),
+        )
+        return summary
 
     def list_run_summaries(self, workflow_id: str) -> list[WorkflowSkillRunSummary]:
         """Return prompt-safe summaries for one workflow id."""
 
-        return [
+        summaries = [
             _run_summary_from_record(record)
             for record in self.store.list_by_workflow(workflow_id)
         ]
+        _emit_workflow_audit(
+            self.audit_sink,
+            action="list_summaries",
+            outcome="found" if summaries else "not_found",
+            workflow_id=workflow_id,
+            run_id=None,
+            detail={"workflow_id": workflow_id, "count": len(summaries)},
+        )
+        return summaries
 
 
 def validate_workflow_skill_manifest(
@@ -569,10 +611,12 @@ class WorkflowSkillLauncher:
         catalog: WorkflowSkillCatalog,
         runner: WorkflowSkillRunner | None = None,
         run_store: InMemoryWorkflowSkillRunStore | JsonlWorkflowSkillRunStore | None = None,
+        audit_sink: WorkflowSkillAuditSink | None = None,
     ) -> None:
         self.catalog = catalog
         self.runner = runner or WorkflowSkillRunner(registry=catalog.registry)
         self.run_store = run_store or InMemoryWorkflowSkillRunStore()
+        self.audit_sink = audit_sink
         if self.runner.registry is not catalog.registry:
             raise ValueError(
                 "WorkflowSkillLauncher and WorkflowSkillCatalog must use the same registry"
@@ -584,7 +628,7 @@ class WorkflowSkillLauncher:
         manifest = self.catalog.get(workflow_id)
         if manifest is None:
             safe_workflow_id = workflow_id or "unknown"
-            return WorkflowSkillRunResult(
+            result = WorkflowSkillRunResult(
                 success=False,
                 status="validation_failed",
                 workflow_id=safe_workflow_id,
@@ -595,8 +639,31 @@ class WorkflowSkillLauncher:
                     )
                 ],
             )
+            _emit_workflow_audit(
+                self.audit_sink,
+                action="launch",
+                outcome=result.status,
+                workflow_id=result.workflow_id,
+                run_id=state.run_id,
+                user_id=state.user_id,
+                session_id=state.session_id,
+                trace_id=state.trace_id,
+                detail=_result_audit_detail(result),
+            )
+            return result
         result = self.runner.run(manifest, state)
         self.run_store.save_result(result, state=state)
+        _emit_workflow_audit(
+            self.audit_sink,
+            action="launch",
+            outcome=_result_audit_outcome(result),
+            workflow_id=result.workflow_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            trace_id=state.trace_id,
+            detail=_result_audit_detail(result),
+        )
         return result
 
     def resume(self, run_id: str, state: AgentState) -> WorkflowSkillRunResult:
@@ -604,7 +671,7 @@ class WorkflowSkillLauncher:
 
         record = self.run_store.get(run_id)
         if record is None:
-            return WorkflowSkillRunResult(
+            result = WorkflowSkillRunResult(
                 success=False,
                 status="validation_failed",
                 workflow_id="unknown",
@@ -615,9 +682,21 @@ class WorkflowSkillLauncher:
                     )
                 ],
             )
+            _emit_workflow_audit(
+                self.audit_sink,
+                action="resume",
+                outcome=result.status,
+                workflow_id=result.workflow_id,
+                run_id=run_id,
+                user_id=state.user_id,
+                session_id=state.session_id,
+                trace_id=state.trace_id,
+                detail=_result_audit_detail(result),
+            )
+            return result
         manifest = self.catalog.get(record.workflow_id)
         if manifest is None:
-            return WorkflowSkillRunResult(
+            result = WorkflowSkillRunResult(
                 success=False,
                 status="validation_failed",
                 workflow_id=record.workflow_id,
@@ -630,9 +709,32 @@ class WorkflowSkillLauncher:
                     )
                 ],
             )
+            _emit_workflow_audit(
+                self.audit_sink,
+                action="resume",
+                outcome=result.status,
+                workflow_id=result.workflow_id,
+                run_id=run_id,
+                user_id=state.user_id,
+                session_id=state.session_id,
+                trace_id=state.trace_id,
+                detail=_result_audit_detail(result),
+            )
+            return result
         state.run_id = record.run_id
         result = self.runner.run(manifest, state, resume_record=record)
         self.run_store.save_result(result, state=state, existing=record)
+        _emit_workflow_audit(
+            self.audit_sink,
+            action="resume",
+            outcome=_result_audit_outcome(result),
+            workflow_id=result.workflow_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            trace_id=state.trace_id,
+            detail=_result_audit_detail(result),
+        )
         return result
 
     def get_run(self, run_id: str) -> WorkflowSkillRunRecord | None:
@@ -768,6 +870,73 @@ def _run_summary_from_record(record: WorkflowSkillRunRecord) -> WorkflowSkillRun
         issue_codes=[issue.code for issue in record.issues],
         updated_at=record.updated_at,
     )
+
+
+def _summary_audit_detail(summary: WorkflowSkillRunSummary) -> dict[str, Any]:
+    return {
+        "workflow_id": summary.workflow_id,
+        "status": summary.status,
+        "attempt_count": summary.attempt_count,
+        "completed_step_ids": list(summary.completed_step_ids),
+        "next_step_id": summary.next_step_id,
+        "issue_codes": list(summary.issue_codes),
+        "has_error": summary.last_error_summary is not None,
+    }
+
+
+def _result_audit_detail(result: WorkflowSkillRunResult) -> dict[str, Any]:
+    return {
+        "workflow_id": result.workflow_id,
+        "status": result.status,
+        "attempt_count": len(result.attempts),
+        "completed_step_ids": _completed_step_ids(result.attempts),
+        "next_step_id": _next_step_id(result),
+        "issue_codes": [issue.code for issue in result.issues],
+        "has_error": _last_error_summary(result.attempts) is not None,
+    }
+
+
+def _result_audit_outcome(result: WorkflowSkillRunResult) -> str:
+    if result.status == "succeeded":
+        return "succeeded"
+    return result.status
+
+
+def _emit_workflow_audit(
+    audit_sink: WorkflowSkillAuditSink | None,
+    *,
+    action: str,
+    outcome: str,
+    workflow_id: str,
+    run_id: str | None,
+    detail: dict[str, Any],
+    user_id: str | None = None,
+    session_id: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    if audit_sink is None:
+        return
+    try:
+        audit_sink.append_audit_event(
+            AgentAuditEvent(
+                event_type=(
+                    "workflow_skill_query"
+                    if action in {"summary", "list_summaries"}
+                    else "workflow_skill_run"
+                ),
+                component="workflow_skill",
+                action=action,
+                outcome=outcome,
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                trace_id=trace_id,
+                detail=dict(detail),
+                redaction=dict(_WORKFLOW_AUDIT_REDACTION),
+            )
+        )
+    except Exception as exc:  # pragma: no cover - defensive audit boundary
+        logger.warning("Workflow skill audit event was not recorded: %s", exc)
 
 
 def _last_error_summary(attempts: list[WorkflowSkillAttemptRecord]) -> str | None:
