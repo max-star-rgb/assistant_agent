@@ -19,9 +19,18 @@ ATTACHED_IMAGE_1 = Path("/home/lenovo1/图片/0717619c-e0de-4fe7-b21c-50b6754eb8
 
 
 def _configured_qwen_tool() -> tuple[VideoUnderstandingTool, QwenRealtimeVisionAdapter]:
-    if os.environ.get("RUN_REAL_VLM_IMAGE_TEST") != "1":
-        pytest.skip("set RUN_REAL_VLM_IMAGE_TEST=1 to call the real VLM with Image #1")
-    config = ProviderConfig.from_env()
+    if not _real_provider_tool_selected():
+        pytest.skip("run this file directly, or set RUN_REAL_VLM_IMAGE_TEST=1")
+    env = {
+        **os.environ,
+        "MULTIMODAL_AGENT_RUNTIME_PROFILE": os.environ.get(
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE", "provider_smoke"
+        ),
+        "MULTIMODAL_AGENT_VISION_PROVIDER": os.environ.get(
+            "MULTIMODAL_AGENT_VISION_PROVIDER", "qwen"
+        ),
+    }
+    config = ProviderConfig.from_env(env)
     if config.runtime_profile.name not in {"provider_smoke", "pilot"}:
         pytest.skip("set MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke or pilot")
     if config.vision_provider != "qwen":
@@ -31,6 +40,13 @@ def _configured_qwen_tool() -> tuple[VideoUnderstandingTool, QwenRealtimeVisionA
     adapter = create_realtime_video_understanding_adapter(config)
     assert isinstance(adapter, QwenRealtimeVisionAdapter)
     return VideoUnderstandingTool(adapter=adapter), adapter
+
+
+def _real_provider_tool_selected() -> bool:
+    return (
+        os.environ.get("ASSISTANT_AGENT_REAL_PROVIDER_TOOL_SELECTED") == "1"
+        or os.environ.get("RUN_REAL_VLM_IMAGE_TEST") == "1"
+    )
 
 
 def _attached_image_as_jpeg(tmp_path: Path) -> Path:
@@ -88,21 +104,13 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
     assert result.data["source"] == "background_keyframe_observation"
     assert result.data["errors"] == []
     assert result.data["summary"]
+    assert adapter.last_raw_response_text
     serialized = json.dumps(result.data, ensure_ascii=False).lower()
     assert any(
         token in serialized
         for token in ("蛋糕", "cake", "草莓", "strawberry", "蓝莓", "blueberry")
     )
-    print(
-        "real_vlm_image_1_result "
-        + json.dumps(
-            {
-                "summary": result.data["summary"],
-                "objects": result.data.get("objects", []),
-                "text_in_video": result.data.get("text_in_video", []),
-                "provider": result.data.get("provider"),
-                "model": result.data.get("model"),
-            },
-            ensure_ascii=False,
-        )
-    )
+    print("\n=== VLM RAW OUTPUT ===")
+    print(adapter.last_raw_response_text)
+    print("=== TOOL RESULT ===")
+    print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))

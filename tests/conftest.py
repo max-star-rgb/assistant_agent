@@ -112,7 +112,11 @@ def _is_runtime_file(filename: str) -> bool:
 def default_tests_run_offline(monkeypatch):
     """Keep default tests independent from a developer's real `.env` or shell env."""
 
-    if __import__("os").environ.get("RUN_INTEGRATION_TESTS") == "1":
+    env = __import__("os").environ
+    if (
+        env.get("RUN_INTEGRATION_TESTS") == "1"
+        or env.get("ASSISTANT_AGENT_REAL_PROVIDER_TOOL_SELECTED") == "1"
+    ):
         return
     monkeypatch.setenv("MULTIMODAL_AGENT_DISABLE_DOTENV", "1")
     for key in PROVIDER_ENV_KEYS:

@@ -87,6 +87,7 @@ class QwenRealtimeVisionAdapter:
         self._first_delta_latency_ms: int | None = None
         self._target_sequence: int | None = None
         self._last_observation_diagnostics: dict[str, Any] = {}
+        self._last_raw_response_text: str | None = None
         self._closed = False
 
     @property
@@ -101,12 +102,17 @@ class QwenRealtimeVisionAdapter:
     def last_observation_diagnostics(self) -> dict[str, Any]:
         return dict(self._last_observation_diagnostics)
 
+    @property
+    def last_raw_response_text(self) -> str | None:
+        return self._last_raw_response_text
+
     def understand_video(self, request: VideoUnderstandingRequest) -> VideoUnderstandingResult:
         started_at = perf_counter()
         self._observation_started_at = started_at
         self._first_delta_latency_ms = None
         self._target_sequence = _safe_sequence(request.metadata.get("frame_sequence"))
         self._connection_reused = False
+        self._last_raw_response_text = None
         if not self.config.api_key:
             return self._failure("provider_unconfigured", "Qwen realtime vision is not configured.", started_at)
         if len(request.frame_refs) != 1:
@@ -130,6 +136,7 @@ class QwenRealtimeVisionAdapter:
             self._expect_event(socket, "input_audio_buffer.committed", deadline)
             socket.send(json.dumps({"type": "response.create"}))
             text = self._receive_response(socket, deadline)
+            self._last_raw_response_text = text
             payload = _normalize_result_payload(_parse_response_payload(text))
             result = VideoUnderstandingResult.model_validate(
                 {

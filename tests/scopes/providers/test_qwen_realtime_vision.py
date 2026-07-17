@@ -111,6 +111,7 @@ def test_realtime_adapter_handshake_and_single_frame_protocol(tmp_path: Path) ->
     assert result.errors == []
     assert result.summary == "杯子在桌上"
     assert result.objects == ["杯子"]
+    assert adapter.last_raw_response_text == '{"summary":"杯子在桌上","objects":["杯子"]}'
     assert connect_calls[0][0].endswith("?model=qwen-realtime-test")
     assert connect_calls[0][1]["additional_headers"]["Authorization"] == "Bearer test-key"
     assert [event["type"] for event in socket.sent] == [
