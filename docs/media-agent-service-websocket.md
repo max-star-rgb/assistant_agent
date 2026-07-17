@@ -70,7 +70,8 @@ Agent 兼容说明：
   "number": "用户号码",
   "callType": "AUDIO",
   "modelName": "模型名称(可选)",
-  "clientCapabilities": {"chatProgress": true, "chatResponseAck": true}
+  "clientCapabilities": {"chatProgress": true, "chatResponseAck": true},
+  "clientInfo": {"clientType": "run_client", "clientName": "scripts/run_client.py"}
 }
 ```
 
@@ -78,11 +79,17 @@ Agent 兼容说明：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `number` | string | 是 | 用户号码；无外层 `sessionId` 时也作为内部 session id |
+| `number` | string | 是 | 用户号码；作为 Gateway `user_id`，不作为可恢复的内部会话 id |
 | `callType` | string | 是 | `AUDIO` 或 `VIDEO` |
 | `modelName` | string | 否 | 媒体侧希望使用的模型名称；Agent 当前记录但不直接用它绕过 provider/runtime policy |
 | `clientCapabilities.chatProgress` | boolean | 否 | 为 true 时立即并每 15 秒发送 `chatProgress` |
 | `clientCapabilities.chatResponseAck` | boolean | 否 | 为 true 时最终响应携带 `deliveryId`，媒体处理后回 ACK |
+| `clientInfo.clientType` | string | 否 | 仅用于安全观测分类；本地 `scripts/run_client.py` 发送 `run_client`，真实媒体可省略，缺省记为 `media_agent` |
+| `clientInfo.clientName` | string | 否 | 仅用于安全观测；当前只记录已知的 `scripts/run_client.py` 本地调试客户端 |
+
+Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway session。
+外层 `sessionId` 只作为媒体协议关联值原样回传，不用于恢复旧通话历史。
+`clientInfo` 不参与 profile、provider、tool visibility 或安全策略选择。
 
 响应 `agent -> client`：
 
@@ -132,7 +139,7 @@ Agent 兼容说明：
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `chatIndex` | string/number | 是 | 对话索引，响应中原样返回 |
-| `userNumber` | string | 是 | 用户号码；无外层 `sessionId` 时也作为内部 session id |
+| `userNumber` | string | 是 | 用户号码；作为 Gateway `user_id`，内部 session 由本连接的 `agent-service-*` 标识承担 |
 | `contents` | array | 是 | 至少一条内容 |
 | `contents[].speakerNumber` | string | 是 | 说话人号码 |
 | `contents[].speechContent` | string | 文本消息必填 | 已完成 ASR 的文本 |

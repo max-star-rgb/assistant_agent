@@ -32,6 +32,7 @@ from assistant_agent.services.operational_logging import digest_identifier, reco
 from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.services.video_context import VideoFrame
 from assistant_agent.services.trace_store import TraceStore, append_observability_event
+from assistant_agent.services.turn_summary import append_agent_service_turn_summary
 from assistant_agent.services.gateway_turn_facade import (
     GatewayStreamChunkConsumer,
     GatewayTurnError,
@@ -78,6 +79,7 @@ class AgentServiceConnectionState:
     session_turn_counter: int = 0
     clock_ns: Callable[[], int] = perf_counter_ns
     client_capabilities: dict[str, bool] = field(default_factory=dict)
+    client_info: dict[str, str] = field(default_factory=lambda: {"client_type": "media_agent"})
     received_message_count: int = 0
     sent_message_count: int = 0
     video_packet_count: int = 0
@@ -204,6 +206,7 @@ class AssistantControlHandler(BaseHandler):
         state.media_protocol = True
         state.assistant_control_start = dict(body)
         state.client_capabilities = _delivery_capabilities(body.get("clientCapabilities"))
+        state.client_info = _client_info(body.get("clientInfo"))
         return _response_envelope(
             message=self.response_message,
             session_id=state.response_session_id,
@@ -522,6 +525,10 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     expects_ack=expects_ack,
                     received_ns=prepared.received_ns,
                     accepted_ns=accepted_ns,
+                    user_id=prepared.user_number,
+                    session_id=prepared.session_id,
+                    client_type=state.client_info.get("client_type", "media_agent"),
+                    client_name=state.client_info.get("client_name"),
                 )
                 timing.mark("queue_entered", at_ns=state.clock_ns())
                 state.turn_timings[delivery.delivery_id] = timing
@@ -1036,6 +1043,35 @@ def _delivery_capabilities(value: Any) -> dict[str, bool]:
     }
 
 
+def _client_info(value: Any) -> dict[str, str]:
+    """Classify the entry client for prompt-safe observability only."""
+
+    if not isinstance(value, dict):
+        return {"client_type": "media_agent"}
+    client_type = _client_info_token(value.get("clientType") or value.get("client_type"))
+    if client_type == "run_client":
+        return {
+            "client_type": "run_client",
+            "client_name": "scripts/run_client.py",
+        }
+    return {"client_type": "media_agent"}
+
+
+def _client_info_token(value: Any) -> str | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    token = text.strip().lower().replace("-", "_").replace(".", "_")
+    return "run_client" if token in {"run_client", "scripts/run_client_py"} else None
+
+
+def _client_trace_attributes(timing: AgentServiceTurnTiming) -> dict[str, str]:
+    attributes = {"client_type": timing.client_type or "media_agent"}
+    if timing.client_name:
+        attributes["client_name"] = timing.client_name
+    return attributes
+
+
 def _required_item_text(item: dict[str, Any], index: int, field_name: str) -> str:
     value = item.get(field_name)
     text = str(value).strip() if value is not None else ""
@@ -1098,6 +1134,15 @@ def _observe_turn_terminal(
     except Exception:  # noqa: BLE001 - custom observers may fail.
         pass
     try:
+        append_agent_service_turn_summary(
+            state.trace_store,
+            timing=timing,
+            latency_summary=summary,
+            events=events,
+        )
+    except Exception:  # noqa: BLE001 - custom observers may fail.
+        pass
+    try:
         report_turn_latency(summary, logger=logger)
     except Exception:  # noqa: BLE001 - custom reporters may fail.
         pass
@@ -1117,6 +1162,8 @@ def _observe_delivery_ack(
                 state.trace_store,
                 trace_id=timing.trace_id,
                 run_id=timing.assistant_run_id,
+                user_id=timing.user_id,
+                session_id=timing.session_id,
                 canonical_event="agent_service.delivery.acked",
                 node_name="agent_service",
                 status="acked",
@@ -1126,6 +1173,7 @@ def _observe_delivery_ack(
                     "session_turn": timing.session_turn,
                     "gateway_run_id": timing.gateway_run_id,
                     "turn_id": timing.turn_id,
+                    **_client_trace_attributes(timing),
                 },
             )
         except Exception:  # noqa: BLE001 - observer-only event.
@@ -1314,6 +1362,7 @@ def _agent_service_gateway_metadata(
             "user_number": user_number,
             "content_count": content_count,
             "control_started": state.assistant_control_start is not None,
+            "client": dict(state.client_info),
         },
         "gateway": {
             "suppress_realtime_backend_source": True,

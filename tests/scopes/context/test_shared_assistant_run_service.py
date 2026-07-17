@@ -1,6 +1,7 @@
 import asyncio
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.events import AgentEvent
@@ -18,6 +19,8 @@ from assistant_agent.services.assistant_run_service import (
 )
 from assistant_agent.services.context.builder import build_assistant_context_pack
 from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.services import trace_conversation
+from assistant_agent.services.trace_conversation import InMemoryTraceConversationStore
 
 
 class RecordingSink:
@@ -75,6 +78,67 @@ def test_shared_assistant_run_service_accepts_user_request() -> None:
     assert response.trace_id.startswith("trace_")
     assert response.runtime_info["graph_mode"] == "assistant_loop"
     assert response.current_stage
+
+
+def test_failed_turn_records_trace_debug_content_without_conversation_history(monkeypatch) -> None:
+    conversation_store = InMemoryConversationStore()
+    trace_conversation_store = InMemoryTraceConversationStore()
+    request = UserRequest(user_id="u1", session_id="s1", text="帮我查一下今天的 AI 新闻")
+    state = AgentState.from_request(request)
+    state.status = "failed"
+    state.errors.append(
+        AgentError(
+            message="provider_network_error: SSL EOF",
+            source="web_search",
+            details={"code": "provider_network_error"},
+        )
+    )
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+    monkeypatch.setattr(
+        trace_conversation,
+        "get_default_trace_conversation_store",
+        lambda: trace_conversation_store,
+    )
+
+    run_service._record_conversation_turn(
+        state,
+        conversation_store=conversation_store,
+        enable_conversation_history=True,
+    )
+    run_service._record_trace_conversation_turn(state)
+
+    assert conversation_store.get("u1", "s1") == []
+    view = trace_conversation_store.get(
+        user_id="u1",
+        session_id="s1",
+        trace_id=state.trace_id,
+    )
+    assert view is not None
+    assert view.user.text == "帮我查一下今天的 AI 新闻"
+    assert view.assistant.text == "请求失败：provider_network_error: SSL EOF"
+
+
+def test_completed_turn_does_not_duplicate_trace_debug_content(monkeypatch) -> None:
+    trace_conversation_store = InMemoryTraceConversationStore()
+    state = AgentState.from_request(UserRequest(user_id="u1", session_id="s1", text="你好"))
+    state.status = "completed"
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+    monkeypatch.setattr(
+        trace_conversation,
+        "get_default_trace_conversation_store",
+        lambda: trace_conversation_store,
+    )
+
+    run_service._record_trace_conversation_turn(state)
+
+    assert (
+        trace_conversation_store.get(
+            user_id="u1",
+            session_id="s1",
+            trace_id=state.trace_id,
+        )
+        is None
+    )
 
 
 def test_shared_assistant_run_service_traces_conversation_preparation_before_run() -> None:

@@ -516,6 +516,7 @@ def run_assistant_request(
         conversation_store=resolved_store,
         enable_conversation_history=enable_conversation_history,
     )
+    _record_trace_conversation_turn(state)
     raw_events = getattr(sink, "events", [])
     events = list(raw_events) if isinstance(raw_events, list) else []
     return AssistantRunArtifacts(runtime=resolved_runtime, state=state, events=events)
@@ -995,6 +996,38 @@ def _record_conversation_turn(
             trace_id=state.trace_id,
         ),
     )
+
+
+def _record_trace_conversation_turn(state: AgentState) -> None:
+    if os.environ.get("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT") != "1":
+        return
+    if state.status not in {"failed", "cancelled"}:
+        return
+    user_text = (state.request.text or "").strip()
+    if not user_text:
+        return
+    assistant_text = _trace_conversation_assistant_text(state)
+    if not assistant_text:
+        return
+    from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
+
+    get_default_trace_conversation_store().append(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=state.trace_id,
+        user_text=user_text,
+        assistant_text=assistant_text,
+    )
+
+
+def _trace_conversation_assistant_text(state: AgentState) -> str | None:
+    if state.status == "failed":
+        reason = blocked_reason(state)
+        return f"请求失败：{reason}" if reason else "请求失败。"
+    if state.status == "cancelled":
+        reason = blocked_reason(state)
+        return f"请求已取消：{reason}" if reason else "请求已取消。"
+    return None
 
 
 def _record_session_summary(state: AgentState, *, conversation_store: ConversationStore) -> None:

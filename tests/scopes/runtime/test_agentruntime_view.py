@@ -114,7 +114,123 @@ def test_agentruntime_view_follow_readiness_waits_for_agent_service_turn_finishe
     assert module._follow_update_ready(complete) is True
 
 
-def test_agentruntime_view_follow_without_session_id_prints_session_separator(tmp_path: Path) -> None:
+def test_agentruntime_view_follow_readiness_accepts_assistant_turn_summary() -> None:
+    module = _load_agentruntime_view_module()
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    events = [
+        _event(
+            "trace_summary",
+            "run_summary",
+            "run.started",
+            session_id="summary-session",
+            created_at=base_time,
+        ),
+        _event(
+            "trace_summary",
+            "run_summary",
+            "assistant.turn.summary",
+            status="summary",
+            session_id="summary-session",
+            created_at=base_time + timedelta(milliseconds=1),
+            output_summary={
+                "turn_summary": {
+                    "schema_version": "assistant_turn_summary_v1",
+                    "trace_id": "trace_summary",
+                    "assistant_run_id": "run_summary",
+                    "user_id": "u1",
+                    "session_id": "summary-session",
+                    "client_type": "api",
+                    "terminal_status": "completed",
+                    "response_present": True,
+                    "tool_count": 0,
+                    "error_count": 0,
+                }
+            },
+        ),
+    ]
+
+    assert module._follow_update_ready(events) is True
+
+
+def test_agentruntime_view_summary_payload_prefers_turn_summary_session_and_status() -> None:
+    module = _load_agentruntime_view_module()
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    events = [
+        _event(
+            "trace_summary",
+            "run_summary",
+            "run.started",
+            session_id="raw-session",
+            created_at=base_time,
+        ),
+        _event(
+            "trace_summary",
+            "run_summary",
+            "assistant.turn.summary",
+            status="summary",
+            session_id="summary-session",
+            created_at=base_time + timedelta(milliseconds=1),
+            output_summary={
+                "turn_summary": {
+                    "schema_version": "assistant_turn_summary_v1",
+                    "trace_id": "trace_summary",
+                    "assistant_run_id": "run_summary",
+                    "gateway_run_id": "gateway_summary",
+                    "turn_id": "turn_summary",
+                    "user_id": "u1",
+                    "session_id": "summary-session",
+                    "session_turn": 2,
+                    "client_type": "media_agent",
+                    "terminal_status": "cancelled",
+                    "response_present": False,
+                    "tool_count": 0,
+                    "error_count": 1,
+                    "failure_summary": {"code": "agent_run_cancelled"},
+                    "latency_summary_ref": None,
+                }
+            },
+        ),
+    ]
+
+    payload = module._summary_payload(events)
+
+    assert payload["status"] == "cancelled"
+    assert payload["session_id"] == "summary-session"
+    assert payload["turn_summary"]["client_type"] == "media_agent"
+    assert payload["turn_summary"]["gateway_run_id"] == "gateway_summary"
+
+
+def test_agentruntime_view_follow_latest_keeps_global_session_visibility_by_default() -> None:
+    module = _load_agentruntime_view_module()
+    args = module.build_parser().parse_args(["last", "--follow"])
+
+    assert module._follow_lookup_session_id(args, locked_session_id=None) is None
+
+    locked = module._next_locked_follow_session_id(
+        args,
+        locked_session_id=None,
+        current_session_id="agent-service-session",
+    )
+
+    assert locked is None
+    assert module._follow_lookup_session_id(args, locked_session_id=locked) is None
+
+
+def test_agentruntime_view_follow_all_sessions_keeps_global_latest_mode() -> None:
+    module = _load_agentruntime_view_module()
+    args = module.build_parser().parse_args(["last", "--follow", "--follow-all-sessions"])
+
+    locked = module._next_locked_follow_session_id(
+        args,
+        locked_session_id=None,
+        current_session_id="agent-service-session",
+    )
+
+    assert locked is None
+    assert module._follow_lookup_session_id(args, locked_session_id="ignored") is None
+
+
+def test_agentruntime_view_follow_without_session_id_prints_initial_session_separator_by_default(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_session_sample_trace(trace_path)
 
@@ -124,6 +240,56 @@ def test_agentruntime_view_follow_without_session_id_prints_session_separator(tm
         str(trace_path),
         "--follow",
         "--follow-include-existing",
+        "--follow-limit",
+        "1",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.startswith(
+        "\n================ SESSION other-session ================\n"
+        "run run_global_latest trace trace_global_latest status=completed events=2"
+    )
+
+
+def test_agentruntime_view_follow_default_prints_separator_after_session_switch() -> None:
+    module = _load_agentruntime_view_module()
+    args = module.build_parser().parse_args(["last", "--follow"])
+
+    assert module._should_print_session_separator(
+        args,
+        printed_any=False,
+        session_changed=True,
+    ) is True
+    assert module._should_print_session_separator(
+        args,
+        printed_any=True,
+        session_changed=True,
+    ) is True
+
+
+def test_agentruntime_view_follow_latest_collects_all_new_runs_between_polls(tmp_path: Path) -> None:
+    module = _load_agentruntime_view_module()
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_session_sample_trace(trace_path)
+    args = module.build_parser().parse_args(["last", "--trace-path", str(trace_path), "--follow"])
+
+    groups = module._follow_event_groups(args, suppressed_run_ids=set())
+
+    assert [group[0].run_id for group in groups] == ["run_debug", "run_global_latest"]
+
+
+def test_agentruntime_view_follow_can_show_session_separator(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_session_sample_trace(trace_path)
+
+    result = _run_agentruntime_view(
+        "last",
+        "--trace-path",
+        str(trace_path),
+        "--follow",
+        "--follow-include-existing",
+        "--show-session-banner",
         "--follow-limit",
         "1",
     )
@@ -727,6 +893,7 @@ def _event(
     session_id: str | None = None,
     created_at: datetime,
     attributes: dict[str, object] | None = None,
+    output_summary: dict[str, object] | None = None,
 ) -> TraceEvent:
     return TraceEvent(
         trace_id=trace_id,
@@ -740,5 +907,6 @@ def _event(
         model=model,
         latency_ms=latency_ms,
         attributes=attributes or {},
+        output_summary=output_summary or {},
         created_at=created_at,
     )

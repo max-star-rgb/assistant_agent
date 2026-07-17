@@ -94,6 +94,7 @@ from assistant_agent.services.session_store import SessionStore, create_session_
 from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.tool_policy import max_result_chars_for_registered_tool
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
+from assistant_agent.services.turn_summary import append_runtime_turn_summary
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry, tool_execution_policy
@@ -465,6 +466,7 @@ class AgentGraphRuntime:
             },
             error=_latest_state_error(state),
         )
+        append_runtime_turn_summary(self.trace_store, state=state)
         if state.status == "failed":
             self._emit(
                 AgentEvent(

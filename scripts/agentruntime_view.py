@@ -27,6 +27,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from assistant_agent.services.trace_store import TraceEvent, trace_debug_summary
+from assistant_agent.services.turn_summary import (
+    ASSISTANT_TURN_SUMMARY_EVENT,
+    ASSISTANT_TURN_SUMMARY_KEY,
+    ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION,
+)
 
 
 DEFAULT_TRACE_PATH = ".data/graph_trace.jsonl"
@@ -145,6 +150,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--follow-live-updates",
         action="store_true",
         help="Print non-terminal trace updates while a run is still in progress.",
+    )
+    parser.add_argument(
+        "--follow-all-sessions",
+        action="store_true",
+        help=(
+            "Compatibility flag. last/latest/@last --follow already watches the global latest stream; "
+            "use --session-id to isolate one session."
+        ),
+    )
+    parser.add_argument(
+        "--show-session-banner",
+        action="store_true",
+        help="Compatibility flag. --follow already prints SESSION banners for each observed session.",
     )
     parser.add_argument(
         "--poll-interval",
@@ -307,54 +325,67 @@ def _events_for_identifier(events: list[TraceEvent], identifier: str) -> list[Tr
 
 def _follow_local_trace(args: argparse.Namespace, sections: tuple[str, ...]) -> int:
     deadline = None if args.follow_timeout is None else monotonic() + args.follow_timeout
-    skip_existing_latest = _is_latest_identifier(args.identifier) and not args.follow_include_existing
-    baseline_events = _find_local_events(args.trace_path, args.identifier, session_id=args.session_id)
-    previous_signature: tuple[tuple[Any, ...], ...] | None = (
-        _events_signature(baseline_events) if skip_existing_latest and baseline_events else None
-    )
+    suppressed_run_ids = _initial_suppressed_follow_run_ids(args)
     previous_session_id: str | None = None
     printed_any = False
     printed_updates = 0
     printed_run_ids: set[str] = set()
-    saw_matching_events = bool(baseline_events)
+    printed_signatures: dict[str, tuple[tuple[Any, ...], ...]] = {}
+    saw_matching_events = bool(_follow_event_groups(args, suppressed_run_ids=set()))
+    locked_session_id: str | None = None
     while True:
-        events = _find_local_events(args.trace_path, args.identifier, session_id=args.session_id)
-        if events:
+        event_groups = _follow_event_groups(
+            args,
+            suppressed_run_ids=suppressed_run_ids,
+            locked_session_id=locked_session_id,
+        )
+        if event_groups:
             saw_matching_events = True
+        for events in event_groups:
             signature = _events_signature(events)
-            if signature != previous_signature:
-                run_id = events[0].run_id
-                if not args.follow_live_updates and run_id in printed_run_ids:
-                    previous_signature = signature
-                    continue
-                if not args.follow_live_updates and not _follow_update_ready(events):
-                    previous_signature = signature
-                    continue
-                payload = _follow_payload(args, events, sections)
-                current_session_id = _follow_session_id(payload, events)
-                session_changed = args.session_id is None and current_session_id != previous_session_id
-                if session_changed:
-                    print()
-                    print(_format_follow_session_separator(payload, current_session_id))
-                    previous_session_id = current_session_id
-                elif printed_any:
-                    print()
-                    print("--- trace update ---")
-                print(
-                    _format_human(
-                        payload,
-                        show_errors=args.errors,
-                        sections=sections,
-                        show_latency_stages=args.latency_stages,
-                    ),
-                    flush=True,
-                )
-                previous_signature = signature
-                printed_any = True
+            run_id = events[0].run_id
+            if not args.follow_live_updates and run_id in printed_run_ids:
+                continue
+            if args.follow_live_updates and printed_signatures.get(run_id) == signature:
+                continue
+            if not args.follow_live_updates and not _follow_update_ready(events):
+                continue
+            payload = _follow_payload(args, events, sections)
+            current_session_id = _follow_session_id(payload, events)
+            session_changed = args.session_id is None and current_session_id != previous_session_id
+            if session_changed:
+                previous_session_id = current_session_id
+            locked_session_id = _next_locked_follow_session_id(
+                args,
+                locked_session_id=locked_session_id,
+                current_session_id=current_session_id,
+            )
+            if session_changed and _should_print_session_separator(
+                args,
+                printed_any=printed_any,
+                session_changed=session_changed,
+            ):
+                print()
+                print(_format_follow_session_separator(payload, current_session_id))
+            elif printed_any:
+                print()
+                print("--- trace update ---")
+            print(
+                _format_human(
+                    payload,
+                    show_errors=args.errors,
+                    sections=sections,
+                    show_latency_stages=args.latency_stages,
+                ),
+                flush=True,
+            )
+            printed_signatures[run_id] = signature
+            printed_any = True
+            if not args.follow_live_updates:
                 printed_run_ids.add(run_id)
-                printed_updates += 1
-                if args.follow_limit is not None and printed_updates >= args.follow_limit:
-                    return 0
+            printed_updates += 1
+            if args.follow_limit is not None and printed_updates >= args.follow_limit:
+                return 0
         if deadline is not None and monotonic() >= deadline:
             if printed_any:
                 return 0
@@ -363,6 +394,87 @@ def _follow_local_trace(args: argparse.Namespace, sections: tuple[str, ...]) -> 
             print(f"trace/run not found: {args.identifier}", file=sys.stderr)
             return 1
         sleep(args.poll_interval)
+
+
+def _initial_suppressed_follow_run_ids(args: argparse.Namespace) -> set[str]:
+    if not _is_latest_identifier(args.identifier):
+        return set()
+    events = _load_local_events(args.trace_path)
+    lookup_session_id = _follow_lookup_session_id(args, locked_session_id=None)
+    if lookup_session_id:
+        events = [event for event in events if event.session_id == lookup_session_id]
+    groups = _group_trace_events_by_run(events)
+    if not args.follow_include_existing:
+        return {run_id for run_id, _ in groups}
+    latest_events = _latest_run_events(events)
+    latest_run_id = latest_events[0].run_id if latest_events else None
+    return {run_id for run_id, _ in groups if run_id != latest_run_id}
+
+
+def _follow_event_groups(
+    args: argparse.Namespace,
+    *,
+    suppressed_run_ids: set[str],
+    locked_session_id: str | None = None,
+) -> list[list[TraceEvent]]:
+    lookup_session_id = _follow_lookup_session_id(args, locked_session_id=locked_session_id)
+    if not _is_latest_identifier(args.identifier):
+        events = _find_local_events(args.trace_path, args.identifier, session_id=lookup_session_id)
+        if not events or events[0].run_id in suppressed_run_ids:
+            return []
+        return [events]
+    events = _load_local_events(args.trace_path)
+    if lookup_session_id:
+        events = [event for event in events if event.session_id == lookup_session_id]
+    return [
+        group
+        for run_id, group in _group_trace_events_by_run(events)
+        if run_id not in suppressed_run_ids
+    ]
+
+
+def _group_trace_events_by_run(events: list[TraceEvent]) -> list[tuple[str, list[TraceEvent]]]:
+    groups: dict[str, list[TraceEvent]] = {}
+    order: list[str] = []
+    for event in events:
+        run_id = event.run_id
+        if run_id not in groups:
+            groups[run_id] = []
+            order.append(run_id)
+        groups[run_id].append(event)
+    return [(run_id, groups[run_id]) for run_id in order]
+
+
+def _follow_lookup_session_id(
+    args: argparse.Namespace,
+    *,
+    locked_session_id: str | None,
+) -> str | None:
+    if args.session_id:
+        return args.session_id
+    return None
+
+
+def _next_locked_follow_session_id(
+    args: argparse.Namespace,
+    *,
+    locked_session_id: str | None,
+    current_session_id: str | None,
+) -> str | None:
+    return locked_session_id
+
+
+def _should_print_session_separator(
+    args: argparse.Namespace,
+    *,
+    printed_any: bool,
+    session_changed: bool,
+) -> bool:
+    if not session_changed:
+        return False
+    if args.session_id:
+        return False
+    return True
 
 
 def _events_signature(events: list[TraceEvent]) -> tuple[tuple[Any, ...], ...]:
@@ -387,6 +499,8 @@ def _events_signature(events: list[TraceEvent]) -> tuple[tuple[Any, ...], ...]:
 
 def _follow_update_ready(events: list[TraceEvent]) -> bool:
     event_names = {_trace_event_name(event) for event in events}
+    if ASSISTANT_TURN_SUMMARY_EVENT in event_names:
+        return True
     if event_names & AGENT_SERVICE_TERMINAL_EVENTS:
         return True
     if _is_agent_service_trace(events):
@@ -506,6 +620,10 @@ def _server_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
         events = []
         summary["events"] = events
     _add_timing_fields(events)
+    turn_summary = _payload_turn_summary(summary) or _latest_turn_summary(events)
+    if isinstance(turn_summary, dict):
+        summary["turn_summary"] = turn_summary
+        _apply_turn_summary_payload(summary, turn_summary)
     error_count = summary.get("error_count")
     if not isinstance(error_count, int):
         error_count = len(_error_events(events))
@@ -520,10 +638,56 @@ def _server_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _summary_payload(events: list[TraceEvent]) -> dict[str, Any]:
     summary = trace_debug_summary(events)
     _add_timing_fields(summary["events"])
-    summary["status"] = _infer_status(summary["events"], summary["error_count"])
+    turn_summary = _latest_turn_summary(summary["events"])
+    if isinstance(turn_summary, dict):
+        summary["turn_summary"] = turn_summary
+        _apply_turn_summary_payload(summary, turn_summary)
+    if not isinstance(summary.get("status"), str):
+        summary["status"] = _infer_status(summary["events"], summary["error_count"])
     summary["event_count"] = len(events)
     summary["duration_ms"] = _duration_ms(events)
     return summary
+
+
+def _payload_turn_summary(payload: dict[str, Any]) -> dict[str, Any] | None:
+    value = payload.get("turn_summary")
+    return dict(value) if _is_turn_summary(value) else None
+
+
+def _latest_turn_summary(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        output_summary = event.get("output_summary")
+        if not isinstance(output_summary, dict):
+            continue
+        value = output_summary.get(ASSISTANT_TURN_SUMMARY_KEY)
+        if _is_turn_summary(value):
+            return dict(value)
+    return None
+
+
+def _is_turn_summary(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("schema_version") == ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION
+    )
+
+
+def _apply_turn_summary_payload(payload: dict[str, Any], turn_summary: dict[str, Any]) -> None:
+    for source_key, target_key in (
+        ("trace_id", "trace_id"),
+        ("assistant_run_id", "run_id"),
+        ("user_id", "user_id"),
+        ("session_id", "session_id"),
+    ):
+        value = turn_summary.get(source_key)
+        if isinstance(value, str) and value:
+            payload[target_key] = value
+    terminal_status = turn_summary.get("terminal_status")
+    if isinstance(terminal_status, str) and terminal_status:
+        payload["status"] = terminal_status
+    error_count = turn_summary.get("error_count")
+    if isinstance(error_count, int) and not isinstance(error_count, bool):
+        payload["error_count"] = error_count
 
 
 def _add_timing_fields(events: list[dict[str, Any]]) -> None:
@@ -598,10 +762,18 @@ def _format_human(
         else:
             lines.append("  (none)")
     if "timeline" in sections:
+        turn_summary = payload.get("turn_summary")
+        if isinstance(turn_summary, dict):
+            lines.extend(("", *_format_turn_summary(turn_summary)))
         turn_latency = payload.get("turn_latency")
         if isinstance(turn_latency, dict):
             lines.extend(("", *_format_turn_latency(turn_latency, show_stages=show_latency_stages)))
-        if show_errors or isinstance(turn_latency, dict) or ("conversation" in sections and isinstance(conversation, dict)):
+        if (
+            show_errors
+            or isinstance(turn_summary, dict)
+            or isinstance(turn_latency, dict)
+            or ("conversation" in sections and isinstance(conversation, dict))
+        ):
             lines.extend(("", "Timeline"))
         for index, event in enumerate(events, start=1):
             lines.append(_format_event_line(index, event))
@@ -745,6 +917,32 @@ def _format_turn_latency(summary: dict[str, Any], *, show_stages: bool = False) 
     return lines
 
 
+def _format_turn_summary(summary: dict[str, Any]) -> list[str]:
+    lines = [
+        "Turn summary",
+        "  "
+        f"terminal={_plain_value(summary.get('terminal_status'))} "
+        f"client={_plain_value(summary.get('client_type'))} "
+        f"session_turn={_plain_value(summary.get('session_turn'))} "
+        f"response={_plain_value(summary.get('response_present'))} "
+        f"tools={_plain_value(summary.get('tool_count'))} "
+        f"errors={_plain_value(summary.get('error_count'))}",
+        "  "
+        f"trace={_plain_value(summary.get('trace_id'))} "
+        f"gateway_run={_plain_value(summary.get('gateway_run_id'))} "
+        f"assistant_run={_plain_value(summary.get('assistant_run_id'))}",
+    ]
+    failure = summary.get("failure_summary")
+    if isinstance(failure, dict):
+        details: list[str] = []
+        _append_named(details, "code", failure.get("code"))
+        _append_named(details, "source", failure.get("source"))
+        _append_named(details, "message", failure.get("message"))
+        if details:
+            lines.append(f"  failure {' '.join(details)}")
+    return lines
+
+
 def _format_latency_stage(stage: dict[str, Any]) -> str:
     details = [
         f"    {_plain_value(stage.get('name'))}",
@@ -820,10 +1018,14 @@ def _milliseconds(value: Any) -> str:
 def _format_header(payload: dict[str, Any]) -> str:
     duration = payload.get("duration_ms")
     duration_part = f" duration={duration}ms" if isinstance(duration, int) else ""
+    turn_summary = payload.get("turn_summary")
+    client_part = ""
+    if isinstance(turn_summary, dict):
+        client_part = f" client={_plain_value(turn_summary.get('client_type'))}"
     return (
         f"run {payload.get('run_id')} trace {payload.get('trace_id')} "
         f"status={payload.get('status')} events={payload.get('event_count', 0)} "
-        f"errors={payload.get('error_count', 0)}{duration_part}"
+        f"errors={payload.get('error_count', 0)}{client_part}{duration_part}"
     )
 
 

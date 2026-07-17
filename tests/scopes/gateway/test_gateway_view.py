@@ -143,6 +143,52 @@ def test_gateway_view_last_outputs_latest_terminal_run(tmp_path: Path) -> None:
     assert "run=run_cancel" in result.stdout
 
 
+def test_gateway_view_last_ignores_session_lifecycle_after_latest_run(tmp_path: Path) -> None:
+    event_path = tmp_path / "gateway_events.jsonl"
+    _write_jsonl(
+        event_path,
+        [
+            _gateway_record(
+                "gateway.run.started",
+                run_id="run_latest",
+                trace_id="trace_latest",
+                session_id="debug-session",
+                created_at="2026-07-16T12:00:00.000Z",
+            ),
+            _gateway_record(
+                "gateway.run.completed",
+                run_id="run_latest",
+                trace_id="trace_latest",
+                session_id="debug-session",
+                created_at="2026-07-16T12:00:01.000Z",
+                attributes={"status": "completed"},
+            ),
+            {
+                "schema_version": "gateway_lifecycle_event_v1",
+                "created_at": "2026-07-16T12:00:02.000Z",
+                "component": "gateway",
+                "event": "gateway.session.destroyed",
+                "run_id": None,
+                "turn_id": None,
+                "trace_id": None,
+                "user_id": _digest("user"),
+                "session_id": None,
+                "attributes": {"active_count": 0},
+            },
+        ],
+    )
+
+    result = _run_gateway_view("last", "--event-path", str(event_path))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith(
+        "gateway run run_latest trace trace_latest status=completed events=2"
+    )
+    assert "gateway.run.started" in result.stdout
+    assert "gateway.run.completed" in result.stdout
+    assert "gateway.session.destroyed" not in result.stdout
+
+
 def test_gateway_view_follow_latest_waits_for_new_gateway_run_by_default(tmp_path: Path) -> None:
     event_path = tmp_path / "gateway_events.jsonl"
     _write_gateway_session_sample_events(event_path)
@@ -161,7 +207,37 @@ def test_gateway_view_follow_latest_waits_for_new_gateway_run_by_default(tmp_pat
     assert result.stderr == ""
 
 
-def test_gateway_view_follow_can_include_existing_latest_run(tmp_path: Path) -> None:
+def test_gateway_view_follow_latest_keeps_global_session_visibility_by_default() -> None:
+    module = _load_gateway_view_module()
+    args = module.build_parser().parse_args(["last", "--follow"])
+
+    assert module._follow_lookup_session_id(args, locked_session_id=None) is None
+
+    locked = module._next_locked_follow_session_id(
+        args,
+        locked_session_id=None,
+        current_session_id="sha256:agentservice",
+    )
+
+    assert locked is None
+    assert module._follow_lookup_session_id(args, locked_session_id=locked) is None
+
+
+def test_gateway_view_follow_all_sessions_keeps_global_latest_mode() -> None:
+    module = _load_gateway_view_module()
+    args = module.build_parser().parse_args(["last", "--follow", "--follow-all-sessions"])
+
+    locked = module._next_locked_follow_session_id(
+        args,
+        locked_session_id=None,
+        current_session_id="sha256:agentservice",
+    )
+
+    assert locked is None
+    assert module._follow_lookup_session_id(args, locked_session_id="ignored") is None
+
+
+def test_gateway_view_follow_can_include_existing_latest_run_with_initial_session_separator_by_default(tmp_path: Path) -> None:
     event_path = tmp_path / "gateway_events.jsonl"
     _write_gateway_session_sample_events(event_path)
 
@@ -183,6 +259,117 @@ def test_gateway_view_follow_can_include_existing_latest_run(tmp_path: Path) -> 
     assert "gateway.run.started" in result.stdout
     assert "gateway.run.completed" in result.stdout
     assert "run_debug" not in result.stdout
+
+
+def test_gateway_view_follow_default_prints_separator_after_session_switch() -> None:
+    module = _load_gateway_view_module()
+    args = module.build_parser().parse_args(["last", "--follow"])
+
+    assert module._should_print_session_separator(
+        args,
+        printed_any=False,
+        session_changed=True,
+    ) is True
+    assert module._should_print_session_separator(
+        args,
+        printed_any=True,
+        session_changed=True,
+    ) is True
+
+
+def test_gateway_view_follow_latest_collects_all_new_runs_between_polls(tmp_path: Path) -> None:
+    module = _load_gateway_view_module()
+    event_path = tmp_path / "gateway_events.jsonl"
+    _write_gateway_session_sample_events(event_path)
+    args = module.build_parser().parse_args(["last", "--event-path", str(event_path), "--follow"])
+    source_path, _, line_parser = module._source(args)
+
+    groups = module._follow_event_groups(
+        args,
+        source_path,
+        line_parser=line_parser,
+        suppressed_group_ids=set(),
+    )
+
+    assert [group[0].fields["run_id"] for group in groups] == [
+        "run_debug",
+        "run_global_latest",
+    ]
+
+
+def test_gateway_view_follow_latest_skips_session_lifecycle_groups(tmp_path: Path) -> None:
+    module = _load_gateway_view_module()
+    event_path = tmp_path / "gateway_events.jsonl"
+    _write_jsonl(
+        event_path,
+        [
+            {
+                "schema_version": "gateway_lifecycle_event_v1",
+                "created_at": "2026-07-16T12:00:00.000Z",
+                "component": "gateway",
+                "event": "gateway.session.acquired",
+                "run_id": None,
+                "turn_id": None,
+                "trace_id": None,
+                "user_id": _digest("user"),
+                "session_id": None,
+                "attributes": {"active_count": 1},
+            },
+            _gateway_record(
+                "gateway.run.completed",
+                run_id="run_latest",
+                trace_id="trace_latest",
+                session_id="debug-session",
+                created_at="2026-07-16T12:00:01.000Z",
+                attributes={"status": "completed"},
+            ),
+            {
+                "schema_version": "gateway_lifecycle_event_v1",
+                "created_at": "2026-07-16T12:00:02.000Z",
+                "component": "gateway",
+                "event": "gateway.session.destroyed",
+                "run_id": None,
+                "turn_id": None,
+                "trace_id": None,
+                "user_id": _digest("user"),
+                "session_id": None,
+                "attributes": {"active_count": 0},
+            },
+        ],
+    )
+    args = module.build_parser().parse_args(["last", "--event-path", str(event_path), "--follow"])
+    source_path, _, line_parser = module._source(args)
+
+    groups = module._follow_event_groups(
+        args,
+        source_path,
+        line_parser=line_parser,
+        suppressed_group_ids=set(),
+    )
+
+    assert [module._follow_group_id(group) for group in groups] == ["run:run_latest"]
+
+
+def test_gateway_view_follow_can_show_session_separator(tmp_path: Path) -> None:
+    event_path = tmp_path / "gateway_events.jsonl"
+    _write_gateway_session_sample_events(event_path)
+
+    result = _run_gateway_view(
+        "last",
+        "--event-path",
+        str(event_path),
+        "--follow",
+        "--follow-include-existing",
+        "--show-session-banner",
+        "--follow-limit",
+        "1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith(
+        f"\n================ SESSION {_digest('other-session')} ================\n"
+        "gateway run run_global_latest trace trace_global_latest status=completed events=2"
+    )
 
 
 def test_gateway_view_follow_session_id_filters_without_session_separator(tmp_path: Path) -> None:
@@ -305,6 +492,18 @@ def _run_gateway_view(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def _load_gateway_view_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("gateway_view_test_module", SCRIPT_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:

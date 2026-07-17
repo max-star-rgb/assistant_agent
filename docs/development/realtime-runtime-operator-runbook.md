@@ -121,15 +121,19 @@ The operator writes JSONL send/receive frame logs to
 prints the last `trace_id` from `run.end`, and `/trace last` shells out to
 `scripts/agentruntime_view.py --server http://127.0.0.1:8000` for the current trace.
 
-## Gateway Debug Smoke
+## Media-Agent Vendor Envelope Smoke
 
-Use the normalized Gateway frame entry for low-level debugging:
+Use the Media-Agent compatibility protocol when mimicking the media service's
+`assistantControl` and `chat` messages:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_gateway_client.py --server http://127.0.0.1:8000 "你好"
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_client.py --server http://127.0.0.1:8000 "你好"
 ```
 
-This is a debug smoke, not a separate product runtime.
+Omit the text to keep a console open. In the console, type text to send another
+`chat`; use `/new [sessionId]` to reconnect with a fresh media session.
+
+This is a vendor-protocol debug smoke, not a separate product runtime.
 
 ## Trace Check
 

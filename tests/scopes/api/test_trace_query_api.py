@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
@@ -5,6 +7,7 @@ from assistant_agent.api import routes_agent
 from assistant_agent.api.app import create_app
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.assistant_run_service import ConversationTurn, InMemoryConversationStore
+from assistant_agent.services.trace_conversation import InMemoryTraceConversationStore
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
 
 
@@ -34,6 +37,15 @@ def test_trace_query_api_can_query_by_run_id_and_trace_id(monkeypatch) -> None:
     assert "execute_tool" in run_summary["node_path"]
     assert trace_summary["trace_id"] == run_payload["trace_id"]
     assert trace_summary["run_id"] == run_payload["run_id"]
+    turn_summary = trace_summary["turn_summary"]
+    assert turn_summary["schema_version"] == "assistant_turn_summary_v1"
+    assert turn_summary["terminal_status"] == "completed"
+    assert turn_summary["client_type"] == "api"
+    assert turn_summary["response_present"] is True
+    assert turn_summary["assistant_run_id"] == run_payload["run_id"]
+    summary_dump = json.dumps(turn_summary, ensure_ascii=False)
+    assert "帮我找相似款" not in summary_dump
+    assert run_payload["response_text"] not in summary_dump
     assert trace_summary["events"]
     assert run_summary["context"]["budget"]["total_chars"] > 0
     assert trace_summary["context"]["budget"]["total_chars"] > 0
@@ -204,6 +216,58 @@ def test_trace_query_api_projects_latest_turn_latency(monkeypatch) -> None:
     assert "conversation" not in run_payload["turn_latency"]
 
 
+def test_trace_query_api_projects_latest_turn_summary(monkeypatch) -> None:
+    trace_store = InMemoryTraceStore()
+    trace_store.append(
+        TraceEvent(
+            trace_id="trace_turn_summary",
+            run_id="assistant_run_summary",
+            user_id="user_summary",
+            session_id="session_summary",
+            node_name="runtime",
+            event_type="observability",
+            canonical_event="assistant.turn.summary",
+            status="failed",
+            output_summary={
+                "turn_summary": {
+                    "schema_version": "assistant_turn_summary_v1",
+                    "trace_id": "trace_turn_summary",
+                    "assistant_run_id": "assistant_run_summary",
+                    "gateway_run_id": "gateway_run_summary",
+                    "turn_id": "turn_summary",
+                    "user_id": "user_summary",
+                    "session_id": "session_summary",
+                    "session_turn": 3,
+                    "client_type": "media_agent",
+                    "terminal_status": "failed",
+                    "response_present": False,
+                    "tool_count": 1,
+                    "error_count": 1,
+                    "failure_summary": {
+                        "code": "provider_network_error",
+                        "message": "provider network error",
+                    },
+                    "latency_summary_ref": {
+                        "canonical_event": "agent_service.turn.finished",
+                        "delivery_id": "delivery_summary",
+                    },
+                }
+            },
+        )
+    )
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    client = TestClient(create_app())
+
+    run_payload = client.get("/runs/assistant_run_summary").json()
+    trace_payload = client.get("/traces/trace_turn_summary").json()
+
+    assert run_payload["turn_summary"]["terminal_status"] == "failed"
+    assert trace_payload["turn_summary"]["gateway_run_id"] == "gateway_run_summary"
+    assert trace_payload["turn_summary"]["latency_summary_ref"]["delivery_id"] == "delivery_summary"
+    assert "conversation" not in run_payload["turn_summary"]
+
+
 def test_trace_conversation_endpoint_is_hidden_when_disabled(monkeypatch) -> None:
     runtime, conversation_store = _trace_conversation_fixture()
     monkeypatch.delenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", raising=False)
@@ -244,6 +308,52 @@ def test_trace_conversation_endpoint_returns_matching_turn_without_identity(monk
         "user": {"text": "眼前是什么？", "chars": 6, "truncated": False},
         "assistant": {"text": "眼前是一个杯子。", "chars": 8, "truncated": False},
     }
+
+
+def test_trace_conversation_endpoint_returns_failed_turn_debug_content(monkeypatch) -> None:
+    trace_store = InMemoryTraceStore()
+    trace_store.append(
+        TraceEvent(
+            trace_id="trace_failed_content",
+            run_id="run_failed_content",
+            user_id="user_failed",
+            session_id="session_failed",
+            node_name="runtime",
+            event_type="observability",
+            canonical_event="run.failed",
+            status="failed",
+        )
+    )
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+    conversation_store = InMemoryConversationStore()
+    trace_conversation_store = InMemoryTraceConversationStore()
+    trace_conversation_store.append(
+        user_id="user_failed",
+        session_id="session_failed",
+        trace_id="trace_failed_content",
+        user_text="帮我查一下今天的 AI 新闻",
+        assistant_text="请求失败：provider_network_error",
+    )
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+    monkeypatch.setattr(routes_agent, "get_agent_runtime", lambda: runtime)
+    monkeypatch.setattr(routes_agent, "get_default_conversation_store", lambda config=None: conversation_store)
+    monkeypatch.setattr(
+        routes_agent,
+        "get_default_trace_conversation_store",
+        lambda: trace_conversation_store,
+    )
+    client = TestClient(create_app(), client=("127.0.0.1", 50000))
+
+    response = client.get("/traces/trace_failed_content/conversation")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "schema_version": "trace_conversation_view_v1",
+        "trace_id": "trace_failed_content",
+        "user": {"text": "帮我查一下今天的 AI 新闻", "chars": 14, "truncated": False},
+        "assistant": {"text": "请求失败：provider_network_error", "chars": 27, "truncated": False},
+    }
+    assert conversation_store.get("user_failed", "session_failed") == []
 
 
 def test_trace_conversation_endpoint_returns_404_for_unknown_trace_or_content(monkeypatch) -> None:

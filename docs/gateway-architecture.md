@@ -21,7 +21,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and local CLI `--scenario` through demo flows enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
 - The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, and treats raw `audio` / `interrupt` frames as entry-layer ACK traffic. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer pre-warms rolling semantics, while AgentRuntime may dynamically expose `video_understanding` for active-video turns. The main LLM only knows that the tool can be called; it never receives VLM role instructions, frames, JPEG paths, base64 media, or provider raw responses. The exact Media-Agent wire contract is `docs/media-agent-service-websocket.md`.
-- The old browser Web Chat console, `/demo/console`, `/static/index.html`, `scripts/run_client.py`, and legacy `/ws/agent/{session_id}` event stream are removed from the product app. Do not reintroduce ordinary chat entrypoints before the realtime assistant runtime is stable.
+- The old browser Web Chat console, `/demo/console`, `/static/index.html`, and legacy `/ws/agent/{session_id}` event stream are removed from the product app. `scripts/run_client.py` is only a local Media-Agent protocol console client for `/agent-service/v1`, not a browser chat runtime. It still uses the real Media-Agent compatibility route and marks `clientInfo.clientType=run_client` only for prompt-safe observability.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
 
 ## Layering
@@ -156,7 +156,9 @@ answer text was already delivered, the terminal packet uses an empty
 also marked `display_only=true` / `displayOnly=true` for clients that support
 that hint. With
 `stream=false`, or when no provider token delta exists,
-only the successful terminal packet is sent. `deliveryId` and application ACK
+only the successful terminal packet is sent. Optional `assistantControl.clientInfo`
+is classified only for observability: omitted or unknown clients are
+`media_agent`, while the local script client is `run_client`. `deliveryId` and application ACK
 apply only to a successful terminal packet. A streamed failure closes with
 `code=FAIL` and body-level `final=true`, but has no `deliveryId` and is not
 ACK-negotiated; after a successful socket send its delivery state remains
@@ -520,7 +522,13 @@ Hermes' message gateway is useful reference material for defensive edge handling
 
 `/ws/realtime/media` is the primary realtime call entry for Media Relay integrations. It accepts media-entry events, validates identity and session binding against the WebSocket query/auth context, and maps valid events to Gateway frames:
 
-Local Media Relay testing should use `scripts/realtime_media_client.py` or `scripts/run_realtime_call_simulator.py`; see `docs/development/realtime-runtime-operator-runbook.md` for the operator loop. A future Web UI can be added as a thin entry adapter, but it must not reintroduce a separate browser chat runtime or make the browser a second primary Gateway client path.
+Local Media Relay testing should use `scripts/realtime_media_client.py`,
+`scripts/run_client.py` for the vendor `/agent-service/v1` envelope, or
+`scripts/run_realtime_call_simulator.py`; see
+`docs/development/realtime-runtime-operator-runbook.md` for the operator loop. A
+future Web UI can be added as a thin entry adapter, but it must not reintroduce a
+separate browser chat runtime or make the browser a second primary Gateway client
+path.
 
 | media event | required shape | Gateway mapping |
 | --- | --- | --- |
@@ -610,6 +618,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `scripts/run_demo_flows.py` | Offline demo/scenario entry adapter that runs scenarios through a local `GatewayTurnFacade` and formats the existing demo summary payload. |
 | `scripts/run_gateway_client.py` | Local operator smoke client for the Gateway frame WebSocket route. |
 | `scripts/realtime_media_client.py` | Local Media Relay protocol smoke client for `/ws/realtime/media` scenarios. |
+| `scripts/run_client.py` | Local Media-Agent protocol console client for `/agent-service/v1`; supports repeated `chat` sends and `/new [sessionId]`. |
 | `scripts/run_realtime_call_simulator.py` | In-process text-only realtime call simulator for Phase 1 Gateway lifecycle gates. |
 
 ### Entry Convergence Inventory
@@ -627,7 +636,7 @@ Phase 0 treats these entry classifications as architecture contracts:
 | HTTP `POST /agents/run` | explicit `AgentRouter` service call | Separate opt-in router/debug entry, not the default product path. |
 | Inbound A2A `/a2a/rpc` | protocol adapter over `AgentRouter` | Explicit adapter, not Gateway lifecycle. |
 | MCP `tool_run` | `ActionValidator -> ToolExecutor -> ToolRegistry` | Tool adapter path, not assistant entry. |
-| Removed legacy Web Chat | `/demo/console`, `/static/index.html`, `/ws/agent/{session_id}`, and `scripts/run_client.py` are not registered or shipped | Ordinary browser chat is out of scope until the realtime assistant runtime is stable. |
+| Removed legacy Web Chat | `/demo/console`, `/static/index.html`, and `/ws/agent/{session_id}` are not registered or shipped | Ordinary browser chat is out of scope until the realtime assistant runtime is stable. |
 
 Gateway entry and lifecycle convergence contracts live in `tests/critical/test_gateway.py`,
 `tests/critical/test_gateway_session.py`, and `tests/scopes/gateway/test_gateway_api.py`.

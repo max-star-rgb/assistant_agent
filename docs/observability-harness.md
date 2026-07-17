@@ -1,6 +1,6 @@
 # Observability Harness
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 This document is the current entry for assistant run status, logs, monitoring,
 trace, and ReAct checkpoint observability. It defines the developer-facing
@@ -37,6 +37,12 @@ negotiated, application delivery confirmation remains a later, separate
 `agent_service.delivery.acked` event. A turn with `ack_status=pending` was sent
 successfully but has not been confirmed by the media application. Failure
 terminals are never `ack_status=pending` and carry no ACK-able delivery ID.
+The terminal event carries the same top-level `user_id` and internal
+`agent-service-*` `session_id` as the Assistant runtime events, so machine-log
+filters and `last --follow` do not lose the accepted chat's session identity.
+Its bounded attributes also include `client_type`: omitted media handshakes are
+classified as `media_agent`, while the local `scripts/run_client.py` console is
+classified as `run_client`.
 
 The correlation identifiers are deliberately distinct:
 
@@ -72,6 +78,40 @@ send can report `provider_token_stream_seen=true` with `stream_chunk_count=0`.
 `final_response_sent=true` means a terminal response was successfully handed to
 the WebSocket; it covers both `SUCCESS` and `FAIL` terminals and is not a
 business-success flag.
+
+## Assistant Turn Summary
+
+Every terminal Assistant turn writes one prompt-safe `assistant.turn.summary`
+trace event with `schema_version=assistant_turn_summary_v1`. This event is the
+canonical machine fact for developer-facing turn identity and terminal status.
+Raw trace timeline events remain the detailed diagnostic source, but viewers
+and local tools should prefer the summary when deciding session banners, client
+type, readiness, terminal status, response presence, tool/error counts, and
+bounded failure text.
+
+The summary is appended after runtime postprocess for ordinary runtime turns.
+Agent-Service suppresses that ordinary runtime write and appends the same schema
+after `agent_service.turn.finished`, so the summary can include the Gateway run,
+turn id, media session turn, classified client, and a safe reference to the
+latency event. This keeps one summary per terminal turn while preserving the
+existing `agent_service_turn_latency_v1` schema.
+
+Allowed summary fields are:
+
+- `trace_id`, `assistant_run_id`, optional `gateway_run_id`, optional `turn_id`;
+- `user_id`, `session_id`, optional `session_turn`;
+- `client_type` in `api`, `cli`, `gateway`, `media_agent`, `run_client`, or
+  `unknown`;
+- `terminal_status` in `completed`, `failed`, `cancelled`, or `unknown`;
+- `response_present`, `tool_count`, `error_count`;
+- optional bounded `failure_summary`;
+- optional `latency_summary_ref` pointing at `agent_service.turn.finished`.
+
+The event must not contain user text, assistant response text, prompts, provider
+raw payloads, memory contents, media bytes, or provider/tool request bodies.
+Failure summaries are sanitized and bounded; current-turn user/assistant text
+for failed or cancelled local debugging remains only in the explicit
+`--allow-local-trace-content` trace-conversation overlay.
 
 The safe INFO records have this shape and never contain prompts or responses:
 
@@ -133,8 +173,8 @@ Run console 只保留 launcher 输出与 WARNING/ERROR。该配置显式设置 o
 声明 PyCharm `log_file` 页签。Gateway 开发观察统一运行 `.run/Gateway Follow.run.xml`，
 它执行 `scripts/gateway_view.py last --event-path .data/gateway_events.jsonl --follow`。
 runtime 开发观察统一运行 `.run/AgentRuntime Follow.run.xml`，它常驻跟随
-`.data/graph_trace.jsonl`，连接本地 8089 server，按 Conversation、Timeline、ReAct
-detail 三层输出新的终态 run。
+`.data/graph_trace.jsonl`，连接本地 8089 server，优先用 Turn summary 识别终态和
+session，再按 Conversation、Timeline、ReAct detail 三层输出新的终态 run。
 
 对应关系保持明确：
 
@@ -144,10 +184,19 @@ detail 三层输出新的终态 run。
 - AgentRuntime 机器 trace：`.data/graph_trace.jsonl`
 - AgentRuntime 开发者视图：`scripts/agentruntime_view.py last --follow`
 
-当全局 latest 切换到不同 session 时，Gateway viewer 和 AgentRuntime viewer 都会打印醒目的单行 `SESSION` banner。
+`scripts/gateway_view.py last` / `latest` 默认锚定最新 Gateway run 或 trace 事件；
+run 之后追加的 `gateway.session.destroyed` 等 session lifecycle 事件不会抢占 latest
+run 视图。需要逐条检查 lifecycle 时使用 `--tail`。
+
+Gateway viewer 和 AgentRuntime viewer 的 `last --follow` 默认持续观察全局 latest
+run。每个 observed session 的第一块输出前都会打印 `SESSION` 分割符，方便把消息记录
+和 session 对上；`scripts/run_client.py /new`、真实通话重连或并行调试会话都会清楚分段。
+需要强隔离时，加 `--session-id <session>`。
 Conversation 层要求 server 已显式启用 `--allow-local-trace-content`；共享
 `.run/Assistant Server.run.xml` 已为本地调试启用该开关。AgentRuntime viewer 配置本身不保存
-密钥或 `.env` 路径。
+密钥或 `.env` 路径。成功 turn 的 Conversation 来自正常 conversation history；失败或
+取消的 turn 只在本机 trace-content debug store 中保留当前用户输入和 bounded 失败摘要，
+用于开发视图定位问题，不进入后续模型对话历史。
 
 ## Realtime Video Observation
 
@@ -413,30 +462,36 @@ Local CLI:
 `last`、`latest` 和 `@last` 在一次性查看时解析为本地 JSONL 文件中最后活跃的 run，
 避免从控制台复制 `run_id` / `trace_id` 才能打开详情。`--session-id` 会先过滤本地
 JSONL，再解析 `last` 或驱动 `--follow`，适合明确只看某个调试会话。若不传
-`--session-id`，`last --follow` 表示全局 latest stream；它默认从启动时已有记录之后
-开始等待新 trace，不会首屏打印旧 run，也不会把同一 turn 的中间 trace 快照打印成多块。
-默认只在 run 达到终态时输出一次；Agent-Service trace 会等待
-`agent_service.turn.finished`，确保 Conversation、Turn latency、Timeline 和 ReAct detail
-在同一块里尽量完整。需要立即打印当前 latest 再继续跟随时，显式加
+`--session-id`，`last --follow` 会持续跟随全局 latest run。它默认从启动时已有记录
+之后开始等待新 trace，不会首屏打印旧 run，也不会把同一 turn 的中间 trace 快照
+打印成多块。每个 observed session 的第一块输出前都会打印 `SESSION` 分割符，帮助区分
+`run_client /new`、真实媒体新连接或并行调试会话。
+默认只在 run 达到终态时输出一次；新 trace 优先等待
+`assistant.turn.summary`，旧 trace 继续用 raw `run.completed` / `run.failed` /
+`run.cancelled` 和 `agent_service.turn.finished` 兜底。Agent-Service summary 在
+`agent_service.turn.finished` 之后追加，确保 Conversation、Turn summary、Turn latency、
+Timeline 和 ReAct detail 在同一块里尽量完整。需要立即打印当前 latest 再继续跟随时，显式加
 `--follow-include-existing`；需要逐事件观察中间态时，显式加 `--follow-live-updates`。
-`--follow` 每次切换到不同 session 时都会在 `SESSION` banner 前留一个空行，避免
-session 切换悄悄发生。
+`--follow-all-sessions` 和 `--show-session-banner` 保留为兼容参数；现在默认已经是
+跨 session follow，并且默认打印 session banner。
 
 server 参数和 AgentRuntime viewer 参数分开理解：`scripts/run_server.py` 的参数负责启动
 runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关；
-`scripts/agentruntime_view.py` 的 `--trace-path`、`--server`、`--sections`、`--follow` 和
-`--session-id` 只负责查询与展示。`--follow --server` 的数据流是：本地
+`scripts/agentruntime_view.py` 的 `--trace-path`、`--server`、`--sections`、`--follow`、
+`--session-id`、`--follow-all-sessions` 和 `--show-session-banner` 只负责查询与展示。`--follow --server` 的数据流是：本地
 `.data/graph_trace.jsonl` 发现当前 session 最新 trace 或变化，再用 `trace_id` 向
 loopback server 拉 `/traces/{trace_id}`；包含 `conversation` 时，再拉
 `/traces/{trace_id}/conversation`。server 查不到 trace 时降级使用本地 summary；
-conversation 查不到时标记 unavailable，仍继续输出 Timeline 和 ReAct detail。
+conversation 查不到时标记 unavailable，仍继续输出 Timeline 和 ReAct detail。失败 run
+如果有本机 trace-content debug 记录，Conversation 会显示用户输入和“请求失败/已取消”
+摘要；该记录不写入普通 conversation history，不作为未来 prompt 上下文。
 需要强隔离时再加 `--session-id <session>`。
 
 `--sections` 控制输出层级：`conversation` 需要 `--server` 且 server 已用
 `--allow-local-trace-content` 启动；`timeline` 是默认事件线；`react` 展示
 prompt-safe 的 LLM 决策、validator、tool 调用、耗时、错误和恢复动作证据。server-backed
-view 会在事件 timeline 前渲染 `turn_latency` 摘要、bottleneck、ACK state 和
-consumed-video diagnostics；详细 stage 默认交给 `timeline`，需要在 `Turn latency`
+view 会在事件 timeline 前渲染 `turn_summary` 终态事实、`turn_latency` 摘要、
+bottleneck、ACK state 和 consumed-video diagnostics；详细 stage 默认交给 `timeline`，需要在 `Turn latency`
 中展开旧版 stage rows 时再加 `--latency-stages`。Conversation text 不会写入 trace events
 或 JSONL。
 

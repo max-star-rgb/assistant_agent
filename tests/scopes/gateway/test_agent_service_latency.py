@@ -45,6 +45,10 @@ def _sent_timing(*, total_ms: int = 100, expects_ack: bool = False) -> AgentServ
         expects_ack=expects_ack,
         received_ns=1_000_000_000,
         accepted_ns=1_004_000_000,
+        user_id="10086",
+        session_id="agent-service-s1",
+        client_type="run_client",
+        client_name="scripts/run_client.py",
     )
     timing.mark("queue_entered", at_ns=1_005_000_000)
     timing.mark("queue_acquired", at_ns=1_012_000_000)
@@ -285,7 +289,12 @@ def test_terminal_summary_is_appended_only_with_trace_correlation() -> None:
     assert append_turn_latency_trace(store, timing=timing, summary=summary) is True
     event = store.list_by_trace("trace_1")[-1]
     assert event.canonical_event == "agent_service.turn.finished"
+    assert event.user_id == "10086"
+    assert event.session_id == "agent-service-s1"
+    assert event.attributes["client_type"] == "run_client"
+    assert event.attributes["client_name"] == "scripts/run_client.py"
     assert event.output_summary["turn_latency"]["total_ms"] == 100
+    assert event.output_summary["turn_latency"]["client_type"] == "run_client"
 
     missing = _sent_timing(total_ms=100)
     missing.trace_id = None

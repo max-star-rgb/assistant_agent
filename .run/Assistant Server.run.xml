@@ -1,17 +1,17 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="Assistant Server" type="PythonConfigurationType" factoryName="Python">
+    <log_file alias="Gateway" path="$PROJECT_DIR$/.data/logs/gateway.log" show_all="true" skipped="false" />
     <module name="hello_agent" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
     <option name="PARENT_ENVS" value="true" />
     <envs>
+      <env name="PYTHONUNBUFFERED" value="1" />
       <env name="MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_LEVEL" value="WARNING" />
       <env name="MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_MODE" value="concise" />
       <env name="MULTIMODAL_AGENT_OPERATIONAL_FILE_LEVEL" value="DEBUG" />
-      <env name="MULTIMODAL_AGENT_GATEWAY_EVENT_PATH" value="$PROJECT_DIR$/.data/gateway_events.jsonl" />
       <env name="MULTIMODAL_AGENT_OPERATIONAL_LOGGING_ENABLED" value="1" />
       <env name="MULTIMODAL_AGENT_OPERATIONAL_LOG_DIR" value="$PROJECT_DIR$/.data/logs" />
-      <env name="PYTHONUNBUFFERED" value="1" />
     </envs>
     <option name="SDK_HOME" value="$USER_HOME$/miniconda3/envs/hello_agent/bin/python" />
     <option name="SDK_NAME" value="hello_agent" />
@@ -20,7 +20,7 @@
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/scripts/run_server.py" />
-    <option name="PARAMETERS" value="--host 0.0.0.0 --port 8089 --console-level WARNING --file-log-level DEBUG --console-mode concise --log-dir .data/logs --gateway-event-path .data/gateway_events.jsonl --allow-local-trace-content" />
+    <option name="PARAMETERS" value="--host 0.0.0.0 --port 8089 --console-level WARNING --file-log-level DEBUG --console-mode concise --log-dir .data/logs --allow-local-trace-content --start-web-search-relay" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

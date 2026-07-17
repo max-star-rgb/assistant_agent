@@ -272,6 +272,7 @@ def test_agent_service_chat_runs_through_gateway(monkeypatch) -> None:
     assert request.metadata["runtime"]["history"] == ["你好"]
     assert request.metadata["transport"] == "agent_service_websocket"
     assert request.metadata["agent_service"]["chat_index"] == 2
+    assert request.metadata["agent_service"]["client"]["client_type"] == "media_agent"
     assert request.metadata["system_prompt_profile"] == "realtime_phone"
     assert request.metadata["channel"] == "realtime_phone"
     assert request.metadata["runtime"]["session_config"] == {
@@ -343,6 +344,20 @@ def test_agent_service_chat_appends_correlated_turn_latency_trace(
     with caplog.at_level(logging.INFO, logger="assistant_agent.api.agent_service_websocket"):
         with client.websocket_connect("/agent-service/v1?sessionId=s1") as websocket:
             websocket.send_json(
+                _media_envelope(
+                    "assistantControl",
+                    {
+                        "number": "10086",
+                        "callType": "AUDIO",
+                        "clientInfo": {
+                            "clientType": "run_client",
+                            "clientName": "scripts/run_client.py",
+                        },
+                    },
+                )
+            )
+            assert websocket.receive_json()["message"] == "assistantControl"
+            websocket.send_json(
                 _envelope(
                     "chat",
                     "s1",
@@ -366,26 +381,61 @@ def test_agent_service_chat_appends_correlated_turn_latency_trace(
         for event in trace_store.events
         if event.canonical_event == "agent_service.turn.finished"
     )
+    terminal_index = trace_store.events.index(terminal)
     summary = terminal.output_summary["turn_latency"]
     assert summary["status"] == "sent"
+    assert summary["client_type"] == "run_client"
+    assert summary["client_name"] == "scripts/run_client.py"
     assert summary["total_ms"] >= 0
     assert summary["gateway_run_id"]
     assert summary["assistant_run_id"] == terminal.run_id
     assert summary["gateway_run_id"] != summary["assistant_run_id"]
     assert summary["trace_id"] == terminal.trace_id
+    assert terminal.user_id == "10086"
+    assert terminal.session_id.startswith("agent-service-")
+    assert terminal.attributes["client_type"] == "run_client"
+    assert terminal.attributes["client_name"] == "scripts/run_client.py"
     assert any(stage["name"] == "websocket_send" for stage in summary["stages"])
-    dumped = terminal.model_dump_json()
+    dumped = json.dumps(
+        {"attributes": terminal.attributes, "output_summary": terminal.output_summary},
+        ensure_ascii=False,
+    )
     assert "unique private turn text" not in dumped
-    assert "10086" not in dumped
     assert "private-chat-index" not in dumped
+    turn_summary_events = [
+        event
+        for event in trace_store.events
+        if event.canonical_event == "assistant.turn.summary"
+    ]
+    assert len(turn_summary_events) == 1
+    turn_summary_event = turn_summary_events[0]
+    assert trace_store.events.index(turn_summary_event) > terminal_index
+    turn_summary = turn_summary_event.output_summary["turn_summary"]
+    assert turn_summary["schema_version"] == "assistant_turn_summary_v1"
+    assert turn_summary["terminal_status"] == "completed"
+    assert turn_summary["client_type"] == "run_client"
+    assert turn_summary["session_turn"] == 1
+    assert turn_summary["gateway_run_id"] == summary["gateway_run_id"]
+    assert turn_summary["assistant_run_id"] == summary["assistant_run_id"]
+    assert turn_summary["trace_id"] == summary["trace_id"]
+    assert turn_summary["latency_summary_ref"] == {
+        "canonical_event": "agent_service.turn.finished",
+        "delivery_id": summary["delivery_id"],
+        "trace_id": summary["trace_id"],
+        "gateway_run_id": summary["gateway_run_id"],
+        "assistant_run_id": summary["assistant_run_id"],
+    }
+    summary_dump = json.dumps(turn_summary, ensure_ascii=False)
+    assert "unique private turn text" not in summary_dump
+    assert "private-chat-index" not in summary_dump
     assert any(record.getMessage().startswith("turn_latency status=sent") for record in caplog.records)
     info_lines = [record.getMessage() for record in caplog.records]
     assert not any("websocket received" in line for line in info_lines)
     assert not any("websocket sent" in line for line in info_lines)
     closed = [line for line in info_lines if line.startswith("agent-service websocket closed")]
     assert len(closed) == 1
-    assert "messages_received=1" in closed[0]
-    assert "messages_sent=1" in closed[0]
+    assert "messages_received=2" in closed[0]
+    assert "messages_sent=2" in closed[0]
     assert "video_packets=0" in closed[0]
 
 

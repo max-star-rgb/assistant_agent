@@ -51,7 +51,7 @@ def test_real_web_search_tool_provider_smoke(capsys) -> None:
     result, tool_elapsed_ms = measure_tool_run(
         lambda: tool.run(
             WebSearchInput(
-                query="OpenAI Realtime API latest changes",
+                query="今天天气怎么样？",
                 recency_days=30,
                 limit=3,
             ),

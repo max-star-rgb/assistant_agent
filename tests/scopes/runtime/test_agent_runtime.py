@@ -1,7 +1,9 @@
 from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.agent.state import AgentError
 from assistant_agent.agent.workflow import AgentWorkflow
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
 class CapturingGraph:
@@ -11,6 +13,20 @@ class CapturingGraph:
     def invoke(self, initial_state, config=None):
         self.config = config
         initial_state["state"].set_response(AgentResponse(message="ok", data={}))
+        return initial_state
+
+
+class FailingGraph:
+    def invoke(self, initial_state, config=None):
+        state = initial_state["state"]
+        state.errors.append(
+            AgentError(
+                message="provider network failure " + ("x" * 500),
+                source="chat_provider",
+                details={"code": "provider_network_error", "recovery_action": "retry"},
+            )
+        )
+        state.status = "failed"
         return initial_state
 
 
@@ -47,6 +63,71 @@ def test_agent_graph_runtime_passes_run_id_as_langgraph_thread_id() -> None:
     assert session is not None
     assert session.thread_id == "thread_1"
     assert session.last_run_id == state.run_id
+
+
+def test_agent_graph_runtime_emits_prompt_safe_turn_summary() -> None:
+    trace_store = InMemoryTraceStore()
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="private user text should stay out of summary",
+            metadata={"source": "assistant_run_service"},
+        )
+    )
+
+    summary_events = [
+        event
+        for event in trace_store.events
+        if event.canonical_event == "assistant.turn.summary"
+    ]
+    assert len(summary_events) == 1
+    event = summary_events[0]
+    summary = event.output_summary["turn_summary"]
+    assert summary["schema_version"] == "assistant_turn_summary_v1"
+    assert summary["terminal_status"] == "completed"
+    assert summary["response_present"] is True
+    assert summary["client_type"] == "cli"
+    assert summary["assistant_run_id"] == state.run_id
+    assert summary["trace_id"] == state.trace_id
+    assert summary["user_id"] == "u1"
+    assert summary["session_id"] == "s1"
+    dumped = event.model_dump_json()
+    assert "private user text should stay out of summary" not in dumped
+    assert state.response is not None
+    assert state.response.message not in dumped
+
+
+def test_agent_graph_runtime_failed_turn_summary_has_bounded_failure() -> None:
+    trace_store = InMemoryTraceStore()
+    runtime = AgentGraphRuntime(trace_store=trace_store)
+    runtime._select_graph = lambda request, runtime_context=None: FailingGraph()
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="private failure request",
+            metadata={"source": "assistant_run_service"},
+        )
+    )
+
+    summary = next(
+        event.output_summary["turn_summary"]
+        for event in trace_store.events
+        if event.canonical_event == "assistant.turn.summary"
+    )
+    assert state.status == "failed"
+    assert summary["terminal_status"] == "failed"
+    assert summary["response_present"] is False
+    assert summary["error_count"] == 1
+    assert summary["failure_summary"]["code"] == "provider_network_error"
+    assert summary["failure_summary"]["source"] == "chat_provider"
+    assert len(summary["failure_summary"]["message"]) <= 240
+    dumped = str(summary)
+    assert "private failure request" not in dumped
 
 
 def test_agent_workflow_run_uses_graph_runtime_compatibly() -> None:

@@ -58,6 +58,10 @@ class AgentServiceTurnTiming:
     gateway_run_id: str | None = None
     assistant_run_id: str | None = None
     trace_id: str | None = None
+    user_id: str | None = None
+    session_id: str | None = None
+    client_type: str = "media_agent"
+    client_name: str | None = None
 
     def mark(self, name: CheckpointName, *, at_ns: int | None = None) -> None:
         self.checkpoints[name] = perf_counter_ns() if at_ns is None else at_ns
@@ -133,6 +137,8 @@ class TurnLatencySummary(BaseModel):
     delivery_id: str
     session_turn: int
     chat_index_digest: str
+    client_type: str = "media_agent"
+    client_name: str | None = None
     turn_id: str | None = None
     gateway_run_id: str | None = None
     assistant_run_id: str | None = None
@@ -208,6 +214,8 @@ def analyze_agent_service_turn(
         delivery_id=timing.delivery_id,
         session_turn=timing.session_turn,
         chat_index_digest=timing.chat_index_digest,
+        client_type=timing.client_type or "media_agent",
+        client_name=timing.client_name,
         turn_id=timing.turn_id,
         gateway_run_id=timing.gateway_run_id,
         assistant_run_id=timing.assistant_run_id,
@@ -243,24 +251,30 @@ def append_turn_latency_trace(
 
     if trace_store is None or not timing.trace_id or not timing.assistant_run_id:
         return False
+    attributes = {
+        "delivery_id": timing.delivery_id,
+        "session_turn": timing.session_turn,
+        "chat_index_digest": timing.chat_index_digest,
+        "turn_id": timing.turn_id,
+        "gateway_run_id": timing.gateway_run_id,
+        "client_type": timing.client_type or "media_agent",
+    }
+    if timing.client_name:
+        attributes["client_name"] = timing.client_name
     try:
         trace_store.append(
             TraceEvent(
                 trace_id=timing.trace_id,
                 run_id=timing.assistant_run_id,
+                user_id=timing.user_id,
+                session_id=timing.session_id,
                 node_name="agent_service",
                 event_type="observability",
                 canonical_event="agent_service.turn.finished",
                 span_id=new_span_id(),
                 status=summary.status,
                 latency_ms=summary.total_ms,
-                attributes={
-                    "delivery_id": timing.delivery_id,
-                    "session_turn": timing.session_turn,
-                    "chat_index_digest": timing.chat_index_digest,
-                    "turn_id": timing.turn_id,
-                    "gateway_run_id": timing.gateway_run_id,
-                },
+                attributes=attributes,
                 output_summary={"turn_latency": summary.model_dump(mode="json")},
             )
         )
@@ -275,13 +289,14 @@ def report_turn_latency(summary: TurnLatencySummary, *, logger: logging.Logger) 
     try:
         logger.info(
             "turn_latency status=%s trace=%s gateway_run=%s assistant_run=%s "
-            "delivery=%s session_turn=%s total=%s bottleneck=%s bottleneck_ms=%s share=%s",
+            "delivery=%s session_turn=%s client=%s total=%s bottleneck=%s bottleneck_ms=%s share=%s",
             summary.status,
             summary.trace_id or "none",
             summary.gateway_run_id or "none",
             summary.assistant_run_id or "none",
             summary.delivery_id,
             summary.session_turn,
+            summary.client_type,
             _format_ms(summary.total_ms),
             summary.bottleneck or "none",
             _format_ms(summary.bottleneck_ms),

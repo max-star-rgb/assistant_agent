@@ -14,6 +14,12 @@ Use these when validating the realtime assistant loop:
   and wire `WEB_SEARCH_BASE_URL` for this run.
 - `scripts/realtime_media_client.py`: server-backed Media Relay protocol smoke
   client and manual text-call operator for `/ws/realtime/media`.
+- `scripts/run_client.py`: server-backed Media-Agent protocol console client for
+  `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
+  new media session. Agent chat responses print only the reply text, not the
+  raw vendor envelope. The handshake marks `clientInfo.clientType=run_client`
+  so trace and Gateway metadata can distinguish local protocol tests from
+  ordinary media-agent calls.
 - `scripts/run_gateway_client.py`: server-backed normalized Gateway frame smoke
   client for `/ws/gateway`.
 - `scripts/run_realtime_call_simulator.py`: in-process text-only realtime gate

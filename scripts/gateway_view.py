@@ -182,6 +182,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print non-terminal Gateway run updates while a run is still in progress.",
     )
     parser.add_argument(
+        "--follow-all-sessions",
+        action="store_true",
+        help=(
+            "Compatibility flag. last/latest/@last --follow already watches the global latest stream; "
+            "use --session-id to isolate one session."
+        ),
+    )
+    parser.add_argument(
+        "--show-session-banner",
+        action="store_true",
+        help="Compatibility flag. --follow already prints SESSION banners for each observed session.",
+    )
+    parser.add_argument(
         "--poll-interval",
         type=float,
         default=DEFAULT_POLL_INTERVAL,
@@ -339,7 +352,7 @@ def _is_latest_identifier(identifier: str) -> bool:
 def _latest_gateway_events(entries: list[GatewayLogEntry]) -> list[GatewayLogEntry]:
     if not entries:
         return []
-    latest = entries[-1]
+    latest = _latest_gateway_anchor(entries)
     run_id = _entry_run_id(latest)
     if run_id:
         return [entry for entry in entries if _entry_run_id(entry) == run_id]
@@ -347,6 +360,13 @@ def _latest_gateway_events(entries: list[GatewayLogEntry]) -> list[GatewayLogEnt
     if trace_id:
         return [entry for entry in entries if _entry_trace_id(entry) == trace_id]
     return [latest]
+
+
+def _latest_gateway_anchor(entries: list[GatewayLogEntry]) -> GatewayLogEntry:
+    for entry in reversed(entries):
+        if _entry_run_id(entry) or _entry_trace_id(entry):
+            return entry
+    return entries[-1]
 
 
 def _gateway_events_for_identifier(entries: list[GatewayLogEntry], identifier: str) -> list[GatewayLogEntry]:
@@ -373,55 +393,71 @@ def _follow_gateway_events(
     line_parser: Callable[[str], GatewayLogEntry | None],
 ) -> int:
     deadline = None if args.follow_timeout is None else monotonic() + args.follow_timeout
-    skip_existing_latest = _is_latest_identifier(args.identifier) and not args.follow_include_existing
-    baseline_events = _find_gateway_events(
+    suppressed_group_ids = _initial_suppressed_follow_group_ids(
+        args,
         source_path,
-        args.identifier,
         line_parser=line_parser,
-        session_id=args.session_id,
-    )
-    previous_signature: tuple[tuple[Any, ...], ...] | None = (
-        _events_signature(baseline_events) if skip_existing_latest and baseline_events else None
     )
     previous_session_id: str | None = None
     printed_any = False
     printed_updates = 0
     printed_group_ids: set[str] = set()
-    saw_matching_events = bool(baseline_events)
-    while True:
-        events = _find_gateway_events(
+    printed_signatures: dict[str, tuple[tuple[Any, ...], ...]] = {}
+    saw_matching_events = bool(
+        _follow_event_groups(
+            args,
             source_path,
-            args.identifier,
             line_parser=line_parser,
-            session_id=args.session_id,
+            suppressed_group_ids=set(),
         )
-        if events:
+    )
+    locked_session_id: str | None = None
+    while True:
+        event_groups = _follow_event_groups(
+            args,
+            source_path,
+            line_parser=line_parser,
+            suppressed_group_ids=suppressed_group_ids,
+            locked_session_id=locked_session_id,
+        )
+        if event_groups:
             saw_matching_events = True
+        for events in event_groups:
             signature = _events_signature(events)
-            if signature != previous_signature:
-                group_id = _follow_group_id(events)
-                if not args.follow_live_updates and group_id in printed_group_ids:
-                    previous_signature = signature
-                    continue
-                if not args.follow_live_updates and not _follow_update_ready(events):
-                    previous_signature = signature
-                    continue
-                current_session_id = _gateway_session_id(events)
-                session_changed = args.session_id is None and current_session_id != previous_session_id
-                if session_changed:
-                    print()
-                    print(_format_follow_session_separator(current_session_id))
-                    previous_session_id = current_session_id
-                elif printed_any:
-                    print()
-                    print("--- gateway update ---")
-                print(_format_gateway_payload(events), flush=True)
-                previous_signature = signature
-                printed_any = True
+            group_id = _follow_group_id(events)
+            if not args.follow_live_updates and group_id in printed_group_ids:
+                continue
+            if args.follow_live_updates and printed_signatures.get(group_id) == signature:
+                continue
+            if not args.follow_live_updates and not _follow_update_ready(events):
+                continue
+            current_session_id = _gateway_session_id(events)
+            session_changed = args.session_id is None and current_session_id != previous_session_id
+            if session_changed:
+                previous_session_id = current_session_id
+            locked_session_id = _next_locked_follow_session_id(
+                args,
+                locked_session_id=locked_session_id,
+                current_session_id=current_session_id,
+            )
+            if session_changed and _should_print_session_separator(
+                args,
+                printed_any=printed_any,
+                session_changed=session_changed,
+            ):
+                print()
+                print(_format_follow_session_separator(current_session_id))
+            elif printed_any:
+                print()
+                print("--- gateway update ---")
+            print(_format_gateway_payload(events), flush=True)
+            printed_signatures[group_id] = signature
+            printed_any = True
+            if not args.follow_live_updates:
                 printed_group_ids.add(group_id)
-                printed_updates += 1
-                if args.follow_limit is not None and printed_updates >= args.follow_limit:
-                    return 0
+            printed_updates += 1
+            if args.follow_limit is not None and printed_updates >= args.follow_limit:
+                return 0
         if deadline is not None and monotonic() >= deadline:
             if printed_any:
                 return 0
@@ -430,6 +466,121 @@ def _follow_gateway_events(
             print(f"gateway run/event not found: {args.identifier}", file=sys.stderr)
             return 1
         sleep(args.poll_interval)
+
+
+def _initial_suppressed_follow_group_ids(
+    args: argparse.Namespace,
+    source_path: Path,
+    *,
+    line_parser: Callable[[str], GatewayLogEntry | None],
+) -> set[str]:
+    if not _is_latest_identifier(args.identifier):
+        return set()
+    entries = _load_gateway_entries(source_path, line_parser=line_parser)
+    lookup_session_id = _follow_lookup_session_id(args, locked_session_id=None)
+    if lookup_session_id:
+        expected_session_id = _session_id_filter_value(lookup_session_id)
+        entries = [
+            entry
+            for entry in entries
+            if str(entry.fields.get("session_id") or "") == expected_session_id
+        ]
+    groups = _follow_latest_gateway_groups(entries)
+    if not args.follow_include_existing:
+        return {group_id for group_id, _ in groups}
+    latest_events = _latest_gateway_events(entries)
+    latest_group_id = _follow_group_id(latest_events) if latest_events else None
+    return {group_id for group_id, _ in groups if group_id != latest_group_id}
+
+
+def _follow_event_groups(
+    args: argparse.Namespace,
+    source_path: Path,
+    *,
+    line_parser: Callable[[str], GatewayLogEntry | None],
+    suppressed_group_ids: set[str],
+    locked_session_id: str | None = None,
+) -> list[list[GatewayLogEntry]]:
+    lookup_session_id = _follow_lookup_session_id(args, locked_session_id=locked_session_id)
+    if not _is_latest_identifier(args.identifier):
+        events = _find_gateway_events(
+            source_path,
+            args.identifier,
+            line_parser=line_parser,
+            session_id=lookup_session_id,
+        )
+        if not events or _follow_group_id(events) in suppressed_group_ids:
+            return []
+        return [events]
+    entries = _load_gateway_entries(source_path, line_parser=line_parser)
+    if lookup_session_id:
+        expected_session_id = _session_id_filter_value(lookup_session_id)
+        entries = [
+            entry
+            for entry in entries
+            if str(entry.fields.get("session_id") or "") == expected_session_id
+        ]
+    return [
+        group
+        for group_id, group in _follow_latest_gateway_groups(entries)
+        if group_id not in suppressed_group_ids
+    ]
+
+
+def _follow_latest_gateway_groups(entries: list[GatewayLogEntry]) -> list[tuple[str, list[GatewayLogEntry]]]:
+    return [
+        (group_id, group)
+        for group_id, group in _group_gateway_events(entries)
+        if _gateway_group_has_run_or_trace(group)
+    ]
+
+
+def _gateway_group_has_run_or_trace(entries: list[GatewayLogEntry]) -> bool:
+    return any(_entry_run_id(entry) or _entry_trace_id(entry) for entry in entries)
+
+
+def _group_gateway_events(entries: list[GatewayLogEntry]) -> list[tuple[str, list[GatewayLogEntry]]]:
+    groups: dict[str, list[GatewayLogEntry]] = {}
+    order: list[str] = []
+    for entry in entries:
+        group_id = _follow_group_id([entry])
+        if group_id not in groups:
+            groups[group_id] = []
+            order.append(group_id)
+        groups[group_id].append(entry)
+    return [(group_id, groups[group_id]) for group_id in order]
+
+
+def _follow_lookup_session_id(
+    args: argparse.Namespace,
+    *,
+    locked_session_id: str | None,
+) -> str | None:
+    if args.session_id:
+        return args.session_id
+    return None
+
+
+def _next_locked_follow_session_id(
+    args: argparse.Namespace,
+    *,
+    locked_session_id: str | None,
+    current_session_id: str | None,
+) -> str | None:
+    return locked_session_id
+
+
+def _should_print_session_separator(
+    args: argparse.Namespace,
+    *,
+    printed_any: bool,
+    session_changed: bool,
+) -> bool:
+    if not session_changed:
+        return False
+    if args.session_id:
+        return False
+    return True
 
 
 def _events_signature(events: list[GatewayLogEntry]) -> tuple[tuple[Any, ...], ...]:

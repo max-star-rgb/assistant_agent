@@ -87,6 +87,7 @@ from assistant_agent.services.trace_persistence import (
 from assistant_agent.services.trace_conversation import (
     TraceConversationView,
     find_trace_conversation,
+    get_default_trace_conversation_store,
 )
 from assistant_agent.services.trial_access import (
     TrialAccessGate,
@@ -401,6 +402,12 @@ def get_trace_conversation(trace_id: str, request: Request) -> TraceConversation
         session_id=identity_event.session_id,
         trace_id=trace_id,
     )
+    if conversation is None:
+        conversation = get_default_trace_conversation_store().get(
+            user_id=identity_event.user_id,
+            session_id=identity_event.session_id,
+            trace_id=trace_id,
+        )
     if conversation is None:
         raise HTTPException(status_code=404, detail="trace conversation not found")
     return conversation

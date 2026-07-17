@@ -1,5 +1,6 @@
 """Explicit, bounded lookup of one trace's persisted conversation turn."""
 
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -25,6 +26,81 @@ class TraceConversationView(BaseModel):
     trace_id: str
     user: TraceConversationText
     assistant: TraceConversationText
+
+
+@dataclass(frozen=True)
+class TraceConversationRecord:
+    """One current-turn debug record keyed by trace identity."""
+
+    user_id: str
+    session_id: str
+    trace_id: str
+    user_text: str
+    assistant_text: str
+
+
+class InMemoryTraceConversationStore:
+    """Process-local current-turn text lookup for explicit trace debugging.
+
+    This store is intentionally separate from conversation history. Failed turns
+    can be inspected locally without becoming future model context.
+    """
+
+    def __init__(self, *, max_records: int = 512) -> None:
+        if max_records <= 0:
+            raise ValueError("max_records must be positive")
+        self.max_records = max_records
+        self._records: list[TraceConversationRecord] = []
+
+    def append(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        record = TraceConversationRecord(
+            user_id=user_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+        )
+        self._records = [*self._records, record][-self.max_records :]
+
+    def get(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        limit: int = DEFAULT_TRACE_CONVERSATION_CHAR_LIMIT,
+    ) -> TraceConversationView | None:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        for record in reversed(self._records):
+            if (
+                record.user_id == user_id
+                and record.session_id == session_id
+                and record.trace_id == trace_id
+            ):
+                return TraceConversationView(
+                    trace_id=trace_id,
+                    user=_bounded_text(record.user_text, limit=limit),
+                    assistant=_bounded_text(record.assistant_text, limit=limit),
+                )
+        return None
+
+
+_DEFAULT_TRACE_CONVERSATION_STORE = InMemoryTraceConversationStore()
+
+
+def get_default_trace_conversation_store() -> InMemoryTraceConversationStore:
+    """Return the process-local current-turn trace content store."""
+
+    return _DEFAULT_TRACE_CONVERSATION_STORE
 
 
 def find_trace_conversation(

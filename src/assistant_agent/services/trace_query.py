@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from assistant_agent.schemas.context import ContextReport
 from assistant_agent.services.context.report import context_report_from_trace_context_summary
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, trace_debug_summary, trace_event_summary
+from assistant_agent.services.turn_summary import latest_turn_summary_from_events
 
 
 class RunSummary(BaseModel):
@@ -27,6 +28,7 @@ class RunSummary(BaseModel):
     event_count: int = 0
     context: dict[str, Any] = Field(default_factory=dict)
     turn_latency: dict[str, Any] | None = None
+    turn_summary: dict[str, Any] | None = None
 
 
 class TraceSummary(BaseModel):
@@ -42,6 +44,7 @@ class TraceSummary(BaseModel):
     retry_count: int = 0
     context: dict[str, Any] = Field(default_factory=dict)
     turn_latency: dict[str, Any] | None = None
+    turn_summary: dict[str, Any] | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -85,6 +88,7 @@ class TraceQueryService:
             event_count=len(events),
             context=_latest_context_summary(events),
             turn_latency=_latest_turn_latency(events),
+            turn_summary=latest_turn_summary_from_events(events),
         )
 
     def trace_summary(self, trace_id: str) -> TraceSummary | None:
@@ -103,6 +107,7 @@ class TraceQueryService:
             retry_count=summary["retry_count"],
             context=_latest_context_summary(events),
             turn_latency=_latest_turn_latency(events),
+            turn_summary=latest_turn_summary_from_events(events),
             events=summary["events"],
         )
 
