@@ -81,6 +81,10 @@ def test_run_server_parser_defaults() -> None:
     assert args.console_mode == "concise"
     assert args.log_dir == ".data/logs"
     assert args.gateway_event_path == ".data/gateway_events.jsonl"
+    assert args.enable_workflow_skills is False
+    assert args.workflow_skill_manifest_dir == "skills/workflows"
+    assert args.workflow_skill_tool_module == []
+    assert args.workflow_skill_run_store == ".data/workflow_skill_runs.jsonl"
 
 
 def test_run_server_parser_accepts_operational_logging_options() -> None:
@@ -103,6 +107,62 @@ def test_run_server_parser_accepts_operational_logging_options() -> None:
     assert args.file_log_level == "INFO"
     assert args.console_mode == "verbose"
     assert args.log_dir == "/tmp/assistant-logs"
+
+
+def test_run_server_parser_accepts_workflow_skill_options() -> None:
+    module = _load_module("run_server_parser_workflow_skills_test")
+
+    args = module.build_parser().parse_args(
+        [
+            "--enable-workflow-skills",
+            "--workflow-skill-manifest-dir",
+            "custom/workflows",
+            "--workflow-skill-tool-module",
+            "custom.tools",
+            "--workflow-skill-tool-module",
+            "other.tools",
+            "--workflow-skill-run-store",
+            ".data/custom-workflow-runs.jsonl",
+        ]
+    )
+
+    assert args.enable_workflow_skills is True
+    assert args.workflow_skill_manifest_dir == "custom/workflows"
+    assert args.workflow_skill_tool_module == ["custom.tools", "other.tools"]
+    assert args.workflow_skill_run_store == ".data/custom-workflow-runs.jsonl"
+
+
+def test_prepare_environment_exports_workflow_skill_runtime_config(monkeypatch) -> None:
+    module = _load_module("run_server_workflow_env_test")
+    args = module.build_parser().parse_args(
+        [
+            "--no-env-file",
+            "--enable-workflow-skills",
+            "--workflow-skill-manifest-dir",
+            "custom/workflows",
+            "--workflow-skill-tool-module",
+            "custom.tools",
+            "--workflow-skill-tool-module",
+            "other.tools",
+            "--workflow-skill-run-store",
+            ".data/custom-workflow-runs.jsonl",
+        ]
+    )
+    keys = (
+        "MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED",
+        "MULTIMODAL_AGENT_WORKFLOW_SKILL_MANIFEST_DIR",
+        "MULTIMODAL_AGENT_WORKFLOW_SKILL_TOOL_MODULES",
+        "MULTIMODAL_AGENT_WORKFLOW_SKILL_RUN_STORE",
+    )
+    for key in keys:
+        monkeypatch.delenv(key, raising=False)
+
+    module._prepare_environment(args)
+
+    assert os.environ["MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED"] == "1"
+    assert os.environ["MULTIMODAL_AGENT_WORKFLOW_SKILL_MANIFEST_DIR"] == "custom/workflows"
+    assert os.environ["MULTIMODAL_AGENT_WORKFLOW_SKILL_TOOL_MODULES"] == "custom.tools,other.tools"
+    assert os.environ["MULTIMODAL_AGENT_WORKFLOW_SKILL_RUN_STORE"] == ".data/custom-workflow-runs.jsonl"
 
 
 def test_run_server_parser_retains_legacy_log_level_shorthand() -> None:

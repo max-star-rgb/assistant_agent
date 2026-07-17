@@ -42,6 +42,14 @@ from assistant_agent.services.provider_specs import (
     supported_chat_providers,
     supported_image_generation_providers,
 )
+from assistant_agent.services.tool_workflow_skill_runtime_app import (
+    DEFAULT_WORKFLOW_SKILL_MANIFEST_DIR,
+    DEFAULT_WORKFLOW_SKILL_RUN_STORE,
+    WORKFLOW_SKILLS_ENABLED_ENV,
+    WORKFLOW_SKILL_MANIFEST_DIR_ENV,
+    WORKFLOW_SKILL_RUN_STORE_ENV,
+    WORKFLOW_SKILL_TOOL_MODULES_ENV,
+)
 from assistant_agent.services.trial_access import (
     TRIAL_USER_IDS_ENV,
     parse_trial_user_ids,
@@ -127,6 +135,27 @@ def build_parser() -> argparse.ArgumentParser:
         choices=supported_image_generation_providers(),
         help="Override MULTIMODAL_AGENT_IMAGE_PROVIDER for this process.",
     )
+    parser.add_argument(
+        "--enable-workflow-skills",
+        action="store_true",
+        help="Enable explicit workflow skill HTTP APIs for this process.",
+    )
+    parser.add_argument(
+        "--workflow-skill-manifest-dir",
+        default=DEFAULT_WORKFLOW_SKILL_MANIFEST_DIR,
+        help="Directory containing workflow_skill_v1 JSON manifests.",
+    )
+    parser.add_argument(
+        "--workflow-skill-tool-module",
+        action="append",
+        default=[],
+        help="Python module exposing __assistant_tools__ for workflow skills. Repeatable.",
+    )
+    parser.add_argument(
+        "--workflow-skill-run-store",
+        default=DEFAULT_WORKFLOW_SKILL_RUN_STORE,
+        help="JSONL path used to persist workflow skill run records.",
+    )
     return parser
 
 
@@ -147,6 +176,12 @@ def _prepare_environment(args: argparse.Namespace) -> dict[str, str]:
         os.environ["MULTIMODAL_AGENT_IMAGE_PROVIDER"] = args.image_provider
     if args.allow_local_trace_content:
         os.environ[LOCAL_TRACE_CONTENT_ENV] = "1"
+    if args.enable_workflow_skills:
+        os.environ[WORKFLOW_SKILLS_ENABLED_ENV] = "1"
+    os.environ[WORKFLOW_SKILL_MANIFEST_DIR_ENV] = args.workflow_skill_manifest_dir
+    os.environ[WORKFLOW_SKILL_RUN_STORE_ENV] = args.workflow_skill_run_store
+    if args.workflow_skill_tool_module:
+        os.environ[WORKFLOW_SKILL_TOOL_MODULES_ENV] = ",".join(args.workflow_skill_tool_module)
     os.environ[SERVER_TRACE_ENABLED_ENV] = "1"
     _configure_trial_user_allowlist(args)
     return loaded
@@ -203,6 +238,23 @@ def _print_runtime_summary(config: ProviderConfig, *, loaded_env_keys: list[str]
     if config.conversation_history_backend == "jsonl":
         print(f"  conversation_history_path: {config.conversation_history_path}")
     print(f"  langgraph_checkpointer_backend: {config.langgraph_checkpointer_backend}")
+    print(
+        "  workflow_skills: "
+        + ("enabled" if os.environ.get(WORKFLOW_SKILLS_ENABLED_ENV) == "1" else "disabled")
+    )
+    print(
+        "  workflow_skill_manifest_dir: "
+        + os.environ.get(WORKFLOW_SKILL_MANIFEST_DIR_ENV, DEFAULT_WORKFLOW_SKILL_MANIFEST_DIR)
+    )
+    tool_modules = os.environ.get(WORKFLOW_SKILL_TOOL_MODULES_ENV, "")
+    print(
+        "  workflow_skill_tool_modules: "
+        + (str(len([item for item in tool_modules.split(",") if item.strip()])) if tool_modules else "0")
+    )
+    print(
+        "  workflow_skill_run_store: "
+        + os.environ.get(WORKFLOW_SKILL_RUN_STORE_ENV, DEFAULT_WORKFLOW_SKILL_RUN_STORE)
+    )
     print(
         "  local_trace_content: "
         + ("enabled" if os.environ.get(LOCAL_TRACE_CONTENT_ENV) == "1" else "disabled")
