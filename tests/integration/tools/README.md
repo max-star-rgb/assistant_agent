@@ -15,14 +15,18 @@
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_qwen_realtime_vision_attached_image_provider.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_vision_understanding_attached_image_provider_smoke.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_image_generation_provider_smoke.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_shopping_search_provider_smoke.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_web_search_provider_smoke.py
 ```
 
 如果要从更宽的选择范围里强制运行某个真实 provider smoke，必须显式设置对应 opt-in：
 
 ```bash
 RUN_REAL_VLM_IMAGE_TEST=1 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_qwen_realtime_vision_attached_image_provider.py
-RUN_REAL_VISION_IMAGE_TOOL_TEST=1 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_vision_understanding_attached_image_provider_smoke.py
+RUN_REAL_IMAGE_GENERATION_TOOL_TEST=1 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_image_generation_provider_smoke.py
+RUN_REAL_SHOPPING_TOOL_TEST=1 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_shopping_search_provider_smoke.py
+RUN_REAL_WEB_SEARCH_TOOL_TEST=1 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q -s tests/integration/tools/test_web_search_provider_smoke.py
 ```
 
 不要把本目录加入 `tests/scopes/**`、`critical` 或普通 `scripts/run_scoped_tests.py` 开发路径。
@@ -33,12 +37,16 @@ RUN_REAL_VISION_IMAGE_TOOL_TEST=1 /home/lenovo1/miniconda3/envs/hello_agent/bin/
 - provider 专属链路写 provider 名，例如 `qwen_realtime`。
 - 可复用多 provider 的链路使用 `configured_provider` 或省略 provider 名，并在测试内读取
   `MULTIMODAL_AGENT_*_PROVIDER`。
-- 通用图片准备、分层成功诊断和 LLM-facing observation 打印放在 `manual_tool_smoke.py`。
+- 每个文件保持可独立运行；不要依赖普通自动化测试里的 fixture 或外部 helper。
 
 ## 现有文件
 
 - `test_qwen_realtime_vision_attached_image_provider.py`：验证 `video_understanding` 工具到
   Qwen realtime WebSocket VLM 的真实链路，包含 snapshot publishability 判断。
-- `test_vision_understanding_attached_image_provider_smoke.py`：验证 `vision_understanding`
-  图片工具到当前配置真实 vision provider 的链路，适合作为未来 OpenAI/Qwen/Ark 等 provider
-  的共同 smoke 入口。
+- `test_image_generation_provider_smoke.py`：验证 `image_generation` 工具到当前配置真实图片生成
+  provider 的链路，默认使用 Qwen，支持切换到已实现的 Ark。
+- `test_shopping_search_provider_smoke.py`：验证 `shopping_search` 工具到好单库搜索与比价链路，
+  默认要求 `MULTIMODAL_AGENT_PRODUCT_PROVIDER=haodanku` 和
+  `MULTIMODAL_AGENT_PRICE_PROVIDER=haodanku`。
+- `test_web_search_provider_smoke.py`：验证 `web_search` 工具到 HTTP 联网搜索 provider 的链路，
+  默认要求 `MULTIMODAL_AGENT_SEARCH_PROVIDER=http`。
