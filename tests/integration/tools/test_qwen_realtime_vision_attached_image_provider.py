@@ -15,7 +15,9 @@ from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
 ATTACHED_IMAGE_1 = Path("/home/lenovo1/图片/0717619c-e0de-4fe7-b21c-50b6754eb8b8.png")
+DOWNSAMPLED_IMAGE_1_JPEG = REPO_ROOT / ".local" / "integration" / "tools" / "image-1-cake-480p.jpg"
 
 
 def _configured_qwen_tool() -> tuple[VideoUnderstandingTool, QwenRealtimeVisionAdapter]:
@@ -49,10 +51,12 @@ def _real_provider_tool_selected() -> bool:
     )
 
 
-def _attached_image_as_jpeg(tmp_path: Path) -> Path:
+def _attached_image_as_jpeg() -> Path:
+    if _is_jpeg(DOWNSAMPLED_IMAGE_1_JPEG):
+        return DOWNSAMPLED_IMAGE_1_JPEG
     if not ATTACHED_IMAGE_1.is_file():
         pytest.skip(f"Image #1 is not available at {ATTACHED_IMAGE_1}")
-    output = tmp_path / "image-1-provider-input.jpg"
+    DOWNSAMPLED_IMAGE_1_JPEG.parent.mkdir(parents=True, exist_ok=True)
     command = [
         "/usr/bin/ffmpeg",
         "-y",
@@ -64,12 +68,12 @@ def _attached_image_as_jpeg(tmp_path: Path) -> Path:
         "-frames:v",
         "1",
         "-vf",
-        "scale=1024:1024:force_original_aspect_ratio=decrease",
+        "scale=480:480:force_original_aspect_ratio=decrease",
         "-vcodec",
         "mjpeg",
         "-q:v",
         "6",
-        str(output),
+        str(DOWNSAMPLED_IMAGE_1_JPEG),
     ]
     try:
         completed = subprocess.run(command, check=False, capture_output=True)
@@ -77,16 +81,22 @@ def _attached_image_as_jpeg(tmp_path: Path) -> Path:
         pytest.skip("/usr/bin/ffmpeg is required to convert Image #1 to the JPEG VLM input")
     if completed.returncode != 0:
         message = completed.stderr.decode("utf-8", errors="replace")
-        pytest.fail(f"failed to convert Image #1 to JPEG: {message}")
-    return output
+        pytest.fail(f"failed to downsample Image #1 to 480p JPEG: {message}")
+    return DOWNSAMPLED_IMAGE_1_JPEG
+
+
+def _is_jpeg(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    data = path.read_bytes()
+    return data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")
 
 
 def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
-    tmp_path: Path,
     capsys,
 ) -> None:
     tool, adapter = _configured_qwen_tool()
-    frame = _attached_image_as_jpeg(tmp_path)
+    frame = _attached_image_as_jpeg()
     try:
         result = tool.run(
             VideoUnderstandingRequest(
