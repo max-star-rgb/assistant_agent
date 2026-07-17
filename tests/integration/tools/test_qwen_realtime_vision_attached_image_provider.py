@@ -115,15 +115,38 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
         print(adapter.last_raw_response_text or "<no raw VLM text received>", flush=True)
         print("=== TOOL RESULT ===", flush=True)
         print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2), flush=True)
+        print("=== SUCCESS LAYERS ===", flush=True)
+        print(json.dumps(_success_layers(result, adapter.last_raw_response_text), ensure_ascii=False, indent=2), flush=True)
 
-    assert result.success is True
-    assert result.data is not None
-    assert result.data["source"] == "background_keyframe_observation"
-    assert result.data["errors"] == []
-    assert result.data["summary"]
+    layers = _success_layers(result, adapter.last_raw_response_text)
+    assert layers["execution_success"] is True, layers
+    assert layers["semantic_success"] is True, layers
+    assert layers["snapshot_publishable"] is True, layers
     assert adapter.last_raw_response_text
     serialized = json.dumps(result.data, ensure_ascii=False).lower()
     assert any(
         token in serialized
         for token in ("蛋糕", "cake", "草莓", "strawberry", "蓝莓", "blueberry")
     )
+
+
+def _success_layers(result, raw_response_text: str | None) -> dict[str, object]:
+    data = result.data if isinstance(result.data, dict) else {}
+    errors = data.get("errors")
+    data_errors = errors if isinstance(errors, list) else []
+    summary = data.get("summary")
+    source = data.get("source")
+    execution_success = result.success is True
+    semantic_success = execution_success and isinstance(summary, str) and bool(summary) and not data_errors
+    snapshot_publishable = semantic_success and source == "background_keyframe_observation"
+    return {
+        "execution_success": execution_success,
+        "semantic_success": semantic_success,
+        "snapshot_publishable": snapshot_publishable,
+        "tool_success": result.success,
+        "contract_status": result.contract.status if result.contract is not None else None,
+        "source": source,
+        "error": result.error,
+        "data_errors": data_errors,
+        "raw_text_received": bool(raw_response_text),
+    }
