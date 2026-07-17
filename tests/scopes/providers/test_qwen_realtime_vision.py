@@ -71,8 +71,27 @@ def test_default_connect_bounds_close_handshake(monkeypatch) -> None:
     assert captured == {
         "url": "wss://qwen.local/realtime",
         "open_timeout": 2.0,
+        "timeout": 2.0,
         "close_timeout": 1.0,
     }
+
+
+def test_default_connect_caps_tcp_connect_timeout(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    sentinel = object()
+
+    def connect(url: str, **kwargs: Any) -> object:
+        captured.update({"url": url, **kwargs})
+        return sentinel
+
+    transport = importlib.import_module("websockets.sync.client")
+    monkeypatch.setattr(transport, "connect", connect)
+
+    result = qwen_realtime._default_connect("wss://qwen.local/realtime", open_timeout=60.0)
+
+    assert result is sentinel
+    assert captured["open_timeout"] == 60.0
+    assert captured["timeout"] == 10.0
 
 
 def test_realtime_adapter_handshake_and_single_frame_protocol(tmp_path: Path) -> None:

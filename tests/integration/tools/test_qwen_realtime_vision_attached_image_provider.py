@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.providers.qwen_realtime_vision import QwenRealtimeVisionAdapter
+from assistant_agent.providers.qwen_realtime_vision import (
+    DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS,
+    QwenRealtimeVisionAdapter,
+)
 from assistant_agent.schemas.perception import VideoUnderstandingRequest
 from assistant_agent.services.video_adapter import create_realtime_video_understanding_adapter
 from assistant_agent.tools.base import ToolContext
@@ -173,6 +176,7 @@ def _provider_config_diagnostics(config: ProviderConfig) -> dict[str, object]:
         "base_url": config.qwen_realtime_vision_base_url,
         "model": config.qwen_realtime_vision_model,
         "timeout_seconds": config.video_understanding_timeout_seconds,
+        "tcp_connect_timeout_cap_seconds": DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS,
         "credential_source": _credential_source(),
         "proxy_env_names": _proxy_env_names(),
     }
