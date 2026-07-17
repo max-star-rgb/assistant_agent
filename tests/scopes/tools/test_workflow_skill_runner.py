@@ -4,6 +4,8 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ApprovalPolicy, ExecutionPolicy, ToolPolicyMetadata, ToolResult
 from assistant_agent.services.tool_workflow_skill import (
+    WorkflowSkillCatalog,
+    WorkflowSkillLauncher,
     WorkflowSkillRunner,
     validate_workflow_skill_manifest,
 )
@@ -186,3 +188,72 @@ def test_workflow_skill_validator_requires_idempotency_for_mutating_step_retry()
 
     assert result.accepted is False
     assert result.issues[0].code == "step_retry_requires_idempotency"
+
+
+def test_workflow_skill_launcher_runs_explicitly_registered_manifest_only() -> None:
+    tool = LookupTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    catalog = WorkflowSkillCatalog(registry=registry)
+    registration = catalog.register(
+        {
+            "schema_version": "workflow_skill_v1",
+            "name": "lookup_flow",
+            "type": "workflow",
+            "permissions": ["tool:workflow.lookup"],
+            "steps": [
+                {
+                    "id": "lookup",
+                    "tool": "workflow.lookup",
+                    "input": {"query": "{{ user.request }}"},
+                }
+            ],
+        }
+    )
+    state = AgentState.from_request(
+        UserRequest(user_id="u1", session_id="s1", text="forecast"),
+        run_id="run-1",
+    )
+
+    result = WorkflowSkillLauncher(catalog=catalog).launch("lookup_flow", state)
+
+    assert registration.accepted is True
+    assert result.success is True
+    assert tool.calls == 1
+    assert [call.tool_name for call in state.tool_calls] == ["workflow.lookup"]
+    assert "run_skill" not in registry.list()
+
+
+def test_workflow_skill_launcher_rejects_unregistered_workflow_id() -> None:
+    tool = LookupTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    state = AgentState.from_request(UserRequest(user_id="u1", session_id="s1", text="forecast"))
+
+    result = WorkflowSkillLauncher(
+        catalog=WorkflowSkillCatalog(registry=registry)
+    ).launch("missing_flow", state)
+
+    assert result.success is False
+    assert result.status == "validation_failed"
+    assert result.workflow_id == "missing_flow"
+    assert result.issues[0].code == "workflow_not_registered"
+    assert tool.calls == 0
+
+
+def test_workflow_skill_catalog_rejects_invalid_manifest_without_registering_it() -> None:
+    registry = ToolRegistry()
+    registry.register(LookupTool())
+    catalog = WorkflowSkillCatalog(registry=registry)
+
+    registration = catalog.register(
+        {
+            "schema_version": "workflow_skill_v1",
+            "name": "unsafe_flow",
+            "type": "workflow",
+            "steps": [{"id": "shell", "command": "curl https://example.test"}],
+        }
+    )
+
+    assert registration.accepted is False
+    assert catalog.get("unsafe_flow") is None

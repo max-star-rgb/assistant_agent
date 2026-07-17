@@ -103,6 +103,38 @@ class WorkflowSkillValidationResult(BaseModel):
     issues: list[WorkflowSkillValidationIssue] = Field(default_factory=list)
 
 
+class WorkflowSkillCatalog:
+    """Explicitly registered workflow skill manifests for one runtime boundary."""
+
+    def __init__(self, *, registry: ToolRegistry) -> None:
+        self.registry = registry
+        self._manifests: dict[str, WorkflowSkillManifest] = {}
+
+    def register(
+        self,
+        payload: Mapping[str, Any] | WorkflowSkillManifest,
+    ) -> WorkflowSkillValidationResult:
+        """Validate and register a workflow manifest by its manifest name."""
+
+        validation = validate_workflow_skill_manifest(
+            _manifest_payload(payload),
+            registry=self.registry,
+        )
+        if validation.accepted and validation.manifest is not None:
+            self._manifests[validation.manifest.name] = validation.manifest
+        return validation
+
+    def get(self, workflow_id: str) -> WorkflowSkillManifest | None:
+        """Return a registered workflow manifest by id."""
+
+        return self._manifests.get(workflow_id)
+
+    def list_workflow_ids(self) -> list[str]:
+        """Return registered workflow ids in registration order."""
+
+        return list(self._manifests)
+
+
 class WorkflowSkillAttemptRecord(BaseModel):
     """Prompt-safe record for one workflow step attempt."""
 
@@ -329,6 +361,42 @@ class WorkflowSkillRunner:
         return None
 
 
+class WorkflowSkillLauncher:
+    """Launch only explicitly registered workflow manifests."""
+
+    def __init__(
+        self,
+        *,
+        catalog: WorkflowSkillCatalog,
+        runner: WorkflowSkillRunner | None = None,
+    ) -> None:
+        self.catalog = catalog
+        self.runner = runner or WorkflowSkillRunner(registry=catalog.registry)
+        if self.runner.registry is not catalog.registry:
+            raise ValueError(
+                "WorkflowSkillLauncher and WorkflowSkillCatalog must use the same registry"
+            )
+
+    def launch(self, workflow_id: str, state: AgentState) -> WorkflowSkillRunResult:
+        """Launch a registered workflow manifest by id."""
+
+        manifest = self.catalog.get(workflow_id)
+        if manifest is None:
+            safe_workflow_id = workflow_id or "unknown"
+            return WorkflowSkillRunResult(
+                success=False,
+                status="validation_failed",
+                workflow_id=safe_workflow_id,
+                issues=[
+                    WorkflowSkillValidationIssue(
+                        code="workflow_not_registered",
+                        message="Workflow skill manifest is not explicitly registered.",
+                    )
+                ],
+            )
+        return self.runner.run(manifest, state)
+
+
 def _pre_validation_issues(payload: Mapping[str, Any]) -> list[WorkflowSkillValidationIssue]:
     issues: list[WorkflowSkillValidationIssue] = []
     raw_steps = payload.get("steps")
@@ -413,6 +481,12 @@ def _manifest_from_payload(payload: Mapping[str, Any] | WorkflowSkillManifest) -
         return WorkflowSkillManifest.model_validate(payload)
     except ValidationError:
         return None
+
+
+def _manifest_payload(payload: Mapping[str, Any] | WorkflowSkillManifest) -> Mapping[str, Any]:
+    if isinstance(payload, WorkflowSkillManifest):
+        return payload.model_dump(mode="python")
+    return payload
 
 
 def _payload_name(payload: Mapping[str, Any] | WorkflowSkillManifest) -> str:
