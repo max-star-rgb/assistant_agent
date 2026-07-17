@@ -1111,7 +1111,12 @@ def _summary_metadata(
 
 
 def _force_minimum_recent_window(request: UserRequest) -> bool:
-    return _explicit_compact_metadata(request.metadata) or (request.text or "").strip() == "/compact"
+    text = (request.text or "").strip()
+    return (
+        _explicit_compact_metadata(request.metadata)
+        or text == "/compact"
+        or text == "生成摘要"
+    )
 
 
 def _explicit_compact_metadata(metadata: dict[str, Any]) -> bool:

@@ -16,6 +16,7 @@ from assistant_agent.services.context.capability_catalog import (
 from assistant_agent.services.context.skill_loader import load_repo_skill_descriptors
 from assistant_agent.services.context import tool_catalog
 from assistant_agent.services.context.tool_catalog import select_prompt_tool_specs
+from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.tools.registry import create_default_registry
 
@@ -540,6 +541,11 @@ def test_capability_catalog_selects_realtime_web_search_descriptor() -> None:
     assert descriptor.governed_tools == ["web_search"]
     assert descriptor.required_inputs_by_tool == {"web_search": ["query"]}
     assert any("ToolExecutor" in item for item in descriptor.runtime_constraints)
+    assert any(
+        "retryable transient failures once" in item
+        for item in descriptor.runtime_constraints
+    )
+    assert descriptor.permissions == ["tool:web_search"]
 
 
 def test_capability_catalog_auto_recalls_realtime_web_search_descriptor() -> None:
@@ -550,6 +556,9 @@ def test_capability_catalog_auto_recalls_realtime_web_search_descriptor() -> Non
         text="查一下今天 AI 行业最新消息",
     )
     tool_selection = select_prompt_tool_specs(request, specs)
+    original_run_tool_set = tool_selection.run_tool_set.model_dump(mode="json")
+    governed_spec = next(spec for spec in tool_selection.prompt_tool_specs if spec.name == "web_search")
+    original_retry_count = ToolPolicyInterpreter().view_for_spec(governed_spec).retry_count
 
     capability_selection = select_tool_capability_descriptors(
         request=request,
@@ -566,6 +575,8 @@ def test_capability_catalog_auto_recalls_realtime_web_search_descriptor() -> Non
         reason == "capability_catalog_auto_recalled:realtime_web_search"
         for reason in capability_selection.selection_reasons
     )
+    assert tool_selection.run_tool_set.model_dump(mode="json") == original_run_tool_set
+    assert ToolPolicyInterpreter().view_for_spec(governed_spec).retry_count == original_retry_count
 
 
 def test_capability_catalog_omits_descriptor_when_governed_tool_missing() -> None:

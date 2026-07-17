@@ -1425,15 +1425,12 @@ class AgentGraphRuntime:
             },
             error=_chat_result_error(result),
         )
-        if _main_llm_no_answer_error(result) is not None:
-            self._set_native_runtime_no_answer_fallback_response(
-                state,
-                result,
-                observations=observations,
-                iteration=iteration + 1,
-                max_iterations=max_iterations,
-            )
-            return True
+        no_answer_error = _main_llm_no_answer_error(result)
+        if no_answer_error is not None:
+            metadata = state.request.metadata
+            metadata["native_runtime_final_only_handoff_failed"] = True
+            metadata["native_runtime_final_only_error_code"] = no_answer_error.code
+            return False
         if result.success and not result.tool_calls:
             self._set_native_runtime_response(state, result, observations)
             if state.response is not None:

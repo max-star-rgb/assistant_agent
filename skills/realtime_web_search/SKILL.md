@@ -32,3 +32,4 @@ disable-model-invocation: false
 ## Runtime Constraints
 - Selection context only; execute governed tools only through ToolExecutor.
 - Read-only external lookup; do not execute raw HTTP from this descriptor.
+- Governed tool execution may retry retryable transient failures once under ToolExecutor policy; this descriptor does not grant retry permission.
