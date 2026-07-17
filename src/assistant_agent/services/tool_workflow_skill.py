@@ -178,6 +178,20 @@ class WorkflowSkillRunRecord(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class WorkflowSkillRunSummary(BaseModel):
+    """Operator-facing workflow run summary without raw step outputs."""
+
+    workflow_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    status: WorkflowSkillRunStatus
+    attempt_count: int = Field(ge=0)
+    completed_step_ids: list[str] = Field(default_factory=list)
+    next_step_id: str | None = None
+    last_error_summary: str | None = None
+    issue_codes: list[str] = Field(default_factory=list)
+    updated_at: datetime
+
+
 class InMemoryWorkflowSkillRunStore:
     """Process-local workflow skill run store for deterministic resume tests."""
 
@@ -227,6 +241,29 @@ class InMemoryWorkflowSkillRunStore:
             updated_at=datetime.now(timezone.utc),
         )
         return self.save(record)
+
+
+class WorkflowSkillRunQueryService:
+    """Prompt-safe workflow run query service."""
+
+    def __init__(self, *, store: InMemoryWorkflowSkillRunStore) -> None:
+        self.store = store
+
+    def get_run_summary(self, run_id: str) -> WorkflowSkillRunSummary | None:
+        """Return one prompt-safe workflow run summary."""
+
+        record = self.store.get(run_id)
+        if record is None:
+            return None
+        return _run_summary_from_record(record)
+
+    def list_run_summaries(self, workflow_id: str) -> list[WorkflowSkillRunSummary]:
+        """Return prompt-safe summaries for one workflow id."""
+
+        return [
+            _run_summary_from_record(record)
+            for record in self.store.list_by_workflow(workflow_id)
+        ]
 
 
 def validate_workflow_skill_manifest(
@@ -616,6 +653,27 @@ def _completed_step_ids(attempts: list[WorkflowSkillAttemptRecord]) -> list[str]
         if attempt.status == "succeeded" and attempt.step_id not in completed:
             completed.append(attempt.step_id)
     return completed
+
+
+def _run_summary_from_record(record: WorkflowSkillRunRecord) -> WorkflowSkillRunSummary:
+    return WorkflowSkillRunSummary(
+        workflow_id=record.workflow_id,
+        run_id=record.run_id,
+        status=record.status,
+        attempt_count=len(record.attempts),
+        completed_step_ids=list(record.completed_step_ids),
+        next_step_id=record.next_step_id,
+        last_error_summary=_last_error_summary(record.attempts),
+        issue_codes=[issue.code for issue in record.issues],
+        updated_at=record.updated_at,
+    )
+
+
+def _last_error_summary(attempts: list[WorkflowSkillAttemptRecord]) -> str | None:
+    for attempt in reversed(attempts):
+        if attempt.error_summary:
+            return attempt.error_summary
+    return None
 
 
 def _next_step_id(result: WorkflowSkillRunResult) -> str | None:

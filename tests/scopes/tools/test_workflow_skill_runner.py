@@ -7,6 +7,7 @@ from assistant_agent.services.tool_workflow_skill import (
     InMemoryWorkflowSkillRunStore,
     WorkflowSkillCatalog,
     WorkflowSkillLauncher,
+    WorkflowSkillRunQueryService,
     WorkflowSkillRunner,
     validate_workflow_skill_manifest,
 )
@@ -418,3 +419,59 @@ def test_workflow_skill_launcher_recovers_failed_run_from_checkpoint() -> None:
     assert lookup.calls == 1
     assert recoverable.calls == 2
     assert launcher.get_run("run-2").completed_step_ids == ["lookup", "recover"]
+
+
+def test_workflow_skill_run_query_service_returns_prompt_safe_summary() -> None:
+    lookup = LookupTool()
+    recoverable = FailThenSuccessTool()
+    registry = ToolRegistry()
+    registry.register(lookup)
+    registry.register(recoverable)
+    catalog = WorkflowSkillCatalog(registry=registry)
+    catalog.register(
+        {
+            "schema_version": "workflow_skill_v1",
+            "name": "recover_flow",
+            "type": "workflow",
+            "permissions": [
+                "tool:workflow.lookup",
+                "tool:workflow.fail_then_success",
+            ],
+            "steps": [
+                {
+                    "id": "lookup",
+                    "tool": "workflow.lookup",
+                    "checkpoint": True,
+                    "input": {"query": "{{ user.request }}"},
+                },
+                {
+                    "id": "recover",
+                    "tool": "workflow.fail_then_success",
+                    "input": {"query": "{{ steps.lookup.data.summary }}"},
+                },
+            ],
+        }
+    )
+    store = InMemoryWorkflowSkillRunStore()
+    launcher = WorkflowSkillLauncher(catalog=catalog, run_store=store)
+    launcher.launch(
+        "recover_flow",
+        AgentState.from_request(
+            UserRequest(user_id="u1", session_id="s1", text="news"),
+            run_id="run-query",
+        ),
+    )
+
+    summary = WorkflowSkillRunQueryService(store=store).get_run_summary("run-query")
+
+    assert summary is not None
+    assert summary.workflow_id == "recover_flow"
+    assert summary.run_id == "run-query"
+    assert summary.status == "failed"
+    assert summary.attempt_count == 2
+    assert summary.completed_step_ids == ["lookup"]
+    assert summary.next_step_id == "recover"
+    assert summary.last_error_summary == "provider_timeout: transient timeout"
+    payload = summary.model_dump(mode="json")
+    assert "step_results" not in payload
+    assert "data" not in payload
