@@ -4,15 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 from collections import deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from time import monotonic, sleep
 
 
-DEFAULT_GATEWAY_LOG_PATH = ".data/logs/gateway.log"
+DEFAULT_GATEWAY_EVENT_PATH = ".data/gateway_events.jsonl"
 DEFAULT_TAIL_LINES = 50
 DEFAULT_POLL_INTERVAL = 1.0
 RAW_LINE_LIMIT = 240
@@ -20,10 +22,12 @@ RAW_LINE_LIMIT = 240
 MACHINE_KEYS = {
     "level",
     "component",
+    "schema_version",
     "event",
     "run_id",
     "turn_id",
     "trace_id",
+    "created_at",
     "message",
 }
 IDENTIFIER_KEYS = {
@@ -123,16 +127,20 @@ EVENT_DETAIL_KEYS = {
 class GatewayLogEntry:
     raw: str
     timestamp: str
-    fields: dict[str, str]
+    fields: dict[str, Any]
     parsed: bool
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="View Gateway lifecycle logs as a timeline.")
+    parser = argparse.ArgumentParser(description="View Gateway lifecycle events as a timeline.")
+    parser.add_argument(
+        "--event-path",
+        default=DEFAULT_GATEWAY_EVENT_PATH,
+        help=f"Gateway lifecycle JSONL path. Defaults to {DEFAULT_GATEWAY_EVENT_PATH}.",
+    )
     parser.add_argument(
         "--log-path",
-        default=DEFAULT_GATEWAY_LOG_PATH,
-        help=f"Gateway key=value log path. Defaults to {DEFAULT_GATEWAY_LOG_PATH}.",
+        help="Legacy Gateway key=value log path. When set, --event-path is ignored.",
     )
     parser.add_argument(
         "--tail",
@@ -176,12 +184,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.follow_timeout is not None and args.follow_timeout < 0:
         parser.error("--follow-timeout must be greater than or equal to 0")
 
-    log_path = Path(args.log_path)
-    if not log_path.is_absolute():
-        log_path = Path.cwd() / log_path
-    print(_format_header(log_path, follow=args.follow, tail=args.tail), flush=True)
+    source_path, source_format, line_parser = _source(args)
+    print(
+        _format_header(source_path, source_format=source_format, follow=args.follow, tail=args.tail),
+        flush=True,
+    )
 
-    printed_entries = _print_tail(log_path, args.tail)
+    printed_entries = _print_tail(source_path, args.tail, line_parser=line_parser)
     if args.follow_limit is not None and printed_entries >= args.follow_limit:
         return 0
     if not args.follow:
@@ -189,8 +198,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("  (no gateway log entries)", flush=True)
         return 0
     return _follow_log(
-        log_path,
-        initial_offset=_file_size(log_path),
+        source_path,
+        initial_offset=_file_size(source_path),
+        line_parser=line_parser,
         poll_interval=args.poll_interval,
         already_printed=printed_entries,
         follow_limit=args.follow_limit,
@@ -198,23 +208,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
 
-def _format_header(log_path: Path, *, follow: bool, tail: int) -> str:
+def _source(args: argparse.Namespace) -> tuple[Path, str, Callable[[str], GatewayLogEntry | None]]:
+    if args.log_path:
+        source_path = Path(args.log_path)
+        source_format = "key-value"
+        line_parser = _parse_key_value_log_line
+    else:
+        source_path = Path(args.event_path)
+        source_format = "jsonl"
+        line_parser = _parse_jsonl_event_line
+    if not source_path.is_absolute():
+        source_path = Path.cwd() / source_path
+    return source_path, source_format, line_parser
+
+
+def _format_header(source_path: Path, *, source_format: str, follow: bool, tail: int) -> str:
     mode = "follow" if follow else "tail"
-    return f"Gateway timeline path={log_path} mode={mode} tail={tail}"
+    return f"Gateway timeline path={source_path} source={source_format} mode={mode} tail={tail}"
 
 
-def _print_tail(log_path: Path, tail: int) -> int:
+def _print_tail(
+    source_path: Path,
+    tail: int,
+    *,
+    line_parser: Callable[[str], GatewayLogEntry | None],
+) -> int:
     if tail == 0:
         return 0
-    if not log_path.exists():
+    if not source_path.exists():
         return 0
-    lines = _tail_lines(log_path, tail)
-    return _print_entries(lines)
+    lines = _tail_lines(source_path, tail)
+    return _print_entries(lines, line_parser=line_parser)
 
 
-def _tail_lines(log_path: Path, tail: int) -> list[str]:
+def _tail_lines(source_path: Path, tail: int) -> list[str]:
     window: deque[str] = deque(maxlen=tail)
-    with log_path.open("r", encoding="utf-8") as file:
+    with source_path.open("r", encoding="utf-8") as file:
         for line in file:
             if line.strip():
                 window.append(line)
@@ -222,9 +251,10 @@ def _tail_lines(log_path: Path, tail: int) -> list[str]:
 
 
 def _follow_log(
-    log_path: Path,
+    source_path: Path,
     *,
     initial_offset: int,
+    line_parser: Callable[[str], GatewayLogEntry | None],
     poll_interval: float,
     already_printed: int,
     follow_limit: int | None,
@@ -234,9 +264,9 @@ def _follow_log(
     printed_entries = already_printed
     deadline = None if follow_timeout is None else monotonic() + follow_timeout
     while True:
-        new_lines, offset = _read_new_lines(log_path, offset)
+        new_lines, offset = _read_new_lines(source_path, offset)
         if new_lines:
-            printed_entries += _print_entries(new_lines)
+            printed_entries += _print_entries(new_lines, line_parser=line_parser)
             if follow_limit is not None and printed_entries >= follow_limit:
                 return 0
         if deadline is not None and monotonic() >= deadline:
@@ -244,29 +274,33 @@ def _follow_log(
         sleep(poll_interval)
 
 
-def _read_new_lines(log_path: Path, offset: int) -> tuple[list[str], int]:
-    if not log_path.exists():
+def _read_new_lines(source_path: Path, offset: int) -> tuple[list[str], int]:
+    if not source_path.exists():
         return [], 0
-    size = _file_size(log_path)
+    size = _file_size(source_path)
     if size < offset:
         offset = 0
-    with log_path.open("r", encoding="utf-8") as file:
+    with source_path.open("r", encoding="utf-8") as file:
         file.seek(offset)
         lines = [line for line in file if line.strip()]
         return lines, file.tell()
 
 
-def _file_size(log_path: Path) -> int:
+def _file_size(source_path: Path) -> int:
     try:
-        return log_path.stat().st_size
+        return source_path.stat().st_size
     except OSError:
         return 0
 
 
-def _print_entries(lines: Iterable[str]) -> int:
+def _print_entries(
+    lines: Iterable[str],
+    *,
+    line_parser: Callable[[str], GatewayLogEntry | None],
+) -> int:
     count = 0
     for line in lines:
-        entry = _parse_log_line(line)
+        entry = line_parser(line)
         if entry is None:
             continue
         print(_format_entry(entry), flush=True)
@@ -274,7 +308,40 @@ def _print_entries(lines: Iterable[str]) -> int:
     return count
 
 
-def _parse_log_line(raw_line: str) -> GatewayLogEntry | None:
+def _parse_jsonl_event_line(raw_line: str) -> GatewayLogEntry | None:
+    raw = raw_line.rstrip("\n")
+    if not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return GatewayLogEntry(raw=raw, timestamp="", fields={}, parsed=False)
+    if not isinstance(payload, dict):
+        return GatewayLogEntry(raw=raw, timestamp="", fields={}, parsed=False)
+    event = payload.get("event")
+    timestamp = payload.get("created_at")
+    if not isinstance(event, str) or not event or not isinstance(timestamp, str):
+        return GatewayLogEntry(raw=raw, timestamp="", fields={}, parsed=False)
+    fields: dict[str, Any] = {
+        "level": "INFO",
+        "component": payload.get("component") or "gateway",
+        "schema_version": payload.get("schema_version"),
+        "created_at": timestamp,
+        "event": event,
+    }
+    for key in ("run_id", "turn_id", "trace_id", "user_id", "session_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value and value != "-":
+            fields[key] = value
+    attributes = payload.get("attributes")
+    if isinstance(attributes, dict):
+        for key, value in attributes.items():
+            if _is_scalar(value):
+                fields[str(key)] = value
+    return GatewayLogEntry(raw=raw, timestamp=timestamp, fields=fields, parsed=True)
+
+
+def _parse_key_value_log_line(raw_line: str) -> GatewayLogEntry | None:
     raw = raw_line.rstrip("\n")
     if not raw.strip():
         return None
@@ -290,7 +357,7 @@ def _parse_log_line(raw_line: str) -> GatewayLogEntry | None:
         timestamp = tokens[0]
         tokens = tokens[1:]
 
-    fields: dict[str, str] = {}
+    fields: dict[str, Any] = {}
     message_parts: list[str] = []
     for token in tokens:
         if "=" not in token:
@@ -358,6 +425,10 @@ def _identifier_parts(entry: GatewayLogEntry) -> list[str]:
 def _format_field(key: str, value: str) -> str:
     label = PAYLOAD_KEY_LABELS.get(key, key)
     return f"{label}={value}"
+
+
+def _is_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
 
 
 def _shorten(value: str) -> str:

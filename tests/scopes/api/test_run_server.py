@@ -54,6 +54,7 @@ def test_run_server_parser_defaults() -> None:
     assert args.file_log_level == "DEBUG"
     assert args.console_mode == "concise"
     assert args.log_dir == ".data/logs"
+    assert args.gateway_event_path == ".data/gateway_events.jsonl"
 
 
 def test_run_server_parser_accepts_operational_logging_options() -> None:
@@ -107,7 +108,18 @@ def test_run_server_suppresses_uvicorn_info_access_noise(monkeypatch, tmp_path) 
 
     monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=_run))
     try:
-        assert module.main(["--no-env-file", "--log-dir", str(tmp_path)]) == 0
+        assert (
+            module.main(
+                [
+                    "--no-env-file",
+                    "--log-dir",
+                    str(tmp_path),
+                    "--gateway-event-path",
+                    str(tmp_path / "gateway_events.jsonl"),
+                ]
+            )
+            == 0
+        )
     finally:
         from assistant_agent.services.operational_logging import (
             reset_operational_logging_for_tests,
@@ -119,7 +131,11 @@ def test_run_server_suppresses_uvicorn_info_access_noise(monkeypatch, tmp_path) 
     assert captured["log_level"] == "warning"
     gateway_raw = (tmp_path / "gateway.log").read_text(encoding="utf-8")
     assert "event=gateway.server.starting" in gateway_raw
-    assert "server_starting host=127.0.0.1 port=8000" in gateway_raw
+    assert "host=127.0.0.1 port=8000" in gateway_raw
+    gateway_events = (tmp_path / "gateway_events.jsonl").read_text(encoding="utf-8")
+    assert '"event": "gateway.server.starting"' in gateway_events
+    assert '"host": "127.0.0.1"' in gateway_events
+    assert '"port": 8000' in gateway_events
 
 
 def test_operational_logging_is_idempotent_and_writes_gateway_file_only(

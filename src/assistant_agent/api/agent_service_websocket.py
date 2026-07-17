@@ -28,7 +28,7 @@ from assistant_agent.services.agent_service_latency import (
     report_turn_latency,
 )
 from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
-from assistant_agent.services.operational_logging import digest_identifier, log_gateway_lifecycle
+from assistant_agent.services.operational_logging import digest_identifier, record_gateway_lifecycle
 from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.services.video_context import VideoFrame
 from assistant_agent.services.trace_store import TraceStore, append_observability_event
@@ -42,6 +42,7 @@ from assistant_agent.services.gateway_turn_facade import (
 
 router = APIRouter()
 logger = logging.getLogger("assistant_agent.api.agent_service_websocket")
+log_gateway_lifecycle = record_gateway_lifecycle
 
 SUCCESS_CODE = "OK"
 FAIL_CODE = "FAIL"
@@ -1020,7 +1021,7 @@ def _create_agent_service_gateway_manager() -> GatewaySessionManager:
             run_request=_run_assistant_request_for_agent_service,
             load_env=False,
         ),
-        lifecycle_sink=log_gateway_lifecycle,
+        lifecycle_sink=record_gateway_lifecycle,
         start_reaper=False,
     )
 

@@ -89,10 +89,11 @@ not a delivery authority.
 ## Operational Logging
 
 本地 server 在不改变 FastAPI 单进程结构的前提下提供 Gateway operational logging；
-Gateway 开发视图通过 `scripts/gateway_view.py --follow` 读取 Gateway 机器日志，
+Gateway 开发视图通过 `scripts/gateway_view.py --follow` 读取 Gateway lifecycle JSONL，
 Assistant runtime 开发视图通过 `scripts/trace_view.py --follow` 读取 canonical
-trace。控制台是 Combined 摘要，`.data/logs/gateway.log` 接收 server 启动 marker
-与 Gateway lifecycle。Combined 默认采用 `concise` 模式，只显示关键 Gateway lifecycle
+trace。控制台是 Combined 摘要，`.data/gateway_events.jsonl` 接收 server 启动 marker
+与 Gateway lifecycle，`.data/logs/gateway.log` 只保留兼容的 key=value text projection。
+Combined 默认采用 `concise` 模式，只显示关键 Gateway lifecycle
 以及普通应用 WARNING/ERROR 的 logger 名；Gateway 与 runtime 开发者 timeline
 都不依赖 Assistant Server 控制台分栏。`component=runtime` 的文本日志不进入
 Combined，即使 `verbose` 也不作为 runtime 观察入口。未经过安全投影的普通应用
@@ -101,17 +102,16 @@ message 不在 Combined 原样显示，即使 `verbose` 也只显示其 logger �
 stderr，避免 PyCharm 将所有正常事件渲染为红色；控制台只显示短关联 ID，不显示稳定
 身份摘要或密集 payload。Uvicorn 内建 INFO 默认降噪，避免 WebSocket 握手 query value
 绕过安全投影进入控制台；只有显式 `--access-log` 时才恢复其 INFO/access 输出。
-Gateway 文件继续使用 UTC `key=value` 格式并保留完整可用的 `run_id`、`turn_id`、
-`trace_id`，用于从入口 lifecycle 串联到 runtime trace。该文件通过标准库
-`RotatingFileHandler` 轮转，
-单文件上限 5 MiB，保留 3 个备份；重复配置或 reload 不得重复安装 handler。
-launcher 通过显式进程环境把 level/path 传给 `create_app()`，因此 reload 后的实际
-server 子进程会重新执行同一幂等配置。文件目录或 handler 打开失败时保留 Combined
+Gateway JSONL 使用 `gateway_lifecycle_event_v1` schema，并保留完整可用的
+`run_id`、`turn_id`、`trace_id`，用于从入口 lifecycle 串联到 runtime trace。
+兼容 text log 继续使用 UTC `key=value` 格式，通过标准库 `RotatingFileHandler`
+轮转，单文件上限 5 MiB，保留 3 个备份；重复配置或 reload 不得重复安装 handler。
+launcher 通过显式进程环境把 JSONL/text path 传给 `create_app()`，因此 reload 后的实际
+server 子进程会重新执行同一幂等配置。JSONL 或 text handler 打开失败时保留 Combined
 console 并 fail-open，不得阻止应用启动。
 
-Gateway 日志在 server 启动时先写一条 `gateway.server.starting` marker，便于
-`scripts/gateway_view.py --follow` 启动后立即显示内容；之后来自
-`GatewayLifecycleEvent` 的 fail-open sink，覆盖
+Gateway lifecycle sink 在 server 启动时先写一条 `gateway.server.starting` marker，便于
+`scripts/gateway_view.py --follow` 启动后立即显示内容；之后覆盖
 session、queue、admission、run、cancel、interrupt 和 terminal 边界。它保留 `run_id` / `turn_id`，
 但只记录 allowlist 内的状态、计数、reason/source 等 prompt-safe 字段；`user_id` 与
 `session_id` 使用稳定短摘要，不记录用户文本。Agent-Service 连接日志同样只记录
@@ -123,22 +123,24 @@ server `CompositeTraceStore` 只保留进程内 primary 与后台 JSONL persiste
 是唯一 runtime 开发观察视图。
 
 `scripts/run_server.py` 提供 `--console-level`、`--file-log-level`、
-`--console-mode {concise,verbose}` 与 `--log-dir PATH`，默认分别为 `INFO`、`DEBUG`、
-`concise` 和 `.data/logs`；`--file-log-level` 只控制 `gateway.log`。旧
+`--console-mode {concise,verbose}`、`--log-dir PATH` 与 `--gateway-event-path PATH`，
+默认分别为 `INFO`、`DEBUG`、`concise`、`.data/logs` 和 `.data/gateway_events.jsonl`；
+`--file-log-level` 只控制兼容 `gateway.log`。旧
 `--log-level` 仍作为同时覆盖 console/file level 的兼容 shorthand。共享 PyCharm 配置
 `.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器和 mock Provider 启动：
 Run console 只保留 launcher 输出与 WARNING/ERROR。该配置显式设置 operational logging
-环境变量，确保 launcher 与 reload 后的 server 子进程写入同一 Gateway 文件，但不再
+环境变量，确保 launcher 与 reload 后的 server 子进程写入同一 Gateway JSONL/text 文件，但不再
 声明 PyCharm `log_file` 页签。Gateway 开发观察统一运行 `.run/Gateway Follow.run.xml`，
-它执行 `scripts/gateway_view.py --log-path .data/logs/gateway.log --tail 50 --follow`。
+它执行 `scripts/gateway_view.py --event-path .data/gateway_events.jsonl --tail 50 --follow`。
 runtime 开发观察统一运行 `.run/Trace Follow.run.xml`，它常驻跟随
 `.data/graph_trace.jsonl`，连接本地 8089 server，按 Conversation、Timeline、ReAct
 detail 三层输出新的终态 run。
 
 对应关系保持明确：
 
-- Gateway 机器日志：`.data/logs/gateway.log`
+- Gateway 机器事件：`.data/gateway_events.jsonl`
 - Gateway 开发者视图：`scripts/gateway_view.py --follow`
+- Gateway 兼容 text projection：`.data/logs/gateway.log`
 - AgentRuntime 机器 trace：`.data/graph_trace.jsonl`
 - AgentRuntime 开发者视图：`scripts/trace_view.py --follow`
 
@@ -441,7 +443,7 @@ consumed-video diagnostics；详细 stage 默认交给 `timeline`，需要在 `T
 推荐 PyCharm 本地流程：
 
 1. 运行 `.run/Assistant Server.run.xml`。共享配置已带 `--allow-local-trace-content`，
-   并持续写 `.data/logs/gateway.log`；如果个人配置移除了内容开关，Conversation 层会不可用。
+   并持续写 `.data/gateway_events.jsonl`；如果个人配置移除了内容开关，Conversation 层会不可用。
 2. 运行 `.run/Gateway Follow.run.xml`，它常驻输出 Gateway server、session、queue、
    run、cancel 和 interrupt lifecycle。
 3. 运行 `.run/Trace Follow.run.xml`，它全局常驻输出

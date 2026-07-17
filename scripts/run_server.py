@@ -12,7 +12,6 @@ launch it without a module-based uvicorn run configuration.
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -25,9 +24,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.gateway.observability import GatewayLifecycleEvent
 from assistant_agent.services.assistant_run_service import load_env_file, runtime_info
 from assistant_agent.services.operational_logging import (
-    GATEWAY_LOGGER_NAME,
+    DEFAULT_GATEWAY_EVENT_PATH,
+    GATEWAY_EVENT_PATH_ENV,
     OPERATIONAL_CONSOLE_LEVEL_ENV,
     OPERATIONAL_CONSOLE_MODE_ENV,
     OPERATIONAL_FILE_LEVEL_ENV,
@@ -35,6 +36,7 @@ from assistant_agent.services.operational_logging import (
     OPERATIONAL_LOG_LEVEL_ENV,
     OPERATIONAL_LOGGING_ENABLED_ENV,
     configure_operational_logging_from_env,
+    record_gateway_lifecycle,
 )
 from assistant_agent.services.provider_specs import (
     supported_chat_providers,
@@ -91,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-dir",
         default=".data/logs",
         help="Directory for rotating gateway.log.",
+    )
+    parser.add_argument(
+        "--gateway-event-path",
+        default=str(DEFAULT_GATEWAY_EVENT_PATH),
+        help=f"Path for Gateway lifecycle JSONL events. Defaults to {DEFAULT_GATEWAY_EVENT_PATH}.",
     )
     parser.add_argument(
         "--allow-local-trace-content",
@@ -231,19 +238,22 @@ def _print_ignored_provider_hint(config: ProviderConfig) -> None:
         )
 
 
-def _log_gateway_server_starting(args: argparse.Namespace, log_dir: Path) -> None:
-    logging.getLogger(GATEWAY_LOGGER_NAME).info(
-        "server_starting host=%s port=%s log_dir=%s",
-        args.host,
-        args.port,
-        log_dir,
-        extra={
-            "component": "gateway",
-            "event": "gateway.server.starting",
-            "run_id": "-",
-            "turn_id": "-",
-            "trace_id": "-",
-        },
+def _log_gateway_server_starting(
+    args: argparse.Namespace,
+    *,
+    log_dir: Path,
+    gateway_event_path: Path,
+) -> None:
+    record_gateway_lifecycle(
+        GatewayLifecycleEvent(
+            type="gateway.server.starting",
+            payload={
+                "host": args.host,
+                "port": args.port,
+                "log_dir": str(log_dir),
+                "gateway_event_path": str(gateway_event_path),
+            },
+        )
     )
 
 
@@ -255,8 +265,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_dir = Path(args.log_dir).expanduser()
     if not log_dir.is_absolute():
         log_dir = REPO_ROOT / log_dir
+    gateway_event_path = Path(args.gateway_event_path).expanduser()
+    if not gateway_event_path.is_absolute():
+        gateway_event_path = REPO_ROOT / gateway_event_path
     os.environ[OPERATIONAL_LOGGING_ENABLED_ENV] = "1"
     os.environ[OPERATIONAL_LOG_DIR_ENV] = str(log_dir)
+    os.environ[GATEWAY_EVENT_PATH_ENV] = str(gateway_event_path)
     if args.log_level is not None:
         os.environ[OPERATIONAL_LOG_LEVEL_ENV] = args.log_level
     else:
@@ -265,7 +279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     os.environ[OPERATIONAL_FILE_LEVEL_ENV] = args.file_log_level
     os.environ[OPERATIONAL_CONSOLE_MODE_ENV] = args.console_mode
     configure_operational_logging_from_env()
-    _log_gateway_server_starting(args, log_dir)
+    _log_gateway_server_starting(args, log_dir=log_dir, gateway_event_path=gateway_event_path)
 
     import uvicorn
 
@@ -285,6 +299,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  console_log: {args.console_level} / {args.console_mode}")
         print(f"  gateway_file_log_level: {args.file_log_level}")
     print(f"  operational_log_dir: {log_dir}")
+    print(f"  gateway_event_path: {gateway_event_path}")
     _print_runtime_summary(config, loaded_env_keys=sorted(loaded_env))
     if args.public_url:
         print(f"Share this URL with trial users: {args.public_url}")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import sys
@@ -13,7 +12,12 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from assistant_agent.gateway.observability import GatewayLifecycleEvent
+from assistant_agent.gateway.observability import (
+    GatewayLifecycleEvent,
+    JsonlGatewayLifecycleStore,
+    digest_gateway_identifier,
+    gateway_lifecycle_attributes,
+)
 
 
 GATEWAY_LOGGER_NAME = "assistant_agent.gateway.lifecycle"
@@ -23,6 +27,7 @@ DEFAULT_OPERATIONAL_LOG_LEVEL = "INFO"
 DEFAULT_OPERATIONAL_CONSOLE_LEVEL = "INFO"
 DEFAULT_OPERATIONAL_FILE_LEVEL = "DEBUG"
 DEFAULT_OPERATIONAL_CONSOLE_MODE = "concise"
+DEFAULT_GATEWAY_EVENT_PATH = Path(".data/gateway_events.jsonl")
 OPERATIONAL_LOG_MAX_BYTES = 5 * 1024 * 1024
 OPERATIONAL_LOG_BACKUP_COUNT = 3
 OPERATIONAL_LOGGING_ENABLED_ENV = "MULTIMODAL_AGENT_OPERATIONAL_LOGGING_ENABLED"
@@ -31,10 +36,12 @@ OPERATIONAL_LOG_LEVEL_ENV = "MULTIMODAL_AGENT_OPERATIONAL_LOG_LEVEL"
 OPERATIONAL_CONSOLE_LEVEL_ENV = "MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_LEVEL"
 OPERATIONAL_FILE_LEVEL_ENV = "MULTIMODAL_AGENT_OPERATIONAL_FILE_LEVEL"
 OPERATIONAL_CONSOLE_MODE_ENV = "MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_MODE"
+GATEWAY_EVENT_PATH_ENV = "MULTIMODAL_AGENT_GATEWAY_EVENT_PATH"
 
 _PACKAGE_LOGGER_NAME = "assistant_agent"
 _HANDLER_MARKER = "_assistant_agent_operational_handler"
 _CONFIG_LOCK = RLock()
+_GATEWAY_EVENT_STORE: JsonlGatewayLifecycleStore | None = None
 _CONCISE_GATEWAY_EVENTS = frozenset(
     {
         "gateway.run.started",
@@ -50,45 +57,6 @@ _CONCISE_GATEWAY_EVENTS = frozenset(
         "gateway.session.hangup_marked",
     }
 )
-_GATEWAY_PAYLOAD_FIELDS = frozenset(
-    {
-        "active_count",
-        "active_runs",
-        "cancel_phase",
-        "created",
-        "disposition",
-        "expects_reply",
-        "global_queue_depth",
-        "handled_by",
-        "limit",
-        "max_active_runs",
-        "newly_marked",
-        "phase",
-        "queue_depth",
-        "queue_reason",
-        "queue_wait_ms",
-        "reason",
-        "resumed",
-        "scope",
-        "source",
-        "status",
-    }
-)
-_GATEWAY_SAFE_REASONS = frozenset(
-    {
-        "cancelled",
-        "completed",
-        "error",
-        "interrupted_by_new_turn",
-        "queue_overflow",
-        "queue_wait_timeout",
-        "run_deadline_expired",
-        "semantic_interrupt",
-        "session_closed",
-    }
-)
-
-
 class _UtcOperationalFormatter(logging.Formatter):
     converter = time.gmtime
 
@@ -174,6 +142,7 @@ def configure_operational_logging(
     console_level: str = DEFAULT_OPERATIONAL_CONSOLE_LEVEL,
     file_level: str = DEFAULT_OPERATIONAL_FILE_LEVEL,
     console_mode: str = DEFAULT_OPERATIONAL_CONSOLE_MODE,
+    gateway_event_path: Path | None = None,
 ) -> None:
     """Configure a human console and isolated rotating component files.
 
@@ -227,6 +196,8 @@ def configure_operational_logging(
             console.setFormatter(_HumanConsoleFormatter(mode=resolved_console_mode))
             package_logger.addHandler(console)
 
+        _configure_gateway_event_store(gateway_event_path, package_logger=package_logger)
+
         try:
             resolved_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
@@ -277,6 +248,7 @@ def configure_operational_logging_from_env(
     }:
         return
     legacy_level = source.get(OPERATIONAL_LOG_LEVEL_ENV)
+    gateway_event_path_value = source.get(GATEWAY_EVENT_PATH_ENV)
     configure_operational_logging(
         Path(source.get(OPERATIONAL_LOG_DIR_ENV) or DEFAULT_OPERATIONAL_LOG_DIR),
         legacy_level,
@@ -290,13 +262,16 @@ def configure_operational_logging_from_env(
         console_mode=(
             source.get(OPERATIONAL_CONSOLE_MODE_ENV) or DEFAULT_OPERATIONAL_CONSOLE_MODE
         ),
+        gateway_event_path=Path(gateway_event_path_value) if gateway_event_path_value else None,
     )
 
 
 def reset_operational_logging_for_tests() -> None:
     """Remove handlers owned by this module; intended for tests and reload setup."""
 
+    global _GATEWAY_EVENT_STORE
     with _CONFIG_LOCK:
+        _GATEWAY_EVENT_STORE = None
         for logger_name in (
             _PACKAGE_LOGGER_NAME,
             GATEWAY_LOGGER_NAME,
@@ -314,21 +289,33 @@ def reset_operational_logging_for_tests() -> None:
 def digest_identifier(value: str | None) -> str:
     """Return a stable short digest suitable for operational correlation."""
 
-    if not value:
-        return "-"
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
-    return f"sha256:{digest}"
+    return digest_gateway_identifier(value) or "-"
+
+
+def record_gateway_lifecycle(event: GatewayLifecycleEvent) -> None:
+    """Persist and log one prompt-safe Gateway lifecycle event."""
+
+    append_gateway_lifecycle_event(event)
+    log_gateway_lifecycle(event)
+
+
+def append_gateway_lifecycle_event(event: GatewayLifecycleEvent) -> None:
+    """Append one Gateway lifecycle event to the configured JSONL store."""
+
+    try:
+        with _CONFIG_LOCK:
+            store = _GATEWAY_EVENT_STORE
+        if store is not None:
+            store.append(event)
+    except Exception:  # noqa: BLE001 - lifecycle persistence is fail-open.
+        return
 
 
 def log_gateway_lifecycle(event: GatewayLifecycleEvent) -> None:
     """Project one prompt-safe Gateway lifecycle event to its component logger."""
 
     try:
-        details = {
-            key: _gateway_payload_value(key, value)
-            for key, value in event.payload.items()
-            if key in _GATEWAY_PAYLOAD_FIELDS and _is_scalar(value)
-        }
+        details = gateway_lifecycle_attributes(event.payload)
         message_fields = {
             "user_id": digest_identifier(event.user_id),
             "session_id": digest_identifier(event.session_id),
@@ -346,6 +333,30 @@ def log_gateway_lifecycle(event: GatewayLifecycleEvent) -> None:
         )
     except Exception:  # noqa: BLE001 - operational logging is fail-open.
         return
+
+
+def _configure_gateway_event_store(
+    gateway_event_path: Path | None,
+    *,
+    package_logger: logging.Logger,
+) -> None:
+    global _GATEWAY_EVENT_STORE
+    _GATEWAY_EVENT_STORE = None
+    if gateway_event_path is None:
+        return
+    try:
+        _GATEWAY_EVENT_STORE = JsonlGatewayLifecycleStore(gateway_event_path)
+    except OSError:
+        package_logger.warning(
+            "gateway event JSONL unavailable",
+            extra={
+                "component": "gateway",
+                "event": "gateway.events_unavailable",
+                "run_id": "-",
+                "turn_id": "-",
+                "trace_id": "-",
+            },
+        )
 
 
 def _resolve_level(level: str) -> int:
@@ -426,16 +437,6 @@ def _safe_token(value: Any) -> str:
     if value is None or value == "":
         return "-"
     return "_".join(str(value).split())
-
-
-def _is_scalar(value: Any) -> bool:
-    return value is None or isinstance(value, (str, int, float, bool))
-
-
-def _gateway_payload_value(key: str, value: Any) -> Any:
-    if key == "reason" and isinstance(value, str) and value not in _GATEWAY_SAFE_REASONS:
-        return "client_supplied"
-    return value
 
 
 def _mark_handler(handler: logging.Handler, role: str) -> None:

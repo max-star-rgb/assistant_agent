@@ -648,11 +648,11 @@ def test_create_gateway_session_manager_reads_queue_policy_env() -> None:
 
 
 def test_default_gateway_session_manager_uses_operational_lifecycle_sink() -> None:
-    from assistant_agent.services.operational_logging import log_gateway_lifecycle
+    from assistant_agent.services.operational_logging import record_gateway_lifecycle
 
     manager = gateway_runtime.create_gateway_session_manager(env={}, start_reaper=False)
 
-    assert manager.lifecycle_sink is log_gateway_lifecycle
+    assert manager.lifecycle_sink is record_gateway_lifecycle
 
 
 def test_gateway_lifecycle_log_uses_terminal_trace_id(caplog) -> None:
