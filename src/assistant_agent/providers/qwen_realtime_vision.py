@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import base64
 import json
+import socket as socket_module
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic, perf_counter, sleep as blocking_sleep
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
+from urllib.request import getproxies, proxy_bypass
 
 from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
 
@@ -21,6 +23,7 @@ MAX_BASE64_JPEG_BYTES = 256 * 1024
 PCM_SAMPLE_RATE = 16_000
 PCM_SILENCE_MILLISECONDS = 200
 DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS = 10.0
+DEFAULT_FORCE_IPV4_DIRECT_CONNECTION = True
 DEFAULT_CLOSE_TIMEOUT_SECONDS = 1.0
 JPEG_NORMALIZE_TIMEOUT_SECONDS = 3.0
 JPEG_NORMALIZE_WIDTHS = (1280, 960, 720, 640, 480)
@@ -355,11 +358,27 @@ class QwenRealtimeVisionAdapter:
 def _default_connect(url: str, **kwargs: Any) -> Any:
     from websockets.sync.client import connect
 
+    opened_sock: socket_module.socket | None = None
     kwargs.setdefault(
         "timeout",
         _tcp_connect_timeout(kwargs.get("open_timeout")),
     )
-    return connect(url, close_timeout=DEFAULT_CLOSE_TIMEOUT_SECONDS, **kwargs)
+    if _should_open_direct_ipv4_socket(url, kwargs):
+        opened_sock = _open_direct_ipv4_socket(
+            url,
+            timeout=float(kwargs["timeout"]),
+            source_address=kwargs.pop("source_address", None),
+        )
+        kwargs["sock"] = opened_sock
+    try:
+        return connect(url, close_timeout=DEFAULT_CLOSE_TIMEOUT_SECONDS, **kwargs)
+    except Exception:
+        if opened_sock is not None:
+            try:
+                opened_sock.close()
+            except Exception:
+                pass
+        raise
 
 
 def _tcp_connect_timeout(open_timeout: Any) -> float:
@@ -370,6 +389,73 @@ def _tcp_connect_timeout(open_timeout: Any) -> float:
     except (TypeError, ValueError):
         return DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS
     return max(0.001, min(timeout, DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS))
+
+
+def _should_open_direct_ipv4_socket(url: str, kwargs: dict[str, Any]) -> bool:
+    if not DEFAULT_FORCE_IPV4_DIRECT_CONNECTION:
+        return False
+    if kwargs.get("sock") is not None:
+        return False
+    proxy = kwargs.get("proxy", True)
+    if proxy not in {True, None}:
+        return False
+    return proxy is None or not _proxy_configured_for_url(url)
+
+
+def _proxy_configured_for_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    host = parsed.hostname
+    if not host or proxy_bypass(host):
+        return False
+    proxies = getproxies()
+    scheme = parsed.scheme.lower()
+    proxy_keys = {
+        "wss": ("wss", "https", "all"),
+        "ws": ("ws", "http", "all"),
+    }.get(scheme, (scheme, "all"))
+    return any(proxies.get(key) for key in proxy_keys)
+
+
+def _open_direct_ipv4_socket(
+    url: str,
+    *,
+    timeout: float,
+    source_address: tuple[str, int] | None = None,
+) -> socket_module.socket:
+    parsed = urlsplit(url)
+    host = parsed.hostname
+    port = parsed.port or _default_port(parsed.scheme)
+    if not host or port is None:
+        raise ValueError("Qwen realtime vision WebSocket URL must include a host and supported scheme.")
+    last_error: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in socket_module.getaddrinfo(
+        host,
+        port,
+        family=socket_module.AF_INET,
+        type=socket_module.SOCK_STREAM,
+    ):
+        sock = socket_module.socket(family, socktype, proto)
+        sock.settimeout(timeout)
+        try:
+            if source_address is not None:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+            continue
+        return sock
+    if last_error is not None:
+        raise last_error
+    raise OSError(f"No IPv4 address found for {host}.")
+
+
+def _default_port(scheme: str) -> int | None:
+    if scheme == "wss":
+        return 443
+    if scheme == "ws":
+        return 80
+    return None
 
 
 def _model_url(base_url: str, model: str) -> str:

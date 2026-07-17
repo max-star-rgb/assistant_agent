@@ -10,6 +10,7 @@ import pytest
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.providers.qwen_realtime_vision import (
+    DEFAULT_FORCE_IPV4_DIRECT_CONNECTION,
     DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS,
     QwenRealtimeVisionAdapter,
 )
@@ -177,6 +178,7 @@ def _provider_config_diagnostics(config: ProviderConfig) -> dict[str, object]:
         "model": config.qwen_realtime_vision_model,
         "timeout_seconds": config.video_understanding_timeout_seconds,
         "tcp_connect_timeout_cap_seconds": DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS,
+        "direct_ipv4_default": DEFAULT_FORCE_IPV4_DIRECT_CONNECTION,
         "credential_source": _credential_source(),
         "proxy_env_names": _proxy_env_names(),
     }

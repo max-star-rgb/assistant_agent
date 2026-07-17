@@ -64,6 +64,7 @@ def test_default_connect_bounds_close_handshake(monkeypatch) -> None:
 
     transport = importlib.import_module("websockets.sync.client")
     monkeypatch.setattr(transport, "connect", connect)
+    monkeypatch.setattr(qwen_realtime, "_proxy_configured_for_url", lambda _url: True)
 
     result = qwen_realtime._default_connect("wss://qwen.local/realtime", open_timeout=2.0)
 
@@ -86,12 +87,77 @@ def test_default_connect_caps_tcp_connect_timeout(monkeypatch) -> None:
 
     transport = importlib.import_module("websockets.sync.client")
     monkeypatch.setattr(transport, "connect", connect)
+    monkeypatch.setattr(qwen_realtime, "_proxy_configured_for_url", lambda _url: True)
 
     result = qwen_realtime._default_connect("wss://qwen.local/realtime", open_timeout=60.0)
 
     assert result is sentinel
     assert captured["open_timeout"] == 60.0
     assert captured["timeout"] == 10.0
+
+
+def test_default_connect_forces_direct_ipv4_without_proxy(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    sentinel = object()
+    ipv4_socket = object()
+    opened: dict[str, Any] = {}
+
+    def open_direct_ipv4_socket(url: str, **kwargs: Any) -> object:
+        opened.update({"url": url, **kwargs})
+        return ipv4_socket
+
+    def connect(url: str, **kwargs: Any) -> object:
+        captured.update({"url": url, **kwargs})
+        return sentinel
+
+    transport = importlib.import_module("websockets.sync.client")
+    monkeypatch.setattr(transport, "connect", connect)
+    monkeypatch.setattr(qwen_realtime, "_proxy_configured_for_url", lambda _url: False)
+    monkeypatch.setattr(qwen_realtime, "_open_direct_ipv4_socket", open_direct_ipv4_socket)
+
+    result = qwen_realtime._default_connect(
+        "wss://qwen.local/realtime",
+        open_timeout=60.0,
+        source_address=("127.0.0.1", 0),
+    )
+
+    assert result is sentinel
+    assert opened == {
+        "url": "wss://qwen.local/realtime",
+        "timeout": 10.0,
+        "source_address": ("127.0.0.1", 0),
+    }
+    assert captured["sock"] is ipv4_socket
+    assert "source_address" not in captured
+
+
+def test_default_connect_closes_direct_ipv4_socket_when_handshake_fails(monkeypatch) -> None:
+    class SocketSentinel:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    ipv4_socket = SocketSentinel()
+
+    def connect(*_args: Any, **_kwargs: Any) -> object:
+        raise OSError("handshake failed")
+
+    transport = importlib.import_module("websockets.sync.client")
+    monkeypatch.setattr(transport, "connect", connect)
+    monkeypatch.setattr(qwen_realtime, "_proxy_configured_for_url", lambda _url: False)
+    monkeypatch.setattr(
+        qwen_realtime,
+        "_open_direct_ipv4_socket",
+        lambda *_args, **_kwargs: ipv4_socket,
+    )
+
+    try:
+        qwen_realtime._default_connect("wss://qwen.local/realtime", open_timeout=60.0)
+    except OSError:
+        pass
+
+    assert ipv4_socket.closed is True
 
 
 def test_realtime_adapter_handshake_and_single_frame_protocol(tmp_path: Path) -> None:
