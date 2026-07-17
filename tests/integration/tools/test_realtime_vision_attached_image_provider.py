@@ -21,6 +21,7 @@ from assistant_agent.services.video_adapter import (
 from assistant_agent.schemas.tool_observation import observation_from_tool_result
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
+from tests.tool_smoke_metrics import build_tool_smoke_metrics, measure_tool_run
 
 
 THIS_FILE = Path(__file__).resolve()
@@ -62,14 +63,16 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
     tool, adapter, config = _configured_qwen_tool()
     frame = _attached_image_as_jpeg()
     try:
-        result = tool.run(
-            VideoUnderstandingRequest(
-                video_ref="attached-image-1-cake",
-                frame_refs=[str(frame)],
-                user_query="识别这张图中的主体、食材和装饰。",
-                metadata={"frame_sequence": 1},
-            ),
-            ToolContext(metadata={"realtime_video_observation": True}),
+        result, tool_elapsed_ms = measure_tool_run(
+            lambda: tool.run(
+                VideoUnderstandingRequest(
+                    video_ref="attached-image-1-cake",
+                    frame_refs=[str(frame)],
+                    user_query="识别这张图中的主体、食材和装饰。",
+                    metadata={"frame_sequence": 1},
+                ),
+                ToolContext(metadata={"realtime_video_observation": True}),
+            )
         )
     finally:
         adapter.close()
@@ -88,6 +91,14 @@ def test_real_qwen_vlm_tool_understands_attached_image_1_provider_smoke(
         _print_json_section(
             "TOOL RESULT",
             result.model_dump(mode="json"),
+        )
+        _print_json_section(
+            "TOOL SMOKE METRICS",
+            build_tool_smoke_metrics(
+                result,
+                tool_elapsed_ms=tool_elapsed_ms,
+                provider_diagnostics=adapter.last_observation_diagnostics,
+            ),
         )
         _print_json_section(
             "FILTERED TOOL RESULT (LLM-FACING)",

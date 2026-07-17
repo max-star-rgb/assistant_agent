@@ -16,6 +16,7 @@ from assistant_agent.services.product_adapter import (
 )
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
+from tests.tool_smoke_metrics import build_tool_smoke_metrics, measure_tool_run
 
 
 THIS_FILE = Path(__file__).resolve()
@@ -56,13 +57,15 @@ def _configured_shopping_search_tool() -> tuple[ShoppingSearchTool, ProviderConf
 def test_real_shopping_search_tool_provider_smoke(capsys) -> None:
     tool, config = _configured_shopping_search_tool()
 
-    result = tool.run(
-        ProductSearchInput(
-            query="白色运动鞋",
-            budget_max=500,
-            top_k=3,
-        ),
-        ToolContext(),
+    result, tool_elapsed_ms = measure_tool_run(
+        lambda: tool.run(
+            ProductSearchInput(
+                query="白色运动鞋",
+                budget_max=500,
+                top_k=3,
+            ),
+            ToolContext(),
+        )
     )
 
     with capsys.disabled():
@@ -77,6 +80,10 @@ def test_real_shopping_search_tool_provider_smoke(capsys) -> None:
             empty="<raw provider payload is not exposed by this tool>",
         )
         _print_json_section("TOOL RESULT", result.model_dump(mode="json"))
+        _print_json_section(
+            "TOOL SMOKE METRICS",
+            build_tool_smoke_metrics(result, tool_elapsed_ms=tool_elapsed_ms),
+        )
         _print_json_section(
             "FILTERED TOOL RESULT (LLM-FACING)",
             _filtered_tool_result_for_llm(result),

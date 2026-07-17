@@ -13,8 +13,13 @@ from assistant_agent.schemas.tool_observation import observation_from_tool_resul
 from assistant_agent.services.image_generation_adapter import (
     create_image_generation_adapter,
 )
+from assistant_agent.services.generated_artifacts import (
+    GENERATED_ARTIFACT_DIR,
+    GENERATED_ARTIFACT_PUBLIC_PREFIX,
+)
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
+from tests.tool_smoke_metrics import build_tool_smoke_metrics, measure_tool_run
 
 
 THIS_FILE = Path(__file__).resolve()
@@ -50,13 +55,15 @@ def _configured_image_generation_tool() -> tuple[ImageGenerationTool, ProviderCo
 def test_real_image_generation_tool_provider_smoke(capsys) -> None:
     tool, config = _configured_image_generation_tool()
 
-    result = tool.run(
-        ImageGenerationInput(
-            prompt="一张简洁的正方形应用图标，白色背景，中间是清晰的蓝色数字 1，扁平设计。",
-            n=1,
-            watermark=False,
-        ),
-        ToolContext(),
+    result, tool_elapsed_ms = measure_tool_run(
+        lambda: tool.run(
+            ImageGenerationInput(
+                prompt="一张简洁的正方形应用图标，白色背景，中间是清晰的蓝色数字 1，扁平设计。",
+                n=1,
+                watermark=False,
+            ),
+            ToolContext(),
+        )
     )
 
     with capsys.disabled():
@@ -71,6 +78,11 @@ def test_real_image_generation_tool_provider_smoke(capsys) -> None:
             empty="<raw provider payload is not exposed by this tool>",
         )
         _print_json_section("TOOL RESULT", result.model_dump(mode="json"))
+        _print_json_section(
+            "TOOL SMOKE METRICS",
+            build_tool_smoke_metrics(result, tool_elapsed_ms=tool_elapsed_ms),
+        )
+        _print_json_section("LOCAL ARTIFACT FILES", _local_artifact_files(result))
         _print_json_section(
             "FILTERED TOOL RESULT (LLM-FACING)",
             _filtered_tool_result_for_llm(result),
@@ -124,6 +136,50 @@ def _provider_config_diagnostics(config: ProviderConfig) -> dict[str, object]:
         "credential_source": provider.spec.api_key_env,
         "proxy_env_names": _proxy_env_names(),
     }
+
+
+def _local_artifact_files(result) -> list[dict[str, object]]:
+    data = result.data if isinstance(result.data, dict) else {}
+    candidates: list[str] = []
+    for key in ("output_ref", "image_url", "download_url"):
+        value = data.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+    for key in ("image_urls", "download_urls"):
+        values = data.get(key)
+        if isinstance(values, list):
+            candidates.extend(value for value in values if isinstance(value, str))
+
+    files: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        path = _local_path_for_generated_artifact(candidate)
+        if path is None:
+            continue
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        exists = path.is_file()
+        files.append(
+            {
+                "artifact_url": candidate,
+                "path": str(path),
+                "exists": exists,
+                "size_bytes": path.stat().st_size if exists else None,
+            }
+        )
+    return files
+
+
+def _local_path_for_generated_artifact(value: str) -> Path | None:
+    prefix = f"{GENERATED_ARTIFACT_PUBLIC_PREFIX.rstrip('/')}/"
+    if not value.startswith(prefix):
+        return None
+    filename = value.removeprefix(prefix)
+    if not filename or "/" in filename:
+        return None
+    return GENERATED_ARTIFACT_DIR / filename
 
 
 def _skip_unless_manual_tool_selected(env_var: str) -> None:

@@ -13,6 +13,7 @@ from assistant_agent.schemas.web_search import WebSearchInput
 from assistant_agent.services.web_search_adapter import create_web_search_adapter
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.web_search_tool import WebSearchTool
+from tests.tool_smoke_metrics import build_tool_smoke_metrics, measure_tool_run
 
 
 THIS_FILE = Path(__file__).resolve()
@@ -47,13 +48,15 @@ def _configured_web_search_tool() -> tuple[WebSearchTool, ProviderConfig]:
 def test_real_web_search_tool_provider_smoke(capsys) -> None:
     tool, config = _configured_web_search_tool()
 
-    result = tool.run(
-        WebSearchInput(
-            query="OpenAI Realtime API latest changes",
-            recency_days=30,
-            limit=3,
-        ),
-        ToolContext(),
+    result, tool_elapsed_ms = measure_tool_run(
+        lambda: tool.run(
+            WebSearchInput(
+                query="OpenAI Realtime API latest changes",
+                recency_days=30,
+                limit=3,
+            ),
+            ToolContext(),
+        )
     )
 
     with capsys.disabled():
@@ -68,6 +71,10 @@ def test_real_web_search_tool_provider_smoke(capsys) -> None:
             empty="<raw provider payload is not exposed by this tool>",
         )
         _print_json_section("TOOL RESULT", result.model_dump(mode="json"))
+        _print_json_section(
+            "TOOL SMOKE METRICS",
+            build_tool_smoke_metrics(result, tool_elapsed_ms=tool_elapsed_ms),
+        )
         _print_json_section(
             "FILTERED TOOL RESULT (LLM-FACING)",
             _filtered_tool_result_for_llm(result),
