@@ -69,6 +69,27 @@ def test_price_compare_without_products_but_with_query_adds_search_then_compare(
     assert [step.tool_name for step in validated.plan_steps] == ["product_search", "price_compare"]
 
 
+def test_web_fetch_without_url_becomes_followup() -> None:
+    decision = IntentDecision(primary_intent="web_fetch", confidence=0.8)
+
+    validated = CapabilityValidator().validate(decision, _request(text="Read the page"))
+
+    assert validated.primary_intent == "ask_followup"
+    assert validated.missing_inputs == ["url"]
+
+
+def test_web_fetch_with_url_creates_fetch_step() -> None:
+    decision = IntentDecision(primary_intent="web_fetch", confidence=0.8)
+
+    validated = CapabilityValidator().validate(
+        decision, _request(text="Read https://example.com/article page content")
+    )
+
+    assert validated.primary_intent == "web_fetch"
+    assert validated.capabilities == ["web_fetch"]
+    assert validated.plan_steps[0].tool_name == "web_fetch"
+
+
 def test_memory_retrieval_without_session_or_user_context_becomes_followup() -> None:
     request = UserRequest.model_construct(
         user_id="",

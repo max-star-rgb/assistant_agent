@@ -16,12 +16,12 @@ from assistant_agent.agent.system_prompt_policy import (
         (
             SystemPromptProfile.TEXT_DEFAULT,
             None,
-            "1d4e027450f9dd73d87e1d29066861b5c958e246fc90df24e3b08cc29d152bd7",
+            "910f70359befbe4757fe674a1269daa729eee629a1c31893a79ddff29db8b914",
         ),
         (
             SystemPromptProfile.TEXT_DEFAULT,
             SystemPromptOptions(product_mode=True),
-            "9eb763be339edbf383cbdf0890ad492cca429424311ba8137710661f968d461f",
+            "c8e8cb4461fd9cf6e559808c35e7014732be62138b9aaa059e1d10619ac40246",
         ),
         (
             SystemPromptProfile.REALTIME_PHONE,

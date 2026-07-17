@@ -46,3 +46,5 @@ def test_contract_lookup_accepts_legacy_aliases() -> None:
     assert contract_for_intent("understand_image").name == "image_understanding"
     assert contract_for_intent("generate_image").name == "image_generation"
     assert contract_for_intent("retrieve_memory").name == "memory_retrieval"
+    assert contract_for_intent("fetch_web").name == "web_fetch"
+    assert contract_for_intent("read_url").name == "web_fetch"

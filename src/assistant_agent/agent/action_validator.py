@@ -217,6 +217,14 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
         return _reject("invalid_tool_input", "price_compare requires query or items.")
     if tool_name == "web_search" and not _non_empty_string(tool_input.get("query")):
         return _reject("invalid_tool_input", "web_search requires query.")
+    if tool_name == "web_fetch":
+        url = tool_input.get("url")
+        if not _non_empty_string(url):
+            return _reject("invalid_tool_input", "web_fetch requires url.")
+        if not _is_http_url(str(url)):
+            return _reject(
+                "invalid_tool_input", "web_fetch requires http or https url."
+            )
     if tool_name == "memory_retrieval" and not tool_input.get("query"):
         return _reject("invalid_tool_input", "memory_retrieval requires query.")
     if tool_name == "memory":
@@ -260,6 +268,11 @@ def _has_memory_save_text(tool_input: dict[str, Any]) -> bool:
 
 def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _is_http_url(value: str) -> bool:
+    lowered = value.strip().lower()
+    return lowered.startswith("http://") or lowered.startswith("https://")
 
 
 def _validate_legacy_memory_tool_input(tool_input: dict[str, Any]) -> ActionValidationResult | None:

@@ -1,5 +1,7 @@
 """Rule-based multi-step task planning."""
 
+import re
+
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
 
@@ -7,6 +9,7 @@ from assistant_agent.schemas.requests import UserRequest
 class RuleBasedTaskPlanner:
     """Build a TaskPlan from request media and keyword rules."""
 
+    url_re = re.compile(r"https?://\S+")
     memory_keywords = ("上次", "刚才", "之前", "以前", "我喜欢")
     memory_save_keywords = ("记住", "帮我记", "保存偏好")
     search_keywords = ("找", "搜索", "同款", "相似")
@@ -34,6 +37,19 @@ class RuleBasedTaskPlanner:
         "look up",
     )
     explicit_web_search_keywords = ("联网搜索", "网上搜索", "网页搜索", "web search", "search the web", "internet search")
+    web_fetch_keywords = (
+        "打开",
+        "读取",
+        "读一下",
+        "看一下",
+        "正文",
+        "网页内容",
+        "fetch",
+        "open",
+        "read",
+        "page content",
+        "article",
+    )
     product_hint_keywords = ("耳机", "鞋", "包", "衣服", "手机", "电脑", "椅", "桌", "灯", "相似款", "同款", "商品", "产品", "电商", "价格")
     compare_keywords = ("比价", "价格", "便宜", "比较")
     image_keywords = ("生成", "海报", "风格图", "换背景", "出图")
@@ -70,7 +86,16 @@ class RuleBasedTaskPlanner:
                 reason="用户提供了媒体输入，先理解媒体内容。",
             )
 
-        if self._has_web_search_intent(text):
+        if self._has_web_fetch_intent(text):
+            self._append_step(
+                steps,
+                action="fetch_web",
+                tool_name="web_fetch",
+                required_inputs=["url"],
+                reason="用户要求读取已知 URL 的网页正文。",
+            )
+
+        if self._has_web_search_intent(text) and not self._has_web_fetch_intent(text):
             self._append_step(
                 steps,
                 action="search_web",
@@ -222,6 +247,11 @@ class RuleBasedTaskPlanner:
         if self._contains(text, self.explicit_web_search_keywords):
             return True
         return self._contains(text, self.web_search_keywords) and not self._contains(text, self.product_hint_keywords)
+
+    def _has_web_fetch_intent(self, text: str) -> bool:
+        return bool(self.url_re.search(text)) and self._contains(
+            text, self.web_fetch_keywords
+        )
 
     def _has_render_intent(self, text: str) -> bool:
         if not text:

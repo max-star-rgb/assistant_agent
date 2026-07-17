@@ -9,7 +9,9 @@ small subset should be treated as primary entry scripts.
 Use these when validating the realtime assistant loop:
 
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
-  memory, trace, and tool-governed runtime routes.
+  memory, trace, and tool-governed runtime routes. For local Tavily web search/fetch
+  development, pass `--start-web-search-relay` to start the relay child process
+  and wire `WEB_SEARCH_BASE_URL` for this run.
 - `scripts/realtime_media_client.py`: server-backed Media Relay protocol smoke
   client and manual text-call operator for `/ws/realtime/media`.
 - `scripts/run_gateway_client.py`: server-backed normalized Gateway frame smoke
@@ -29,6 +31,8 @@ These are useful, but they are not the main product path:
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: eval harness for lower-layer behavior checks.
 - `scripts/check_env.py`: environment sanity check.
+- `scripts/run_tavily_search_relay.py`: opt-in local HTTP relay that adapts the
+  generic `web_search` and `web_fetch` HTTP protocols to Tavily Search/Extract APIs.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.
 - `scripts/memory_audit.py`, `scripts/agentruntime_view.py`, and

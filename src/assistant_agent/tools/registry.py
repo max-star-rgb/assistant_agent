@@ -23,6 +23,7 @@ from assistant_agent.tools.product_search_tool import ProductSearchTool
 from assistant_agent.tools.render_tool import Render3DTool
 from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 from assistant_agent.services.web_search_adapter import create_web_search_adapter
+from assistant_agent.services.web_fetch_adapter import create_web_fetch_adapter
 from assistant_agent.services.image_generation_adapter import create_image_generation_adapter
 from assistant_agent.services.memory_media_ingestion import create_memory_media_ingestion_service
 from assistant_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
@@ -36,6 +37,7 @@ from assistant_agent.services.realtime_video_memory import RealtimeVideoMemorySt
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 from assistant_agent.tools.vision_tool import VisionUnderstandingTool
 from assistant_agent.tools.web_search_tool import WebSearchTool
+from assistant_agent.tools.web_fetch_tool import WebFetchTool
 from assistant_agent.tools.task_plan_tool import TaskPlanSubmitTool
 
 if TYPE_CHECKING:
@@ -444,6 +446,37 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
+    "web_fetch": {
+        "when_to_use": [
+            "Fetch readable page content from a specific HTTP(S) URL provided by the user or returned by web_search.",
+            "Use when search snippets are insufficient and the answer needs content from a known web page.",
+        ],
+        "when_not_to_use": [
+            "No specific URL is available; use web_search first for general web lookup.",
+            "User asks for browser automation, form submission, login-only content, or JavaScript-rendered interaction.",
+            "User asks for shopping/product candidates; use shopping_search or product_search instead.",
+        ],
+        "runtime_constraints": [
+            "Requires an http or https URL.",
+            "Returns extracted readable text only; does not render a browser, submit forms, or crawl multiple pages.",
+            "Real HTTP fetch requires provider_smoke or pilot runtime profile plus explicit MULTIMODAL_AGENT_SEARCH_PROVIDER=http.",
+        ],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads web page/provider data and does not mutate external state.",
+        },
+        "execution": {
+            "dependency_mode": "requires_prior_observation",
+            "resource_reads": ["web_page"],
+            "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我打开这个网页看一下。",
+        },
+        "visibility": {
+            "allowed_entry_profiles": ["agent_service"],
+        },
+    },
     "memory": {
         "when_to_use": ["Legacy memory retrieve/save compatibility tool."],
         "when_not_to_use": ["Prefer memory_retrieval or memory_save in the assistant loop."],
@@ -665,6 +698,7 @@ def create_default_registry(
         ProductSearchTool(adapter=product_search_adapter),
         PriceCompareTool(adapter=price_compare_adapter),
         WebSearchTool(adapter=create_web_search_adapter(config)),
+        WebFetchTool(adapter=create_web_fetch_adapter(config)),
         ImageGenerationTool(adapter=create_image_generation_adapter(config)),
         Render3DTool(adapter=create_render_adapter(config)),
         MemoryTool(),

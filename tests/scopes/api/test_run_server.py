@@ -85,6 +85,10 @@ def test_run_server_parser_defaults() -> None:
     assert args.workflow_skill_manifest_dir == "skills/workflows"
     assert args.workflow_skill_tool_module == []
     assert args.workflow_skill_run_store == ".data/workflow_skill_runs.jsonl"
+    assert args.start_web_search_relay is False
+    assert args.web_search_relay_host == "127.0.0.1"
+    assert args.web_search_relay_port == 7005
+    assert args.web_search_relay_path == "/search"
 
 
 def test_run_server_parser_accepts_operational_logging_options() -> None:
@@ -130,6 +134,158 @@ def test_run_server_parser_accepts_workflow_skill_options() -> None:
     assert args.workflow_skill_manifest_dir == "custom/workflows"
     assert args.workflow_skill_tool_module == ["custom.tools", "other.tools"]
     assert args.workflow_skill_run_store == ".data/custom-workflow-runs.jsonl"
+
+
+def test_run_server_parser_accepts_web_search_relay_options() -> None:
+    module = _load_module("run_server_parser_web_search_relay_test")
+
+    args = module.build_parser().parse_args(
+        [
+            "--start-web-search-relay",
+            "--web-search-relay-host",
+            "127.0.0.2",
+            "--web-search-relay-port",
+            "7105",
+            "--web-search-relay-path",
+            "search",
+        ]
+    )
+
+    assert args.start_web_search_relay is True
+    assert args.web_search_relay_host == "127.0.0.2"
+    assert args.web_search_relay_port == 7105
+    assert args.web_search_relay_path == "search"
+
+
+def test_prepare_environment_enables_web_search_relay_dev_defaults(monkeypatch) -> None:
+    module = _load_module("run_server_web_search_relay_env_test")
+    args = module.build_parser().parse_args(
+        [
+            "--no-env-file",
+            "--start-web-search-relay",
+            "--web-search-relay-port",
+            "7105",
+            "--web-search-relay-path",
+            "search",
+        ]
+    )
+    for key in (
+        "MULTIMODAL_AGENT_RUNTIME_PROFILE",
+        "MULTIMODAL_AGENT_SEARCH_PROVIDER",
+        "WEB_SEARCH_BASE_URL",
+        "WEB_SEARCH_API_KEY",
+        "WEB_SEARCH_RELAY_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+
+    module._prepare_environment(args)
+
+    assert os.environ["MULTIMODAL_AGENT_RUNTIME_PROFILE"] == "provider_smoke"
+    assert os.environ["MULTIMODAL_AGENT_SEARCH_PROVIDER"] == "http"
+    assert os.environ["WEB_SEARCH_BASE_URL"] == "http://127.0.0.1:7105/search"
+    assert os.environ["WEB_SEARCH_API_KEY"] == os.environ["WEB_SEARCH_RELAY_API_KEY"]
+    assert len(os.environ["WEB_SEARCH_API_KEY"]) > 16
+
+
+def test_web_search_relay_env_can_start_from_environment(monkeypatch) -> None:
+    module = _load_module("run_server_web_search_relay_env_flag_test")
+    args = module.build_parser().parse_args(["--no-env-file"])
+    monkeypatch.setenv("MULTIMODAL_AGENT_START_WEB_SEARCH_RELAY", "1")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    monkeypatch.delenv("WEB_SEARCH_BASE_URL", raising=False)
+    monkeypatch.delenv("WEB_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("WEB_SEARCH_RELAY_API_KEY", raising=False)
+
+    module._prepare_environment(args)
+
+    assert module._should_start_web_search_relay(args) is True
+    assert os.environ["WEB_SEARCH_BASE_URL"] == "http://127.0.0.1:7005/search"
+    assert os.environ["WEB_SEARCH_API_KEY"] == os.environ["WEB_SEARCH_RELAY_API_KEY"]
+    assert len(os.environ["WEB_SEARCH_API_KEY"]) > 16
+
+
+def test_start_web_search_relay_requires_tavily_key(monkeypatch) -> None:
+    module = _load_module("run_server_web_search_relay_missing_key_test")
+    args = module.build_parser().parse_args(["--no-env-file", "--start-web-search-relay"])
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    try:
+        module._prepare_environment(args)
+    except RuntimeError as exc:
+        assert "TAVILY_API_KEY" in str(exc)
+    else:  # pragma: no cover - failure path assertion
+        raise AssertionError("expected missing TAVILY_API_KEY to fail")
+
+
+def test_run_server_starts_and_stops_web_search_relay_child(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    module = _load_module("run_server_web_search_relay_child_test")
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        def __init__(self, command, cwd, env, text) -> None:  # noqa: ANN001
+            captured["command"] = command
+            captured["cwd"] = cwd
+            captured["env"] = env
+            captured["text"] = text
+            self.terminated = False
+            self.waited = False
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+            captured["terminated"] = True
+
+        def wait(self, timeout=None):  # noqa: ANN001
+            self.waited = True
+            captured["wait_timeout"] = timeout
+            return 0
+
+    monkeypatch.setattr(module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=lambda *args, **kwargs: None))
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    for key in (
+        "WEB_SEARCH_BASE_URL",
+        "WEB_SEARCH_API_KEY",
+        "WEB_SEARCH_RELAY_API_KEY",
+        "MULTIMODAL_AGENT_SEARCH_PROVIDER",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    try:
+        result = module.main(
+            [
+                "--no-env-file",
+                "--start-web-search-relay",
+                "--web-search-relay-port",
+                "7105",
+                "--log-dir",
+                str(tmp_path),
+                "--gateway-event-path",
+                str(tmp_path / "gateway_events.jsonl"),
+            ]
+        )
+    finally:
+        from assistant_agent.services.operational_logging import (
+            reset_operational_logging_for_tests,
+        )
+
+        reset_operational_logging_for_tests()
+
+    assert result == 0
+    command = captured["command"]
+    assert command[:2] == [sys.executable, str(Path.cwd() / "scripts" / "run_tavily_search_relay.py")]
+    assert "--port" in command and "7105" in command
+    relay_env = captured["env"]
+    assert relay_env["WEB_SEARCH_BASE_URL"] == "http://127.0.0.1:7105/search"
+    assert relay_env["WEB_SEARCH_API_KEY"] == relay_env["WEB_SEARCH_RELAY_API_KEY"]
+    assert captured["terminated"] is True
+    assert captured["wait_timeout"] == 5
 
 
 def test_prepare_environment_exports_workflow_skill_runtime_config(monkeypatch) -> None:

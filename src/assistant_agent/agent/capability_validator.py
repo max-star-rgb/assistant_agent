@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from assistant_agent.schemas.capabilities import CapabilityName, contract_for_intent
 from assistant_agent.schemas.intent_decision import IntentDecision, PlanStep
 from assistant_agent.schemas.requests import UserRequest
@@ -10,6 +12,7 @@ from assistant_agent.schemas.requests import UserRequest
 class CapabilityValidator:
     """Apply capability input contracts to a router-produced IntentDecision."""
 
+    url_re = re.compile(r"https?://\S+")
     render_vague_texts = {"渲染", "渲染一下", "看看效果", "做个展示", "展示一下", "3d", "3D"}
 
     def validate(self, decision: IntentDecision, request: UserRequest) -> IntentDecision:
@@ -66,6 +69,8 @@ class CapabilityValidator:
             return [] if request.video_ids else ["video"]
         if capability == "web_search":
             return [] if self._has_query(request) else ["query"]
+        if capability == "web_fetch":
+            return [] if self._has_url(request) else ["url"]
         if capability == "product_search":
             return [] if self._has_search_input(request) else ["search_query"]
         if capability == "price_compare":
@@ -139,6 +144,9 @@ class CapabilityValidator:
 
     def _has_query(self, request: UserRequest) -> bool:
         return bool((request.text or "").strip())
+
+    def _has_url(self, request: UserRequest) -> bool:
+        return bool(self.url_re.search(request.text or ""))
 
     def _has_search_input(self, request: UserRequest) -> bool:
         metadata = request.metadata

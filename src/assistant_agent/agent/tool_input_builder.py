@@ -1,10 +1,14 @@
 """Build structured tool inputs from request and prior tool outputs."""
 
+import re
 from typing import Any
 
 from assistant_agent.agent.prompt_builder import build_image_generation_request
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
+
+
+_URL_RE = re.compile(r"https?://\S+")
 
 
 def build_tool_input(
@@ -41,6 +45,8 @@ def build_tool_input(
         return {"query": request.text or "白色低帮运动鞋", "items": latest_items(outputs_by_step)}
     if action == "search_web":
         return build_web_search_input(request)
+    if action == "fetch_web":
+        return build_web_fetch_input(request)
     if action == "generate_image":
         return build_image_generation_request(request, outputs_by_step).model_dump()
     if action == "render_3d":
@@ -74,6 +80,14 @@ def build_web_search_input(request: UserRequest) -> dict[str, Any]:
     elif any(marker in text for marker in ("最新", "最近")) or any(marker in lowered for marker in ("latest", "recent")):
         payload["recency_days"] = 7
     return payload
+
+
+def build_web_fetch_input(request: UserRequest) -> dict[str, Any]:
+    """Build web fetch input from a user request containing a URL."""
+
+    match = _URL_RE.search(request.text or "")
+    url = match.group(0).rstrip(".,，。)") if match else ""
+    return {"url": url}
 
 
 def _metadata_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:

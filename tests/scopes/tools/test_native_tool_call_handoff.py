@@ -196,6 +196,7 @@ def test_agent_service_live_camera_first_llm_call_exposes_video_tool_without_id(
     assert set(tool_names) == {
         "shopping_search",
         "web_search",
+        "web_fetch",
         "memory_retrieval",
         "memory_save",
         "video_understanding",

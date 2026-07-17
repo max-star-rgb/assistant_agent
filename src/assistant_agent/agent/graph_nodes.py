@@ -79,7 +79,7 @@ def route_by_intent(graph_state: AgentGraphState) -> str:
     capability = canonical_intent(intent.intent)
     if capability in {"image_understanding", "video_understanding"}:
         return "vision_node"
-    if capability in {"product_search", "web_search"}:
+    if capability in {"product_search", "web_search", "web_fetch"}:
         return "search_node"
     if capability == "price_compare":
         return "compare_node"

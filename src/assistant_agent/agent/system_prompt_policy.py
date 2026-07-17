@@ -50,6 +50,7 @@ _MEMORY_TOOL_RULES = (
 
 _WEB_SEARCH_RULES = (
     "For current, latest, realtime, today, news, or online lookup requests, use web_search; memory is not a source for current web facts.",
+    "When a specific URL's readable page content is needed, use web_fetch; do not use web_search as a substitute for page body extraction.",
 )
 
 _PRODUCT_MODE_RULES = (

@@ -109,6 +109,7 @@ PROGRESS_MESSAGES = {
     "vision_understanding": "我看一下。",
     "video_understanding": "我分析一下。",
     "web_search": "我联网查一下。",
+    "web_fetch": "我打开这个网页看一下。",
     "image_generation": "我开始生成，可能需要一点时间。",
 }
 

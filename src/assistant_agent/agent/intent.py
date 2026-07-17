@@ -1,6 +1,7 @@
 """Rule-based intent detection."""
 
 from dataclasses import dataclass
+import re
 
 from assistant_agent.agent.capability_validator import CapabilityValidator
 from assistant_agent.schemas.capabilities import CapabilityName
@@ -22,6 +23,7 @@ class RuleMatch:
 class IntentDetector:
     """Detect user intent with deterministic keyword rules."""
 
+    url_re = re.compile(r"https?://\S+")
     memory_keywords = ("上次", "刚才", "之前", "以前", "我喜欢")
     save_memory_keywords = ("记住", "帮我记", "保存偏好")
     image_understanding_keywords = (
@@ -65,6 +67,19 @@ class IntentDetector:
         "look up",
     )
     explicit_web_search_keywords = ("联网搜索", "网上搜索", "网页搜索", "web search", "search the web", "internet search")
+    web_fetch_keywords = (
+        "打开",
+        "读取",
+        "读一下",
+        "看一下",
+        "正文",
+        "网页内容",
+        "fetch",
+        "open",
+        "read",
+        "page content",
+        "article",
+    )
     product_hint_keywords = ("耳机", "鞋", "包", "衣服", "手机", "电脑", "椅", "桌", "灯", "相似款", "同款", "商品", "产品", "电商", "价格")
     compare_keywords = ("比价", "比较价格", "哪个便宜", "便宜", "价格", "平台")
     generation_keywords = ("生成", "海报", "换背景", "风格图", "出图", "封面")
@@ -179,6 +194,13 @@ class IntentDetector:
                 rationale="用户询问价格、便宜程度或平台比较。",
             )
 
+        if self._has_web_fetch_intent(text):
+            return IntentResult(
+                intent="web_fetch",
+                confidence=0.85,
+                rationale="用户要求读取已知 URL 的网页正文。",
+            )
+
         if self._has_web_search_intent(text):
             return IntentResult(
                 intent="web_search",
@@ -254,7 +276,11 @@ class IntentDetector:
             matches.append(
                 RuleMatch("media_understanding_keywords", "image_understanding", 0.9, "用户询问图片内容。")
             )
-        if self._has_web_search_intent(text):
+        if self._has_web_fetch_intent(text):
+            matches.append(
+                RuleMatch("web_fetch_url_keywords", "web_fetch", 0.9, "用户要求读取已知 URL 的网页正文。")
+            )
+        if self._has_web_search_intent(text) and not self._has_web_fetch_intent(text):
             matches.append(
                 RuleMatch("web_search_keywords", "web_search", 0.9, "用户要求检索最新、实时或联网信息。")
             )
@@ -329,7 +355,7 @@ class IntentDetector:
         elif request.image_ids and self._contains(text, self.media_reference_keywords):
             ordered.append("image_understanding")
 
-        for capability in ("web_search", "product_search", "price_compare", "image_generation", "render_3d", "memory_save"):
+        for capability in ("web_fetch", "web_search", "product_search", "price_compare", "image_generation", "render_3d", "memory_save"):
             if any(match.intent == capability for match in matches):
                 ordered.append(capability)
 
@@ -357,6 +383,7 @@ class IntentDetector:
             "image_understanding": "vision_understanding",
             "video_understanding": "video_understanding",
             "web_search": "web_search",
+            "web_fetch": "web_fetch",
             "product_search": "product_search",
             "price_compare": "price_compare",
             "render_3d": "render_3d",
@@ -467,6 +494,11 @@ class IntentDetector:
         if self._contains(text, self.explicit_web_search_keywords):
             return True
         return self._contains(text, self.web_search_keywords) and not self._contains(text, self.product_hint_keywords)
+
+    def _has_web_fetch_intent(self, text: str) -> bool:
+        return bool(self.url_re.search(text)) and self._contains(
+            text, self.web_fetch_keywords
+        )
 
     def _has_render_intent(self, text: str) -> bool:
         if not text:

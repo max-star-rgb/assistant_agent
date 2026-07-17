@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import urllib.error
+import urllib.parse
 import urllib.request
 from time import perf_counter
 from typing import Any, Protocol
@@ -97,6 +99,7 @@ class HttpWebSearchAdapter:
         self.base_url = base_url
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
+        self._opener = _loopback_proxy_bypass_opener(base_url)
 
     def search(self, request: WebSearchRequest) -> WebSearchResult:
         missing = []
@@ -127,9 +130,12 @@ class HttpWebSearchAdapter:
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(
-                http_request, timeout=self.timeout_seconds
-            ) as response:
+            response_context = (
+                self._opener.open(http_request, timeout=self.timeout_seconds)
+                if self._opener is not None
+                else urllib.request.urlopen(http_request, timeout=self.timeout_seconds)
+            )
+            with response_context as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             return _failed_web_search_result(
@@ -194,6 +200,24 @@ def _request_payload(request: WebSearchRequest) -> dict[str, Any]:
     }
 
 
+def _loopback_proxy_bypass_opener(base_url: str | None) -> Any | None:
+    if not _should_bypass_proxy_for_base_url(base_url):
+        return None
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _should_bypass_proxy_for_base_url(base_url: str | None) -> bool:
+    host = urllib.parse.urlparse(base_url or "").hostname
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _web_search_result_from_payload(
     payload: Any, *, request: WebSearchRequest, latency_ms: int
 ) -> WebSearchResult:
@@ -205,6 +229,39 @@ def _web_search_result_from_payload(
             message="http web search provider returned a non-object JSON response.",
             recoverable=False,
             latency_ms=latency_ms,
+        )
+
+    provider = str(payload.get("provider") or "http")
+    query_used = str(payload.get("query_used") or payload.get("query") or request.query)
+    backend_errors = _errors_from_payload(payload.get("errors"), provider=provider)
+    if backend_errors:
+        raw_results_for_error = (
+            payload.get("results")
+            if isinstance(payload.get("results"), list)
+            else payload.get("items")
+        )
+        if not isinstance(raw_results_for_error, list):
+            raw_results_for_error = []
+        results_for_error = [
+            item
+            for item in (
+                _result_item_from_payload(item) for item in raw_results_for_error
+            )
+            if item is not None
+        ][: request.limit]
+        return WebSearchResult(
+            query_used=query_used,
+            results=results_for_error,
+            summary=payload.get("summary")
+            if isinstance(payload.get("summary"), str)
+            else None,
+            provider=provider,
+            total=_int_value(payload.get("total"), default=len(results_for_error)),
+            latency_ms=latency_ms,
+            output_ref=payload.get("output_ref")
+            if isinstance(payload.get("output_ref"), str)
+            else None,
+            errors=backend_errors,
         )
 
     raw_results = (
@@ -224,8 +281,6 @@ def _web_search_result_from_payload(
 
     results = [_result_item_from_payload(item) for item in raw_results]
     results = [item for item in results if item is not None][: request.limit]
-    provider = str(payload.get("provider") or "http")
-    query_used = str(payload.get("query_used") or payload.get("query") or request.query)
     if not results:
         return _failed_web_search_result(
             provider=provider,
@@ -248,6 +303,43 @@ def _web_search_result_from_payload(
         if isinstance(payload.get("output_ref"), str)
         else None,
     )
+
+
+def _errors_from_payload(payload: Any, *, provider: str) -> list[WebSearchProviderError]:
+    if not isinstance(payload, list):
+        return []
+    errors: list[WebSearchProviderError] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        code = (
+            item.get("code")
+            if isinstance(item.get("code"), str)
+            else "provider_unknown_error"
+        )
+        message = (
+            item.get("message") if isinstance(item.get("message"), str) else code
+        )
+        recoverable = (
+            item.get("recoverable")
+            if isinstance(item.get("recoverable"), bool)
+            else None
+        )
+        error = build_provider_error(
+            code,
+            message,
+            recoverable=recoverable,
+            provider=provider,
+            capability="web_search",
+        )
+        errors.append(
+            WebSearchProviderError(
+                code=error.code,
+                message=error.message,
+                recoverable=error.recoverable,
+            )
+        )
+    return errors
 
 
 def _result_item_from_payload(payload: Any) -> WebSearchResultItem | None:

@@ -207,7 +207,7 @@ excluded_reasons
 
 工具副作用策略是工具治理元数据，不属于 Gateway 协议。
 
-- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`shopping_search`、`product_search`、`price_compare`、image/video understanding。
+- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`web_fetch`、`shopping_search`、`product_search`、`price_compare`、image/video understanding。
 - 创建可替换 artifact 的工具标为 `compensatable`，例如 `image_generation` 和 `render_3d`；中断后应生成修正版或说明已有 artifact，而不是宣称旧结果被撤销。
 - confirmation-sensitive 工具标为 `pending_confirmation`，例如 `memory_save` 和 legacy `memory`；如果工具结果返回 `requires_confirmation=true` 或 `confirmation_id`，realtime task-state 会记录 pending confirmation。
 - 如果 confirmation-sensitive 或未知工具已经成功返回，realtime task-state 会把它视为 `committed`，中断后的下一轮必须报告已发生状态或提供安全后续动作。
@@ -232,6 +232,7 @@ Runtime gate 映射：
 - `vision_understanding`
 - `video_understanding`
 - `web_search`
+- `web_fetch`
 - `shopping_search`
 - `product_search`
 - `price_compare`
@@ -255,7 +256,7 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 
 默认副作用分类：
 
-- `vision_understanding`、`video_understanding`、`web_search`、`shopping_search`、`product_search`、`price_compare`: `external_read`。
+- `vision_understanding`、`video_understanding`、`web_search`、`web_fetch`、`shopping_search`、`product_search`、`price_compare`: `external_read`。
 - `memory_retrieval`: `local_read`。
 - `memory_ingest_status`: `external_read`。
 - `image_generation`、`render_3d`: `compensatable`。
@@ -266,6 +267,7 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 默认执行属性：
 
 - `web_search`、`shopping_search`、`product_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`、`artifact_reuse=reusable`。
+- `web_fetch`: `dependency_mode=requires_prior_observation`，因为通常需要先消费用户提供的 URL 或 `web_search` 返回的 URL。
 - `price_compare`: `dependency_mode=requires_prior_observation`，因为同一批次中通常需要先消费商品候选或先前 observation。
 - `image_generation`、`render_3d`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=requires_validation`。
 - `delegate_to_agent`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=do_not_reuse`。
@@ -274,7 +276,7 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 
 ## Web Search 工具
 
-`web_search` 是只读实时信息检索工具，用于“最新消息 / 实时信息 / 今天新闻 / 联网搜索 / current/latest/news/web search”等时间敏感请求。它只返回搜索结果列表和摘要输入，不做网页全文抓取、浏览器渲染、爬虫或多页面阅读。
+`web_search` 是只读实时信息检索工具，用于“最新消息 / 实时信息 / 今天新闻 / 联网搜索 / current/latest/news/web search”等时间敏感请求。它只返回搜索结果列表和摘要输入，不做网页全文抓取、浏览器渲染、爬虫或多页面阅读；需要读取某个结果页正文时再调用 `web_fetch`。
 
 输入字段：
 
@@ -300,6 +302,36 @@ Provider 边界：
 - `HttpWebSearchAdapter` 缺配置时返回结构化 `provider_unconfigured`，不 fallback 到 mock。
 - v1 通用 HTTP 后端使用 JSON POST：`query`、`recency_days`、`site_filter`、`limit`；响应应包含 `results` 或 `items`。
 
+## Web Fetch 工具
+
+`web_fetch` 是只读网页正文提取工具，用于读取一个已知 HTTP(S) URL 的可读内容。它适合接在 `web_search` 之后补充正文证据，也可以直接读取用户明确给出的 URL。它不做通用搜索、浏览器渲染、登录、表单提交、JS 交互或多页面爬取。
+
+输入字段：
+
+- `url`: 必填 HTTP(S) URL。
+- `max_chars`: 返回给模型的正文字符上限，schema 限制为 1-20000。
+- `content_format`: `markdown` 或 `text`，默认 `markdown`。
+
+输出字段：
+
+- `url`
+- `title`
+- `content`
+- `content_format`
+- `provider`
+- `total_chars`
+- `truncated`
+- `latency_ms`
+- `output_ref`
+
+Provider 边界：
+
+- 默认 `MULTIMODAL_AGENT_SEARCH_PROVIDER=mock`，`MockWebFetchAdapter` 返回稳定假正文。
+- 真实 HTTP fetch 复用 web search provider 开关，必须同时满足 `provider_smoke` 或 `pilot` runtime profile、显式 `MULTIMODAL_AGENT_SEARCH_PROVIDER=http`、`WEB_SEARCH_BASE_URL` 和 `WEB_SEARCH_API_KEY`。
+- `HttpWebFetchAdapter` 会把配置为 `/search` 的 relay URL 派生到同级 `/fetch`，例如 `http://127.0.0.1:7005/search` -> `http://127.0.0.1:7005/fetch`。
+- local/offline profile 即使检测到 `WEB_SEARCH_API_KEY` 也不会选择 http provider。
+- v1 通用 HTTP 后端使用 JSON POST：`url`、`max_chars`、`content_format`；响应应包含 `content`，也可返回结构化 `errors`。
+
 ## ActionValidator 边界
 
 `ActionValidator.validate()` 在执行前拒绝不安全或不可执行的 action。当前校验包括：
@@ -311,6 +343,7 @@ Provider 边界：
 - `vision_understanding` 必须有 `image_ids`、`video_ref`、`video_ids` 或可信 active video 引用；`video_understanding` 作为兼容别名必须有 `video_ref`、`video_ids` 或由运行时绑定可信 active video。
 - `image_generation` 必须有 prompt 或 product information。
 - `web_search` 必须有非空 query；`limit` 等范围由工具 Pydantic schema 校验。
+- `web_fetch` 必须有非空 http/https URL；`max_chars` 和 `content_format` 由工具 Pydantic schema 校验。
 - `shopping_search` 必须有 query、visual summary、video summary 或商品描述字段；该工具一次执行商品搜索和比价，不下单、不付款。
 - `product_search` 必须有 query 或 visual summary。
 - `price_compare` 必须有 query 或 items。
@@ -397,6 +430,7 @@ contract
 - 成功 observation 包含 summary、output_ref、structured_output、next_step_hint。
 - 失败或 rejected observation 包含 sanitized error_code/error_message 和 recovery hint。
 - `web_search` 会保留 `title`、`url`、`snippet`、`published_at`、`source`，成功 observation 摘要首条结果和总数。
+- `web_fetch` 会保留 `url`、`title`、`content`、`content_format`、`total_chars` 和 `truncated`，成功 observation 摘要页面 URL 与正文规模。
 - `shopping_search` 是购物推荐/购买建议/比价的一步式工具：模型只需调用该工具一次，工具内部先执行商品搜索，再用搜索结果执行比价，并在同一个 observation 中返回 `search`、`comparison`、`offers`、`best_offer`、`summary` 和 URL 状态。它不下单、不付款。App/Gateway/Agent-Service 购物展示优先由 deterministic presenter 从 `shopping_search` / `price_compare` 的结构化结果生成，LLM 只负责简短自然语言摘要，不应自由手写商品卡片字段。
 - 商品搜索/比价会保留 title、price、原价、券额、无条件到手价、条件价说明、currency、图片、URL、url_status、品牌/型号/核心规格等后续回答和 `price_compare` 必需字段。好单库 real adapter 仍只在显式 `provider_smoke`/`pilot` profile 下启用；`HAODANKU_ENABLED_PLATFORMS` 默认仅为 `taobao`（天猫归入淘宝组），可用规范名 `taobao,jd,pdd` 显式恢复多平台。模型请求的平台会与已启用集合取交集，未启用平台不访问 Provider、不进入 `failed_platforms`；若只请求未启用平台，则返回 `provider_platform_disabled`。
 - `price_compare` 使用与搜索相同的已启用平台集合，先按品牌、型号和核心规格形成可比较组，以同款可信度、无条件到手总价、链接状态、销量和数据完整度排序；会员、补贴、凑单等条件价只作说明。内部结果仍最多九条且每个平台最多三条；App 购物协议最多展示三条。入选报价再经过淘宝 `ratesurl`、京东 `unify_jditems_link`、拼多多 `unify_pdditems_link` 官方转链；淘宝未配置 PID/授权昵称时不调用 `ratesurl`，只保留通过 HTTP(S)、平台域名和非空路径校验的真实直链并标记 `unverified`，不得表述为返利链接或佣金保证。

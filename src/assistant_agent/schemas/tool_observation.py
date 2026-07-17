@@ -106,6 +106,9 @@ def _summary_from_result(
             explicit_summary = data.get("summary") or data.get("message")
             if isinstance(explicit_summary, str) and explicit_summary.strip():
                 return sanitize_error_message(explicit_summary)
+        fetch_summary = _web_fetch_summary(result.tool_name, data)
+        if fetch_summary:
+            return fetch_summary
         web_summary = _web_search_summary(result.tool_name, data)
         if web_summary:
             return web_summary
@@ -160,6 +163,21 @@ def _web_search_summary(tool_name: str, data: dict[str, Any]) -> str:
     url_part = f", url {url}" if url else ", no result url"
     return sanitize_error_message(
         f"Top web result{total_part}: {title}{source_part}{date_part}{url_part}."
+    )
+
+
+def _web_fetch_summary(tool_name: str, data: dict[str, Any]) -> str:
+    if tool_name != "web_fetch":
+        return ""
+    url = data.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return ""
+    title = data.get("title") if isinstance(data.get("title"), str) else "web page"
+    total_chars = data.get("total_chars")
+    chars_part = f", content_chars {total_chars}" if total_chars is not None else ""
+    truncated_part = ", truncated" if data.get("truncated") else ""
+    return sanitize_error_message(
+        f"Fetched web page: {title}, url {url}{chars_part}{truncated_part}."
     )
 
 
@@ -231,6 +249,8 @@ def _next_step_hint(
         return "Use the compared offers and best_offer in the final answer; include URL status when present."
     if tool_name == "web_search":
         return "Use the web search results in the final answer; include source URLs and published dates when present."
+    if tool_name == "web_fetch":
+        return "Use the fetched page content in the final answer; cite the source URL when it informs the answer."
     if tool_name == "image_generation":
         return "Return the generated image reference to the user."
     if tool_name == "render_3d":
