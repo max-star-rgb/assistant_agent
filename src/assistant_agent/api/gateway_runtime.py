@@ -14,9 +14,11 @@ from typing import Any
 from assistant_agent.gateway import (
     GatewayBridge,
     GatewayQueuePolicy,
+    GatewayRuntimePool,
     GatewaySessionManager,
     GatewayTurnArbitrationController,
     GatewayTurnArbitrationPolicy,
+    shared_gateway_runtime_factory,
 )
 from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
 from assistant_agent.schemas.api import AgentRunResponse
@@ -30,6 +32,7 @@ from assistant_agent.services.realtime_turn_arbiter import (
 _GATEWAY_SESSION_MANAGER: GatewaySessionManager | None = None
 _GATEWAY_BRIDGE: GatewayBridge | None = None
 _GATEWAY_TURN_FACADE: GatewayTurnFacade | None = None
+_GATEWAY_RUNTIME_POOL: GatewayRuntimePool | None = None
 _GATEWAY_RUNTIME_LOOP_ID: int | None = None
 _GATEWAY_HTTP_RESPONSES: dict[str, AgentRunResponse] = {}
 _GATEWAY_HTTP_RESPONSES_LOCK = RLock()
@@ -40,6 +43,9 @@ GATEWAY_HANGUP_GRACE_S_ENV = "MULTIMODAL_AGENT_GATEWAY_HANGUP_GRACE_S"
 GATEWAY_REAPER_INTERVAL_S_ENV = "MULTIMODAL_AGENT_GATEWAY_REAPER_INTERVAL_S"
 GATEWAY_START_REAPER_ENV = "MULTIMODAL_AGENT_GATEWAY_START_REAPER"
 GATEWAY_MAX_ACTIVE_RUNS_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS"
+GATEWAY_MAX_RUNTIME_INSTANCES_ENV = (
+    "MULTIMODAL_AGENT_GATEWAY_MAX_RUNTIME_INSTANCES"
+)
 GATEWAY_MAX_PENDING_PER_SESSION_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_PENDING_PER_SESSION"
 GATEWAY_MAX_QUEUED_TURNS_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_QUEUED_TURNS"
 GATEWAY_QUEUE_WAIT_TIMEOUT_MS_ENV = "MULTIMODAL_AGENT_GATEWAY_QUEUE_WAIT_TIMEOUT_MS"
@@ -97,6 +103,12 @@ def get_gateway_turn_facade() -> GatewayTurnFacade:
     return _GATEWAY_TURN_FACADE
 
 
+def get_gateway_runtime_pool_for_tests() -> GatewayRuntimePool | None:
+    """Return the process-local Gateway runtime pool for focused tests."""
+
+    return _GATEWAY_RUNTIME_POOL
+
+
 def create_gateway_turn_facade(
     *,
     manager: GatewaySessionManager | None = None,
@@ -115,8 +127,8 @@ def create_gateway_session_manager(
 ) -> GatewaySessionManager:
     """Create a GatewaySessionManager from safe local defaults and env overrides."""
 
+    global _GATEWAY_RUNTIME_POOL
     source = os.environ if env is None else env
-    resolved_backend_factory = backend_factory or _default_gateway_backend_factory
     defaults = GatewayQueuePolicy()
     queue_policy = GatewayQueuePolicy(
         max_active_runs=_positive_int_env(
@@ -150,6 +162,25 @@ def create_gateway_session_manager(
             default=defaults.dedupe_max_entries_per_user,
         ),
     )
+    if backend_factory is None:
+        max_runtime_instances = _positive_int_env(
+            source,
+            GATEWAY_MAX_RUNTIME_INSTANCES_ENV,
+            default=queue_policy.max_active_runs,
+        )
+        if max_runtime_instances < queue_policy.max_active_runs:
+            raise ValueError(
+                "max_runtime_instances must be greater than or equal to max_active_runs"
+            )
+        runtime_pool = GatewayRuntimePool(
+            max_runtime_instances=max_runtime_instances,
+            runtime_factory=_default_gateway_runtime_factory(),
+            run_request=_run_assistant_request_with_http_runtime,
+        )
+        _GATEWAY_RUNTIME_POOL = runtime_pool
+        resolved_backend_factory = _default_gateway_backend_factory(runtime_pool)
+    else:
+        resolved_backend_factory = backend_factory
     arbitration_policy = GatewayTurnArbitrationPolicy(
         enabled=_bool_env(
             source,
@@ -195,8 +226,16 @@ def create_gateway_session_manager(
     )
 
 
-def _default_gateway_backend_factory() -> RealtimeAgentBackend:
-    return GatewayAgentAdapter(run_request=_run_assistant_request_with_http_runtime)
+def _default_gateway_backend_factory(
+    runtime_pool: GatewayRuntimePool,
+) -> Callable[[], RealtimeAgentBackend]:
+    return lambda: GatewayAgentAdapter(run_request=runtime_pool.run_request)
+
+
+def _default_gateway_runtime_factory() -> Callable[[], Any]:
+    from assistant_agent.api import routes_agent
+
+    return shared_gateway_runtime_factory(routes_agent.get_agent_runtime)
 
 
 def _default_realtime_turn_arbiter(*, min_confidence: float) -> RealtimeTurnArbiter:
@@ -211,9 +250,14 @@ def _default_realtime_turn_arbiter(*, min_confidence: float) -> RealtimeTurnArbi
 
 
 def _run_assistant_request_with_http_runtime(request: Any, **kwargs: Any) -> Any:
-    from assistant_agent.api.routes_agent import get_assistant_runtime_app
+    if kwargs.get("runtime") is None:
+        from assistant_agent.api.routes_agent import get_assistant_runtime_app
 
-    artifacts = get_assistant_runtime_app().run_request(request, **kwargs)
+        artifacts = get_assistant_runtime_app().run_request(request, **kwargs)
+    else:
+        from assistant_agent.services.assistant_run_service import run_assistant_request
+
+        artifacts = run_assistant_request(request, **kwargs)
     capture_id = _gateway_http_response_capture_id(getattr(request, "metadata", {}))
     if capture_id is not None:
         _capture_gateway_http_response(capture_id, artifacts.api_response())
@@ -264,10 +308,11 @@ def set_gateway_runtime_for_tests(
 ) -> None:
     """Install explicit Gateway runtime services for tests."""
 
-    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_LOOP_ID
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_POOL, _GATEWAY_RUNTIME_LOOP_ID
     _GATEWAY_SESSION_MANAGER = manager
     _GATEWAY_BRIDGE = bridge
     _GATEWAY_TURN_FACADE = None
+    _GATEWAY_RUNTIME_POOL = None
     _GATEWAY_RUNTIME_LOOP_ID = _running_loop_id()
     _clear_gateway_http_responses()
 
@@ -275,32 +320,38 @@ def set_gateway_runtime_for_tests(
 async def shutdown_gateway_runtime() -> None:
     """Close application-owned Gateway sessions and reset process globals."""
 
-    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_LOOP_ID
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_POOL, _GATEWAY_RUNTIME_LOOP_ID
     manager = _GATEWAY_SESSION_MANAGER
     facade = _GATEWAY_TURN_FACADE
+    runtime_pool = _GATEWAY_RUNTIME_POOL
     _GATEWAY_SESSION_MANAGER = None
     _GATEWAY_BRIDGE = None
     _GATEWAY_TURN_FACADE = None
+    _GATEWAY_RUNTIME_POOL = None
     _GATEWAY_RUNTIME_LOOP_ID = None
     _clear_gateway_http_responses()
     if facade is not None:
         await facade.close()
     if manager is not None:
         await manager.close()
+    if runtime_pool is not None:
+        runtime_pool.close()
 
 
 def reset_gateway_runtime_for_tests() -> None:
     """Best-effort synchronous reset for tests without an active event loop."""
 
-    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_LOOP_ID
+    global _GATEWAY_SESSION_MANAGER, _GATEWAY_BRIDGE, _GATEWAY_TURN_FACADE, _GATEWAY_RUNTIME_POOL, _GATEWAY_RUNTIME_LOOP_ID
     manager = _GATEWAY_SESSION_MANAGER
     facade = _GATEWAY_TURN_FACADE
+    runtime_pool = _GATEWAY_RUNTIME_POOL
     _GATEWAY_SESSION_MANAGER = None
     _GATEWAY_BRIDGE = None
     _GATEWAY_TURN_FACADE = None
+    _GATEWAY_RUNTIME_POOL = None
     _GATEWAY_RUNTIME_LOOP_ID = None
     _clear_gateway_http_responses()
-    if manager is None and facade is None:
+    if manager is None and facade is None and runtime_pool is None:
         return
 
     async def close_runtime() -> None:
@@ -308,6 +359,8 @@ def reset_gateway_runtime_for_tests() -> None:
             await facade.close()
         if manager is not None:
             await manager.close()
+        if runtime_pool is not None:
+            runtime_pool.close()
 
     try:
         loop = asyncio.get_running_loop()

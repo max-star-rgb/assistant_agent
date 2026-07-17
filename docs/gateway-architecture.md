@@ -272,6 +272,11 @@ message.user -> per-session FIFO -> process-wide admission -> backend run
 - Queue time starts at ingress and includes both same-session waiting and global
   capacity waiting. It does not consume the backend run deadline and queued
   text is appended to session history only after admission.
+- The default Gateway backend uses a bounded application-owned runtime instance
+  pool. `max_active_runs` remains the admission limit; `max_runtime_instances`
+  bounds how many `AgentGraphRuntime` instances the default backend may create.
+  The default runtime limit follows `max_active_runs`, and a smaller value is
+  rejected at startup.
 - `run.cancel` can target a queued `run_id`. Queue timeout and pre-run cancel
   end with `run.end(reason=cancelled)` plus prompt-safe cancellation metadata
   with `phase=before_llm`; neither path calls the backend.
@@ -292,15 +297,18 @@ The policy is configured at process startup with strict positive values:
 | environment variable | default |
 | --- | ---: |
 | `MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS` | `4` |
+| `MULTIMODAL_AGENT_GATEWAY_MAX_RUNTIME_INSTANCES` | `MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS` |
 | `MULTIMODAL_AGENT_GATEWAY_MAX_PENDING_PER_SESSION` | `8` |
 | `MULTIMODAL_AGENT_GATEWAY_MAX_QUEUED_TURNS` | `64` |
 | `MULTIMODAL_AGENT_GATEWAY_QUEUE_WAIT_TIMEOUT_MS` | `120000` |
 | `MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S` | `300` |
 | `MULTIMODAL_AGENT_GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER` | `1024` |
 
-All Gateway queue, dedupe, and admission state is process-local and in memory. It does
-not provide restart recovery, cross-worker consistency, durable-task storage, message
-collection/summarization, or live prompt steering. The retained
+All Gateway queue, dedupe, admission, and default runtime-pool state is process-local
+and in memory. Custom backend factories own their own runtime concurrency and are not
+wrapped by the default runtime pool. Gateway does not provide restart recovery,
+cross-worker consistency, durable-task storage, message collection/summarization, or
+live prompt steering. The retained
 [design](superpowers/specs/2026-07-13-gateway-queue-admission-design.md) and
 [implementation plan](superpowers/plans/2026-07-13-gateway-queue-admission.md)
 record the reviewed rationale and execution evidence; this document remains the

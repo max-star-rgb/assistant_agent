@@ -29,6 +29,10 @@ from assistant_agent.gateway.queueing import (
     GatewayRunAdmissionController,
     QueueOverflowError,
 )
+from assistant_agent.gateway.runtime_pool import (
+    GatewayRuntimePool,
+    shared_gateway_runtime_factory,
+)
 from assistant_agent.gateway.session import (
     ActiveRun,
     CancelToken,
@@ -67,6 +71,7 @@ __all__ = [
     "GatewayLifecycleSink",
     "GatewayQueuePolicy",
     "GatewayRunAdmissionController",
+    "GatewayRuntimePool",
     "GatewaySessionHandle",
     "GatewaySessionManager",
     "GatewaySessionService",
@@ -81,5 +86,6 @@ __all__ = [
     "dumps_frame",
     "emit_gateway_lifecycle_event",
     "frame",
+    "shared_gateway_runtime_factory",
     "loads_frame",
 ]

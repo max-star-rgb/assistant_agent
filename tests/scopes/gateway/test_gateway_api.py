@@ -625,26 +625,75 @@ def test_gateway_http_runtime_captures_agent_run_response(monkeypatch) -> None:
 
 
 def test_create_gateway_session_manager_reads_queue_policy_env() -> None:
-    manager = gateway_runtime.create_gateway_session_manager(
-        env={
-            "MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS": "2",
-            "MULTIMODAL_AGENT_GATEWAY_MAX_PENDING_PER_SESSION": "3",
-            "MULTIMODAL_AGENT_GATEWAY_MAX_QUEUED_TURNS": "7",
-            "MULTIMODAL_AGENT_GATEWAY_QUEUE_WAIT_TIMEOUT_MS": "9000",
-            "MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S": "45",
-            "MULTIMODAL_AGENT_GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER": "20",
-        },
-        start_reaper=False,
-    )
+    try:
+        manager = gateway_runtime.create_gateway_session_manager(
+            env={
+                "MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS": "2",
+                "MULTIMODAL_AGENT_GATEWAY_MAX_RUNTIME_INSTANCES": "3",
+                "MULTIMODAL_AGENT_GATEWAY_MAX_PENDING_PER_SESSION": "3",
+                "MULTIMODAL_AGENT_GATEWAY_MAX_QUEUED_TURNS": "7",
+                "MULTIMODAL_AGENT_GATEWAY_QUEUE_WAIT_TIMEOUT_MS": "9000",
+                "MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S": "45",
+                "MULTIMODAL_AGENT_GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER": "20",
+            },
+            start_reaper=False,
+        )
 
-    assert manager.queue_policy == GatewayQueuePolicy(
-        max_active_runs=2,
-        max_pending_per_session=3,
-        max_queued_turns_global=7,
-        queue_wait_timeout_ms=9000,
-        dedupe_ttl_s=45.0,
-        dedupe_max_entries_per_user=20,
-    )
+        assert manager.queue_policy == GatewayQueuePolicy(
+            max_active_runs=2,
+            max_pending_per_session=3,
+            max_queued_turns_global=7,
+            queue_wait_timeout_ms=9000,
+            dedupe_ttl_s=45.0,
+            dedupe_max_entries_per_user=20,
+        )
+        pool = gateway_runtime.get_gateway_runtime_pool_for_tests()
+        assert pool is not None
+        assert pool.max_runtime_instances == 3
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+
+def test_gateway_runtime_instance_default_follows_active_run_limit() -> None:
+    try:
+        gateway_runtime.create_gateway_session_manager(
+            env={"MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS": "5"},
+            start_reaper=False,
+        )
+
+        pool = gateway_runtime.get_gateway_runtime_pool_for_tests()
+        assert pool is not None
+        assert pool.max_runtime_instances == 5
+    finally:
+        gateway_runtime.reset_gateway_runtime_for_tests()
+
+
+def test_gateway_runtime_instances_cannot_be_less_than_active_runs() -> None:
+    with pytest.raises(
+        ValueError,
+        match="max_runtime_instances must be greater than or equal to max_active_runs",
+    ):
+        gateway_runtime.create_gateway_session_manager(
+            env={
+                "MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS": "3",
+                "MULTIMODAL_AGENT_GATEWAY_MAX_RUNTIME_INSTANCES": "2",
+            },
+            start_reaper=False,
+        )
+
+
+@pytest.mark.parametrize("value", ["0", "not-an-int"])
+def test_create_gateway_session_manager_rejects_invalid_runtime_instance_env(
+    value: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="MULTIMODAL_AGENT_GATEWAY_MAX_RUNTIME_INSTANCES must be a positive integer",
+    ):
+        gateway_runtime.create_gateway_session_manager(
+            env={"MULTIMODAL_AGENT_GATEWAY_MAX_RUNTIME_INSTANCES": value},
+            start_reaper=False,
+        )
 
 
 def test_default_gateway_session_manager_uses_operational_lifecycle_sink() -> None:
