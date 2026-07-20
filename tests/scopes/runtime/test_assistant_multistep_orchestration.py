@@ -15,8 +15,8 @@ from assistant_agent.schemas.requests import UserRequest
                 text="找这张图里的鞋子，比较价格，再生成海报",
                 image_ids=["img1"],
             ),
-            ["understand_image", "search_product", "compare_price", "generate_image"],
-            ["vision_understanding", "shopping_search", "price_compare", "image_generation"],
+            ["understand_image", "shopping_search", "generate_image"],
+            ["vision_understanding", "shopping_search", "image_generation"],
         ),
         (
             UserRequest(user_id="u1", session_id="s1", text="根据上次那个包，生成一张宣传图"),
@@ -25,8 +25,8 @@ from assistant_agent.schemas.requests import UserRequest
         ),
         (
             UserRequest(user_id="u1", session_id="s1", text="帮我找 500 元以内的白鞋，再比较价格"),
-            ["search_product", "compare_price"],
-            ["shopping_search", "price_compare"],
+            ["shopping_search"],
+            ["shopping_search"],
         ),
         (
             UserRequest(
@@ -70,7 +70,6 @@ def test_multistep_plan_exposes_dependencies_between_steps() -> None:
     assert state.plan is not None
     assert state.plan.steps[1].depends_on == ["step_1"]
     assert state.plan.steps[2].depends_on == ["step_2"]
-    assert state.plan.steps[3].depends_on == ["step_3"]
 
 
 def test_multistep_outputs_feed_later_tool_inputs() -> None:
@@ -84,11 +83,9 @@ def test_multistep_outputs_feed_later_tool_inputs() -> None:
     )
 
     shopping_search_call = state.tool_calls[1]
-    price_compare_call = state.tool_calls[2]
-    image_generation_call = state.tool_calls[3]
+    image_generation_call = state.tool_calls[2]
 
     assert shopping_search_call.input["visual_summary"] == "图片中展示了一双白色低帮运动鞋，整体为简约日系风格。"
-    assert price_compare_call.input["items"][0]["product_id"] == "p1"
     assert image_generation_call.input["product_id"] == "p2"
     assert image_generation_call.input["product_title"] == "简约白色板鞋 B"
     assert image_generation_call.input["reference_image_ids"] == ["img1"]

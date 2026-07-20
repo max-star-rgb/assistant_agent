@@ -25,7 +25,6 @@ from assistant_agent.tools.personal_assistant_tools import (
     ReminderCreateTool,
     WeatherTool,
 )
-from assistant_agent.tools.price_compare_tool import PriceCompareTool
 from assistant_agent.tools.python_interpreter_tool import PythonInterpreterTool
 from assistant_agent.tools.render_tool import Render3DTool
 from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
@@ -392,23 +391,6 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
         },
         "visibility": {
             "allowed_entry_profiles": ["agent_service"],
-        },
-    },
-    "price_compare": {
-        "when_to_use": ["Compare prices, offers, or cheapest options."],
-        "when_not_to_use": ["No product candidates or product query are available."],
-        "runtime_constraints": ["Use shopping_search first if no candidates are available."],
-        "side_effect": {
-            "level": "external_read",
-            "requires_confirmation": False,
-            "description": "Reads offer/provider data and does not mutate external state.",
-        },
-        "execution": {
-            "dependency_mode": "requires_prior_observation",
-            "resource_reads": ["product_candidates", "offers"],
-            "realtime_safety": "safe",
-            "artifact_reuse": "reusable",
-            "progress_message": "我比一下价格。",
         },
     },
     "python_interpreter": {
@@ -951,7 +933,6 @@ def create_default_registry(
             search_adapter=product_search_adapter,
             price_compare_adapter=price_compare_adapter,
         ),
-        PriceCompareTool(adapter=price_compare_adapter),
         WeatherTool(adapter=personal_adapters.weather),
         CalendarSearchTool(adapter=personal_adapters.calendar),
         CalendarCreateTool(adapter=personal_adapters.calendar),

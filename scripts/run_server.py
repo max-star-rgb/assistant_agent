@@ -309,8 +309,11 @@ def _print_runtime_summary(config: ProviderConfig, *, loaded_env_keys: list[str]
     print(f"  chat_model: {config.chat_model or '(unset)'}")
     print(f"  vision_provider: {providers['vision']}")
     print(f"  image_provider: {providers['image_generation']}")
-    print(f"  product_search_provider: {providers['product_search']}")
-    print(f"  price_compare_provider: {providers['price_compare']}")
+    shopping_provider = providers["shopping_search"]
+    print(
+        "  shopping_search_provider: "
+        f"search={shopping_provider['search']}, compare={shopping_provider['compare']}"
+    )
     print(f"  render_provider: {providers['render']}")
     print(f"  web_search_provider: {config.search_provider}")
     if config.web_search_base_url:

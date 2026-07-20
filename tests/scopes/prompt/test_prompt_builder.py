@@ -56,7 +56,7 @@ def test_image_generation_request_reads_prior_outputs() -> None:
             output_ref="mock://vision/white-low-top-sneaker",
         ),
         "step_2": ToolResult(
-            tool_name="product_search",
+            tool_name="shopping_search",
             success=True,
             data={"items": [{"product_id": "p1", "title": "白色运动鞋", "price": 299, "platform": "mock-shop"}]},
         ),

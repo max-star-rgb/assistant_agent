@@ -207,15 +207,11 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
             for key in ("prompt", "product_id", "product_title")
         ) and not tool_input.get("product_info"):
             return _reject("invalid_tool_input", "image_generation requires prompt or product information.")
-    if tool_name == "product_search" and not (tool_input.get("query") or tool_input.get("visual_summary")):
-        return _reject("invalid_tool_input", "product_search requires query or visual_summary.")
-    if tool_name == "shopping_search" and not _has_product_search_description(tool_input):
+    if tool_name == "shopping_search" and not _has_shopping_search_description(tool_input):
         return _reject(
             "invalid_tool_input",
             "shopping_search requires query, visual_summary, video_summary, or product descriptors.",
         )
-    if tool_name == "price_compare" and not (tool_input.get("query") or tool_input.get("items")):
-        return _reject("invalid_tool_input", "price_compare requires query or items.")
     if tool_name == "python_interpreter":
         safety_error = validate_python_code_safety(str(tool_input.get("code") or ""))
         if safety_error is not None:
@@ -261,7 +257,7 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
     return None
 
 
-def _has_product_search_description(tool_input: dict[str, Any]) -> bool:
+def _has_shopping_search_description(tool_input: dict[str, Any]) -> bool:
     if tool_input.get("query") or tool_input.get("visual_summary") or tool_input.get("video_summary"):
         return True
     for key in ("objects", "colors", "materials"):

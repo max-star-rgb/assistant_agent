@@ -16,15 +16,15 @@ def test_text_to_render_executes_direct_render_step() -> None:
     assert state.tool_results[0].output_ref == "mock://render/preview.png"
 
 
-def test_product_search_to_render_executes_multistep_flow() -> None:
+def test_shopping_search_to_render_executes_multistep_flow() -> None:
     state = AgentGraphRuntime(memory_store=InMemoryStore()).run_state(
         UserRequest(user_id="u1", session_id="s1", text="帮我找一款黑色办公椅，然后放到现代办公室里看看")
     )
 
     assert state.status == "completed"
     assert state.plan is not None
-    assert [step.action for step in state.plan.steps] == ["search_product", "render_3d"]
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "render_3d"]
+    assert [step.action for step in state.plan.steps] == ["shopping_search", "render_3d"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "render_3d"]
     render_input = state.tool_calls[1].input
     assert render_input["product_ref"] == "p1"
     assert render_input["product_title"] == "白色低帮运动鞋 A"

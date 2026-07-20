@@ -27,8 +27,6 @@ PUBLIC_CAPABILITY_TAGS = {
     "chat",
     "image_generation",
     "memory",
-    "price_compare",
-    "product_search",
     "render_3d",
     "shopping_search",
     "tool_calling",

@@ -27,9 +27,6 @@ from assistant_agent.agent.plan_validator import PlanValidationResult, PlanValid
 from assistant_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
-from assistant_agent.agent.shopping_guards import (
-    repair_price_compare_decision_from_search,
-)
 from assistant_agent.agent.system_prompt_policy import (
     SystemPromptOptions,
     SystemPromptProfile,
@@ -541,9 +538,6 @@ def _apply_decision_guards(
     """Apply loop/safety guards after a policy proposes an assistant decision."""
 
     state = graph_state["state"]
-    if decision.type == "tool_call" and decision.tool_name == "price_compare":
-        return repair_price_compare_decision_from_search(decision, state, context.request)
-
     if decision.reason == "Empty or whitespace-only output.":
         guard = LoopGuard(state.request.metadata).record_empty_decision()
         if guard.triggered:

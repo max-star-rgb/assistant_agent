@@ -472,7 +472,7 @@ def test_delegate_to_agent_tool_filters_parent_context_and_raw_metadata() -> Non
                 "unreviewed_note": "not allowlisted",
                 "tool_results": [
                     {
-                        "tool_name": "product_search",
+                        "tool_name": "shopping_search",
                         "status": "succeeded",
                         "output_ref": "local://tool-result/search-1",
                         "raw_data": "large raw tool output",
@@ -495,7 +495,7 @@ def test_delegate_to_agent_tool_filters_parent_context_and_raw_metadata() -> Non
     assert request.metadata["tool_result_refs"] == [
         {
             "output_ref": "local://tool-result/search-1",
-            "tool_name": "product_search",
+            "tool_name": "shopping_search",
             "status": "succeeded",
         }
     ]

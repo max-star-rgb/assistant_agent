@@ -56,7 +56,7 @@ def test_llm_event_accumulator_aggregates_tool_call_deltas_by_index() -> None:
                 index=0,
                 id="call_1",
                 type="function",
-                name_delta="product_search",
+                name_delta="shopping_search",
                 arguments_delta='{"query": "通勤',
             ),
         )
@@ -86,14 +86,14 @@ def test_llm_event_accumulator_aggregates_tool_call_deltas_by_index() -> None:
     assert accumulator.finish_reason == "tool_calls"
     assert len(calls) == 1
     assert calls[0].id == "call_1"
-    assert calls[0].name == "product_search"
+    assert calls[0].name == "shopping_search"
     assert calls[0].arguments == {"query": "通勤耳机", "limit": 2}
     assert calls[0].provider_format == "llm_event"
     assert calls[0].raw == {
         "id": "call_1",
         "type": "function",
         "function": {
-            "name": "product_search",
+            "name": "shopping_search",
             "arguments": '{"query": "通勤耳机", "limit": 2}',
         },
     }

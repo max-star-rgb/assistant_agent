@@ -14,8 +14,8 @@ def test_http_agent_run_uses_graph_runtime_and_exposes_tool_observability() -> N
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "completed"
-    assert payload["intent"] == "product_search"
-    assert [call["tool_name"] for call in payload["tool_calls"]] == ["product_search"]
+    assert payload["intent"] == "shopping_search"
+    assert [call["tool_name"] for call in payload["tool_calls"]] == ["shopping_search"]
     assert payload["tool_results"][0]["success"] is True
     assert payload["errors"] == []
 
@@ -31,8 +31,8 @@ def test_http_agent_run_returns_structured_tool_error() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "failed"
-    assert payload["intent"] == "price_compare"
+    assert payload["intent"] == "shopping_search"
     assert payload["tool_calls"][0]["status"] == "failed"
     assert payload["tool_results"][0]["success"] is False
     assert payload["errors"][0]["code"] == "TOOL_INPUT_INVALID"
-    assert payload["errors"][0]["detail"]["source"] == "price_compare"
+    assert payload["errors"][0]["detail"]["source"] == "shopping_search"

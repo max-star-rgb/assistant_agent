@@ -2,11 +2,11 @@ from fastapi.testclient import TestClient
 
 from assistant_agent.agent.response_templates import compose_contract_response
 from assistant_agent.api.app import create_app
-from assistant_agent.schemas.products import PriceOffer, ProductResult, ProductSearchResult, RankingReason
+from assistant_agent.schemas.products import PriceOffer, ProductResult, RankingReason
 from assistant_agent.schemas.tool_observation import observation_from_tool_result
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.product_adapter import MockPriceCompareAdapter, MockProductSearchAdapter, PriceCompareInput, ProductSearchInput
-from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 
 
 def test_product_result_contract_exposes_stable_fields() -> None:
@@ -68,29 +68,39 @@ def test_price_offer_contract_exposes_stable_fields_and_ranking_reason() -> None
     assert result.ranking_reason.explanation
 
 
-def test_product_search_tool_output_does_not_expose_provider_raw_response() -> None:
-    result = ProductSearchTool(adapter=MockProductSearchAdapter()).run({"query": "白色低帮运动鞋"})
+def test_shopping_search_tool_output_does_not_expose_provider_raw_response() -> None:
+    result = ShoppingSearchTool(
+        search_adapter=MockProductSearchAdapter(),
+        price_compare_adapter=MockPriceCompareAdapter(),
+    ).run({"query": "白色低帮运动鞋"})
 
     assert result.success is True
     assert result.data["provider"] == "mock"
     assert "raw" not in result.data
     assert "provider_response" not in result.data
-    assert "items" in result.data
-    assert result.data["items"][0]["product_url"] == "mock://shop-a/p1"
+    assert "search" in result.data
+    assert result.data["search"]["items"][0]["product_url"] == "mock://shop-a/p1"
+    assert result.data["best_offer"]["product_url"] == "mock://shop-b/p2"
 
 
-def test_product_search_observation_includes_user_visible_product_url() -> None:
-    result = ProductSearchTool(adapter=MockProductSearchAdapter()).run({"query": "白色低帮运动鞋"})
+def test_shopping_search_observation_includes_user_visible_product_url() -> None:
+    result = ShoppingSearchTool(
+        search_adapter=MockProductSearchAdapter(),
+        price_compare_adapter=MockPriceCompareAdapter(),
+    ).run({"query": "白色低帮运动鞋"})
 
     observation = observation_from_tool_result(result)
 
     assert observation.status == "succeeded"
-    assert "白色低帮运动鞋 A" in observation.summary
-    assert "mock://shop-a/p1" in observation.summary
+    assert "简约白色板鞋 B" in observation.summary
+    assert observation.structured_output["best_offer"]["product_url"] == "mock://shop-b/p2"
 
 
-def test_product_search_observation_leaves_next_action_to_model_reasoning() -> None:
-    result = ProductSearchTool(adapter=MockProductSearchAdapter()).run({"query": "白色低帮运动鞋"})
+def test_shopping_search_observation_guides_final_purchase_advice() -> None:
+    result = ShoppingSearchTool(
+        search_adapter=MockProductSearchAdapter(),
+        price_compare_adapter=MockPriceCompareAdapter(),
+    ).run({"query": "白色低帮运动鞋"})
 
     observation = observation_from_tool_result(
         result,
@@ -99,15 +109,15 @@ def test_product_search_observation_leaves_next_action_to_model_reasoning() -> N
 
     assert observation.status == "succeeded"
     assert observation.next_step_hint is not None
-    assert "由当前用户请求决定" in observation.next_step_hint
-    assert "如果模型选择 price_compare" in observation.next_step_hint
-    assert "structured_output.items" in observation.next_step_hint
-    assert "完整商品对象" in observation.next_step_hint
-    assert "本地关键词规则不会替模型选择工具" in observation.next_step_hint
+    assert "structured_output.best_offer" in observation.next_step_hint
+    assert "不要声称已经下单" in observation.next_step_hint
 
 
-def test_product_search_observation_does_not_keyword_force_price_compare_for_purchase_advice() -> None:
-    result = ProductSearchTool(adapter=MockProductSearchAdapter()).run({"query": "蓝牙耳机"})
+def test_shopping_search_observation_does_not_expose_old_compare_tool_hint() -> None:
+    result = ShoppingSearchTool(
+        search_adapter=MockProductSearchAdapter(),
+        price_compare_adapter=MockPriceCompareAdapter(),
+    ).run({"query": "蓝牙耳机"})
 
     observation = observation_from_tool_result(
         result,
@@ -116,15 +126,12 @@ def test_product_search_observation_does_not_keyword_force_price_compare_for_pur
 
     assert observation.status == "succeeded"
     assert observation.next_step_hint is not None
-    assert "由当前用户请求决定" in observation.next_step_hint
-    assert "请先调用 price_compare" not in observation.next_step_hint
-    assert "structured_output.items" in observation.next_step_hint
-    assert "完整商品对象" in observation.next_step_hint
+    assert "price_compare" not in observation.next_step_hint
 
 
-def test_repeated_product_search_failure_observation_points_to_prior_success() -> None:
+def test_repeated_shopping_search_failure_observation_points_to_prior_success() -> None:
     failed_result = ToolResult(
-        tool_name="product_search",
+        tool_name="shopping_search",
         success=False,
         error="unknown_error: 数据已获取完毕或获取数据失败!",
     )
@@ -134,7 +141,7 @@ def test_repeated_product_search_failure_observation_points_to_prior_success() -
         request_text="帮我找一款商品",
         prior_observations=[
             {
-                "tool_name": "product_search",
+                "tool_name": "shopping_search",
                 "status": "succeeded",
                 "summary": "Top product: 商品 A.",
             }
@@ -143,11 +150,11 @@ def test_repeated_product_search_failure_observation_points_to_prior_success() -
 
     assert observation.status == "failed"
     assert observation.next_step_hint is not None
-    assert "previous product_search call already succeeded" in observation.next_step_hint
+    assert "previous shopping_search call already succeeded" in observation.next_step_hint
     assert "partial results" in observation.next_step_hint
 
 
-def test_product_search_observation_does_not_show_invalid_synthetic_product_url() -> None:
+def test_shopping_search_observation_does_not_show_invalid_synthetic_product_url() -> None:
     product = ProductResult(
         product_id="AAE9r8X",
         provider_item_id="AAE9r8X",
@@ -159,16 +166,14 @@ def test_product_search_observation_does_not_show_invalid_synthetic_product_url(
         availability="unknown",
         source="haodanku",
     )
-    search_result = ProductSearchResult(
-        items=[product],
-        provider="haodanku",
-        query_used="闲鱼",
-        total=1,
-    )
     tool_result = ToolResult(
-        tool_name="product_search",
+        tool_name="shopping_search",
         success=True,
-        data=search_result.model_dump(mode="json"),
+        data={
+            "best_offer": product.model_dump(mode="json"),
+            "offers": [product.model_dump(mode="json")],
+            "summary": "找到闲鱼加密 ID 商品。",
+        },
     )
 
     observation = observation_from_tool_result(tool_result)
@@ -176,8 +181,8 @@ def test_product_search_observation_does_not_show_invalid_synthetic_product_url(
         [
             {
                 "status": "succeeded",
-                "capability": "product_search",
-                "data": {"items": [product.model_dump(mode="json")], "total": 1},
+                "capability": "shopping_search",
+                "data": {"best_offer": product.model_dump(mode="json")},
             }
         ],
         [],

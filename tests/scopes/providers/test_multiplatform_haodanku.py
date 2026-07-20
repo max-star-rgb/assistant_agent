@@ -13,7 +13,8 @@ from assistant_agent.providers.haodanku_product_search import (
 from assistant_agent.schemas.products import ProductSearchRequest
 from assistant_agent.schemas.products import PriceCompareRequest, ProductResult
 from assistant_agent.schemas.products import ProductProviderError, ProductSearchResult
-from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.services.product_adapter import MockPriceCompareAdapter
+from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 
 
 def test_pdd_search_url_normalizes_top_k_to_supported_back() -> None:
@@ -203,7 +204,7 @@ def test_compare_converts_selected_offers_with_official_platform_endpoints(monke
     }
 
 
-def test_product_search_tool_treats_partial_platform_coverage_as_success() -> None:
+def test_shopping_search_tool_treats_partial_platform_coverage_as_success() -> None:
     class PartialAdapter:
         def search(self, request):  # noqa: ANN001
             item = ProductResult(product_id="tb", title="手机", price=10, platform="taobao")
@@ -219,12 +220,15 @@ def test_product_search_tool_treats_partial_platform_coverage_as_success() -> No
                 total=1,
             )
 
-    result = ProductSearchTool(adapter=PartialAdapter()).run({"query": "手机"})
+    result = ShoppingSearchTool(
+        search_adapter=PartialAdapter(),
+        price_compare_adapter=MockPriceCompareAdapter(),
+    ).run({"query": "手机"})
 
     assert result.success is True
     assert result.contract is not None
     assert result.contract.status == "succeeded"
-    assert result.data["failed_platforms"] == ["jd"]
+    assert result.data["search"]["failed_platforms"] == ["jd"]
 
 
 def test_compare_returns_structured_no_products_when_all_searches_are_empty() -> None:

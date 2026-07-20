@@ -28,7 +28,7 @@ CAPABILITY_TYPE_PRIORITY = {
         "product": 3,
         "conversation": 4,
     },
-    "product_search": {
+    "shopping_search": {
         "preference": 0,
         "product": 1,
         "conversation": 2,

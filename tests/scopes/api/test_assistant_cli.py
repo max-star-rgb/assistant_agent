@@ -62,15 +62,15 @@ def test_assistant_cli_json_output_from_text() -> None:
 
 def test_assistant_cli_scenario_reuses_demo_matrix() -> None:
     result = subprocess.run(
-        [sys.executable, "scripts/run_assistant_cli.py", "--scenario", "product_search_compare"],
+        [sys.executable, "scripts/run_assistant_cli.py", "--scenario", "shopping_search"],
         check=True,
         capture_output=True,
         text=True,
     )
     payload = json.loads(result.stdout)
 
-    assert payload["scenario_id"] == "product_search_compare"
-    assert payload["tool_sequence"] == ["product_search", "price_compare"]
+    assert payload["scenario_id"] == "shopping_search"
+    assert payload["tool_sequence"] == ["shopping_search"]
     assert "价格" in payload["response_text"]
     assert payload["offline"] is True
 

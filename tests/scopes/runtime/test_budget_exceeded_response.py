@@ -32,7 +32,7 @@ def test_response_composer_summarizes_budget_failure_with_partial_result() -> No
     state.errors.append(
         AgentError(
             message="Provider call budget exceeded for this run.",
-            source="product_search",
+            source="shopping_search",
             details={
                 "code": "provider_call_limit_exceeded",
                 "recovery_action": "continue_with_partial_result",

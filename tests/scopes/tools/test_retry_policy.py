@@ -102,7 +102,7 @@ class IdempotentMutatingTimeoutTool(FlakyTimeoutTool):
 
 
 class LegacyReadTimeoutTool(FlakyTimeoutTool):
-    name = "product_search"
+    name = "shopping_search"
     policy = None
 
 

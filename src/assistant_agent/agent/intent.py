@@ -189,7 +189,7 @@ class IntentDetector:
 
         if self._contains(text, self.compare_keywords):
             return IntentResult(
-                intent="price_compare",
+                intent="shopping_search",
                 confidence=0.85,
                 rationale="用户询问价格、便宜程度或平台比较。",
             )
@@ -208,11 +208,11 @@ class IntentDetector:
                 rationale="用户要求检索最新、实时或联网信息。",
             )
 
-        if self._has_product_search_intent(text):
+        if self._has_shopping_search_intent(text):
             return IntentResult(
-                intent="product_search",
+                intent="shopping_search",
                 confidence=0.85,
-                rationale="用户要求查找同款或相似商品。",
+                rationale="用户要求查找同款、相似商品或购物信息。",
             )
 
         if self._has_render_intent(text):
@@ -284,13 +284,13 @@ class IntentDetector:
             matches.append(
                 RuleMatch("web_search_keywords", "web_search", 0.9, "用户要求检索最新、实时或联网信息。")
             )
-        if self._has_product_search_intent(text):
+        if self._has_shopping_search_intent(text):
             matches.append(
-                RuleMatch("product_search_keywords", "product_search", 0.9, "用户要求查找同款或相似商品。")
+                RuleMatch("shopping_search_keywords", "shopping_search", 0.9, "用户要求查找同款或相似商品。")
             )
         if self._contains(text, self.compare_keywords):
             matches.append(
-                RuleMatch("price_compare_keywords", "price_compare", 0.9, "用户询问价格、便宜程度或平台比较。")
+                RuleMatch("shopping_search_compare_keywords", "shopping_search", 0.9, "用户询问价格、便宜程度或平台比较。")
             )
         if self._contains(text, self.generation_keywords) and not self._has_render_intent(text):
             matches.append(
@@ -355,7 +355,7 @@ class IntentDetector:
         elif request.image_ids and self._contains(text, self.media_reference_keywords):
             ordered.append("image_understanding")
 
-        for capability in ("web_fetch", "web_search", "product_search", "price_compare", "image_generation", "render_3d", "memory_save"):
+        for capability in ("web_fetch", "web_search", "shopping_search", "image_generation", "render_3d", "memory_save"):
             if any(match.intent == capability for match in matches):
                 ordered.append(capability)
 
@@ -384,8 +384,7 @@ class IntentDetector:
             "video_understanding": "video_understanding",
             "web_search": "web_search",
             "web_fetch": "web_fetch",
-            "product_search": "product_search",
-            "price_compare": "price_compare",
+            "shopping_search": "shopping_search",
             "render_3d": "render_3d",
             "memory_retrieval": "memory_retrieval",
             "memory_save": "memory_save",
@@ -442,7 +441,7 @@ class IntentDetector:
         if not has_media:
             return False
 
-        if self._has_product_search_intent(text) or self._has_web_search_intent(text) or self._contains(text, self.compare_keywords):
+        if self._has_shopping_search_intent(text) or self._has_web_search_intent(text) or self._contains(text, self.compare_keywords):
             return True
         if has_media and self._contains(text, self.generation_keywords) and self._contains(
             text, self.media_reference_keywords
@@ -469,7 +468,7 @@ class IntentDetector:
         lowered = text.lower()
         return any(keyword.lower() in lowered for keyword in keywords)
 
-    def _has_product_search_intent(self, text: str) -> bool:
+    def _has_shopping_search_intent(self, text: str) -> bool:
         if self._contains(
             text,
             (

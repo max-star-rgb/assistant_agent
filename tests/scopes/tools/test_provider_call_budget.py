@@ -17,7 +17,7 @@ def test_provider_call_budget_counts_calls_and_estimated_cost() -> None:
     )
     budget.record_call(
         run_id="run_1",
-        capability="product_search",
+        capability="shopping_search",
         provider="local_json",
         estimated_cost=None,
         status="succeeded",
@@ -26,7 +26,7 @@ def test_provider_call_budget_counts_calls_and_estimated_cost() -> None:
     assert budget.provider_call_count == 2
     assert budget.capability_call_count("image_generation") == 1
     assert budget.estimated_cost_total == 0.01
-    assert budget.summary()["calls_by_capability"] == {"image_generation": 1, "product_search": 1}
+    assert budget.summary()["calls_by_capability"] == {"image_generation": 1, "shopping_search": 1}
 
 
 def test_provider_call_budget_blocks_max_calls_exceeded() -> None:
@@ -41,14 +41,14 @@ def test_provider_call_budget_blocks_max_calls_exceeded() -> None:
 
 
 def test_provider_call_budget_blocks_per_capability_limit() -> None:
-    budget = ProviderCallBudget(max_provider_calls_per_run=5, max_calls_per_capability={"product_search": 1})
-    budget.record_call(run_id="run_1", capability="product_search", provider="mock", status="succeeded")
+    budget = ProviderCallBudget(max_provider_calls_per_run=5, max_calls_per_capability={"shopping_search": 1})
+    budget.record_call(run_id="run_1", capability="shopping_search", provider="mock", status="succeeded")
 
-    error = budget.check_before_call(capability="product_search", provider="mock")
+    error = budget.check_before_call(capability="shopping_search", provider="mock")
 
     assert error is not None
     assert error.code == "provider_call_limit_exceeded"
-    assert error.capability == "product_search"
+    assert error.capability == "shopping_search"
 
 
 def test_provider_call_budget_blocks_cost_and_input_size() -> None:

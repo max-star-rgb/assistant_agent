@@ -22,11 +22,11 @@ from assistant_agent.services.context.renderer import (
 
 
 def _pack(text: str = "帮我查耳机") -> AssistantContextPack:
-    product = ToolSpec(name="product_search", required_inputs=["query"])
+    product = ToolSpec(name="shopping_search", required_inputs=["query"])
     hidden = ToolSpec(name="render_3d", required_inputs=["scene_description"])
     return AssistantContextPack(
         request=UserRequest(user_id="u1", session_id="s1", text=text),
-        observations=[{"tool_name": "product_search", "status": "succeeded"}],
+        observations=[{"tool_name": "shopping_search", "status": "succeeded"}],
         tool_specs=[product, hidden],
         prompt_tool_specs=[product],
         iteration=1,
@@ -87,7 +87,7 @@ def test_native_tool_mode_preserves_provider_request_contract() -> None:
     assert request.messages[1]["content"] == render_native_tool_context(pack).native_user_message
     assert request.messages[2]["tool_calls"][0]["id"] == "call_1"
     assert request.messages[3]["tool_call_id"] == "call_1"
-    assert [tool["function"]["name"] for tool in request.tools] == ["product_search"]
+    assert [tool["function"]["name"] for tool in request.tools] == ["shopping_search"]
     assert request.tool_choice == "auto"
     assert request.temperature == 0.2
     assert request.max_tokens == 1024
@@ -98,12 +98,12 @@ def test_native_tool_mode_preserves_intentionally_empty_governed_tool_set() -> N
     pack = _pack()
     pack.prompt_tool_specs = []
     pack.run_tool_set = RunToolSet(
-        registered_tool_names=["product_search", "render_3d"],
+        registered_tool_names=["shopping_search", "render_3d"],
         qualified_tool_names=[],
         exposed_tool_names=[],
         executable_tool_names=[],
         excluded_reasons={
-            "product_search": ["disabled_by_default"],
+            "shopping_search": ["disabled_by_default"],
             "render_3d": ["skill_activation_required"],
         },
     )
@@ -165,7 +165,7 @@ def test_compile_preserves_raw_call_and_does_not_mutate_inputs() -> None:
                 "id": "raw-1",
                 "type": "function",
                 "function": {
-                    "name": "product_search",
+                    "name": "shopping_search",
                     "arguments": '{"query":"耳机"}',
                 },
             }

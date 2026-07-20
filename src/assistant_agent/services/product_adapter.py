@@ -456,7 +456,7 @@ def _failed_search_result(
         message,
         recoverable=recoverable,
         provider=provider,
-        capability="product_search",
+        capability="shopping_search",
     )
     return ProductSearchResult(
         provider=provider,
@@ -607,10 +607,10 @@ def _failed_price_result(
         message,
         recoverable=recoverable,
         provider=provider,
-        capability="price_compare",
+        capability="shopping_search",
     )
     return PriceCompareResult(
-        query=query or "price_compare",
+        query=query or "shopping_search",
         summary=error.message,
         provider=provider,
         errors=[ProductProviderError(code=error.code, message=error.message, recoverable=error.recoverable)],

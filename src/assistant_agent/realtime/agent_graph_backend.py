@@ -28,7 +28,7 @@ from assistant_agent.schemas.realtime_cancellation import (
 )
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.products import PriceCompareResult, ShoppingSearchResult
+from assistant_agent.schemas.products import ShoppingSearchResult
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.assistant_run_service import (
     run_assistant_request,
@@ -82,14 +82,11 @@ def shopping_detail_enabled(metadata: dict[str, Any]) -> bool:
     return is_trusted_agent_service_request(metadata)
 
 
-ShoppingDetailResult = PriceCompareResult | ShoppingSearchResult
+ShoppingDetailResult = ShoppingSearchResult
 
 
 def _successful_shopping_detail_event(event: AgentEvent) -> bool:
-    if event.type not in {"tool_finished", "tool_completed"} or event.tool_name not in {
-        "price_compare",
-        "shopping_search",
-    }:
+    if event.type not in {"tool_finished", "tool_completed"} or event.tool_name != "shopping_search":
         return False
     post_tool_call = event.payload.get("post_tool_call")
     return isinstance(post_tool_call, dict) and post_tool_call.get("status") == "succeeded"
@@ -99,7 +96,7 @@ def _successful_shopping_detail_result(state: Any) -> ShoppingDetailResult | Non
     first_successful: ShoppingDetailResult | None = None
     presenter = ShoppingDetailPresenter()
     for result in getattr(state, "tool_results", []):
-        if result.tool_name not in {"price_compare", "shopping_search"}:
+        if result.tool_name != "shopping_search":
             continue
         if not result.success or not isinstance(result.data, dict):
             continue
@@ -117,8 +114,6 @@ def _successful_shopping_detail_result(state: Any) -> ShoppingDetailResult | Non
 
 
 def _parse_shopping_detail_result(tool_name: str, data: dict[str, Any]) -> ShoppingDetailResult | None:
-    if tool_name == "price_compare":
-        return PriceCompareResult.model_validate(data)
     if tool_name == "shopping_search":
         return ShoppingSearchResult.model_validate(data)
     return None

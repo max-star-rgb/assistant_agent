@@ -81,8 +81,6 @@ def build_provider_diagnostics_summary(
                     "image_understanding",
                     "video_understanding",
                     "shopping_search",
-                    "product_search",
-                    "price_compare",
                     "render_3d",
                 )
             },

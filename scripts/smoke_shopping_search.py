@@ -1,4 +1,4 @@
-"""Manual smoke entry point for product_search -> price_compare capability."""
+"""Manual smoke entry point for the unified shopping_search capability."""
 
 from __future__ import annotations
 
@@ -17,18 +17,17 @@ if str(SRC_ROOT) not in sys.path:
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.services.product_adapter import (
-    PriceCompareInput,
-    ProductSearchInput,
     create_price_compare_adapter,
     create_product_search_adapter,
 )
+from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a manual product_search to price_compare smoke test. Defaults use offline mock adapters.",
+        description="Run a manual shopping_search smoke test. Defaults use offline mock adapters.",
     )
-    parser.add_argument("--query", required=True, help="Text query for product search and price compare.")
+    parser.add_argument("--query", required=True, help="Text query for shopping search.")
     parser.add_argument("--budget-max", type=float, default=None, help="Optional maximum offer price.")
     parser.add_argument("--top-k", type=int, default=5, help="Maximum number of products/offers to return.")
     parser.add_argument("--local-json", default=None, help="Small local JSON product dataset for local_json provider.")
@@ -45,50 +44,42 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         return 2
 
     config = ProviderConfig.from_env(source)
-    search = create_product_search_adapter(config).search(
-        ProductSearchInput(query=args.query, budget_max=args.budget_max, top_k=args.top_k)
+    tool = ShoppingSearchTool(
+        search_adapter=create_product_search_adapter(config),
+        price_compare_adapter=create_price_compare_adapter(config),
     )
-    if not search.success:
-        output = {
-            "status": "failed",
-            "provider": search.provider,
-            "capability": "price_compare",
+    result = tool.run(
+        {
             "query": args.query,
-            "search_result": _search_payload(search),
-            "compare_result": None,
-            "errors": [error.model_dump(mode="json") for error in search.errors],
+            "budget_max": args.budget_max,
+            "top_k": args.top_k,
         }
-        print(json.dumps(output, ensure_ascii=False, indent=2))
-        return 1
-
-    compare = create_price_compare_adapter(config).compare(
-        PriceCompareInput(items=search.items, query=args.query, budget_max=args.budget_max, top_k=args.top_k)
     )
+    data = result.data or {}
     output = {
-        "status": "success" if compare.success else "failed",
-        "provider": compare.provider,
-        "capability": "price_compare",
-        "query": args.query,
-        "search_result": _search_payload(search),
-        "compare_result": {
-            "offers": [offer.model_dump(mode="json") for offer in compare.offers],
-            "best_offer": compare.best_offer.model_dump(mode="json") if compare.best_offer else None,
-            "ranking_reason": compare.ranking_reason.model_dump(mode="json") if compare.ranking_reason else None,
-            "output_ref": compare.output_ref,
+        "status": "success" if result.success else "failed",
+        "provider": data.get("provider"),
+        "capability": "shopping_search",
+        "query": data.get("query") or args.query,
+        "search_result": {
+            "provider": (data.get("search") or {}).get("provider"),
+            "item_count": len((data.get("search") or {}).get("items") or []),
+            "items": (data.get("search") or {}).get("items") or [],
+            "output_ref": (data.get("search") or {}).get("output_ref"),
         },
-        "errors": [error.model_dump(mode="json") for error in compare.errors],
+        "compare_result": {
+            "offers": data.get("offers") or [],
+            "best_offer": data.get("best_offer"),
+            "ranking_reason": data.get("ranking_reason"),
+            "output_ref": (data.get("comparison") or {}).get("output_ref")
+            if isinstance(data.get("comparison"), dict)
+            else None,
+        },
+        "output_ref": result.output_ref,
+        "errors": data.get("errors") or [],
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
-    return 0 if compare.success else 1
-
-
-def _search_payload(search) -> dict:
-    return {
-        "provider": search.provider,
-        "item_count": len(search.items),
-        "items": [item.model_dump(mode="json") for item in search.items],
-        "output_ref": search.output_ref,
-    }
+    return 0 if result.success else 1
 
 
 def _normalized_env(source: Mapping[str, str], local_json: str | None) -> dict[str, str]:
@@ -157,7 +148,7 @@ def _price_provider(source: Mapping[str, str]) -> str:
 def _print_provider_unconfigured(reason: str) -> None:
     print("provider_unconfigured")
     print(reason)
-    print("Please set MULTIMODAL_AGENT_SHOPPING_PROVIDER and required shopping provider configuration.")
+    print("Please set MULTIMODAL_AGENT_SHOPPING_PROVIDER and the required shopping configuration.")
 
 
 if __name__ == "__main__":

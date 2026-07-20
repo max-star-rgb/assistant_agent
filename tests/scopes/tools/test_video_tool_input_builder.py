@@ -35,8 +35,8 @@ def test_understand_video_input_uses_video_ref() -> None:
     assert payload["session_id"] == "s1"
 
 
-def test_video_result_feeds_product_search_input() -> None:
-    payload = build_tool_input("search_product", _request(), {"step_1": _video_result()})
+def test_video_result_feeds_shopping_search_input() -> None:
+    payload = build_tool_input("shopping_search", _request(), {"step_1": _video_result()})
 
     assert payload["visual_summary"] == VIDEO_DATA["summary"]
     assert payload["video_summary"] == VIDEO_DATA["summary"]

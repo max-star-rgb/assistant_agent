@@ -25,7 +25,7 @@ def main() -> int:
         ).model_dump(mode="json"),
         "tool_run": server.call_tool(
             "tool_run",
-            {"tool_name": "product_search", "input": {"query": "白色运动鞋"}},
+            {"tool_name": "shopping_search", "input": {"query": "白色运动鞋"}},
         ).model_dump(mode="json"),
         "redaction": server.call_tool(
             "missing_tool",

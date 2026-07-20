@@ -303,7 +303,7 @@ def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -
                                 "id": "call_1",
                                 "type": "function",
                                 "function": {
-                                    "name": "product_search",
+                                    "name": "shopping_search",
                                     "arguments": '{"query": "通勤耳机", "limit": 2}',
                                 },
                             }
@@ -324,7 +324,7 @@ def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -
     assert result.message_kind == "tool_call"
     assert result.reasoning_content == "internal provider reasoning"
     assert len(result.tool_calls) == 1
-    assert result.tool_calls[0].name == "product_search"
+    assert result.tool_calls[0].name == "shopping_search"
     assert result.tool_calls[0].arguments == {"query": "通勤耳机", "limit": 2}
 
 
@@ -351,7 +351,7 @@ def test_openai_compatible_chat_payload_sends_native_tools(monkeypatch) -> None:
                 {
                     "type": "function",
                     "function": {
-                        "name": "product_search",
+                        "name": "shopping_search",
                         "description": "Search products.",
                         "parameters": {"type": "object", "properties": {}, "required": []},
                     },
@@ -364,7 +364,7 @@ def test_openai_compatible_chat_payload_sends_native_tools(monkeypatch) -> None:
 
     payload = completions.calls[0]
     assert payload["messages"][0]["role"] == "system"
-    assert payload["tools"][0]["function"]["name"] == "product_search"
+    assert payload["tools"][0]["function"]["name"] == "shopping_search"
     assert payload["tool_choice"] == "auto"
     assert payload["response_format"] == {"type": "json_object"}
 
@@ -402,7 +402,7 @@ def test_openai_compatible_chat_payload_omits_unsupported_native_tools(monkeypat
                 {
                     "type": "function",
                     "function": {
-                        "name": "product_search",
+                        "name": "shopping_search",
                         "description": "Search products.",
                         "parameters": {"type": "object", "properties": {}, "required": []},
                     },
@@ -540,7 +540,7 @@ def test_openai_stream_tool_call_chunks_are_converted_to_llm_events() -> None:
                                         "id": "call_1",
                                         "type": "function",
                                         "function": {
-                                            "name": "product_search",
+                                            "name": "shopping_search",
                                             "arguments": '{"query": "通勤',
                                         },
                                     }
@@ -585,7 +585,7 @@ def test_openai_stream_tool_call_chunks_are_converted_to_llm_events() -> None:
     assert first_delta.index == 0
     assert first_delta.id == "call_1"
     assert first_delta.type == "function"
-    assert first_delta.name_delta == "product_search"
+    assert first_delta.name_delta == "shopping_search"
     assert first_delta.arguments_delta == '{"query": "通勤'
     assert second_delta.index == 0
     assert second_delta.arguments_delta == '耳机", "limit": 2}'
@@ -608,7 +608,7 @@ def test_stream_chunks_aggregate_tool_call_arguments(monkeypatch) -> None:
                                     "id": "call_1",
                                     "type": "function",
                                     "function": {
-                                        "name": "product_search",
+                                        "name": "shopping_search",
                                         "arguments": '{"query": "通勤',
                                     },
                                 }
@@ -646,7 +646,7 @@ def test_stream_chunks_aggregate_tool_call_arguments(monkeypatch) -> None:
     assert completions.calls[0]["stream"] is True
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].id == "call_1"
-    assert result.tool_calls[0].name == "product_search"
+    assert result.tool_calls[0].name == "shopping_search"
     assert result.tool_calls[0].arguments == {"query": "通勤耳机", "limit": 2}
 
 

@@ -282,7 +282,7 @@ async def test_openai_async_stream_maps_interleaved_tool_call_deltas() -> None:
     for event in events:
         accumulator.apply(event)
     calls = accumulator.finalize_tool_calls(provider_format="openai_compatible")
-    assert [call.name for call in calls] == ["product_search", "web_search"]
+    assert [call.name for call in calls] == ["shopping_search", "web_search"]
     assert calls[0].arguments == {"query": "commute headphones"}
     assert calls[1].arguments == {"query": "news"}
 

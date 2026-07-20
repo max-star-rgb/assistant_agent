@@ -126,10 +126,10 @@ def _normalize_case(case: dict[str, Any]) -> dict[str, Any]:
 def _infer_suite(case: dict[str, Any]) -> str:
     category = case.get("category")
     case_id = case.get("id")
-    if category in {"multistep", "multi_step_orchestration", "product_search_price_compare"}:
+    if category in {"multistep", "multi_step_orchestration", "shopping_search"}:
         return "e2e"
     if case_id in {
-        "product_search_to_render",
+        "shopping_search_to_render",
         "image_understanding_to_render",
         "video_understanding_to_render",
         "memory_to_render",
@@ -306,7 +306,7 @@ def evaluate_durable_task_case(case: dict[str, Any], router_mode: str = "rule") 
         task_id = task_data.get("task_id") if isinstance(task_data, dict) else None
         bundle = service.store.load(task_id) if isinstance(task_id, str) else None
     else:
-        tool_name = "custom_notification" if scenario == "waiting_confirmation" else "product_search"
+        tool_name = "custom_notification" if scenario == "waiting_confirmation" else "shopping_search"
         bundle = _submit_durable_eval_task(service, tool_name=tool_name)
         if scenario == "final_completion":
             lease = service.claim_next(worker_id="eval-worker")

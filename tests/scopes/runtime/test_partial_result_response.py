@@ -4,8 +4,8 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult, ToolSelection
 from assistant_agent.services.provider_policy import ProviderExecutionPolicy, RetryPolicy
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
-from assistant_agent.tools.product_search_tool import ProductSearchTool
 from assistant_agent.tools.registry import ToolRegistry
+from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 
 
 class StaticIntentDetector:
@@ -28,14 +28,14 @@ class StaticRouter:
         ]
 
 
-class OptionalTimeoutProductSearchTool(ProductSearchTool):
+class OptionalTimeoutShoppingSearchTool(ShoppingSearchTool):
     def _run(self, input, context) -> ToolResult:
         return ToolResult(tool_name=self.name, success=False, error="provider_timeout: price source timed out")
 
 
 def test_partial_result_response_summarizes_optional_provider_failure() -> None:
     registry = ToolRegistry()
-    registry.register(OptionalTimeoutProductSearchTool())
+    registry.register(OptionalTimeoutShoppingSearchTool())
     registry.register(ImageGenerationTool())
     runtime = AgentGraphRuntime(
         registry=registry,
@@ -46,8 +46,8 @@ def test_partial_result_response_summarizes_optional_provider_failure() -> None:
                 steps=[
                     TaskStep(
                         step_id="step_1",
-                        action="search_product",
-                        tool_name="product_search",
+                        action="shopping_search",
+                        tool_name="shopping_search",
                         optional=True,
                     ),
                     TaskStep(step_id="step_2", action="generate_image", tool_name="image_generation"),

@@ -804,7 +804,7 @@ def _checkpoint_artifacts_from_tool_artifacts(
 
 def _checkpoint_artifact_summary(artifact: TaskArtifact) -> str:
     structured_output = artifact.context.get("structured_output")
-    if artifact.tool_name == "product_search" and isinstance(structured_output, dict):
+    if artifact.tool_name == "shopping_search" and isinstance(structured_output, dict):
         items = structured_output.get("items")
         if isinstance(items, list) and items:
             first = items[0]

@@ -48,7 +48,7 @@ def test_trace_debug_summary_is_redacted() -> None:
             run_id="run_1",
             node_name="tool_executor",
             event_type="tool_failed",
-            tool_name="product_search",
+            tool_name="shopping_search",
             provider="http",
             error_code="provider_timeout",
             error={"code": "provider_timeout", "message": "api_key=abc timed out"},

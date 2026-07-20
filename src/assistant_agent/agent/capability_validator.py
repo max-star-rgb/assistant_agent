@@ -27,11 +27,6 @@ class CapabilityValidator:
         if missing:
             return self._ask_followup(normalized, missing)
 
-        if "price_compare" in normalized.capabilities and not self._has_product_candidates(normalized, request):
-            if self._has_query(request):
-                return self._ensure_search_before_price_compare(normalized)
-            return self._ask_followup(normalized, ["product_candidates", "search_query"])
-
         return normalized
 
     def _normalize_decision(self, decision: IntentDecision) -> IntentDecision:
@@ -71,12 +66,8 @@ class CapabilityValidator:
             return [] if self._has_query(request) else ["query"]
         if capability == "web_fetch":
             return [] if self._has_url(request) else ["url"]
-        if capability == "product_search":
+        if capability == "shopping_search":
             return [] if self._has_search_input(request) else ["search_query"]
-        if capability == "price_compare":
-            if self._has_product_candidates(decision, request) or self._has_query(request):
-                return []
-            return ["product_candidates", "search_query"]
         if capability == "render_3d":
             return [] if self._has_render_goal(request) else ["scene_description"]
         if capability == "memory_retrieval":
@@ -96,27 +87,6 @@ class CapabilityValidator:
                 missing.append("session_id")
             return missing
         return []
-
-    def _ensure_search_before_price_compare(self, decision: IntentDecision) -> IntentDecision:
-        capabilities: list[CapabilityName] = []
-        for capability in decision.capabilities:
-            if capability == "price_compare" and "product_search" not in capabilities:
-                capabilities.append("product_search")
-            if capability not in capabilities:
-                capabilities.append(capability)
-
-        plan_steps = [
-            self._step_for_capability(index=index, capability=capability)
-            for index, capability in enumerate(capabilities)
-        ]
-        return decision.model_copy(
-            update={
-                "primary_intent": "multi_step_orchestration",
-                "capabilities": capabilities,
-                "plan_steps": plan_steps,
-                "reason": decision.reason or "比价缺少候选商品，先搜索商品再比价。",
-            }
-        )
 
     def _ask_followup(self, decision: IntentDecision, missing_inputs: list[str]) -> IntentDecision:
         deduped_missing = self._dedupe(missing_inputs)
@@ -155,12 +125,6 @@ class CapabilityValidator:
             or metadata.get("visual_summary")
             or metadata.get("video_summary")
         )
-
-    def _has_product_candidates(self, decision: IntentDecision, request: UserRequest) -> bool:
-        metadata = request.metadata
-        if metadata.get("product_candidates") or metadata.get("products"):
-            return True
-        return any(step.capability == "product_search" for step in decision.plan_steps)
 
     def _has_render_goal(self, request: UserRequest) -> bool:
         metadata = request.metadata

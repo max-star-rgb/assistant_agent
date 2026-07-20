@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from assistant_agent.api.app import create_app
 
 
-def test_product_search_api_returns_stable_product_contract() -> None:
+def test_shopping_search_api_returns_stable_product_contract() -> None:
     client = TestClient(create_app())
 
     response = client.post(
@@ -14,15 +14,15 @@ def test_product_search_api_returns_stable_product_contract() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "completed"
-    assert payload["intent"] == "product_search"
-    assert [call["tool_name"] for call in payload["tool_calls"]] == ["product_search"]
+    assert payload["intent"] == "shopping_search"
+    assert [call["tool_name"] for call in payload["tool_calls"]] == ["shopping_search"]
     assert payload["errors"] == []
 
     result = payload["tool_results"][0]
     assert result["success"] is True
     assert result["data"]["provider"] == "mock"
-    assert result["data"]["total"] >= 1
-    product = result["data"]["items"][0]
+    assert result["data"]["search"]["total"] >= 1
+    product = result["data"]["search"]["items"][0]
     assert product["product_id"]
     assert product["product_url"] == "mock://shop-a/p1"
     assert product["image_url"] == "mock://images/p1.png"
@@ -33,7 +33,7 @@ def test_product_search_api_returns_stable_product_contract() -> None:
     assert "raw" not in result["data"]
 
 
-def test_media_summary_product_search_api_runs_vision_then_search() -> None:
+def test_media_summary_shopping_search_api_runs_vision_then_search() -> None:
     client = TestClient(create_app())
 
     response = client.post(
@@ -52,8 +52,8 @@ def test_media_summary_product_search_api_runs_vision_then_search() -> None:
     assert payload["intent"] == "multi_step_orchestration"
     assert [call["tool_name"] for call in payload["tool_calls"]] == [
         "vision_understanding",
-        "product_search",
+        "shopping_search",
     ]
     search_result = payload["tool_results"][1]
     assert search_result["success"] is True
-    assert search_result["data"]["items"][0]["source"] == "mock"
+    assert search_result["data"]["search"]["items"][0]["source"] == "mock"

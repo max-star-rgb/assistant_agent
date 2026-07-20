@@ -32,7 +32,7 @@ def test_conditional_graph_can_compile() -> None:
 
 
 def test_search_intent_routes_to_search_node() -> None:
-    assert route_by_intent(graph_state_for_intent("search_product")) == "search_node"
+    assert route_by_intent(graph_state_for_intent("shopping_search")) == "search_node"
 
 
 def test_image_generation_intent_routes_to_image_node() -> None:
@@ -69,5 +69,5 @@ def test_conditional_graph_executes_search_node() -> None:
 
     assert state.status == "completed"
     assert state.intent is not None
-    assert state.intent.intent == "product_search"
+    assert state.intent.intent == "shopping_search"
     assert state.tool_calls[0].tool_name == "shopping_search"

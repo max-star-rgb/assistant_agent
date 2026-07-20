@@ -81,6 +81,13 @@ def _latest_product(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]:
     for result in reversed(list(outputs_by_step.values())):
         if not result.data:
             continue
+        if result.tool_name == "shopping_search":
+            best_offer = result.data.get("best_offer")
+            if isinstance(best_offer, dict) and best_offer:
+                return best_offer
+            search = result.data.get("search")
+            if isinstance(search, dict) and isinstance(search.get("items"), list) and search["items"]:
+                return search["items"][0]
         if isinstance(result.data.get("items"), list) and result.data["items"]:
             return result.data["items"][0]
     return {}

@@ -44,7 +44,7 @@ def test_llm_tool_call_delta_does_not_map_to_user_visible_agent_event() -> None:
         event_type="tool_call_delta",
         provider="deepseek",
         model="deepseek-chat",
-        tool_call_delta=LLMToolCallDelta(index=0, name_delta="product_search"),
+        tool_call_delta=LLMToolCallDelta(index=0, name_delta="shopping_search"),
     )
 
     assert (
@@ -119,7 +119,7 @@ def test_runtime_emits_tool_failed_and_task_failed_events() -> None:
     assert "agent_trace_final_answer" in event_types
     assert event_types[-2:] == ["graph_node_finished", "task_failed"]
     tool_failed = next(event for event in sink.events if event.type == "tool_failed")
-    assert tool_failed.tool_name == "price_compare"
+    assert tool_failed.tool_name == "shopping_search"
     assert tool_failed.error
     assert sink.events[-1].error
 

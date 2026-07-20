@@ -743,7 +743,7 @@ def test_app_lifespan_closes_gateway_before_agent_runtime(monkeypatch) -> None:
     assert calls == ["gateway", "agent"]
 
 
-def test_run_server_runtime_summary_prints_product_providers(monkeypatch, capsys) -> None:
+def test_run_server_runtime_summary_prints_shopping_provider(monkeypatch, capsys) -> None:
     module = _load_module("run_server_runtime_summary_test")
     monkeypatch.delenv("MULTIMODAL_AGENT_TRIAL_USER_IDS", raising=False)
     monkeypatch.delenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", raising=False)
@@ -760,8 +760,7 @@ def test_run_server_runtime_summary_prints_product_providers(monkeypatch, capsys
     module._print_runtime_summary(config, loaded_env_keys=[])
     output = capsys.readouterr().out
 
-    assert "product_search_provider: haodanku" in output
-    assert "price_compare_provider: haodanku" in output
+    assert "shopping_search_provider: search=haodanku, compare=haodanku" in output
     assert "memory_backend: jsonl" in output
     assert "conversation_history_backend: jsonl" in output
     assert "langgraph_checkpointer_backend: none" in output

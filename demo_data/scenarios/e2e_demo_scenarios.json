@@ -117,7 +117,7 @@
     ]
   },
   {
-    "scenario_id": "product_search_compare",
+    "scenario_id": "shopping_search",
     "title": "文本商品搜索和比价",
     "user_query": "帮我找 500 元以内的白色运动鞋，并比较价格。",
     "metadata": {
@@ -128,8 +128,7 @@
       ]
     },
     "expected_tools": [
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "expected_response_contains": [
       "商品",
@@ -137,7 +136,7 @@
     ]
   },
   {
-    "scenario_id": "image_to_product_search_compare",
+    "scenario_id": "image_to_shopping_search",
     "title": "图片找同款并比价",
     "user_query": "帮我找图里这双鞋的相似款，并比较价格。",
     "metadata": {
@@ -152,8 +151,7 @@
     },
     "expected_tools": [
       "vision_understanding",
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "expected_response_contains": [
       "图片",
@@ -161,7 +159,7 @@
     ]
   },
   {
-    "scenario_id": "product_search_to_image_generation",
+    "scenario_id": "shopping_search_to_image_generation",
     "title": "商品搜索后生成海报",
     "user_query": "找一款日系白色帆布鞋，然后生成一张商品海报。",
     "metadata": {
@@ -172,7 +170,7 @@
       ]
     },
     "expected_tools": [
-      "product_search",
+      "shopping_search",
       "image_generation"
     ],
     "expected_response_contains": [
@@ -181,7 +179,7 @@
     ]
   },
   {
-    "scenario_id": "product_search_to_render",
+    "scenario_id": "shopping_search_to_render",
     "title": "商品搜索后进入 3D 渲染",
     "user_query": "找一把黑色办公椅，然后放到现代办公室里做 3D 展示。",
     "metadata": {
@@ -190,7 +188,7 @@
       "expected_output_ref_prefix": "mock://render/"
     },
     "expected_tools": [
-      "product_search",
+      "shopping_search",
       "render_3d"
     ],
     "expected_response_contains": [
@@ -238,7 +236,7 @@
     ]
   },
   {
-    "scenario_id": "full_multistep_image_search_compare_generate",
+    "scenario_id": "full_multistep_image_shopping_generate",
     "title": "完整多步图片找同款、比价并生成海报",
     "user_query": "帮我找图里的鞋，比较价格，再生成一张海报。",
     "metadata": {
@@ -253,8 +251,7 @@
     },
     "expected_tools": [
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "expected_response_contains": [
@@ -263,7 +260,7 @@
     ]
   },
   {
-    "scenario_id": "video_to_product_search",
+    "scenario_id": "video_to_shopping_search",
     "title": "视频找商品",
     "user_query": "找这个视频里的商品。",
     "metadata": {
@@ -275,7 +272,7 @@
     },
     "expected_tools": [
       "video_understanding",
-      "product_search"
+      "shopping_search"
     ],
     "expected_response_contains": [
       "视频",

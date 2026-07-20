@@ -9,8 +9,7 @@ def test_timeout_policy_defaults_are_conservative() -> None:
     assert policy.for_capability("image_generation") == 60.0
     assert policy.for_capability("image_understanding") == 60.0
     assert policy.for_capability("video_understanding") == 120.0
-    assert policy.for_capability("product_search") == 20.0
-    assert policy.for_capability("price_compare") == 20.0
+    assert policy.for_capability("shopping_search") == 20.0
     assert policy.for_capability("render_3d") == 120.0
 
 
@@ -32,7 +31,7 @@ def test_timeout_policy_reads_environment_overrides() -> None:
     assert policy.for_capability("image_generation") == 13.0
     assert policy.for_capability("image_understanding") == 14.0
     assert policy.for_capability("video_understanding") == 15.0
-    assert policy.for_capability("product_search") == 16.0
+    assert policy.for_capability("shopping_search") == 16.0
     assert policy.for_capability("render_3d") == 17.0
 
 

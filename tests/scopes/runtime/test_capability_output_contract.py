@@ -70,7 +70,7 @@ def test_multistep_response_collects_capability_contracts() -> None:
 
     contracts = state.response.data["contracts"]
 
-    assert [contract["capability"] for contract in contracts] == ["shopping_search", "price_compare"]
+    assert [contract["capability"] for contract in contracts] == ["shopping_search"]
     assert all(contract["status"] == "succeeded" for contract in contracts)
 
 
@@ -83,7 +83,7 @@ def test_failed_capability_contract_uses_stable_errors() -> None:
 
     assert result.success is False
     assert result.contract is not None
-    assert result.contract.capability == "price_compare"
+    assert result.contract.capability == "shopping_search"
     assert result.contract.status == "failed"
     assert result.contract.errors
     assert result.contract.errors[0].code

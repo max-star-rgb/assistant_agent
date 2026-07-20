@@ -78,7 +78,7 @@ def test_app_shopping_detail_suppresses_llm_delta_and_emits_one_presented_chunk(
                 AgentEvent(
                     type="tool_finished",
                     session_id=request.session_id,
-                    tool_name="price_compare",
+                    tool_name="shopping_search",
                     payload={"post_tool_call": {"status": "succeeded"}},
                 )
             )
@@ -97,7 +97,7 @@ def test_app_shopping_detail_suppresses_llm_delta_and_emits_one_presented_chunk(
             }
             artifacts.state.tool_results.append(
                 ToolResult(
-                    tool_name="price_compare",
+                    tool_name="shopping_search",
                     success=True,
                     data={"query": "手机", "summary": "自然语言摘要", "offers": [offer], "best_offer": offer},
                 )
@@ -105,7 +105,7 @@ def test_app_shopping_detail_suppresses_llm_delta_and_emits_one_presented_chunk(
             later_ineligible_offer = {**offer, "offer_id": "jd:2", "product_id": "jd:2", "image_url": None}
             artifacts.state.tool_results.append(
                 ToolResult(
-                    tool_name="price_compare",
+                    tool_name="shopping_search",
                     success=True,
                     data={
                         "query": "手机",
@@ -509,7 +509,7 @@ def test_agent_graph_realtime_backend_forwards_runtime_progress_events() -> None
                 type="tool_progress",
                 session_id=request.session_id,
                 run_id="assistant-run-1",
-                tool_name="product_search",
+                tool_name="shopping_search",
                 progress=0.5,
             )
         )
@@ -531,7 +531,7 @@ def test_agent_graph_realtime_backend_forwards_runtime_progress_events() -> None
     assert result.status == "completed"
     assert [event.type for event in events[:2]] == ["run.progress", "run.progress"]
     assert events[0].payload["status"] == "started"
-    assert events[1].payload["tool_name"] == "product_search"
+    assert events[1].payload["tool_name"] == "shopping_search"
     assert events[1].payload["progress"] == 0.5
 
 
@@ -1481,7 +1481,7 @@ def test_agent_graph_realtime_backend_forwards_runtime_tool_trace_and_error_even
                 type="tool_started",
                 session_id=request.session_id,
                 run_id="run-1",
-                tool_name="product_search",
+                tool_name="shopping_search",
             )
         )
         sink.emit(
@@ -1489,7 +1489,7 @@ def test_agent_graph_realtime_backend_forwards_runtime_tool_trace_and_error_even
                 type="tool_finished",
                 session_id=request.session_id,
                 run_id="run-1",
-                tool_name="product_search",
+                tool_name="shopping_search",
                 output_ref="mock://result",
             )
         )
@@ -1498,7 +1498,7 @@ def test_agent_graph_realtime_backend_forwards_runtime_tool_trace_and_error_even
                 type="tool_failed",
                 session_id=request.session_id,
                 run_id="run-1",
-                tool_name="price_compare",
+                tool_name="web_search",
                 error={"code": "TOOL_FAILED", "message": "tool failed"},
             )
         )

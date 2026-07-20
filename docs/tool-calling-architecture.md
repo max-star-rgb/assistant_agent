@@ -6,7 +6,7 @@
 
 - 默认真实 LLM 运行时是 `AgentGraphRuntime` 内的 provider-native loop；非 mock chat adapter 不再进入 prompt-json 控制面调用。
 - 工具声明契约由 `ToolSpec` 表达，inventory 来源是 `ToolRegistry.list_specs()`；执行边界通过 `ToolRegistry.get_spec()` 读取同一路径生成的单工具契约，并由 `ToolPolicyInterpreter` 编译成只读 `ToolPolicyView`。真实 LLM 路径把 exposed ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
-- `select_prompt_tool_specs()` 会把 registry inventory 装配成 prompt-safe `RunToolSet`，分别记录 registered、qualified、exposed、executable 工具和排除原因。资格只由 `skill_only`、`enabled_by_default`、`requires_env`、显式 `tool_visibility` override 等结构化事实决定，不读取 `request.text` 推断用户意图；provider-native 模型只能执行本轮 `executable_tool_names` 中的工具。
+- `select_prompt_tool_specs()` 会把 registry inventory 装配成 prompt-safe `RunToolSet`，分别记录 registered、qualified、exposed、executable 工具和排除原因。默认按工具分类暴露：`read` 默认暴露；`generate` 默认不按文本暴露，但当前代码配置为可暴露；`write` 默认不暴露，当前只把记忆写入工具 `memory_save` / `memory_media_ingest` 代码配置为可暴露；`dangerous` 默认不暴露。`generate` / `write` 的暴露优先级从低到高是默认不暴露、代码配置可暴露（代码内置或 `configured_tools` / `configured_toolsets`）、结构化显式指定暴露（`enabled_tools` / `enabled_toolsets` / `enabled_skills`）。工具目录不得读取用户话术触发 `generate` 或 `write` 暴露；`dangerous` 只接受结构化显式启用和自身 env/profile gate。provider-native 模型只能执行本轮 `executable_tool_names` 中的工具。
 - Skill capability catalog 可在不改变工具资格的前提下，按显式 `enabled_skills` 或确定性 `skill_recall` 把 prompt-safe skill descriptor 注入上下文；自动召回不会激活 `skill_only` 工具、不会新增 `run_skill`，也不会绕过工具治理链路。结构化 `workflow_skill_v1` 先显式注册进 `WorkflowSkillCatalog`，再由 `WorkflowSkillLauncher` 按 manifest name 启动并交给 `WorkflowSkillRunner` 执行；launcher 可通过 process-local 或 JSONL-backed run store 查询和 resume 运行记录，每个 resumed step 仍先经 `ActionValidator` 再进 `ToolExecutor`。产品化 HTTP 入口默认关闭，只能通过 `scripts/run_server.py --enable-workflow-skills` 或 `MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED=1` 显式启用，并只暴露 manifest list、launch、resume 和 run summary，不提供通用 `run_skill`。
 - `tool_search` 是 fallback discovery 工具，只在当前已暴露核心工具无法满足用户需求时查看已配置 MCP server 的 allowlisted tool catalog。它返回 prompt-safe MCP 候选、输入摘要和 permission 状态；allowed 但未默认 enabled 的 MCP 工具会标记为 `permission_required`，未 allowlist 的 server 工具不回传给模型。`tool_search` 不执行 MCP 工具、不注册新工具、不授予权限；后续执行仍必须显式启用并重新经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
 - `ToolSpec.side_effect` 表达工具副作用策略，`ToolSpec.execution` 表达稳定调度/依赖/资源事实；未知工具默认按 confirmation-sensitive 且需要串行观察处理。realtime task-state 会消费 side-effect 策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
@@ -34,14 +34,14 @@
 | layer | question | current boundary |
 | --- | --- | --- |
 | 注册 | 系统有什么 | `ToolRegistry` 保存实例并通过 `ToolSpec` 暴露稳定契约 |
-| 装配 | 当前给什么 | `select_prompt_tool_specs()` 按环境、profile、显式 visibility/skill 等结构化事实生成 `RunToolSet`，不替 LLM 判断任务意图 |
+| 装配 | 当前给什么 | `select_prompt_tool_specs()` 按环境、profile、visibility/skill 和工具分类生成 `RunToolSet`；不使用关键词/正则/高信号话术打开 generate/write/dangerous，也不做 read 工具语义预选 |
 | 策略 | 什么时候能用 | `ToolPolicyMetadata` / `ToolPolicyInterpreter` 提供治理事实，`ActionValidator` 执行本轮 allowlist、确认与敏感操作语义 gate |
 | 适配 | 模型怎么看见 | `PromptCompiler` 和 `tool_spec_adapters` 只转换 exposed ToolSpec，不决定权限 |
 | 执行器 | 怎么安全落地 | `ToolExecutor` 统一身份、预算、retry、幂等、事件、trace，再调用 registry tool |
 
 这五层是职责分解，不是五套继承体系。层间优先传递 `ToolSpec`、`RunToolSet`、`AssistantDecision`、`ToolResult` 这些少量数据契约；只有出现第二种真实实现或明确替换需求时才新增 interface。这里的“低抽象”是让依赖方向和安全边界更直接：资格判断是普通纯函数，当前召回也是 identity 纯函数，风险解释集中在既有 policy/validator/executor 中。低抽象并不等于减少校验、策略或可观测性，而是避免为尚不存在的多实现提前增加 strategy、factory、protocol 或 meta-tool。
 
-系统与 LLM 的决策边界是：系统根据结构化运行事实定义“合法候选空间”，LLM 根据请求语义在候选空间内决定“是否调用、调用哪个、参数是什么”，系统再验证并安全执行。自然语言不能把未授权工具变成 qualified，也不能代替确认、身份、预算或幂等约束；反过来，系统也不再用关键词把已 qualified 的工具从 LLM 视野中删掉。
+系统与 LLM 的决策边界是：系统根据运行事实、工具分类、代码配置和结构化显式 opt-in 定义“合法候选空间”，LLM 根据请求语义在候选空间内决定“是否调用、调用哪个、参数是什么”，系统再验证并安全执行。自然语言不能打开 generate/write/dangerous，也不能代替确认、身份、预算或幂等约束。反过来，系统也不再用关键词把 read 工具从 LLM 视野中删掉。
 
 ## 当前主调用链
 
@@ -53,7 +53,7 @@ UserRequest
   -> ToolRegistry.list_specs()
   -> build_assistant_context_pack()
        -> select_prompt_tool_specs()
-       -> qualify_tool_specs() from structured runtime facts
+       -> qualify_tool_specs() from runtime facts, tool category, and configured/explicit opt-in
        -> recall_qualified_tool_specs()  # current implementation: identity
        -> RunToolSet(registered / qualified / exposed / executable)
   -> ChatRequest(messages=[...], tools=[...], tool_choice="auto")
@@ -114,7 +114,7 @@ the validated rule; no LLM chooses a proactive probe tool in this phase.
 - `src/assistant_agent/tools/registry.py`: 工具注册、ToolSpec 生成和默认工具集合。
 - `src/assistant_agent/tools/base.py`: `ToolContext`、`BaseTool`、`MockTool` 基础契约。
 - `src/assistant_agent/schemas/tools.py`: `ToolSpec`、`RunToolSet`、`ToolExecutionPolicy`、`ToolResult`、`ToolCallRecord`。
-- `src/assistant_agent/services/context/tool_catalog.py`: 按环境依赖、显式 skill/visibility policy 等结构化事实完成资格判断，再经 identity recall 组装本轮 `RunToolSet` 与 prompt ToolSpec；不读取请求文本做工具路由。
+- `src/assistant_agent/services/context/tool_catalog.py`: 按环境依赖、skill/visibility policy、工具分类、代码配置和显式指定完成资格判断，再经 identity recall 组装本轮 `RunToolSet` 与 prompt ToolSpec；不读取请求文本缩小 read 工具集合，不允许文本启用 generate 或 dangerous。
 - `src/assistant_agent/services/context/skill_recall.py`: 对已加载的 prompt-safe skill descriptor 做确定性请求文本召回，只决定 capability catalog 候选，不决定工具 qualified/exposed/executable。
 - `src/assistant_agent/services/tool_workflow_skill.py`: `workflow_skill_v1` manifest validator、显式 `WorkflowSkillCatalog` / `WorkflowSkillLauncher`、process-local / JSONL-backed run store、prompt-safe run query service、redacted audit sink 接入和最小 `WorkflowSkillRunner`；只支持 governed tool steps，不执行 shell/http/browser/Markdown steps。
 - `src/assistant_agent/services/tool_workflow_skill_runtime_app.py`: 产品入口边界；从环境变量加载 workflow manifest 目录、显式 local tool module 和 JSONL run store，默认 disabled，向 API 层提供 prompt-safe list/launch/resume/query 操作。
@@ -189,9 +189,9 @@ excluded_reasons
 
 集合必须满足 `qualified ⊆ registered`、`exposed ⊆ qualified`、`executable ⊆ qualified`，由 `RunToolSet` 模型校验。当前 provider-native 与 mock/offline assistant loop 都使用 identity recall，因而正常情况下 `qualified = exposed = executable`；这表示 LLM 可以自主选择任何合格工具，不表示可以绕过后续风险 gate。
 
-资格判断不读取 `request.text`，也不使用关键词、tag 或旧 intent/router 来缩小工具集合。`request.metadata.tool_visibility` 可显式提供 `enabled_tools`、`enabled_toolsets`、`enabled_skills`；`skill_only` 工具必须由带匹配 `tool:<name>` permission 的有效且显式启用 skill 激活，不能只靠自然语言或 `enabled_tools` 绕过。缺少 `requires_env`、默认禁用且未显式启用、或缺少有效 skill 激活的工具会留在 registered，但不会进入 qualified。
+资格判断不使用关键词、正则、高信号话术、tag 或旧 intent/router 来判断用户意图或缩小工具集合。工具先按 policy 归类为 `read`、`generate`、`write` 或 `dangerous`：`read` 默认进入候选；当前代码配置让 `generate` 工具进入候选；当前代码配置只让记忆写入工具 `memory_save` / `memory_media_ingest` 进入候选；其他 `write` 默认不暴露，可通过代码配置 `configured_tools` / `configured_toolsets` 暴露，也可通过结构化显式指定 `enabled_tools` / `enabled_toolsets` / `enabled_skills` 暴露，后者优先级更高；`dangerous` 不能由自然语言启用。`skill_only` 工具必须由带匹配 `tool:<name>` permission 的有效且显式启用 skill 激活，不能只靠自然语言或 `enabled_tools` 绕过。缺少 `requires_env`、默认禁用且未显式启用、或缺少有效 skill 激活的工具会留在 registered，但不会进入 qualified。
 
-`recall_qualified_tool_specs(request, qualified_specs)` 是为未来上下文规模问题预留的纯函数边界，当前按原顺序返回全部 qualified ToolSpec，并记录 `recall_identity`。在另行批准高召回率与漏召回恢复设计前，不引入 embedding、selector、strategy/factory/protocol 或 meta-tool，也不根据请求文本做语义召回。
+`recall_qualified_tool_specs(request, qualified_specs)` 是为未来上下文规模问题预留的纯函数边界，当前按原顺序返回全部 qualified ToolSpec，并记录 `recall_identity`。在另行批准高召回率与漏召回恢复设计前，不引入 embedding、selector、strategy/factory/protocol 或 meta-tool，也不根据请求文本做 read 工具语义召回。
 
 注意事项：
 
@@ -200,7 +200,7 @@ excluded_reasons
 - provider-native tools 发送完整 ToolSpec，并把 `terminal` / `requires_prior_observation` 等执行约束追加成简短 prompt-safe 描述；旧 prompt-facing ToolSpec 子集只服务历史 renderer 测试和离线兼容材料，不是生产决策路径。
 - `side_effect` 包含 `level`、`requires_confirmation`、`description`、可选 `confirmation_kind` 和 `compensation_hint`；provider-native/MCP 描述也会包含该信息。
 - `execution` 包含 `dependency_mode`、可选 `concurrency_group`、`resource_reads`、`resource_writes`、`realtime_safety`、`artifact_reuse` 和可选 `progress_message`。它只表达调度/依赖/资源事实、realtime artifact 复用提示和等待提示，不表达“允许并发”命令。
-- `visibility` 是工具目录装配元数据，包含 `requires_env`、`enabled_by_default`、`skill_only`、`allowed_entry_profiles` 和 `requires_media`。可信 Agent-Service 入口只暴露显式声明 `allowed_entry_profiles=["agent_service"]` 且满足 `requires_media` 的工具；没有该声明的默认工具不会因工具名或用户文本进入通话前台目录。
+- `visibility` 是工具目录装配元数据，包含 `requires_env`、`enabled_by_default`、`skill_only`、`allowed_entry_profiles` 和 `requires_media`。可信 Agent-Service 入口仍受 `allowed_entry_profiles` 和 `requires_media` 限制；没有 profile 限制的 read 工具可默认暴露；当前 generate 和记忆写入由代码配置暴露，其他 write 仍需代码配置或结构化显式指定，dangerous 仍需结构化显式启用。
 - 未分类工具使用保守默认：`level=pending_confirmation`、`requires_confirmation=true`、`dependency_mode=requires_prior_observation`、`realtime_safety=needs_confirmation` 且 `artifact_reuse=requires_validation`。
 - MCP 工具 schema 通过 `tool_spec_to_mcp_tool()` 支持。`OfflineMCPServer.list_tools()` 暴露本地 MCP wrapper 工具；显式配置的外部 MCP server 可通过 `MCPToolAdapter` 归一成 registry proxy tool，再由同一套 ToolSpec/validator/executor 治理。
 
@@ -208,7 +208,7 @@ excluded_reasons
 
 工具副作用策略是工具治理元数据，不属于 Gateway 协议。
 
-- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`web_fetch`、`visual_image_search`、`shopping_search`、`price_compare`、image/video understanding。
+- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`web_fetch`、`visual_image_search`、`shopping_search`、image/video understanding。
 - 创建可替换 artifact 的工具标为 `compensatable`，例如 `image_generation` 和 `render_3d`；中断后应生成修正版或说明已有 artifact，而不是宣称旧结果被撤销。
 - confirmation-sensitive 工具标为 `pending_confirmation`，例如 `memory_save` 和 legacy `memory`；如果工具结果返回 `requires_confirmation=true` 或 `confirmation_id`，realtime task-state 会记录 pending confirmation。
 - 如果 confirmation-sensitive 或未知工具已经成功返回，realtime task-state 会把它视为 `committed`，中断后的下一轮必须报告已发生状态或提供安全后续动作。
@@ -237,7 +237,6 @@ Runtime gate 映射：
 - `visual_image_search`
 - `web_fetch`
 - `shopping_search`
-- `price_compare`
 - `weather`
 - `calendar_search`
 - `calendar_create`
@@ -267,7 +266,7 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 
 默认副作用分类：
 
-- `vision_understanding`、`video_understanding`、`web_search`、`web_fetch`、`shopping_search`、`price_compare`、`weather`、`calendar_search`、`contacts_search`: `external_read`。
+- `vision_understanding`、`video_understanding`、`web_search`、`web_fetch`、`shopping_search`、`weather`、`calendar_search`、`contacts_search`: `external_read`。
 - `memory_retrieval`: `local_read`。
 - `memory_ingest_status`: `external_read`。
 - `image_generation`、`render_3d`: `compensatable`。
@@ -280,7 +279,6 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 
 - `web_search`、`shopping_search`、`weather`、`calendar_search`、`contacts_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`、`artifact_reuse=reusable`。
 - `web_fetch`: `dependency_mode=requires_prior_observation`，因为通常需要先消费用户提供的 URL 或 `web_search` 返回的 URL。
-- `price_compare`: `dependency_mode=requires_prior_observation`，因为同一批次中通常需要先消费商品候选或先前 observation。
 - `calendar_create`、`reminder_create`: `dependency_mode=terminal`、`realtime_safety=needs_confirmation`、`artifact_reuse=do_not_reuse`。
 - `image_generation`、`render_3d`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=requires_validation`。
 - `delegate_to_agent`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=do_not_reuse`。
@@ -358,7 +356,7 @@ Provider 边界：
 - `web_search` 必须有非空 query；`limit` 等范围由工具 Pydantic schema 校验。
 - `web_fetch` 必须有非空 http/https URL；`max_chars` 和 `content_format` 由工具 Pydantic schema 校验。
 - `shopping_search` 必须有 query、visual summary、video summary 或商品描述字段；该工具一次执行商品搜索和比价，不下单、不付款。
-- `price_compare` 必须有 query 或 items。
+- `shopping_search` 必须有 query、visual_summary、video_summary 或商品描述字段。
 - `memory_retrieval` 必须有 query，并且当前用户请求必须显式引用历史、上次/之前、已保存记忆、个人偏好或继续旧任务；query 本身不构成读取授权。
 - legacy `memory` 只允许 `action=retrieve/save`，并复用 memory save 校验。
 - `memory_save` 必须有 query、`content.text` 或 `content.summary`，且 assistant-loop 调用必须包含 `source_intent`、`source_reason`、`future_use`、`evidence`。
@@ -443,9 +441,9 @@ contract
 - 失败或 rejected observation 包含 sanitized error_code/error_message 和 recovery hint。
 - `web_search` 会保留 `title`、`url`、`snippet`、`published_at`、`source`，成功 observation 摘要首条结果和总数。
 - `web_fetch` 会保留 `url`、`title`、`content`、`content_format`、`total_chars` 和 `truncated`，成功 observation 摘要页面 URL 与正文规模。
-- `shopping_search` 是购物推荐/购买建议/比价的一步式工具：模型只需调用该工具一次，工具内部先执行商品搜索，再用搜索结果执行比价，并在同一个 observation 中返回 `search`、`comparison`、`offers`、`best_offer`、`summary` 和 URL 状态。它不下单、不付款。App/Gateway/Agent-Service 购物展示优先由 deterministic presenter 从 `shopping_search` / `price_compare` 的结构化结果生成，LLM 只负责简短自然语言摘要，不应自由手写商品卡片字段。
-- 商品搜索/比价会保留 title、price、原价、券额、无条件到手价、条件价说明、currency、图片、URL、url_status、品牌/型号/核心规格等后续回答和 `price_compare` 必需字段。好单库 real adapter 仍只在显式 `provider_smoke`/`pilot` profile 下启用；`HAODANKU_ENABLED_PLATFORMS` 默认仅为 `taobao`（天猫归入淘宝组），可用规范名 `taobao,jd,pdd` 显式恢复多平台。模型请求的平台会与已启用集合取交集，未启用平台不访问 Provider、不进入 `failed_platforms`；若只请求未启用平台，则返回 `provider_platform_disabled`。
-- `price_compare` 使用与搜索相同的已启用平台集合，先按品牌、型号和核心规格形成可比较组，以同款可信度、无条件到手总价、链接状态、销量和数据完整度排序；会员、补贴、凑单等条件价只作说明。内部结果仍最多九条且每个平台最多三条；App 购物协议最多展示三条。入选报价再经过淘宝 `ratesurl`、京东 `unify_jditems_link`、拼多多 `unify_pdditems_link` 官方转链；淘宝未配置 PID/授权昵称时不调用 `ratesurl`，只保留通过 HTTP(S)、平台域名和非空路径校验的真实直链并标记 `unverified`，不得表述为返利链接或佣金保证。
+- `shopping_search` 是购物推荐/购买建议/比价的一步式工具：模型只需调用该工具一次，工具内部先执行商品搜索，再用搜索结果执行报价比较，并在同一个 observation 中返回 `search`、`comparison`、`offers`、`best_offer`、`summary` 和 URL 状态。它不下单、不付款。App/Gateway/Agent-Service 购物展示由 deterministic presenter 从 `shopping_search` 的结构化结果生成，LLM 只负责简短自然语言摘要，不应自由手写商品卡片字段。
+- 商品搜索/比价会保留 title、price、原价、券额、无条件到手价、条件价说明、currency、图片、URL、url_status、品牌/型号、核心规格、推荐理由等后续回答必要字段。好单库 real adapter 仍只在显式 `provider_smoke`/`pilot` profile 下启用；`HAODANKU_ENABLED_PLATFORMS` 默认仅为 `taobao`（天猫归入淘宝组），可用规范名 `taobao,jd,pdd` 显式恢复多平台。模型请求的平台会与已启用集合取交集，未启用平台不访问 Provider、不进入 `failed_platforms`；若只请求未启用平台，则返回 `provider_platform_disabled`。
+- 工具内部比较使用与搜索相同的已启用平台集合，先按品牌、型号和核心规格形成可比较组，以同款可信度、无条件到手总价、链接状态、销量和数据完整度排序；会员、补贴、凑单等条件价只作说明。内部结果仍最多九条且每个平台最多三条；App 购物协议最多展示三条。入选报价再经过淘宝 `ratesurl`、京东 `unify_jditems_link`、拼多多 `unify_pdditems_link` 官方转链；淘宝未配置 PID/授权昵称时不调用 `ratesurl`，只保留通过 HTTP(S)、平台域名和非空路径校验的真实直链并标记 `unverified`，不得表述为返利链接或佣金保证。
 - context builder 会压缩大 observation、截断命令输出、移除 raw provider payload、base64、secret-like 内容。
 
 - rich policy 的 `max_result_chars` 在 `ToolResult -> ToolObservation` 边界生效；限制由 registry ToolSpec 提供，工具结果不能自行放宽。超限 observation 保留 status、summary、error/output reference，并记录 `truncated=true` 与 `original_chars`，不会截断原始审计引用。
@@ -459,7 +457,7 @@ assistant loop 有本地保护，不依赖模型自律：
 - unknown tool、invalid input、missing required input、render intent 缺失等会触发 rejection guard。
 - 同一工具失败达到阈值会停止重复调用。
 - `image_generation` 和 `render_3d` 是 terminal tools；成功后再次请求同一工具会被阻止并转为 final answer。
-- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词把 `final_answer`、重复搜索或其他模型动作强制改写成 `price_compare`。AgentRuntime 默认工具目录只暴露 `shopping_search` 作为购物搜索入口，由该工具内部完成搜索和比价；`price_compare` 仅用于已有商品候选或明确比价输入的显式比较。`price_compare` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
+- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词强制改写模型动作。AgentRuntime 默认工具目录只暴露 `shopping_search` 作为购物入口，由该工具内部完成搜索和比价。`shopping_search` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
 
 计划状态是本地治理结构，不是生产 runtime 的独立 planner/controller 调用：
 

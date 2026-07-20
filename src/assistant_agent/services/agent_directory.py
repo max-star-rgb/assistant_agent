@@ -120,8 +120,6 @@ def default_agent_instance(
             "vision_understanding",
             "video_understanding",
             "shopping_search",
-            "product_search",
-            "price_compare",
             "image_generation",
             "render_3d",
             "memory",

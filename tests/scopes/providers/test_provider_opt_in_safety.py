@@ -22,12 +22,12 @@ SMOKE_CASES = [
         {"MULTIMODAL_AGENT_VISION_PROVIDER": "openai"},
     ),
     (
-        Path("scripts/smoke_product_search.py"),
+        Path("scripts/smoke_shopping_search.py"),
         ["--query", "white sneaker"],
         {"MULTIMODAL_AGENT_SHOPPING_PROVIDER": "http", "PRODUCT_SEARCH_API_KEY": "sk-provider-safety-test"},
     ),
     (
-        Path("scripts/smoke_price_compare.py"),
+        Path("scripts/smoke_shopping_search.py"),
         ["--query", "white sneaker"],
         {
             "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "http",

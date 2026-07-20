@@ -792,8 +792,10 @@ def runtime_info(config: ProviderConfig) -> dict[str, Any]:
         "providers": {
             "chat": config.chat_provider,
             "vision": config.vision_provider,
-            "product_search": config.product_search_provider,
-            "price_compare": config.price_compare_provider,
+            "shopping_search": {
+                "search": config.product_search_provider,
+                "compare": config.price_compare_provider,
+            },
             "image_generation": config.image_generation_provider,
             "render": config.render_provider,
         },

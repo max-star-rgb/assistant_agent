@@ -233,16 +233,12 @@ def _compact_structured_output(tool_name: str, value: Any, *, stats: _Compaction
     if not isinstance(value, Mapping):
         return {}
     data = dict(value)
-    if tool_name == "product_search":
-        return _compact_product_search_output(data, stats=stats)
     if tool_name == "shopping_search":
         return _compact_shopping_search_output(data, stats=stats)
-    if tool_name == "price_compare":
-        return _compact_price_compare_output(data, stats=stats)
     return _compact_generic_mapping(data, stats=stats, key_path=("structured_output",))
 
 
-def _compact_product_search_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
+def _compact_shopping_search_search_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
     output = _copy_keys(
         data,
         (
@@ -268,7 +264,7 @@ def _compact_product_search_output(data: dict[str, Any], *, stats: _CompactionSt
     return _compact_generic_mapping(output, stats=stats, key_path=("structured_output",))
 
 
-def _compact_price_compare_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
+def _compact_shopping_search_comparison_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
     output = _copy_keys(
         data,
         (
@@ -331,10 +327,10 @@ def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionS
     )
     search = data.get("search")
     if isinstance(search, Mapping):
-        output["search"] = _compact_product_search_output(dict(search), stats=stats)
+        output["search"] = _compact_shopping_search_search_output(dict(search), stats=stats)
     comparison = data.get("comparison")
     if isinstance(comparison, Mapping):
-        output["comparison"] = _compact_price_compare_output(dict(comparison), stats=stats)
+        output["comparison"] = _compact_shopping_search_comparison_output(dict(comparison), stats=stats)
     if isinstance(output.get("best_offer"), Mapping):
         output["best_offer"] = _compact_offer(
             output["best_offer"],

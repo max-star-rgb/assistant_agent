@@ -352,7 +352,7 @@ def failed_price_result(
     """Build a structured price-comparison failure."""
 
     return PriceCompareResult(
-        query=query or "price_compare",
+        query=query or "shopping_search",
         summary=message,
         provider=provider,
         errors=[ProductProviderError(code=code, message=message, recoverable=recoverable)],

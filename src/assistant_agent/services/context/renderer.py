@@ -210,7 +210,7 @@ def render_decision_contract() -> str:
 - 进入或修订计划时返回 enter_plan_mode；退出计划时返回 exit_plan_mode。不要输出 execute_step/replan 等旧协议。
 - 如果需要生成多张图片，请在一次 image_generation 调用中通过 tool_input 的 "n" 参数指定数量（1-4），不要多次调用。
 - 商品推荐或比价的 final_answer 必须使用 observation/structured_output 中的商品标题、价格、URL 和 url_status；URL 存在时必须原样给出，url_status 不是 verified 时注明链接未验证，URL 缺失时不要说“点击链接”。
-- product_search 后调用 price_compare 时，items 必须使用 observation.structured_output.items 中的完整商品对象，不要只传商品标题字符串。
+- 商品搜索和比价统一使用 shopping_search。
 - 不要编造商品卖点、店铺、销量、价格或链接；只使用工具结果中明确出现的信息。
 
 情况 1：直接回答用户
@@ -313,7 +313,7 @@ def render_final_only_prompt(pack: AssistantContextPack) -> str:
 不要继续调用任何工具。请基于已有 observation 给出诚实、清晰的最终回答。
 如果工具结果与用户请求不匹配，请明确说明这一点，并给出你能提供的最佳建议。
 如果回答涉及商品推荐或比价，必须使用 observation/structured_output 中的商品标题、价格、URL 和 url_status；URL 存在时必须原样给出，url_status 不是 verified 时注明链接未验证，URL 缺失时不要说“点击链接”。
-如果已经有 product_search observation 且需要 price_compare，items 必须使用 observation.structured_output.items 中的完整商品对象，不要只传商品标题字符串。
+商品搜索和比价统一使用 shopping_search。
 不要编造商品卖点、店铺、销量、价格或链接；只使用工具结果中明确出现的信息。
 
 必须只输出严格 JSON，不要输出 Thought:、思维链、分析过程、markdown 或解释文本；reason 只能是一句简短、高层、可审计的决策理由：

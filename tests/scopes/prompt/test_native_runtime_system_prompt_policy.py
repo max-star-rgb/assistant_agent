@@ -58,13 +58,13 @@ class MutatingTwoTurnChatAdapter:
                 tool_calls=[
                     NativeToolCall(
                         id="call_1",
-                        name="product_search",
+                        name="shopping_search",
                         arguments={"query": "通勤耳机"},
                         raw={
                             "id": "call_1",
                             "type": "function",
                             "function": {
-                                "name": "product_search",
+                                "name": "shopping_search",
                                 "arguments": '{"query":"通勤耳机"}',
                             },
                         },
@@ -315,9 +315,9 @@ def test_native_runtime_user_message_stays_context_renderer_output_without_tool_
     assert "用户请求：帮我找通勤耳机" in user_message
     assert "上一轮：预算五百以内" in user_message
     assert "可用工具 ToolSpec 列表" not in user_message
-    assert '"name": "product_search"' not in user_message
+    assert '"name": "shopping_search"' not in user_message
     assert adapter.requests[0].tools
-    assert any(tool["function"]["name"] == "product_search" for tool in adapter.requests[0].tools)
+    assert any(tool["function"]["name"] == "shopping_search" for tool in adapter.requests[0].tools)
 
 
 def test_native_runtime_sends_all_qualified_tool_schemas() -> None:
@@ -337,7 +337,7 @@ def test_assistant_loop_native_chat_request_sends_all_qualified_tool_schemas() -
     state = AgentState.from_request(request)
     tool_specs = [
         ToolSpec(name="web_search", required_inputs=["query"]),
-        ToolSpec(name="product_search", required_inputs=["query"]),
+        ToolSpec(name="shopping_search", required_inputs=["query"]),
         ToolSpec(name="memory_retrieval", required_inputs=["query"]),
         ToolSpec(name="memory_save", required_inputs=["content"]),
         ToolSpec(name="render_3d", required_inputs=["scene_description"]),
@@ -368,7 +368,7 @@ def test_assistant_loop_native_chat_request_sends_all_qualified_tool_schemas() -
 
     tool_names = [tool["function"]["name"] for tool in chat_request.tools]
     assert tool_names == [spec.name for spec in tool_specs]
-    assert "product_search" in tool_names
+    assert "shopping_search" in tool_names
     assert "render_3d" in tool_names
 
 
@@ -420,7 +420,7 @@ def test_assistant_loop_context_report_counts_compiled_owner_persona() -> None:
 def test_assistant_loop_native_tool_helper_uses_system_prompt_policy() -> None:
     request = UserRequest(user_id="u1", session_id="s1", text="你好")
     state = AgentState.from_request(request)
-    tool_specs = [ToolSpec(name="product_search", required_inputs=["query"])]
+    tool_specs = [ToolSpec(name="shopping_search", required_inputs=["query"])]
     context_pack = build_assistant_context_pack(
         state=state,
         request=request,
@@ -457,8 +457,8 @@ def test_assistant_loop_native_tool_helper_uses_system_prompt_policy() -> None:
 def test_assistant_loop_native_tool_helper_preserves_compatibility_payload() -> None:
     request = UserRequest(user_id="u1", session_id="s1", text="")
     state = AgentState.from_request(request)
-    observation = {"tool_name": "product_search", "status": "succeeded"}
-    tool_specs = [ToolSpec(name="product_search", required_inputs=["query"])]
+    observation = {"tool_name": "shopping_search", "status": "succeeded"}
+    tool_specs = [ToolSpec(name="shopping_search", required_inputs=["query"])]
     context_pack = build_assistant_context_pack(
         state=state,
         request=request,
@@ -498,7 +498,7 @@ def test_final_only_handoff_uses_system_prompt_policy_and_existing_context_promp
         state=state,
         request=request,
         memory_text="",
-        observations=[{"tool_name": "product_search", "status": "succeeded"}],
+        observations=[{"tool_name": "shopping_search", "status": "succeeded"}],
         iteration=4,
         max_iterations=5,
     )

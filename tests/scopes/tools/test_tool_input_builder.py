@@ -3,7 +3,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 
 
-def test_build_tool_input_uses_visual_summary_for_product_search() -> None:
+def test_build_tool_input_uses_visual_summary_for_shopping_search() -> None:
     request = UserRequest(user_id="u1", session_id="s1", text="找同款")
     outputs = {
         "s1": ToolResult(
@@ -13,7 +13,7 @@ def test_build_tool_input_uses_visual_summary_for_product_search() -> None:
         )
     }
 
-    tool_input = build_tool_input("search_product", request, outputs)
+    tool_input = build_tool_input("shopping_search", request, outputs)
 
     assert tool_input == {"query": "找同款", "visual_summary": "白色低帮运动鞋"}
 

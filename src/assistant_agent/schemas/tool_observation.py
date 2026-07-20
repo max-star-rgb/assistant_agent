@@ -124,16 +124,6 @@ def _summary_from_result(
 
 
 def _shopping_summary(tool_name: str, data: dict[str, Any]) -> str:
-    if tool_name == "product_search":
-        items = data.get("items")
-        if isinstance(items, list) and items:
-            item = items[0]
-            if isinstance(item, dict):
-                return _format_product_item_summary(item, total=data.get("total"))
-    if tool_name == "price_compare":
-        best_offer = data.get("best_offer")
-        if isinstance(best_offer, dict) and best_offer:
-            return _format_product_item_summary(best_offer, prefix="Best offer")
     if tool_name == "shopping_search":
         best_offer = data.get("best_offer")
         if isinstance(best_offer, dict) and best_offer:
@@ -231,22 +221,8 @@ def _next_step_hint(
         return (
             "If the user only asked for a description, final_answer is likely enough."
         )
-    if tool_name == "product_search":
-        items = data.get("items")
-        has_items = isinstance(items, list) and bool(items)
-        if not has_items:
-            return (
-                "没有返回商品候选；可以换一个更具体的商品查询，或向用户追问关键信息。"
-            )
-        return (
-            "由当前用户请求决定是直接回答，还是继续选择另一个购物工具。"
-            "如果模型选择 price_compare，请把 structured_output.items 里的完整商品对象作为 items 传入，"
-            "不要只传商品标题。本地关键词规则不会替模型选择工具。"
-        )
     if tool_name == "shopping_search":
         return "已完成商品搜索和比价；请基于 structured_output.best_offer、offers 和 URL 状态给出最终购物建议，不要声称已经下单。"
-    if tool_name == "price_compare":
-        return "Use the compared offers and best_offer in the final answer; include URL status when present."
     if tool_name == "web_search":
         return "Use the web search results in the final answer; include source URLs and published dates when present."
     if tool_name == "web_fetch":

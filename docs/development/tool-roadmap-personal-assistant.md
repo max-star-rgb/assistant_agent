@@ -98,9 +98,8 @@
 
 期望工具序列：
 
-1. `shopping_search` 或 `product_search` 查商品候选。
-2. `price_compare` 比价。
-3. `web_fetch` 可选读取用户指定详情页或评价页。
+1. `shopping_search` 查询商品候选并完成报价比较。
+2. `web_fetch` 可选读取用户指定详情页或评价页。
 
 成功输出形态：列出候选、价格、URL 状态和推荐理由；不下单、不支付。
 
@@ -111,6 +110,48 @@
 - `contacts_search`：外部只读，读取联系人候选；trace/audit 默认脱敏。
 - `calendar_create`：外部写，必须由 runtime confirmation 放行，并要求 idempotency key。
 - `reminder_create`：外部写，必须由 runtime confirmation 放行，并要求 idempotency key。
+
+## MCP-backed 真实使用路径
+
+默认注册仍使用 mock/local adapter。真实个人数据源只能在 `provider_smoke` / `pilot` runtime profile 下显式启用：
+
+```bash
+export MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke
+export MULTIMODAL_AGENT_PERSONAL_ASSISTANT_PROVIDER=mcp
+export MULTIMODAL_AGENT_MCP_ENABLED=1
+export MULTIMODAL_AGENT_MCP_CONFIG_PATH=.local/mcp_servers.json
+```
+
+`.local/mcp_servers.json` 保持未跟踪，示例形态：
+
+```json
+{
+  "servers": [
+    {
+      "server_name": "google_workspace",
+      "preset": "google_workspace",
+      "transport": "stdio",
+      "command": ["google-workspace-mcp"],
+      "personal_assistant_tools": {
+        "calendar_search": "search_events",
+        "calendar_create": "create_event",
+        "contacts_search": "search_contacts"
+      }
+    },
+    {
+      "server_name": "todoist",
+      "preset": "todoist",
+      "transport": "stdio",
+      "command": ["todoist-mcp"],
+      "personal_assistant_tools": {
+        "reminder_create": "create_task"
+      }
+    }
+  ]
+}
+```
+
+内置 MCP preset 只提供常见 allowlist/read-only/default visibility 和 personal tool 映射默认值；实际外部 server 的命令、参数、凭据和工具名差异仍以本地配置覆盖。Notion 和 Slack 当前作为直接外部 MCP 工具接入：`notion` preset 默认暴露 `search_pages`、`fetch_page` 为 read-only，`slack` preset 默认暴露 `search_messages`、`list_channels` 为 read-only；`create_page`、`post_message` 这类写工具保持确认敏感，不作为个人助理稳定工具的默认后端。
 
 ## 暂不新增
 

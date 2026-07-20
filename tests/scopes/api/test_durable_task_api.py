@@ -86,9 +86,9 @@ def test_task_confirmation_endpoint_resumes_bound_step(monkeypatch) -> None:
         TaskCheckpoint(
             kind="waiting_confirmation",
             step_id="step_1",
-            tool_name="product_search",
+            tool_name="shopping_search",
             tool_input_digest="digest-1",
-            confirmation_summary='Approve product_search with final arguments: {"query":"headphones"}',
+            confirmation_summary='Approve shopping_search with final arguments: {"query":"headphones"}',
             confirmation_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         ),
     )
@@ -171,7 +171,7 @@ def _submit(service: DurableTaskService, *, requires_followup: bool = False):
         plan=TaskPlan(
             goal="API task",
             steps=[
-                TaskStep(step_id="step_1", action="search", tool_name="product_search")
+                TaskStep(step_id="step_1", action="shopping_search", tool_name="shopping_search")
             ],
             requires_followup=requires_followup,
             followup_question="预算是多少？" if requires_followup else None,

@@ -38,7 +38,7 @@ class ToolRouter:
         "memory_retrieval": "retrieve_memory",
         "web_search": "search_web",
         "web_fetch": "fetch_web",
-        "shopping_search": "search_product",
+        "shopping_search": "shopping_search",
         "multi_step_orchestration": "multi_tool_task",
         "direct_chat": "chat",
         "understand_image": "understand_image",
@@ -83,7 +83,7 @@ class ToolRouter:
                     ),
                     TaskStep(
                         step_id="step_2",
-                        action="search_product",
+                        action="shopping_search",
                         tool_name="shopping_search",
                         input_refs=["step_1"],
                         depends_on=["step_1"],

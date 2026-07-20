@@ -132,11 +132,11 @@ def _snapshot() -> dict:
     plan = TaskPlan(
         goal="调研并汇总耳机",
         steps=[
-            TaskStep(step_id="step_1", action="搜索", tool_name="product_search"),
+            TaskStep(step_id="step_1", action="搜索", tool_name="shopping_search"),
             TaskStep(
                 step_id="step_2",
-                action="比价",
-                tool_name="price_compare",
+                action="渲染",
+                tool_name="render_3d",
                 depends_on=["step_1"],
             ),
         ],

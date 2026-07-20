@@ -18,24 +18,24 @@ def test_single_step_video_summary_uses_video_understanding_tool() -> None:
     assert "我先理解了视频内容" in state.response.message
 
 
-def test_video_to_product_search_flow() -> None:
+def test_video_to_shopping_search_flow() -> None:
     state = _run("找视频里的商品")
 
-    assert [call.tool_name for call in state.tool_calls] == ["video_understanding", "product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["video_understanding", "shopping_search"]
     assert state.tool_calls[1].input["video_summary"]
     assert state.tool_results[1].success is True
 
 
-def test_video_to_product_search_to_price_compare_flow() -> None:
+def test_video_to_shopping_search_price_comparison_flow() -> None:
     state = _run("找视频里的商品，并比较价格")
 
     assert [call.tool_name for call in state.tool_calls] == [
         "video_understanding",
-        "product_search",
-        "price_compare",
+        "shopping_search",
     ]
-    assert state.tool_calls[2].input["items"]
-    assert state.tool_results[2].success is True
+    assert state.tool_calls[1].input["video_summary"]
+    assert state.tool_results[1].success is True
+    assert state.tool_results[1].data["best_offer"] is not None
 
 
 def test_video_to_image_generation_flow() -> None:

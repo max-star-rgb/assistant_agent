@@ -29,7 +29,7 @@ def build_tool_input(
         }
     if action == "understand_image":
         return {"image_ids": request.image_ids, "video_ids": request.video_ids, "question": request.text}
-    if action == "search_product":
+    if action == "shopping_search":
         visual = latest_visual_data(outputs_by_step)
         summary = visual.get("summary") if visual else None
         payload = {
@@ -41,8 +41,6 @@ def build_tool_input(
             "materials": visual.get("materials", []) if visual else [],
         }
         return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
-    if action == "compare_price":
-        return {"query": request.text or "白色低帮运动鞋", "items": latest_items(outputs_by_step)}
     if action == "search_web":
         return build_web_search_input(request)
     if action == "fetch_web":

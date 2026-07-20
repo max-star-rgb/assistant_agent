@@ -163,7 +163,7 @@ def _memory_type_from_capability(capability: str) -> MemoryType:
         return "image"
     if capability == "video_understanding":
         return "video"
-    if capability in {"product_search", "price_compare"}:
+    if capability == "shopping_search":
         return "product"
     if capability == "render_3d":
         return "render"

@@ -6,8 +6,7 @@
     "expected_intent": "chat",
     "expected_tools": [],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d",
       "vision_understanding"
@@ -21,8 +20,7 @@
     "expected_intent": "ask_followup",
     "expected_tools": [],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d",
       "vision_understanding"
@@ -38,8 +36,7 @@
       "memory_save"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -67,7 +64,7 @@
     ],
     "must_not_call": [
       "image_generation",
-      "price_compare"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -75,12 +72,12 @@
     "id": "routing_search_001",
     "category": "routing",
     "text": "帮我找相似款",
-    "expected_intent": "search_product",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "product_search"
+      "shopping_search"
     ],
     "must_not_call": [
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "suite": "routing"
@@ -89,12 +86,12 @@
     "id": "routing_search_002",
     "category": "routing",
     "text": "搜索白色低帮运动鞋",
-    "expected_intent": "search_product",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "product_search"
+      "shopping_search"
     ],
     "must_not_call": [
-      "price_compare",
+      "shopping_search",
       "render_3d"
     ],
     "suite": "routing"
@@ -103,12 +100,12 @@
     "id": "routing_compare_001",
     "category": "routing",
     "text": "哪个便宜",
-    "expected_intent": "compare_price",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "price_compare"
+      "shopping_search"
     ],
     "must_not_call": [
-      "product_search",
+      "shopping_search",
       "image_generation"
     ],
     "suite": "routing"
@@ -123,7 +120,7 @@
     ],
     "must_not_call": [
       "render_3d",
-      "price_compare"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -137,7 +134,7 @@
     ],
     "must_not_call": [
       "image_generation",
-      "product_search"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -151,15 +148,14 @@
     "expected_intent": "multi_tool_task",
     "expected_tools": [
       "video_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "must_not_call": [
       "render_3d"
     ],
     "suite": "e2e",
-    "scenario_id": "full_multistep_image_search_compare_generate",
+    "scenario_id": "full_multistep_image_shopping_generate",
     "expected_response_contains": [
       "价格",
       "图片"
@@ -175,8 +171,7 @@
     "expected_intent": "multi_tool_task",
     "expected_tools": [
       "video_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "must_not_call": [
@@ -194,8 +189,7 @@
     "expected_intent": "multi_tool_task",
     "expected_tools": [
       "vision_understanding",
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "must_not_call": [
       "render_3d"
@@ -212,8 +206,7 @@
     "expected_intent": "multi_tool_task",
     "expected_tools": [
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "must_not_call": [
@@ -231,8 +224,7 @@
     "expected_intent": "multi_tool_task",
     "expected_tools": [
       "video_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "must_not_call": [
@@ -250,8 +242,7 @@
     "expected_intent": "multi_tool_task",
     "expected_tools": [
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "must_not_call": [
@@ -269,8 +260,7 @@
     "expected_intent": "multi_tool_task",
     "expected_tools": [
       "video_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "must_not_call": [
@@ -288,8 +278,7 @@
     "expected_intent": "multi_tool_task",
     "expected_tools": [
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "must_not_call": [
@@ -306,7 +295,7 @@
       "memory_retrieval"
     ],
     "must_not_call": [
-      "product_search"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -332,7 +321,7 @@
       "memory_save"
     ],
     "must_not_call": [
-      "product_search"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -345,7 +334,7 @@
       "memory_save"
     ],
     "must_not_call": [
-      "price_compare"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -356,8 +345,7 @@
     "expected_intent": "ask_followup",
     "expected_tools": [],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d",
       "vision_understanding"
@@ -371,8 +359,7 @@
     "expected_intent": "ask_followup",
     "expected_tools": [],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d",
       "vision_understanding"
@@ -389,8 +376,7 @@
     "expected_intent": "ask_followup",
     "expected_tools": [],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d",
       "vision_understanding"
@@ -407,8 +393,7 @@
     "expected_intent": "ask_followup",
     "expected_tools": [],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d",
       "vision_understanding"
@@ -427,8 +412,7 @@
       "vision_understanding"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -461,7 +445,7 @@
       "vision_understanding"
     ],
     "must_not_call": [
-      "price_compare",
+      "shopping_search",
       "render_3d"
     ],
     "suite": "routing"
@@ -478,7 +462,7 @@
       "video_understanding"
     ],
     "must_not_call": [
-      "product_search",
+      "shopping_search",
       "image_generation"
     ],
     "suite": "routing"
@@ -491,8 +475,7 @@
     "expected_tools": [],
     "must_not_call": [
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d"
     ],
@@ -525,8 +508,7 @@
     "expected_tools": [],
     "must_not_call": [
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d"
     ],
@@ -540,8 +522,7 @@
     "expected_tools": [],
     "must_not_call": [
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d"
     ],
@@ -609,57 +590,57 @@
     "suite": "routing"
   },
   {
-    "id": "text_product_search_001",
-    "category": "text_only_product_search",
+    "id": "text_shopping_search_001",
+    "category": "text_only_shopping_search",
     "text": "帮我找 500 元以内的白色运动鞋",
-    "expected_intent": "product_search",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "product_search"
+      "shopping_search"
     ],
     "must_not_call": [
       "vision_understanding"
     ],
     "suite": "e2e",
-    "scenario_id": "product_search_compare",
+    "scenario_id": "shopping_search",
     "expected_response_contains": [
       "商品"
     ]
   },
   {
-    "id": "text_product_search_002",
-    "category": "text_only_product_search",
+    "id": "text_shopping_search_002",
+    "category": "text_only_shopping_search",
     "text": "搜索 300 元以内的白色板鞋",
-    "expected_intent": "product_search",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "product_search"
+      "shopping_search"
     ],
     "must_not_call": [
       "vision_understanding",
-      "price_compare"
+      "shopping_search"
     ],
     "suite": "routing"
   },
   {
-    "id": "text_product_search_003",
-    "category": "text_only_product_search",
+    "id": "text_shopping_search_003",
+    "category": "text_only_shopping_search",
     "text": "帮我找日系白色休闲鞋",
-    "expected_intent": "product_search",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "product_search"
+      "shopping_search"
     ],
     "must_not_call": [
       "vision_understanding",
-      "price_compare"
+      "shopping_search"
     ],
     "suite": "routing"
   },
   {
-    "id": "text_price_compare_001",
-    "category": "text_only_price_compare",
+    "id": "text_shopping_search_001",
+    "category": "text_only_shopping_search",
     "text": "比较一下 iPhone 15 和 iPhone 16 的价格",
-    "expected_intent": "price_compare",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "price_compare"
+      "shopping_search"
     ],
     "must_not_call": [
       "vision_understanding",
@@ -668,26 +649,26 @@
     "suite": "routing"
   },
   {
-    "id": "text_price_compare_002",
-    "category": "text_only_price_compare",
+    "id": "text_shopping_search_002",
+    "category": "text_only_shopping_search",
     "text": "哪个平台更便宜",
-    "expected_intent": "price_compare",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "price_compare"
+      "shopping_search"
     ],
     "must_not_call": [
       "vision_understanding",
-      "product_search"
+      "shopping_search"
     ],
     "suite": "routing"
   },
   {
-    "id": "text_price_compare_003",
-    "category": "text_only_price_compare",
+    "id": "text_shopping_search_003",
+    "category": "text_only_shopping_search",
     "text": "比较价格，预算 300 元",
-    "expected_intent": "price_compare",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "price_compare"
+      "shopping_search"
     ],
     "must_not_call": [
       "vision_understanding",
@@ -722,8 +703,7 @@
       "vision_understanding"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -738,10 +718,10 @@
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
       "vision_understanding",
-      "product_search"
+      "shopping_search"
     ],
     "must_not_call": [
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "suite": "routing"
@@ -759,7 +739,7 @@
       "video_understanding"
     ],
     "must_not_call": [
-      "product_search",
+      "shopping_search",
       "image_generation"
     ],
     "suite": "routing"
@@ -778,8 +758,7 @@
       "image_generation"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -794,15 +773,14 @@
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
       "vision_understanding",
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "must_not_call": [
       "image_generation",
       "render_3d"
     ],
     "suite": "e2e",
-    "scenario_id": "image_to_product_search_compare",
+    "scenario_id": "image_to_shopping_search",
     "expected_response_contains": [
       "图片",
       "价格"
@@ -819,10 +797,10 @@
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
       "video_understanding",
-      "product_search"
+      "shopping_search"
     ],
     "must_not_call": [
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "suite": "routing"
@@ -837,7 +815,7 @@
     ],
     "must_not_call": [
       "vision_understanding",
-      "product_search"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -852,7 +830,7 @@
     ],
     "must_not_call": [
       "vision_understanding",
-      "product_search"
+      "shopping_search"
     ],
     "suite": "e2e",
     "scenario_id": "memory_to_image_generation",
@@ -862,12 +840,11 @@
   },
   {
     "id": "search_compare_text_001",
-    "category": "product_search_price_compare",
+    "category": "shopping_search_shopping_search",
     "text": "帮我找 500 元以内的白鞋，再比较价格",
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "must_not_call": [
       "vision_understanding",
@@ -877,12 +854,11 @@
   },
   {
     "id": "search_compare_text_002",
-    "category": "product_search_price_compare",
+    "category": "shopping_search_shopping_search",
     "text": "搜索白色运动鞋，然后比较价格",
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "must_not_call": [
       "vision_understanding",
@@ -898,8 +874,7 @@
     "expected_tools": [],
     "must_not_call": [
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d"
     ],
@@ -917,8 +892,7 @@
     "expected_tools": [],
     "must_not_call": [
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d"
     ],
@@ -933,28 +907,27 @@
       "render_3d"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "vision_understanding"
     ],
     "suite": "routing"
   },
   {
-    "id": "product_search_to_render",
+    "id": "shopping_search_to_render",
     "category": "render_3d",
     "text": "帮我找一款黑色办公椅，然后放到现代办公室里看看",
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
-      "product_search",
+      "shopping_search",
       "render_3d"
     ],
     "must_not_call": [
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "suite": "e2e",
-    "scenario_id": "product_search_to_render",
+    "scenario_id": "shopping_search_to_render",
     "expected_response_contains": [
       "3D"
     ]
@@ -973,8 +946,7 @@
       "render_3d"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "suite": "e2e"
@@ -993,8 +965,7 @@
       "render_3d"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "suite": "e2e"
@@ -1009,8 +980,7 @@
       "render_3d"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "vision_understanding"
     ],
@@ -1027,14 +997,14 @@
       "mock_llm": {
         "expected_intent": "multi_step_orchestration",
         "expected_tools": [
-          "product_search",
+          "shopping_search",
           "image_generation"
         ]
       },
       "hybrid": {
         "expected_intent": "multi_step_orchestration",
         "expected_tools": [
-          "product_search",
+          "shopping_search",
           "image_generation"
         ]
       }
@@ -1063,9 +1033,9 @@
     "category": "router_comparison",
     "suite": "routing",
     "text": "看看这个有没有便宜点的，顺便做个图",
-    "expected_intent": "price_compare",
+    "expected_intent": "shopping_search",
     "expected_tools": [
-      "price_compare"
+      "shopping_search"
     ],
     "router_expectations": {
       "mock_llm": {
@@ -1075,8 +1045,7 @@
       "hybrid": {
         "expected_intent": "multi_step_orchestration",
         "expected_tools": [
-          "product_search",
-          "price_compare"
+          "shopping_search"
         ]
       }
     }
@@ -1122,7 +1091,7 @@
     }
   },
   {
-    "id": "video_to_price_compare_001",
+    "id": "video_to_shopping_search_001",
     "category": "video_understanding",
     "suite": "e2e",
     "text": "找视频里的商品并比较价格",
@@ -1133,8 +1102,7 @@
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
       "video_understanding",
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ],
     "must_not_call": [
       "image_generation",
@@ -1160,8 +1128,7 @@
       "image_generation"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "render_3d"
     ],
     "expected_response_contains": [
@@ -1184,8 +1151,7 @@
       "memory_save"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d"
     ],
@@ -1208,8 +1174,7 @@
     "must_not_call": [
       "video_understanding",
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "must_not_require": [
@@ -1230,8 +1195,7 @@
     "must_not_call": [
       "video_understanding",
       "vision_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ]
   },
@@ -1307,8 +1271,7 @@
     "must_not_call": [
       "vision_understanding",
       "video_understanding",
-      "product_search",
-      "price_compare"
+      "shopping_search"
     ]
   },
   {
@@ -1328,8 +1291,7 @@
     "must_not_call": [
       "vision_understanding",
       "video_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ]
   },
@@ -1349,8 +1311,7 @@
     "must_not_call": [
       "vision_understanding",
       "video_understanding",
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d"
     ]
@@ -2111,8 +2072,7 @@
       "react plan-mode baseline ok"
     ],
     "must_not_call": [
-      "product_search",
-      "price_compare",
+      "shopping_search",
       "image_generation",
       "render_3d"
     ],
@@ -2138,7 +2098,7 @@
     "expected_intent": "multi_step_orchestration",
     "expected_capability": "multi_step_orchestration",
     "expected_tools": [
-      "product_search",
+      "shopping_search",
       "image_generation"
     ],
     "expected_response_contains": [
@@ -2149,14 +2109,14 @@
       "final_answer"
     ],
     "expected_observation_tools": [
-      "product_search",
+      "shopping_search",
       "image_generation"
     ],
     "expected_chat_calls": 3,
     "scripted_chat_outputs": [
       {
         "type": "tool_call",
-        "tool_name": "product_search",
+        "tool_name": "shopping_search",
         "tool_input": {
           "query": "白色低帮运动鞋",
           "top_k": 3
@@ -2221,7 +2181,7 @@
     "expected_intent": "multi_step_orchestration",
     "expected_capability": "multi_step_orchestration",
     "expected_tools": [
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "expected_response_contains": [
@@ -2232,14 +2192,14 @@
       "final_answer"
     ],
     "expected_observation_tools": [
-      "price_compare",
+      "shopping_search",
       "image_generation"
     ],
     "expected_chat_calls": 3,
     "scripted_chat_outputs": [
       {
         "type": "tool_call",
-        "tool_name": "price_compare",
+        "tool_name": "shopping_search",
         "tool_input": {
           "query": "白色低帮运动鞋",
           "items": [
@@ -2291,7 +2251,10 @@
     "expected_tools": [],
     "expected_chat_calls": 1,
     "scripted_chat_outputs": [
-      {"type": "final_answer", "message": "这是一个直接回答。"}
+      {
+        "type": "final_answer",
+        "message": "这是一个直接回答。"
+      }
     ]
   },
   {
@@ -2302,7 +2265,9 @@
     "text": "后台完成耳机搜索和比价",
     "execution_strategy": "plan_and_solve",
     "expected_intent": "multi_step_orchestration",
-    "expected_tools": ["task_plan_submit"],
+    "expected_tools": [
+      "task_plan_submit"
+    ],
     "expected_task_status": "queued",
     "expected_plan_version": 1,
     "expected_chat_calls": 1,
@@ -2314,7 +2279,11 @@
           "plan": {
             "goal": "搜索并比较耳机",
             "steps": [
-              {"step_id": "step_1", "action": "搜索", "tool_name": "product_search"}
+              {
+                "step_id": "step_1",
+                "action": "搜索",
+                "tool_name": "shopping_search"
+              }
             ]
           },
           "revision_reason": "initial"
@@ -2330,7 +2299,9 @@
     "text": "建立持久化任务",
     "task_execution_mode": "durable",
     "expected_intent": "multi_step_orchestration",
-    "expected_tools": ["task_plan_submit"],
+    "expected_tools": [
+      "task_plan_submit"
+    ],
     "expected_task_status": "queued",
     "expected_plan_version": 1,
     "expected_chat_calls": 1,
@@ -2342,7 +2313,11 @@
           "plan": {
             "goal": "搜索耳机",
             "steps": [
-              {"step_id": "step_1", "action": "搜索", "tool_name": "product_search"}
+              {
+                "step_id": "step_1",
+                "action": "搜索",
+                "tool_name": "shopping_search"
+              }
             ]
           },
           "revision_reason": "initial"
@@ -2359,7 +2334,9 @@
     "task_execution_mode": "durable",
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [],
-    "expected_error_codes": ["durable_plan_must_be_standalone"],
+    "expected_error_codes": [
+      "durable_plan_must_be_standalone"
+    ],
     "expected_chat_calls": 1,
     "scripted_chat_outputs": [
       {
@@ -2371,13 +2348,22 @@
               "plan": {
                 "goal": "搜索耳机",
                 "steps": [
-                  {"step_id": "step_1", "action": "搜索", "tool_name": "product_search"}
+                  {
+                    "step_id": "step_1",
+                    "action": "搜索",
+                    "tool_name": "shopping_search"
+                  }
                 ]
               },
               "revision_reason": "initial"
             }
           },
-          {"tool_name": "product_search", "tool_input": {"query": "耳机"}}
+          {
+            "tool_name": "shopping_search",
+            "tool_input": {
+              "query": "耳机"
+            }
+          }
         ]
       }
     ]
@@ -2388,12 +2374,20 @@
     "suite": "durable_tasks",
     "durable_scenario": "valid_resume",
     "expected_intent": "multi_step_orchestration",
-    "expected_tools": ["product_search"],
+    "expected_tools": [
+      "shopping_search"
+    ],
     "expected_task_status": "running",
     "expected_plan_version": 1,
     "expected_chat_calls": 1,
     "scripted_chat_outputs": [
-      {"type": "tool_call", "tool_name": "product_search", "tool_input": {"query": "耳机"}}
+      {
+        "type": "tool_call",
+        "tool_name": "shopping_search",
+        "tool_input": {
+          "query": "耳机"
+        }
+      }
     ]
   },
   {
@@ -2404,10 +2398,15 @@
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [],
     "expected_task_status": "replanning",
-    "expected_error_codes": ["durable_step_required"],
+    "expected_error_codes": [
+      "durable_step_required"
+    ],
     "expected_chat_calls": 1,
     "scripted_chat_outputs": [
-      {"type": "final_answer", "message": "过早声称完成"}
+      {
+        "type": "final_answer",
+        "message": "过早声称完成"
+      }
     ]
   },
   {
@@ -2416,12 +2415,20 @@
     "suite": "durable_tasks",
     "durable_scenario": "waiting_confirmation",
     "expected_intent": "multi_step_orchestration",
-    "expected_tools": ["custom_notification"],
+    "expected_tools": [
+      "custom_notification"
+    ],
     "expected_task_status": "waiting_confirmation",
     "expected_plan_version": 1,
     "expected_chat_calls": 1,
     "scripted_chat_outputs": [
-      {"type": "tool_call", "tool_name": "custom_notification", "tool_input": {"text": "通知团队"}}
+      {
+        "type": "tool_call",
+        "tool_name": "custom_notification",
+        "tool_input": {
+          "text": "通知团队"
+        }
+      }
     ]
   },
   {
@@ -2435,7 +2442,10 @@
     "expected_plan_version": 1,
     "expected_chat_calls": 1,
     "scripted_chat_outputs": [
-      {"type": "final_answer", "message": "任务完成"}
+      {
+        "type": "final_answer",
+        "message": "任务完成"
+      }
     ]
   }
 ]

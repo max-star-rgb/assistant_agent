@@ -15,9 +15,9 @@ def test_api_tool_results_include_capability_contracts() -> None:
     payload = response.json()
     contracts = [result["contract"] for result in payload["tool_results"]]
 
-    assert [contract["capability"] for contract in contracts] == ["product_search", "price_compare"]
+    assert [contract["capability"] for contract in contracts] == ["shopping_search"]
     assert all(contract["status"] == "succeeded" for contract in contracts)
-    assert payload["data"]["contracts"][0]["capability"] == "product_search"
+    assert payload["data"]["contracts"][0]["capability"] == "shopping_search"
 
 
 def test_api_failed_tool_contract_has_errors() -> None:
@@ -33,7 +33,7 @@ def test_api_failed_tool_contract_has_errors() -> None:
     contract = payload["tool_results"][0]["contract"]
 
     assert payload["status"] == "failed"
-    assert contract["capability"] == "price_compare"
+    assert contract["capability"] == "shopping_search"
     assert contract["status"] == "failed"
     assert contract["errors"][0]["code"]
     assert contract["errors"][0]["message"]

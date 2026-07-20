@@ -13,8 +13,8 @@ def test_run_summary_query_returns_debug_summary() -> None:
             run_id="run_1",
             node_name="search_node",
             event_type="tool_failed",
-            capability="product_search",
-            tool_name="product_search",
+            capability="shopping_search",
+            tool_name="shopping_search",
             provider="mock",
             status="failed",
             error_code="provider_call_limit_exceeded",
@@ -28,7 +28,7 @@ def test_run_summary_query_returns_debug_summary() -> None:
     assert summary.run_id == "run_1"
     assert summary.trace_id == "trace_1"
     assert summary.node_path == ["detect_intent"]
-    assert summary.tools == ["product_search"]
+    assert summary.tools == ["shopping_search"]
     assert summary.providers == ["mock"]
     assert summary.error_count == 1
     assert summary.budget_exceeded is True
@@ -48,8 +48,8 @@ def test_run_and_trace_summary_expose_latest_context_summary() -> None:
             "total_tool_count": 4,
             "prompt_tool_count": 2,
             "filtered_tool_count": 2,
-            "selected_tool_names": ["product_search", "price_compare"],
-            "selection_reasons": ["price_compare_keyword"],
+            "selected_tool_names": ["shopping_search"],
+            "selection_reasons": ["shopping_search_keyword"],
             "fallback_used": False,
         },
     }

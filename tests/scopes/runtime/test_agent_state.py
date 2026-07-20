@@ -39,7 +39,7 @@ def test_agent_state_can_be_created_from_request() -> None:
 def test_set_intent_and_plan_marks_state_running() -> None:
     state = AgentState.from_request(make_request())
     intent = IntentResult(
-        intent="search_product",
+        intent="shopping_search",
         confidence=0.9,
         rationale="用户要求查找相似商品",
     )
@@ -49,7 +49,7 @@ def test_set_intent_and_plan_marks_state_running() -> None:
             TaskStep(
                 step_id="s1",
                 action="search",
-                tool_name="product_search",
+                tool_name="shopping_search",
             )
         ],
     )
@@ -80,12 +80,12 @@ def test_tool_call_success_flow_keeps_run_active() -> None:
     state = AgentState.from_request(make_request())
 
     call = state.add_tool_call(
-        tool_name="product_search",
+        tool_name="shopping_search",
         input={"query": "白色低帮运动鞋"},
         call_id="call_1",
     )
     result = ToolResult(
-        tool_name="product_search",
+        tool_name="shopping_search",
         success=True,
         data={"count": 3},
         output_ref="tool-result:call_1",
@@ -101,9 +101,9 @@ def test_tool_call_success_flow_keeps_run_active() -> None:
 
 def test_tool_call_failure_records_error_and_failed_status() -> None:
     state = AgentState.from_request(make_request())
-    call = state.add_tool_call("product_search", call_id="call_1")
+    call = state.add_tool_call("shopping_search", call_id="call_1")
     result = ToolResult(
-        tool_name="product_search",
+        tool_name="shopping_search",
         success=False,
         error="缺少商品描述，无法搜索",
     )
@@ -114,7 +114,7 @@ def test_tool_call_failure_records_error_and_failed_status() -> None:
     assert failed.status == "failed"
     assert failed.error_message == "缺少商品描述，无法搜索"
     assert len(state.errors) == 1
-    assert state.errors[0].source == "product_search"
+    assert state.errors[0].source == "shopping_search"
     assert state.tool_results == [result]
 
 
@@ -130,7 +130,7 @@ def test_set_response_marks_state_completed() -> None:
 
 def test_completing_unknown_tool_call_raises() -> None:
     state = AgentState.from_request(make_request())
-    result = ToolResult(tool_name="product_search", success=True)
+    result = ToolResult(tool_name="shopping_search", success=True)
 
     with pytest.raises(ValueError, match="Tool call not found"):
         state.complete_tool_call("missing", result)

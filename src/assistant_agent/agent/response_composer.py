@@ -19,7 +19,7 @@ def save_demo_memory(request: UserRequest, state: AgentState, tool_executor: Too
     if not request.video_ids:
         return
     completed_tools = {result.tool_name for result in state.tool_results if result.success}
-    if not {"video_understanding", "shopping_search", "price_compare", "image_generation"}.issubset(completed_tools):
+    if not {"video_understanding", "shopping_search", "image_generation"}.issubset(completed_tools):
         return
     if any(result.tool_name == "memory_save" for result in state.tool_results):
         return
@@ -29,9 +29,9 @@ def save_demo_memory(request: UserRequest, state: AgentState, tool_executor: Too
         "source_intent": "assistant_candidate",
         "source_reason": "demo flow inferred a completed multi-tool task summary.",
         "future_use": "future demo runs may reference the task flow if the user confirms it.",
-        "evidence": "video understanding, shopping search, price compare, and image generation all succeeded.",
+        "evidence": "video understanding, shopping search, and image generation all succeeded.",
         "content": {
-            "summary": "完成视频鞋子识别、商品搜索、比价和日系海报生成。",
+            "summary": "完成视频鞋子识别、购物搜索比价和日系海报生成。",
             "text": request.text,
         },
     }
@@ -86,7 +86,7 @@ def compose_response(state: AgentState) -> AgentResponse:
     for result in state.tool_results:
         if not result.success or not result.data:
             continue
-        if result.tool_name in {"price_compare", "shopping_search"} and result.data.get("items") and not product_title:
+        if result.tool_name == "shopping_search" and result.data.get("items") and not product_title:
             first_item = result.data["items"][0]
             product_title = first_item.get("title")
             best_price = first_item.get("price")

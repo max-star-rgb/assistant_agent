@@ -364,8 +364,8 @@ def test_realtime_task_state_reducer_tracks_pending_tool_and_display_progress() 
         payload={
             "event_id": "evt-tool-start",
             "run_id": "run-1",
-            "tool_name": "product_search",
-            "current_step": "product_search",
+            "tool_name": "shopping_search",
+            "current_step": "shopping_search",
         },
     )
     state = reduce_realtime_task_state_event(
@@ -387,9 +387,9 @@ def test_realtime_task_state_reducer_tracks_pending_tool_and_display_progress() 
     text = format_realtime_task_state_snapshot(snapshot)
 
     assert snapshot.pending_tool == {
-        "tool_name": "product_search",
+        "tool_name": "shopping_search",
         "status": "working",
-        "current_step": "product_search",
+        "current_step": "shopping_search",
         "run_id": "run-1",
     }
     assert snapshot.tts_state == "speaking"
@@ -401,7 +401,7 @@ def test_realtime_task_state_reducer_tracks_pending_tool_and_display_progress() 
         "current_step": "awaiting_first_output",
     }
     assert snapshot.last_realtime_event_ids == ["evt-tool-start", "evt-progress-1"]
-    assert "pending_tool: product_search [working]" in text
+    assert "pending_tool: shopping_search [working]" in text
     assert "last_spoken_progress: I am on it." in text
 
 
@@ -427,9 +427,9 @@ def test_realtime_task_state_reducer_clears_pending_tool_on_finish_or_failure() 
         user_id="u1",
         session_id="s1",
         pending_tool={
-            "tool_name": "product_search",
+            "tool_name": "shopping_search",
             "status": "working",
-            "current_step": "product_search",
+            "current_step": "shopping_search",
             "run_id": "run-1",
         },
     )
@@ -437,12 +437,12 @@ def test_realtime_task_state_reducer_clears_pending_tool_on_finish_or_failure() 
     finished = reduce_realtime_task_state_event(
         state,
         event_type="tool.finished",
-        payload={"event_id": "evt-tool-finished", "tool_name": "product_search"},
+        payload={"event_id": "evt-tool-finished", "tool_name": "shopping_search"},
     )
     failed = reduce_realtime_task_state_event(
         state,
         event_type="tool.failed",
-        payload={"event_id": "evt-tool-failed", "tool_name": "product_search"},
+        payload={"event_id": "evt-tool-failed", "tool_name": "shopping_search"},
     )
 
     assert finished.pending_tool is None
@@ -456,7 +456,7 @@ def test_realtime_task_state_reducer_marks_cancel_and_hangup_sources() -> None:
         task_id="rtask:u1:s1",
         user_id="u1",
         session_id="s1",
-        pending_tool={"tool_name": "product_search", "status": "working"},
+        pending_tool={"tool_name": "shopping_search", "status": "working"},
         tts_state="speaking",
     )
 
@@ -566,7 +566,7 @@ def test_run_assistant_request_injects_task_state_before_runtime() -> None:
     assert latest_request.metadata["conversation_turn_index"] == 2
 
 
-def test_realtime_task_state_reuses_completed_product_search_artifact_on_interrupt() -> None:
+def test_realtime_task_state_reuses_completed_shopping_search_artifact_on_interrupt() -> None:
     task_store = InMemoryRealtimeTaskStateStore()
     runtime = _ProductSearchRuntime()
 
@@ -594,9 +594,9 @@ def test_realtime_task_state_reuses_completed_product_search_artifact_on_interru
     assert snapshot["stale_artifact_count"] == 0
     assert snapshot["pending_confirmation_count"] == 0
     assert snapshot["committed_side_effect_count"] == 0
-    assert snapshot["side_effects"][0]["tool_name"] == "product_search"
+    assert snapshot["side_effects"][0]["tool_name"] == "shopping_search"
     assert snapshot["side_effects"][0]["effect_level"] == "external_read"
-    assert reusable_artifact["tool_name"] == "product_search"
+    assert reusable_artifact["tool_name"] == "shopping_search"
     assert reusable_artifact["output_ref"] == "mock://products/headphones"
     assert reusable_artifact["context"]["structured_output"]["items"][0]["title"] == "通勤降噪耳机 A"
     assert "raw_provider_payload" not in str(reusable_artifact)
@@ -713,7 +713,7 @@ def test_realtime_task_state_records_checkpoint_for_multi_step_read_only_run() -
 
     run_assistant_request(
         _realtime_request("帮我搜索并比价三款蓝牙耳机", run_id="run-1", turn_id="turn-1"),
-        runtime=_ProductSearchAndPriceCompareRuntime(),
+        runtime=_ShoppingSearchRuntime(),
         conversation_store=InMemoryConversationStore(),
         realtime_task_state_store=task_store,
         load_env=False,
@@ -725,21 +725,16 @@ def test_realtime_task_state_records_checkpoint_for_multi_step_read_only_run() -
     assert len(checkpoints) == 1
     checkpoint = checkpoints[0]
     assert checkpoint.reuse_policy == "reusable"
-    assert checkpoint.summary == "Completed 2 reusable tool steps."
+    assert checkpoint.summary == "Completed 1 reusable tool steps."
     assert checkpoint.context == {
         "schema_version": "realtime_checkpoint_v1",
-        "completed_step_count": 2,
-        "completed_tools": ["product_search", "price_compare"],
+        "completed_step_count": 1,
+        "completed_tools": ["shopping_search"],
         "artifact_refs": [
             {
-                "tool_name": "product_search",
+                "tool_name": "shopping_search",
                 "output_ref": "mock://products/headphones",
                 "summary": "通勤降噪耳机 A",
-            },
-            {
-                "tool_name": "price_compare",
-                "output_ref": "mock://prices/headphones",
-                "summary": "Cheapest offer is 359 CNY.",
             },
         ],
     }
@@ -752,7 +747,7 @@ def test_realtime_task_state_resumes_from_checkpoint_on_interrupt() -> None:
 
     run_assistant_request(
         _realtime_request("帮我搜索并比价三款蓝牙耳机", run_id="run-1", turn_id="turn-1"),
-        runtime=_ProductSearchAndPriceCompareRuntime(),
+        runtime=_ShoppingSearchRuntime(),
         conversation_store=conversation_store,
         realtime_task_state_store=task_store,
         load_env=False,
@@ -778,7 +773,7 @@ def test_realtime_task_state_resumes_from_checkpoint_on_interrupt() -> None:
     assert snapshot["latest_revision"]["strategy"] == "resume_from_checkpoint"
     assert snapshot["continuation_strategy"] == "resume_from_checkpoint"
     assert checkpoint["context"]["schema_version"] == "realtime_checkpoint_v1"
-    assert checkpoint["context"]["completed_tools"] == ["product_search", "price_compare"]
+    assert checkpoint["context"]["completed_tools"] == ["shopping_search"]
     assert progress.text == "Resuming from the latest task checkpoint."
     assert progress.payload["strategy"] == "resume_from_checkpoint"
     assert progress.payload["checkpoint_count"] == 1
@@ -789,7 +784,7 @@ def test_realtime_task_state_marks_checkpoint_stale_when_user_restarts_work() ->
 
     run_assistant_request(
         _realtime_request("帮我搜索并比价三款蓝牙耳机", run_id="run-1", turn_id="turn-1"),
-        runtime=_ProductSearchAndPriceCompareRuntime(),
+        runtime=_ShoppingSearchRuntime(),
         conversation_store=InMemoryConversationStore(),
         realtime_task_state_store=task_store,
         load_env=False,
@@ -829,9 +824,9 @@ def test_run_assistant_request_updates_call_state_from_runtime_events() -> None:
     assert state is not None
     assert [event.type for event in sink.events] == ["tool_started", "progress_message"]
     assert state.pending_tool == {
-        "tool_name": "product_search",
+        "tool_name": "shopping_search",
         "status": "working",
-        "current_step": "product_search",
+        "current_step": "shopping_search",
         "run_id": "run-1",
     }
     assert state.tts_state == "speaking"
@@ -840,7 +835,7 @@ def test_run_assistant_request_updates_call_state_from_runtime_events() -> None:
         "source": "native_tool_wait",
         "replaceable": True,
         "display_only": True,
-        "current_step": "product_search",
+        "current_step": "shopping_search",
     }
     assert state.last_realtime_event_ids == ["evt-tool-start", "evt-progress"]
 
@@ -1062,7 +1057,7 @@ class _ProductSearchRuntime:
         state = AgentState.from_request(request)
         state.tool_results.append(
             ToolResult(
-                tool_name="product_search",
+                tool_name="shopping_search",
                 success=True,
                 output_ref="mock://products/headphones",
                 data={
@@ -1088,13 +1083,13 @@ class _ProductSearchRuntime:
         return state
 
 
-class _ProductSearchAndPriceCompareRuntime:
+class _ShoppingSearchRuntime:
     def run_state(self, request: UserRequest, **kwargs) -> AgentState:
         state = AgentState.from_request(request)
         state.tool_results.extend(
             [
                 ToolResult(
-                    tool_name="product_search",
+                    tool_name="shopping_search",
                     success=True,
                     output_ref="mock://products/headphones",
                     data={
@@ -1105,23 +1100,6 @@ class _ProductSearchAndPriceCompareRuntime:
                                 "product_id": "p1",
                                 "title": "通勤降噪耳机 A",
                                 "price": 399,
-                                "currency": "CNY",
-                                "raw_provider_payload": {"token": "sk-test"},
-                            }
-                        ],
-                    },
-                ),
-                ToolResult(
-                    tool_name="price_compare",
-                    success=True,
-                    output_ref="mock://prices/headphones",
-                    data={
-                        "summary": "Cheapest offer is 359 CNY.",
-                        "items": [
-                            {
-                                "product_id": "p1",
-                                "title": "通勤降噪耳机 A",
-                                "price": 359,
                                 "currency": "CNY",
                                 "raw_provider_payload": {"token": "sk-test"},
                             }
@@ -1227,8 +1205,8 @@ class _RealtimeEventRuntime:
                 type="tool_started",
                 session_id=request.session_id,
                 run_id="run-1",
-                tool_name="product_search",
-                payload={"event_id": "evt-tool-start", "current_step": "product_search"},
+                tool_name="shopping_search",
+                payload={"event_id": "evt-tool-start", "current_step": "shopping_search"},
             )
         )
         event_sink.emit(
@@ -1236,14 +1214,14 @@ class _RealtimeEventRuntime:
                 type="progress_message",
                 session_id=request.session_id,
                 run_id="run-1",
-                tool_name="product_search",
+                tool_name="shopping_search",
                 text="I will check that.",
                 payload={
                     "event_id": "evt-progress",
                     "source": "native_tool_wait",
                     "replaceable": True,
                     "display_only": True,
-                    "current_step": "product_search",
+                    "current_step": "shopping_search",
                 },
             )
         )
@@ -1259,8 +1237,8 @@ class _RealtimeToolCompletionRuntime:
                 type="tool_started",
                 session_id=request.session_id,
                 run_id="run-1",
-                tool_name="product_search",
-                payload={"event_id": "evt-tool-start", "current_step": "product_search"},
+                tool_name="shopping_search",
+                payload={"event_id": "evt-tool-start", "current_step": "shopping_search"},
             )
         )
         event_sink.emit(
@@ -1268,7 +1246,7 @@ class _RealtimeToolCompletionRuntime:
                 type="tool_finished",
                 session_id=request.session_id,
                 run_id="run-1",
-                tool_name="product_search",
+                tool_name="shopping_search",
                 output_ref="mock://products/headphones",
                 payload={"event_id": "evt-tool-finished"},
             )
@@ -1339,8 +1317,8 @@ class _RealtimeCancelledFromHangupRuntime:
                 type="tool_started",
                 session_id=request.session_id,
                 run_id="run-1",
-                tool_name="product_search",
-                payload={"event_id": "evt-tool-start", "current_step": "product_search"},
+                tool_name="shopping_search",
+                payload={"event_id": "evt-tool-start", "current_step": "shopping_search"},
             )
         )
         event_sink.emit(

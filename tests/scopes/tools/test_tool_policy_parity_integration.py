@@ -131,7 +131,7 @@ def test_scheduler_parallelizes_only_independent_safe_read_only_calls() -> None:
 def test_scheduler_serializes_requires_prior_observation_calls() -> None:
     calls = [
         _scheduled_call("shopping_search"),
-        _scheduled_call("price_compare", dependency_mode="requires_prior_observation"),
+        _scheduled_call("web_fetch", dependency_mode="requires_prior_observation"),
     ]
 
     schedule = tool_scheduler.plan_tool_schedule(calls, remaining_tool_budget=5)

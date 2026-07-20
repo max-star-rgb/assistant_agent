@@ -36,7 +36,7 @@ def test_agent_graph_runtime_run_returns_agent_response() -> None:
     )
 
     assert isinstance(response, AgentResponse)
-    assert response.data["intent"] == "product_search"
+    assert response.data["intent"] == "shopping_search"
     assert response.data["tool_count"] == 1
 
 
@@ -137,7 +137,7 @@ def test_agent_workflow_run_uses_graph_runtime_compatibly() -> None:
 
     assert state.status == "completed"
     assert state.intent is not None
-    assert state.intent.intent == "product_search"
+    assert state.intent.intent == "shopping_search"
     assert state.tool_calls[0].tool_name == "shopping_search"
 
 

@@ -65,12 +65,12 @@ def test_perception_bundle_contains_visual_understanding() -> None:
 
 def test_intent_result_validates_intent_and_confidence() -> None:
     intent = IntentResult(
-        intent="search_product",
+        intent="shopping_search",
         confidence=0.91,
         rationale="用户明确要求找相似商品",
     )
 
-    assert intent.intent == "search_product"
+    assert intent.intent == "shopping_search"
 
     with pytest.raises(ValidationError):
         IntentResult(intent="unknown", confidence=0.5, rationale="bad")
@@ -83,13 +83,8 @@ def test_task_plan_serializes_nested_steps() -> None:
     plan = TaskPlan(
         goal="搜索并比较白色低帮运动鞋",
         steps=[
-            TaskStep(step_id="s1", action="search", tool_name="product_search"),
-            TaskStep(
-                step_id="s2",
-                action="compare",
-                tool_name="price_compare",
-                depends_on=["s1"],
-            ),
+            TaskStep(step_id="s1", action="shopping_search", tool_name="shopping_search"),
+            TaskStep(step_id="s2", action="render", tool_name="render_3d", depends_on=["s1"]),
         ],
     )
 
@@ -101,13 +96,13 @@ def test_task_plan_serializes_nested_steps() -> None:
 
 def test_tool_models_capture_selection_result_and_call_record() -> None:
     selected = ToolSelection(
-        tool_name="product_search",
+        tool_name="shopping_search",
         reason="需要搜索商品候选",
         input={"query": "白色低帮运动鞋"},
         step_id="s1",
     )
     result = ToolResult(
-        tool_name="product_search",
+        tool_name="shopping_search",
         success=True,
         data={"count": 3},
         latency_ms=12,
@@ -126,7 +121,7 @@ def test_tool_models_capture_selection_result_and_call_record() -> None:
     assert record.status == "succeeded"
 
     with pytest.raises(ValidationError):
-        ToolResult(tool_name="product_search", success=True, latency_ms=-1)
+        ToolResult(tool_name="shopping_search", success=True, latency_ms=-1)
 
 
 def test_product_and_price_compare_models_validate_ranges() -> None:

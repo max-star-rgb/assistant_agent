@@ -31,7 +31,7 @@ class RecordingTool(MockTool):
     input_schema = QueryInput
     output_schema = QueryInput
 
-    def __init__(self, name: str = "product_search") -> None:
+    def __init__(self, name: str = "shopping_search") -> None:
         self.name = name
         self.calls = 0
 
@@ -83,8 +83,8 @@ def test_worker_returns_false_when_no_task_is_claimable() -> None:
 
 
 def test_worker_executes_one_ready_step_and_checkpoints_before_release() -> None:
-    worker, service, tool, _ = _worker([_native("product_search", {"query": "耳机"})])
-    bundle = _submit(service, tool_name="product_search")
+    worker, service, tool, _ = _worker([_native("shopping_search", {"query": "耳机"})])
+    bundle = _submit(service, tool_name="shopping_search")
 
     assert worker.run_once() is True
 
@@ -92,7 +92,7 @@ def test_worker_executes_one_ready_step_and_checkpoints_before_release() -> None
     run = stored.step_runs[0]
     assert tool.calls == 1
     assert run.status == "succeeded"
-    assert run.output_ref == "mock://product_search/1"
+    assert run.output_ref == "mock://shopping_search/1"
     assert stored.task.lease_token is None
     assert [event.event_type for event in service.store.list_events(bundle.task.task_id)][-1] == "step.completed"
 
@@ -134,7 +134,7 @@ def test_worker_requires_confirmation_then_resumes_with_bound_approval() -> None
 
 def test_approved_nonfirst_ready_step_uses_its_own_confirmation_binding() -> None:
     registry = ToolRegistry()
-    search = RecordingTool("product_search")
+    search = RecordingTool("shopping_search")
     notification = RecordingTool("custom_notification")
     registry.register(search)
     registry.register(notification)
@@ -163,7 +163,7 @@ def test_approved_nonfirst_ready_step_uses_its_own_confirmation_binding() -> Non
         plan=TaskPlan(
             goal="搜索并通知",
             steps=[
-                TaskStep(step_id="step_search", action="搜索", tool_name="product_search"),
+                TaskStep(step_id="step_search", action="搜索", tool_name="shopping_search"),
                 TaskStep(step_id="step_notify", action="通知", tool_name="custom_notification"),
             ],
         ),
@@ -190,7 +190,7 @@ def test_approved_nonfirst_ready_step_uses_its_own_confirmation_binding() -> Non
 
 def test_cancel_racing_after_model_decision_prevents_tool_start() -> None:
     registry = ToolRegistry()
-    tool = RecordingTool("product_search")
+    tool = RecordingTool("shopping_search")
     registry.register(tool)
     service = DurableTaskService(store=InMemoryTaskStore(), registry=registry)
     bundle_holder = {}
@@ -204,7 +204,7 @@ def test_cancel_racing_after_model_decision_prevents_tool_start() -> None:
             )
             return super().chat(request)
 
-    adapter = CancellingAdapter([_native("product_search", {"query": "耳机"})])
+    adapter = CancellingAdapter([_native("shopping_search", {"query": "耳机"})])
     runtime = AgentGraphRuntime(
         registry=registry,
         config=ProviderConfig(durable_tasks_enabled=True),
@@ -217,7 +217,7 @@ def test_cancel_racing_after_model_decision_prevents_tool_start() -> None:
         worker_id="worker-test",
         poll_seconds=0.01,
     )
-    bundle = _submit(service, tool_name="product_search")
+    bundle = _submit(service, tool_name="shopping_search")
     bundle_holder["task_id"] = bundle.task.task_id
 
     assert worker.run_once() is True
@@ -255,7 +255,7 @@ def test_worker_rejects_changed_input_after_confirmation() -> None:
 
 def test_worker_rejects_premature_natural_language_completion() -> None:
     worker, service, tool, _ = _worker([_final("已经完成")])
-    bundle = _submit(service, tool_name="product_search")
+    bundle = _submit(service, tool_name="shopping_search")
 
     assert worker.run_once() is True
 
@@ -268,7 +268,7 @@ def test_worker_rejects_premature_natural_language_completion() -> None:
 def test_worker_can_revise_the_bound_plan_without_leaving_a_stale_lease() -> None:
     revised_plan = TaskPlan(
         goal="修订后的任务",
-        steps=[TaskStep(step_id="step_1", action="重新搜索", tool_name="product_search")],
+        steps=[TaskStep(step_id="step_1", action="重新搜索", tool_name="shopping_search")],
     )
     worker, service, _, _ = _worker(
         [
@@ -281,7 +281,7 @@ def test_worker_can_revise_the_bound_plan_without_leaving_a_stale_lease() -> Non
             )
         ]
     )
-    bundle = _submit(service, tool_name="product_search")
+    bundle = _submit(service, tool_name="shopping_search")
 
     worker.run_once()
 
@@ -293,14 +293,14 @@ def test_worker_can_revise_the_bound_plan_without_leaving_a_stale_lease() -> Non
 
 def test_waiting_input_is_not_claimed_until_identity_bound_input_arrives() -> None:
     worker, service, tool, adapter = _worker(
-        [_native("product_search", {"query": "用户补充的预算"})]
+        [_native("shopping_search", {"query": "用户补充的预算"})]
     )
     bundle = service.submit_plan(
         identity=RequestIdentity.for_user(user_id="u1", session_id="s1"),
         ingress_run_id="run-ingress",
         plan=TaskPlan(
             goal="等待预算后搜索",
-            steps=[TaskStep(step_id="step_1", action="搜索", tool_name="product_search")],
+            steps=[TaskStep(step_id="step_1", action="搜索", tool_name="shopping_search")],
             requires_followup=True,
             followup_question="预算是多少？",
         ),
@@ -322,8 +322,8 @@ def test_waiting_input_is_not_claimed_until_identity_bound_input_arrives() -> No
 
 
 def test_invalid_ready_step_input_checkpoints_waiting_input() -> None:
-    worker, service, tool, _ = _worker([_native("product_search", {})])
-    bundle = _submit(service, tool_name="product_search")
+    worker, service, tool, _ = _worker([_native("shopping_search", {})])
+    bundle = _submit(service, tool_name="shopping_search")
 
     worker.run_once()
 
@@ -337,11 +337,11 @@ def test_invalid_ready_step_input_checkpoints_waiting_input() -> None:
 def test_worker_uses_a_separate_completion_quantum_after_required_steps() -> None:
     worker, service, _, adapter = _worker(
         [
-            _native("product_search", {"query": "耳机"}),
+            _native("shopping_search", {"query": "耳机"}),
             _final("任务完成"),
         ]
     )
-    bundle = _submit(service, tool_name="product_search")
+    bundle = _submit(service, tool_name="shopping_search")
 
     assert worker.run_once() is True
     assert service.store.load(bundle.task.task_id).task.status == "running"
@@ -356,11 +356,11 @@ def test_worker_uses_a_separate_completion_quantum_after_required_steps() -> Non
 def test_expired_lease_retries_read_only_step_after_pre_checkpoint_crash() -> None:
     worker, service, tool, _ = _worker(
         [
-            _native("product_search", {"query": "耳机"}),
-            _native("product_search", {"query": "耳机"}),
+            _native("shopping_search", {"query": "耳机"}),
+            _native("shopping_search", {"query": "耳机"}),
         ]
     )
-    bundle = _submit(service, tool_name="product_search")
+    bundle = _submit(service, tool_name="shopping_search")
     now = datetime.now(timezone.utc)
     _run_without_checkpoint(worker, service, now)
 
@@ -394,9 +394,9 @@ def test_expired_mutating_attempt_stops_at_outcome_unknown_after_crash() -> None
 
 def test_attempt_is_committed_before_tool_result_checkpoint() -> None:
     worker, service, tool, _ = _worker(
-        [_native("product_search", {"query": "耳机"})]
+        [_native("shopping_search", {"query": "耳机"})]
     )
-    bundle = _submit(service, tool_name="product_search")
+    bundle = _submit(service, tool_name="shopping_search")
     now = datetime.now(timezone.utc)
 
     _run_without_checkpoint(worker, service, now)
@@ -440,9 +440,9 @@ def test_mutating_timeout_checkpoints_outcome_unknown_without_retry() -> None:
 
 def test_cancelled_quantum_checkpoints_task_before_any_tool_call() -> None:
     worker, service, tool, adapter = _worker(
-        [_native("product_search", {"query": "耳机"})]
+        [_native("shopping_search", {"query": "耳机"})]
     )
-    bundle = _submit(service, tool_name="product_search")
+    bundle = _submit(service, tool_name="shopping_search")
     lease = service.claim_next(worker_id="cancel-worker")
     snapshot = service.snapshot_for_lease(lease)
     stored = service.store.load(lease.task_id)
@@ -473,7 +473,7 @@ def test_worker_loop_uses_cooperative_stop_event() -> None:
     worker.run(stop)
 
 
-def _worker(outputs: list[ChatResult], *, tool_name: str = "product_search"):
+def _worker(outputs: list[ChatResult], *, tool_name: str = "shopping_search"):
     registry = ToolRegistry()
     tool = RecordingTool(tool_name)
     registry.register(tool)

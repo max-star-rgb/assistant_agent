@@ -30,7 +30,7 @@ def run_request(request: UserRequest):
         (
             UserRequest(user_id="u1", session_id="s1", text="找同款并比价", image_ids=["img1"]),
             "multi_step_orchestration",
-            ["vision_understanding", "shopping_search", "price_compare"],
+            ["vision_understanding", "shopping_search"],
         ),
         (
             UserRequest(user_id="u1", session_id="s1", text="找视频里的商品", video_ids=["video1"]),

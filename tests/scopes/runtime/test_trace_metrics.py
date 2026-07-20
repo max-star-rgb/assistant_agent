@@ -26,11 +26,11 @@ def test_build_trace_metrics_summarizes_runs_tools_llm_context_gateway_and_memor
     assert metrics["errors"]["count"] == 2
     assert metrics["errors"]["by_code"] == {"provider_timeout": 2}
     assert metrics["tools"]["total_calls"] == 1
-    assert metrics["tools"]["by_tool"]["product_search"]["call_count"] == 1
-    assert metrics["tools"]["by_tool"]["product_search"]["failure_count"] == 1
-    assert metrics["tools"]["by_tool"]["product_search"]["failure_rate"] == 1.0
-    assert metrics["tools"]["by_tool"]["product_search"]["retry_count"] == 1
-    assert metrics["tools"]["by_tool"]["product_search"]["latency_ms"]["avg"] == 80.0
+    assert metrics["tools"]["by_tool"]["shopping_search"]["call_count"] == 1
+    assert metrics["tools"]["by_tool"]["shopping_search"]["failure_count"] == 1
+    assert metrics["tools"]["by_tool"]["shopping_search"]["failure_rate"] == 1.0
+    assert metrics["tools"]["by_tool"]["shopping_search"]["retry_count"] == 1
+    assert metrics["tools"]["by_tool"]["shopping_search"]["latency_ms"]["avg"] == 80.0
     assert metrics["llm"]["call_count"] == 2
     assert metrics["llm"]["provider_counts"] == {"mock": 2}
     assert metrics["llm"]["direct_answer_count"] == 1
@@ -54,7 +54,7 @@ def test_trace_metrics_prefers_terminal_tool_events_over_observation_duplicates(
         "run_id": "run_1",
         "user_id": "u1",
         "session_id": "s1",
-        "tool_name": "product_search",
+        "tool_name": "shopping_search",
         "attributes": {"tool_call_id": "call_1", "retry_count": 1},
     }
     events = [
@@ -88,10 +88,10 @@ def test_trace_metrics_prefers_terminal_tool_events_over_observation_duplicates(
     metrics = build_trace_metrics(events)
 
     assert metrics["tools"]["total_calls"] == 1
-    assert metrics["tools"]["by_tool"]["product_search"]["call_count"] == 1
-    assert metrics["tools"]["by_tool"]["product_search"]["failure_count"] == 1
-    assert metrics["tools"]["by_tool"]["product_search"]["retry_count"] == 1
-    assert metrics["tools"]["by_tool"]["product_search"]["latency_ms"]["avg"] == 90.0
+    assert metrics["tools"]["by_tool"]["shopping_search"]["call_count"] == 1
+    assert metrics["tools"]["by_tool"]["shopping_search"]["failure_count"] == 1
+    assert metrics["tools"]["by_tool"]["shopping_search"]["retry_count"] == 1
+    assert metrics["tools"]["by_tool"]["shopping_search"]["latency_ms"]["avg"] == 90.0
 
 
 def test_trace_metrics_loads_and_filters_jsonl_events(tmp_path: Path) -> None:
@@ -117,7 +117,7 @@ def test_trace_metrics_script_outputs_human_summary(tmp_path: Path) -> None:
     assert "runs=3 completed=1 failed=1 cancelled=1" in result.stdout
     assert "success_rate=33.3%" in result.stdout
     assert "llm calls=2" in result.stdout
-    assert "product_search calls=1 failed=1" in result.stdout
+    assert "shopping_search calls=1 failed=1" in result.stdout
     assert "context samples=1 avg_budget=75.0%" in result.stdout
     assert "gateway cancels=1 sources=hangup:1" in result.stdout
     assert "memory retrievals=1 saves=1 candidates=2 saved=1 rejected=1" in result.stdout
@@ -265,7 +265,7 @@ def _sample_events() -> list[TraceEvent]:
             event_type="tool_observation",
             canonical_event="tool.observation",
             status="failed",
-            tool_name="product_search",
+            tool_name="shopping_search",
             latency_ms=80,
             attributes={"retry_count": 1},
             error={"code": "provider_timeout", "message": "Provider timed out"},

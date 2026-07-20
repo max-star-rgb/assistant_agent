@@ -61,7 +61,7 @@ def test_trace_metrics_observer_summary_uses_existing_metrics_shape() -> None:
             canonical_event="tool.failed",
             status="failed",
             node_name="tool_executor",
-            tool_name="product_search",
+            tool_name="shopping_search",
             latency_ms=80,
             attributes={"retry_count": 1},
             error={"code": "provider_timeout", "message": "Provider timed out"},
@@ -75,7 +75,7 @@ def test_trace_metrics_observer_summary_uses_existing_metrics_shape() -> None:
     assert metrics["run"]["count"] == 1
     assert metrics["run"]["failed"] == 1
     assert metrics["tools"]["total_calls"] == 1
-    assert metrics["tools"]["by_tool"]["product_search"]["failure_count"] == 1
+    assert metrics["tools"]["by_tool"]["shopping_search"]["failure_count"] == 1
 
 
 def test_trace_metrics_observer_clear_resets_local_state() -> None:

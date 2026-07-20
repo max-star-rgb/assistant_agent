@@ -104,10 +104,10 @@ class RuleBasedTaskPlanner:
                 reason="用户要求检索最新、实时或联网信息。",
             )
 
-        if self._has_product_search_intent(text):
+        if self._has_shopping_search_intent(text):
             self._append_step(
                 steps,
-                action="search_product",
+                action="shopping_search",
                 tool_name="shopping_search",
                 required_inputs=["query or visual_summary"],
                 reason="用户要求查找商品，执行购物搜索。",
@@ -116,7 +116,7 @@ class RuleBasedTaskPlanner:
         if self._contains(text, self.compare_keywords) and not self._has_step(steps, "shopping_search"):
             self._append_step(
                 steps,
-                action="search_product",
+                action="shopping_search",
                 tool_name="shopping_search",
                 required_inputs=["query"],
                 reason="用户要求比价但没有候选商品，先执行购物搜索。",
@@ -213,7 +213,7 @@ class RuleBasedTaskPlanner:
         lowered = text.lower()
         return any(keyword.lower() in lowered for keyword in keywords)
 
-    def _has_product_search_intent(self, text: str) -> bool:
+    def _has_shopping_search_intent(self, text: str) -> bool:
         if self._contains(
             text,
             (

@@ -42,7 +42,7 @@ def _tool_event(
         canonical_event,
         status=status,
         node_name="tool_executor",
-        tool_name="product_search",
+        tool_name="shopping_search",
         attributes={"tool_call_id": "call_1", "step_id": "step_1"},
         error=error,
     )
@@ -99,7 +99,7 @@ def test_trace_invariant_observer_reports_observation_without_prior_tool_or_reje
     violations = observer.violations()
 
     assert [violation.code for violation in violations] == ["tool_observation_without_prior_action"]
-    assert violations[0].tool_name == "product_search"
+    assert violations[0].tool_name == "shopping_search"
 
 
 def test_trace_invariant_observer_allows_observation_after_validation_rejection() -> None:

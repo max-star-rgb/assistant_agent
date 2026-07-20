@@ -26,7 +26,7 @@ def test_image_generation_response_is_specific() -> None:
     assert "已完成请求处理" not in state.response.message
 
 
-def test_product_search_price_compare_response_is_specific() -> None:
+def test_shopping_search_response_is_specific() -> None:
     state = _run(UserRequest(user_id="u1", session_id="s1", text="帮我找 500 元以内的白鞋，再比较价格"))
 
     assert state.response is not None

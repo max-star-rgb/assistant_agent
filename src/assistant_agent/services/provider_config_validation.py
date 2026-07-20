@@ -64,13 +64,13 @@ def validate_provider_config(config: ProviderConfig) -> ProviderConfigValidation
     )
     _add_issue_if_missing(
         issues,
-        capability="product_search",
+        capability="shopping_search",
         provider=config.product_search_provider,
         missing=_product_search_missing(config),
     )
     _add_issue_if_missing(
         issues,
-        capability="price_compare",
+        capability="shopping_search",
         provider=config.price_compare_provider,
         missing=_price_compare_missing(config),
     )

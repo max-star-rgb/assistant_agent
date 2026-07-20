@@ -10,7 +10,7 @@ def test_compose_response_includes_price_and_image_result() -> None:
     state.set_intent(IntentResult(intent="multi_tool_task", confidence=0.9, rationale="test"))
     state.tool_results.append(
         ToolResult(
-            tool_name="price_compare",
+            tool_name="shopping_search",
             success=True,
             data={"items": [{"title": "白色低帮运动鞋 A", "price": 259.0}]},
         )

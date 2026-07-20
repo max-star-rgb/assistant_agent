@@ -183,7 +183,7 @@ def test_provider_stream_runner_accumulates_tool_calls_without_streaming_argumen
     assert result.finish_reason == "tool_calls"
     assert result.message_kind == "tool_call"
     assert len(result.tool_calls) == 1
-    assert result.tool_calls[0].name == "product_search"
+    assert result.tool_calls[0].name == "shopping_search"
     assert result.tool_calls[0].arguments == {"query": "commute headphones"}
     assert callback_events == [
         (

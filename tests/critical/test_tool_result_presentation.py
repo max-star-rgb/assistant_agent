@@ -15,7 +15,7 @@ from assistant_agent.schemas.tool_observation import observation_from_tool_resul
 
 def test_tool_result_model_observation_is_assistant_facing_data() -> None:
     result = ToolResult(
-        tool_name="product_search",
+        tool_name="shopping_search",
         success=True,
         data={
             "summary": "legacy summary with token sk-test",

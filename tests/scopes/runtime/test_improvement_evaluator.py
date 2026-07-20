@@ -77,7 +77,7 @@ def test_valid_skill_replacement_generates_local_diff_without_writing(tmp_path: 
 
 def test_skill_permission_expansion_is_rejected(tmp_path: Path) -> None:
     original = _skill("- User asks for current information.")
-    replacement = original.replace("- tool:web_search", "- tool:web_search\n- tool:price_compare")
+    replacement = original.replace("- tool:web_search", "- tool:web_search\n- tool:shopping_search")
     skill_path = tmp_path / "skills" / "realtime_web_search" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text(original, encoding="utf-8")

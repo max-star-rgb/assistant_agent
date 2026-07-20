@@ -174,7 +174,6 @@ def test_react_decision_trace_includes_context_report_v1() -> None:
     assert report["sections"]["system_prompt"]["chars"] > 0
     assert report["sections"]["tool_schema"]["item_count"] >= 1
     assert "shopping_search" in report["selected_tool_names"]
-    assert "price_compare" in report["selected_tool_names"]
 
 
 def test_mock_runtime_emits_memory_lifecycle_trace_without_memory_content() -> None:

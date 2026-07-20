@@ -698,11 +698,11 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
                 await event_sink(
                     RealtimeAgentEvent(
                         type="run.progress",
-                        text="Calling product_search.",
+                        text="Calling shopping_search.",
                         payload={
                             "stage": "tool",
                             "status": "working",
-                            "current_step": "product_search",
+                            "current_step": "shopping_search",
                         },
                         display_only=True,
                     )
@@ -730,7 +730,7 @@ class GatewaySessionTests(unittest.IsolatedAsyncioTestCase):
             "event.progress",
             "run.end",
         ]
-        assert frames[1]["payload"]["text"] == "Calling product_search."
+        assert frames[1]["payload"]["text"] == "Calling shopping_search."
         assert frames[1]["payload"]["stage"] == "tool"
         assert frames[1]["payload"]["status"] == "working"
         assert frames[1]["payload"]["display_only"] is True

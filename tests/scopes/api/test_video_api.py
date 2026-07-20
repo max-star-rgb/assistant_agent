@@ -52,8 +52,7 @@ def test_video_api_returns_multistep_video_result() -> None:
     assert payload["intent"] == "multi_step_orchestration"
     assert [call["tool_name"] for call in payload["tool_calls"]] == [
         "video_understanding",
-        "product_search",
-        "price_compare",
+        "shopping_search",
     ]
     assert payload["tool_results"][0]["contract"]["capability"] == "video_understanding"
     assert payload["tool_calls"][1]["input"]["video_summary"]

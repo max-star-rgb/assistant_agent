@@ -42,7 +42,7 @@ def test_render_api_returns_multistep_render_result() -> None:
     payload = response.json()
     assert payload["status"] == "completed"
     assert payload["intent"] == "multi_step_orchestration"
-    assert [call["tool_name"] for call in payload["tool_calls"]] == ["product_search", "render_3d"]
+    assert [call["tool_name"] for call in payload["tool_calls"]] == ["shopping_search", "render_3d"]
 
     render_call = payload["tool_calls"][1]
     render_result = payload["tool_results"][1]

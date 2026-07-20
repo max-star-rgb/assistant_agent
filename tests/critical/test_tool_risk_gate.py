@@ -93,7 +93,7 @@ def test_risk_gate_maps_side_effect_policy_to_runtime_gate_level() -> None:
 
 
 def test_read_only_tools_run_without_idempotency_overhead() -> None:
-    tool = RecordingTool("product_search")
+    tool = RecordingTool("shopping_search")
     registry = ToolRegistry()
     registry.register(tool)
     ledger = InMemoryToolIdempotencyLedger()

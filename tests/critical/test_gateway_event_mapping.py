@@ -5,11 +5,11 @@ from assistant_agent.realtime import RealtimeAgentEvent
 def test_realtime_progress_event_maps_to_gateway_progress_frame() -> None:
     event = RealtimeAgentEvent(
         type="run.progress",
-        text="Calling product_search.",
+        text="Calling shopping_search.",
         payload={
             "stage": "tool",
             "status": "working",
-            "current_step": "product_search",
+            "current_step": "shopping_search",
             "progress": 0.25,
         },
         display_only=True,
@@ -27,8 +27,8 @@ def test_realtime_progress_event_maps_to_gateway_progress_frame() -> None:
     assert mapped["session_id"] == "session-1"
     assert mapped["turn_id"] == "turn-1"
     assert mapped["run_id"] == "run-1"
-    assert mapped["payload"]["text"] == "Calling product_search."
-    assert mapped["payload"]["message"] == "Calling product_search."
+    assert mapped["payload"]["text"] == "Calling shopping_search."
+    assert mapped["payload"]["message"] == "Calling shopping_search."
     assert mapped["payload"]["stage"] == "tool"
     assert mapped["payload"]["status"] == "working"
     assert mapped["payload"]["progress"] == 0.25

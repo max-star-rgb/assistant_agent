@@ -19,13 +19,13 @@ def test_text_to_render_builds_scene_description() -> None:
     assert tool_input["session_id"] == "s1"
 
 
-def test_product_search_result_feeds_render_request() -> None:
+def test_shopping_search_result_feeds_render_request() -> None:
     tool_input = build_tool_input(
         "render_3d",
         UserRequest(user_id="u1", session_id="s1", text="放到现代办公室里看看"),
         {
             "step_1": ToolResult(
-                tool_name="product_search",
+                tool_name="shopping_search",
                 success=True,
                 data={
                     "items": [

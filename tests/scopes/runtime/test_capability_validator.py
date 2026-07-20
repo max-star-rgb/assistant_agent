@@ -58,15 +58,15 @@ def test_render_without_scene_becomes_followup() -> None:
     assert validated.missing_inputs == ["scene_description"]
 
 
-def test_price_compare_without_products_but_with_query_adds_search_then_compare() -> None:
-    decision = IntentDecision(primary_intent="price_compare", confidence=0.8)
+def test_shopping_search_with_query_creates_single_shopping_step() -> None:
+    decision = IntentDecision(primary_intent="shopping_search", confidence=0.8)
 
     validated = CapabilityValidator().validate(decision, _request(text="比较一下白色运动鞋价格"))
 
-    assert validated.primary_intent == "multi_step_orchestration"
-    assert validated.capabilities == ["product_search", "price_compare"]
-    assert [step.capability for step in validated.plan_steps] == ["product_search", "price_compare"]
-    assert [step.tool_name for step in validated.plan_steps] == ["shopping_search", "price_compare"]
+    assert validated.primary_intent == "shopping_search"
+    assert validated.capabilities == ["shopping_search"]
+    assert [step.capability for step in validated.plan_steps] == ["shopping_search"]
+    assert [step.tool_name for step in validated.plan_steps] == ["shopping_search"]
 
 
 def test_web_fetch_without_url_becomes_followup() -> None:

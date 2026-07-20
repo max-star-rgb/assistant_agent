@@ -18,11 +18,10 @@ def test_langgraph_loop_executes_multistep_task_one_step_at_a_time() -> None:
     assert [call.tool_name for call in state.tool_calls[:4]] == [
         "video_understanding",
         "shopping_search",
-        "price_compare",
         "image_generation",
     ]
     assert state.response is not None
-    assert state.response.data["tool_count"] >= 4
+    assert state.response.data["tool_count"] >= 3
 
 
 def test_conditional_graph_uses_explicit_multistep_loop_nodes() -> None:

@@ -2,8 +2,7 @@ import pytest
 
 from assistant_agent.schemas.products import PriceCompareResult, ProductResult
 from assistant_agent.services.product_adapter import MockProductSearchAdapter, PriceCompareInput, ProductSearchInput
-from assistant_agent.tools.price_compare_tool import PriceCompareTool
-from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 
 
 def test_mock_product_adapter_search_returns_product_schema_list() -> None:
@@ -39,13 +38,14 @@ def test_mock_product_adapter_rejects_missing_search_query() -> None:
     assert "缺少商品描述" in result.errors[0].message
 
 
-def test_product_tools_return_structured_results_without_provider_details() -> None:
-    search_result = ProductSearchTool(adapter=MockProductSearchAdapter()).run({"query": "白色低帮运动鞋"})
-    compare_result = PriceCompareTool(adapter=MockProductSearchAdapter()).run(
-        {"query": "白色低帮运动鞋", "items": search_result.data["items"]}
+def test_shopping_search_tool_returns_structured_results_without_provider_details() -> None:
+    result = ShoppingSearchTool(
+        search_adapter=MockProductSearchAdapter(),
+        price_compare_adapter=MockProductSearchAdapter(),
+    ).run(
+        {"query": "白色低帮运动鞋"}
     )
 
-    assert search_result.success is True
-    assert compare_result.success is True
-    assert search_result.data["items"]
-    assert compare_result.data["best_value_product_id"]
+    assert result.success is True
+    assert result.data["search"]["items"]
+    assert result.data["best_value_product_id"]

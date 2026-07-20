@@ -31,5 +31,4 @@ def test_conditional_graph_still_executes_multi_tool_path_after_refactor() -> No
     tool_names = [call.tool_name for call in state.tool_calls]
     assert "video_understanding" in tool_names
     assert "shopping_search" in tool_names
-    assert "price_compare" in tool_names
     assert "image_generation" in tool_names

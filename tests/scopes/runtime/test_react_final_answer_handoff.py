@@ -113,25 +113,9 @@ def test_mock_rule_plan_still_uses_response_composer_after_tools() -> None:
 
 
 def test_native_compare_request_uses_tool_calls_then_final_content() -> None:
-    item = {
-        "product_id": "p1",
-        "title": "Cinnamoroll 玉桂狗毛绒公仔",
-        "price": 39.9,
-        "currency": "CNY",
-        "platform": "mock",
-        "url": "https://example.com/p1",
-    }
     adapter = NativeScriptedChatAdapter(
         [
             _tool_call("shopping_search", {"query": "Cinnamoroll 玉桂狗 毛绒公仔 周边", "top_k": 15}),
-            _tool_call(
-                "price_compare",
-                {
-                    "query": "Cinnamoroll 玉桂狗 毛绒公仔 周边",
-                    "items": [item],
-                    "top_k": 5,
-                },
-            ),
             _final("已完成玉桂狗公仔比价。"),
         ]
     )
@@ -145,9 +129,9 @@ def test_native_compare_request_uses_tool_calls_then_final_content() -> None:
         )
     )
 
-    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "price_compare"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.response is not None
     assert state.response.message == "已完成玉桂狗公仔比价。"
-    assert len(adapter.requests) == 3
+    assert len(adapter.requests) == 2
     assert adapter.requests[0].tools
-    assert adapter.requests[1].tools
+    assert adapter.requests[1].tools == []

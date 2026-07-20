@@ -118,10 +118,10 @@ def test_action_validator_rejects_unqualified_tool_outside_run_allowlist() -> No
     request = UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机")
     state = AgentState.from_request(request, run_id="run-1")
     state.run_tool_set = RunToolSet(
-        registered_tool_names=["product_search", "web_search"],
-        qualified_tool_names=["product_search"],
-        exposed_tool_names=["product_search"],
-        executable_tool_names=["product_search"],
+        registered_tool_names=["shopping_search", "web_search"],
+        qualified_tool_names=["shopping_search"],
+        exposed_tool_names=["shopping_search"],
+        executable_tool_names=["shopping_search"],
         excluded_reasons={"web_search": ["disabled_by_default"]},
     )
 

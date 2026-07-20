@@ -11,7 +11,7 @@ from assistant_agent.tools.registry import create_default_registry
 
 def sample_spec() -> ToolSpec:
     return ToolSpec(
-        name="product_search",
+        name="shopping_search",
         description="Search products.",
         input_schema={
             "fields": {
@@ -64,7 +64,7 @@ def test_tool_spec_to_openai_tool_uses_function_calling_shape() -> None:
     tool = tool_spec_to_openai_tool(sample_spec())
 
     assert tool["type"] == "function"
-    assert tool["function"]["name"] == "product_search"
+    assert tool["function"]["name"] == "shopping_search"
     assert tool["function"]["parameters"]["required"] == ["query"]
     assert "User asks to find products." in tool["function"]["description"]
     assert "Use only through ToolExecutor." in tool["function"]["description"]
@@ -74,12 +74,12 @@ def test_tool_spec_to_openai_tool_uses_function_calling_shape() -> None:
 
 def test_tool_spec_to_openai_tool_adds_prompt_safe_execution_constraints_only() -> None:
     spec = ToolSpec(
-        name="price_compare",
+        name="shopping_search",
         description="Compare prices.",
         execution=ToolExecutionPolicy(
             dependency_mode="requires_prior_observation",
             concurrency_group="catalog",
-            resource_reads=["product_search.results"],
+            resource_reads=["shopping_search.results"],
             resource_writes=["internal.debug"],
             realtime_safety="safe",
         ),
@@ -112,7 +112,7 @@ def test_terminal_tool_openai_description_mentions_terminal_constraint() -> None
 def test_tool_spec_to_mcp_tool_uses_mcp_input_schema_shape() -> None:
     tool = tool_spec_to_mcp_tool(sample_spec())
 
-    assert tool["name"] == "product_search"
+    assert tool["name"] == "shopping_search"
     assert "inputSchema" in tool
     assert tool["inputSchema"]["properties"]["query"]["type"] == "string"
     assert tool["inputSchema"]["additionalProperties"] is False

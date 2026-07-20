@@ -15,12 +15,8 @@ def compose_contract_response(
 ) -> str:
     """Compose a readable response from capability output contracts."""
 
-    has_price_compare = any(
-        contract.get("status") == "succeeded" and contract.get("capability") == "price_compare"
-        for contract in contracts
-    )
     parts = [
-        _summary_for_contract(contract, search_only_shopping=has_price_compare)
+        _summary_for_contract(contract)
         for contract in contracts
         if contract.get("status") == "succeeded"
     ]
@@ -48,14 +44,10 @@ def extract_response_fields(contracts: list[dict[str, Any]]) -> dict[str, Any]:
     for contract in contracts:
         capability = contract.get("capability")
         data = contract.get("data") or {}
-        if capability in {"price_compare", "shopping_search"}:
+        if capability == "shopping_search":
             best_offer = data.get("best_offer") or {}
             product_title = best_offer.get("title") or product_title
             best_price = best_offer.get("total_price") or best_offer.get("price") or best_price
-        elif capability == "product_search" and not product_title:
-            items = data.get("items") or []
-            if items:
-                product_title = items[0].get("title")
         elif capability == "image_generation":
             image_url = data.get("image_url") or contract.get("output_ref") or image_url
         elif capability == "render_3d":
@@ -63,21 +55,16 @@ def extract_response_fields(contracts: list[dict[str, Any]]) -> dict[str, Any]:
     return {"product_title": product_title, "best_price": best_price, "image_url": image_url, "render_ref": render_ref}
 
 
-def _summary_for_contract(contract: dict[str, Any], *, search_only_shopping: bool = False) -> str:
+def _summary_for_contract(contract: dict[str, Any]) -> str:
     capability = contract.get("capability")
     data = contract.get("data") or {}
     output_ref = contract.get("output_ref")
     if capability in {"image_understanding", "video_understanding"}:
         return _vision_summary(capability, data)
-    if capability == "product_search":
-        return _product_search_summary(data)
     if capability == "web_search":
         return _web_search_summary(data)
-    if capability == "shopping_search" and search_only_shopping:
-        search_data = data.get("search") if isinstance(data.get("search"), dict) else {}
-        return _product_search_summary(search_data)
-    if capability in {"price_compare", "shopping_search"}:
-        return _price_compare_summary(data)
+    if capability == "shopping_search":
+        return _shopping_search_summary(data)
     if capability == "image_generation":
         image_url = data.get("download_url") or data.get("image_url") or output_ref
         if image_url:
@@ -114,20 +101,6 @@ def _vision_summary(capability: str, data: dict[str, Any]) -> str:
     return f"我先理解了{subject}内容。"
 
 
-def _product_search_summary(data: dict[str, Any]) -> str:
-    items = data.get("items") or []
-    total = data.get("total") or len(items)
-    if not items:
-        return "已完成商品搜索，但没有找到候选商品。"
-    first = items[0]
-    title = first.get("title") or "候选商品"
-    source = first.get("source") or "mock"
-    price = first.get("price")
-    price_text = f"，价格 {price} {first.get('currency') or 'CNY'}" if price is not None else ""
-    url_text = _product_link_text(first)
-    return f"已基于 {source} 数据找到 {total} 个商品候选，优先候选是 {title}{price_text}{url_text}。"
-
-
 def _web_search_summary(data: dict[str, Any]) -> str:
     results = data.get("results") or []
     total = data.get("total") or len(results)
@@ -143,7 +116,7 @@ def _web_search_summary(data: dict[str, Any]) -> str:
     return f"已基于 {source} 搜索到 {total} 条结果，首条是 {title}{date_text}{url_text}。"
 
 
-def _price_compare_summary(data: dict[str, Any]) -> str:
+def _shopping_search_summary(data: dict[str, Any]) -> str:
     best_offer = data.get("best_offer") or {}
     if not best_offer:
         summary = data.get("summary")

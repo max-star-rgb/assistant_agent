@@ -65,7 +65,7 @@ class MockLLMIntentRouter:
         if "卖" in query or "营销" in query:
             return {
                 "primary_intent": "multi_step_orchestration",
-                "capabilities": ["product_search", "image_generation"],
+                "capabilities": ["shopping_search", "image_generation"],
                 "confidence": 0.72,
                 "source": "mock_llm",
                 "reason": "mock LLM 判断用户需要商品信息和生成营销素材。",

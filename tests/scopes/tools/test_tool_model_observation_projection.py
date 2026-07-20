@@ -2,12 +2,12 @@ from assistant_agent.schemas.tool_observation import observation_from_tool_resul
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.web_search_adapter import MockWebSearchAdapter
 from assistant_agent.services.image_generation_adapter import MockImageGenerationAdapter
-from assistant_agent.services.product_adapter import MockProductSearchAdapter
+from assistant_agent.services.product_adapter import MockPriceCompareAdapter, MockProductSearchAdapter
 from assistant_agent.services.video_adapter import MockVideoUnderstandingAdapter
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
 from assistant_agent.tools.memory_tool import MemoryTool
-from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 from assistant_agent.tools.web_search_tool import WebSearchTool
 
@@ -58,13 +58,16 @@ def test_web_search_model_observation_keeps_sources_without_execution_metadata()
     assert "latency_ms" not in observation.structured_output
 
 
-def test_product_search_model_observation_preserves_llm_usable_items_only() -> None:
-    result = ProductSearchTool(adapter=MockProductSearchAdapter()).run(
+def test_shopping_search_model_observation_preserves_llm_usable_items_only() -> None:
+    result = ShoppingSearchTool(
+        search_adapter=MockProductSearchAdapter(),
+        price_compare_adapter=MockPriceCompareAdapter(),
+    ).run(
         {"query": "白色低帮运动鞋"}
     )
 
     observation = observation_from_tool_result(result)
-    item = observation.structured_output["items"][0]
+    item = observation.structured_output["search"]["items"][0]
 
     assert result.model_observation is not None
     assert item["title"]

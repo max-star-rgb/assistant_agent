@@ -59,8 +59,8 @@ def build_provider_readiness_report(config: ProviderConfig) -> ProviderReadiness
         _check("image_understanding", config.vision_provider, config, issues_by_key),
         _check("direct_chat", config.chat_provider, config, issues_by_key),
         _check("image_generation", config.image_generation_provider, config, issues_by_key),
-        _check("product_search", config.product_search_provider, config, issues_by_key),
-        _check("price_compare", config.price_compare_provider, config, issues_by_key),
+        _check("shopping_search", config.product_search_provider, config, issues_by_key),
+        _check("shopping_search", config.price_compare_provider, config, issues_by_key),
         _check("render_3d", config.render_provider, config, issues_by_key),
         _check("video_understanding", config.vision_provider, config, issues_by_key),
     ]
@@ -161,8 +161,7 @@ def _offline_providers(capability: str) -> set[str]:
         "image_understanding": {"mock"},
         "direct_chat": {"mock"},
         "image_generation": {"mock"},
-        "product_search": {"mock", "local_json"},
-        "price_compare": {"mock", "local"},
+        "shopping_search": {"mock", "local_json", "local"},
         "render_3d": {"mock"},
         "video_understanding": {"mock"},
     }
