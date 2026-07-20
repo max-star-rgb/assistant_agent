@@ -1,4 +1,5 @@
 from pathlib import Path
+from xml.etree import ElementTree
 
 
 def test_scripts_readme_declares_realtime_entry_layers() -> None:
@@ -16,6 +17,12 @@ def test_scripts_readme_declares_realtime_entry_layers() -> None:
     assert "/agent-service/v1" in readme
     assert "/new [sessionId]" in readme
     assert "/ws/agent" not in readme
+
+
+def test_assistant_server_pycharm_config_does_not_attach_log_file_tabs() -> None:
+    config = ElementTree.parse(".run/Assistant Server.run.xml")
+
+    assert config.findall(".//log_file") == []
 
 
 def test_realtime_runtime_runbook_covers_minimal_closed_loop() -> None:

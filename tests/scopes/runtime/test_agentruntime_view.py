@@ -24,8 +24,14 @@ def test_agentruntime_view_last_outputs_latest_local_run(tmp_path: Path) -> None
     assert result.returncode == 0
     assert result.stderr == ""
     assert result.stdout.startswith("run run_new trace trace_new status=completed events=4")
-    assert "llm.chat.finished" in result.stdout
-    assert "react.decision" in result.stdout
+    assert "Turn Overview" in result.stdout
+    assert "execution=success" in result.stdout
+    assert "task_outcome=unknown" in result.stdout
+    assert "Decision path" in result.stdout
+    assert "LLM chat x1" in result.stdout
+    assert "Raw events" not in result.stdout
+    assert "llm.chat.finished" not in result.stdout
+    assert "react.decision" not in result.stdout
     assert "run_old" not in result.stdout
 
 
@@ -200,6 +206,56 @@ def test_agentruntime_view_summary_payload_prefers_turn_summary_session_and_stat
     assert payload["turn_summary"]["gateway_run_id"] == "gateway_summary"
 
 
+def test_agentruntime_view_uses_turn_summary_without_rendering_summary_block(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    store = JsonlTraceStore(trace_path)
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    for event in (
+        _event(
+            "trace_summary",
+            "run_summary",
+            "run.started",
+            session_id="raw-session",
+            created_at=base_time,
+        ),
+        _event(
+            "trace_summary",
+            "run_summary",
+            "assistant.turn.summary",
+            status="summary",
+            session_id="summary-session",
+            created_at=base_time + timedelta(milliseconds=1),
+            output_summary={
+                "turn_summary": {
+                    "schema_version": "assistant_turn_summary_v1",
+                    "trace_id": "trace_summary",
+                    "assistant_run_id": "run_summary",
+                    "gateway_run_id": "gateway_summary",
+                    "user_id": "u1",
+                    "session_id": "summary-session",
+                    "client_type": "media_agent",
+                    "terminal_status": "cancelled",
+                    "response_present": False,
+                    "tool_count": 0,
+                    "error_count": 1,
+                }
+            },
+        ),
+    ):
+        store.append(event)
+
+    result = _run_agentruntime_view("last", "--trace-path", str(trace_path), "--sections", "timeline")
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout.startswith(
+        "run run_summary trace trace_summary status=cancelled events=2 errors=1 client=media_agent"
+    )
+    assert "Turn summary" not in result.stdout
+    assert "Raw events" in result.stdout
+    assert "assistant.turn.summary" in result.stdout
+
+
 def test_agentruntime_view_follow_latest_keeps_global_session_visibility_by_default() -> None:
     module = _load_agentruntime_view_module()
     args = module.build_parser().parse_args(["last", "--follow"])
@@ -344,7 +400,7 @@ def test_agentruntime_view_last_session_id_selects_latest_matching_session_run(t
     assert "run_global_latest" not in result.stdout
 
 
-def test_agentruntime_view_full_sections_fetch_and_render_conversation_timeline_react(tmp_path: Path) -> None:
+def test_agentruntime_view_full_sections_fetch_and_render_conversation_decision_raw_events(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
     server = _AgentRuntimeViewServer(
@@ -367,7 +423,7 @@ def test_agentruntime_view_full_sections_fetch_and_render_conversation_timeline_
             "--server",
             server.url,
             "--sections",
-            "conversation,timeline,react",
+            "overview,conversation,decision,timeline",
             "--errors",
         )
     finally:
@@ -375,19 +431,24 @@ def test_agentruntime_view_full_sections_fetch_and_render_conversation_timeline_
 
     assert result.returncode == 0
     assert result.stderr == ""
+    overview_index = result.stdout.index("Turn Overview")
     conversation_index = result.stdout.index("Conversation")
-    timeline_index = result.stdout.index("Timeline")
-    react_index = result.stdout.index("ReAct detail")
-    assert conversation_index < timeline_index < react_index
+    decision_index = result.stdout.index("Decision Trace")
+    raw_index = result.stdout.index("Raw events")
+    assert overview_index < conversation_index < decision_index < raw_index
+    assert "ReAct detail" not in result.stdout
+    assert "Turn summary" not in result.stdout
     assert "User: 用户原文：帮我找一双白色板鞋" in result.stdout
     assert "Assistant: 助手原文：我会先搜索可选商品。" in result.stdout
+    assert "Decision  tool_call product_search" in result.stdout
+    assert "Tool      product_search 30ms succeeded 3 results" in result.stdout
     assert "decision=tool_call" in result.stdout
     assert "why=needs product search evidence before continuing" in result.stdout
     assert "validation=accepted" in result.stdout
     assert "tool=product_search" in result.stdout
 
 
-def test_agentruntime_view_follow_server_outputs_conversation_timeline_react(tmp_path: Path) -> None:
+def test_agentruntime_view_follow_server_accepts_legacy_react_section_as_decision_trace(tmp_path: Path) -> None:
     trace_path = tmp_path / "graph_trace.jsonl"
     _write_sample_trace(trace_path)
     server = _AgentRuntimeViewServer(
@@ -423,11 +484,15 @@ def test_agentruntime_view_follow_server_outputs_conversation_timeline_react(tmp
     assert result.returncode == 0
     assert result.stderr == ""
     conversation_index = result.stdout.index("Conversation")
-    timeline_index = result.stdout.index("Timeline")
-    react_index = result.stdout.index("ReAct detail")
-    assert conversation_index < timeline_index < react_index
+    decision_index = result.stdout.index("Decision Trace")
+    raw_index = result.stdout.index("Raw events")
+    assert conversation_index < decision_index < raw_index
+    assert "ReAct detail" not in result.stdout
+    assert "Turn summary" not in result.stdout
     assert "User: 用户原文：帮我找一双白色板鞋" in result.stdout
+    assert "Decision  tool_call product_search" in result.stdout
     assert "decision=tool_call" in result.stdout
+    assert "why=needs product search evidence before continuing" in result.stdout
     assert "tool=product_search" in result.stdout
 
 
@@ -455,8 +520,10 @@ def test_agentruntime_view_full_sections_render_unavailable_conversation_when_en
     assert "Conversation" in result.stdout
     assert "unavailable" in result.stdout
     assert "conversation endpoint returned 404" in result.stdout
-    assert "Timeline" in result.stdout
-    assert "ReAct detail" in result.stdout
+    assert "Decision Trace" in result.stdout
+    assert "Raw events" in result.stdout
+    assert "ReAct detail" not in result.stdout
+    assert "Turn summary" not in result.stdout
     assert "decision=tool_call" in result.stdout
 
 
@@ -486,8 +553,43 @@ def test_agentruntime_view_turn_latency_hides_stage_rows_by_default(tmp_path: Pa
     assert "Video: source=realtime_video_context pending=1 in_flight=true fallback=false" in result.stdout
     assert "  Stages" not in result.stdout
     assert "    llm_chat[1]" not in result.stdout
-    assert "Timeline" in result.stdout
+    assert "Raw events" in result.stdout
     assert "llm.chat.finished" in result.stdout
+
+
+def test_agentruntime_view_default_overview_surfaces_turn_diagnostic_flags(tmp_path: Path) -> None:
+    trace_path = tmp_path / "graph_trace.jsonl"
+    _write_sample_trace(trace_path)
+    server = _AgentRuntimeViewServer({"/traces/trace_new": _server_trace_payload_with_diagnostic_risks()})
+    server.start()
+    try:
+        result = _run_agentruntime_view(
+            "last",
+            "--trace-path",
+            str(trace_path),
+            "--server",
+            server.url,
+        )
+    finally:
+        server.stop()
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "Turn Overview" in result.stdout
+    assert "execution=success" in result.stdout
+    assert "delivery=success" in result.stdout
+    assert "task_outcome=unknown" in result.stdout
+    assert "ux_outcome=unknown" in result.stdout
+    assert "Total latency    27790ms" in result.stdout
+    assert "first_text=unknown" in result.stdout
+    assert "first_audio=unknown" in result.stdout
+    assert "LLM wall         7085ms provider=245ms overhead=6840ms" in result.stdout
+    assert "Context peak     81.3%" in result.stdout
+    assert "P0 LLM overhead 6840ms exceeds provider latency" in result.stdout
+    assert "P1 Context peak 81.3%" in result.stdout
+    assert "P1 realtime first-text/first-audio latency is missing" in result.stdout
+    assert "Raw events" not in result.stdout
+    assert "llm.chat.finished" not in result.stdout
 
 
 def test_agentruntime_view_latency_stages_flag_outputs_stage_rows(tmp_path: Path) -> None:
@@ -733,6 +835,118 @@ def _server_trace_payload_with_tool_exposure() -> dict[str, Any]:
         ),
     )
     return payload
+
+
+def _server_trace_payload_with_diagnostic_risks() -> dict[str, Any]:
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    events = [
+        _server_event("run.started", created_at=base_time),
+        _server_event(
+            "context.build.finished",
+            status="succeeded",
+            created_at=base_time + timedelta(milliseconds=30),
+            output_summary={
+                "context": {
+                    "budget": {
+                        "context_usage_ratio": 0.813,
+                        "total_tokens": 813,
+                        "max_tokens": 1000,
+                    },
+                    "source_counts": {
+                        "prompt_tool_specs": 12,
+                        "tool_observations": 5,
+                        "conversation_turns": 1,
+                    },
+                },
+            },
+        ),
+        _server_event(
+            "llm.chat.finished",
+            status="succeeded",
+            provider="deepseek",
+            model="deepseek-chat",
+            latency_ms=7085,
+            created_at=base_time + timedelta(milliseconds=7115),
+            attributes={"iteration": 4, "wall_latency_ms": 7085, "provider_latency_ms": 245},
+        ),
+        _server_event(
+            "react.decision",
+            status="tool_call",
+            tool_name="web_search",
+            created_at=base_time + timedelta(milliseconds=7120),
+            output_summary={"decision_type": "tool_call", "reason": "needs web evidence"},
+            attributes={"iteration": 1},
+        ),
+        _server_event(
+            "tool.finished",
+            status="succeeded",
+            tool_name="web_search",
+            latency_ms=2160,
+            created_at=base_time + timedelta(milliseconds=9280),
+            output_summary={"result_count": 5},
+            attributes={"iteration": 1, "tool_call_id": "search_1"},
+        ),
+        _server_event(
+            "tool.finished",
+            status="succeeded",
+            tool_name="web_search",
+            latency_ms=3180,
+            created_at=base_time + timedelta(milliseconds=12460),
+            output_summary={"result_count": 5},
+            attributes={"iteration": 1, "tool_call_id": "search_2"},
+        ),
+        _server_event(
+            "tool.finished",
+            status="succeeded",
+            tool_name="web_search",
+            latency_ms=3220,
+            created_at=base_time + timedelta(milliseconds=15680),
+            output_summary={"result_count": 5},
+            attributes={"iteration": 1, "tool_call_id": "search_3"},
+        ),
+        _server_event(
+            "tool.finished",
+            status="succeeded",
+            tool_name="web_fetch",
+            latency_ms=1600,
+            created_at=base_time + timedelta(milliseconds=17280),
+            output_summary={"item_count": 1},
+            attributes={"iteration": 2, "tool_call_id": "fetch_1"},
+        ),
+        _server_event(
+            "tool.finished",
+            status="succeeded",
+            tool_name="web_fetch",
+            latency_ms=1870,
+            created_at=base_time + timedelta(milliseconds=19150),
+            output_summary={"item_count": 1},
+            attributes={"iteration": 2, "tool_call_id": "fetch_2"},
+        ),
+        _server_event(
+            "run.completed",
+            status="completed",
+            created_at=base_time + timedelta(milliseconds=27790),
+        ),
+    ]
+    return {
+        "trace_id": "trace_new",
+        "run_id": "run_new",
+        "status": "completed",
+        "duration_ms": 27790,
+        "events": events,
+        "turn_latency": {
+            "schema_version": "agent_service_turn_latency_v1",
+            "status": "sent",
+            "delivery_id": "delivery_x",
+            "session_turn": 1,
+            "total_ms": 27790,
+            "trace_id": "trace_new",
+            "gateway_run_id": "gateway_run_x",
+            "assistant_run_id": "run_new",
+            "ack_status": "not_negotiated",
+            "user_visible_event_count": 26,
+        },
+    }
 
 
 def _server_event(

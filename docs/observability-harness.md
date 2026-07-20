@@ -170,11 +170,13 @@ server `CompositeTraceStore` 只保留进程内 primary 与后台 JSONL persiste
 `.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器和 mock Provider 启动：
 Run console 只保留 launcher 输出与 WARNING/ERROR。该配置显式设置 operational logging
 环境变量，确保 launcher 与 reload 后的 server 子进程写入同一 Gateway JSONL/text 文件，但不再
-声明 PyCharm `log_file` 页签。Gateway 开发观察统一运行 `.run/Gateway Follow.run.xml`，
+声明 PyCharm `log_file` 页签。Gateway 开发观察统一运行 `.run/Gateway.run.xml`，
 它执行 `scripts/gateway_view.py last --event-path .data/gateway_events.jsonl --follow`。
-runtime 开发观察统一运行 `.run/AgentRuntime Follow.run.xml`，它常驻跟随
+runtime 开发观察统一运行 `.run/AgentRuntime.run.xml`，它常驻跟随
 `.data/graph_trace.jsonl`，连接本地 8089 server，优先用 Turn summary 识别终态和
-session，再按 Conversation、Timeline、ReAct detail 三层输出新的终态 run。
+session，但不单独渲染 Turn summary 块。Human view 默认先输出 Turn Overview；
+Conversation、Decision Trace 和 Raw events 作为显式层级展开。ReAct 决策、
+validator 和 tool 证据在 Decision Trace 中按 iteration 聚合，Raw events 保留完整事件线。
 
 对应关系保持明确：
 
@@ -448,9 +450,10 @@ Local CLI:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --follow
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --follow --follow-include-existing
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --follow --follow-live-updates
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --sections timeline,react
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline,react --errors --follow
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections conversation,timeline --latency-stages
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --sections decision
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --sections timeline
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections overview,conversation --errors --follow
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py last --trace-path .data/graph_trace.jsonl --server http://127.0.0.1:8000 --sections overview,conversation,decision,timeline --latency-stages
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py <run_id-or-trace_id>
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py <run_id-or-trace_id> --errors
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py <run_id-or-trace_id> --json
@@ -469,8 +472,9 @@ JSONL，再解析 `last` 或驱动 `--follow`，适合明确只看某个调试�
 默认只在 run 达到终态时输出一次；新 trace 优先等待
 `assistant.turn.summary`，旧 trace 继续用 raw `run.completed` / `run.failed` /
 `run.cancelled` 和 `agent_service.turn.finished` 兜底。Agent-Service summary 在
-`agent_service.turn.finished` 之后追加，确保 Conversation、Turn summary、Turn latency、
-Timeline 和 ReAct detail 在同一块里尽量完整。需要立即打印当前 latest 再继续跟随时，显式加
+`agent_service.turn.finished` 之后追加，确保 Turn Overview、Conversation、
+Decision Trace 和 Raw events 尽量完整。Turn summary 作为终态/session 选择的机器事实保留在
+payload/JSON 中，不在 human view 里单独输出。需要立即打印当前 latest 再继续跟随时，显式加
 `--follow-include-existing`；需要逐事件观察中间态时，显式加 `--follow-live-updates`。
 `--follow-all-sessions` 和 `--show-session-banner` 保留为兼容参数；现在默认已经是
 跨 session follow，并且默认打印 session banner。
@@ -482,27 +486,28 @@ runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关�
 `.data/graph_trace.jsonl` 发现当前 session 最新 trace 或变化，再用 `trace_id` 向
 loopback server 拉 `/traces/{trace_id}`；包含 `conversation` 时，再拉
 `/traces/{trace_id}/conversation`。server 查不到 trace 时降级使用本地 summary；
-conversation 查不到时标记 unavailable，仍继续输出 Timeline 和 ReAct detail。失败 run
+conversation 查不到时标记 unavailable，仍继续输出 Turn Overview。失败 run
 如果有本机 trace-content debug 记录，Conversation 会显示用户输入和“请求失败/已取消”
 摘要；该记录不写入普通 conversation history，不作为未来 prompt 上下文。
 需要强隔离时再加 `--session-id <session>`。
 
-`--sections` 控制输出层级：`conversation` 需要 `--server` 且 server 已用
-`--allow-local-trace-content` 启动；`timeline` 是默认事件线；`react` 展示
-prompt-safe 的 LLM 决策、validator、tool 调用、耗时、错误和恢复动作证据。server-backed
-view 会在事件 timeline 前渲染 `turn_summary` 终态事实、`turn_latency` 摘要、
-bottleneck、ACK state 和 consumed-video diagnostics；详细 stage 默认交给 `timeline`，需要在 `Turn latency`
-中展开旧版 stage rows 时再加 `--latency-stages`。Conversation text 不会写入 trace events
-或 JSONL。
+`--sections` 控制输出层级：默认是 `overview`。`conversation` 需要 `--server` 且
+server 已用 `--allow-local-trace-content` 启动；`decision` 按 ReAct iteration
+聚合决策和工具结果；`timeline` 展示 Raw events。`react` 和 `--react-detail` 仍作为
+兼容输入接受，并映射到 `decision`。server-backed view 在 Overview 中聚合
+`turn_latency`、LLM wall/provider 差值、tool latency、Context peak、ACK state 和
+缺失的实时用户感知指标；需要在 `Turn latency` 中展开旧版 stage rows 时再加
+`--latency-stages` 并显式请求 `timeline`。Conversation text 不会写入 trace events 或 JSONL。
 
 推荐 PyCharm 本地流程：
 
 1. 运行 `.run/Assistant Server.run.xml`。共享配置已带 `--allow-local-trace-content`，
    并持续写 `.data/gateway_events.jsonl`；如果个人配置移除了内容开关，Conversation 层会不可用。
-2. 运行 `.run/Gateway Follow.run.xml`，它常驻输出 Gateway server、session、queue、
+2. 运行 `.run/Gateway.run.xml`，它常驻输出 Gateway server、session、queue、
    run、cancel 和 interrupt lifecycle。
-3. 运行 `.run/AgentRuntime Follow.run.xml`，它全局常驻输出
-   Conversation -> Timeline -> ReAct detail，并在 session 切换时打印单行 banner。
+3. 运行 `.run/AgentRuntime.run.xml`，它全局常驻输出
+   Turn Overview -> Conversation，并在 session 切换时打印单行 banner。需要看执行路径时
+   临时运行 `--sections overview,decision`；需要查事件状态机时再运行 `--sections timeline`。
 
 共享 `.run` 配置与 `.run/Assistant Server.run.xml` 对齐为
 `http://127.0.0.1:8089`。实际通话测试如果本机 server 跑在其他端口，复制对应
@@ -518,7 +523,7 @@ request only the matching turn:
   --trace-path .data/graph_trace.jsonl \
   --server http://127.0.0.1:8000 \
   --session-id pycharm-debug-session \
-  --sections conversation,timeline,react \
+  --sections overview,conversation,decision \
   --errors
 ```
 
@@ -531,23 +536,42 @@ only the current user/final-assistant pair, and clips each side to 1000 Unicode
 characters with an explicit truncation marker. Do not enable this gate on a
 shared or production process.
 
-Human-readable output should show:
+Human-readable default output should show the diagnosis first:
 
 ```text
-run run_xxx trace trace_xxx status=failed duration=1832ms
-01  run.started                         0ms
-02  context.build.finished             12ms budget=42%
-03  llm.chat.finished                  820ms provider=mock model=...
-04  react.decision                       tool_call product_search
-05  action.validation.finished           accepted
-06  tool.started                         product_search risk=external_read
-07  tool.failed                          provider_timeout retry=1
-08  tool.observation                     failed recovery=retry_or_report
-09  run.failed                           PROVIDER_TIMEOUT
+run run_xxx trace trace_xxx status=completed events=55 errors=0 duration=27790ms
+
+Turn Overview
+  execution=success delivery=success task_outcome=unknown ux_outcome=unknown
+
+Performance
+  Total latency    27790ms
+  First response   first_text=unknown first_audio=unknown dead_air=unknown
+  web_search       x3 8560ms
+  web_fetch        x2 3470ms
+  LLM chat x4      14624ms
+  LLM wall         7085ms provider=245ms overhead=6840ms
+  Context peak     81.3%
+
+Decision path
+  LLM chat x4
+  Decision tool_call web_search
+  Tool web_search x3
+  Tool web_fetch x2
+
+Main issues
+  P0 LLM overhead 6840ms exceeds provider latency
+  P1 Context peak 81.3%
+  P1 realtime first-text/first-audio latency is missing
+
+Suggested actions
+  1. Break down LLM queue, request build, TTFT, stream consume, parse, and finalize timing.
+  2. Inspect system prompt, tool schemas, and tool observations as primary context contributors.
+  3. Record first text delta, first audio, playback start, and longest silence for realtime turns.
 ```
 
 Developer output should group errors first when requested, then show the full
-timeline. The default view should be short enough to paste into an issue or a
+diagnostic layer requested by `--sections`. The default view should be short enough to paste into an issue or a
 handoff note. Metrics output should answer aggregate health questions without
 opening individual traces first.
 

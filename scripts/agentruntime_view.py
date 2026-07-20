@@ -36,11 +36,12 @@ from assistant_agent.services.turn_summary import (
 
 DEFAULT_TRACE_PATH = ".data/graph_trace.jsonl"
 LATEST_IDENTIFIERS = {"last", "latest", "@last"}
-TRACE_SECTION_ORDER = ("conversation", "timeline", "react")
+TRACE_SECTION_ORDER = ("overview", "conversation", "decision", "timeline")
 TRACE_SECTION_ALIASES = {
     "all": TRACE_SECTION_ORDER,
     "full": TRACE_SECTION_ORDER,
 }
+COMPAT_REACT_SECTION = "react"
 FOLLOW_SESSION_SEPARATOR = "=" * 16
 RUN_TERMINAL_EVENTS = frozenset({"run.completed", "run.failed", "run.cancelled"})
 AGENT_SERVICE_TERMINAL_EVENTS = frozenset({"agent_service.turn.finished"})
@@ -118,19 +119,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sections",
         help=(
-            "Comma-separated output sections: conversation,timeline,react. "
-            "Use full/all for all sections. Defaults to timeline."
+            "Comma-separated output sections: overview,conversation,decision,timeline. "
+            "react is accepted for compatibility and maps to decision. "
+            "Use full/all for all sections. Defaults to overview."
         ),
     )
     parser.add_argument(
         "--react-detail",
         action="store_true",
-        help="Add a ReAct detail section with prompt-safe decision/tool evidence.",
+        help="Compatibility flag. Adds the Decision Trace section.",
     )
     parser.add_argument(
         "--latency-stages",
         action="store_true",
-        help="Expand per-stage rows inside Turn latency. By default Timeline owns detailed stages.",
+        help="Expand per-stage rows inside Turn latency. Raw events usually own detailed stages.",
     )
     parser.add_argument("--json", dest="json_output", action="store_true", help="Print a JSON summary.")
     parser.add_argument(
@@ -260,11 +262,11 @@ def _parse_sections(
 ) -> tuple[str, ...]:
     requested: list[str]
     if value is None:
-        requested = ["timeline"]
+        requested = ["overview"]
         if include_conversation:
             requested.append("conversation")
         if react_detail:
-            requested.append("react")
+            requested.append("decision")
     else:
         requested = []
         for raw_item in value.split(","):
@@ -275,9 +277,11 @@ def _parse_sections(
                 requested.extend(TRACE_SECTION_ALIASES[item])
             elif item in TRACE_SECTION_ORDER:
                 requested.append(item)
+            elif item == COMPAT_REACT_SECTION:
+                requested.append("decision")
             else:
                 parser.error(
-                    "--sections must contain only conversation,timeline,react,full,all"
+                    "--sections must contain only overview,conversation,decision,timeline,react,full,all"
                 )
     if not requested:
         parser.error("--sections must not be empty")
@@ -632,6 +636,10 @@ def _server_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
         summary["event_count"] = len(events)
     if not isinstance(summary.get("status"), str):
         summary["status"] = _infer_status(events, error_count)
+    if not isinstance(summary.get("duration_ms"), int):
+        duration_ms = _duration_ms_from_event_dicts(events)
+        if duration_ms is not None:
+            summary["duration_ms"] = duration_ms
     return summary
 
 
@@ -740,6 +748,16 @@ def _duration_ms(events: list[TraceEvent]) -> int | None:
     return max(0, round((finished_at - started_at).total_seconds() * 1000))
 
 
+def _duration_ms_from_event_dicts(events: list[dict[str, Any]]) -> int | None:
+    if not events:
+        return None
+    started_at = _event_created_at(events[0])
+    finished_at = _event_created_at(events[-1])
+    if started_at is None or finished_at is None:
+        return None
+    return max(0, round((finished_at - started_at).total_seconds() * 1000))
+
+
 def _format_human(
     payload: dict[str, Any],
     *,
@@ -750,6 +768,8 @@ def _format_human(
     lines = [_format_header(payload)]
     events = payload.get("events", [])
     conversation = payload.get("conversation")
+    if "overview" in sections:
+        lines.extend(("", *_format_turn_overview(payload)))
     if "conversation" in sections and isinstance(conversation, dict):
         lines.extend(("", *_format_conversation(conversation)))
     if show_errors:
@@ -761,87 +781,422 @@ def _format_human(
                 lines.append(_format_error_line(index, event))
         else:
             lines.append("  (none)")
+    if "decision" in sections:
+        lines.extend(("", *_format_decision_trace(events)))
     if "timeline" in sections:
-        turn_summary = payload.get("turn_summary")
-        if isinstance(turn_summary, dict):
-            lines.extend(("", *_format_turn_summary(turn_summary)))
         turn_latency = payload.get("turn_latency")
         if isinstance(turn_latency, dict):
             lines.extend(("", *_format_turn_latency(turn_latency, show_stages=show_latency_stages)))
-        if (
-            show_errors
-            or isinstance(turn_summary, dict)
-            or isinstance(turn_latency, dict)
-            or ("conversation" in sections and isinstance(conversation, dict))
-        ):
-            lines.extend(("", "Timeline"))
+        lines.extend(("", "Raw events"))
         for index, event in enumerate(events, start=1):
             lines.append(_format_event_line(index, event))
-    if "react" in sections:
-        lines.extend(("", *_format_react_detail(events)))
     return "\n".join(lines)
 
 
-def _format_react_detail(events: list[dict[str, Any]]) -> list[str]:
-    lines = ["ReAct detail"]
-    react_events = [
-        (index, event)
-        for index, event in enumerate(events, start=1)
-        if _event_name(event) in REACT_DETAIL_EVENTS
+def _format_turn_overview(payload: dict[str, Any]) -> list[str]:
+    diagnostic = _turn_diagnostic(payload)
+    lines = [
+        "Turn Overview",
+        "  "
+        f"execution={diagnostic['execution_status']} "
+        f"delivery={diagnostic['delivery_status']} "
+        f"task_outcome={diagnostic['task_outcome']} "
+        f"ux_outcome={diagnostic['realtime_ux_status']}",
+        "",
+        "Performance",
+        f"  Total latency    {_milliseconds(diagnostic.get('total_latency_ms'))}",
+        "  "
+        f"First response   first_text={_milliseconds_or_unknown(diagnostic.get('first_text_latency_ms'))} "
+        f"first_audio={_milliseconds_or_unknown(diagnostic.get('first_audio_latency_ms'))} "
+        f"dead_air={_milliseconds_or_unknown(diagnostic.get('dead_air_ms'))}",
     ]
-    if not react_events:
-        lines.append("  (none)")
-        return lines
-    for index, event in react_events:
-        details = _react_event_details(event)
-        suffix = f" {' '.join(details)}" if details else ""
-        lines.append(f"  {index:02d} {_event_name(event)}{suffix}")
+    for tool in diagnostic["tool_summary"]:
+        lines.append(
+            "  "
+            f"{tool['tool_name']:<16} x{tool['count']} "
+            f"{_milliseconds(tool.get('total_latency_ms'))}"
+        )
+    llm = diagnostic["llm_summary"]
+    if llm["count"]:
+        lines.append(
+            "  "
+            f"LLM chat x{llm['count']:<7} "
+            f"{_milliseconds(llm.get('wall_latency_ms'))}"
+        )
+        if isinstance(llm.get("provider_latency_ms"), int):
+            lines.append(
+                "  "
+                f"LLM wall         {_milliseconds(llm.get('max_wall_latency_ms'))} "
+                f"provider={_milliseconds(llm.get('max_provider_latency_ms'))} "
+                f"overhead={_milliseconds(llm.get('max_overhead_ms'))}"
+            )
+    context_peak = diagnostic.get("context_peak_ratio")
+    if isinstance(context_peak, float):
+        lines.append(f"  Context peak     {_percent(context_peak)}")
+
+    lines.extend(("", "Decision path"))
+    path = diagnostic["decision_path"]
+    if path:
+        lines.extend(f"  {item}" for item in path)
+    else:
+        lines.append("  unknown")
+
+    lines.extend(("", "Main issues"))
+    flags = diagnostic["diagnostic_flags"]
+    if flags:
+        lines.extend(f"  {item}" for item in flags)
+    else:
+        lines.append("  none")
+
+    lines.extend(("", "Suggested actions"))
+    suggestions = diagnostic["suggested_actions"]
+    if suggestions:
+        for index, item in enumerate(suggestions, start=1):
+            lines.append(f"  {index}. {item}")
+    else:
+        lines.append("  none")
     return lines
 
 
-def _react_event_details(event: dict[str, Any]) -> list[str]:
-    name = _event_name(event)
-    details: list[str] = []
-    attributes = event.get("attributes")
+def _turn_diagnostic(payload: dict[str, Any]) -> dict[str, Any]:
+    events = payload.get("events")
+    event_items = [item for item in events if isinstance(item, dict)] if isinstance(events, list) else []
+    turn_summary = payload.get("turn_summary") if isinstance(payload.get("turn_summary"), dict) else {}
+    turn_latency = payload.get("turn_latency") if isinstance(payload.get("turn_latency"), dict) else {}
+    llm_summary = _llm_latency_summary(event_items)
+    context_peak = _context_peak_ratio(event_items)
+    tool_summary = _tool_latency_summary(event_items)
+    first_text_latency_ms = _first_int(
+        turn_latency,
+        ("first_text_latency_ms", "first_stream_chunk_latency_ms", "first_token_latency_ms"),
+    )
+    first_audio_latency_ms = _first_int(
+        turn_latency,
+        ("first_audio_latency_ms", "first_tts_audio_latency_ms", "first_playback_latency_ms"),
+    )
+    dead_air_ms = _first_int(turn_latency, ("dead_air_ms", "max_silence_ms", "longest_silence_ms"))
+    flags = _diagnostic_flags(
+        llm_summary=llm_summary,
+        context_peak=context_peak,
+        turn_latency=turn_latency,
+        first_text_latency_ms=first_text_latency_ms,
+        first_audio_latency_ms=first_audio_latency_ms,
+        tool_summary=tool_summary,
+    )
+    return {
+        "execution_status": _execution_status(payload),
+        "delivery_status": _delivery_status(turn_latency, turn_summary),
+        "task_outcome": _task_outcome(payload, turn_summary),
+        "realtime_ux_status": _realtime_ux_status(
+            first_text_latency_ms=first_text_latency_ms,
+            first_audio_latency_ms=first_audio_latency_ms,
+            dead_air_ms=dead_air_ms,
+        ),
+        "total_latency_ms": _first_int(turn_latency, ("total_ms",)) or payload.get("duration_ms"),
+        "first_text_latency_ms": first_text_latency_ms,
+        "first_audio_latency_ms": first_audio_latency_ms,
+        "dead_air_ms": dead_air_ms,
+        "llm_summary": llm_summary,
+        "tool_summary": tool_summary,
+        "context_peak_ratio": context_peak,
+        "decision_path": _decision_path(event_items, llm_summary=llm_summary, tool_summary=tool_summary),
+        "diagnostic_flags": flags,
+        "suggested_actions": _suggested_actions(flags),
+    }
+
+
+def _execution_status(payload: dict[str, Any]) -> str:
+    status = str(payload.get("status") or "unknown")
+    error_count = payload.get("error_count")
+    if status == "completed" and error_count == 0:
+        return "success"
+    if status in {"failed", "cancelled"}:
+        return status
+    if isinstance(error_count, int) and error_count > 0:
+        return "failed"
+    return "unknown"
+
+
+def _delivery_status(turn_latency: Any, turn_summary: Any) -> str:
+    if isinstance(turn_latency, dict):
+        status = str(turn_latency.get("status") or "").lower()
+        ack = str(turn_latency.get("ack_status") or "").lower()
+        if status in {"sent", "acked", "success", "completed"} or ack == "acked":
+            return "success"
+        if status in {"failed", "disconnected_before_send"}:
+            return "failed"
+    if isinstance(turn_summary, dict) and turn_summary.get("response_present") is True:
+        return "response_ready"
+    return "unknown"
+
+
+def _task_outcome(payload: dict[str, Any], turn_summary: Any) -> str:
+    for source in (payload, turn_summary):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("task_outcome")
+        if isinstance(value, str) and value:
+            return value
+    return "unknown"
+
+
+def _realtime_ux_status(
+    *,
+    first_text_latency_ms: int | None,
+    first_audio_latency_ms: int | None,
+    dead_air_ms: int | None,
+) -> str:
+    if first_text_latency_ms is None and first_audio_latency_ms is None and dead_air_ms is None:
+        return "unknown"
+    return "measured"
+
+
+def _llm_latency_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    count = 0
+    wall_total = 0
+    provider_total = 0
+    max_wall = 0
+    max_provider = 0
+    for event in events:
+        if _event_name(event) != "llm.chat.finished":
+            continue
+        count += 1
+        attributes = event.get("attributes")
+        wall = _int_from_mapping(attributes, "wall_latency_ms") if isinstance(attributes, dict) else None
+        if wall is None:
+            wall = event.get("latency_ms") if isinstance(event.get("latency_ms"), int) else 0
+        provider = _int_from_mapping(attributes, "provider_latency_ms") if isinstance(attributes, dict) else None
+        wall_total += wall
+        max_wall = max(max_wall, wall)
+        if provider is not None:
+            provider_total += provider
+            max_provider = max(max_provider, provider)
+    max_overhead = max(0, max_wall - max_provider) if max_provider else None
+    return {
+        "count": count,
+        "wall_latency_ms": wall_total if count else None,
+        "provider_latency_ms": provider_total if provider_total else None,
+        "overhead_ms": max(0, wall_total - provider_total) if provider_total else None,
+        "max_wall_latency_ms": max_wall if count else None,
+        "max_provider_latency_ms": max_provider if max_provider else None,
+        "max_overhead_ms": max_overhead,
+    }
+
+
+def _tool_latency_summary(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for event in events:
+        if _event_name(event) not in {"tool.finished", "tool.failed"}:
+            continue
+        tool_name = event.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name:
+            tool_name = "unknown_tool"
+        if tool_name not in summaries:
+            summaries[tool_name] = {"tool_name": tool_name, "count": 0, "total_latency_ms": 0}
+            order.append(tool_name)
+        summary = summaries[tool_name]
+        summary["count"] += 1
+        latency_ms = event.get("latency_ms")
+        if isinstance(latency_ms, int):
+            summary["total_latency_ms"] += latency_ms
+    return [summaries[name] for name in order]
+
+
+def _context_peak_ratio(events: list[dict[str, Any]]) -> float | None:
+    peak: float | None = None
+    for event in events:
+        candidates: list[Any] = []
+        attributes = event.get("attributes")
+        if isinstance(attributes, dict):
+            candidates.append(attributes.get("context_usage_ratio"))
+        output_summary = event.get("output_summary")
+        if isinstance(output_summary, dict):
+            context = output_summary.get("context")
+            if isinstance(context, dict):
+                budget = context.get("budget")
+                if isinstance(budget, dict):
+                    candidates.append(budget.get("context_usage_ratio"))
+        for value in candidates:
+            ratio = _ratio_value(value)
+            if ratio is not None:
+                peak = ratio if peak is None else max(peak, ratio)
+    return peak
+
+
+def _decision_path(
+    events: list[dict[str, Any]],
+    *,
+    llm_summary: dict[str, Any],
+    tool_summary: list[dict[str, Any]],
+) -> list[str]:
+    path: list[str] = []
+    if llm_summary.get("count"):
+        path.append(f"LLM chat x{llm_summary['count']}")
+    decisions = [
+        event
+        for event in events
+        if _event_name(event) == "react.decision"
+    ]
+    for event in decisions[:3]:
+        output_summary = event.get("output_summary")
+        decision = None
+        if isinstance(output_summary, dict):
+            decision = output_summary.get("decision_type")
+        decision = decision or event.get("status") or "unknown"
+        tool = event.get("tool_name")
+        suffix = f" {tool}" if isinstance(tool, str) and tool else ""
+        path.append(f"Decision {decision}{suffix}")
+    for tool in tool_summary:
+        path.append(f"Tool {tool['tool_name']} x{tool['count']}")
+    return path
+
+
+def _diagnostic_flags(
+    *,
+    llm_summary: dict[str, Any],
+    context_peak: float | None,
+    turn_latency: Any,
+    first_text_latency_ms: int | None,
+    first_audio_latency_ms: int | None,
+    tool_summary: list[dict[str, Any]],
+) -> list[str]:
+    flags: list[str] = []
+    overhead = llm_summary.get("max_overhead_ms")
+    provider = llm_summary.get("max_provider_latency_ms")
+    if isinstance(overhead, int) and overhead >= 1000 and isinstance(provider, int):
+        flags.append(f"P0 LLM overhead {overhead}ms exceeds provider latency")
+    if isinstance(context_peak, float) and context_peak >= 0.8:
+        flags.append(f"P1 Context peak {_percent(context_peak)}")
+    if isinstance(turn_latency, dict):
+        ack_status = str(turn_latency.get("ack_status") or "").lower()
+        if ack_status in {"not_negotiated", "none", "unknown"} and first_text_latency_ms is None and first_audio_latency_ms is None:
+            flags.append("P1 realtime first-text/first-audio latency is missing")
+    if any(
+        tool["tool_name"] in {"web_search", "web_fetch"}
+        and tool["count"] >= 3
+        and tool.get("total_latency_ms", 0) >= 3000
+        for tool in tool_summary
+    ):
+        flags.append("P1 repeated read-only tool calls may be serial or over-broad")
+    return flags
+
+
+def _suggested_actions(flags: list[str]) -> list[str]:
+    suggestions: list[str] = []
+    if any("LLM overhead" in flag for flag in flags):
+        suggestions.append("Break down LLM queue, request build, TTFT, stream consume, parse, and finalize timing.")
+    if any("Context peak" in flag for flag in flags):
+        suggestions.append("Inspect system prompt, tool schemas, and tool observations as primary context contributors.")
+    if any("first-text/first-audio" in flag for flag in flags):
+        suggestions.append("Record first text delta, first audio, playback start, and longest silence for realtime turns.")
+    if any("read-only tool calls" in flag for flag in flags):
+        suggestions.append("Review whether same-batch read-only tool calls can run concurrently or be narrowed.")
+    return suggestions
+
+
+def _first_int(source: Any, keys: tuple[str, ...]) -> int | None:
+    if not isinstance(source, dict):
+        return None
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _int_from_mapping(source: dict[str, Any], key: str) -> int | None:
+    value = source.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _ratio_value(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        ratio = float(value)
+        if ratio > 1:
+            ratio = ratio / 100
+        return max(0.0, ratio)
+    return None
+
+
+def _format_decision_trace(events: list[dict[str, Any]]) -> list[str]:
+    lines = ["Decision Trace"]
+    iterations = _decision_iterations(events)
+    if not iterations:
+        lines.append("  (none)")
+        return lines
+    for iteration in sorted(iterations):
+        events_for_iteration = iterations[iteration]
+        lines.append(f"Iteration {iteration}")
+        decision = next(
+            (event for event in events_for_iteration if _event_name(event) == "react.decision"),
+            None,
+        )
+        if decision is not None:
+            lines.extend(_format_iteration_decision(decision))
+        tool_lines = [
+            _format_iteration_tool_event(event)
+            for event in events_for_iteration
+            if _event_name(event) in {"tool.finished", "tool.failed"}
+        ]
+        if tool_lines:
+            lines.extend(tool_lines)
+    return lines
+
+
+def _decision_iterations(events: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    iterations: dict[int, list[dict[str, Any]]] = {}
+    for event in events:
+        if _event_name(event) not in REACT_DETAIL_EVENTS:
+            continue
+        attributes = event.get("attributes")
+        iteration = 0
+        if isinstance(attributes, dict):
+            value = attributes.get("iteration")
+            if isinstance(value, int) and not isinstance(value, bool):
+                iteration = value
+        iterations.setdefault(iteration, []).append(event)
+    return iterations
+
+
+def _format_iteration_decision(event: dict[str, Any]) -> list[str]:
     output_summary = event.get("output_summary")
-    if isinstance(attributes, dict):
-        _append_named(details, "iteration", attributes.get("iteration"))
-        _append_named(details, "batch", _batch_value(attributes))
-    latency_ms = event.get("latency_ms")
-    if isinstance(latency_ms, int):
-        details.append(f"latency={latency_ms}ms")
-    _append_named(details, "status", event.get("status"))
-    _append_named(details, "tool", event.get("tool_name"))
-    _append_named(details, "provider", event.get("provider"))
-    _append_named(details, "model", event.get("model"))
-    if name == "react.decision" and isinstance(output_summary, dict):
-        _append_named(details, "decision", output_summary.get("decision_type") or event.get("status"))
-        _append_named(details, "why", output_summary.get("reason"))
-        _append_named(details, "confidence", output_summary.get("confidence"))
-        _append_context_evidence(details, output_summary.get("context"))
-    elif name == "action.validation.finished":
-        _append_named(details, "validation", event.get("status"))
-        if isinstance(output_summary, dict):
-            validator = output_summary.get("validator_result")
-            if isinstance(validator, dict):
-                _append_named(details, "code", validator.get("code"))
-                _append_named(details, "message", validator.get("message"))
-        if isinstance(attributes, dict):
-            _append_named(details, "risk", attributes.get("risk"))
-            _append_named(details, "side_effect", attributes.get("side_effect"))
-            _append_named(details, "confirmation", attributes.get("confirmation_state"))
-    elif name.startswith("tool."):
-        _append_named(details, "error", event.get("error_code"))
-        if isinstance(attributes, dict):
-            _append_named(details, "tool_call_id", attributes.get("tool_call_id"))
-            _append_named(details, "recovery", attributes.get("recovery_action"))
-        if isinstance(output_summary, dict):
-            _append_named(details, "output_ref", output_summary.get("output_ref"))
-            _append_named(details, "artifact", output_summary.get("artifact_ref") or output_summary.get("artifact_id"))
-            _append_named(details, "results", output_summary.get("result_count") or output_summary.get("item_count"))
-    else:
-        _append_named(details, "error", event.get("error_code"))
-    return details
+    decision = event.get("status") or "unknown"
+    reason = None
+    if isinstance(output_summary, dict):
+        decision = output_summary.get("decision_type") or decision
+        reason = output_summary.get("reason")
+    tool = event.get("tool_name")
+    tool_suffix = f" {tool}" if isinstance(tool, str) and tool else ""
+    lines = [f"  Decision  {_plain_value(decision)}{tool_suffix}"]
+    if isinstance(reason, str) and reason:
+        lines.append(f"  Reason    {_compact_value(reason)}")
+    return lines
+
+
+def _format_iteration_tool_event(event: dict[str, Any]) -> str:
+    tool_name = _plain_value(event.get("tool_name"))
+    latency = _milliseconds(event.get("latency_ms"))
+    status = _plain_value(event.get("status"))
+    result_text = _tool_result_text(event.get("output_summary"))
+    suffix = f" {result_text}" if result_text else ""
+    return f"  Tool      {tool_name} {latency} {status}{suffix}"
+
+
+def _tool_result_text(output_summary: Any) -> str:
+    if not isinstance(output_summary, dict):
+        return ""
+    result_count = output_summary.get("result_count")
+    if isinstance(result_count, int):
+        label = "result" if result_count == 1 else "results"
+        return f"{result_count} {label}"
+    item_count = output_summary.get("item_count")
+    if isinstance(item_count, int):
+        label = "item" if item_count == 1 else "items"
+        return f"{item_count} {label}"
+    return ""
 
 
 def _batch_value(attributes: dict[str, Any]) -> str | None:
@@ -917,32 +1272,6 @@ def _format_turn_latency(summary: dict[str, Any], *, show_stages: bool = False) 
     return lines
 
 
-def _format_turn_summary(summary: dict[str, Any]) -> list[str]:
-    lines = [
-        "Turn summary",
-        "  "
-        f"terminal={_plain_value(summary.get('terminal_status'))} "
-        f"client={_plain_value(summary.get('client_type'))} "
-        f"session_turn={_plain_value(summary.get('session_turn'))} "
-        f"response={_plain_value(summary.get('response_present'))} "
-        f"tools={_plain_value(summary.get('tool_count'))} "
-        f"errors={_plain_value(summary.get('error_count'))}",
-        "  "
-        f"trace={_plain_value(summary.get('trace_id'))} "
-        f"gateway_run={_plain_value(summary.get('gateway_run_id'))} "
-        f"assistant_run={_plain_value(summary.get('assistant_run_id'))}",
-    ]
-    failure = summary.get("failure_summary")
-    if isinstance(failure, dict):
-        details: list[str] = []
-        _append_named(details, "code", failure.get("code"))
-        _append_named(details, "source", failure.get("source"))
-        _append_named(details, "message", failure.get("message"))
-        if details:
-            lines.append(f"  failure {' '.join(details)}")
-    return lines
-
-
 def _format_latency_stage(stage: dict[str, Any]) -> str:
     details = [
         f"    {_plain_value(stage.get('name'))}",
@@ -1015,6 +1344,14 @@ def _milliseconds(value: Any) -> str:
     return f"{value}ms" if isinstance(value, int) else "none"
 
 
+def _milliseconds_or_unknown(value: Any) -> str:
+    return f"{value}ms" if isinstance(value, int) else "unknown"
+
+
+def _percent(value: float) -> str:
+    return f"{value * 100:.1f}%"
+
+
 def _format_header(payload: dict[str, Any]) -> str:
     duration = payload.get("duration_ms")
     duration_part = f" duration={duration}ms" if isinstance(duration, int) else ""
@@ -1033,7 +1370,7 @@ def _format_event_line(index: int, event: dict[str, Any]) -> str:
     name = _event_name(event)
     details = _event_details(event)
     suffix = f" {' '.join(details)}" if details else ""
-    return f"{index:02d}  {name:<34}{suffix}"
+    return f"{index:02d}  {_event_clock(event):<18} {name:<34}{suffix}"
 
 
 def _format_error_line(index: int, event: dict[str, Any]) -> str:
@@ -1043,7 +1380,7 @@ def _format_error_line(index: int, event: dict[str, Any]) -> str:
     if isinstance(message, str) and message:
         details.append(f"message={_compact_value(message)}")
     suffix = f" {' '.join(details)}" if details else ""
-    return f"{index:02d}  {name:<34}{suffix}"
+    return f"{index:02d}  {_event_clock(event):<18} {name:<34}{suffix}"
 
 
 def _event_name(event: dict[str, Any]) -> str:
@@ -1051,28 +1388,85 @@ def _event_name(event: dict[str, Any]) -> str:
     return str(name or "event")
 
 
+def _event_clock(event: dict[str, Any]) -> str:
+    elapsed_ms = event.get("elapsed_ms")
+    if not isinstance(elapsed_ms, int):
+        return "t+?"
+    gap_ms = event.get("gap_ms")
+    if isinstance(gap_ms, int) and gap_ms > 0:
+        return f"t+{elapsed_ms}ms dt+{gap_ms}ms"
+    return f"t+{elapsed_ms}ms"
+
+
 def _event_details(event: dict[str, Any]) -> list[str]:
     details: list[str] = []
     name = _event_name(event)
     latency_ms = event.get("latency_ms")
     if isinstance(latency_ms, int):
-        details.append(f"{latency_ms}ms")
-    elapsed_ms = event.get("elapsed_ms")
-    if isinstance(elapsed_ms, int):
-        details.append(f"at={elapsed_ms}ms")
-    gap_ms = event.get("gap_ms")
-    if isinstance(gap_ms, int) and gap_ms > 0:
-        details.append(f"gap={gap_ms}ms")
+        details.append(f"latency={latency_ms}ms")
     _append_named(details, "status", event.get("status"))
     _append_named(details, "tool", event.get("tool_name"))
     _append_named(details, "provider", event.get("provider"))
     _append_named(details, "model", event.get("model"))
     _append_named(details, "error", event.get("error_code"))
+    if name in REACT_DETAIL_EVENTS:
+        _append_react_timeline_details(details, event)
     if name == "context.build.finished":
         _append_context_tool_exposure(details, event.get("output_summary"))
-    _append_selected(details, event.get("output_summary"), DETAIL_OUTPUT_KEYS)
-    _append_selected(details, event.get("attributes"), DETAIL_ATTRIBUTE_KEYS)
+    if name in REACT_DETAIL_EVENTS:
+        _append_selected(details, event.get("attributes"), _react_remaining_attribute_keys(name))
+    else:
+        _append_selected(details, event.get("output_summary"), DETAIL_OUTPUT_KEYS)
+        _append_selected(details, event.get("attributes"), DETAIL_ATTRIBUTE_KEYS)
     return details
+
+
+def _append_react_timeline_details(details: list[str], event: dict[str, Any]) -> None:
+    name = _event_name(event)
+    attributes = event.get("attributes")
+    output_summary = event.get("output_summary")
+    if isinstance(attributes, dict):
+        _append_named(details, "iteration", attributes.get("iteration"))
+        _append_named(details, "batch", _batch_value(attributes))
+    if name == "react.decision" and isinstance(output_summary, dict):
+        _append_named(details, "decision", output_summary.get("decision_type") or event.get("status"))
+        _append_named(details, "why", output_summary.get("reason"))
+        _append_named(details, "confidence", output_summary.get("confidence"))
+        _append_context_evidence(details, output_summary.get("context"))
+    elif name == "action.validation.finished":
+        _append_named(details, "validation", event.get("status"))
+        if isinstance(output_summary, dict):
+            validator = output_summary.get("validator_result")
+            if isinstance(validator, dict):
+                _append_named(details, "code", validator.get("code"))
+                _append_named(details, "message", validator.get("message"))
+        if isinstance(attributes, dict):
+            _append_named(details, "risk", attributes.get("risk"))
+            _append_named(details, "side_effect", attributes.get("side_effect"))
+            _append_named(details, "confirmation", attributes.get("confirmation_state"))
+    elif name.startswith("tool."):
+        if isinstance(attributes, dict):
+            _append_named(details, "tool_call_id", attributes.get("tool_call_id"))
+            _append_named(details, "recovery", attributes.get("recovery_action"))
+        if isinstance(output_summary, dict):
+            _append_named(details, "output_ref", output_summary.get("output_ref"))
+            _append_named(details, "artifact", output_summary.get("artifact_ref") or output_summary.get("artifact_id"))
+            _append_named(details, "results", output_summary.get("result_count") or output_summary.get("item_count"))
+
+
+def _react_remaining_attribute_keys(name: str) -> tuple[str, ...]:
+    skipped = {
+        "iteration",
+        "decision_type",
+        "risk",
+        "side_effect",
+        "confirmation_state",
+        "tool_call_id",
+        "recovery_action",
+    }
+    if not name.startswith("tool."):
+        skipped.update({"retry_count"})
+    return tuple(key for key in DETAIL_ATTRIBUTE_KEYS if key not in skipped)
 
 
 def _append_context_tool_exposure(details: list[str], output_summary: Any) -> None:
@@ -1096,7 +1490,9 @@ def _append_context_tool_exposure(details: list[str], output_summary: Any) -> No
 def _append_named(details: list[str], name: str, value: Any) -> None:
     if value is None or value == "":
         return
-    details.append(f"{name}={_compact_value(value)}")
+    item = f"{name}={_compact_value(value)}"
+    if item not in details:
+        details.append(item)
 
 
 def _append_selected(details: list[str], values: Any, keys: tuple[str, ...]) -> None:

@@ -1,6 +1,5 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="Assistant Server" type="PythonConfigurationType" factoryName="Python">
-    <log_file alias="Gateway" path="$PROJECT_DIR$/.data/logs/gateway.log" show_all="true" skipped="false" />
     <module name="hello_agent" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
