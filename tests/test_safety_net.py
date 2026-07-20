@@ -83,6 +83,24 @@ def test_package_and_runtime_initialize_offline() -> None:
     assert runtime.chat_adapter.provider == "mock"
 
 
+def test_legacy_shopping_config_does_not_fallback() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "haodanku",
+            "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "local_json",
+            "PRODUCT_SEARCH_LOCAL_PATH": "/tmp/legacy-products.json",
+            "MULTIMODAL_AGENT_PRICE_PROVIDER": "local",
+        }
+    )
+
+    assert config.shopping_search_provider == "mock"
+    assert config.shopping_search_local_path is None
+    assert config.shopping_compare_provider == "mock"
+    assert not hasattr(config, "shopping_provider")
+    assert not hasattr(config, "product_search_provider")
+    assert not hasattr(config, "price_compare_provider")
+
+
 def test_trace_observer_close_propagates_timeout_budget() -> None:
     span_sink = TimeoutAwareLifecycleSink()
     score_sink = TimeoutAwareLifecycleSink()

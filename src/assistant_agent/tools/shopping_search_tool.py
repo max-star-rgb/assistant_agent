@@ -37,18 +37,16 @@ class ShoppingSearchTool(MockTool):
         self,
         *,
         search_adapter: ShoppingSearchAdapter | None = None,
-        price_compare_adapter: ShoppingCompareAdapter | None = None,
+        compare_adapter: ShoppingCompareAdapter | None = None,
     ) -> None:
         self.search_adapter = search_adapter or create_shopping_search_adapter()
-        self.price_compare_adapter = (
-            price_compare_adapter or create_shopping_compare_adapter()
-        )
+        self.compare_adapter = compare_adapter or create_shopping_compare_adapter()
 
     def _run(self, input: ProductSearchInput, context: ToolContext) -> ToolResult:
         search_result = self.search_adapter.search(input)
         comparison_result: PriceCompareResult | None = None
         if search_result.items:
-            comparison_result = self.price_compare_adapter.compare(
+            comparison_result = self.compare_adapter.compare(
                 _compare_input_from_search(input, search_result)
             )
 

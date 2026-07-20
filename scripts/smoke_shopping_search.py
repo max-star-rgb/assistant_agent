@@ -17,8 +17,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.services.product_adapter import (
-    create_price_compare_adapter,
-    create_product_search_adapter,
+    create_shopping_compare_adapter,
+    create_shopping_search_adapter,
 )
 from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 
@@ -45,8 +45,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
 
     config = ProviderConfig.from_env(source)
     tool = ShoppingSearchTool(
-        search_adapter=create_product_search_adapter(config),
-        price_compare_adapter=create_price_compare_adapter(config),
+        search_adapter=create_shopping_search_adapter(config),
+        compare_adapter=create_shopping_compare_adapter(config),
     )
     result = tool.run(
         {
@@ -85,70 +85,54 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
 def _normalized_env(source: Mapping[str, str], local_json: str | None) -> dict[str, str]:
     normalized = dict(source)
     if local_json:
-        normalized["PRODUCT_SEARCH_LOCAL_PATH"] = local_json
-    if "PRODUCT_SEARCH_LOCAL_PATH" not in normalized and "PRODUCT_SEARCH_LOCAL_JSON" in normalized:
-        normalized["PRODUCT_SEARCH_LOCAL_PATH"] = normalized["PRODUCT_SEARCH_LOCAL_JSON"]
+        normalized["SHOPPING_SEARCH_LOCAL_PATH"] = local_json
     return normalized
 
 
 def _missing_provider_config(source: Mapping[str, str]) -> str | None:
-    product_provider = _product_provider(source)
-    price_provider = _price_provider(source)
-    if product_provider == "local_json" and not source.get("PRODUCT_SEARCH_LOCAL_PATH"):
-        return "missing PRODUCT_SEARCH_LOCAL_PATH"
-    if product_provider == "http":
+    search_provider = _search_provider(source)
+    compare_provider = _compare_provider(source)
+    if search_provider == "local_json" and not source.get("SHOPPING_SEARCH_LOCAL_PATH"):
+        return "missing SHOPPING_SEARCH_LOCAL_PATH"
+    if search_provider == "http":
         missing = []
-        if not source.get("PRODUCT_SEARCH_BASE_URL"):
-            missing.append("PRODUCT_SEARCH_BASE_URL")
-        if not source.get("PRODUCT_SEARCH_API_KEY"):
-            missing.append("PRODUCT_SEARCH_API_KEY")
+        if not source.get("SHOPPING_SEARCH_BASE_URL"):
+            missing.append("SHOPPING_SEARCH_BASE_URL")
+        if not source.get("SHOPPING_SEARCH_API_KEY"):
+            missing.append("SHOPPING_SEARCH_API_KEY")
         if missing:
             return f"missing {', '.join(missing)}"
-    if product_provider == "haodanku" and not source.get("HAODANKU_API_KEY"):
+    if search_provider == "haodanku" and not source.get("HAODANKU_API_KEY"):
         return "missing HAODANKU_API_KEY"
-    if price_provider == "http":
+    if compare_provider == "http":
         missing = []
-        if not source.get("PRICE_COMPARE_BASE_URL"):
-            missing.append("PRICE_COMPARE_BASE_URL")
-        if not source.get("PRICE_COMPARE_API_KEY"):
-            missing.append("PRICE_COMPARE_API_KEY")
+        if not source.get("SHOPPING_COMPARE_BASE_URL"):
+            missing.append("SHOPPING_COMPARE_BASE_URL")
+        if not source.get("SHOPPING_COMPARE_API_KEY"):
+            missing.append("SHOPPING_COMPARE_API_KEY")
         if missing:
             return f"missing {', '.join(missing)}"
-    if price_provider == "haodanku" and not source.get("HAODANKU_API_KEY"):
+    if compare_provider == "haodanku" and not source.get("HAODANKU_API_KEY"):
         return "missing HAODANKU_API_KEY"
-    if product_provider not in {"mock", "local_json", "http", "haodanku"}:
-        return (
-            "MULTIMODAL_AGENT_SHOPPING_PROVIDER must be mock, http, or haodanku; "
-            "MULTIMODAL_AGENT_PRODUCT_PROVIDER may also use local_json."
-        )
-    if price_provider not in {"mock", "local", "http", "haodanku"}:
-        return (
-            "MULTIMODAL_AGENT_SHOPPING_PROVIDER must be mock, http, or haodanku; "
-            "MULTIMODAL_AGENT_PRICE_PROVIDER may also use local."
-        )
+    if search_provider not in {"mock", "local_json", "http", "haodanku"}:
+        return "MULTIMODAL_AGENT_SHOPPING_SEARCH_PROVIDER must be mock, local_json, http, or haodanku."
+    if compare_provider not in {"mock", "local", "http", "haodanku"}:
+        return "MULTIMODAL_AGENT_SHOPPING_COMPARE_PROVIDER must be mock, local, http, or haodanku."
     return None
 
 
-def _product_provider(source: Mapping[str, str]) -> str:
-    return (
-        source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER")
-        or source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER")
-        or "mock"
-    )
+def _search_provider(source: Mapping[str, str]) -> str:
+    return source.get("MULTIMODAL_AGENT_SHOPPING_SEARCH_PROVIDER") or "mock"
 
 
-def _price_provider(source: Mapping[str, str]) -> str:
-    return (
-        source.get("MULTIMODAL_AGENT_PRICE_PROVIDER")
-        or source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER")
-        or "mock"
-    )
+def _compare_provider(source: Mapping[str, str]) -> str:
+    return source.get("MULTIMODAL_AGENT_SHOPPING_COMPARE_PROVIDER") or "mock"
 
 
 def _print_provider_unconfigured(reason: str) -> None:
     print("provider_unconfigured")
     print(reason)
-    print("Please set MULTIMODAL_AGENT_SHOPPING_PROVIDER and the required shopping configuration.")
+    print("Please set the explicit shopping_search provider configuration.")
 
 
 if __name__ == "__main__":

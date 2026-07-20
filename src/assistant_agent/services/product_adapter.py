@@ -270,12 +270,6 @@ def create_shopping_search_adapter(config: ProviderConfig | None = None) -> Shop
     return MockProductSearchAdapter()
 
 
-def create_product_search_adapter(config: ProviderConfig | None = None) -> ProductSearchAdapter:
-    """Create a product search adapter without initializing real provider clients."""
-
-    return create_shopping_search_adapter(config)
-
-
 def create_shopping_compare_adapter(config: ProviderConfig | None = None) -> ShoppingCompareAdapter:
     """Create a shopping compare adapter without initializing real provider clients."""
 
@@ -307,12 +301,6 @@ def create_shopping_compare_adapter(config: ProviderConfig | None = None) -> Sho
             timeout_seconds=resolved.shopping_compare_timeout_seconds,
         )
     return MockPriceCompareAdapter()
-
-
-def create_price_compare_adapter(config: ProviderConfig | None = None) -> PriceCompareAdapter:
-    """Create a price compare adapter without initializing real provider clients."""
-
-    return create_shopping_compare_adapter(config)
 
 
 def _mock_products() -> list[ProductResult]:

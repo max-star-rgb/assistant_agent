@@ -309,10 +309,10 @@ def _print_runtime_summary(config: ProviderConfig, *, loaded_env_keys: list[str]
     print(f"  chat_model: {config.chat_model or '(unset)'}")
     print(f"  vision_provider: {providers['vision']}")
     print(f"  image_provider: {providers['image_generation']}")
-    shopping_provider = providers["shopping_search"]
+    shopping_config = providers["shopping_search"]
     print(
         "  shopping_search_provider: "
-        f"search={shopping_provider['search']}, compare={shopping_provider['compare']}"
+        f"search={shopping_config['search']}, compare={shopping_config['compare']}"
     )
     print(f"  render_provider: {providers['render']}")
     print(f"  web_search_provider: {config.search_provider}")

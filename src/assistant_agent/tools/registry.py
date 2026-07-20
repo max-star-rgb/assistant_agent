@@ -938,7 +938,7 @@ def create_default_registry(
         ),
         ShoppingSearchTool(
             search_adapter=shopping_search_adapter,
-            price_compare_adapter=shopping_compare_adapter,
+            compare_adapter=shopping_compare_adapter,
         ),
         WeatherTool(adapter=personal_adapters.weather),
         CalendarSearchTool(adapter=personal_adapters.calendar),
