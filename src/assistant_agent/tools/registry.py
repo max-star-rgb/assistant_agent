@@ -51,6 +51,8 @@ from assistant_agent.tools.web_fetch_tool import WebFetchTool
 from assistant_agent.tools.task_plan_tool import TaskPlanSubmitTool
 
 if TYPE_CHECKING:
+    from assistant_agent.mcp.config import MCPServerConfig
+    from assistant_agent.mcp.registration import MCPToolDiscoveryRunner
     from assistant_agent.services.agent_communication import AgentCommunicationService
     from assistant_agent.services.durable_tasks.service import DurableTaskService
 
@@ -884,6 +886,10 @@ def create_default_registry(
     enable_agent_delegation: bool = False,
     agent_communication_service: AgentCommunicationService | None = None,
     durable_task_service: DurableTaskService | None = None,
+    enable_mcp_tools: bool = False,
+    mcp_server_configs: list[MCPServerConfig] | None = None,
+    mcp_config_path: str | None = None,
+    mcp_runner: MCPToolDiscoveryRunner | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     memory_media_service = create_memory_media_ingestion_service(config)
@@ -932,6 +938,16 @@ def create_default_registry(
     if config is not None and config.durable_tasks_enabled:
         if durable_task_service is not None:
             registry.register(TaskPlanSubmitTool(durable_task_service))
+    if enable_mcp_tools or mcp_server_configs is not None:
+        from assistant_agent.mcp.config import load_mcp_server_configs_from_env
+        from assistant_agent.mcp.registration import register_configured_mcp_tools
+
+        server_configs = (
+            mcp_server_configs
+            if mcp_server_configs is not None
+            else load_mcp_server_configs_from_env(config_path=mcp_config_path)
+        )
+        register_configured_mcp_tools(registry, server_configs, runner=mcp_runner)
     return registry
 
 

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, create_model
 from assistant_agent.mcp.config import MCPToolAdapterConfig
 from assistant_agent.schemas.tools import (
     ApprovalPolicy,
+    ToolExecutionPolicy,
     ToolPolicyMetadata,
     ToolResult,
     ToolSpec,
@@ -57,7 +58,8 @@ class MCPProxyTool:
         self.description = definition.description
         self.input_schema = _input_model_for_definition(definition)
         self.output_schema = self.input_schema
-        self.policy = _default_mcp_policy(config)
+        self.policy = _default_mcp_policy(config, definition.name)
+        self.execution = _default_mcp_execution(config, definition.name)
 
     def run(
         self,
@@ -105,7 +107,8 @@ class MCPToolAdapter:
             input_schema=_schema_to_fields(input_model),
             required_inputs=_required_inputs(definition.input_schema),
             runtime_constraints=["MCP proxy tool; execute only through ToolExecutor."],
-            policy=_default_mcp_policy(self.config),
+            execution=_default_mcp_execution(self.config, definition.name),
+            policy=_default_mcp_policy(self.config, definition.name),
         )
 
     def proxy_tool_for_definition(self, definition: MCPToolDefinition) -> MCPProxyTool:
@@ -115,16 +118,43 @@ class MCPToolAdapter:
             raise ValueError("runner is required to create an MCP proxy tool")
         return MCPProxyTool(config=self.config, definition=definition, runner=self.runner)
 
+    def namespaced_tool_name(self, tool_name: str) -> str:
+        return namespaced_mcp_tool_name(self.config, tool_name)
 
-def _default_mcp_policy(config: MCPToolAdapterConfig) -> ToolPolicyMetadata:
+
+def namespaced_mcp_tool_name(config: MCPToolAdapterConfig, tool_name: str) -> str:
+    return _namespaced_tool_name(config, tool_name)
+
+
+def _default_mcp_policy(config: MCPToolAdapterConfig, tool_name: str) -> ToolPolicyMetadata:
+    if config.is_read_only(tool_name):
+        risk = "external_read"
+        approval = ApprovalPolicy(mode="never", confirmation_kind=None)
+    else:
+        risk = "external_write"
+        approval = ApprovalPolicy(mode="conditional", confirmation_kind="mcp_tool")
     return ToolPolicyMetadata(
-        risk="external_write",
-        approval=ApprovalPolicy(mode="conditional", confirmation_kind="mcp_tool"),
+        risk=risk,
+        approval=approval,
         visibility=VisibilityPolicy(
             toolset=f"mcp.{_safe_name(config.server_name)}",
-            enabled_by_default=False,
+            enabled_by_default=config.is_enabled_by_default(tool_name),
             tags=["mcp"],
         ),
+    )
+
+
+def _default_mcp_execution(
+    config: MCPToolAdapterConfig,
+    tool_name: str,
+) -> ToolExecutionPolicy:
+    if not config.is_read_only(tool_name):
+        return ToolExecutionPolicy()
+    return ToolExecutionPolicy(
+        dependency_mode="independent",
+        resource_reads=[namespaced_mcp_tool_name(config, tool_name)],
+        realtime_safety="safe",
+        artifact_reuse="reusable",
     )
 
 

@@ -201,7 +201,7 @@ excluded_reasons
 - `execution` 包含 `dependency_mode`、可选 `concurrency_group`、`resource_reads`、`resource_writes`、`realtime_safety`、`artifact_reuse` 和可选 `progress_message`。它只表达调度/依赖/资源事实、realtime artifact 复用提示和等待提示，不表达“允许并发”命令。
 - `visibility` 是工具目录装配元数据，包含 `requires_env`、`enabled_by_default`、`skill_only`、`allowed_entry_profiles` 和 `requires_media`。可信 Agent-Service 入口只暴露显式声明 `allowed_entry_profiles=["agent_service"]` 且满足 `requires_media` 的工具；没有该声明的默认工具不会因工具名或用户文本进入通话前台目录。
 - 未分类工具使用保守默认：`level=pending_confirmation`、`requires_confirmation=true`、`dependency_mode=requires_prior_observation`、`realtime_safety=needs_confirmation` 且 `artifact_reuse=requires_validation`。
-- MCP 工具 schema 通过 `tool_spec_to_mcp_tool()` 支持，但当前 `OfflineMCPServer.list_tools()` 暴露的是 MCP wrapper 工具；registry ToolSpec 通过 `tool_list` 返回。
+- MCP 工具 schema 通过 `tool_spec_to_mcp_tool()` 支持。`OfflineMCPServer.list_tools()` 暴露本地 MCP wrapper 工具；显式配置的外部 MCP server 可通过 `MCPToolAdapter` 归一成 registry proxy tool，再由同一套 ToolSpec/validator/executor 治理。
 
 ## Tool Side-Effect Policy
 
@@ -544,6 +544,8 @@ The external HTTP contract for these Memory Server endpoints is owned by
 - `demo_flow_run`: 走离线 demo flow。
 
 MCP server 不直接依赖 provider SDK，不直接访问 OpenAI/DashScope/httpx/requests。错误 envelope 会脱敏。新增外部入口必须遵守同样边界：先归一成内部 request/decision，再走 validator/executor。
+
+外部 MCP 工具调用是显式 opt-in 路径：`create_default_registry(enable_mcp_tools=True, ...)` 或 `MULTIMODAL_AGENT_MCP_ENABLED=1` 加本地未跟踪配置文件后，才会读取 `MCPServerConfig` 并通过 stdio MCP client 执行 discovery。每个外部工具必须出现在 `allowed_tools` 中才会注册；未声明 read-only 的工具保持 `external_write` hard gate，只有同时列入 `read_only_tools` 和 `enabled_tools` 的工具才作为默认可见的 `external_read` 工具自动执行。MCP proxy 仍只通过 `ActionValidator -> ToolExecutor -> ToolRegistry` 调用，不暴露 server env、命令、provider raw payload 或本地路径。
 
 ## Improvement Lab 边界
 
