@@ -114,6 +114,8 @@ PROGRESS_MESSAGES = {
     "image_generation": "我开始生成，可能需要一点时间。",
 }
 
+_NATIVE_ASSISTANT_REASONING_CONTENT_KEY = "assistant_reasoning_content"
+_NATIVE_ASSISTANT_TURN_ID_KEY = "assistant_turn_id"
 _MAIN_LLM_NO_ANSWER_ERROR_CODES = frozenset({"provider_timeout", "provider_empty_response"})
 _MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGES = {
     "provider_timeout": "抱歉，刚才主模型没有及时响应，请再说一遍。",
@@ -820,9 +822,16 @@ class AgentGraphRuntime:
         step_ids: dict[int, str] = {}
         for group_index, scheduled_call in enumerate(group.calls):
             call = result.tool_calls[scheduled_call.call_index]
-            call_payload = call.model_dump(mode="json")
-            native_calls.append(call_payload)
-            state.request.metadata.setdefault("native_tool_calls", []).append(call_payload)
+            native_calls.append(
+                _native_tool_call_replay_payload(
+                    call,
+                    result=result,
+                    iteration=iteration,
+                )
+            )
+            state.request.metadata.setdefault("native_tool_calls", []).append(
+                _native_tool_call_public_payload(call)
+            )
             _record_native_tool_call_preamble(
                 state,
                 tool_name=call.name,
@@ -1149,9 +1158,16 @@ class AgentGraphRuntime:
                         )
                         return state
 
-                    call_payload = call.model_dump(mode="json")
-                    native_calls.append(call_payload)
-                    state.request.metadata.setdefault("native_tool_calls", []).append(call_payload)
+                    native_calls.append(
+                        _native_tool_call_replay_payload(
+                            call,
+                            result=result,
+                            iteration=iteration,
+                        )
+                    )
+                    state.request.metadata.setdefault("native_tool_calls", []).append(
+                        _native_tool_call_public_payload(call)
+                    )
                     _record_native_tool_call_preamble(state, tool_name=call.name, content=result.response_text)
                     decision = native_tool_call_to_assistant_decision(call)
                     _record_native_decision_metadata(
@@ -2000,6 +2016,23 @@ def _native_schedule_is_parallel(schedule: Any) -> bool:
         return False
     first_group = schedule.groups[0]
     return first_group.mode == "parallel" and len(first_group.calls) > 1
+
+
+def _native_tool_call_public_payload(call: NativeToolCall) -> dict[str, Any]:
+    return call.model_dump(mode="json")
+
+
+def _native_tool_call_replay_payload(
+    call: NativeToolCall,
+    *,
+    result: ChatResult,
+    iteration: int,
+) -> dict[str, Any]:
+    payload = call.model_dump(mode="json")
+    payload[_NATIVE_ASSISTANT_TURN_ID_KEY] = f"native_runtime_assistant_turn_{iteration + 1}"
+    if result.reasoning_content:
+        payload[_NATIVE_ASSISTANT_REASONING_CONTENT_KEY] = result.reasoning_content
+    return payload
 
 
 def _native_provider_budget_parallel_safe(state: AgentState, call_count: int) -> bool:

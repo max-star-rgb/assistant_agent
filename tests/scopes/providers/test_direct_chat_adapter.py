@@ -297,6 +297,7 @@ def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -
                 {
                     "message": {
                         "content": None,
+                        "reasoning_content": "internal provider reasoning",
                         "tool_calls": [
                             {
                                 "id": "call_1",
@@ -321,6 +322,7 @@ def test_openai_compatible_chat_response_parses_native_tool_calls(monkeypatch) -
     assert result.response_text == ""
     assert result.finish_reason == "tool_calls"
     assert result.message_kind == "tool_call"
+    assert result.reasoning_content == "internal provider reasoning"
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "product_search"
     assert result.tool_calls[0].arguments == {"query": "通勤耳机", "limit": 2}

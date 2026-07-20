@@ -72,6 +72,7 @@ class ChatResult(BaseModel):
 
     response_text: str = ""
     tool_calls: list[NativeToolCall] = Field(default_factory=list)
+    reasoning_content: str | None = Field(default=None, exclude=True)
     finish_reason: str | None = None
     refusal: str | None = None
     message_kind: str | None = None
@@ -398,6 +399,7 @@ def _parse_openai_chat_response(
     if isinstance(content, list):
         content = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
     tool_calls = _parse_openai_tool_calls(message.get("tool_calls"))
+    reasoning_content = message.get("reasoning_content")
     refusal = message.get("refusal") if isinstance(message.get("refusal"), str) else None
     if (not isinstance(content, str) or not content.strip()) and not tool_calls and not refusal:
         raise ProviderAdapterError("provider_empty_response", "chat provider returned empty content")
@@ -406,6 +408,7 @@ def _parse_openai_chat_response(
     return ChatResult(
         response_text=content.strip() if isinstance(content, str) else "",
         tool_calls=tool_calls,
+        reasoning_content=reasoning_content if isinstance(reasoning_content, str) and reasoning_content else None,
         finish_reason=str(finish_reason) if finish_reason is not None else None,
         refusal=refusal,
         message_kind=_chat_message_kind(tool_calls=tool_calls, refusal=refusal, content=content),
@@ -426,30 +429,35 @@ def _parse_openai_chat_stream(
     stream_callback: ChatStreamCallback | None = None,
 ) -> ChatResult:
     accumulator = LLMEventAccumulator()
+    state = _OpenAIStreamState(response_model=model)
     refusal = ""
-    for event in _openai_chat_stream_events(stream, provider=provider, model=model):
-        accumulator.apply(event)
-        if event.event_type == "token_delta":
-            _emit_stream_delta(
-                stream_callback,
-                event.text or "",
-                provider=event.provider,
-                model=event.model,
-                token_streaming=True,
-                finish_reason=event.finish_reason,
-            )
-        elif event.event_type == "completed":
-            raw_refusal = event.metadata.get("refusal")
-            if isinstance(raw_refusal, str):
-                refusal = raw_refusal
+    for chunk in stream:
+        for event in _openai_chat_chunk_events(chunk, provider=provider, state=state):
+            accumulator.apply(event)
+            if event.event_type == "token_delta":
+                _emit_stream_delta(
+                    stream_callback,
+                    event.text or "",
+                    provider=event.provider,
+                    model=event.model,
+                    token_streaming=True,
+                    finish_reason=event.finish_reason,
+                )
+    completed_event = _openai_stream_completed_event(provider=provider, state=state)
+    accumulator.apply(completed_event)
+    raw_refusal = completed_event.metadata.get("refusal")
+    if isinstance(raw_refusal, str):
+        refusal = raw_refusal
 
     content = accumulator.response_text
     tool_calls = accumulator.finalize_tool_calls(provider_format="openai_compatible")
+    reasoning_content = "".join(state.reasoning_content_parts)
     if not content.strip() and not tool_calls and not refusal:
         raise ProviderAdapterError("provider_empty_response", "chat provider returned empty content")
     return ChatResult(
         response_text=content.strip(),
         tool_calls=tool_calls,
+        reasoning_content=reasoning_content or None,
         finish_reason=accumulator.finish_reason,
         refusal=refusal or None,
         message_kind=_chat_message_kind(tool_calls=tool_calls, refusal=refusal or None, content=content),
@@ -467,6 +475,7 @@ class _OpenAIStreamState:
     finish_reason: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     refusal_parts: list[str] = field(default_factory=list)
+    reasoning_content_parts: list[str] = field(default_factory=list)
 
 
 def _openai_chat_chunk_events(
@@ -516,6 +525,9 @@ def _openai_chat_chunk_events(
         refusal = delta.get("refusal")
         if isinstance(refusal, str):
             state.refusal_parts.append(refusal)
+        reasoning_content = delta.get("reasoning_content")
+        if isinstance(reasoning_content, str):
+            state.reasoning_content_parts.append(reasoning_content)
         yield from _openai_tool_call_delta_events(
             delta.get("tool_calls"),
             provider=provider,

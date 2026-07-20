@@ -75,7 +75,11 @@ def native_result(name: str, arguments: dict[str, object]) -> ChatResult:
     )
 
 
-def native_multi_result(calls: list[tuple[str, dict[str, object]]]) -> ChatResult:
+def native_multi_result(
+    calls: list[tuple[str, dict[str, object]]],
+    *,
+    reasoning_content: str | None = None,
+) -> ChatResult:
     return ChatResult(
         response_text="",
         tool_calls=[
@@ -95,6 +99,7 @@ def native_multi_result(calls: list[tuple[str, dict[str, object]]]) -> ChatResul
         message_kind="tool_call",
         provider="scripted-native",
         model="native-test",
+        reasoning_content=reasoning_content,
     )
 
 
@@ -1812,6 +1817,40 @@ def test_native_runtime_executes_multiple_tool_calls_serially_in_provider_order(
     assert state.response is not None
     assert state.response.message == "已基于两个工具 observation 回答。"
     assert state.response.data["tool_observations"] == 2
+
+
+def test_native_runtime_replays_reasoning_content_for_deepseek_tool_handoff() -> None:
+    adapter = NativeToolChatAdapter(
+        [
+            native_multi_result(
+                [
+                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
+                ],
+                reasoning_content="internal provider reasoning",
+            ),
+            final_result("已基于工具 observation 回答。"),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(max_tool_iterations=5),
+        chat_adapter=adapter,
+    )
+
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"))
+
+    assert adapter.calls == 2
+    assistant_tool_messages = [
+        message
+        for message in adapter.requests[1].messages
+        if message["role"] == "assistant" and message.get("tool_calls")
+    ]
+    assert len(assistant_tool_messages) == 1
+    assert assistant_tool_messages[0]["reasoning_content"] == "internal provider reasoning"
+    assert [call["id"] for call in assistant_tool_messages[0]["tool_calls"]] == ["call_1", "call_2"]
+    assert all("reasoning_content" not in call for call in state.request.metadata["native_tool_calls"])
+    assert state.response is not None
+    assert state.response.message == "已基于工具 observation 回答。"
 
 
 def test_native_runtime_parallelizes_independent_read_only_tool_batch_through_executor() -> None:

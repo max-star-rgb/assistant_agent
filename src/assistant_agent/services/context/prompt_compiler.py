@@ -19,6 +19,9 @@ from assistant_agent.services.context.renderer import (
     render_native_tool_context,
 )
 
+_ASSISTANT_REASONING_CONTENT_KEY = "assistant_reasoning_content"
+_ASSISTANT_TURN_ID_KEY = "assistant_turn_id"
+
 
 class PromptCompileMode(StrEnum):
     """Supported production provider-request compilation modes."""
@@ -146,30 +149,85 @@ def _rendered_user_content(
 
 def _native_tool_messages(request: PromptCompileRequest) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
-    for index, observation in enumerate(request.observations):
-        call = request.native_calls[index] if index < len(request.native_calls) else {}
-        tool_call_payload = _native_tool_call_payload(
+    index = 0
+    while index < len(request.observations):
+        call = _native_call_at(request, index)
+        turn_id = _assistant_turn_id(call)
+        if turn_id:
+            grouped: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+            while index < len(request.observations):
+                candidate = _native_call_at(request, index)
+                if _assistant_turn_id(candidate) != turn_id:
+                    break
+                grouped.append((index, candidate, request.observations[index]))
+                index += 1
+            messages.extend(
+                _native_tool_turn_messages(
+                    grouped,
+                    id_prefix=request.tool_call_id_prefix,
+                )
+            )
+            continue
+        messages.extend(
+            _native_tool_turn_messages(
+                [(index, call, request.observations[index])],
+                id_prefix=request.tool_call_id_prefix,
+            )
+        )
+        index += 1
+    return messages
+
+
+def _native_call_at(request: PromptCompileRequest, index: int) -> dict[str, Any]:
+    return request.native_calls[index] if index < len(request.native_calls) else {}
+
+
+def _assistant_turn_id(call: dict[str, Any]) -> str | None:
+    value = call.get(_ASSISTANT_TURN_ID_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def _native_tool_turn_messages(
+    grouped: list[tuple[int, dict[str, Any], dict[str, Any]]],
+    *,
+    id_prefix: str,
+) -> list[dict[str, Any]]:
+    tool_call_payloads = [
+        _native_tool_call_payload(
             call,
             observation,
             index,
-            id_prefix=request.tool_call_id_prefix,
+            id_prefix=id_prefix,
         )
-        messages.append(
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [tool_call_payload],
-            }
-        )
+        for index, call, observation in grouped
+    ]
+    assistant_message: dict[str, Any] = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": tool_call_payloads,
+    }
+    reasoning_content = _assistant_reasoning_content([call for _, call, _ in grouped])
+    if reasoning_content is not None:
+        assistant_message["reasoning_content"] = reasoning_content
+    messages = [assistant_message]
+    for payload, (_, _, observation) in zip(tool_call_payloads, grouped, strict=True):
         messages.append(
             {
                 "role": "tool",
-                "tool_call_id": tool_call_payload["id"],
-                "name": tool_call_payload["function"]["name"],
+                "tool_call_id": payload["id"],
+                "name": payload["function"]["name"],
                 "content": json.dumps(observation, ensure_ascii=False),
             }
         )
     return messages
+
+
+def _assistant_reasoning_content(calls: list[dict[str, Any]]) -> str | None:
+    for call in calls:
+        value = call.get(_ASSISTANT_REASONING_CONTENT_KEY)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _native_tool_call_payload(
