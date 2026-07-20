@@ -143,8 +143,8 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.runtime_profile.name == "provider_smoke"
     assert config.openai_api_key == "test-openai-key"
     assert config.qwen_api_key == "test-qwen-key"
-    assert config.qwen_vision_api_key == "test-qwen-vision-key"
-    assert config.qwen_image_api_key == "test-qwen-image-key"
+    assert config.qwen_vision_api_key == "test-qwen-key"
+    assert config.qwen_image_api_key == "test-qwen-key"
     assert config.dashscope_api_key is None
     assert config.ark_chat_api_key is None
     assert config.seed_api_key == "test-seed-key"
@@ -201,6 +201,33 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.has_any_real_provider() is True
 
 
+def test_provider_config_uses_canonical_qwen_api_key_for_all_qwen_capabilities() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_VISUAL_IMAGE_SEARCH_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER": "dashscope",
+            "QWEN_API_KEY": "canonical-qwen-key",
+        }
+    )
+
+    assert config.qwen_api_key == "canonical-qwen-key"
+    assert config.chat_api_key == "canonical-qwen-key"
+    assert config.vision_api_key == "canonical-qwen-key"
+    assert config.qwen_vision_api_key == "canonical-qwen-key"
+    assert config.qwen_realtime_vision_api_key == "canonical-qwen-key"
+    assert config.image_generation_api_key == "canonical-qwen-key"
+    assert config.qwen_image_api_key == "canonical-qwen-key"
+    assert config.qwen_image_search_api_key == "canonical-qwen-key"
+    assert config.vision_embedding_api_key == "canonical-qwen-key"
+    assert config.resolved_chat_provider().missing_required_env() == []
+    assert config.resolved_vision_provider().missing_required_env() == []
+    assert config.resolved_image_generation_provider().missing_required_env() == []
+
+
 def test_provider_config_offline_eval_defaults_to_mock_local_providers() -> None:
     config = ProviderConfig.from_env({"MULTIMODAL_AGENT_RUNTIME_PROFILE": "offline_eval"})
 
@@ -232,7 +259,7 @@ def test_provider_config_uses_qwen_vision_settings_for_realtime_video() -> None:
     assert config.qwen_realtime_vision_model == "qwen3.5-omni-flash-realtime"
 
 
-def test_provider_config_reads_qwen_realtime_vision_settings_and_prefers_vision_key() -> None:
+def test_provider_config_reads_qwen_realtime_vision_settings_and_prefers_canonical_key() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
@@ -246,7 +273,7 @@ def test_provider_config_reads_qwen_realtime_vision_settings_and_prefers_vision_
         }
     )
 
-    assert config.qwen_realtime_vision_api_key == "vision-key"
+    assert config.qwen_realtime_vision_api_key == "dashscope-key"
     assert config.qwen_realtime_vision_base_url == "wss://qwen.local/realtime"
     assert config.qwen_realtime_vision_workspace_id == "workspace-ignored"
     assert config.qwen_realtime_vision_region == "ap-southeast-1"

@@ -497,7 +497,8 @@ MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
   --port 8089
 ```
 
-Qwen realtime 视频适配器优先使用 `QWEN_VISION_API_KEY`（缺省回退到 `DASHSCOPE_API_KEY`）。
+Qwen/DashScope API key 统一使用 `QWEN_API_KEY`（兼容 `DASHSCOPE_API_KEY`；旧的
+`QWEN_VISION_API_KEY` 仍作为迁移期别名）。
 推荐配置百炼业务空间专属 WebSocket endpoint：设置 `QWEN_REALTIME_VISION_WORKSPACE_ID`
 和 `QWEN_REALTIME_VISION_REGION`（默认 `cn-beijing`；可选 `ap-southeast-1`）后，运行时会生成
 `wss://{WorkspaceId}.{region}.maas.aliyuncs.com/api-ws/v1/realtime`。显式
@@ -517,8 +518,8 @@ provider 选择入口。启动前应确认 chat readiness 和 `video_understandi
 仓库的 opt-in smoke 覆盖单帧、连续五帧后最终完成 sequence、主动断线后的新 session
 恢复，以及首 delta/完整观察耗时。只有同时设置 `RUN_INTEGRATION_TESTS=1`、
 `MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke|pilot`、
-`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 和 `QWEN_VISION_API_KEY`（或 fallback
-`DASHSCOPE_API_KEY`）时才会联网：
+`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 和 `QWEN_API_KEY`（兼容 `DASHSCOPE_API_KEY`，
+迁移期也接受旧 `QWEN_VISION_API_KEY`）时才会联网：
 
 ```bash
 RUN_INTEGRATION_TESTS=1 \

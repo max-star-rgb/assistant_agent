@@ -81,7 +81,7 @@ def test_provider_smoke_validation_reports_missing_explicit_real_config() -> Non
         ("product_search", "http"),
     }
     missing = {name for issue in result.issues for name in issue.missing}
-    assert {"QWEN_VISION_API_KEY", "PRODUCT_SEARCH_BASE_URL", "PRODUCT_SEARCH_API_KEY"}.issubset(missing)
+    assert {"QWEN_API_KEY", "PRODUCT_SEARCH_BASE_URL", "PRODUCT_SEARCH_API_KEY"}.issubset(missing)
 
 
 def test_provider_smoke_validation_accepts_explicit_qwen_vision_config() -> None:
@@ -177,7 +177,7 @@ def test_image_generation_validation_uses_provider_spec_for_qwen() -> None:
     assert result.valid is False
     assert result.issues[0].capability == "image_generation"
     assert result.issues[0].provider == "qwen"
-    assert result.issues[0].missing == ["QWEN_IMAGE_API_KEY"]
+    assert result.issues[0].missing == ["QWEN_API_KEY"]
 
 
 def test_validation_issue_provider_error_is_redacted() -> None:

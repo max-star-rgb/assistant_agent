@@ -21,7 +21,7 @@ def _configured_adapter() -> QwenRealtimeVisionAdapter:
     if config.vision_provider != "qwen":
         pytest.skip("set MULTIMODAL_AGENT_VISION_PROVIDER=qwen")
     if not config.qwen_realtime_vision_api_key:
-        pytest.skip("set QWEN_VISION_API_KEY or DASHSCOPE_API_KEY")
+        pytest.skip("set QWEN_API_KEY or DASHSCOPE_API_KEY")
     adapter = create_realtime_video_understanding_adapter(config)
     assert isinstance(adapter, QwenRealtimeVisionAdapter)
     return adapter

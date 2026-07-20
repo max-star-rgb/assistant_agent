@@ -28,7 +28,7 @@ def test_provider_smoke_missing_config_is_not_ready() -> None:
     assert report.ready is False
     assert vision.provider == "qwen"
     assert vision.status == "not_ready"
-    assert vision.issues[0].missing == ["QWEN_VISION_API_KEY"]
+    assert vision.issues[0].missing == ["QWEN_API_KEY"]
 
 
 def test_provider_smoke_configured_qwen_vision_is_ready_without_calling_provider() -> None:
@@ -62,7 +62,7 @@ def test_provider_smoke_missing_qwen_vision_marks_video_understanding_not_ready(
 
     assert video.provider == "qwen"
     assert video.status == "not_ready"
-    assert video.issues[0].missing == ["QWEN_VISION_API_KEY"]
+    assert video.issues[0].missing == ["QWEN_API_KEY"]
 
 
 def test_provider_smoke_configured_qwen_vision_marks_video_understanding_ready() -> None:

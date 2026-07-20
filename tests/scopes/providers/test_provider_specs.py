@@ -124,6 +124,14 @@ def test_resolve_chat_provider_accepts_qwen_dashscope_key_and_workspace() -> Non
     assert resolved.missing_required_env() == []
 
 
+def test_resolve_chat_provider_accepts_legacy_qwen_key_aliases() -> None:
+    resolved = resolve_chat_provider("qwen", {"QWEN_VISION_API_KEY": "legacy-qwen-key"})
+
+    assert resolved.provider == "qwen"
+    assert resolved.api_key == "legacy-qwen-key"
+    assert resolved.missing_required_env() == []
+
+
 def test_resolve_chat_provider_accepts_ark_api_key_alias() -> None:
     resolved = resolve_chat_provider(
         "ark",
@@ -152,7 +160,7 @@ def test_resolve_chat_provider_requires_explicit_ark_model() -> None:
 def test_vision_provider_specs_include_openai_compatible_providers() -> None:
     assert {"mock", "openai", "qwen", "seed", "ark"}.issubset(supported_vision_providers())
     assert VISION_PROVIDER_SPECS["qwen"].adapter_kind == "openai_compatible"
-    assert VISION_PROVIDER_SPECS["qwen"].api_key_env == "QWEN_VISION_API_KEY"
+    assert VISION_PROVIDER_SPECS["qwen"].api_key_env == "QWEN_API_KEY"
     assert VISION_PROVIDER_SPECS["qwen"].base_url_env == "QWEN_VISION_BASE_URL"
     assert VISION_PROVIDER_SPECS["qwen"].model_env == "QWEN_VISION_MODEL"
     assert VISION_PROVIDER_SPECS["ark"].adapter_kind == "ark_responses"
@@ -195,7 +203,7 @@ def test_resolve_vision_provider_accepts_explicit_qwen_config() -> None:
     resolved = resolve_vision_provider(
         "qwen",
         {
-            "QWEN_VISION_API_KEY": "test-key",
+            "QWEN_API_KEY": "test-key",
             "QWEN_VISION_BASE_URL": "https://qwen.local/v1",
             "QWEN_VISION_MODEL": "qwen-vl-test",
         },
@@ -204,6 +212,13 @@ def test_resolve_vision_provider_accepts_explicit_qwen_config() -> None:
     assert resolved.api_key == "test-key"
     assert resolved.base_url == "https://qwen.local/v1"
     assert resolved.model == "qwen-vl-test"
+    assert resolved.missing_required_env() == []
+
+
+def test_resolve_vision_provider_accepts_legacy_qwen_vision_key_alias() -> None:
+    resolved = resolve_vision_provider("qwen", {"QWEN_VISION_API_KEY": "test-key"})
+
+    assert resolved.api_key == "test-key"
     assert resolved.missing_required_env() == []
 
 
@@ -222,7 +237,7 @@ def test_image_generation_provider_specs_include_optional_skeleton_providers() -
     assert IMAGE_GENERATION_PROVIDER_SPECS["openai"].api_key_env == "OPENAI_API_KEY"
     assert IMAGE_GENERATION_PROVIDER_SPECS["openai"].model_env == "OPENAI_IMAGE_MODEL"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].adapter_kind == "dashscope_image"
-    assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].api_key_env == "QWEN_IMAGE_API_KEY"
+    assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].api_key_env == "QWEN_API_KEY"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].base_url_env == "QWEN_IMAGE_BASE_URL"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].default_base_url == "https://dashscope.aliyuncs.com/api/v1"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].default_model == "qwen-image-2.0-pro"
@@ -260,13 +275,20 @@ def test_resolve_ark_image_generation_provider_requires_env_url_and_model() -> N
 
 
 def test_resolve_qwen_image_generation_provider_uses_dashscope_key() -> None:
-    resolved = resolve_image_generation_provider("qwen", {"QWEN_IMAGE_API_KEY": "test-key"})
+    resolved = resolve_image_generation_provider("qwen", {"QWEN_API_KEY": "test-key"})
 
     assert resolved.provider == "qwen"
     assert resolved.adapter_kind == "dashscope_image"
     assert resolved.api_key == "test-key"
     assert resolved.base_url == "https://dashscope.aliyuncs.com/api/v1"
     assert resolved.model == "qwen-image-2.0-pro"
+    assert resolved.missing_required_env() == []
+
+
+def test_resolve_qwen_image_generation_provider_accepts_legacy_image_key_alias() -> None:
+    resolved = resolve_image_generation_provider("qwen", {"QWEN_IMAGE_API_KEY": "test-key"})
+
+    assert resolved.api_key == "test-key"
     assert resolved.missing_required_env() == []
 
 

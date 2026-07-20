@@ -51,7 +51,7 @@ def _configured_qwen_tool() -> tuple[
     if config.vision_provider != "qwen":
         pytest.skip("set MULTIMODAL_AGENT_VISION_PROVIDER=qwen")
     if not config.qwen_realtime_vision_api_key:
-        pytest.skip("set QWEN_VISION_API_KEY or DASHSCOPE_API_KEY")
+        pytest.skip("set QWEN_API_KEY or DASHSCOPE_API_KEY")
     adapter = create_realtime_video_understanding_adapter(config)
     assert isinstance(adapter, QwenRealtimeVisionAdapter)
     return VideoUnderstandingTool(adapter=adapter), adapter, config
@@ -161,6 +161,8 @@ def _endpoint_style(config: ProviderConfig) -> str:
 
 
 def _credential_source() -> str | None:
+    if os.environ.get("QWEN_API_KEY"):
+        return "QWEN_API_KEY"
     if os.environ.get("QWEN_VISION_API_KEY"):
         return "QWEN_VISION_API_KEY"
     if os.environ.get("DASHSCOPE_API_KEY"):

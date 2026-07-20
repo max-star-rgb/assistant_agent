@@ -158,7 +158,7 @@ def test_qwen_adapter_missing_key_does_not_call_provider(monkeypatch) -> None:
         adapter.generate(ImageGenerationInput(prompt="生成一张图"))
 
     assert exc_info.value.code == "provider_unconfigured"
-    assert "QWEN_IMAGE_API_KEY" in exc_info.value.message
+    assert "QWEN_API_KEY" in exc_info.value.message
 
 
 @pytest.mark.parametrize("status", [400, 401, 500])

@@ -141,6 +141,7 @@ def test_dashscope_adapter_missing_key_returns_structured_error_without_http_cal
 
     assert result.embedding == []
     assert result.errors[0]["code"] == "provider_unconfigured"
+    assert "QWEN_API_KEY" in result.errors[0]["message"]
     assert "DASHSCOPE_API_KEY" in result.errors[0]["message"]
 
 

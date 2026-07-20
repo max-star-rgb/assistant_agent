@@ -87,7 +87,10 @@ class DashScopeVisionEmbeddingProvider:
                 provider=self.provider,
                 model=self.config.model,
                 code="provider_unconfigured",
-                message="dashscope vision embedding provider requires DASHSCOPE_API_KEY or QWEN_VISION_API_KEY.",
+                message=(
+                    "dashscope vision embedding provider requires QWEN_API_KEY or DASHSCOPE_API_KEY "
+                    "(legacy QWEN_VISION_API_KEY is also accepted)."
+                ),
             )
 
         try:

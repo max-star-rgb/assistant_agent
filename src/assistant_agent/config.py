@@ -284,14 +284,12 @@ class ProviderConfig:
         return cls(
             runtime_profile=runtime_profile,
             openai_api_key=source.get("OPENAI_API_KEY"),
-            qwen_api_key=source.get("QWEN_API_KEY"),
+            qwen_api_key=_qwen_provider_api_key(source),
             dashscope_api_key=source.get("DASHSCOPE_API_KEY"),
             ark_api_key=source.get("ARK_API_KEY"),
-            qwen_vision_api_key=source.get("QWEN_VISION_API_KEY"),
-            qwen_realtime_vision_api_key=(
-                source.get("QWEN_VISION_API_KEY") or source.get("DASHSCOPE_API_KEY")
-            ),
-            qwen_image_api_key=source.get("QWEN_IMAGE_API_KEY"),
+            qwen_vision_api_key=_qwen_capability_api_key(source, "QWEN_VISION_API_KEY"),
+            qwen_realtime_vision_api_key=_qwen_capability_api_key(source, "QWEN_VISION_API_KEY"),
+            qwen_image_api_key=_qwen_capability_api_key(source, "QWEN_IMAGE_API_KEY"),
             ark_vision_api_key=source.get("ARK_VISION_API_KEY"),
             ark_image_api_key=source.get("ARK_IMAGE_API_KEY"),
             ark_chat_api_key=source.get("ARK_CHAT_API_KEY"),
@@ -463,9 +461,7 @@ class ProviderConfig:
                 allow_real=allow_real_providers,
             ),
             qwen_image_search_api_key=(
-                source.get("QWEN_IMAGE_SEARCH_API_KEY")
-                or source.get("QWEN_API_KEY")
-                or source.get("DASHSCOPE_API_KEY")
+                _qwen_capability_api_key(source, "QWEN_IMAGE_SEARCH_API_KEY")
             ),
             qwen_image_search_base_url=source.get(
                 "QWEN_IMAGE_SEARCH_BASE_URL",
@@ -634,8 +630,8 @@ class ProviderConfig:
                 "OPENAI_API_KEY": self.openai_api_key or "",
                 "OPENAI_VISION_BASE_URL": self.openai_vision_base_url,
                 "OPENAI_VISION_MODEL": self.openai_vision_model,
-                "QWEN_API_KEY": self.qwen_api_key or "",
-                "QWEN_VISION_API_KEY": self.qwen_vision_api_key or self.qwen_api_key or "",
+                "QWEN_API_KEY": self.qwen_api_key or self.qwen_vision_api_key or self.dashscope_api_key or "",
+                "QWEN_VISION_API_KEY": self.qwen_vision_api_key or "",
                 "QWEN_VISION_BASE_URL": self.qwen_vision_base_url,
                 "QWEN_VISION_MODEL": self.qwen_vision_model,
                 "ARK_API_KEY": self.ark_api_key or "",
@@ -659,6 +655,7 @@ class ProviderConfig:
                     "OPENAI_API_KEY": self.image_generation_api_key or "",
                     "OPENAI_IMAGE_MODEL": self.image_generation_model or "",
                     "DASHSCOPE_API_KEY": self.image_generation_api_key or "",
+                    "QWEN_API_KEY": self.image_generation_api_key or "",
                     "QWEN_IMAGE_API_KEY": self.image_generation_api_key or "",
                     "QWEN_IMAGE_BASE_URL": self.image_generation_base_url or "",
                     "QWEN_IMAGE_MODEL": self.image_generation_model or "",
@@ -677,7 +674,8 @@ class ProviderConfig:
                 "OPENAI_API_KEY": self.openai_api_key or "",
                 "OPENAI_IMAGE_MODEL": self.openai_image_model,
                 "DASHSCOPE_API_KEY": self.dashscope_api_key or "",
-                "QWEN_IMAGE_API_KEY": self.qwen_image_api_key or self.dashscope_api_key or "",
+                "QWEN_API_KEY": self.qwen_api_key or self.qwen_image_api_key or self.dashscope_api_key or "",
+                "QWEN_IMAGE_API_KEY": self.qwen_image_api_key or "",
                 "QWEN_IMAGE_BASE_URL": self.qwen_image_base_url,
                 "QWEN_IMAGE_MODEL": self.qwen_image_model,
                 "ARK_API_KEY": self.ark_api_key or "",
@@ -789,7 +787,24 @@ def _vision_embedding_provider(value: str | None, *, allow_real: bool = True) ->
 
 
 def _vision_embedding_api_key(source: Mapping[str, str]) -> str | None:
-    return source.get("DASHSCOPE_API_KEY") or source.get("QWEN_VISION_API_KEY")
+    return _qwen_capability_api_key(source, "QWEN_VISION_API_KEY")
+
+
+def _qwen_provider_api_key(source: Mapping[str, str]) -> str | None:
+    return _qwen_capability_api_key(
+        source,
+        "QWEN_VISION_API_KEY",
+        "QWEN_IMAGE_API_KEY",
+        "QWEN_IMAGE_SEARCH_API_KEY",
+    )
+
+
+def _qwen_capability_api_key(source: Mapping[str, str], *legacy_api_key_envs: str) -> str | None:
+    for key_env in ("QWEN_API_KEY", "DASHSCOPE_API_KEY", *legacy_api_key_envs):
+        value = source.get(key_env)
+        if value:
+            return value
+    return None
 
 
 def _qwen_chat_workspace_id(source: Mapping[str, str]) -> str | None:

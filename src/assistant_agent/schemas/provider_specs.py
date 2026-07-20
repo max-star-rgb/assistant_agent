@@ -275,7 +275,7 @@ VISION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
         provider_env=VISION_PROVIDER_ENV,
         adapter_kind="openai_compatible",
         capabilities=VISION_TEXT_IMAGE_CAPABILITIES,
-        api_key_env="QWEN_VISION_API_KEY",
+        api_key_env="QWEN_API_KEY",
         base_url_env="QWEN_VISION_BASE_URL",
         model_env="QWEN_VISION_MODEL",
         default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -359,7 +359,7 @@ IMAGE_GENERATION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
         provider_env=IMAGE_GENERATION_PROVIDER_ENV,
         adapter_kind="dashscope_image",
         capabilities=IMAGE_GENERATION_CAPABILITIES,
-        api_key_env="QWEN_IMAGE_API_KEY",
+        api_key_env="QWEN_API_KEY",
         base_url_env="QWEN_IMAGE_BASE_URL",
         model_env="QWEN_IMAGE_MODEL",
         default_base_url="https://dashscope.aliyuncs.com/api/v1",
@@ -469,8 +469,12 @@ def _chat_provider_env_with_aliases(provider: str, env: Mapping[str, str]) -> Ma
         return env
     normalized = dict(env)
     if provider == "qwen":
-        if not normalized.get("QWEN_API_KEY") and normalized.get("DASHSCOPE_API_KEY"):
-            normalized["QWEN_API_KEY"] = normalized["DASHSCOPE_API_KEY"]
+        normalized = _qwen_env_with_api_key_aliases(
+            normalized,
+            "QWEN_VISION_API_KEY",
+            "QWEN_IMAGE_API_KEY",
+            "QWEN_IMAGE_SEARCH_API_KEY",
+        )
         if not normalized.get("QWEN_CHAT_BASE_URL"):
             workspace_id = (normalized.get("QWEN_CHAT_WORKSPACE_ID") or "").strip()
             if workspace_id:
@@ -507,6 +511,12 @@ def select_vision_provider(value: str | None, *, allow_real: bool) -> str:
 def resolve_vision_provider(provider: str, env: Mapping[str, str]) -> ResolvedProviderSpec:
     """Resolve selected Vision provider values from environment-like data."""
 
+    if provider == "qwen":
+        return resolve_provider(
+            provider,
+            _qwen_env_with_api_key_aliases(env, "QWEN_VISION_API_KEY"),
+            VISION_PROVIDER_SPECS,
+        )
     return resolve_provider(provider, env, VISION_PROVIDER_SPECS)
 
 
@@ -531,4 +541,22 @@ def select_image_generation_provider(value: str | None, *, allow_real: bool) -> 
 def resolve_image_generation_provider(provider: str, env: Mapping[str, str]) -> ResolvedProviderSpec:
     """Resolve selected image generation provider values from environment-like data."""
 
+    if provider == "qwen":
+        return resolve_provider(
+            provider,
+            _qwen_env_with_api_key_aliases(env, "QWEN_IMAGE_API_KEY"),
+            IMAGE_GENERATION_PROVIDER_SPECS,
+        )
     return resolve_provider(provider, env, IMAGE_GENERATION_PROVIDER_SPECS)
+
+
+def _qwen_env_with_api_key_aliases(env: Mapping[str, str], *legacy_api_key_envs: str) -> dict[str, str]:
+    normalized = dict(env)
+    if normalized.get("QWEN_API_KEY"):
+        return normalized
+    for key_env in ("DASHSCOPE_API_KEY", *legacy_api_key_envs):
+        value = normalized.get(key_env)
+        if value:
+            normalized["QWEN_API_KEY"] = value
+            break
+    return normalized
