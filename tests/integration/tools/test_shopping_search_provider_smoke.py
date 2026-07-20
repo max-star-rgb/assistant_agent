@@ -29,20 +29,17 @@ def _configured_shopping_search_tool() -> tuple[ShoppingSearchTool, ProviderConf
         "MULTIMODAL_AGENT_RUNTIME_PROFILE": os.environ.get(
             "MULTIMODAL_AGENT_RUNTIME_PROFILE", "provider_smoke"
         ),
-        "MULTIMODAL_AGENT_PRODUCT_PROVIDER": os.environ.get(
-            "MULTIMODAL_AGENT_PRODUCT_PROVIDER", "haodanku"
-        ),
-        "MULTIMODAL_AGENT_PRICE_PROVIDER": os.environ.get(
-            "MULTIMODAL_AGENT_PRICE_PROVIDER", "haodanku"
+        "MULTIMODAL_AGENT_SHOPPING_PROVIDER": os.environ.get(
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER", "haodanku"
         ),
     }
     config = ProviderConfig.from_env(env)
     if config.runtime_profile.name not in {"provider_smoke", "pilot"}:
         pytest.skip("set MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke or pilot")
     if config.product_search_provider != "haodanku":
-        pytest.skip("set MULTIMODAL_AGENT_PRODUCT_PROVIDER=haodanku")
+        pytest.skip("set MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku")
     if config.price_compare_provider != "haodanku":
-        pytest.skip("set MULTIMODAL_AGENT_PRICE_PROVIDER=haodanku")
+        pytest.skip("set MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku")
     if not config.haodanku_api_key:
         pytest.skip("set HAODANKU_API_KEY")
     return (
@@ -128,6 +125,7 @@ def _provider_config_diagnostics(config: ProviderConfig) -> dict[str, object]:
         "python": sys.executable,
         "cwd": str(Path.cwd()),
         "runtime_profile": config.runtime_profile.name,
+        "shopping_provider": config.shopping_provider,
         "product_search_provider": config.product_search_provider,
         "price_compare_provider": config.price_compare_provider,
         "haodanku_base_url": config.haodanku_base_url,

@@ -58,7 +58,6 @@ RUN_REAL_WEB_SEARCH_TOOL_TEST=1 /home/lenovo1/miniconda3/envs/hello_agent/bin/py
 - `test_image_generation_provider_smoke.py`：验证 `image_generation` 工具到当前配置真实图片生成
   provider 的链路，默认使用 Qwen，支持切换到已实现的 Ark。
 - `test_shopping_search_provider_smoke.py`：验证 `shopping_search` 工具到好单库搜索与比价链路，
-  默认要求 `MULTIMODAL_AGENT_PRODUCT_PROVIDER=haodanku` 和
-  `MULTIMODAL_AGENT_PRICE_PROVIDER=haodanku`。
+  默认要求 `MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku`。
 - `test_web_search_provider_smoke.py`：验证 `web_search` 工具到 HTTP 联网搜索 provider 的链路，
   默认要求 `MULTIMODAL_AGENT_SEARCH_PROVIDER=http`。

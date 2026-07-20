@@ -15,6 +15,7 @@ def test_provider_config_allows_empty_environment() -> None:
     assert config.search_provider == "mock"
     assert config.web_search_base_url is None
     assert config.web_search_api_key is None
+    assert config.shopping_provider == "mock"
     assert config.product_search_provider == "mock"
     assert config.price_compare_provider == "mock"
     assert config.haodanku_enabled_platforms == ("taobao",)
@@ -38,6 +39,50 @@ def test_provider_config_falls_back_to_taobao_when_enabled_platforms_are_invalid
     config = ProviderConfig.from_env({"HAODANKU_ENABLED_PLATFORMS": "tmall,invalid"})
 
     assert config.haodanku_enabled_platforms == ("taobao",)
+
+
+def test_provider_config_shopping_provider_drives_search_and_price_compare() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "haodanku",
+            "HAODANKU_API_KEY": "test-key",
+        }
+    )
+
+    assert config.shopping_provider == "haodanku"
+    assert config.product_search_provider == "haodanku"
+    assert config.price_compare_provider == "haodanku"
+    assert config.haodanku_api_key == "test-key"
+
+
+def test_local_demo_profile_blocks_real_shopping_provider_from_environment() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "local_demo",
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "haodanku",
+            "HAODANKU_API_KEY": "test-key",
+        }
+    )
+
+    assert config.shopping_provider == "mock"
+    assert config.product_search_provider == "mock"
+    assert config.price_compare_provider == "mock"
+
+
+def test_legacy_product_and_price_provider_env_override_shopping_provider() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "haodanku",
+            "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http",
+            "MULTIMODAL_AGENT_PRICE_PROVIDER": "local",
+        }
+    )
+
+    assert config.shopping_provider == "haodanku"
+    assert config.product_search_provider == "http"
+    assert config.price_compare_provider == "local"
 
 
 def test_provider_config_auto_persists_conversation_history_with_jsonl_memory() -> None:
@@ -103,7 +148,7 @@ def test_provider_config_reads_environment_values() -> None:
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
             "QWEN_CHAT_BASE_URL": "https://qwen.local/v1",
             "QWEN_CHAT_MODEL": "qwen-test-chat",
-            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
             "DEEPSEEK_CHAT_BASE_URL": "https://deepseek.local/v1",
             "DEEPSEEK_CHAT_MODEL": "deepseek-test-chat",
             "MULTIMODAL_AGENT_IMAGE_PROVIDER": "comfyui",
@@ -117,11 +162,10 @@ def test_provider_config_reads_environment_values() -> None:
             "WEB_SEARCH_BASE_URL": "http://localhost:7005",
             "WEB_SEARCH_API_KEY": "test-web-search-key",
             "WEB_SEARCH_TIMEOUT_SECONDS": "4.25",
-            "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http",
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "http",
             "PRODUCT_SEARCH_BASE_URL": "http://localhost:7001",
             "PRODUCT_SEARCH_API_KEY": "test-product-key",
             "PRODUCT_SEARCH_TIMEOUT_SECONDS": "3.5",
-            "MULTIMODAL_AGENT_PRICE_PROVIDER": "http",
             "PRICE_COMPARE_BASE_URL": "http://localhost:7002",
             "PRICE_COMPARE_API_KEY": "test-price-key",
             "PRICE_COMPARE_TIMEOUT_SECONDS": "4.5",
@@ -177,6 +221,7 @@ def test_provider_config_reads_environment_values() -> None:
     assert config.web_search_base_url == "http://localhost:7005"
     assert config.web_search_api_key == "test-web-search-key"
     assert config.web_search_timeout_seconds == 4.25
+    assert config.shopping_provider == "http"
     assert config.product_search_provider == "http"
     assert config.product_search_base_url == "http://localhost:7001"
     assert config.product_search_api_key == "test-product-key"
@@ -226,6 +271,46 @@ def test_provider_config_uses_canonical_qwen_api_key_for_all_qwen_capabilities()
     assert config.resolved_chat_provider().missing_required_env() == []
     assert config.resolved_vision_provider().missing_required_env() == []
     assert config.resolved_image_generation_provider().missing_required_env() == []
+
+
+def test_provider_config_uses_canonical_ark_api_key_for_all_ark_capabilities() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "ark",
+            "ARK_API_KEY": "canonical-ark-key",
+            "ARK_CHAT_MODEL": "ark-chat-test",
+            "ARK_IMAGE_BASE_URL": "https://ark.local/api/v3",
+            "ARK_IMAGE_MODEL": "ark-image-test",
+        }
+    )
+
+    assert config.ark_api_key == "canonical-ark-key"
+    assert config.ark_chat_api_key == "canonical-ark-key"
+    assert config.ark_vision_api_key == "canonical-ark-key"
+    assert config.ark_image_api_key == "canonical-ark-key"
+    assert config.chat_api_key == "canonical-ark-key"
+    assert config.vision_api_key == "canonical-ark-key"
+    assert config.image_generation_api_key == "canonical-ark-key"
+    assert config.resolved_chat_provider().missing_required_env() == []
+    assert config.resolved_vision_provider().missing_required_env() == []
+    assert config.resolved_image_generation_provider().missing_required_env() == []
+
+
+def test_provider_config_uses_canonical_deepseek_api_key_for_chat() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "canonical-deepseek-key",
+        }
+    )
+
+    assert config.deepseek_api_key == "canonical-deepseek-key"
+    assert config.chat_api_key == "canonical-deepseek-key"
+    assert config.resolved_chat_provider().missing_required_env() == []
 
 
 def test_provider_config_offline_eval_defaults_to_mock_local_providers() -> None:
@@ -361,7 +446,7 @@ def test_provider_config_reads_deepseek_chat_provider() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
         }
     )
 
@@ -420,13 +505,14 @@ def test_provider_config_reads_ark_chat_provider() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
-            "ARK_CHAT_API_KEY": "test-ark-chat-key",
+            "ARK_API_KEY": "test-ark-chat-key",
             "ARK_CHAT_BASE_URL": "https://ark.local/api/v3",
             "ARK_CHAT_MODEL": "ark-chat-test",
         }
     )
 
     assert config.chat_provider == "ark"
+    assert config.ark_api_key == "test-ark-chat-key"
     assert config.ark_chat_api_key == "test-ark-chat-key"
     assert config.chat_api_key == "test-ark-chat-key"
     assert config.chat_base_url == "https://ark.local/api/v3"
@@ -437,12 +523,12 @@ def test_provider_config_reads_ark_chat_provider() -> None:
     assert config.resolved_chat_provider().missing_required_env() == []
 
 
-def test_provider_config_accepts_legacy_ark_api_key_for_chat() -> None:
+def test_provider_config_accepts_legacy_ark_chat_api_key_for_chat() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
-            "ARK_API_KEY": "legacy-ark-key",
+            "ARK_CHAT_API_KEY": "legacy-ark-key",
             "ARK_CHAT_MODEL": "ark-chat-test",
         }
     )
@@ -464,7 +550,7 @@ def test_provider_config_common_chat_stream_can_disable_deepseek_default_stream(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
             "CHAT_STREAM": "false",
         }
     )
@@ -478,7 +564,7 @@ def test_provider_config_reads_deepseek_chat_stream_override() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
             "CHAT_STREAM": "false",
             "DEEPSEEK_CHAT_STREAM": "true",
         }
@@ -493,7 +579,7 @@ def test_provider_config_deepseek_chat_stream_override_can_disable_common_switch
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
             "CHAT_STREAM": "true",
             "DEEPSEEK_CHAT_STREAM": "false",
         }
@@ -503,12 +589,12 @@ def test_provider_config_deepseek_chat_stream_override_can_disable_common_switch
     assert config.chat_stream is False
 
 
-def test_provider_config_accepts_legacy_deepseek_api_key_as_fallback() -> None:
+def test_provider_config_accepts_legacy_deepseek_chat_api_key_as_fallback() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_API_KEY": "legacy-deepseek-key",
+            "DEEPSEEK_CHAT_API_KEY": "legacy-deepseek-key",
         }
     )
 

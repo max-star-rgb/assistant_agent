@@ -45,7 +45,7 @@ class RestartAdapter:
                 tool_calls=[
                     NativeToolCall(
                         id="call-1",
-                        name="product_search",
+                        name="shopping_search",
                         arguments={"query": "耳机", "limit": 1},
                     )
                 ],
@@ -154,7 +154,7 @@ def test_queued_sqlite_task_is_claimed_after_app_restart(monkeypatch, tmp_path) 
         ingress_run_id="run-restart",
         plan=TaskPlan(
             goal="restart task",
-            steps=[TaskStep(step_id="step_1", action="search", tool_name="product_search")],
+            steps=[TaskStep(step_id="step_1", action="search", tool_name="shopping_search")],
         ),
         revision_reason="initial",
     )

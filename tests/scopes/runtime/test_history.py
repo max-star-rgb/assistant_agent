@@ -46,7 +46,7 @@ def test_history_records_failed_tool_call(tmp_path) -> None:
         query: str | None = None
 
     class FailingTool(MockTool):
-        name = "product_search"
+        name = "shopping_search"
         description = "Always fails for history tests."
         input_schema = FailingInput
         output_schema = FailingInput
@@ -77,7 +77,7 @@ def test_history_records_failed_tool_call(tmp_path) -> None:
     assert any(record.status == "failed" for record in tool_records)
     failed_record = [record for record in tool_records if record.status == "failed"][0]
     assert failed_record.call_id
-    assert failed_record.tool_name == "product_search"
+    assert failed_record.tool_name == "shopping_search"
     assert failed_record.error == "mock failure"
     assert failed_record.latency_ms == 7
     assert run_records[-1].status == "failed"

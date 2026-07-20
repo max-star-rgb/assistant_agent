@@ -2,11 +2,11 @@ from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.trace_store import InMemoryTraceStore
-from assistant_agent.tools.product_search_tool import ProductSearchTool
 from assistant_agent.tools.registry import ToolRegistry
+from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 
 
-class SensitiveFailingProductSearchTool(ProductSearchTool):
+class SensitiveFailingShoppingSearchTool(ShoppingSearchTool):
     def _run(self, input, context) -> ToolResult:
         return ToolResult(
             tool_name=self.name,
@@ -58,7 +58,7 @@ def test_tool_failure_is_recorded_in_trace() -> None:
     assert state.status == "failed"
     assert len(failed_events) == 1
     assert failed_events[0].node_name == "execute_tool"
-    assert failed_events[0].tool_name == "product_search"
+    assert failed_events[0].tool_name == "shopping_search"
     assert failed_events[0].error is not None
     assert failed_events[0].error["code"] == "provider_timeout"
 
@@ -85,5 +85,5 @@ def test_trace_does_not_include_sensitive_fields() -> None:
 
 def _runtime_with_sensitive_failure(trace_store: InMemoryTraceStore) -> AgentGraphRuntime:
     registry = ToolRegistry()
-    registry.register(SensitiveFailingProductSearchTool())
+    registry.register(SensitiveFailingShoppingSearchTool())
     return AgentGraphRuntime(registry=registry, trace_store=trace_store)

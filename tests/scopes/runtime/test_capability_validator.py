@@ -66,7 +66,7 @@ def test_price_compare_without_products_but_with_query_adds_search_then_compare(
     assert validated.primary_intent == "multi_step_orchestration"
     assert validated.capabilities == ["product_search", "price_compare"]
     assert [step.capability for step in validated.plan_steps] == ["product_search", "price_compare"]
-    assert [step.tool_name for step in validated.plan_steps] == ["product_search", "price_compare"]
+    assert [step.tool_name for step in validated.plan_steps] == ["shopping_search", "price_compare"]
 
 
 def test_web_fetch_without_url_becomes_followup() -> None:

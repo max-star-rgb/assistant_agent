@@ -26,7 +26,6 @@ from assistant_agent.tools.personal_assistant_tools import (
     WeatherTool,
 )
 from assistant_agent.tools.price_compare_tool import PriceCompareTool
-from assistant_agent.tools.product_search_tool import ProductSearchTool
 from assistant_agent.tools.python_interpreter_tool import PythonInterpreterTool
 from assistant_agent.tools.render_tool import Render3DTool
 from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
@@ -34,6 +33,7 @@ from assistant_agent.services.web_search_adapter import create_web_search_adapte
 from assistant_agent.services.web_fetch_adapter import create_web_fetch_adapter
 from assistant_agent.services.image_generation_adapter import create_image_generation_adapter
 from assistant_agent.services.memory_media_ingestion import create_memory_media_ingestion_service
+from assistant_agent.services.personal_assistant_mcp_adapters import create_personal_assistant_adapter_bundle
 from assistant_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
 from assistant_agent.services.render_adapter import create_render_adapter
 from assistant_agent.services.tool_visual_image_search_adapter import create_visual_image_search_adapter
@@ -367,23 +367,6 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "requires_validation",
         },
     },
-    "product_search": {
-        "when_to_use": ["Search for products, similar items, or product candidates."],
-        "when_not_to_use": ["User only asks for general chat or image description."],
-        "runtime_constraints": ["Requires query or visual summary."],
-        "side_effect": {
-            "level": "external_read",
-            "requires_confirmation": False,
-            "description": "Reads product/provider data and does not mutate external state.",
-        },
-        "execution": {
-            "dependency_mode": "independent",
-            "resource_reads": ["product_catalog"],
-            "realtime_safety": "safe",
-            "artifact_reuse": "reusable",
-            "progress_message": "我查一下。",
-        },
-    },
     "shopping_search": {
         "when_to_use": [
             "Search current product candidates and compare prices or offers in one call.",
@@ -413,7 +396,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
     "price_compare": {
         "when_to_use": ["Compare prices, offers, or cheapest options."],
         "when_not_to_use": ["No product candidates or product query are available."],
-        "runtime_constraints": ["Use product_search first if no candidates are available."],
+        "runtime_constraints": ["Use shopping_search first if no candidates are available."],
         "side_effect": {
             "level": "external_read",
             "requires_confirmation": False,
@@ -470,7 +453,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
         ],
         "when_not_to_use": [
             "User asks for weather, calendar, contacts, commute, morning, or departure briefing facts that can be handled by weather, calendar_search, or contacts_search.",
-            "User asks for shopping/product candidates; use product_search instead.",
+            "User asks for shopping/product candidates; use shopping_search instead.",
             "User asks to use saved preferences or prior chats; memory tools may be relevant but do not replace web_search for current facts.",
             "Do not use for ordinary chat or timeless explanations that can be answered from available context.",
         ],
@@ -532,7 +515,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
         "when_not_to_use": [
             "No specific URL is available; use web_search first for general web lookup.",
             "User asks for browser automation, form submission, login-only content, or JavaScript-rendered interaction.",
-            "User asks for shopping/product candidates; use shopping_search or product_search instead.",
+            "User asks for shopping/product candidates; use shopping_search instead.",
         ],
         "runtime_constraints": [
             "Requires an http or https URL.",
@@ -904,6 +887,17 @@ def create_default_registry(
     mcp_runner: MCPToolDiscoveryRunner | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
+    should_use_mcp_personal = getattr(config, "personal_assistant_provider", "mock") == "mcp"
+    resolved_mcp_server_configs = mcp_server_configs
+    if (enable_mcp_tools or should_use_mcp_personal) and resolved_mcp_server_configs is None:
+        from assistant_agent.mcp.config import load_mcp_server_configs_from_env
+
+        resolved_mcp_server_configs = load_mcp_server_configs_from_env(config_path=mcp_config_path)
+    personal_adapters = create_personal_assistant_adapter_bundle(
+        config,
+        mcp_server_configs=resolved_mcp_server_configs,
+        mcp_runner=mcp_runner,
+    )
     memory_media_service = create_memory_media_ingestion_service(config)
     product_search_adapter = create_product_search_adapter(config)
     price_compare_adapter = create_price_compare_adapter(config)
@@ -923,13 +917,12 @@ def create_default_registry(
             search_adapter=product_search_adapter,
             price_compare_adapter=price_compare_adapter,
         ),
-        ProductSearchTool(adapter=product_search_adapter),
         PriceCompareTool(adapter=price_compare_adapter),
-        WeatherTool(),
-        CalendarSearchTool(),
-        CalendarCreateTool(),
-        ContactsSearchTool(),
-        ReminderCreateTool(),
+        WeatherTool(adapter=personal_adapters.weather),
+        CalendarSearchTool(adapter=personal_adapters.calendar),
+        CalendarCreateTool(adapter=personal_adapters.calendar),
+        ContactsSearchTool(adapter=personal_adapters.contacts),
+        ReminderCreateTool(adapter=personal_adapters.reminder),
         WebSearchTool(adapter=create_web_search_adapter(config)),
         VisualImageSearchTool(adapter=create_visual_image_search_adapter(config)),
         WebFetchTool(adapter=create_web_fetch_adapter(config)),
@@ -951,14 +944,9 @@ def create_default_registry(
         if durable_task_service is not None:
             registry.register(TaskPlanSubmitTool(durable_task_service))
     if enable_mcp_tools or mcp_server_configs is not None:
-        from assistant_agent.mcp.config import load_mcp_server_configs_from_env
         from assistant_agent.mcp.registration import register_configured_mcp_tools
 
-        server_configs = (
-            mcp_server_configs
-            if mcp_server_configs is not None
-            else load_mcp_server_configs_from_env(config_path=mcp_config_path)
-        )
+        server_configs = resolved_mcp_server_configs or []
         register_configured_mcp_tools(registry, server_configs, runner=mcp_runner)
     return registry
 

@@ -17,7 +17,7 @@ def test_langgraph_loop_executes_multistep_task_one_step_at_a_time() -> None:
     assert state.status == "completed"
     assert [call.tool_name for call in state.tool_calls[:4]] == [
         "video_understanding",
-        "product_search",
+        "shopping_search",
         "price_compare",
         "image_generation",
     ]

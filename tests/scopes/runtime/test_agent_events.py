@@ -95,8 +95,8 @@ def test_runtime_emits_ordered_task_graph_tool_and_final_events() -> None:
     tool_started = next(event for event in sink.events if event.type == "tool_started")
     tool_finished = next(event for event in sink.events if event.type == "tool_finished")
     response_delta = next(event for event in sink.events if event.type == "response_delta")
-    assert tool_started.tool_name == "product_search"
-    assert tool_finished.output_ref == "mock://products/white-low-top-sneaker"
+    assert tool_started.tool_name == "shopping_search"
+    assert tool_finished.output_ref == "mock://compare/white-low-top-sneaker"
     assert response_delta.payload["source"] == "runtime_final_response"
     assert response_delta.payload["token_streaming"] is False
     assert sink.events[-1].text

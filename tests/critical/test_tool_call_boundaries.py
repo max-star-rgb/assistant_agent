@@ -87,7 +87,7 @@ def test_action_validator_attaches_pre_tool_call_boundary_metadata() -> None:
     validation = ActionValidator().validate(
         decision=AssistantDecision(
             type="tool_call",
-            tool_name="product_search",
+            tool_name="shopping_search",
             tool_input={"query": "通勤降噪耳机", "idempotency_key": "search-1"},
         ),
         registry=create_default_registry(),
@@ -99,7 +99,7 @@ def test_action_validator_attaches_pre_tool_call_boundary_metadata() -> None:
     pre = validation.metadata["pre_tool_call"]
     assert pre["schema_version"] == "tool_call_boundary_v1"
     assert pre["phase"] == "pre_tool_call"
-    assert pre["tool_name"] == "product_search"
+    assert pre["tool_name"] == "shopping_search"
     assert pre["runtime_identity"] == {
         "user_id": "u1",
         "session_id": "s1",

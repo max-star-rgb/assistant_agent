@@ -50,7 +50,7 @@ def _scheduled_call(
 def test_scheduler_builds_call_metadata_from_policy_view(monkeypatch) -> None:
     class FakePolicyInterpreter:
         def view_for_tool_name(self, tool_name: str) -> ToolPolicyView:
-            assert tool_name == "product_search"
+            assert tool_name == "shopping_search"
             return ToolPolicyView(
                 tool_name=tool_name,
                 side_effect_level="compensatable",
@@ -74,7 +74,7 @@ def test_scheduler_builds_call_metadata_from_policy_view(monkeypatch) -> None:
         call_index=0,
         decision=AssistantDecision(
             type="tool_call",
-            tool_name="product_search",
+            tool_name="shopping_search",
             tool_input={"query": "headphones"},
         ),
         validation=_accepted_validation(),
@@ -94,7 +94,7 @@ def test_scheduler_policy_metadata_matches_default_interpreter_views() -> None:
     interpreter = ToolPolicyInterpreter()
     specs_by_name = {spec.name: spec for spec in create_default_registry().list_specs()}
 
-    for tool_name in ("product_search", "web_search", "image_generation", "memory_save"):
+    for tool_name in ("shopping_search", "web_search", "image_generation", "memory_save"):
         scheduled = tool_scheduler.build_scheduled_tool_call(
             call_index=0,
             decision=AssistantDecision(
@@ -114,7 +114,7 @@ def test_scheduler_policy_metadata_matches_default_interpreter_views() -> None:
 
 def test_scheduler_parallelizes_only_independent_safe_read_only_calls() -> None:
     calls = [
-        _scheduled_call("product_search"),
+        _scheduled_call("shopping_search"),
         _scheduled_call("web_search"),
     ]
 
@@ -130,7 +130,7 @@ def test_scheduler_parallelizes_only_independent_safe_read_only_calls() -> None:
 
 def test_scheduler_serializes_requires_prior_observation_calls() -> None:
     calls = [
-        _scheduled_call("product_search"),
+        _scheduled_call("shopping_search"),
         _scheduled_call("price_compare", dependency_mode="requires_prior_observation"),
     ]
 
@@ -148,28 +148,28 @@ def test_scheduler_serializes_terminal_confirmation_unsafe_and_resource_write_ba
     cases = [
         (
             [
-                _scheduled_call("product_search"),
+                _scheduled_call("shopping_search"),
                 _scheduled_call("image_generation", dependency_mode="terminal"),
             ],
             "terminal_tool",
         ),
         (
             [
-                _scheduled_call("product_search"),
+                _scheduled_call("shopping_search"),
                 _scheduled_call("memory_save", realtime_safety="needs_confirmation"),
             ],
             "realtime_confirmation_required",
         ),
         (
             [
-                _scheduled_call("product_search"),
+                _scheduled_call("shopping_search"),
                 _scheduled_call("external_mutation", realtime_safety="unsafe"),
             ],
             "realtime_unsafe",
         ),
         (
             [
-                _scheduled_call("product_search"),
+                _scheduled_call("shopping_search"),
                 _scheduled_call("cache_refresh", resource_writes=["catalog"]),
             ],
             "resource_write_conflict",
@@ -196,7 +196,7 @@ def test_pre_tool_call_boundary_summary_uses_policy_view(monkeypatch) -> None:
             return self.view_for_tool_name(spec.name)
 
         def view_for_tool_name(self, tool_name: str) -> ToolPolicyView:
-            assert tool_name == "product_search"
+            assert tool_name == "shopping_search"
             return ToolPolicyView(
                 tool_name=tool_name,
                 side_effect_level="compensatable",
@@ -217,7 +217,7 @@ def test_pre_tool_call_boundary_summary_uses_policy_view(monkeypatch) -> None:
     state = AgentState.from_request(request, run_id="run-1")
 
     summary = tool_call_boundary.build_pre_tool_call_summary(
-        tool_name="product_search",
+        tool_name="shopping_search",
         tool_input={"query": "headphones"},
         registry=create_default_registry(),
         request=request,

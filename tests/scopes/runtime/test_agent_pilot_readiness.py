@@ -73,7 +73,7 @@ def test_pilot_readiness_checker_blocks_missing_explicit_provider_config() -> No
     assert report.status == "blocked"
     checks = {check.name: check for check in report.checks}
     assert checks["provider_config_explicit"].status == "failed"
-    assert "DEEPSEEK_CHAT_API_KEY" in checks["provider_config_explicit"].detail["checks"][1]["missing"]
+    assert "DEEPSEEK_API_KEY" in checks["provider_config_explicit"].detail["checks"][1]["missing"]
     assert checks["provider_budget_defaults"].status == "warning"
 
 
@@ -185,7 +185,7 @@ def test_check_pilot_readiness_script_blocks_missing_provider_config() -> None:
     rendered = result.stdout + result.stderr
     assert result.returncode == 1
     assert payload["status"] == "blocked"
-    assert "DEEPSEEK_CHAT_API_KEY" in rendered
+    assert "DEEPSEEK_API_KEY" in rendered
     assert "Traceback" not in rendered
 
 

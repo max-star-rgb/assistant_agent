@@ -34,7 +34,10 @@ class ArkVisionProviderAdapter:
 
     def understand(self, input: VisionUnderstandingInput) -> VisualUnderstandingResult:
         if not self.config.api_key:
-            raise ProviderAdapterError("provider_unconfigured", "ark vision provider requires ARK_VISION_API_KEY")
+            raise ProviderAdapterError(
+                "provider_unconfigured",
+                "ark vision provider requires ARK_API_KEY (legacy ARK_VISION_API_KEY is also accepted).",
+            )
         if not input.image_ids:
             raise ValueError("Ark vision provider requires image_ids.")
         if input.video_ids:

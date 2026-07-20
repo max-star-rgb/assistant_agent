@@ -108,27 +108,18 @@ class RuleBasedTaskPlanner:
             self._append_step(
                 steps,
                 action="search_product",
-                tool_name="product_search",
+                tool_name="shopping_search",
                 required_inputs=["query or visual_summary"],
-                reason="用户要求查找商品，执行商品搜索。",
+                reason="用户要求查找商品，执行购物搜索。",
             )
 
-        if self._contains(text, self.compare_keywords) and not self._has_step(steps, "product_search"):
+        if self._contains(text, self.compare_keywords) and not self._has_step(steps, "shopping_search"):
             self._append_step(
                 steps,
                 action="search_product",
-                tool_name="product_search",
+                tool_name="shopping_search",
                 required_inputs=["query"],
-                reason="用户要求比价但没有候选商品，先搜索商品候选。",
-            )
-
-        if self._contains(text, self.compare_keywords):
-            self._append_step(
-                steps,
-                action="compare_price",
-                tool_name="price_compare",
-                required_inputs=["product candidates or search query"],
-                reason="用户要求比较价格。",
+                reason="用户要求比价但没有候选商品，先执行购物搜索。",
             )
 
         if self._contains(text, self.image_keywords):

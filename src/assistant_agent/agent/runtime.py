@@ -105,7 +105,7 @@ if TYPE_CHECKING:
 
 
 PROGRESS_MESSAGES = {
-    "product_search": "我查一下。",
+    "shopping_search": "我查一下并比一下价格。",
     "price_compare": "我比一下价格。",
     "vision_understanding": "我看一下。",
     "video_understanding": "我分析一下。",

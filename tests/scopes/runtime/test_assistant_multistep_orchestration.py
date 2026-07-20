@@ -16,7 +16,7 @@ from assistant_agent.schemas.requests import UserRequest
                 image_ids=["img1"],
             ),
             ["understand_image", "search_product", "compare_price", "generate_image"],
-            ["vision_understanding", "product_search", "price_compare", "image_generation"],
+            ["vision_understanding", "shopping_search", "price_compare", "image_generation"],
         ),
         (
             UserRequest(user_id="u1", session_id="s1", text="根据上次那个包，生成一张宣传图"),
@@ -26,7 +26,7 @@ from assistant_agent.schemas.requests import UserRequest
         (
             UserRequest(user_id="u1", session_id="s1", text="帮我找 500 元以内的白鞋，再比较价格"),
             ["search_product", "compare_price"],
-            ["product_search", "price_compare"],
+            ["shopping_search", "price_compare"],
         ),
         (
             UserRequest(
@@ -83,11 +83,11 @@ def test_multistep_outputs_feed_later_tool_inputs() -> None:
         )
     )
 
-    product_search_call = state.tool_calls[1]
+    shopping_search_call = state.tool_calls[1]
     price_compare_call = state.tool_calls[2]
     image_generation_call = state.tool_calls[3]
 
-    assert product_search_call.input["visual_summary"] == "图片中展示了一双白色低帮运动鞋，整体为简约日系风格。"
+    assert shopping_search_call.input["visual_summary"] == "图片中展示了一双白色低帮运动鞋，整体为简约日系风格。"
     assert price_compare_call.input["items"][0]["product_id"] == "p1"
     assert image_generation_call.input["product_id"] == "p2"
     assert image_generation_call.input["product_title"] == "简约白色板鞋 B"

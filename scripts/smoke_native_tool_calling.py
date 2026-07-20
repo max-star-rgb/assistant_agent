@@ -46,12 +46,12 @@ class ScriptedNativeToolChatAdapter:
                 tool_calls=[
                     NativeToolCall(
                         id="native_call_1",
-                        name="product_search",
+                        name="shopping_search",
                         arguments={"query": self.query, "limit": 2},
                         raw={
                             "id": "native_call_1",
                             "type": "function",
-                            "function": {"name": "product_search", "arguments": "{}"},
+                            "function": {"name": "shopping_search", "arguments": "{}"},
                         },
                     )
                 ],
@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--expect-tool",
-        default="product_search",
+        default="shopping_search",
         help="Tool expected in the run. Use empty string to disable this assertion.",
     )
     return parser

@@ -45,6 +45,7 @@ VisionProviderName = str
 VisionEmbeddingProviderName = Literal["mock", "dashscope"]
 ChatProviderName = str
 ImageGenerationProviderName = str
+ShoppingProviderName = Literal["mock", "http", "haodanku"]
 ProductSearchProviderName = Literal["mock", "local_json", "http", "haodanku"]
 PriceCompareProviderName = Literal["mock", "local", "http", "haodanku"]
 RenderProviderName = Literal["mock", "http"]
@@ -169,6 +170,7 @@ class ProviderConfig:
     qwen_image_search_base_url: str = DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL
     qwen_image_search_model: str = DEFAULT_QWEN_IMAGE_SEARCH_MODEL
     qwen_image_search_timeout_seconds: float = 30.0
+    shopping_provider: ShoppingProviderName = "mock"
     product_search_provider: ProductSearchProviderName = "mock"
     product_search_local_path: str | None = None
     product_search_base_url: str | None = None
@@ -217,10 +219,6 @@ class ProviderConfig:
         source = _clean_env_source(os.environ if env is None else env)
         if not source.get("QWEN_API_KEY") and source.get("DASHSCOPE_API_KEY"):
             source["QWEN_API_KEY"] = source["DASHSCOPE_API_KEY"]
-        if not source.get("DEEPSEEK_CHAT_API_KEY") and source.get("DEEPSEEK_API_KEY"):
-            source["DEEPSEEK_CHAT_API_KEY"] = source["DEEPSEEK_API_KEY"]
-        if not source.get("ARK_CHAT_API_KEY") and source.get("ARK_API_KEY"):
-            source["ARK_CHAT_API_KEY"] = source["ARK_API_KEY"]
         qwen_chat_workspace_id = _qwen_chat_workspace_id(source)
         source["QWEN_CHAT_BASE_URL"] = _qwen_chat_base_url(
             source,
@@ -247,6 +245,10 @@ class ProviderConfig:
             allow_real=allow_real_providers,
         )
         image_generation_settings = resolve_image_generation_provider(image_generation_provider, source)
+        shopping_provider = _shopping_provider(
+            source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER"),
+            allow_real=allow_real_providers,
+        )
         qwen_realtime_vision_workspace_id = _qwen_realtime_vision_workspace_id(source)
         qwen_realtime_vision_region = _qwen_realtime_vision_region(
             source.get("QWEN_REALTIME_VISION_REGION")
@@ -260,8 +262,11 @@ class ProviderConfig:
             source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED"),
             False,
         )
+        memory_backend_env = source.get("MULTIMODAL_AGENT_MEMORY_BACKEND")
+        if not memory_backend_env and memory_framework_enabled:
+            memory_backend_env = "framework"
         memory_backend = _memory_backend(
-            source.get("MULTIMODAL_AGENT_MEMORY_BACKEND"),
+            memory_backend_env,
             allow_remote=allow_real_providers or memory_remote_enabled,
             allow_framework=memory_framework_enabled,
             allow_plugin=memory_plugin_enabled,
@@ -286,15 +291,15 @@ class ProviderConfig:
             openai_api_key=source.get("OPENAI_API_KEY"),
             qwen_api_key=_qwen_provider_api_key(source),
             dashscope_api_key=source.get("DASHSCOPE_API_KEY"),
-            ark_api_key=source.get("ARK_API_KEY"),
+            ark_api_key=_ark_provider_api_key(source),
             qwen_vision_api_key=_qwen_capability_api_key(source, "QWEN_VISION_API_KEY"),
             qwen_realtime_vision_api_key=_qwen_capability_api_key(source, "QWEN_VISION_API_KEY"),
             qwen_image_api_key=_qwen_capability_api_key(source, "QWEN_IMAGE_API_KEY"),
-            ark_vision_api_key=source.get("ARK_VISION_API_KEY"),
-            ark_image_api_key=source.get("ARK_IMAGE_API_KEY"),
-            ark_chat_api_key=source.get("ARK_CHAT_API_KEY"),
+            ark_vision_api_key=_ark_capability_api_key(source, "ARK_VISION_API_KEY"),
+            ark_image_api_key=_ark_capability_api_key(source, "ARK_IMAGE_API_KEY"),
+            ark_chat_api_key=_ark_capability_api_key(source, "ARK_CHAT_API_KEY"),
             seed_api_key=source.get("SEED_API_KEY"),
-            deepseek_api_key=source.get("DEEPSEEK_CHAT_API_KEY") or source.get("DEEPSEEK_API_KEY"),
+            deepseek_api_key=_deepseek_provider_api_key(source),
             comfyui_base_url=source.get("COMFYUI_BASE_URL"),
             blender_render_url=source.get("BLENDER_RENDER_URL"),
             search_api_base_url=source.get("SEARCH_API_BASE_URL"),
@@ -475,8 +480,9 @@ class ProviderConfig:
                 source.get("QWEN_IMAGE_SEARCH_TIMEOUT_SECONDS"),
                 30.0,
             ),
+            shopping_provider=shopping_provider,
             product_search_provider=_product_search_provider(
-                source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER"),
+                source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER") or shopping_provider,
                 allow_real=allow_real_providers,
             ),
             product_search_local_path=source.get("PRODUCT_SEARCH_LOCAL_PATH"),
@@ -484,7 +490,7 @@ class ProviderConfig:
             product_search_api_key=source.get("PRODUCT_SEARCH_API_KEY"),
             product_search_timeout_seconds=_float_env(source.get("PRODUCT_SEARCH_TIMEOUT_SECONDS"), 10.0),
             price_compare_provider=_price_compare_provider(
-                source.get("MULTIMODAL_AGENT_PRICE_PROVIDER"),
+                source.get("MULTIMODAL_AGENT_PRICE_PROVIDER") or shopping_provider,
                 allow_real=allow_real_providers,
             ),
             price_compare_base_url=source.get("PRICE_COMPARE_BASE_URL"),
@@ -587,12 +593,12 @@ class ProviderConfig:
                 "QWEN_API_KEY": self.qwen_api_key or "",
                 "QWEN_CHAT_BASE_URL": self.qwen_chat_base_url,
                 "QWEN_CHAT_MODEL": self.qwen_chat_model,
-                "ARK_CHAT_API_KEY": self.ark_chat_api_key or self.ark_api_key or "",
-                "ARK_API_KEY": self.ark_chat_api_key or self.ark_api_key or "",
+                "ARK_API_KEY": self.ark_api_key or self.ark_chat_api_key or "",
+                "ARK_CHAT_API_KEY": self.ark_chat_api_key or "",
                 "ARK_CHAT_BASE_URL": self.ark_chat_base_url,
                 "ARK_CHAT_MODEL": self.ark_chat_model or "",
-                "DEEPSEEK_CHAT_API_KEY": self.deepseek_api_key or "",
                 "DEEPSEEK_API_KEY": self.deepseek_api_key or "",
+                "DEEPSEEK_CHAT_API_KEY": self.deepseek_api_key or "",
                 "DEEPSEEK_CHAT_BASE_URL": self.deepseek_chat_base_url,
                 "DEEPSEEK_CHAT_MODEL": self.deepseek_chat_model,
                 "LOCAL_CHAT_BASE_URL": self.local_chat_base_url or "",
@@ -634,8 +640,8 @@ class ProviderConfig:
                 "QWEN_VISION_API_KEY": self.qwen_vision_api_key or "",
                 "QWEN_VISION_BASE_URL": self.qwen_vision_base_url,
                 "QWEN_VISION_MODEL": self.qwen_vision_model,
-                "ARK_API_KEY": self.ark_api_key or "",
-                "ARK_VISION_API_KEY": self.ark_vision_api_key or self.ark_api_key or "",
+                "ARK_API_KEY": self.ark_api_key or self.ark_vision_api_key or "",
+                "ARK_VISION_API_KEY": self.ark_vision_api_key or "",
                 "ARK_VISION_BASE_URL": self.ark_vision_base_url,
                 "ARK_VISION_MODEL": self.ark_vision_model,
                 "SEED_API_KEY": self.seed_api_key or "",
@@ -678,8 +684,8 @@ class ProviderConfig:
                 "QWEN_IMAGE_API_KEY": self.qwen_image_api_key or "",
                 "QWEN_IMAGE_BASE_URL": self.qwen_image_base_url,
                 "QWEN_IMAGE_MODEL": self.qwen_image_model,
-                "ARK_API_KEY": self.ark_api_key or "",
-                "ARK_IMAGE_API_KEY": self.ark_image_api_key or self.ark_api_key or "",
+                "ARK_API_KEY": self.ark_api_key or self.ark_image_api_key or "",
+                "ARK_IMAGE_API_KEY": self.ark_image_api_key or "",
                 "ARK_IMAGE_BASE_URL": self.ark_image_base_url,
                 "ARK_IMAGE_MODEL": self.ark_image_model,
                 "COMFYUI_BASE_URL": self.comfyui_base_url or "",
@@ -799,8 +805,33 @@ def _qwen_provider_api_key(source: Mapping[str, str]) -> str | None:
     )
 
 
+def _ark_provider_api_key(source: Mapping[str, str]) -> str | None:
+    return _ark_capability_api_key(
+        source,
+        "ARK_CHAT_API_KEY",
+        "ARK_VISION_API_KEY",
+        "ARK_IMAGE_API_KEY",
+    )
+
+
+def _deepseek_provider_api_key(source: Mapping[str, str]) -> str | None:
+    for key_env in ("DEEPSEEK_API_KEY", "DEEPSEEK_CHAT_API_KEY"):
+        value = source.get(key_env)
+        if value:
+            return value
+    return None
+
+
 def _qwen_capability_api_key(source: Mapping[str, str], *legacy_api_key_envs: str) -> str | None:
     for key_env in ("QWEN_API_KEY", "DASHSCOPE_API_KEY", *legacy_api_key_envs):
+        value = source.get(key_env)
+        if value:
+            return value
+    return None
+
+
+def _ark_capability_api_key(source: Mapping[str, str], *legacy_api_key_envs: str) -> str | None:
+    for key_env in ("ARK_API_KEY", *legacy_api_key_envs):
         value = source.get(key_env)
         if value:
             return value
@@ -870,6 +901,14 @@ def _search_provider(value: str | None, *, allow_real: bool = True) -> SearchPro
 def _visual_image_search_provider(value: str | None, *, allow_real: bool = True) -> VisualImageSearchProviderName:
     if allow_real and value == "qwen":
         return "qwen"
+    return "mock"
+
+
+def _shopping_provider(value: str | None, *, allow_real: bool = True) -> ShoppingProviderName:
+    if not allow_real:
+        return "mock"
+    if value in {"http", "haodanku"}:
+        return value
     return "mock"
 
 

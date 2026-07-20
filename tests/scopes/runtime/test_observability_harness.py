@@ -173,7 +173,7 @@ def test_react_decision_trace_includes_context_report_v1() -> None:
     assert report["schema_version"] == "context_report_v1"
     assert report["sections"]["system_prompt"]["chars"] > 0
     assert report["sections"]["tool_schema"]["item_count"] >= 1
-    assert "product_search" in report["selected_tool_names"]
+    assert "shopping_search" in report["selected_tool_names"]
     assert "price_compare" in report["selected_tool_names"]
 
 
@@ -258,7 +258,7 @@ def test_native_runtime_emits_canonical_llm_decision_validation_observation_and_
                 tool_calls=[
                     NativeToolCall(
                         id="call_native_1",
-                        name="product_search",
+                        name="shopping_search",
                         arguments={"query": "白色运动鞋"},
                     )
                 ],
@@ -350,7 +350,7 @@ def test_native_runtime_emits_context_report_with_selected_tool_schema() -> None
     assert report["sections"]["system_prompt"]["chars"] > 0
     assert report["selected_tool_names"] == exposed_tool_names
     assert report["sections"]["tool_schema"]["item_count"] == len(exposed_tool_names)
-    assert "product_search" in report["selected_tool_names"]
+    assert "shopping_search" in report["selected_tool_names"]
 
 
 def test_native_runtime_emits_memory_load_trace_without_memory_content() -> None:
@@ -399,7 +399,7 @@ def test_native_runtime_trace_satisfies_success_timeline_invariants() -> None:
                 tool_calls=[
                     NativeToolCall(
                         id="call_native_1",
-                        name="product_search",
+                        name="shopping_search",
                         arguments={"query": "白色运动鞋"},
                     )
                 ],
@@ -486,7 +486,7 @@ def test_native_runtime_traces_validation_and_response_finalization_latency() ->
                 tool_calls=[
                     NativeToolCall(
                         id="call_native_latency",
-                        name="product_search",
+                        name="shopping_search",
                         arguments={"query": "白色运动鞋"},
                     )
                 ],

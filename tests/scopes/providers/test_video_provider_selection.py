@@ -165,7 +165,7 @@ def test_ark_vision_provider_does_not_select_old_video_adapter() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
-            "ARK_VISION_API_KEY": "test-ark-video-key",
+            "ARK_API_KEY": "test-ark-video-key",
             "ARK_VISION_BASE_URL": "https://ark.local/api/v3",
             "ARK_VISION_MODEL": "ark-video-model",
         }
@@ -181,7 +181,7 @@ def test_provider_config_does_not_reuse_ark_vision_key_for_video() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
-            "ARK_VISION_API_KEY": "test-ark-vision-key",
+            "ARK_API_KEY": "test-ark-vision-key",
         }
     )
 
@@ -208,7 +208,7 @@ def test_default_registry_keeps_ark_vision_env_on_mock_video_adapter() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_VISION_PROVIDER": "ark",
-            "ARK_VISION_API_KEY": "test-ark-vision-key",
+            "ARK_API_KEY": "test-ark-vision-key",
             "ARK_VISION_BASE_URL": "https://ark.local/api/v3",
             "ARK_VISION_MODEL": "ark-video-model",
         }

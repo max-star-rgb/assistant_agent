@@ -10,7 +10,7 @@
 - Skill capability catalog 可在不改变工具资格的前提下，按显式 `enabled_skills` 或确定性 `skill_recall` 把 prompt-safe skill descriptor 注入上下文；自动召回不会激活 `skill_only` 工具、不会新增 `run_skill`，也不会绕过工具治理链路。结构化 `workflow_skill_v1` 先显式注册进 `WorkflowSkillCatalog`，再由 `WorkflowSkillLauncher` 按 manifest name 启动并交给 `WorkflowSkillRunner` 执行；launcher 可通过 process-local 或 JSONL-backed run store 查询和 resume 运行记录，每个 resumed step 仍先经 `ActionValidator` 再进 `ToolExecutor`。产品化 HTTP 入口默认关闭，只能通过 `scripts/run_server.py --enable-workflow-skills` 或 `MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED=1` 显式启用，并只暴露 manifest list、launch、resume 和 run summary，不提供通用 `run_skill`。
 - `ToolSpec.side_effect` 表达工具副作用策略，`ToolSpec.execution` 表达稳定调度/依赖/资源事实；未知工具默认按 confirmation-sensitive 且需要串行观察处理。realtime task-state 会消费 side-effect 策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
 - 真实 LLM 只能返回自然语言 `content` 或 provider-native `tool_calls`。native tool call 会先归一化成内部 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
-- 当第一轮 native response 是 `tool_calls` 时，runtime 不把该轮模型 `content` 当作正式回答输出；它只记录为内部 preamble，并发出一条可替换的 `progress_message` 事件（例如 `product_search` -> “我查一下。”）。该事件不写入 LLM messages，也不参与第二轮回答生成。
+- 当第一轮 native response 是 `tool_calls` 时，runtime 不把该轮模型 `content` 当作正式回答输出；它只记录为内部 preamble，并发出一条可替换的 `progress_message` 事件（例如 `shopping_search` -> “我查一下并比一下价格。”）。该事件不写入 LLM messages，也不参与第二轮回答生成。
 - 工具执行必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。API、WebSocket、MCP 或新增入口都不能直接 `registry.run(...)`。
 - `ToolExecutor` 是运行时治理边界：重新从 registry 解析 `ToolPolicyView`，绑定 user/session 身份，执行 approval/idempotency、安全 retry 和 deadline 传播，检查 provider budget，记录 state/tool history/event/trace，再调用 registry。
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
@@ -207,7 +207,7 @@ excluded_reasons
 
 工具副作用策略是工具治理元数据，不属于 Gateway 协议。
 
-- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`web_fetch`、`visual_image_search`、`shopping_search`、`product_search`、`price_compare`、image/video understanding。
+- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`web_fetch`、`visual_image_search`、`shopping_search`、`price_compare`、image/video understanding。
 - 创建可替换 artifact 的工具标为 `compensatable`，例如 `image_generation` 和 `render_3d`；中断后应生成修正版或说明已有 artifact，而不是宣称旧结果被撤销。
 - confirmation-sensitive 工具标为 `pending_confirmation`，例如 `memory_save` 和 legacy `memory`；如果工具结果返回 `requires_confirmation=true` 或 `confirmation_id`，realtime task-state 会记录 pending confirmation。
 - 如果 confirmation-sensitive 或未知工具已经成功返回，realtime task-state 会把它视为 `committed`，中断后的下一轮必须报告已发生状态或提供安全后续动作。
@@ -235,7 +235,6 @@ Runtime gate 映射：
 - `visual_image_search`
 - `web_fetch`
 - `shopping_search`
-- `product_search`
 - `price_compare`
 - `weather`
 - `calendar_search`
@@ -266,7 +265,7 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 
 默认副作用分类：
 
-- `vision_understanding`、`video_understanding`、`web_search`、`web_fetch`、`shopping_search`、`product_search`、`price_compare`、`weather`、`calendar_search`、`contacts_search`: `external_read`。
+- `vision_understanding`、`video_understanding`、`web_search`、`web_fetch`、`shopping_search`、`price_compare`、`weather`、`calendar_search`、`contacts_search`: `external_read`。
 - `memory_retrieval`: `local_read`。
 - `memory_ingest_status`: `external_read`。
 - `image_generation`、`render_3d`: `compensatable`。
@@ -277,7 +276,7 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 
 默认执行属性：
 
-- `web_search`、`shopping_search`、`product_search`、`weather`、`calendar_search`、`contacts_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`、`artifact_reuse=reusable`。
+- `web_search`、`shopping_search`、`weather`、`calendar_search`、`contacts_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`、`artifact_reuse=reusable`。
 - `web_fetch`: `dependency_mode=requires_prior_observation`，因为通常需要先消费用户提供的 URL 或 `web_search` 返回的 URL。
 - `price_compare`: `dependency_mode=requires_prior_observation`，因为同一批次中通常需要先消费商品候选或先前 observation。
 - `calendar_create`、`reminder_create`: `dependency_mode=terminal`、`realtime_safety=needs_confirmation`、`artifact_reuse=do_not_reuse`。
@@ -357,7 +356,6 @@ Provider 边界：
 - `web_search` 必须有非空 query；`limit` 等范围由工具 Pydantic schema 校验。
 - `web_fetch` 必须有非空 http/https URL；`max_chars` 和 `content_format` 由工具 Pydantic schema 校验。
 - `shopping_search` 必须有 query、visual summary、video summary 或商品描述字段；该工具一次执行商品搜索和比价，不下单、不付款。
-- `product_search` 必须有 query 或 visual summary。
 - `price_compare` 必须有 query 或 items。
 - `memory_retrieval` 必须有 query，并且当前用户请求必须显式引用历史、上次/之前、已保存记忆、个人偏好或继续旧任务；query 本身不构成读取授权。
 - legacy `memory` 只允许 `action=retrieve/save`，并复用 memory save 校验。
@@ -459,7 +457,7 @@ assistant loop 有本地保护，不依赖模型自律：
 - unknown tool、invalid input、missing required input、render intent 缺失等会触发 rejection guard。
 - 同一工具失败达到阈值会停止重复调用。
 - `image_generation` 和 `render_3d` 是 terminal tools；成功后再次请求同一工具会被阻止并转为 final answer。
-- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词把 `final_answer`、重复搜索或其他模型动作强制改写成 `price_compare`。AgentRuntime 通话工具目录只暴露 `shopping_search` 作为购物入口，由该工具内部完成搜索和比价；普通非通话路径仍保留 `product_search` / `price_compare` 供显式多步使用。当模型已经选择 `price_compare` 时，runtime 可从本轮成功的 `product_search` 结果修复被压缩的完整商品对象与成功平台；`price_compare` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
+- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词把 `final_answer`、重复搜索或其他模型动作强制改写成 `price_compare`。AgentRuntime 默认工具目录只暴露 `shopping_search` 作为购物搜索入口，由该工具内部完成搜索和比价；`price_compare` 仅用于已有商品候选或明确比价输入的显式比较。`price_compare` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
 
 计划状态是本地治理结构，不是生产 runtime 的独立 planner/controller 调用：
 
@@ -546,6 +544,8 @@ The external HTTP contract for these Memory Server endpoints is owned by
 MCP server 不直接依赖 provider SDK，不直接访问 OpenAI/DashScope/httpx/requests。错误 envelope 会脱敏。新增外部入口必须遵守同样边界：先归一成内部 request/decision，再走 validator/executor。
 
 外部 MCP 工具调用是显式 opt-in 路径：`create_default_registry(enable_mcp_tools=True, ...)` 或 `MULTIMODAL_AGENT_MCP_ENABLED=1` 加本地未跟踪配置文件后，才会读取 `MCPServerConfig` 并执行 discovery。默认 client runner 使用官方 MCP Python SDK；仅在 SDK 不可导入时降级到项目内 minimal stdio runner。每个外部工具必须出现在 `allowed_tools` 中才会注册；未声明 read-only 的工具保持 `external_write` hard gate，只有同时列入 `read_only_tools` 和 `enabled_tools` 的工具才作为默认可见的 `external_read` 工具自动执行。MCP proxy 仍只通过 `ActionValidator -> ToolExecutor -> ToolRegistry` 调用，不暴露 server env、命令、provider raw payload 或本地路径。
+
+个人助理稳定工具也可以使用外部 MCP server 作为 adapter 后端，但工具名和治理契约不变：`calendar_search`、`calendar_create`、`contacts_search`、`reminder_create` 仍先进入 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`，工具内部再由 MCP-backed adapter 调用 allowlisted remote tool。该路径只在 `provider_smoke` / `pilot` 且显式 `MULTIMODAL_AGENT_PERSONAL_ASSISTANT_PROVIDER=mcp` 时启用；默认仍是 mock/local。`MCPServerConfig.personal_assistant_tools` 负责把稳定能力映射到 provider-specific MCP 工具，读能力映射必须同时列入 `read_only_tools`。内置 preset 覆盖 `google_workspace`、`todoist`、`notion`、`slack` 的常见 allowlist；实际 server 命令和凭据仍只能放在本地未跟踪配置或环境中。
 
 ## Improvement Lab 边界
 

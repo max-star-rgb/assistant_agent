@@ -128,7 +128,7 @@ def test_provider_smoke_missing_ark_chat_model_is_not_ready() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
-            "ARK_CHAT_API_KEY": "test-ark-key",
+            "ARK_API_KEY": "test-ark-key",
         }
     )
 

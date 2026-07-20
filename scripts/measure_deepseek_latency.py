@@ -701,7 +701,7 @@ def _print_provider_unconfigured(reason: str) -> None:
     print(reason)
     print(
         "Set MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke, "
-        "MULTIMODAL_AGENT_CHAT_PROVIDER=deepseek, DEEPSEEK_CHAT_API_KEY, "
+        "MULTIMODAL_AGENT_CHAT_PROVIDER=deepseek, DEEPSEEK_API_KEY, "
         "and DEEPSEEK_CHAT_STREAM=true before measuring DeepSeek latency."
     )
 

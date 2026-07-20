@@ -27,7 +27,7 @@ def test_real_provider_eval_requires_explicit_real_chat_provider() -> None:
             ProviderConfig.from_env(
                 {
                     "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-                    "DEEPSEEK_CHAT_API_KEY": "test-key",
+                    "DEEPSEEK_API_KEY": "test-key",
                 }
             )
         )
@@ -37,7 +37,7 @@ def test_real_provider_eval_requires_explicit_real_chat_provider() -> None:
             {
                 "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
                 "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-                "DEEPSEEK_CHAT_API_KEY": "test-key",
+                "DEEPSEEK_API_KEY": "test-key",
             }
         )
     )
@@ -48,7 +48,7 @@ def test_real_provider_eval_defaults_non_chat_providers_to_controlled_mock() -> 
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_CHAT_API_KEY": "test-key",
+            "DEEPSEEK_API_KEY": "test-key",
             "MULTIMODAL_AGENT_SEARCH_PROVIDER": "http",
             "MULTIMODAL_AGENT_WEB_SEARCH_API_KEY": "search-key",
         }

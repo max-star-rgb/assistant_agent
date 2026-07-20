@@ -35,8 +35,8 @@ def test_single_tool_capabilities_emit_contracts() -> None:
             ),
         (
             UserRequest(user_id="u1", session_id="s1", text="帮我找白色运动鞋"),
-            "product_search",
-            "product_search",
+            "shopping_search",
+            "shopping_search",
         ),
         (
             UserRequest(user_id="u1", session_id="s1", text="把浅灰色沙发放到北欧风客厅看看"),
@@ -70,7 +70,7 @@ def test_multistep_response_collects_capability_contracts() -> None:
 
     contracts = state.response.data["contracts"]
 
-    assert [contract["capability"] for contract in contracts] == ["product_search", "price_compare"]
+    assert [contract["capability"] for contract in contracts] == ["shopping_search", "price_compare"]
     assert all(contract["status"] == "succeeded" for contract in contracts)
 
 

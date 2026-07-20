@@ -24,12 +24,17 @@ SMOKE_CASES = [
     (
         Path("scripts/smoke_product_search.py"),
         ["--query", "white sneaker"],
-        {"MULTIMODAL_AGENT_PRODUCT_PROVIDER": "http", "PRODUCT_SEARCH_API_KEY": "sk-provider-safety-test"},
+        {"MULTIMODAL_AGENT_SHOPPING_PROVIDER": "http", "PRODUCT_SEARCH_API_KEY": "sk-provider-safety-test"},
     ),
     (
         Path("scripts/smoke_price_compare.py"),
         ["--query", "white sneaker"],
-        {"MULTIMODAL_AGENT_PRICE_PROVIDER": "http", "PRICE_COMPARE_API_KEY": "sk-provider-safety-test"},
+        {
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "http",
+            "PRODUCT_SEARCH_BASE_URL": "https://provider-safety.test",
+            "PRODUCT_SEARCH_API_KEY": "sk-provider-safety-test",
+            "PRICE_COMPARE_API_KEY": "sk-provider-safety-test",
+        },
     ),
     (
         Path("scripts/smoke_render_3d.py"),
@@ -51,7 +56,7 @@ SMOKE_CASES = [
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_CHAT_API_KEY": "",
+            "DEEPSEEK_API_KEY": "",
         },
     ),
 ]

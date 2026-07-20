@@ -32,7 +32,7 @@ def test_in_memory_task_queue_returns_runtime_events() -> None:
     assert event_types[-3:] == ["graph_node_finished", "response_delta", "final_response"]
     tool_started = next(event for event in events if event.type == "tool_started")
     response_delta = next(event for event in events if event.type == "response_delta")
-    assert tool_started.tool_name == "product_search"
+    assert tool_started.tool_name == "shopping_search"
     assert response_delta.payload["source"] == "runtime_final_response"
 
 

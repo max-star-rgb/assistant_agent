@@ -101,8 +101,8 @@ def _normalized_env(source: Mapping[str, str], local_json: str | None) -> dict[s
 
 
 def _missing_provider_config(source: Mapping[str, str]) -> str | None:
-    product_provider = source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER", "mock")
-    price_provider = source.get("MULTIMODAL_AGENT_PRICE_PROVIDER", "mock")
+    product_provider = _product_provider(source)
+    price_provider = _price_provider(source)
     if product_provider == "local_json" and not source.get("PRODUCT_SEARCH_LOCAL_PATH"):
         return "missing PRODUCT_SEARCH_LOCAL_PATH"
     if product_provider == "http":
@@ -113,6 +113,8 @@ def _missing_provider_config(source: Mapping[str, str]) -> str | None:
             missing.append("PRODUCT_SEARCH_API_KEY")
         if missing:
             return f"missing {', '.join(missing)}"
+    if product_provider == "haodanku" and not source.get("HAODANKU_API_KEY"):
+        return "missing HAODANKU_API_KEY"
     if price_provider == "http":
         missing = []
         if not source.get("PRICE_COMPARE_BASE_URL"):
@@ -121,17 +123,41 @@ def _missing_provider_config(source: Mapping[str, str]) -> str | None:
             missing.append("PRICE_COMPARE_API_KEY")
         if missing:
             return f"missing {', '.join(missing)}"
-    if product_provider not in {"mock", "local_json", "http"}:
-        return "MULTIMODAL_AGENT_PRODUCT_PROVIDER must be mock, local_json, or http."
-    if price_provider not in {"mock", "local", "http"}:
-        return "MULTIMODAL_AGENT_PRICE_PROVIDER must be mock, local, or http."
+    if price_provider == "haodanku" and not source.get("HAODANKU_API_KEY"):
+        return "missing HAODANKU_API_KEY"
+    if product_provider not in {"mock", "local_json", "http", "haodanku"}:
+        return (
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER must be mock, http, or haodanku; "
+            "MULTIMODAL_AGENT_PRODUCT_PROVIDER may also use local_json."
+        )
+    if price_provider not in {"mock", "local", "http", "haodanku"}:
+        return (
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER must be mock, http, or haodanku; "
+            "MULTIMODAL_AGENT_PRICE_PROVIDER may also use local."
+        )
     return None
+
+
+def _product_provider(source: Mapping[str, str]) -> str:
+    return (
+        source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER")
+        or source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER")
+        or "mock"
+    )
+
+
+def _price_provider(source: Mapping[str, str]) -> str:
+    return (
+        source.get("MULTIMODAL_AGENT_PRICE_PROVIDER")
+        or source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER")
+        or "mock"
+    )
 
 
 def _print_provider_unconfigured(reason: str) -> None:
     print("provider_unconfigured")
     print(reason)
-    print("Please set product/price provider variables for the selected smoke provider.")
+    print("Please set MULTIMODAL_AGENT_SHOPPING_PROVIDER and required shopping provider configuration.")
 
 
 if __name__ == "__main__":

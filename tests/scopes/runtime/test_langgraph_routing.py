@@ -70,4 +70,4 @@ def test_conditional_graph_executes_search_node() -> None:
     assert state.status == "completed"
     assert state.intent is not None
     assert state.intent.intent == "product_search"
-    assert state.tool_calls[0].tool_name == "product_search"
+    assert state.tool_calls[0].tool_name == "shopping_search"

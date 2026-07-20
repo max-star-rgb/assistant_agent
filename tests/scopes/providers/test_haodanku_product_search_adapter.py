@@ -544,11 +544,12 @@ def test_local_demo_profile_falls_back_to_mock() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "local_demo",
-            "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "haodanku",
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "haodanku",
             "HAODANKU_API_KEY": "test-key",
         }
     )
 
+    assert config.shopping_provider == "mock"
     assert config.product_search_provider == "mock"
     assert isinstance(create_product_search_adapter(config), MockProductSearchAdapter)
 
@@ -557,10 +558,12 @@ def test_provider_smoke_profile_enables_haodanku() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
-            "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "haodanku",
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "haodanku",
             "HAODANKU_API_KEY": "test-key",
         }
     )
 
+    assert config.shopping_provider == "haodanku"
     assert config.product_search_provider == "haodanku"
+    assert config.price_compare_provider == "haodanku"
     assert config.haodanku_api_key == "test-key"

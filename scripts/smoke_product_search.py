@@ -22,6 +22,7 @@ from assistant_agent.services.product_adapter import ProductSearchInput, create_
 PRODUCT_PROVIDER_REQUIREMENTS = {
     "local_json": "PRODUCT_SEARCH_LOCAL_PATH",
     "http": "PRODUCT_SEARCH_BASE_URL and PRODUCT_SEARCH_API_KEY",
+    "haodanku": "HAODANKU_API_KEY",
 }
 
 
@@ -39,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     source = _normalized_env(os.environ if env is None else env, args.local_json)
-    provider = source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER", "mock")
+    provider = _product_provider(source)
 
     missing = _missing_provider_config(provider, source)
     if missing:
@@ -84,15 +85,28 @@ def _missing_provider_config(provider: str, source: Mapping[str, str]) -> str | 
             missing.append("PRODUCT_SEARCH_API_KEY")
         if missing:
             return f"missing {', '.join(missing)}"
+    if provider == "haodanku" and not source.get("HAODANKU_API_KEY"):
+        return "missing HAODANKU_API_KEY"
     if provider not in {"mock", *PRODUCT_PROVIDER_REQUIREMENTS}:
-        return "MULTIMODAL_AGENT_PRODUCT_PROVIDER must be mock, local_json, or http."
+        return (
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER must be mock, http, or haodanku; "
+            "MULTIMODAL_AGENT_PRODUCT_PROVIDER may also use local_json."
+        )
     return None
+
+
+def _product_provider(source: Mapping[str, str]) -> str:
+    return (
+        source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER")
+        or source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER")
+        or "mock"
+    )
 
 
 def _print_provider_unconfigured(reason: str) -> None:
     print("provider_unconfigured")
     print(reason)
-    print("Please set MULTIMODAL_AGENT_PRODUCT_PROVIDER and the required local product configuration.")
+    print("Please set MULTIMODAL_AGENT_SHOPPING_PROVIDER and the required product configuration.")
 
 
 if __name__ == "__main__":

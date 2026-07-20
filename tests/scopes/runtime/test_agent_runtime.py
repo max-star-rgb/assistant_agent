@@ -138,7 +138,7 @@ def test_agent_workflow_run_uses_graph_runtime_compatibly() -> None:
     assert state.status == "completed"
     assert state.intent is not None
     assert state.intent.intent == "product_search"
-    assert state.tool_calls[0].tool_name == "product_search"
+    assert state.tool_calls[0].tool_name == "shopping_search"
 
 
 def test_agent_graph_runtime_handles_image_generation_path() -> None:

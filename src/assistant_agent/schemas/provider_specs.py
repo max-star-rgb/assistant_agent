@@ -204,7 +204,7 @@ CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
         provider_env=CHAT_PROVIDER_ENV,
         adapter_kind="openai_compatible",
         capabilities=OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
-        api_key_env="ARK_CHAT_API_KEY",
+        api_key_env="ARK_API_KEY",
         base_url_env="ARK_CHAT_BASE_URL",
         model_env="ARK_CHAT_MODEL",
         default_base_url="https://ark.cn-beijing.volces.com/api/v3",
@@ -219,7 +219,7 @@ CHAT_PROVIDER_SPECS: dict[str, ProviderSpec] = {
         provider_env=CHAT_PROVIDER_ENV,
         adapter_kind="openai_compatible",
         capabilities=OPENAI_COMPATIBLE_CHAT_CAPABILITIES,
-        api_key_env="DEEPSEEK_CHAT_API_KEY",
+        api_key_env="DEEPSEEK_API_KEY",
         base_url_env="DEEPSEEK_CHAT_BASE_URL",
         model_env="DEEPSEEK_CHAT_MODEL",
         default_base_url="https://api.deepseek.com/v1",
@@ -306,7 +306,7 @@ VISION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
         provider_env=VISION_PROVIDER_ENV,
         adapter_kind="ark_responses",
         capabilities=VISION_TEXT_IMAGE_CAPABILITIES,
-        api_key_env="ARK_VISION_API_KEY",
+        api_key_env="ARK_API_KEY",
         base_url_env="ARK_VISION_BASE_URL",
         model_env="ARK_VISION_MODEL",
         default_base_url="https://ark.cn-beijing.volces.com/api/v3",
@@ -374,7 +374,7 @@ IMAGE_GENERATION_PROVIDER_SPECS: dict[str, ProviderSpec] = {
         provider_env=IMAGE_GENERATION_PROVIDER_ENV,
         adapter_kind="ark_image",
         capabilities=IMAGE_GENERATION_CAPABILITIES,
-        api_key_env="ARK_IMAGE_API_KEY",
+        api_key_env="ARK_API_KEY",
         base_url_env="ARK_IMAGE_BASE_URL",
         model_env="ARK_IMAGE_MODEL",
         requires_api_key=True,
@@ -482,11 +482,9 @@ def _chat_provider_env_with_aliases(provider: str, env: Mapping[str, str]) -> Ma
                     f"https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
                 )
     elif provider == "ark":
-        if not normalized.get("ARK_CHAT_API_KEY") and normalized.get("ARK_API_KEY"):
-            normalized["ARK_CHAT_API_KEY"] = normalized["ARK_API_KEY"]
+        normalized = _ark_env_with_api_key_aliases(normalized, "ARK_CHAT_API_KEY")
     elif provider == "deepseek":
-        if not normalized.get("DEEPSEEK_CHAT_API_KEY") and normalized.get("DEEPSEEK_API_KEY"):
-            normalized["DEEPSEEK_CHAT_API_KEY"] = normalized["DEEPSEEK_API_KEY"]
+        normalized = _deepseek_env_with_api_key_aliases(normalized)
     return normalized
 
 
@@ -515,6 +513,12 @@ def resolve_vision_provider(provider: str, env: Mapping[str, str]) -> ResolvedPr
         return resolve_provider(
             provider,
             _qwen_env_with_api_key_aliases(env, "QWEN_VISION_API_KEY"),
+            VISION_PROVIDER_SPECS,
+        )
+    if provider == "ark":
+        return resolve_provider(
+            provider,
+            _ark_env_with_api_key_aliases(env, "ARK_VISION_API_KEY"),
             VISION_PROVIDER_SPECS,
         )
     return resolve_provider(provider, env, VISION_PROVIDER_SPECS)
@@ -547,16 +551,45 @@ def resolve_image_generation_provider(provider: str, env: Mapping[str, str]) -> 
             _qwen_env_with_api_key_aliases(env, "QWEN_IMAGE_API_KEY"),
             IMAGE_GENERATION_PROVIDER_SPECS,
         )
+    if provider == "ark":
+        return resolve_provider(
+            provider,
+            _ark_env_with_api_key_aliases(env, "ARK_IMAGE_API_KEY"),
+            IMAGE_GENERATION_PROVIDER_SPECS,
+        )
     return resolve_provider(provider, env, IMAGE_GENERATION_PROVIDER_SPECS)
 
 
 def _qwen_env_with_api_key_aliases(env: Mapping[str, str], *legacy_api_key_envs: str) -> dict[str, str]:
+    return _env_with_api_key_aliases(env, "QWEN_API_KEY", "DASHSCOPE_API_KEY", *legacy_api_key_envs)
+
+
+def _ark_env_with_api_key_aliases(env: Mapping[str, str], *legacy_api_key_envs: str) -> dict[str, str]:
+    return _env_with_api_key_aliases(
+        env,
+        "ARK_API_KEY",
+        "ARK_CHAT_API_KEY",
+        "ARK_VISION_API_KEY",
+        "ARK_IMAGE_API_KEY",
+        *legacy_api_key_envs,
+    )
+
+
+def _deepseek_env_with_api_key_aliases(env: Mapping[str, str]) -> dict[str, str]:
+    return _env_with_api_key_aliases(env, "DEEPSEEK_API_KEY", "DEEPSEEK_CHAT_API_KEY")
+
+
+def _env_with_api_key_aliases(
+    env: Mapping[str, str],
+    canonical_api_key_env: str,
+    *legacy_api_key_envs: str,
+) -> dict[str, str]:
     normalized = dict(env)
-    if normalized.get("QWEN_API_KEY"):
+    if normalized.get(canonical_api_key_env):
         return normalized
-    for key_env in ("DASHSCOPE_API_KEY", *legacy_api_key_envs):
+    for key_env in legacy_api_key_envs:
         value = normalized.get(key_env)
         if value:
-            normalized["QWEN_API_KEY"] = value
+            normalized[canonical_api_key_env] = value
             break
     return normalized

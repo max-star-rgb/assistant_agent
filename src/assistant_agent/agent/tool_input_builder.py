@@ -113,6 +113,10 @@ def latest_items(outputs_by_step: dict[str, ToolResult]) -> list[dict[str, Any]]
     """Return the latest list of product-like items from previous results."""
 
     for result in reversed(list(outputs_by_step.values())):
+        if result.tool_name == "shopping_search" and result.data:
+            search = result.data.get("search")
+            if isinstance(search, dict) and isinstance(search.get("items"), list):
+                return search["items"]
         if result.data and isinstance(result.data.get("items"), list):
             return result.data["items"]
     return []

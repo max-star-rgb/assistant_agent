@@ -280,7 +280,7 @@ Configured by `ProviderConfig`:
 - `memory_backend="dual_core"`: opt-in `HybridMemoryStore` with a configurable built-in local core plus external Memory Server query augmentation. This backend is selected from environment only when `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true` or a runtime profile that allows real/network providers is active.
 - `memory_backend="hybrid_remote"`: legacy alias for the same retrieval-augmentation shape as `dual_core`; kept for compatibility.
 - `memory_backend="remote_service"`: opt-in `RemoteServiceMemoryStore` with an external adapter as lifecycle owner. This mode is selected only when remote memory is explicitly enabled and never falls back to local lifecycle writes by default.
-- `memory_backend="framework"`: opt-in `FrameworkMemoryStore` with `memory_framework="mem0"` by default, or explicit `"hindsight"` when requested. Environment loading requires `MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED=true`; credentials alone and normal offline profiles cannot enable it. A configured legacy local fallback is read-only and is consulted only after framework recall failure.
+- `memory_backend="framework"`: opt-in `FrameworkMemoryStore` with `memory_framework="mem0"` by default, or explicit `"hindsight"` when requested. Environment loading is selected by `MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED=true`; `MULTIMODAL_AGENT_MEMORY_BACKEND=framework` is accepted as a legacy explicit spelling but is no longer required. Credentials alone and normal offline profiles cannot enable it. A configured legacy local fallback is read-only and is consulted only after framework recall failure.
 - `memory_backend="<custom_snake_case>"`: process-local custom `MemoryStore` backend selected from environment only when `MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED=true` and the backend name matches `^[a-z][a-z0-9_]*$`. Invalid names, unknown custom names without the plugin switch, and gated built-in modes without their own opt-in resolve back to `memory`.
 - `memory_plugin_enabled`: explicit custom-backend environment switch. It permits configuration to preserve a custom backend name; it does not discover, import, or register plugin code.
 - `memory_local_backend`: local core used by `dual_core` / `hybrid_remote`; allowed values are `memory`, `jsonl`, and `sqlite`. Default is `jsonl` for dual-core modes.
@@ -288,7 +288,7 @@ Configured by `ProviderConfig`:
 
 Environment variables:
 
-- `MULTIMODAL_AGENT_MEMORY_BACKEND`
+- `MULTIMODAL_AGENT_MEMORY_BACKEND` (optional for local/remote/custom backend selection; framework mode is selected by `MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED=true`)
 - `MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED`
 - `MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND`
 - `MULTIMODAL_AGENT_MEMORY_PATH`

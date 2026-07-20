@@ -364,7 +364,7 @@ def test_runtime_streaming_tool_call_runs_through_tool_chain_without_argument_de
                         index=0,
                         id="call_1",
                         type="function",
-                        name_delta="product_",
+                        name_delta="shopping_",
                         arguments_delta='{"query": "通勤',
                     ),
                 ),
@@ -417,9 +417,9 @@ def test_runtime_streaming_tool_call_runs_through_tool_chain_without_argument_de
 
     response_delta_texts = [event.text for event in sink.events if event.type == "response_delta"]
     assert adapter.chat_calls == 0
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.request.metadata["native_tool_call_preambles"] == [
-        {"tool_name": "product_search", "content": "checking"}
+        {"tool_name": "shopping_search", "content": "checking"}
     ]
     assert response_delta_texts == ["已找到"]
     assert "通勤耳机" not in repr(response_delta_texts)

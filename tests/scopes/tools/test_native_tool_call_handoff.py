@@ -506,14 +506,14 @@ class SlowReadOnlyTool(MockTool):
 
 def slow_read_only_registry(probe: ParallelProbe) -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register(SlowReadOnlyTool(name="product_search", probe=probe))
+    registry.register(SlowReadOnlyTool(name="shopping_search", probe=probe))
     registry.register(SlowReadOnlyTool(name="web_search", probe=probe))
     registry.register(SlowReadOnlyTool(name="price_compare", probe=probe))
     return registry
 
 
 def test_progress_message_for_tool_uses_default_policy_messages() -> None:
-    assert progress_message_for_tool("product_search") == "我查一下。"
+    assert progress_message_for_tool("shopping_search") == "我查一下并比一下价格。"
     assert progress_message_for_tool("price_compare") == "我比一下价格。"
     assert progress_message_for_tool("vision_understanding") == "我看一下。"
     assert progress_message_for_tool("video_understanding") == "我分析一下。"
@@ -534,7 +534,7 @@ def test_progress_message_for_tool_prefers_tool_execution_policy() -> None:
 def test_native_tool_call_runs_through_validator_executor_and_observation() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "limit": 2}),
             final_result("已根据 native tool call 搜索通勤耳机。"),
         ]
     )
@@ -547,7 +547,7 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
 
     assert adapter.requests[0].tools
     native_tool_names = [tool["function"]["name"] for tool in adapter.requests[0].tools]
-    assert "product_search" in native_tool_names
+    assert "shopping_search" in native_tool_names
     assert "price_compare" in native_tool_names
     assert "render_3d" in native_tool_names
     assert adapter.requests[0].tool_choice == "auto"
@@ -555,14 +555,14 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
     tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
     assert tool_messages
     assert tool_messages[0]["tool_call_id"] == "call_1"
-    assert "product_search" in tool_messages[0]["content"]
+    assert "shopping_search" in tool_messages[0]["content"]
     assert state.intent is None
     assert state.plan is None
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.response is not None
     assert state.response.message == "已根据 native tool call 搜索通勤耳机。"
     assert state.request.metadata["assistant_loop_steps"][0]["safety_notes"] == ["native_tool_call"]
-    assert any(step.get("observation_tool") == "product_search" for step in state.request.metadata["assistant_loop_steps"])
+    assert any(step.get("observation_tool") == "shopping_search" for step in state.request.metadata["assistant_loop_steps"])
 
 
 def test_native_tool_call_may_choose_any_qualified_tool_without_keyword_routing() -> None:
@@ -579,7 +579,7 @@ def test_native_tool_call_may_choose_any_qualified_tool_without_keyword_routing(
     )
 
     first_turn_tools = [tool["function"]["name"] for tool in adapter.requests[0].tools]
-    assert "product_search" in first_turn_tools
+    assert "shopping_search" in first_turn_tools
     assert "web_search" in first_turn_tools
     assert [call.tool_name for call in state.tool_calls] == ["web_search"]
     assert state.request.metadata["last_action_validator"]["code"] == "accepted"
@@ -588,10 +588,10 @@ def test_native_tool_call_may_choose_any_qualified_tool_without_keyword_routing(
     assert state.response.message == "已根据 web_search observation 回答。"
 
 
-def test_native_runtime_does_not_override_model_final_answer_after_product_search() -> None:
+def test_native_runtime_does_not_override_model_final_answer_after_shopping_search() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "top_k": 2}),
             final_result("已经搜索到商品。"),
         ]
     )
@@ -602,7 +602,7 @@ def test_native_runtime_does_not_override_model_final_answer_after_product_searc
     )
 
     assert adapter.calls == 2
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert "native_runtime_required_price_compare_after_search" not in state.request.metadata
     assert state.response is not None
     assert state.response.message == "已经搜索到商品。"
@@ -611,8 +611,8 @@ def test_native_runtime_does_not_override_model_final_answer_after_product_searc
 def test_native_runtime_preserves_model_selected_repeated_search() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
-            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "top_k": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "top_k": 2}),
             final_result("已经完成搜索和比价。"),
         ]
     )
@@ -623,15 +623,15 @@ def test_native_runtime_preserves_model_selected_repeated_search() -> None:
     )
 
     assert adapter.calls == 3
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "shopping_search"]
     assert state.response is not None
     assert state.response.message == "已经完成搜索和比价。"
 
 
-def test_native_runtime_repairs_price_compare_items_from_search_result() -> None:
+def test_native_runtime_does_not_repair_price_compare_items_after_shopping_search() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "top_k": 2}),
             native_result("price_compare", {"query": "通勤耳机", "platforms": ["京东"]}),
             final_result("已经完成搜索和比价。"),
         ]
@@ -642,20 +642,21 @@ def test_native_runtime_repairs_price_compare_items_from_search_result() -> None
         UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
     )
 
-    assert adapter.calls == 3
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
-    repaired_call = state.request.metadata["native_tool_calls"][1]
-    assert repaired_call["name"] == "price_compare"
-    assert repaired_call["arguments"]["items"]
-    assert "platforms" not in repaired_call["arguments"]
-    assert state.response is not None
-    assert state.response.message == "已经完成搜索和比价。"
+    assert adapter.calls == 2
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "price_compare"]
+    second_call = state.request.metadata["native_tool_calls"][1]
+    assert second_call["name"] == "price_compare"
+    assert "items" not in second_call["arguments"]
+    assert state.status == "failed"
+    assert state.errors
+    assert state.errors[0].source == "price_compare"
+    assert "缺少商品候选列表" in state.errors[0].message
 
 
 def test_native_runtime_preserves_model_selected_unrelated_tool() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "top_k": 2}),
             native_result("web_search", {"query": "通勤耳机评测", "limit": 2}),
             final_result("已经完成搜索和比价。"),
         ]
@@ -666,17 +667,17 @@ def test_native_runtime_preserves_model_selected_unrelated_tool() -> None:
         UserRequest(user_id="u1", session_id="s1", text="帮我搜索并比价通勤耳机")
     )
 
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "web_search"]
 
 
 def test_native_runtime_preserves_model_selected_multi_tool_batch() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "top_k": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "top_k": 2}),
             native_multi_result(
                 [
                     ("web_search", {"query": "通勤耳机评测", "limit": 2}),
-                    ("product_search", {"query": "通勤耳机", "top_k": 2}),
+                    ("shopping_search", {"query": "通勤耳机", "top_k": 2}),
                 ]
             ),
             final_result("已经完成搜索和比价。"),
@@ -689,9 +690,9 @@ def test_native_runtime_preserves_model_selected_multi_tool_batch() -> None:
     )
 
     assert [call.tool_name for call in state.tool_calls] == [
-        "product_search",
+        "shopping_search",
         "web_search",
-        "product_search",
+        "shopping_search",
     ]
 
 
@@ -1101,12 +1102,12 @@ def test_native_tool_call_emits_replaceable_progress_and_suppresses_first_call_c
                     tool_calls=[
                         NativeToolCall(
                             id="call_1",
-                            name="product_search",
+                            name="shopping_search",
                             arguments={"query": "通勤耳机", "limit": 2},
                             raw={
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {"name": "product_search", "arguments": "{}"},
+                                "function": {"name": "shopping_search", "arguments": "{}"},
                             },
                         )
                     ],
@@ -1129,14 +1130,14 @@ def test_native_tool_call_emits_replaceable_progress_and_suppresses_first_call_c
 
     progress_events = [event for event in sink.events if event.type == "progress_message"]
     response_delta_texts = [event.text for event in sink.events if event.type == "response_delta"]
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert len(progress_events) == 1
-    assert progress_events[0].text == "我查一下。"
-    assert progress_events[0].tool_name == "product_search"
+    assert progress_events[0].text == "我查一下并比一下价格。"
+    assert progress_events[0].tool_name == "shopping_search"
     assert progress_events[0].payload["replaceable"] is True
     assert response_delta_texts == ["已找到"]
     assert state.request.metadata["native_tool_call_preambles"] == [
-        {"tool_name": "product_search", "content": "好的"}
+        {"tool_name": "shopping_search", "content": "好的"}
     ]
     assert state.response is not None
     assert state.response.message == "已找到 2 个通勤耳机候选。"
@@ -1148,7 +1149,7 @@ def test_native_tool_call_suppresses_preamble_on_later_tool_iteration() -> None:
             self.requests.append(request)
             self.calls += 1
             if self.calls == 1:
-                return native_result("product_search", {"query": "项目会议", "limit": 2})
+                return native_result("shopping_search", {"query": "项目会议", "limit": 2})
             if self.calls == 2:
                 if request.stream_callback is not None:
                     request.stream_callback("我再查一下", {"token_streaming": True})
@@ -1171,7 +1172,7 @@ def test_native_tool_call_suppresses_preamble_on_later_tool_iteration() -> None:
     )
 
     response_delta_texts = [event.text for event in sink.events if event.type == "response_delta"]
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "web_search"]
     assert response_delta_texts == ["查完了"]
     assert state.response is not None
     assert state.response.message == "查完了，明天上午十点有项目会。"
@@ -1180,7 +1181,7 @@ def test_native_tool_call_suppresses_preamble_on_later_tool_iteration() -> None:
 def test_default_runtime_uses_native_tools_for_non_mock_adapter() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "limit": 2}),
             plain_final_result("已根据 native tool observation 完成回答。"),
         ]
     )
@@ -1190,7 +1191,7 @@ def test_default_runtime_uses_native_tools_for_non_mock_adapter() -> None:
 
     assert adapter.requests[0].tools
     assert adapter.requests[0].tool_choice == "auto"
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.response is not None
     assert state.response.message == "已根据 native tool observation 完成回答。"
     assert "finish_reason=stop" in state.request.metadata["assistant_loop_steps"][-1]["reason"]
@@ -1198,7 +1199,7 @@ def test_default_runtime_uses_native_tools_for_non_mock_adapter() -> None:
 
 def test_native_runtime_fails_immediately_when_adapter_does_not_support_native_tools() -> None:
     adapter = CapabilityAwareChatAdapter(
-        [legacy_json_tool_result("product_search", {"query": "通勤耳机", "limit": 2})],
+        [legacy_json_tool_result("shopping_search", {"query": "通勤耳机", "limit": 2})],
         supports_native_tools=False,
     )
     runtime = AgentGraphRuntime(
@@ -1271,7 +1272,7 @@ def test_native_plain_text_final_answer_uses_finish_reason_without_json_contract
 
 
 def test_native_json_shaped_text_final_answer_is_not_parsed_as_assistant_decision() -> None:
-    raw = '{"type": "tool_call", "tool_name": "product_search", "tool_input": {"query": "耳机"}}'
+    raw = '{"type": "tool_call", "tool_name": "shopping_search", "tool_input": {"query": "耳机"}}'
     adapter = NativeToolChatAdapter([plain_final_result(raw)])
     runtime = AgentGraphRuntime(
         config=ProviderConfig(),
@@ -1752,7 +1753,7 @@ def test_native_invalid_tool_args_are_rejected_by_validator() -> None:
 def test_legacy_json_controller_is_not_used_for_non_mock_native_runtime() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机"}),
+            native_result("shopping_search", {"query": "通勤耳机"}),
             plain_final_result("已用 native 工具路径完成。"),
         ]
     )
@@ -1765,7 +1766,7 @@ def test_legacy_json_controller_is_not_used_for_non_mock_native_runtime() -> Non
 
     assert adapter.requests[0].tools
     assert adapter.requests[0].tool_choice == "auto"
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.response is not None
     assert state.response.message == "已用 native 工具路径完成。"
 
@@ -1792,7 +1793,7 @@ def test_native_runtime_executes_multiple_tool_calls_serially_in_provider_order(
         [
             native_multi_result(
                 [
-                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("shopping_search", {"query": "通勤耳机", "limit": 2}),
                     ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
                 ]
             ),
@@ -1807,12 +1808,12 @@ def test_native_runtime_executes_multiple_tool_calls_serially_in_provider_order(
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"))
 
     assert adapter.calls == 2
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "web_search"]
     tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
     assert len(tool_messages) == 2
     assert tool_messages[0]["tool_call_id"] == "call_1"
     assert tool_messages[1]["tool_call_id"] == "call_2"
-    assert "product_search" in tool_messages[0]["content"]
+    assert "shopping_search" in tool_messages[0]["content"]
     assert "web_search" in tool_messages[1]["content"]
     assert state.response is not None
     assert state.response.message == "已基于两个工具 observation 回答。"
@@ -1824,7 +1825,7 @@ def test_native_runtime_replays_reasoning_content_for_deepseek_tool_handoff() ->
         [
             native_multi_result(
                 [
-                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("shopping_search", {"query": "通勤耳机", "limit": 2}),
                     ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
                 ],
                 reasoning_content="internal provider reasoning",
@@ -1859,7 +1860,7 @@ def test_native_runtime_parallelizes_independent_read_only_tool_batch_through_ex
         [
             native_multi_result(
                 [
-                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("shopping_search", {"query": "通勤耳机", "limit": 2}),
                     ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
                 ]
             ),
@@ -1875,14 +1876,14 @@ def test_native_runtime_parallelizes_independent_read_only_tool_batch_through_ex
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"))
 
     assert probe.overlapped is True
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "web_search"]
     tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]
     assert [message["tool_call_id"] for message in tool_messages] == ["call_1", "call_2"]
-    assert "product_search" in tool_messages[0]["content"]
+    assert "shopping_search" in tool_messages[0]["content"]
     assert "web_search" in tool_messages[1]["content"]
     schedule = state.request.metadata["native_tool_schedules"][0]
     assert schedule["groups"][0]["mode"] == "parallel"
-    assert schedule["groups"][0]["tool_names"] == ["product_search", "web_search"]
+    assert schedule["groups"][0]["tool_names"] == ["shopping_search", "web_search"]
     assert schedule["dependency_modes"] == ["independent", "independent"]
     assert schedule["realtime_safety"] == ["safe", "safe"]
     assert state.response is not None
@@ -1892,14 +1893,14 @@ def test_native_runtime_parallelizes_independent_read_only_tool_batch_through_ex
 def test_native_runtime_replays_parallel_tool_events_in_provider_order() -> None:
     probe = ParallelProbe()
     registry = ToolRegistry()
-    registry.register(SlowReadOnlyTool(name="product_search", probe=probe, delay_seconds=0.1))
+    registry.register(SlowReadOnlyTool(name="shopping_search", probe=probe, delay_seconds=0.1))
     registry.register(SlowReadOnlyTool(name="web_search", probe=probe, delay_seconds=0.01))
     sink = ListEventSink()
     adapter = NativeToolChatAdapter(
         [
             native_multi_result(
                 [
-                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("shopping_search", {"query": "通勤耳机", "limit": 2}),
                     ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
                 ]
             ),
@@ -1919,7 +1920,7 @@ def test_native_runtime_replays_parallel_tool_events_in_provider_order() -> None
 
     assert probe.overlapped is True
     finished_tools = [event.tool_name for event in sink.events if event.type == "tool_finished"]
-    assert finished_tools == ["product_search", "web_search"]
+    assert finished_tools == ["shopping_search", "web_search"]
 
 
 def test_native_runtime_keeps_dependent_read_only_tool_batch_serial() -> None:
@@ -1928,7 +1929,7 @@ def test_native_runtime_keeps_dependent_read_only_tool_batch_serial() -> None:
         [
             native_multi_result(
                 [
-                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("shopping_search", {"query": "通勤耳机", "limit": 2}),
                     ("price_compare", {"query": "通勤耳机", "limit": 2}),
                 ]
             ),
@@ -1944,7 +1945,7 @@ def test_native_runtime_keeps_dependent_read_only_tool_batch_serial() -> None:
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较价格"))
 
     assert probe.overlapped is False
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "price_compare"]
     schedule = state.request.metadata["native_tool_schedules"][0]
     assert schedule["groups"][0]["mode"] == "serial"
     assert schedule["groups"][0]["reason"] == "requires_prior_observation"
@@ -1959,7 +1960,7 @@ def test_native_runtime_stops_multi_tool_batch_when_first_call_is_rejected() -> 
             native_multi_result(
                 [
                     ("unknown_tool", {}),
-                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("shopping_search", {"query": "通勤耳机", "limit": 2}),
                 ]
             )
         ]
@@ -1984,7 +1985,7 @@ def test_native_runtime_multi_tool_batch_respects_single_remaining_tool_budget()
         [
             native_multi_result(
                 [
-                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("shopping_search", {"query": "通勤耳机", "limit": 2}),
                     ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
                 ]
             ),
@@ -1999,7 +2000,7 @@ def test_native_runtime_multi_tool_batch_respects_single_remaining_tool_budget()
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"))
 
     assert adapter.calls == 2
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert adapter.requests[1].tools == []
     assert adapter.requests[1].tool_choice == "none"
     assert state.request.metadata["native_runtime_tool_calls_skipped_for_budget"] == 1
@@ -2014,7 +2015,7 @@ def test_native_runtime_multi_tool_batch_triggers_final_only_when_last_call_cons
         [
             native_multi_result(
                 [
-                    ("product_search", {"query": "通勤耳机", "limit": 2}),
+                    ("shopping_search", {"query": "通勤耳机", "limit": 2}),
                     ("web_search", {"query": "通勤耳机 评测", "limit": 2}),
                 ]
             ),
@@ -2029,7 +2030,7 @@ def test_native_runtime_multi_tool_batch_triggers_final_only_when_last_call_cons
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我找通勤耳机并比较评测"))
 
     assert adapter.calls == 2
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "web_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "web_search"]
     assert adapter.requests[1].tools == []
     assert adapter.requests[1].tool_choice == "none"
     assert state.request.metadata.get("native_runtime_tool_calls_skipped_for_budget") is None
@@ -2042,7 +2043,7 @@ def test_native_runtime_multi_tool_batch_triggers_final_only_when_last_call_cons
 def test_native_runtime_requests_final_only_answer_after_last_allowed_tool_call() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "limit": 2}),
             final_result("这是基于最后一次工具 observation 的最终回答。"),
         ]
     )
@@ -2059,7 +2060,7 @@ def test_native_runtime_requests_final_only_answer_after_last_allowed_tool_call(
     assert adapter.requests[1].tools == []
     assert adapter.requests[1].tool_choice == "none"
     assert any(message["role"] == "tool" for message in adapter.requests[1].messages)
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.response is not None
     assert state.response.message == "这是基于最后一次工具 observation 的最终回答。"
     assert state.response.data["final_only_handoff"] is True
@@ -2070,7 +2071,7 @@ def test_native_runtime_requests_final_only_answer_after_last_allowed_tool_call(
 def test_native_runtime_final_only_handoff_refuses_additional_tool_call() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "limit": 2}),
             native_result("price_compare", {"query": "通勤耳机", "limit": 2}),
         ]
     )
@@ -2084,7 +2085,7 @@ def test_native_runtime_final_only_handoff_refuses_additional_tool_call() -> Non
     assert adapter.calls == 2
     assert adapter.requests[1].tools == []
     assert adapter.requests[1].tool_choice == "none"
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.response is not None
     assert state.response.message == "已达到最大工具调用次数 (1)，这是我能提供的最好回答。"
     assert state.response.data["final_only_returned_tool_call"] is True
@@ -2095,7 +2096,7 @@ def test_native_runtime_final_only_handoff_refuses_additional_tool_call() -> Non
 def test_native_runtime_final_only_handoff_provider_error_falls_back() -> None:
     adapter = NativeToolChatAdapter(
         [
-            native_result("product_search", {"query": "通勤耳机", "limit": 2}),
+            native_result("shopping_search", {"query": "通勤耳机", "limit": 2}),
             ChatResult(
                 provider="scripted-native",
                 model="native-test",
@@ -2119,7 +2120,7 @@ def test_native_runtime_final_only_handoff_provider_error_falls_back() -> None:
     assert adapter.calls == 2
     assert adapter.requests[1].tools == []
     assert adapter.requests[1].tool_choice == "none"
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.response is not None
     assert state.response.message == "已达到最大工具调用次数 (1)，这是我能提供的最好回答。"
     assert state.response.data["final_only_handoff_failed"] is True

@@ -37,18 +37,18 @@ def test_offline_mcp_agent_run_uses_runtime() -> None:
 def test_offline_mcp_tool_run_uses_registry() -> None:
     result = OfflineMCPServer().call_tool(
         "tool_run",
-        {"tool_name": "product_search", "input": {"query": "白色运动鞋"}},
+        {"tool_name": "shopping_search", "input": {"query": "白色运动鞋"}},
     )
 
     assert result.status == "succeeded"
-    assert result.data["tool_name"] == "product_search"
-    assert result.metadata["registry_tool"] == "product_search"
+    assert result.data["tool_name"] == "shopping_search"
+    assert result.metadata["registry_tool"] == "shopping_search"
 
 
 def test_offline_mcp_tool_run_uses_action_validator() -> None:
     result = OfflineMCPServer().call_tool(
         "tool_run",
-        {"tool_name": "product_search", "input": {}},
+        {"tool_name": "shopping_search", "input": {}},
     )
 
     assert result.status == "failed"

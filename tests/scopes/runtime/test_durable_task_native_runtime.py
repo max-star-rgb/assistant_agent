@@ -65,7 +65,7 @@ def test_mixed_plan_and_business_tool_batch_executes_neither() -> None:
     result = _native_batch(
         [
             ("task_plan_submit", _plan_input()),
-            ("product_search", {"query": "耳机"}),
+            ("shopping_search", {"query": "耳机"}),
         ]
     )
     runtime, adapter, service = _durable_runtime(result)
@@ -87,7 +87,7 @@ def test_mixed_plan_and_business_tool_batch_executes_neither() -> None:
 
 def test_durable_mode_rejects_direct_business_tool_call() -> None:
     runtime, adapter, _ = _durable_runtime(
-        _native("product_search", {"query": "耳机", "limit": 2})
+        _native("shopping_search", {"query": "耳机", "limit": 2})
     )
 
     state = runtime.run_state(
@@ -138,7 +138,7 @@ def _durable_runtime(result: ChatResult):
 def _plan_input() -> dict:
     plan = TaskPlan(
         goal="搜索耳机",
-        steps=[TaskStep(step_id="step_1", action="搜索", tool_name="product_search")],
+        steps=[TaskStep(step_id="step_1", action="搜索", tool_name="shopping_search")],
     )
     return {"plan": plan.model_dump(mode="json"), "revision_reason": "initial"}
 

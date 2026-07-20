@@ -55,7 +55,7 @@ def test_native_final_answer_after_tool_observation_is_preserved() -> None:
     final_answer = "我搜索后发现工具结果不匹配耳机需求，因此先给出基于通勤场景的蓝牙耳机建议。"
     adapter = NativeScriptedChatAdapter(
         [
-            _tool_call("product_search", {"query": "无线蓝牙耳机", "limit": 3}),
+            _tool_call("shopping_search", {"query": "无线蓝牙耳机", "limit": 3}),
             _final(final_answer),
         ]
     )
@@ -65,7 +65,7 @@ def test_native_final_answer_after_tool_observation_is_preserved() -> None:
 
     assert state.intent is None
     assert state.plan is None
-    assert [call.tool_name for call in state.tool_calls] == ["product_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.response is not None
     assert state.response.message == final_answer
     assert state.response.data["native_runtime"] is True
@@ -78,7 +78,7 @@ def test_native_public_trace_does_not_expose_hidden_thought_fields() -> None:
     final_answer = "已根据工具结果完成总结。"
     adapter = NativeScriptedChatAdapter(
         [
-            _tool_call("product_search", {"query": "无线蓝牙耳机", "limit": 3}),
+            _tool_call("shopping_search", {"query": "无线蓝牙耳机", "limit": 3}),
             _final(final_answer),
         ]
     )
@@ -123,7 +123,7 @@ def test_native_compare_request_uses_tool_calls_then_final_content() -> None:
     }
     adapter = NativeScriptedChatAdapter(
         [
-            _tool_call("product_search", {"query": "Cinnamoroll 玉桂狗 毛绒公仔 周边", "top_k": 15}),
+            _tool_call("shopping_search", {"query": "Cinnamoroll 玉桂狗 毛绒公仔 周边", "top_k": 15}),
             _tool_call(
                 "price_compare",
                 {
@@ -145,7 +145,7 @@ def test_native_compare_request_uses_tool_calls_then_final_content() -> None:
         )
     )
 
-    assert [call.tool_name for call in state.tool_calls] == ["product_search", "price_compare"]
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search", "price_compare"]
     assert state.response is not None
     assert state.response.message == "已完成玉桂狗公仔比价。"
     assert len(adapter.requests) == 3

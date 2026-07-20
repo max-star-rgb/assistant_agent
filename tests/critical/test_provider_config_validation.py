@@ -112,7 +112,7 @@ def test_provider_smoke_validation_reports_missing_deepseek_chat_key() -> None:
     assert result.valid is False
     assert result.issues[0].capability == "direct_chat"
     assert result.issues[0].provider == "deepseek"
-    assert result.issues[0].missing == ["DEEPSEEK_CHAT_API_KEY"]
+    assert result.issues[0].missing == ["DEEPSEEK_API_KEY"]
 
 
 def test_chat_validation_uses_provider_spec_defaults_for_deepseek() -> None:
@@ -120,7 +120,7 @@ def test_chat_validation_uses_provider_spec_defaults_for_deepseek() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
-            "DEEPSEEK_CHAT_API_KEY": "test-deepseek-key",
+            "DEEPSEEK_API_KEY": "test-deepseek-key",
         }
     )
 
@@ -137,7 +137,7 @@ def test_chat_validation_requires_explicit_ark_model() -> None:
         {
             "MULTIMODAL_AGENT_RUNTIME_PROFILE": "provider_smoke",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "ark",
-            "ARK_CHAT_API_KEY": "test-ark-key",
+            "ARK_API_KEY": "test-ark-key",
         }
     )
 

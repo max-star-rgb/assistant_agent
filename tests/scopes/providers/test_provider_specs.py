@@ -24,13 +24,13 @@ def test_chat_provider_specs_include_openai_compatible_providers() -> None:
     assert CHAT_PROVIDER_SPECS["qwen"].default_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert CHAT_PROVIDER_SPECS["qwen"].default_model == "qwen-plus"
     assert CHAT_PROVIDER_SPECS["ark"].adapter_kind == "openai_compatible"
-    assert CHAT_PROVIDER_SPECS["ark"].api_key_env == "ARK_CHAT_API_KEY"
+    assert CHAT_PROVIDER_SPECS["ark"].api_key_env == "ARK_API_KEY"
     assert CHAT_PROVIDER_SPECS["ark"].base_url_env == "ARK_CHAT_BASE_URL"
     assert CHAT_PROVIDER_SPECS["ark"].model_env == "ARK_CHAT_MODEL"
     assert CHAT_PROVIDER_SPECS["ark"].default_base_url == "https://ark.cn-beijing.volces.com/api/v3"
     assert CHAT_PROVIDER_SPECS["ark"].default_model is None
     assert CHAT_PROVIDER_SPECS["deepseek"].adapter_kind == "openai_compatible"
-    assert CHAT_PROVIDER_SPECS["deepseek"].api_key_env == "DEEPSEEK_CHAT_API_KEY"
+    assert CHAT_PROVIDER_SPECS["deepseek"].api_key_env == "DEEPSEEK_API_KEY"
     assert CHAT_PROVIDER_SPECS["deepseek"].base_url_env == "DEEPSEEK_CHAT_BASE_URL"
     assert CHAT_PROVIDER_SPECS["deepseek"].model_env == "DEEPSEEK_CHAT_MODEL"
     assert CHAT_PROVIDER_SPECS["deepseek"].default_base_url == "https://api.deepseek.com/v1"
@@ -72,14 +72,14 @@ def test_resolve_chat_provider_returns_missing_required_env_names() -> None:
     assert resolved.capabilities == CHAT_PROVIDER_SPECS["deepseek"].capabilities
     assert resolved.base_url == "https://api.deepseek.com/v1"
     assert resolved.model == "deepseek-chat"
-    assert resolved.missing_required_env() == ["DEEPSEEK_CHAT_API_KEY"]
+    assert resolved.missing_required_env() == ["DEEPSEEK_API_KEY"]
 
 
 def test_resolve_chat_provider_accepts_explicit_deepseek_config() -> None:
     resolved = resolve_chat_provider(
         "deepseek",
         {
-            "DEEPSEEK_CHAT_API_KEY": "test-key",
+            "DEEPSEEK_API_KEY": "test-key",
             "DEEPSEEK_CHAT_BASE_URL": "https://deepseek.local/v1",
             "DEEPSEEK_CHAT_MODEL": "deepseek-test",
         },
@@ -95,7 +95,7 @@ def test_resolve_chat_provider_accepts_explicit_ark_config() -> None:
     resolved = resolve_chat_provider(
         "ark",
         {
-            "ARK_CHAT_API_KEY": "test-ark-key",
+            "ARK_API_KEY": "test-ark-key",
             "ARK_CHAT_BASE_URL": "https://ark.local/api/v3",
             "ARK_CHAT_MODEL": "ark-chat-test",
         },
@@ -132,11 +132,11 @@ def test_resolve_chat_provider_accepts_legacy_qwen_key_aliases() -> None:
     assert resolved.missing_required_env() == []
 
 
-def test_resolve_chat_provider_accepts_ark_api_key_alias() -> None:
+def test_resolve_chat_provider_accepts_legacy_ark_chat_key_alias() -> None:
     resolved = resolve_chat_provider(
         "ark",
         {
-            "ARK_API_KEY": "legacy-ark-key",
+            "ARK_CHAT_API_KEY": "legacy-ark-key",
             "ARK_CHAT_MODEL": "ark-chat-test",
         },
     )
@@ -148,8 +148,16 @@ def test_resolve_chat_provider_accepts_ark_api_key_alias() -> None:
     assert resolved.missing_required_env() == []
 
 
+def test_resolve_chat_provider_accepts_legacy_deepseek_chat_key_alias() -> None:
+    resolved = resolve_chat_provider("deepseek", {"DEEPSEEK_CHAT_API_KEY": "legacy-deepseek-key"})
+
+    assert resolved.provider == "deepseek"
+    assert resolved.api_key == "legacy-deepseek-key"
+    assert resolved.missing_required_env() == []
+
+
 def test_resolve_chat_provider_requires_explicit_ark_model() -> None:
-    resolved = resolve_chat_provider("ark", {"ARK_CHAT_API_KEY": "test-ark-key"})
+    resolved = resolve_chat_provider("ark", {"ARK_API_KEY": "test-ark-key"})
 
     assert resolved.provider == "ark"
     assert resolved.base_url == "https://ark.cn-beijing.volces.com/api/v3"
@@ -164,7 +172,7 @@ def test_vision_provider_specs_include_openai_compatible_providers() -> None:
     assert VISION_PROVIDER_SPECS["qwen"].base_url_env == "QWEN_VISION_BASE_URL"
     assert VISION_PROVIDER_SPECS["qwen"].model_env == "QWEN_VISION_MODEL"
     assert VISION_PROVIDER_SPECS["ark"].adapter_kind == "ark_responses"
-    assert VISION_PROVIDER_SPECS["ark"].api_key_env == "ARK_VISION_API_KEY"
+    assert VISION_PROVIDER_SPECS["ark"].api_key_env == "ARK_API_KEY"
     assert VISION_PROVIDER_SPECS["ark"].base_url_env == "ARK_VISION_BASE_URL"
     assert VISION_PROVIDER_SPECS["ark"].model_env == "ARK_VISION_MODEL"
     assert VISION_PROVIDER_SPECS["ark"].default_base_url == "https://ark.cn-beijing.volces.com/api/v3"
@@ -223,12 +231,19 @@ def test_resolve_vision_provider_accepts_legacy_qwen_vision_key_alias() -> None:
 
 
 def test_resolve_vision_provider_accepts_ark_defaults() -> None:
-    resolved = resolve_vision_provider("ark", {"ARK_VISION_API_KEY": "test-ark-key"})
+    resolved = resolve_vision_provider("ark", {"ARK_API_KEY": "test-ark-key"})
 
     assert resolved.provider == "ark"
     assert resolved.api_key == "test-ark-key"
     assert resolved.base_url == "https://ark.cn-beijing.volces.com/api/v3"
     assert resolved.model == "doubao-seed-2-0-lite-260215"
+    assert resolved.missing_required_env() == []
+
+
+def test_resolve_vision_provider_accepts_legacy_ark_vision_key_alias() -> None:
+    resolved = resolve_vision_provider("ark", {"ARK_VISION_API_KEY": "test-ark-key"})
+
+    assert resolved.api_key == "test-ark-key"
     assert resolved.missing_required_env() == []
 
 
@@ -242,7 +257,7 @@ def test_image_generation_provider_specs_include_optional_skeleton_providers() -
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].default_base_url == "https://dashscope.aliyuncs.com/api/v1"
     assert IMAGE_GENERATION_PROVIDER_SPECS["qwen"].default_model == "qwen-image-2.0-pro"
     assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].adapter_kind == "ark_image"
-    assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].api_key_env == "ARK_IMAGE_API_KEY"
+    assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].api_key_env == "ARK_API_KEY"
     assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].base_url_env == "ARK_IMAGE_BASE_URL"
     assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].default_base_url is None
     assert IMAGE_GENERATION_PROVIDER_SPECS["ark"].default_model is None
@@ -265,7 +280,7 @@ def test_resolve_image_generation_provider_returns_missing_required_env_names() 
 
 
 def test_resolve_ark_image_generation_provider_requires_env_url_and_model() -> None:
-    resolved = resolve_image_generation_provider("ark", {"ARK_IMAGE_API_KEY": "test-key"})
+    resolved = resolve_image_generation_provider("ark", {"ARK_API_KEY": "test-key"})
 
     assert resolved.provider == "ark"
     assert resolved.api_key == "test-key"
@@ -296,10 +311,24 @@ def test_resolve_ark_image_generation_provider_exposes_adapter_kind() -> None:
     resolved = resolve_image_generation_provider(
         "ark",
         {
-            "ARK_IMAGE_API_KEY": "test-key",
+            "ARK_API_KEY": "test-key",
             "ARK_IMAGE_BASE_URL": "https://ark.local/api/v3",
             "ARK_IMAGE_MODEL": "ark-image-test",
         },
     )
 
     assert resolved.adapter_kind == "ark_image"
+
+
+def test_resolve_ark_image_generation_provider_accepts_legacy_image_key_alias() -> None:
+    resolved = resolve_image_generation_provider(
+        "ark",
+        {
+            "ARK_IMAGE_API_KEY": "legacy-ark-key",
+            "ARK_IMAGE_BASE_URL": "https://ark.local/api/v3",
+            "ARK_IMAGE_MODEL": "ark-image-test",
+        },
+    )
+
+    assert resolved.api_key == "legacy-ark-key"
+    assert resolved.missing_required_env() == []

@@ -15,7 +15,15 @@ def compose_contract_response(
 ) -> str:
     """Compose a readable response from capability output contracts."""
 
-    parts = [_summary_for_contract(contract) for contract in contracts if contract.get("status") == "succeeded"]
+    has_price_compare = any(
+        contract.get("status") == "succeeded" and contract.get("capability") == "price_compare"
+        for contract in contracts
+    )
+    parts = [
+        _summary_for_contract(contract, search_only_shopping=has_price_compare)
+        for contract in contracts
+        if contract.get("status") == "succeeded"
+    ]
     parts = [part for part in parts if part]
 
     if failures:
@@ -55,7 +63,7 @@ def extract_response_fields(contracts: list[dict[str, Any]]) -> dict[str, Any]:
     return {"product_title": product_title, "best_price": best_price, "image_url": image_url, "render_ref": render_ref}
 
 
-def _summary_for_contract(contract: dict[str, Any]) -> str:
+def _summary_for_contract(contract: dict[str, Any], *, search_only_shopping: bool = False) -> str:
     capability = contract.get("capability")
     data = contract.get("data") or {}
     output_ref = contract.get("output_ref")
@@ -65,6 +73,9 @@ def _summary_for_contract(contract: dict[str, Any]) -> str:
         return _product_search_summary(data)
     if capability == "web_search":
         return _web_search_summary(data)
+    if capability == "shopping_search" and search_only_shopping:
+        search_data = data.get("search") if isinstance(data.get("search"), dict) else {}
+        return _product_search_summary(search_data)
     if capability in {"price_compare", "shopping_search"}:
         return _price_compare_summary(data)
     if capability == "image_generation":

@@ -134,7 +134,7 @@ def test_ark_adapter_missing_key_does_not_call_provider(monkeypatch) -> None:
         adapter.generate(ImageGenerationInput(prompt="生成一张图"))
 
     assert exc_info.value.code == "provider_unconfigured"
-    assert "ARK_IMAGE_API_KEY" in exc_info.value.message
+    assert "ARK_API_KEY" in exc_info.value.message
 
 
 def test_ark_adapter_rejects_non_latin_header_values_without_calling_provider(monkeypatch) -> None:
