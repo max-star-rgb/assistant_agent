@@ -1,18 +1,28 @@
 """Structured per-turn tool exposure rules.
 
-This module deliberately keeps exposure decisions on runtime facts such as
-entry profile and attached media references. It must not infer intent from
-user text; the LLM decides whether to call an exposed tool.
+This module keeps hard exposure decisions on structured runtime facts such as
+entry profile, attached media references, tool policy category, code-configured
+visibility, and explicit structured opt-in. It never infers user intent from
+natural-language request text; the LLM decides whether to call one of the
+already exposed tools.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.tool_policy import ToolPolicyView
+
+ToolExposureCategory = Literal["read", "generate", "write", "dangerous"]
+_DANGEROUS_TOOL_NAMES = {"python_interpreter"}
+_MEDIA_BOUND_TOOL_TYPES = {
+    "video_understanding": {"video"},
+    "vision_understanding": {"image", "video"},
+    "visual_image_search": {"image"},
+}
 
 
 @dataclass(frozen=True)
@@ -66,17 +76,18 @@ def tool_exposure_facts(request: UserRequest) -> ToolExposureFacts:
 def entry_profile_tool_exposure(
     request: UserRequest,
     policy: ToolPolicyView,
+    *,
+    configured_for_exposure: bool = False,
+    explicitly_enabled: bool = False,
 ) -> ToolExposureDecision:
     """Return whether one tool is exposed by the current entry profile."""
 
     facts = tool_exposure_facts(request)
-    if not facts.trusted_agent_service:
-        return ToolExposureDecision(
-            exposed=True,
-            reasons=("default_entry_profile",),
-            facts=facts,
-        )
-    if facts.entry_profile not in policy.allowed_entry_profiles:
+    if (
+        facts.trusted_agent_service
+        and policy.allowed_entry_profiles
+        and facts.entry_profile not in policy.allowed_entry_profiles
+    ):
         return ToolExposureDecision(
             exposed=False,
             excluded_reasons=("entry_profile_not_exposed",),
@@ -88,18 +99,105 @@ def entry_profile_tool_exposure(
             excluded_reasons=("entry_profile_not_exposed",),
             facts=facts,
         )
+    category = tool_exposure_category(policy)
+    if category == "read":
+        return ToolExposureDecision(
+            exposed=True,
+            reasons=("tool_category:read",),
+            facts=facts,
+        )
+    if category == "generate":
+        if configured_for_exposure or explicitly_enabled:
+            return ToolExposureDecision(
+                exposed=True,
+                reasons=(
+                    "tool_category:generate",
+                    _exposure_source_reason(
+                        configured_for_exposure=configured_for_exposure,
+                        explicitly_enabled=explicitly_enabled,
+                    ),
+                ),
+                facts=facts,
+            )
+        return ToolExposureDecision(
+            exposed=False,
+            excluded_reasons=("generate_not_enabled_by_visibility",),
+            facts=facts,
+        )
+    if category == "write":
+        if configured_for_exposure or explicitly_enabled:
+            return ToolExposureDecision(
+                exposed=True,
+                reasons=(
+                    "tool_category:write",
+                    _exposure_source_reason(
+                        configured_for_exposure=configured_for_exposure,
+                        explicitly_enabled=explicitly_enabled,
+                    ),
+                ),
+                facts=facts,
+            )
+        return ToolExposureDecision(
+            exposed=False,
+            excluded_reasons=("write_not_enabled_by_visibility",),
+            facts=facts,
+        )
+    if explicitly_enabled:
+        return ToolExposureDecision(
+            exposed=True,
+            reasons=("tool_category:dangerous", "explicit_tool_exposure"),
+            facts=facts,
+        )
     return ToolExposureDecision(
-        exposed=True,
-        reasons=(f"entry_profile_allowed:{facts.entry_profile}",),
+        exposed=False,
+        excluded_reasons=("dangerous_not_explicitly_enabled",),
         facts=facts,
     )
 
 
+def tool_exposure_category(policy: ToolPolicyView) -> ToolExposureCategory:
+    """Classify one tool for default exposure governance."""
+
+    if (
+        policy.tool_name in _DANGEROUS_TOOL_NAMES
+        or policy.realtime_safety == "unsafe"
+        or policy.toolset == "analysis.local"
+    ):
+        return "dangerous"
+    if (
+        policy.side_effect_level == "compensatable"
+        or policy.risk_gate_level == "soft_gate"
+    ):
+        return "generate"
+    if (
+        policy.requires_confirmation
+        or policy.side_effect_level in {"pending_confirmation", "committed"}
+        or policy.resource_writes
+    ):
+        return "write"
+    return "read"
+
+
+def _exposure_source_reason(
+    *,
+    configured_for_exposure: bool,
+    explicitly_enabled: bool,
+) -> str:
+    if explicitly_enabled:
+        return "explicit_tool_exposure"
+    if configured_for_exposure:
+        return "configured_tool_exposure"
+    return "default_tool_exposure"
+
+
 def _has_required_media(policy: ToolPolicyView, facts: ToolExposureFacts) -> bool:
     required = set(policy.requires_media)
-    if not required:
-        return True
-    return required.issubset(facts.active_media_types)
+    if required:
+        return required.issubset(facts.active_media_types)
+    implicit_any = _MEDIA_BOUND_TOOL_TYPES.get(policy.tool_name)
+    if implicit_any:
+        return bool(implicit_any.intersection(facts.active_media_types))
+    return True
 
 
 def _entry_profile(metadata: dict[str, Any]) -> str | None:

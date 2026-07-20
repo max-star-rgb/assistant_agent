@@ -15,13 +15,15 @@ from assistant_agent.services.context.skill_loader import (
     load_repo_skill_descriptors,
 )
 from assistant_agent.services.context.tool_exposure import (
+    ToolExposureCategory,
     entry_profile_tool_exposure,
-    tool_exposure_facts,
+    tool_exposure_category,
 )
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 
 
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
+_CODE_CONFIGURED_WRITE_TOOL_NAMES = {"memory_save", "memory_media_ingest"}
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,17 @@ class ToolQualificationSelection:
     qualified_tool_specs: list[ToolSpec]
     active_skill_ids: list[str]
     excluded_reasons: dict[str, list[str]]
+
+
+@dataclass(frozen=True)
+class ToolVisibilityOverrides:
+    """Structured per-run tool exposure overrides."""
+
+    explicit_tools: set[str]
+    explicit_toolsets: set[str]
+    explicit_skills: set[str]
+    configured_tools: set[str]
+    configured_toolsets: set[str]
 
 
 def select_prompt_tool_specs(
@@ -103,26 +116,41 @@ def qualify_tool_specs(
     *,
     catalog: SkillCatalog | None = None,
 ) -> ToolQualificationSelection:
-    """Return tools allowed by structured environment and visibility policy."""
+    """Return tools allowed by environment, visibility policy, and exposure class."""
 
-    explicit_tools, explicit_toolsets, explicit_skills = _visibility_overrides(request)
+    visibility_overrides = _visibility_overrides(request)
     active_skill_ids, active_skill_tools = _explicit_skill_activation(
         catalog or SkillCatalog(),
-        explicit_skills,
+        visibility_overrides.explicit_skills,
     )
     qualified_specs: list[ToolSpec] = []
     excluded_reasons: dict[str, list[str]] = {}
-    exposure_facts = tool_exposure_facts(request)
+    trusted_durable_execution = request.metadata.get("_trusted_durable_execution") is True
+    durable_ready_tool_names = set(_string_list(request.metadata.get("ready_tool_names"))) | {
+        "task_plan_submit"
+    }
     interpreter = ToolPolicyInterpreter()
     for spec in tool_specs:
         policy = interpreter.view_for_spec(spec)
-        if exposure_facts.trusted_agent_service:
-            exposure = entry_profile_tool_exposure(request, policy)
-            if not exposure.exposed:
-                excluded_reasons[spec.name] = list(exposure.excluded_reasons)
-                if not excluded_reasons[spec.name]:
-                    excluded_reasons[spec.name] = ["entry_profile_not_exposed"]
-                continue
+        category = tool_exposure_category(policy)
+        durable_ready = trusted_durable_execution and spec.name in durable_ready_tool_names
+        configured_for_exposure = (
+            _code_configured_tool_exposure(category=category, tool_name=spec.name)
+            or durable_ready
+            or spec.name in visibility_overrides.configured_tools
+            or bool(
+                policy.toolset
+                and policy.toolset in visibility_overrides.configured_toolsets
+            )
+        )
+        explicitly_enabled = (
+            spec.name in visibility_overrides.explicit_tools
+            or bool(
+                policy.toolset
+                and policy.toolset in visibility_overrides.explicit_toolsets
+            )
+            or spec.name in active_skill_tools
+        )
         missing_env = [name for name in policy.requires_env if not os.environ.get(name)]
         if missing_env:
             excluded_reasons[spec.name] = [
@@ -132,13 +160,21 @@ def qualify_tool_specs(
         if policy.skill_only and spec.name not in active_skill_tools:
             excluded_reasons[spec.name] = ["skill_activation_required"]
             continue
-        explicitly_enabled = (
-            spec.name in explicit_tools
-            or bool(policy.toolset and policy.toolset in explicit_toolsets)
-            or spec.name in active_skill_tools
-        )
-        if not policy.enabled_by_default and not explicitly_enabled:
+        if not policy.enabled_by_default and not (
+            configured_for_exposure or explicitly_enabled
+        ):
             excluded_reasons[spec.name] = ["disabled_by_default"]
+            continue
+        exposure = entry_profile_tool_exposure(
+            request,
+            policy,
+            configured_for_exposure=configured_for_exposure,
+            explicitly_enabled=explicitly_enabled,
+        )
+        if not exposure.exposed:
+            excluded_reasons[spec.name] = list(exposure.excluded_reasons)
+            if not excluded_reasons[spec.name]:
+                excluded_reasons[spec.name] = ["tool_not_exposed"]
             continue
         qualified_specs.append(spec)
     return ToolQualificationSelection(
@@ -161,14 +197,28 @@ def recall_qualified_tool_specs(
     return list(qualified_tool_specs)
 
 
-def _visibility_overrides(request: UserRequest) -> tuple[set[str], set[str], set[str]]:
+def _visibility_overrides(request: UserRequest) -> ToolVisibilityOverrides:
     payload = request.metadata.get("tool_visibility")
     payload = payload if isinstance(payload, dict) else {}
-    return (
-        set(_string_list(payload.get("enabled_tools"))),
-        set(_string_list(payload.get("enabled_toolsets"))),
-        set(_string_list(payload.get("enabled_skills"))),
+    return ToolVisibilityOverrides(
+        explicit_tools=set(_string_list(payload.get("enabled_tools"))),
+        explicit_toolsets=set(_string_list(payload.get("enabled_toolsets"))),
+        explicit_skills=set(_string_list(payload.get("enabled_skills"))),
+        configured_tools=set(_string_list(payload.get("configured_tools"))),
+        configured_toolsets=set(_string_list(payload.get("configured_toolsets"))),
     )
+
+
+def _code_configured_tool_exposure(
+    *,
+    category: ToolExposureCategory,
+    tool_name: str,
+) -> bool:
+    if category == "generate":
+        return True
+    if category == "write" and tool_name in _CODE_CONFIGURED_WRITE_TOOL_NAMES:
+        return True
+    return False
 
 
 def _explicit_skill_activation(

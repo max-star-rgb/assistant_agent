@@ -33,6 +33,7 @@
 - Gateway 负责 session/run/cancel/interrupt/reconnect/stream frame 生命周期，不承担主大脑职责。
 - 所有工具调用和外部副作用必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
 - Provider 默认只能走 mock/local/offline；真实 Provider 必须由 `provider_smoke` / `pilot` profile 和显式配置启用，不能因为检测到 key 自动启用。
+- Tool catalog、tool exposure、工具预选和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；只能基于 `ToolSpec` policy/category、代码配置、结构化显式 opt-in、entry profile、media/env 等结构化事实定义候选工具空间。是否调用候选工具、调用哪个工具和如何构造参数由 LLM 判断；执行阶段仍必须做安全、授权、确认、幂等和 schema 校验。
 - Memory 读写必须经过 `MemoryManager`、read/write policy、store/audit 边界；memory tool 保持薄适配。
 - MCP、durable task、A2A、API、CLI、demo、eval 都是入口或调度形态，不能绕过 runtime、tool、provider、memory 治理链路。
 - API、demo、eval、CLI 应复用同一套 runtime 行为，避免各自实现 Agent 逻辑。

@@ -6,7 +6,9 @@ from pydantic import ValidationError
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.python_interpreter import PYTHON_INTERPRETER_ENABLED_ENV
 from assistant_agent.schemas.tools import (
+    ToolExecutionPolicy,
     RunToolSet,
+    ToolSideEffectPolicy,
     ToolPolicyMetadata,
     ToolSpec,
     VisibilityPolicy,
@@ -69,10 +71,10 @@ def test_tool_catalog_uses_trusted_agent_service_entry_to_narrow_tools() -> None
     assert trusted.run_tool_set.excluded_reasons == {
         "video_understanding": ["entry_profile_not_exposed"]
     }
-    assert transport_only.run_tool_set.qualified_tool_names == [
-        "web_search",
-        "video_understanding",
-    ]
+    assert transport_only.run_tool_set.qualified_tool_names == ["web_search"]
+    assert transport_only.run_tool_set.excluded_reasons == {
+        "video_understanding": ["entry_profile_not_exposed"]
+    }
 
 
 def test_tool_catalog_exposes_video_understanding_for_agent_service_when_video_is_active() -> None:
@@ -142,14 +144,12 @@ def test_tool_catalog_agent_service_video_exposure_uses_structured_media_not_tex
     ]
 
 
-def test_tool_catalog_exposes_unified_shopping_tool_for_agent_service() -> None:
+def test_tool_catalog_exposes_read_and_configured_memory_write_for_agent_service() -> None:
     specs = [
         _agent_service_tool_spec("web_search"),
         _agent_service_tool_spec("shopping_search"),
-        ToolSpec(name="product_search"),
-        ToolSpec(name="price_compare"),
         _agent_service_tool_spec("memory_retrieval"),
-        _agent_service_tool_spec("memory_save"),
+        _write_tool_spec("memory_save"),
     ]
     request = UserRequest(
         user_id="u1",
@@ -175,16 +175,13 @@ def test_tool_catalog_exposes_unified_shopping_tool_for_agent_service() -> None:
         "memory_retrieval",
         "memory_save",
     ]
-    assert selection.run_tool_set.excluded_reasons == {
-        "product_search": ["entry_profile_not_exposed"],
-        "price_compare": ["entry_profile_not_exposed"],
-    }
+    assert selection.run_tool_set.excluded_reasons == {}
 
 
-def test_agent_service_exposure_uses_visibility_metadata_not_tool_name() -> None:
+def test_agent_service_exposure_uses_tool_category_not_tool_name() -> None:
     specs = [
-        _agent_service_tool_spec("custom.current_weather"),
-        ToolSpec(name="custom.private_billing"),
+        _read_tool_spec("custom.current_weather"),
+        _write_tool_spec("custom.private_billing"),
     ]
     request = UserRequest(
         user_id="u1",
@@ -200,7 +197,7 @@ def test_agent_service_exposure_uses_visibility_metadata_not_tool_name() -> None
 
     assert selection.run_tool_set.qualified_tool_names == ["custom.current_weather"]
     assert selection.run_tool_set.excluded_reasons == {
-        "custom.private_billing": ["entry_profile_not_exposed"]
+        "custom.private_billing": ["write_not_enabled_by_visibility"]
     }
 
 
@@ -236,31 +233,7 @@ def test_agent_service_visibility_requires_declared_active_media() -> None:
     assert with_video.run_tool_set.excluded_reasons == {}
 
 
-def test_default_registry_declares_agent_service_visibility_metadata() -> None:
-    specs = {spec.name: spec for spec in create_default_registry().list_specs()}
-
-    for tool_name in {
-        "web_search",
-        "shopping_search",
-        "memory_retrieval",
-        "memory_save",
-        "weather",
-        "calendar_search",
-        "contacts_search",
-    }:
-        assert specs[tool_name].visibility.allowed_entry_profiles == ["agent_service"]
-        assert specs[tool_name].visibility.requires_media == []
-
-    video = specs["video_understanding"]
-    assert video.visibility.allowed_entry_profiles == ["agent_service"]
-    assert video.visibility.requires_media == ["video"]
-    assert specs["calendar_create"].visibility.allowed_entry_profiles == []
-    assert specs["reminder_create"].visibility.allowed_entry_profiles == []
-    assert specs["product_search"].visibility.allowed_entry_profiles == []
-    assert specs["price_compare"].visibility.allowed_entry_profiles == []
-
-
-def test_default_registry_exposes_personal_readonly_tools_for_agent_service() -> None:
+def test_default_registry_exposes_read_generate_and_memory_write_for_agent_service() -> None:
     request = UserRequest(
         user_id="u1",
         session_id="s1",
@@ -275,20 +248,209 @@ def test_default_registry_exposes_personal_readonly_tools_for_agent_service() ->
     assert "weather" in selection.run_tool_set.exposed_tool_names
     assert "calendar_search" in selection.run_tool_set.exposed_tool_names
     assert "contacts_search" in selection.run_tool_set.exposed_tool_names
+    assert "image_generation" in selection.run_tool_set.exposed_tool_names
+    assert "memory_media_ingest" in selection.run_tool_set.exposed_tool_names
+    assert "memory_retrieval" in selection.run_tool_set.exposed_tool_names
+    assert "memory_save" in selection.run_tool_set.exposed_tool_names
+    assert "render_3d" in selection.run_tool_set.exposed_tool_names
+    assert "web_search" in selection.run_tool_set.exposed_tool_names
     assert "calendar_create" not in selection.run_tool_set.exposed_tool_names
     assert "reminder_create" not in selection.run_tool_set.exposed_tool_names
     assert "weather" not in selection.run_tool_set.excluded_reasons
     assert "calendar_search" not in selection.run_tool_set.excluded_reasons
     assert "contacts_search" not in selection.run_tool_set.excluded_reasons
     assert selection.run_tool_set.excluded_reasons["calendar_create"] == [
-        "entry_profile_not_exposed"
+        "write_not_enabled_by_visibility"
     ]
     assert selection.run_tool_set.excluded_reasons["reminder_create"] == [
-        "entry_profile_not_exposed"
+        "write_not_enabled_by_visibility"
     ]
 
 
-def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text(monkeypatch) -> None:
+def test_agent_service_text_does_not_drive_visibility_beyond_code_config() -> None:
+    specs = [
+        _read_tool_spec("weather"),
+        _generate_tool_spec("image_generation"),
+        _generate_tool_spec("render_3d"),
+        _write_tool_spec("memory_save"),
+        _write_tool_spec("calendar_create"),
+        _dangerous_tool_spec("python_interpreter"),
+    ]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="请生成一张海报，并记住我喜欢冷色调",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+
+    selection = select_prompt_tool_specs(request, specs)
+
+    assert selection.run_tool_set.exposed_tool_names == [
+        "weather",
+        "image_generation",
+        "render_3d",
+        "memory_save",
+    ]
+    assert selection.run_tool_set.excluded_reasons["calendar_create"] == [
+        "write_not_enabled_by_visibility"
+    ]
+    assert selection.run_tool_set.excluded_reasons["python_interpreter"] == [
+        "dangerous_not_explicitly_enabled"
+    ]
+
+
+def test_agent_service_generate_visibility_is_not_text_triggered() -> None:
+    specs = [
+        _read_tool_spec("weather"),
+        _generate_tool_spec("image_generation"),
+        _generate_tool_spec("render_3d"),
+    ]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="把浅灰色沙发放到北欧风客厅看看",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+    unrelated_request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="随便聊聊",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+
+    selection = select_prompt_tool_specs(request, specs)
+    unrelated_selection = select_prompt_tool_specs(unrelated_request, specs)
+
+    assert selection.run_tool_set.exposed_tool_names == [
+        "weather",
+        "image_generation",
+        "render_3d",
+    ]
+    assert unrelated_selection.run_tool_set.exposed_tool_names == (
+        selection.run_tool_set.exposed_tool_names
+    )
+    assert selection.run_tool_set.excluded_reasons == {}
+
+
+def test_agent_service_capability_text_does_not_expose_write_or_dangerous() -> None:
+    specs = [
+        _generate_tool_spec("image_generation"),
+        _generate_tool_spec("render_3d"),
+        _write_tool_spec("memory_save"),
+        _write_tool_spec("calendar_create"),
+        _dangerous_tool_spec("python_interpreter"),
+    ]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="这轮请使用生成能力，并启用记忆能力",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+
+    selection = select_prompt_tool_specs(request, specs)
+
+    assert selection.run_tool_set.exposed_tool_names == [
+        "image_generation",
+        "render_3d",
+        "memory_save",
+    ]
+    assert selection.run_tool_set.excluded_reasons == {
+        "calendar_create": ["write_not_enabled_by_visibility"],
+        "python_interpreter": ["dangerous_not_explicitly_enabled"],
+    }
+
+
+def test_agent_service_request_text_does_not_expose_non_memory_write_tools() -> None:
+    specs = [
+        _write_tool_spec("calendar_create"),
+        _write_tool_spec("reminder_create"),
+    ]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="帮我把明天十点会议加到日历，并设置提醒",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+
+    selection = select_prompt_tool_specs(request, specs)
+
+    assert selection.run_tool_set.exposed_tool_names == []
+    assert selection.run_tool_set.excluded_reasons == {
+        "calendar_create": ["write_not_enabled_by_visibility"],
+        "reminder_create": ["write_not_enabled_by_visibility"],
+    }
+
+
+def test_agent_service_configured_visibility_exposes_generate_and_write() -> None:
+    specs = [
+        _generate_tool_spec("render_3d"),
+        _write_tool_spec("reminder_create"),
+        _write_tool_spec("calendar_create"),
+    ]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="处理一下",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+            "tool_visibility": {
+                "configured_tools": ["render_3d", "reminder_create"],
+            },
+        },
+    )
+
+    selection = select_prompt_tool_specs(request, specs)
+
+    assert selection.run_tool_set.exposed_tool_names == ["render_3d", "reminder_create"]
+    assert selection.run_tool_set.excluded_reasons["calendar_create"] == [
+        "write_not_enabled_by_visibility"
+    ]
+
+
+def test_agent_service_structured_visibility_exposes_generate_and_write() -> None:
+    specs = [
+        _generate_tool_spec("render_3d"),
+        _write_tool_spec("reminder_create"),
+        _write_tool_spec("calendar_create"),
+    ]
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="处理一下",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+            "tool_visibility": {
+                "enabled_tools": ["render_3d", "reminder_create"],
+            },
+        },
+    )
+
+    selection = select_prompt_tool_specs(request, specs)
+
+    assert selection.run_tool_set.exposed_tool_names == ["render_3d", "reminder_create"]
+    assert selection.run_tool_set.excluded_reasons["calendar_create"] == [
+        "write_not_enabled_by_visibility"
+    ]
+
+
+def test_tool_catalog_exposes_default_qualified_tools_independent_of_request_text(monkeypatch) -> None:
     monkeypatch.delenv(PYTHON_INTERPRETER_ENABLED_ENV, raising=False)
     specs = create_default_registry().list_specs()
     requests = [
@@ -299,7 +461,21 @@ def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text(mo
 
     selections = [select_prompt_tool_specs(request, specs) for request in requests]
 
-    expected = [spec.name for spec in specs if spec.name != "python_interpreter"]
+    expected = [
+        "calendar_search",
+        "contacts_search",
+        "image_generation",
+        "memory_ingest_status",
+        "memory_media_ingest",
+        "memory_retrieval",
+        "memory_save",
+        "render_3d",
+        "shopping_search",
+        "tool_search",
+        "weather",
+        "web_fetch",
+        "web_search",
+    ]
     assert [[spec.name for spec in item.qualified_tool_specs] for item in selections] == [
         expected,
         expected,
@@ -339,24 +515,24 @@ def test_trusted_durable_resume_exposes_only_ready_tools_and_plan_revision() -> 
         text="resume",
         metadata={
             "_trusted_durable_execution": True,
-            "ready_tool_names": ["product_search"],
+            "ready_tool_names": ["shopping_search"],
         },
     )
     specs = [
         ToolSpec(name="web_search"),
         ToolSpec(name="task_plan_submit"),
-        ToolSpec(name="product_search"),
+        ToolSpec(name="shopping_search"),
     ]
 
     selection = select_prompt_tool_specs(request, specs)
 
     assert selection.run_tool_set.exposed_tool_names == [
         "task_plan_submit",
-        "product_search",
+        "shopping_search",
     ]
 
 
-def test_qualification_keeps_all_risk_levels_visible() -> None:
+def test_qualification_exposes_read_and_generate_but_requires_enabled_write() -> None:
     specs = [
         ToolSpec(name="read", policy=ToolPolicyMetadata(risk="local_read")),
         ToolSpec(name="artifact", policy=ToolPolicyMetadata(risk="transactional")),
@@ -368,21 +544,24 @@ def test_qualification_keeps_all_risk_levels_visible() -> None:
 
     selection = select_prompt_tool_specs(request, specs)
 
-    assert selection.run_tool_set.qualified_tool_names == [
-        "read",
-        "artifact",
-        "write",
-    ]
-    assert selection.run_tool_set.exposed_tool_names == [
-        "read",
-        "artifact",
-        "write",
-    ]
-    assert selection.run_tool_set.executable_tool_names == [
-        "read",
-        "artifact",
-        "write",
-    ]
+    assert selection.run_tool_set.qualified_tool_names == ["read", "artifact"]
+    assert selection.run_tool_set.exposed_tool_names == ["read", "artifact"]
+    assert selection.run_tool_set.executable_tool_names == ["read", "artifact"]
+    assert selection.run_tool_set.excluded_reasons == {
+        "write": ["write_not_enabled_by_visibility"],
+    }
+
+    explicit = select_prompt_tool_specs(
+        UserRequest(
+            user_id="u1",
+            session_id="s1",
+            text="does not classify tools",
+            metadata={"tool_visibility": {"enabled_tools": ["artifact", "write"]}},
+        ),
+        specs,
+    )
+
+    assert explicit.run_tool_set.qualified_tool_names == ["read", "artifact", "write"]
 
 
 def test_run_tool_set_rejects_exposed_tool_outside_qualified_set() -> None:
@@ -541,7 +720,7 @@ description: Private search guidance.
     assert selection.prompt_tool_specs == [spec]
 
 
-def test_identity_recall_exposes_qualified_memory_tools_without_text_routing() -> None:
+def test_identity_recall_exposes_memory_read_and_configured_memory_write() -> None:
     specs = create_default_registry().list_specs()
 
     selection = select_prompt_tool_specs(
@@ -553,6 +732,7 @@ def test_identity_recall_exposes_qualified_memory_tools_without_text_routing() -
 
     names = [spec.name for spec in selection.prompt_tool_specs]
     assert "memory_retrieval" in names
+    assert "memory_media_ingest" in names
     assert "memory_save" in names
     assert selection.summary.selection_reasons == ["recall_identity"]
 
@@ -749,7 +929,7 @@ description: Private lookup guidance.
             )
         ),
     )
-    public_spec = ToolSpec(name="web_search", required_inputs=["query"])
+    public_spec = _read_tool_spec("web_search")
     request = UserRequest(
         user_id="u1",
         session_id="s1",
@@ -934,10 +1114,10 @@ name: product_research
 description: Product research guidance.
 ---
 ## Governed Tools
-- product_search
+- shopping_search
 
 ## Permissions
-- tool:product_search
+- tool:shopping_search
 """,
     )
     request = UserRequest(
@@ -948,7 +1128,7 @@ description: Product research guidance.
     )
     qualified_specs = [
         ToolSpec(name="web_search", required_inputs=["query"]),
-        ToolSpec(name="product_search", required_inputs=["query"]),
+        ToolSpec(name="shopping_search", required_inputs=["query"]),
     ]
     prompt_specs = [qualified_specs[0]]
 
@@ -978,12 +1158,79 @@ def _agent_service_tool_spec(
     *,
     requires_media: list[str] | None = None,
 ) -> ToolSpec:
+    return _read_tool_spec(
+        name,
+        allowed_entry_profiles=["agent_service"],
+        requires_media=requires_media or [],
+    )
+
+
+def _read_tool_spec(
+    name: str,
+    *,
+    allowed_entry_profiles: list[str] | None = None,
+    requires_media: list[str] | None = None,
+) -> ToolSpec:
     return ToolSpec(
         name=name,
-        policy=ToolPolicyMetadata(
-            visibility=VisibilityPolicy(
-                allowed_entry_profiles=["agent_service"],
-                requires_media=requires_media or [],
-            ),
+        side_effect=ToolSideEffectPolicy(
+            level="external_read",
+            requires_confirmation=False,
+        ),
+        execution=ToolExecutionPolicy(
+            dependency_mode="independent",
+            realtime_safety="safe",
+            artifact_reuse="reusable",
+        ),
+        visibility=VisibilityPolicy(
+            allowed_entry_profiles=allowed_entry_profiles or [],
+            requires_media=requires_media or [],
+        ),
+    )
+
+
+def _generate_tool_spec(name: str) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        side_effect=ToolSideEffectPolicy(
+            level="compensatable",
+            requires_confirmation=False,
+        ),
+        execution=ToolExecutionPolicy(
+            dependency_mode="terminal",
+            resource_writes=["artifact"],
+            realtime_safety="needs_progress",
+            artifact_reuse="requires_validation",
+        ),
+    )
+
+
+def _write_tool_spec(name: str) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        side_effect=ToolSideEffectPolicy(
+            level="pending_confirmation",
+            requires_confirmation=True,
+        ),
+        execution=ToolExecutionPolicy(
+            dependency_mode="terminal",
+            resource_writes=["user_state"],
+            realtime_safety="needs_confirmation",
+            artifact_reuse="do_not_reuse",
+        ),
+    )
+
+
+def _dangerous_tool_spec(name: str) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        side_effect=ToolSideEffectPolicy(
+            level="local_read",
+            requires_confirmation=False,
+        ),
+        execution=ToolExecutionPolicy(
+            dependency_mode="requires_prior_observation",
+            realtime_safety="unsafe",
+            artifact_reuse="requires_validation",
         ),
     )
