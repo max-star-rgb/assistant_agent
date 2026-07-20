@@ -172,7 +172,7 @@ def configure_operational_logging(
 
         package_logger = logging.getLogger(_PACKAGE_LOGGER_NAME)
         package_logger.setLevel(resolved_console_level)
-        package_logger.propagate = False
+        package_logger.propagate = True
         for role, stream, minimum_level, maximum_level in (
             ("console.stdout", sys.stdout, resolved_console_level, logging.WARNING),
             (

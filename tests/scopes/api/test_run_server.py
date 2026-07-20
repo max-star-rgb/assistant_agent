@@ -450,6 +450,39 @@ def test_operational_logging_is_idempotent_and_writes_gateway_file_only(
         operational_logging.reset_operational_logging_for_tests()
 
 
+def test_operational_logging_keeps_child_loggers_visible_to_caplog(
+    tmp_path,
+    caplog,
+) -> None:
+    operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
+    try:
+        operational_logging.configure_operational_logging(
+            tmp_path,
+            console_level="INFO",
+            file_level="DEBUG",
+        )
+
+        with caplog.at_level(logging.INFO, logger="assistant_agent.gateway.lifecycle"):
+            logging.getLogger("assistant_agent.gateway.lifecycle").info(
+                "gateway event visible to test capture",
+                extra={
+                    "component": "gateway",
+                    "event": "gateway.run.started",
+                    "run_id": "gateway-run",
+                    "turn_id": "gateway-turn",
+                    "trace_id": "-",
+                },
+            )
+
+        assert any(
+            record.name == "assistant_agent.gateway.lifecycle"
+            and record.getMessage() == "gateway event visible to test capture"
+            for record in caplog.records
+        )
+    finally:
+        operational_logging.reset_operational_logging_for_tests()
+
+
 def test_operational_logging_file_failure_keeps_combined_console(tmp_path, capsys) -> None:
     operational_logging = importlib.import_module("assistant_agent.services.operational_logging")
     blocked_parent = tmp_path / "not-a-directory"
