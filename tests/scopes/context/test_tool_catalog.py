@@ -244,6 +244,9 @@ def test_default_registry_declares_agent_service_visibility_metadata() -> None:
         "shopping_search",
         "memory_retrieval",
         "memory_save",
+        "weather",
+        "calendar_search",
+        "contacts_search",
     }:
         assert specs[tool_name].visibility.allowed_entry_profiles == ["agent_service"]
         assert specs[tool_name].visibility.requires_media == []
@@ -251,8 +254,38 @@ def test_default_registry_declares_agent_service_visibility_metadata() -> None:
     video = specs["video_understanding"]
     assert video.visibility.allowed_entry_profiles == ["agent_service"]
     assert video.visibility.requires_media == ["video"]
+    assert specs["calendar_create"].visibility.allowed_entry_profiles == []
+    assert specs["reminder_create"].visibility.allowed_entry_profiles == []
     assert specs["product_search"].visibility.allowed_entry_profiles == []
     assert specs["price_compare"].visibility.allowed_entry_profiles == []
+
+
+def test_default_registry_exposes_personal_readonly_tools_for_agent_service() -> None:
+    request = UserRequest(
+        user_id="u1",
+        session_id="s1",
+        text="早上好，帮我说下今天出门前要注意什么",
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {"session_config": {"entry_profile": "agent_service"}},
+        },
+    )
+    selection = select_prompt_tool_specs(request, create_default_registry().list_specs())
+
+    assert "weather" in selection.run_tool_set.exposed_tool_names
+    assert "calendar_search" in selection.run_tool_set.exposed_tool_names
+    assert "contacts_search" in selection.run_tool_set.exposed_tool_names
+    assert "calendar_create" not in selection.run_tool_set.exposed_tool_names
+    assert "reminder_create" not in selection.run_tool_set.exposed_tool_names
+    assert "weather" not in selection.run_tool_set.excluded_reasons
+    assert "calendar_search" not in selection.run_tool_set.excluded_reasons
+    assert "contacts_search" not in selection.run_tool_set.excluded_reasons
+    assert selection.run_tool_set.excluded_reasons["calendar_create"] == [
+        "entry_profile_not_exposed"
+    ]
+    assert selection.run_tool_set.excluded_reasons["reminder_create"] == [
+        "entry_profile_not_exposed"
+    ]
 
 
 def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text(monkeypatch) -> None:

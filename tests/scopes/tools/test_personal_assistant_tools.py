@@ -2,6 +2,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tool_observation import observation_from_tool_result
+from assistant_agent.schemas.tool_spec_adapters import tool_spec_to_openai_tool
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 from assistant_agent.services.tool_risk_gate import InMemoryToolIdempotencyLedger
 from assistant_agent.tools.personal_assistant_tools import (
@@ -51,6 +52,21 @@ def test_default_registry_registers_personal_assistant_tools_with_governance() -
     assert views["reminder_create"].idempotency_required is True
 
 
+def test_personal_briefing_tool_specs_steer_model_away_from_web_search() -> None:
+    registry = create_default_registry()
+    web_search_description = tool_spec_to_openai_tool(registry.get_spec("web_search"))[
+        "function"
+    ]["description"]
+    calendar_description = tool_spec_to_openai_tool(registry.get_spec("calendar_search"))[
+        "function"
+    ]["description"]
+
+    assert "dedicated tool covers the requested fact" in web_search_description
+    assert "weather, calendar_search, or contacts_search" in web_search_description
+    assert "morning or departure briefings" in calendar_description
+    assert "advising travel timing or conflicts" in calendar_description
+
+
 def test_weather_default_tool_returns_prompt_safe_mock_observation() -> None:
     state = _state("上海天气怎么样")
 
@@ -67,6 +83,20 @@ def test_weather_default_tool_returns_prompt_safe_mock_observation() -> None:
     assert observation.summary == "Weather for Shanghai: clear, 26 C."
     assert observation.structured_output["forecast"][0]["temperature_c"] == 26
     assert "raw" not in str(observation).lower()
+
+
+def test_calendar_search_defaults_empty_query_to_today() -> None:
+    state = _state("帮我看今天日程")
+    executor = ToolExecutor(registry=create_default_registry())
+
+    omitted_query = executor.run_tool(state, "step-1", "calendar_search", {})
+    empty_query = executor.run_tool(state, "step-2", "calendar_search", {"query": ""})
+
+    assert omitted_query.success is True
+    assert omitted_query.data["query_used"] == "today"
+    assert omitted_query.data["events"][0]["title"] == "Product sync"
+    assert empty_query.success is True
+    assert empty_query.data["query_used"] == "today"
 
 
 def test_contacts_search_default_tool_returns_redacted_candidates() -> None:

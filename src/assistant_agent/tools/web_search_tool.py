@@ -15,7 +15,7 @@ from assistant_agent.tools.base import MockTool, ToolContext
 class WebSearchTool(MockTool):
     name = "web_search"
     description = (
-        "Search the web for current, latest, news, or time-sensitive information."
+        "Search public web pages for current facts when no dedicated personal tool covers the request."
     )
     input_schema = WebSearchInput
     output_schema = WebSearchResult

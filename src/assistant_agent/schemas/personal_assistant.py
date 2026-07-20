@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class PersonalAssistantProviderError(BaseModel):
@@ -51,10 +51,23 @@ class WeatherResult(BaseModel):
 class CalendarSearchRequest(BaseModel):
     """Calendar event search input."""
 
-    query: str = Field(min_length=1)
+    query: str = Field(
+        default="today",
+        min_length=1,
+        description="Natural-language calendar query. Defaults to today when omitted.",
+    )
     start_time: str | None = None
     end_time: str | None = None
     limit: int = Field(default=5, ge=1, le=20)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _default_blank_query_to_today(cls, value: Any) -> Any:
+        if value is None:
+            return "today"
+        if isinstance(value, str) and not value.strip():
+            return "today"
+        return value
 
 
 class CalendarEvent(BaseModel):

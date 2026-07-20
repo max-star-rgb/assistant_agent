@@ -60,7 +60,11 @@ class WeatherTool(MockTool):
         approval=ApprovalPolicy(mode="never"),
         execution=ExecutionPolicy(timeout_s=3, retry_count=0, max_result_chars=1600),
         data=DataPolicy(sends_data_external=True, redact_in_trace=True),
-        visibility=VisibilityPolicy(toolset="personal.readonly", tags=["weather", "天气"]),
+        visibility=VisibilityPolicy(
+            toolset="personal.readonly",
+            tags=["weather", "天气"],
+            allowed_entry_profiles=["agent_service"],
+        ),
     )
 
     def __init__(self, adapter: WeatherAdapter | None = None) -> None:
@@ -108,6 +112,7 @@ class CalendarSearchTool(MockTool):
         visibility=VisibilityPolicy(
             toolset="personal.calendar",
             tags=["calendar", "日历", "meeting", "会议"],
+            allowed_entry_profiles=["agent_service"],
         ),
     )
 
@@ -215,7 +220,11 @@ class ContactsSearchTool(MockTool):
             sends_data_external=True,
             redact_in_trace=True,
         ),
-        visibility=VisibilityPolicy(toolset="personal.contacts", tags=["contacts", "联系人"]),
+        visibility=VisibilityPolicy(
+            toolset="personal.contacts",
+            tags=["contacts", "联系人"],
+            allowed_entry_profiles=["agent_service"],
+        ),
     )
 
     def __init__(self, adapter: ContactsAdapter | None = None) -> None:

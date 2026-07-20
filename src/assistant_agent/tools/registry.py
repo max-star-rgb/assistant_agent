@@ -465,10 +465,11 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
     },
     "web_search": {
         "when_to_use": [
-            "Answer current, latest, recent, today, realtime, news, or web lookup requests.",
+            "Answer current, latest, recent, realtime, news, or public web lookup requests when no dedicated tool covers the requested fact.",
             "User explicitly asks to search the web, look up online information, or check current information.",
         ],
         "when_not_to_use": [
+            "User asks for weather, calendar, contacts, commute, morning, or departure briefing facts that can be handled by weather, calendar_search, or contacts_search.",
             "User asks for shopping/product candidates; use product_search instead.",
             "User asks to use saved preferences or prior chats; memory tools may be relevant but do not replace web_search for current facts.",
             "Do not use for ordinary chat or timeless explanations that can be answered from available context.",
@@ -579,10 +580,14 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "reusable",
             "progress_message": "我查一下天气。",
         },
+        "visibility": {
+            "allowed_entry_profiles": ["agent_service"],
+        },
     },
     "calendar_search": {
         "when_to_use": [
             "User asks to inspect calendar events, meetings, free/busy context, or 日程.",
+            "Use for morning or departure briefings to inspect today's personal schedule before advising travel timing or conflicts.",
             "Use before scheduling workflows that need existing events or availability context.",
         ],
         "when_not_to_use": [
@@ -590,7 +595,8 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "User asks for a reminder/todo rather than a calendar event.",
         ],
         "runtime_constraints": [
-            "Requires query, time window, or a clear natural-language calendar search.",
+            "Query may be omitted or blank for today's calendar in morning/departure briefings.",
+            "Use explicit query, time window, or a clear natural-language calendar search when available.",
             "Return prompt-safe event summaries only; do not expose raw provider payloads.",
         ],
         "side_effect": {
@@ -604,6 +610,9 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "realtime_safety": "safe",
             "artifact_reuse": "reusable",
             "progress_message": "我查一下日历。",
+        },
+        "visibility": {
+            "allowed_entry_profiles": ["agent_service"],
         },
     },
     "calendar_create": {
@@ -659,6 +668,9 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "realtime_safety": "safe",
             "artifact_reuse": "reusable",
             "progress_message": "我查一下联系人。",
+        },
+        "visibility": {
+            "allowed_entry_profiles": ["agent_service"],
         },
     },
     "reminder_create": {
