@@ -355,5 +355,4 @@ class RenderedAssistantContext(BaseModel):
 
     prompt_json: str | None = None
     native_user_message: str | None = None
-    final_only_prompt: str | None = None
     sections: list[str] = Field(default_factory=list)

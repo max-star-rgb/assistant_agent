@@ -47,7 +47,6 @@ from assistant_agent.schemas.tool_observation import (
 from assistant_agent.services.tool_policy import max_result_chars_for_registered_tool
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult
-from assistant_agent.services.context.builder import build_assistant_context_pack
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
 from assistant_agent.services.context.prompt_compiler import (
     PromptCompileMode,
@@ -72,6 +71,10 @@ PROVIDER_CONTEXT_OVERFLOW_CODES = {
     "provider_request_too_large",
     "provider_input_size_exceeded",
 }
+MAIN_LLM_NO_ANSWER_MESSAGES = {
+    "provider_timeout": "抱歉，刚才主模型没有及时响应，请再说一遍。",
+    "provider_empty_response": "抱歉，刚才主模型返回为空，请再说一遍。",
+}
 
 
 class AssistantLoopState(TypedDict):
@@ -83,6 +86,7 @@ class AssistantLoopState(TypedDict):
     router: NotRequired[ToolRouter]
     tool_executor: NotRequired[ToolExecutor]
     chat_adapter: NotRequired[ChatAdapter]
+    chat_turn: NotRequired[Any]
     context_compactor: NotRequired[Any]
     context_projector: NotRequired[Any]
     memory_manager: NotRequired[Any]
@@ -92,7 +96,9 @@ class AssistantLoopState(TypedDict):
     trace_store: NotRequired[Any]
     event_sink: NotRequired[Any]
     assistant_decision: NotRequired[AssistantDecision | None]
+    pending_tool_decisions: NotRequired[list[AssistantDecision]]
     assistant_iterations: NotRequired[int]
+    tool_calls_used: NotRequired[int]
     tool_observations: NotRequired[list[dict[str, Any]]]
     current_node_name: NotRequired[str]
     max_tool_iterations: NotRequired[int]
@@ -113,6 +119,40 @@ class AssistantDecisionContext:
     iterations: int
     max_iterations: int
     is_mock: bool
+
+
+class _ResponseDeltaBuffer:
+    """Hold streamed text until the model response is known to be terminal text."""
+
+    def __init__(self, graph_state: AssistantLoopState, *, source: str) -> None:
+        self._event_sink = graph_state.get("event_sink")
+        self._state = graph_state["state"]
+        self._source = source
+        self._events: list[AgentEvent] = []
+
+    @property
+    def enabled(self) -> bool:
+        return self._event_sink is not None
+
+    def emit_delta(self, text: str, payload: dict[str, Any]) -> None:
+        event = stream_delta_to_agent_event(
+            text,
+            payload,
+            session_id=self._state.session_id,
+            run_id=self._state.run_id,
+            source=self._source,
+        )
+        if event is not None:
+            self._events.append(event)
+
+    def flush(self) -> None:
+        if self._event_sink is not None:
+            for event in self._events:
+                self._event_sink.emit(event)
+        self._events.clear()
+
+    def discard(self) -> None:
+        self._events.clear()
 
 
 def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
@@ -190,11 +230,16 @@ def _build_decision_context(
     is_mock: bool,
 ) -> AssistantDecisionContext:
     _project_request_context(graph_state, request)
-    try:
-        tool_specs = _list_tool_specs(graph_state["tool_executor"].registry)
-    except Exception as exc:
+    tool_calls_used = int(graph_state.get("tool_calls_used", len(tool_observations)))
+    if tool_calls_used >= max_iterations:
         tool_specs = []
-        _record_tool_description_error(graph_state, exc)
+        request.metadata["tool_call_budget_exhausted"] = True
+    else:
+        try:
+            tool_specs = _list_tool_specs(graph_state["tool_executor"].registry)
+        except Exception as exc:
+            tool_specs = []
+            _record_tool_description_error(graph_state, exc)
     context_pack = build_traced_assistant_context_pack(
         trace_store=graph_state.get("trace_store"),
         trace_id=graph_state.get("trace_id"),
@@ -257,8 +302,6 @@ def _decide_with_mock_plan(
         state=state,
         outputs_by_step=graph_state["outputs_by_step"],
     )
-    if decision.type == "tool_call" and context.iterations + 1 >= context.max_iterations:
-        return _max_iteration_final_answer(context.max_iterations)
     return decision
 
 
@@ -282,50 +325,65 @@ def _decide_with_llm(
             ),
             context,
         )
-    request = _with_response_stream_callback(
+    request, stream_buffer = _with_buffered_response_stream(
         _build_native_tool_chat_request(context, state),
         graph_state,
-        source="assistant_native_final_answer",
+        source="assistant_langgraph_answer",
     )
-    result = chat_adapter.chat(request)
+    result = _run_chat_turn(graph_state, chat_adapter, request)
     _record_chat_usage_metadata(state, result)
     if _is_provider_context_overflow_result(result) and _can_retry_provider_context_overflow(state):
+        stream_buffer.discard()
         _record_provider_context_overflow(state, result)
         retry_context = _rebuild_context_after_provider_overflow(graph_state, context)
-        retry_request = _with_response_stream_callback(
+        retry_request, stream_buffer = _with_buffered_response_stream(
             _build_native_tool_chat_request(retry_context, state),
             graph_state,
-            source="assistant_native_final_answer",
+            source="assistant_langgraph_answer",
         )
-        result = chat_adapter.chat(retry_request)
+        result = _run_chat_turn(graph_state, chat_adapter, retry_request)
         _record_chat_usage_metadata(state, result)
         context = retry_context
         if _is_provider_context_overflow_result(result):
+            stream_buffer.discard()
             _record_provider_context_overflow(state, result, retry_failed=True)
             return _provider_context_overflow_final_answer(result), context
     if result.success and result.tool_calls:
-        _record_native_tool_call(state, result.tool_calls[0])
-        decision = native_tool_call_to_assistant_decision(result.tool_calls[0])
+        stream_buffer.discard()
+        if not _selected_native_tool_specs(context):
+            state.request.metadata["tool_call_returned_after_budget_exhaustion"] = True
+            return _max_iteration_final_answer(context.max_iterations), context
+        pending_decisions = [
+            native_tool_call_to_assistant_decision(call)
+            for call in result.tool_calls
+        ]
+        _record_native_tool_calls(
+            state,
+            result,
+            iteration=context.iterations,
+        )
+        graph_state["pending_tool_decisions"] = pending_decisions
+        decision = pending_decisions[0]
     elif result.success:
+        stream_buffer.flush()
+        graph_state["pending_tool_decisions"] = []
         decision = _native_final_decision(result)
     else:
+        stream_buffer.discard()
+        graph_state["pending_tool_decisions"] = []
         decision = _native_final_decision(result)
-    if decision.type == "tool_call" and context.iterations + 1 >= context.max_iterations:
-        decision = _request_final_answer_after_tool_limit(
-            chat_adapter=chat_adapter,
-            state=state,
-            request=context.request,
-            memory_text=context.memory_text,
-            observations=context.tool_observations,
-            iteration=context.iterations,
-            max_iterations=context.max_iterations,
-            context_compactor=graph_state.get("context_compactor"),
-            context_projector=graph_state.get("context_projector"),
-        )
-        return decision, context
-    if context.iterations >= context.max_iterations and decision.type == "tool_call":
-        return _max_iteration_final_answer(context.max_iterations), context
     return decision, context
+
+
+def _run_chat_turn(
+    graph_state: AssistantLoopState,
+    chat_adapter: ChatAdapter,
+    request: ChatRequest,
+) -> ChatResult:
+    runner = graph_state.get("chat_turn")
+    if callable(runner):
+        return cast(ChatResult, runner(request))
+    return chat_adapter.chat(request)
 
 
 def _record_chat_usage_metadata(state: AgentState, result: ChatResult) -> None:
@@ -450,6 +508,17 @@ def _chat_adapter_supports_native_tools(chat_adapter: ChatAdapter) -> bool:
 def _native_final_decision(result: ChatResult) -> AssistantDecision:
     """Convert a native provider non-tool response into an internal terminal decision."""
 
+    no_answer_code = next(
+        (error.code for error in result.errors if error.code in MAIN_LLM_NO_ANSWER_MESSAGES),
+        None,
+    )
+    if no_answer_code is not None:
+        return AssistantDecision(
+            type="final_answer",
+            message=MAIN_LLM_NO_ANSWER_MESSAGES[no_answer_code],
+            reason=f"Main LLM returned {no_answer_code} without usable content.",
+            safety_notes=[no_answer_code],
+        )
     if result.refusal:
         return AssistantDecision(
             type="final_answer",
@@ -488,7 +557,7 @@ def _compile_native_tool_chat_request(
     context: AssistantDecisionContext,
     state: AgentState,
 ) -> PromptCompileResult:
-    return PromptCompiler().compile(
+    compilation = PromptCompiler().compile(
         PromptCompileRequest(
             user_id=state.user_id,
             session_id=state.session_id,
@@ -501,6 +570,14 @@ def _compile_native_tool_chat_request(
             native_calls=tuple(_native_tool_calls_from_metadata(state)),
             tool_call_id_prefix="call_",
         )
+    )
+    if compilation.selected_tool_specs:
+        return compilation
+    return PromptCompileResult(
+        chat_request=compilation.chat_request.model_copy(update={"tool_choice": None}),
+        system_instruction=compilation.system_instruction,
+        rendered_context=compilation.rendered_context,
+        selected_tool_specs=compilation.selected_tool_specs,
     )
 
 
@@ -519,10 +596,22 @@ def _build_native_tool_messages(context: AssistantDecisionContext, state: AgentS
     return _compile_native_tool_chat_request(context, state).chat_request.messages
 
 
-def _record_native_tool_call(state: AgentState, call: Any) -> None:
+def _record_native_tool_calls(
+    state: AgentState,
+    result: ChatResult,
+    *,
+    iteration: int,
+) -> None:
     calls = state.request.metadata.setdefault("native_tool_calls", [])
-    if isinstance(calls, list):
-        calls.append(call.model_dump(mode="json"))
+    if not isinstance(calls, list):
+        return
+    turn_id = f"assistant_loop_turn_{iteration + 1}"
+    for call in result.tool_calls:
+        payload = call.model_dump(mode="json")
+        payload["assistant_turn_id"] = turn_id
+        if result.reasoning_content:
+            payload["assistant_reasoning_content"] = result.reasoning_content
+        calls.append(payload)
 
 
 def _native_tool_calls_from_metadata(state: AgentState) -> list[dict[str, Any]]:
@@ -612,6 +701,7 @@ def _apply_terminal_decision(
                     "plan_status": state.plan_status,
                     "current_step_id": state.current_step_id,
                     "plan_revision_count": state.plan_revision_count,
+                    **_fallback_response_data(decision),
                 },
                 followup_question=decision.message if decision.type == "ask_followup" else None,
             )
@@ -624,6 +714,14 @@ def _apply_terminal_decision(
         state.status = "completed"
     elif state.status != "failed":
         state.status = "completed"
+
+
+def _fallback_response_data(decision: AssistantDecision) -> dict[str, Any]:
+    code = next(
+        (note for note in decision.safety_notes if note in MAIN_LLM_NO_ANSWER_MESSAGES),
+        None,
+    )
+    return {"fallback_reason": code} if code is not None else {}
 
 
 def _ensure_rule_plan(graph_state: AssistantLoopState) -> None:
@@ -646,55 +744,6 @@ def _max_iteration_final_answer(max_iterations: int) -> AssistantDecision:
         message=f"已达到最大工具调用次数 ({max_iterations})，这是我能提供的最好回答。",
         reason="安全限制：防止无限工具调用循环",
     )
-
-
-def _request_final_answer_after_tool_limit(
-    *,
-    chat_adapter: ChatAdapter,
-    state: AgentState,
-    request: UserRequest,
-    memory_text: str,
-    observations: list[dict[str, Any]],
-    iteration: int,
-    max_iterations: int,
-    context_compactor: Any | None = None,
-    context_projector: Any | None = None,
-) -> AssistantDecision:
-    """Ask the real assistant to summarize instead of issuing another tool call at the limit."""
-
-    if callable(context_projector):
-        context_projector(request)
-    context_pack = build_assistant_context_pack(
-        state=state,
-        request=request,
-        observations=observations,
-        tool_specs=[],
-        iteration=iteration,
-        max_iterations=max_iterations,
-        memory_text=memory_text,
-        context_compactor=context_compactor,
-    )
-    compilation = PromptCompiler().compile(
-        PromptCompileRequest(
-            user_id=state.user_id,
-            session_id=state.session_id,
-            mode=PromptCompileMode.SUMMARY_FINAL_ONLY,
-            user_query_fallback="unused",
-            profile=SystemPromptProfile.FINAL_ONLY,
-            options=SystemPromptOptions(),
-            context_pack=context_pack,
-            observations=tuple(observations),
-            native_calls=(),
-            tool_call_id_prefix="call_",
-        )
-    )
-    result = chat_adapter.chat(compilation.chat_request)
-    _record_chat_usage_metadata(state, result)
-    if result.success:
-        decision = _native_final_decision(result)
-        if decision.type == "final_answer" and decision.message:
-            return decision
-    return _max_iteration_final_answer(max_iterations)
 
 
 def _mock_assistant_decision_from_plan(
@@ -899,6 +948,18 @@ def _with_response_stream_callback(
     return request.model_copy(update={"stream_callback": callback})
 
 
+def _with_buffered_response_stream(
+    request: ChatRequest,
+    graph_state: AssistantLoopState,
+    *,
+    source: str,
+) -> tuple[ChatRequest, _ResponseDeltaBuffer]:
+    buffer = _ResponseDeltaBuffer(graph_state, source=source)
+    if not buffer.enabled:
+        return request, buffer
+    return request.model_copy(update={"stream_callback": buffer.emit_delta}), buffer
+
+
 def _response_stream_callback(
     graph_state: AssistantLoopState,
     *,
@@ -1073,6 +1134,43 @@ def _fail_plan_mode_transition(graph_state: AssistantLoopState, validation: Plan
 
 
 def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoopState:
+    """Execute the current provider-native tool batch within the run budget."""
+
+    pending = list(graph_state.get("pending_tool_decisions") or [])
+    if not pending:
+        decision = graph_state.get("assistant_decision")
+        pending = [decision] if decision is not None and decision.type == "tool_call" else []
+    if not pending:
+        return graph_state
+
+    current = graph_state
+    max_tool_calls = int(graph_state.get("max_tool_iterations", _get_max_tool_iterations()))
+    tool_calls_used = int(graph_state.get("tool_calls_used", 0))
+    for index, decision in enumerate(pending):
+        if tool_calls_used >= max_tool_calls:
+            skipped = len(pending) - index
+            metadata = current["state"].request.metadata
+            metadata["tool_call_budget_exhausted"] = True
+            metadata["tool_calls_skipped_for_budget"] = (
+                int(metadata.get("tool_calls_skipped_for_budget", 0)) + skipped
+            )
+            break
+        current = _execute_single_requested_tool_node(
+            {
+                **current,
+                "assistant_decision": decision,
+            }
+        )
+        tool_calls_used += 1
+        current["tool_calls_used"] = tool_calls_used
+        if current["state"].status in {"failed", "cancelled"}:
+            break
+
+    current["pending_tool_decisions"] = []
+    return current
+
+
+def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoopState:
     """
     Execute the tool requested by the assistant.
 
@@ -1448,7 +1546,6 @@ def route_after_assistant(graph_state: AssistantLoopState) -> str:
     """
     state = graph_state["state"]
     decision = graph_state.get("assistant_decision")
-    iterations = graph_state.get("assistant_iterations", 0)
 
     if state.status == "failed":
         return "finish"
@@ -1463,8 +1560,6 @@ def route_after_assistant(graph_state: AssistantLoopState) -> str:
         return "apply_plan_mode_transition"
 
     if decision.type == "tool_call":
-        if iterations >= int(graph_state.get("max_tool_iterations", _get_max_tool_iterations())):
-            return "finish"
         if not decision.tool_name:
             return "finish"
         return "execute_tool"

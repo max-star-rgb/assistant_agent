@@ -40,7 +40,7 @@ def build_direct_chat_request(
         session_id=request.session_id,
         user_query=clip_text(request.text or "", max_prompt_chars),
         memory_context=clip_list(contexts, MAX_CONTEXT_CHARS),
-        system_instruction=system_instruction or render_system_instruction(SystemPromptProfile.FINAL_ONLY),
+        system_instruction=system_instruction or render_system_instruction(SystemPromptProfile.TEXT_DEFAULT),
     )
 
 

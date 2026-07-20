@@ -19,6 +19,7 @@ from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.hooks import HookManager, HookTraceStore
 from assistant_agent.services.langfuse_scores import LangfuseScoreTraceObserver
 from assistant_agent.services.otel_exporter import TextOtelTraceObserver
+from assistant_agent.services.otel_mapping import langfuse_trace_id
 from assistant_agent.services.session_store import InMemorySessionStore
 
 
@@ -118,6 +119,13 @@ def test_trace_observer_close_propagates_timeout_budget() -> None:
     assert score_sink.shutdown_timeout == 7.5
 
 
+def test_external_trace_id_maps_to_stable_langfuse_trace_id() -> None:
+    trace_id = langfuse_trace_id("trace_example")
+
+    assert trace_id == "38a6c223d755e35a0593e9ea0b7fdb54"
+    assert len(trace_id) == 32
+
+
 def test_plain_text_run_completes() -> None:
     sink = ListEventSink()
     state = AgentGraphRuntime(
@@ -166,7 +174,7 @@ def test_agent_runtime_system_prompt_is_channel_agnostic() -> None:
 
     prompt = str(adapter.requests[0].messages[0]["content"])
     assert prompt == render_system_instruction(SystemPromptProfile.TEXT_DEFAULT)
-    assert {profile.value for profile in SystemPromptProfile} == {"text_default", "final_only"}
+    assert {profile.value for profile in SystemPromptProfile} == {"text_default"}
     for channel_term in ("电话", "通话", "口语", "口播", "挂断", "TTS", "WebSocket"):
         assert channel_term not in prompt
 
@@ -215,6 +223,77 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
     assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.response is not None
     assert state.response.message == "已完成商品搜索。"
+
+
+def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -> None:
+    tool_call = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="tool_calls",
+        message_kind="tool_call",
+        tool_calls=[
+            NativeToolCall(
+                id="call-budget-1",
+                name="shopping_search",
+                arguments={"query": "通勤耳机", "limit": 2},
+                raw={
+                    "id": "call-budget-1",
+                    "type": "function",
+                    "function": {
+                        "name": "shopping_search",
+                        "arguments": '{"query":"通勤耳机","limit":2}',
+                    },
+                },
+            ),
+            NativeToolCall(
+                id="call-budget-2",
+                name="shopping_search",
+                arguments={"query": "降噪耳机", "limit": 2},
+                raw={
+                    "id": "call-budget-2",
+                    "type": "function",
+                    "function": {
+                        "name": "shopping_search",
+                        "arguments": '{"query":"降噪耳机","limit":2}',
+                    },
+                },
+            ),
+        ],
+    )
+    final_answer = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="stop",
+        message_kind="final_answer",
+        response_text="预算内搜索完成。",
+    )
+    adapter = ScriptedChatAdapter([tool_call, final_answer])
+    sink = ListEventSink()
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            agent_graph_mode="assistant_loop",
+            max_tool_iterations=1,
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=adapter,
+        memory_store=InMemoryStore(),
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(user_id="user-1", session_id="session-1", text="帮我找通勤耳机"),
+        event_sink=sink,
+    )
+
+    assert state.status == "completed"
+    assert state.response is not None and state.response.message == "预算内搜索完成。"
+    assert len(adapter.requests) == 2
+    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
+    assert state.request.metadata["tool_calls_skipped_for_budget"] == 1
+    assert adapter.requests[1].tools == []
+    assert adapter.requests[1].messages[0]["content"] == adapter.requests[0].messages[0]["content"]
+    graph_nodes = [event.node_name for event in sink.events if event.type == "graph_node_started"]
+    assert "agent_graph" in graph_nodes
 
 
 def test_provider_timeout_returns_terminal_retry_response() -> None:

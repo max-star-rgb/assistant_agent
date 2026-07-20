@@ -4,7 +4,7 @@
 
 ## 新对话快速交接
 
-- 默认真实 LLM 运行时是 `AgentGraphRuntime` 内的 provider-native loop；非 mock chat adapter 不再进入 prompt-json 控制面调用。
+- 默认前台运行时统一为 `AgentGraphRuntime` 驱动的 LangGraph assistant loop；真实 LLM 在 assistant node 中使用 provider-native `content` / `tool_calls`，mock/local/offline 在同一图节点中使用 deterministic rule plan。
 - 工具稳定身份由轻量 `ToolManifest` 表达，覆盖默认 public tool name、capability、planner action 和少量 provider binding 事实；工具执行契约仍由 `ToolSpec` 表达，inventory 来源是 `ToolRegistry.list_specs()`；执行边界通过 `ToolRegistry.get_spec()` 读取同一路径生成的单工具契约，并由 `ToolPolicyInterpreter` 编译成只读 `ToolPolicyView`。真实 LLM 路径把 exposed ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
 - `select_prompt_tool_specs()` 会把 registry inventory 装配成 prompt-safe `RunToolSet`，分别记录 registered、qualified、exposed、executable 工具和排除原因。默认按工具分类暴露：`read` 默认暴露；`generate` 默认不按文本暴露，但当前代码配置为可暴露；`write` 默认不暴露，当前只把记忆写入工具 `memory_save` / `memory_media_ingest` 代码配置为可暴露；`dangerous` 默认不暴露。`generate` / `write` 的暴露优先级从低到高是默认不暴露、代码配置可暴露（代码内置或 `configured_tools` / `configured_toolsets`）、结构化显式指定暴露（`enabled_tools` / `enabled_toolsets` / `enabled_skills`）。工具目录不得读取用户话术触发 `generate` 或 `write` 暴露；`dangerous` 只接受结构化显式启用和自身 env/profile gate。provider-native 模型只能执行本轮 `executable_tool_names` 中的工具。
 - Skill capability catalog 可在不改变工具资格的前提下，按显式 `enabled_skills` 或确定性 `skill_recall` 把 prompt-safe skill descriptor 注入上下文；自动召回不会激活 `skill_only` 工具、不会新增 `run_skill`，也不会绕过工具治理链路。结构化 `workflow_skill_v1` 先显式注册进 `WorkflowSkillCatalog`，再由 `WorkflowSkillLauncher` 按 manifest name 启动并交给 `WorkflowSkillRunner` 执行；launcher 可通过 process-local 或 JSONL-backed run store 查询和 resume 运行记录，每个 resumed step 仍先经 `ActionValidator` 再进 `ToolExecutor`。产品化 HTTP 入口默认关闭，只能通过 `scripts/run_server.py --enable-workflow-skills` 或 `MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED=1` 显式启用，并只暴露 manifest list、launch、resume 和 run summary，不提供通用 `run_skill`。
@@ -17,13 +17,13 @@
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
 - 工具 observation 是下一轮 LLM 的数据，不是系统指令；写入 prompt 前会被摘要、脱敏、压缩。不要把 provider raw response、密钥、base64 大 payload 暴露给 assistant context。
 - Provider capability facts live in `src/assistant_agent/schemas/provider_specs.py` as `ProviderSpec.capabilities`; chat adapters read that matrix for native tools, response format, streaming and modality switches instead of maintaining a separate provider table. Adapter factories should prefer `ResolvedProviderSpec.adapter_kind` / `ResolvedProviderSpec.capabilities` and must not maintain parallel provider-name dispatch tables.
-- 当前 native loop 会先对同一轮 provider-native `tool_calls` 做 `ToolScheduler` 预检：明确 read-only、无确认需求、`execution.dependency_mode=independent`、无重复工具名、无资源写入、无 concurrency/resource 冲突且 provider budget 可安全检查的 batch 可以并发执行；`requires_prior_observation`、`terminal`、`needs_confirmation`、`unsafe` 或未知执行属性继续按 provider 顺序串行执行。无论并发或串行，每个工具仍独立进入 `ActionValidator -> ToolExecutor -> ToolRegistry`，并受 `max_tool_iterations` 预算限制。mock/local/offline 仍保留 deterministic rule plan，用于稳定测试和演示。
+- 同一轮 provider-native `tool_calls` 会按 provider 顺序进入 assistant loop 的执行节点；每个调用都独立经过 `ActionValidator -> ToolExecutor -> ToolRegistry`，并按实际处理的调用数消耗 `max_tool_iterations` 预算。mock/local/offline 保留 deterministic rule plan，用于稳定测试和演示。
 
 ## 设计收敛原则
 
 本项目工具系统的主身份是：本地优先、受治理、provider-native 的 assistant tool system。对 Hermes、LangChain、OpenClaw、Claude Code 等外部设计只能分层借鉴，不能按某一套系统整体迁移。
 
-- 不可突破的主干是 `AgentGraphRuntime -> provider-native tool_calls -> AssistantDecision -> ActionValidator -> ToolExecutor -> ToolRegistry -> ToolResult/Observation`。
+- 不可突破的主干是 `AgentGraphRuntime -> LangGraph assistant loop -> provider-native tool_calls/AssistantDecision -> ActionValidator -> ToolExecutor -> ToolRegistry -> ToolResult/Observation`。
 - 借鉴 Hermes 时，只优先吸收低摩擦、低抽象的注册/发现思想；不要引入模块级全局 `registry` 或绕过依赖注入的执行入口。
 - 借鉴 LangChain 时，只保留类型契约、Pydantic schema 和结构化结果这类可测试边界；不要增加 `BaseTool -> StructuredTool -> ToolNode` 式多层抽象。
 - 借鉴 OpenClaw 时，优先吸收权限、审批、side-effect、trace、budget、plugin 安全边界；不要提前建设 npm extension、Canvas、Node 或大插件生态，除非已有明确第三方扩展需求。
@@ -48,50 +48,23 @@
 ```text
 UserRequest
   -> AgentGraphRuntime.run_state
-  -> provider-native runtime loop, if chat adapter is non-mock
-  -> load_memory
-  -> ToolRegistry.list_specs()
-  -> build_assistant_context_pack()
-       -> select_prompt_tool_specs()
-       -> qualify_tool_specs() from runtime facts, tool category, and configured/explicit opt-in
-       -> recall_qualified_tool_specs()  # current implementation: identity
-       -> RunToolSet(registered / qualified / exposed / executable)
-  -> ChatRequest(messages=[...], tools=[...], tool_choice="auto")
-  -> ChatAdapter.chat()
-       ├─ content/refusal
-       │    -> stream response_delta when available
-       │    -> final_response
-       └─ tool_calls[]
-            -> each native tool call normalized to AssistantDecision(type="tool_call")
-            -> ToolScheduler batch precheck through ActionValidator.validate()
-            -> execute read-only independent execution-safe calls concurrently, otherwise serially
-            -> ToolExecutor.run_tool()
-            -> append assistant tool_call + tool observation messages in provider order
-            -> ChatAdapter.chat() again for final content or next tool call
-
-Mock/local/offline compatibility path:
-
-UserRequest
-  -> AgentGraphRuntime.run_state
   -> build_assistant_loop_graph
   -> load_memory
   -> assistant_node
-       -> deterministic rule plan
-       -> AssistantDecision
+       -> build_assistant_context_pack() / governed RunToolSet
+       -> real adapter: ChatRequest(messages=[...], tools=[...])
+       -> mock adapter: deterministic rule plan
+       -> content/refusal or AssistantDecision/tool_calls[]
   -> route_after_assistant
   -> execute_requested_tool_node
-       -> optional plan step check, if local plan state is active
-       -> ActionValidator.validate()
-       -> ToolExecutor.run_tool()
-            -> bind runtime identity
-            -> ProviderCallBudget.check_before_call()
-            -> AgentState.add_tool_call()
-            -> tool_started event / ToolHistoryStore.record_start()
-            -> ToolRegistry.run()
-            -> tool.run(input, ToolContext)
-            -> provider budget record, retry/recovery, events/history/trace
-       -> ToolObservation
-  -> assistant_node again, or compose_response
+       -> provider batch in order, bounded by remaining tool-call budget
+       -> ActionValidator -> ToolExecutor -> ToolRegistry -> tool
+       -> ToolObservation(s)
+  -> assistant_node again
+       -> normal tools while budget remains
+       -> empty tools after budget is exhausted, using the same generic system prompt
+       -> model content/refusal becomes the final answer
+  -> compose_response
   -> save_memory
 ```
 
@@ -106,9 +79,8 @@ the validated rule; no LLM chooses a proactive probe tool in this phase.
 
 相关源码：
 
-- `src/assistant_agent/agent/runtime.py`: 组装 registry、memory manager、chat adapter、tool executor、trace store，并承载真实非 mock provider 的 native content/tool_calls 主循环。
-- `src/assistant_agent/agent/tool_scheduler.py`: provider-native tool batch 的保守调度器；只把明确 read-only、独立、预算安全的 batch 标为 parallel。
-- `src/assistant_agent/agent/assistant_loop_nodes.py`: mock/offline assistant loop、native tool handoff 兼容节点、validator 调用、observation 回传和 loop guard。
+- `src/assistant_agent/agent/runtime.py`: 组装 registry、memory manager、chat adapter、tool executor、trace store，并统一启动 LangGraph workflow；durable task quantum 的单步 provider turn 不是第二套前台 agent loop。
+- `src/assistant_agent/agent/assistant_loop_nodes.py`: 真实与 mock provider 共用的 ReAct 节点、provider-native tool-call 归一化、批次执行、validator 调用、observation 回传和 loop guard。
 - `src/assistant_agent/agent/action_validator.py`: 工具执行前的本地校验边界。
 - `src/assistant_agent/agent/tool_executor.py`: 工具执行、预算、retry/recovery、event/history/trace 的统一边界。
 - `src/assistant_agent/services/tool_manifest.py`: 工具 public name / capability 的轻量身份权威；用于减少工具身份字符串散落。
@@ -376,7 +348,7 @@ MCP `tool_run`、local tools CLI 等显式工具入口不经过 assistant prompt
 
 The default pytest safety net protects one complete provider-native tool-call loop at the public runtime
 boundary. More detailed tool validation is added only for a concrete regression or changed stable contract,
-following `AGENTS.md` `Testing Policy`.
+following `tests/README.md`.
 
 ## ToolExecutor 边界
 
@@ -456,11 +428,11 @@ contract
 
 assistant loop 有本地保护，不依赖模型自律：
 
-- `MAX_TOOL_ITERATIONS` 默认 5；接近上限时会要求模型 final answer，不再继续工具调用。
+- `MAX_TOOL_ITERATIONS` 默认 5，按实际处理的工具调用计数。预算耗尽后，下一次 assistant turn 不再暴露工具，但继续使用同一份通用 system prompt 和已有 observation，请模型自行给出最终回答；若模型仍返回工具调用，runtime 不执行并使用可解释的本地兜底。
 - unknown tool、invalid input、missing required input、render intent 缺失等会触发 rejection guard。
 - 同一工具失败达到阈值会停止重复调用。
 - `image_generation` 和 `render_3d` 是 terminal tools；成功后再次请求同一工具会被阻止并转为 final answer。
-- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词强制改写模型动作。AgentRuntime 默认工具目录只暴露 `shopping_search` 作为购物入口，由该工具内部完成搜索和比价。`shopping_search` 成功后的下一轮切换为 `FINAL_ONLY`，不再暴露工具，避免重复真实 Provider 调用。
+- 商品搜索、购买建议和比价的语义工具选择继续由 LLM 完成，runtime 不因“购买”“比价”等关键词强制改写模型动作。AgentRuntime 默认工具目录只暴露 `shopping_search` 作为购物入口，由该工具内部完成搜索和比价；其后是否继续调用其他可用工具仍由模型在统一 ReAct loop 中判断，并受通用工具预算和 loop guard 约束。
 
 计划状态是本地治理结构，不是生产 runtime 的独立 planner/controller 调用：
 

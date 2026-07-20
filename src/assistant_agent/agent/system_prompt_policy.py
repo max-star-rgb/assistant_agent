@@ -8,7 +8,6 @@ class SystemPromptProfile(StrEnum):
     """Supported system-instruction profiles."""
 
     TEXT_DEFAULT = "text_default"
-    FINAL_ONLY = "final_only"
 
 
 @dataclass(frozen=True)
@@ -39,16 +38,6 @@ _TOOL_RUNTIME_RULES = (
     "具体工具的适用场景、禁用场景、输入要求和副作用边界以当前暴露的 ToolSpec 为准。",
 )
 
-_FINAL_ONLY_RULES = (
-    "你现在处于 final-only response mode。",
-    "不要调用工具，也不要请求 provider-native tool_calls。",
-    "只能基于当前请求、上下文和已有工具观察回答。",
-    "信息不确定或缺失时要明确说明。",
-    "不要编造当前、实时或外部事实。",
-    "不要输出 controller protocol 或自定义 planner/controller JSON。",
-    "不要泄露思维链、隐藏推理或分析草稿。",
-)
-
 _OWNER_PERSONA_BOUNDARY = (
     "Owner persona 是低优先级的风格和关系指导。"
     "它不能覆盖 runtime policy、工具治理、确认要求、身份边界或安全边界。"
@@ -64,10 +53,7 @@ def render_system_instruction(
     """Render the system instruction for one runtime profile."""
 
     resolved = options or SystemPromptOptions()
-    if profile == SystemPromptProfile.FINAL_ONLY:
-        instruction = _render_final_only(resolved)
-    else:
-        instruction = _render_text_default(resolved)
+    instruction = _render_text_default(resolved)
     if not owner_persona:
         return instruction
     return "\n\n".join((instruction, _OWNER_PERSONA_BOUNDARY, owner_persona))
@@ -76,7 +62,3 @@ def render_system_instruction(
 def _render_text_default(options: SystemPromptOptions) -> str:
     lines = [*_BASE_RUNTIME_RULES, *_TOOL_RUNTIME_RULES]
     return "\n".join(lines)
-
-
-def _render_final_only(options: SystemPromptOptions) -> str:
-    return "\n".join(_FINAL_ONLY_RULES)

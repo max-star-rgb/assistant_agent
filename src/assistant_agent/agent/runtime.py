@@ -3,8 +3,6 @@
 import asyncio
 import hashlib
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter, time
@@ -16,7 +14,6 @@ from assistant_agent.agent.conditional_graph import build_conditional_agent_grap
 from assistant_agent.agent.assistant_loop_graph import build_assistant_loop_graph
 from assistant_agent.agent.graph_runtime import GraphRuntimeContext
 from assistant_agent.agent.intent import IntentDetector
-from assistant_agent.agent.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
@@ -25,24 +22,11 @@ from assistant_agent.agent.system_prompt_policy import (
     SystemPromptProfile,
 )
 from assistant_agent.agent.tool_executor import ToolExecutor
-from assistant_agent.agent.memory_tool_selection import (
-    build_memory_tool_selection_audit,
-    record_memory_tool_selection_audit,
-)
 from assistant_agent.agent.provider_streaming import ProviderStreamingTurnRunner, supports_async_streaming_chat
-from assistant_agent.agent.tool_scheduler import (
-    ToolExecutionGroup,
-    build_scheduled_tool_call,
-    plan_tool_schedule,
-)
 from assistant_agent.memory.factory import create_memory_store
 from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.assistant_decision import (
-    AssistantDecision,
-    NativeToolCall,
-    native_tool_call_to_assistant_decision,
-)
+from assistant_agent.schemas.assistant_decision import native_tool_call_to_assistant_decision
 from assistant_agent.schemas.api import api_error_from_agent_error
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.durable_tasks import (
@@ -55,7 +39,6 @@ from assistant_agent.schemas.requests import (
     UserRequest,
     normalize_task_execution_mode,
 )
-from assistant_agent.schemas.tool_observation import observation_from_tool_result, rejected_observation
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.event_sink import EventSink
@@ -68,10 +51,8 @@ from assistant_agent.services.context.compactor import ContextCompactor, create_
 from assistant_agent.services.context.prompt_compiler import (
     PromptCompileMode,
     PromptCompileRequest,
-    PromptCompileResult,
     PromptCompiler,
 )
-from assistant_agent.services.context.report import build_context_report
 from assistant_agent.services.realtime_video_memory import project_realtime_video_context
 from assistant_agent.services.context.soul_source import (
     SOUL_COMPILED_MAX_CHARS,
@@ -82,86 +63,21 @@ from assistant_agent.services.context.sources import (
     ContextSourceCoordinator,
     ContextSourceRequest,
 )
-from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
+from assistant_agent.services.memory_observability import load_memory_with_trace
 from assistant_agent.services.memory_core_status import build_memory_core_status, update_memory_core_status_errors
-from assistant_agent.services.response_observability import append_response_final_event
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
 from assistant_agent.services.tool_history import ToolHistoryStore
-from assistant_agent.services.tool_manifest import (
-    IMAGE_GENERATION_TOOL_NAME,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
-    SHOPPING_SEARCH_TOOL_NAME,
-    VIDEO_UNDERSTANDING_TOOL_NAME,
-    WEB_FETCH_TOOL_NAME,
-    WEB_SEARCH_TOOL_NAME,
-)
-from assistant_agent.services.tool_policy import max_result_chars_for_registered_tool
+from assistant_agent.services.tool_manifest import VIDEO_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.turn_summary import append_runtime_turn_summary
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
-from assistant_agent.tools.registry import ToolRegistry, create_default_registry, tool_execution_policy
+from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 from assistant_agent.tools.task_plan_tool import TaskPlanSubmitTool
 
 if TYPE_CHECKING:
     from assistant_agent.services.durable_tasks.worker import TaskQuantumResult
-
-
-PROGRESS_MESSAGES = {
-    SHOPPING_SEARCH_TOOL_NAME: "我查一下并比一下价格。",
-    IMAGE_UNDERSTANDING_TOOL_NAME: "我看一下。",
-    VIDEO_UNDERSTANDING_TOOL_NAME: "我分析一下。",
-    WEB_SEARCH_TOOL_NAME: "我联网查一下。",
-    WEB_FETCH_TOOL_NAME: "我打开这个网页看一下。",
-    IMAGE_GENERATION_TOOL_NAME: "我开始生成，可能需要一点时间。",
-}
-
-_NATIVE_ASSISTANT_REASONING_CONTENT_KEY = "assistant_reasoning_content"
-_NATIVE_ASSISTANT_TURN_ID_KEY = "assistant_turn_id"
-_MAIN_LLM_NO_ANSWER_ERROR_CODES = frozenset({"provider_timeout", "provider_empty_response"})
-_MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGES = {
-    "provider_timeout": "抱歉，刚才主模型没有及时响应，请再说一遍。",
-    "provider_empty_response": "抱歉，刚才主模型返回为空，请再说一遍。",
-}
-
-
-def progress_message_for_tool(tool_name: str, *, tool_spec: ToolSpec | None = None) -> str:
-    """Return the deterministic user-visible wait message for a tool."""
-
-    policy_message = None
-    if tool_spec is not None:
-        policy_message = tool_spec.execution.progress_message
-    if policy_message is None:
-        policy_message = tool_execution_policy(tool_name).progress_message
-    if policy_message:
-        return policy_message
-    return PROGRESS_MESSAGES.get(tool_name, "我处理一下。")
-
-
-def _shopping_search_completed(state: AgentState) -> bool:
-    return any(
-        result.tool_name == SHOPPING_SEARCH_TOOL_NAME and result.success
-        for result in state.tool_results
-    )
-
-
-@dataclass(frozen=True)
-class _ParallelToolRunResult:
-    call_index: int
-    state: AgentState
-    tool_result: ToolResult
-    events: list[AgentEvent]
-
-
-class _BufferedEventSink:
-    """Collect tool events emitted by an isolated parallel branch."""
-
-    def __init__(self) -> None:
-        self.events: list[AgentEvent] = []
-
-    def emit(self, event: AgentEvent) -> None:
-        self.events.append(event)
 
 
 class AgentGraphRuntime:
@@ -323,7 +239,7 @@ class AgentGraphRuntime:
             status="started",
             attributes={
                 "execution_strategy": state.execution_strategy,
-                "native_runtime": self._should_use_native_runtime(),
+                "execution_engine": "langgraph_assistant_loop",
             },
         )
         request.metadata["memory_core_status"] = build_memory_core_status(
@@ -336,6 +252,7 @@ class AgentGraphRuntime:
             router=self.router,
             tool_executor=tool_executor,
             chat_adapter=self.chat_adapter,
+            chat_turn=self._run_native_chat_turn,
             context_compactor=self.context_compactor,
             context_projector=self._refresh_realtime_video_context,
             memory_manager=self.memory_manager,
@@ -360,41 +277,6 @@ class AgentGraphRuntime:
         else:
             if request.task_execution_mode == "durable" and not self.config.durable_tasks_enabled:
                 _set_durable_tasks_disabled_response(state)
-            elif self._should_use_native_runtime():
-                native_started_at = perf_counter()
-                try:
-                    state = self._run_native_runtime(
-                        request,
-                        state=state,
-                        tool_executor=tool_executor,
-                        event_sink=run_event_sink,
-                    )
-                    raise_if_cancelled(cancel_token, phase="post_native_runtime", state=state)
-                    save_memory_with_trace(
-                        manager=self.memory_manager,
-                        trace_store=self.trace_store,
-                        trace_id=state.trace_id,
-                        node_name="native_runtime",
-                        state=state,
-                        skipped_reason="native_runtime_memory_writes_are_llm_tool_calls",
-                    )
-                except AgentRunCancelled as exc:
-                    if isinstance(exc.state, AgentState):
-                        state = exc.state
-                    state.cancel(exc.message, source=exc.source, details=exc.details)
-                finally:
-                    self._append_observability_event(
-                        state,
-                        canonical_event="native_runtime.finished",
-                        node_name="native_runtime",
-                        status=_phase_status(state.status),
-                        latency_ms=int((perf_counter() - native_started_at) * 1000),
-                        attributes={
-                            "tool_count": len(state.tool_calls),
-                            "error_count": len(state.errors),
-                            "response_present": state.response is not None,
-                        },
-                    )
             else:
                 self._emit(
                     AgentEvent(
@@ -559,7 +441,7 @@ class AgentGraphRuntime:
             request.metadata.get("durable_task_snapshot")
         )
         state = AgentState.from_request(request)
-        state.request.metadata["native_runtime"] = True
+        state.request.metadata["durable_task_quantum"] = True
         tool_executor = ToolExecutor(
             registry=self.registry,
             tool_history=self.tool_history,
@@ -581,22 +463,14 @@ class AgentGraphRuntime:
                 state=state,
                 request=request,
             )
-            chat_request = self._native_runtime_chat_request(
-                request,
-                state=state,
-                observations=[],
-                native_calls=[],
-                stream_callback=None,
-                iteration=0,
-                max_iterations=1,
-            )
+            chat_request = self._durable_quantum_chat_request(request, state=state)
             if chat_request is None:
                 return TaskQuantumResult(
                     TaskCheckpoint(kind="failed", error_code="tool_schema_unavailable"),
                     state,
                 )
             result = self._run_native_chat_turn(chat_request)
-            self._record_native_runtime_chat_call(state, request, result)
+            self._record_provider_chat_call(state, request, result)
             if not result.success:
                 message = result.errors[0].message if result.errors else "Provider call failed."
                 return TaskQuantumResult(
@@ -761,574 +635,66 @@ class AgentGraphRuntime:
                 state,
             )
 
-    def _should_use_native_runtime(self) -> bool:
-        """Use provider-native content/tool_calls for every non-mock runtime run."""
-
-        return not _is_mock_chat_adapter(self.chat_adapter)
-
     def _run_native_chat_turn(self, chat_request: ChatRequest) -> ChatResult:
         if self.config.native_provider_streaming and supports_async_streaming_chat(self.chat_adapter):
             return ProviderStreamingTurnRunner().run_turn(self.chat_adapter, chat_request)
         return self.chat_adapter.chat(chat_request)
 
-    def _plan_native_tool_schedule(
-        self,
-        tool_calls: list[Any],
-        *,
-        request: UserRequest,
-        state: AgentState,
-        remaining_tool_budget: int,
-    ):
-        scheduled_calls = []
-        specs_by_name = {spec.name: spec for spec in self.registry.list_specs()}
-        for call_index, call in enumerate(tool_calls):
-            decision = native_tool_call_to_assistant_decision(call)
-            validation_started_at = perf_counter()
-            validation = ActionValidator().validate(
-                decision=decision,
-                registry=self.registry,
-                request=request,
-                state=state,
-            )
-            validation_latency_ms = int((perf_counter() - validation_started_at) * 1000)
-            scheduled_calls.append(
-                build_scheduled_tool_call(
-                    call_index=call_index,
-                    decision=decision,
-                    validation=validation,
-                    validation_latency_ms=validation_latency_ms,
-                    native_call_id=call.id,
-                    tool_spec=specs_by_name.get(decision.tool_name or ""),
-                )
-            )
-            if not validation.accepted:
-                break
-
-        schedule = plan_tool_schedule(
-            scheduled_calls,
-            remaining_tool_budget=remaining_tool_budget,
-            provider_budget_parallel_safe=_native_provider_budget_parallel_safe(state, len(scheduled_calls)),
-        )
-        schedule_metadata = schedule.to_metadata()
-        state.request.metadata.setdefault("native_tool_schedules", []).append(schedule_metadata)
-        state.request.metadata["last_native_tool_schedule"] = schedule_metadata
-        return schedule
-
-    def _run_native_parallel_tool_group(
+    def _durable_quantum_chat_request(
         self,
         request: UserRequest,
         *,
         state: AgentState,
-        tool_executor: ToolExecutor,
-        event_sink: EventSink | None,
-        result: ChatResult,
-        group: ToolExecutionGroup,
-        observations: list[dict[str, Any]],
-        native_calls: list[dict[str, Any]],
-        iteration: int,
-        max_iterations: int,
-    ) -> AgentState | None:
-        observation_start_index = len(observations)
-        step_ids: dict[int, str] = {}
-        for group_index, scheduled_call in enumerate(group.calls):
-            call = result.tool_calls[scheduled_call.call_index]
-            native_calls.append(
-                _native_tool_call_replay_payload(
-                    call,
-                    result=result,
-                    iteration=iteration,
-                )
-            )
-            state.request.metadata.setdefault("native_tool_calls", []).append(
-                _native_tool_call_public_payload(call)
-            )
-            _record_native_tool_call_preamble(
-                state,
-                tool_name=call.name,
-                content=result.response_text,
-            )
-            decision = scheduled_call.decision
-            _record_native_decision_metadata(
-                state,
-                request=request,
-                decision=decision,
-                iteration=iteration,
-                max_iterations=max_iterations,
-                safety_notes=["native_tool_call"],
-            )
-            self._append_observability_event(
-                state,
-                canonical_event="react.decision",
-                node_name="native_runtime",
-                status=decision.type,
-                tool_name=decision.tool_name,
-                attributes={
-                    "iteration": iteration + 1,
-                    "batch_index": scheduled_call.call_index + 1,
-                    "batch_size": len(result.tool_calls),
-                    "decision_type": decision.type,
-                    "reason": decision.reason,
-                    "safety_notes": decision.safety_notes,
-                    "tool_schedule_mode": group.mode,
-                    "tool_schedule_reason": group.reason,
-                },
-            )
-            validation = scheduled_call.validation
-            state.request.metadata["last_action_validator"] = validation.model_dump(mode="json")
-            self._append_observability_event(
-                state,
-                canonical_event="action.validation.finished",
-                node_name="native_runtime",
-                status="accepted",
-                tool_name=decision.tool_name,
-                latency_ms=scheduled_call.validation_latency_ms,
-                attributes={
-                    **validation.model_dump(mode="json"),
-                    "batch_index": scheduled_call.call_index + 1,
-                    "batch_size": len(result.tool_calls),
-                    "tool_schedule_mode": group.mode,
-                    "tool_schedule_reason": group.reason,
-                },
-            )
-            _emit_native_tool_progress_message(
-                state,
-                tool_name=decision.tool_name or call.name,
-                event_sink=event_sink,
-                tool_spec=scheduled_call.tool_spec,
-            )
-            step_ids[scheduled_call.call_index] = (
-                decision.step_id or f"native_runtime_{observation_start_index + group_index + 1}"
-            )
-
-        base_tool_call_count = len(state.tool_calls)
-        base_tool_result_count = len(state.tool_results)
-        base_error_count = len(state.errors)
-        base_provider_call_count = len(state.provider_budget.call_records)
-        tool_results: dict[int, _ParallelToolRunResult] = {}
-        with ThreadPoolExecutor(
-            max_workers=len(group.calls),
-            thread_name_prefix="native_tool_scheduler",
-        ) as executor:
-            future_to_call = {
-                executor.submit(
-                    _run_native_parallel_tool_call,
-                    tool_executor,
-                    state.model_copy(deep=True),
-                    scheduled_call,
-                    step_ids[scheduled_call.call_index],
-                    trace_store=self.trace_store,
-                    trace_id=state.trace_id,
-                ): scheduled_call
-                for scheduled_call in group.calls
-            }
-            for future in as_completed(future_to_call):
-                scheduled_call = future_to_call[future]
-                tool_results[scheduled_call.call_index] = future.result()
-
-        _merge_native_parallel_state_records(
-            state,
-            base_tool_call_count=base_tool_call_count,
-            base_tool_result_count=base_tool_result_count,
-            base_error_count=base_error_count,
-            base_provider_call_count=base_provider_call_count,
-            ordered_results=[tool_results[scheduled_call.call_index] for scheduled_call in group.calls],
-        )
-        _replay_native_parallel_events(
-            [tool_results[scheduled_call.call_index] for scheduled_call in group.calls],
-            event_sink=event_sink,
-        )
-
-        for scheduled_call in group.calls:
-            tool_result = tool_results[scheduled_call.call_index].tool_result
-            observation = observation_from_tool_result(
-                tool_result,
-                request_text=request.text,
-                prior_observations=observations,
-                max_result_chars=max_result_chars_for_registered_tool(
-                    self.registry,
-                    tool_result.tool_name,
-                ),
-            ).model_dump(mode="json")
-            observations.append(observation)
-            state.request.metadata["native_runtime_observations"] = observations
-            _record_native_observation_metadata(state, observation)
-            _append_native_tool_observation_event(self, state, observation)
-
-        if state.status == "failed":
-            return state
-        if len(observations) >= max_iterations:
-            if self._request_native_final_answer_after_tool_limit(
-                request,
-                state=state,
-                observations=observations,
-                native_calls=native_calls,
-                event_sink=event_sink,
-                iteration=iteration,
-                max_iterations=max_iterations,
-            ):
-                return state
-            self._set_native_runtime_max_iteration_response(
-                state,
-                observations=observations,
-                max_iterations=max_iterations,
-            )
-            return state
-        return None
-
-    def _run_native_runtime(
-        self,
-        request: UserRequest,
-        *,
-        state: AgentState,
-        tool_executor: ToolExecutor,
-        event_sink: EventSink | None,
-    ) -> AgentState:
-        """Run provider-native content/tool_calls before entering the graph."""
-
-        if not _chat_adapter_supports_native_tools(self.chat_adapter):
-            _set_native_tooling_unsupported_response(state, self.chat_adapter)
-            return state
-
-        state.request.metadata["native_runtime"] = True
-        state.request.metadata.setdefault("assistant_loop_steps", [])
-        state.request.metadata["auto_task_summary_memory"] = {
-            "skipped": True,
-            "reason": "native_runtime_memory_writes_are_llm_tool_calls",
-        }
-        load_memory_with_trace(
-            manager=self.memory_manager,
-            trace_store=self.trace_store,
-            trace_id=state.trace_id,
-            node_name="native_runtime",
-            state=state,
-            request=request,
-        )
-
-        observations: list[dict[str, Any]] = []
-        native_calls: list[dict[str, Any]] = []
-        max_iterations = max(1, self.config.max_tool_iterations)
-        for iteration in range(max_iterations):
-            stream_buffer = (
-                _NativeRuntimeResponseBuffer(state, event_sink)
-                if event_sink is not None and _response_streaming_enabled(request)
-                else None
-            )
-            stream_callback = (
-                stream_buffer.emit_delta
-                if stream_buffer is not None
-                else (
-                    _native_runtime_stream_callback(state, event_sink)
-                    if _response_streaming_enabled(request)
-                    else None
-                )
-            )
-            chat_request = self._native_runtime_chat_request(
-                request,
-                state=state,
-                observations=observations,
-                native_calls=native_calls,
-                stream_callback=stream_callback,
-                iteration=iteration,
-                max_iterations=max_iterations,
-            )
-            if chat_request is None:
-                return state
-            chat_started_at = perf_counter()
-            result = self._run_native_chat_turn(chat_request)
-            chat_wall_latency_ms = int((perf_counter() - chat_started_at) * 1000)
-            self._record_native_runtime_chat_call(state, request, result)
-            self._append_observability_event(
-                state,
-                canonical_event="llm.chat.finished",
-                node_name="native_runtime",
-                status="succeeded" if result.success else "failed",
-                provider=result.provider,
-                model=result.model,
-                latency_ms=result.latency_ms,
-                attributes={
-                    "iteration": iteration + 1,
-                    "message_kind": result.message_kind,
-                    "finish_reason": result.finish_reason,
-                    "tool_call_count": len(result.tool_calls),
-                    "provider_latency_ms": result.latency_ms,
-                    "wall_latency_ms": chat_wall_latency_ms,
-                    "usage": result.usage,
-                },
-                error=_chat_result_error(result),
-            )
-            if _main_llm_no_answer_error(result) is not None:
-                if stream_buffer is not None:
-                    stream_buffer.discard()
-                self._set_native_runtime_no_answer_fallback_response(
-                    state,
-                    result,
-                    observations=observations,
-                    iteration=iteration,
-                    max_iterations=max_iterations,
-                )
-                return state
-            if result.success and result.tool_calls:
-                if stream_buffer is not None:
-                    stream_buffer.discard()
-                if _invalid_durable_plan_batch(result.tool_calls):
-                    _set_durable_plan_batch_rejection_response(state)
-                    return state
-                schedule = self._plan_native_tool_schedule(
-                    result.tool_calls,
-                    request=request,
-                    state=state,
-                    remaining_tool_budget=max_iterations - len(observations),
-                )
-                if _native_schedule_is_parallel(schedule):
-                    parallel_result = self._run_native_parallel_tool_group(
-                        request,
-                        state=state,
-                        tool_executor=tool_executor,
-                        event_sink=event_sink,
-                        result=result,
-                        group=schedule.groups[0],
-                        observations=observations,
-                        native_calls=native_calls,
-                        iteration=iteration,
-                        max_iterations=max_iterations,
-                    )
-                    if parallel_result is not None:
-                        return parallel_result
-                    continue
-                scheduled_by_index = {
-                    scheduled_call.call_index: scheduled_call
-                    for group in schedule.groups
-                    for scheduled_call in group.calls
-                }
-                for call_index, call in enumerate(result.tool_calls):
-                    if len(observations) >= max_iterations:
-                        self._record_native_tool_calls_skipped_for_budget(
-                            state,
-                            skipped_count=len(result.tool_calls) - call_index,
-                        )
-                        if self._request_native_final_answer_after_tool_limit(
-                            request,
-                            state=state,
-                            observations=observations,
-                            native_calls=native_calls,
-                            event_sink=event_sink,
-                            iteration=iteration,
-                            max_iterations=max_iterations,
-                        ):
-                            return state
-                        self._set_native_runtime_max_iteration_response(
-                            state,
-                            observations=observations,
-                            max_iterations=max_iterations,
-                        )
-                        return state
-
-                    native_calls.append(
-                        _native_tool_call_replay_payload(
-                            call,
-                            result=result,
-                            iteration=iteration,
-                        )
-                    )
-                    state.request.metadata.setdefault("native_tool_calls", []).append(
-                        _native_tool_call_public_payload(call)
-                    )
-                    _record_native_tool_call_preamble(state, tool_name=call.name, content=result.response_text)
-                    decision = native_tool_call_to_assistant_decision(call)
-                    _record_native_decision_metadata(
-                        state,
-                        request=request,
-                        decision=decision,
-                        iteration=iteration,
-                        max_iterations=max_iterations,
-                        safety_notes=["native_tool_call"],
-                    )
-                    self._append_observability_event(
-                        state,
-                        canonical_event="react.decision",
-                        node_name="native_runtime",
-                        status=decision.type,
-                        tool_name=decision.tool_name,
-                        attributes={
-                            "iteration": iteration + 1,
-                            "batch_index": call_index + 1,
-                            "batch_size": len(result.tool_calls),
-                            "decision_type": decision.type,
-                            "reason": decision.reason,
-                            "safety_notes": decision.safety_notes,
-                        },
-                    )
-                    validation_started_at = perf_counter()
-                    validation = ActionValidator().validate(
-                        decision=decision,
-                        registry=self.registry,
-                        request=request,
-                        state=state,
-                    )
-                    validation_latency_ms = int((perf_counter() - validation_started_at) * 1000)
-                    scheduled_call = scheduled_by_index.get(call_index)
-                    if scheduled_call is not None:
-                        validation_latency_ms += scheduled_call.validation_latency_ms
-                    state.request.metadata["last_action_validator"] = validation.model_dump(mode="json")
-                    self._append_observability_event(
-                        state,
-                        canonical_event="action.validation.finished",
-                        node_name="native_runtime",
-                        status="accepted" if validation.accepted else "rejected",
-                        tool_name=decision.tool_name,
-                        latency_ms=validation_latency_ms,
-                        attributes={
-                            **validation.model_dump(mode="json"),
-                            "batch_index": call_index + 1,
-                            "batch_size": len(result.tool_calls),
-                        },
-                        error={"code": validation.code, "message": validation.message} if not validation.accepted else None,
-                    )
-                    if not validation.accepted:
-                        observation = rejected_observation(
-                            tool_name=decision.tool_name or "unknown",
-                            error_code=validation.code,
-                            error_message=validation.message,
-                        ).model_dump(mode="json")
-                        observations.append(observation)
-                        state.request.metadata["native_runtime_observations"] = observations
-                        _record_native_observation_metadata(state, observation)
-                        _append_native_tool_observation_event(self, state, observation)
-                        _set_native_validation_rejection_response(state, validation.model_dump(mode="json"))
-                        return state
-
-                    _emit_native_tool_progress_message(
-                        state,
-                        tool_name=decision.tool_name or call.name,
-                        event_sink=event_sink,
-                        tool_spec=(
-                            scheduled_by_index[call_index].tool_spec
-                            if call_index in scheduled_by_index
-                            else None
-                        ),
-                    )
-                    tool_result = tool_executor.run_tool(
-                        state,
-                        decision.step_id or f"native_runtime_{len(observations) + 1}",
-                        decision.tool_name or "",
-                        decision.tool_input or {},
-                        trace_store=self.trace_store,
-                        trace_id=state.trace_id,
-                        node_name="native_runtime",
-                    )
-                    observation = observation_from_tool_result(
-                        tool_result,
-                        request_text=request.text,
-                        prior_observations=observations,
-                        max_result_chars=max_result_chars_for_registered_tool(
-                            self.registry,
-                            tool_result.tool_name,
-                        ),
-                    ).model_dump(mode="json")
-                    observations.append(observation)
-                    state.request.metadata["native_runtime_observations"] = observations
-                    _record_native_observation_metadata(state, observation)
-                    _append_native_tool_observation_event(self, state, observation)
-                    if tool_result.success and tool_result.tool_name == "task_plan_submit":
-                        _set_durable_task_accepted_response(state, tool_result)
-                        return state
-                    if state.status == "failed":
-                        return state
-                    if len(observations) >= max_iterations:
-                        remaining_calls = len(result.tool_calls) - call_index - 1
-                        if remaining_calls:
-                            self._record_native_tool_calls_skipped_for_budget(
-                                state,
-                                skipped_count=remaining_calls,
-                            )
-                        if self._request_native_final_answer_after_tool_limit(
-                            request,
-                            state=state,
-                            observations=observations,
-                            native_calls=native_calls,
-                            event_sink=event_sink,
-                            iteration=iteration,
-                            max_iterations=max_iterations,
-                        ):
-                            return state
-                        self._set_native_runtime_max_iteration_response(
-                            state,
-                            observations=observations,
-                            max_iterations=max_iterations,
-                        )
-                        return state
-                continue
-
-            if stream_buffer is not None:
-                stream_buffer.flush()
-            self._set_native_runtime_response(state, result, observations)
-            return state
-
-        self._set_native_runtime_max_iteration_response(
-            state,
-            observations=observations,
-            max_iterations=max_iterations,
-        )
-        return state
-
-    def _native_runtime_chat_request(
-        self,
-        request: UserRequest,
-        *,
-        state: AgentState,
-        observations: list[dict[str, Any]],
-        native_calls: list[dict[str, Any]],
-        stream_callback: Any | None,
-        iteration: int,
-        max_iterations: int,
     ) -> ChatRequest | None:
+        """Build the single provider turn used by one durable-task quantum."""
+
         self._refresh_realtime_video_context(request)
-        profile = _system_prompt_profile_from_request(request)
-        if profile != SystemPromptProfile.FINAL_ONLY and _shopping_search_completed(state):
-            profile = SystemPromptProfile.FINAL_ONLY
-        tool_specs = [] if profile == SystemPromptProfile.FINAL_ONLY else _native_runtime_tool_specs(self.registry, state)
+        tool_specs = _durable_quantum_tool_specs(self.registry, state)
         if tool_specs is None:
             return None
         context_pack = build_traced_assistant_context_pack(
             trace_store=self.trace_store,
             trace_id=state.trace_id,
-            node_name="native_runtime",
+            node_name="durable_task_quantum",
             state=state,
             request=request,
-            observations=observations,
+            observations=[],
             tool_specs=tool_specs,
-            iteration=iteration,
-            max_iterations=max_iterations,
+            iteration=0,
+            max_iterations=1,
             context_compactor=None,
-        )
-        mode = (
-            PromptCompileMode.NATIVE_FINAL_ONLY
-            if profile == SystemPromptProfile.FINAL_ONLY
-            else PromptCompileMode.NATIVE_TOOL
         )
         compilation = PromptCompiler().compile(
             PromptCompileRequest(
                 user_id=state.user_id,
                 session_id=state.session_id,
-                mode=mode,
-                user_query_fallback="native runtime assistant turn",
-                profile=profile,
+                mode=PromptCompileMode.NATIVE_TOOL,
+                user_query_fallback="durable task quantum",
+                profile=SystemPromptProfile.TEXT_DEFAULT,
                 options=_system_prompt_options_from_request(request),
                 context_pack=context_pack,
-                observations=tuple(observations),
-                native_calls=tuple(native_calls),
-                tool_call_id_prefix="native_runtime_call_",
-                stream_callback=stream_callback,
+                observations=(),
+                native_calls=(),
+                tool_call_id_prefix="durable_task_call_",
             )
         )
-        self._record_native_runtime_context_report(
-            state,
-            context_pack=context_pack,
-            compilation=compilation,
-            iteration=iteration,
-            max_iterations=max_iterations,
-        )
         return compilation.chat_request
+
+    def _record_provider_chat_call(
+        self,
+        state: AgentState,
+        request: UserRequest,
+        result: ChatResult,
+    ) -> None:
+        state.provider_budget.record_call(
+            run_id=state.run_id,
+            capability="direct_chat" if not result.tool_calls else "assistant_native_tool_call",
+            provider=result.provider,
+            model=result.model,
+            input_size_bytes=len((request.text or "").encode("utf-8")),
+            latency_ms=result.latency_ms,
+            status="succeeded" if result.success else "failed",
+        )
 
     def _refresh_realtime_video_context(self, request: UserRequest) -> None:
         """Refresh the passive rolling snapshot immediately before context build."""
@@ -1353,406 +719,6 @@ class AgentGraphRuntime:
         )
         request.metadata["realtime_video_context"] = context.model_dump(mode="json")
         request.metadata["realtime_video_context_trusted"] = True
-
-    def _request_native_final_answer_after_tool_limit(
-        self,
-        request: UserRequest,
-        *,
-        state: AgentState,
-        observations: list[dict[str, Any]],
-        native_calls: list[dict[str, Any]],
-        event_sink: EventSink | None,
-        iteration: int,
-        max_iterations: int,
-    ) -> bool:
-        stream_callback = (
-            _native_runtime_stream_callback(state, event_sink)
-            if _response_streaming_enabled(request)
-            else None
-        )
-        chat_request = self._native_runtime_final_only_chat_request(
-            request,
-            state=state,
-            observations=observations,
-            native_calls=native_calls,
-            stream_callback=stream_callback,
-            iteration=iteration,
-            max_iterations=max_iterations,
-        )
-        chat_started_at = perf_counter()
-        result = self._run_native_chat_turn(chat_request)
-        chat_wall_latency_ms = int((perf_counter() - chat_started_at) * 1000)
-        self._record_native_runtime_chat_call(
-            state,
-            request,
-            result,
-            capability="direct_chat",
-        )
-        self._append_observability_event(
-            state,
-            canonical_event="llm.chat.finished",
-            node_name="native_runtime",
-            status="succeeded" if result.success else "failed",
-            provider=result.provider,
-            model=result.model,
-            latency_ms=result.latency_ms,
-            attributes={
-                "iteration": iteration + 2,
-                "max_iterations": max_iterations,
-                "final_only_handoff": True,
-                "message_kind": result.message_kind,
-                "finish_reason": result.finish_reason,
-                "tool_call_count": len(result.tool_calls),
-                "provider_latency_ms": result.latency_ms,
-                "wall_latency_ms": chat_wall_latency_ms,
-                "usage": result.usage,
-            },
-            error=_chat_result_error(result),
-        )
-        no_answer_error = _main_llm_no_answer_error(result)
-        if no_answer_error is not None:
-            metadata = state.request.metadata
-            metadata["native_runtime_final_only_handoff_failed"] = True
-            metadata["native_runtime_final_only_error_code"] = no_answer_error.code
-            return False
-        if result.success and not result.tool_calls:
-            self._set_native_runtime_response(state, result, observations)
-            if state.response is not None:
-                state.response.data["final_only_handoff"] = True
-            return True
-
-        metadata = state.request.metadata
-        if result.tool_calls:
-            metadata["native_runtime_final_only_returned_tool_call"] = True
-            metadata["native_runtime_final_only_handoff_failed"] = False
-        else:
-            metadata["native_runtime_final_only_handoff_failed"] = True
-        if result.errors:
-            metadata["native_runtime_final_only_error_code"] = result.errors[0].code
-        return False
-
-    def _native_runtime_final_only_chat_request(
-        self,
-        request: UserRequest,
-        *,
-        state: AgentState,
-        observations: list[dict[str, Any]],
-        native_calls: list[dict[str, Any]],
-        stream_callback: Any | None,
-        iteration: int,
-        max_iterations: int,
-    ) -> ChatRequest:
-        self._refresh_realtime_video_context(request)
-        context_pack = build_traced_assistant_context_pack(
-            trace_store=self.trace_store,
-            trace_id=state.trace_id,
-            node_name="native_runtime",
-            state=state,
-            request=request,
-            observations=observations,
-            tool_specs=[],
-            iteration=iteration + 1,
-            max_iterations=max_iterations,
-            context_compactor=None,
-        )
-        compilation = PromptCompiler().compile(
-            PromptCompileRequest(
-                user_id=state.user_id,
-                session_id=state.session_id,
-                mode=PromptCompileMode.NATIVE_FINAL_ONLY,
-                user_query_fallback="native runtime final answer",
-                profile=SystemPromptProfile.FINAL_ONLY,
-                options=_system_prompt_options_from_request(request),
-                context_pack=context_pack,
-                observations=tuple(observations),
-                native_calls=tuple(native_calls),
-                tool_call_id_prefix="native_runtime_call_",
-                stream_callback=stream_callback,
-            )
-        )
-        self._record_native_runtime_context_report(
-            state,
-            context_pack=context_pack,
-            compilation=compilation,
-            iteration=iteration + 1,
-            max_iterations=max_iterations,
-        )
-        return compilation.chat_request
-
-    def _record_native_runtime_context_report(
-        self,
-        state: AgentState,
-        *,
-        context_pack: Any,
-        compilation: PromptCompileResult,
-        iteration: int,
-        max_iterations: int,
-    ) -> None:
-        report = build_context_report(
-            context_pack,
-            system_prompt=compilation.system_instruction,
-            selected_tool_specs=list(compilation.selected_tool_specs),
-        ).model_dump(mode="json")
-        state.request.metadata["last_context_report_v1"] = report
-        self._append_observability_event(
-            state,
-            canonical_event="context.report",
-            node_name="native_runtime",
-            status="succeeded",
-            attributes={
-                "iteration": iteration + 1,
-                "max_iterations": max_iterations,
-                "selected_tool_count": len(compilation.selected_tool_specs),
-                "compression_stage": report.get("compression_stage"),
-            },
-            output_summary={"context_report_v1": report},
-        )
-
-    def _record_native_runtime_chat_call(
-        self,
-        state: AgentState,
-        request: UserRequest,
-        result: Any,
-        *,
-        capability: str | None = None,
-    ) -> None:
-        state.provider_budget.record_call(
-            run_id=state.run_id,
-            capability=capability or ("direct_chat" if not result.tool_calls else "assistant_native_tool_call"),
-            provider=result.provider,
-            model=result.model,
-            input_size_bytes=len((request.text or "").encode("utf-8")),
-            latency_ms=result.latency_ms,
-            status="succeeded" if result.success else "failed",
-        )
-
-    def _set_native_runtime_no_answer_fallback_response(
-        self,
-        state: AgentState,
-        result: Any,
-        *,
-        observations: list[dict[str, Any]],
-        iteration: int,
-        max_iterations: int,
-    ) -> None:
-        response_started_at = perf_counter()
-        error = _main_llm_no_answer_error(result)
-        errors = [_chat_error_dump(item) for item in getattr(result, "errors", [])]
-        code = getattr(error, "code", "provider_unknown_error")
-        fallback_message = _main_llm_no_answer_fallback_message(code)
-        recoverable = True
-        metadata = state.request.metadata
-        metadata["native_runtime_main_llm_no_answer_fallback"] = True
-        metadata["native_runtime_main_llm_no_answer_error_code"] = code
-        details = {
-            "code": code,
-            "retryable": recoverable,
-            "recoverable": recoverable,
-            "main_llm_no_answer_fallback": True,
-            "errors": errors,
-        }
-        state.errors.append(
-            AgentError(
-                message="主 LLM 未返回可用回答，已提示用户重试。",
-                source="native_runtime",
-                details=details,
-            )
-        )
-        decision = AssistantDecision(
-            type="final_answer",
-            message=fallback_message,
-            reason="main_llm_no_answer_fallback",
-            safety_notes=["main_llm_no_answer_fallback"],
-        )
-        _record_native_decision_metadata(
-            state,
-            request=state.request,
-            decision=decision,
-            iteration=iteration,
-            max_iterations=max_iterations,
-            safety_notes=decision.safety_notes,
-        )
-        self._append_observability_event(
-            state,
-            canonical_event="react.decision",
-            node_name="native_runtime",
-            status=decision.type,
-            attributes={
-                "iteration": iteration + 1,
-                "decision_type": decision.type,
-                "reason": decision.reason,
-                "message_present": True,
-                "safety_notes": decision.safety_notes,
-                "error_code": code,
-            },
-        )
-        state.set_response(
-            AgentResponse(
-                message=fallback_message,
-                data={
-                    "native_runtime": True,
-                    "main_llm_no_answer_fallback": True,
-                    "fallback_reason": code,
-                    "provider": result.provider,
-                    "model": result.model,
-                    "usage": result.usage,
-                    "finish_reason": result.finish_reason,
-                    "message_kind": result.message_kind,
-                    "tool_count": len(state.tool_calls),
-                    "tool_observations": len(observations),
-                    "errors": errors,
-                    "provider_budget": state.provider_budget.summary(),
-                },
-            )
-        )
-        append_response_final_event(
-            trace_store=self.trace_store,
-            trace_id=state.trace_id,
-            node_name="native_runtime",
-            state=state,
-            source="native_runtime",
-            latency_ms=int((perf_counter() - response_started_at) * 1000),
-        )
-
-    def _set_native_runtime_response(
-        self,
-        state: AgentState,
-        result: Any,
-        observations: list[dict[str, Any]],
-    ) -> None:
-        response_started_at = perf_counter()
-        errors = [error.model_dump(mode="json") for error in result.errors]
-        if not result.success:
-            first_error = result.errors[0] if result.errors else None
-            message = (
-                f"处理失败：{first_error.code}: {first_error.message}"
-                if first_error is not None
-                else "处理失败：provider returned an error."
-            )
-            details: dict[str, Any] = {"errors": errors}
-            if first_error is not None:
-                details["code"] = first_error.code
-                details["retryable"] = first_error.recoverable
-            state.errors.append(
-                AgentError(
-                    message=message,
-                    source="native_runtime",
-                    details=details,
-                )
-            )
-            state.response = AgentResponse(
-                message=message,
-                data={
-                    "native_runtime": True,
-                    "provider": result.provider,
-                    "model": result.model,
-                    "errors": errors,
-                    "provider_budget": state.provider_budget.summary(),
-                },
-            )
-            state.status = "failed"
-            append_response_final_event(
-                trace_store=self.trace_store,
-                trace_id=state.trace_id,
-                node_name="native_runtime",
-                state=state,
-                source="native_runtime",
-                latency_ms=int((perf_counter() - response_started_at) * 1000),
-            )
-            return
-        else:
-            message = result.refusal or result.response_text or "已处理请求。"
-        decision = AssistantDecision(
-            type="final_answer",
-            message=message,
-            reason=_native_finish_reason(result, fallback="Provider finished without requesting a tool."),
-            safety_notes=["provider_refusal"] if result.refusal else [],
-        )
-        _record_native_decision_metadata(
-            state,
-            request=state.request,
-            decision=decision,
-            iteration=len(observations),
-            max_iterations=max(1, self.config.max_tool_iterations),
-            safety_notes=decision.safety_notes,
-        )
-        self._append_observability_event(
-            state,
-            canonical_event="react.decision",
-            node_name="native_runtime",
-            status=decision.type,
-            attributes={
-                "iteration": len(observations) + 1,
-                "decision_type": decision.type,
-                "reason": decision.reason,
-                "message_present": bool(decision.message),
-                "safety_notes": decision.safety_notes,
-            },
-        )
-        state.set_response(
-            AgentResponse(
-                message=message,
-                data={
-                    "native_runtime": True,
-                    "reason": decision.reason,
-                    "provider": result.provider,
-                    "model": result.model,
-                    "usage": result.usage,
-                    "finish_reason": result.finish_reason,
-                    "message_kind": result.message_kind,
-                    "tool_count": len(state.tool_calls),
-                    "tool_observations": len(observations),
-                    "errors": errors,
-                    "provider_budget": state.provider_budget.summary(),
-                },
-                output_refs=[result.output_ref] if result.output_ref else [],
-            )
-        )
-        append_response_final_event(
-            trace_store=self.trace_store,
-            trace_id=state.trace_id,
-            node_name="native_runtime",
-            state=state,
-            source="native_runtime",
-            latency_ms=int((perf_counter() - response_started_at) * 1000),
-        )
-
-    def _set_native_runtime_max_iteration_response(
-        self,
-        state: AgentState,
-        *,
-        observations: list[dict[str, Any]],
-        max_iterations: int,
-    ) -> None:
-        metadata = state.request.metadata
-        state.set_response(
-            AgentResponse(
-                message=f"已达到最大工具调用次数 ({max_iterations})，这是我能提供的最好回答。",
-                data={
-                    "native_runtime": True,
-                    "tool_count": len(state.tool_calls),
-                    "tool_observations": len(observations),
-                    "final_only_handoff_failed": bool(metadata.get("native_runtime_final_only_handoff_failed")),
-                    "final_only_returned_tool_call": bool(metadata.get("native_runtime_final_only_returned_tool_call")),
-                    "final_only_error_code": metadata.get("native_runtime_final_only_error_code"),
-                    "provider_budget": state.provider_budget.summary(),
-                },
-            )
-        )
-
-    def _record_native_tool_calls_skipped_for_budget(
-        self,
-        state: AgentState,
-        *,
-        skipped_count: int,
-    ) -> None:
-        if skipped_count <= 0:
-            return
-        metadata = state.request.metadata
-        current = metadata.get("native_runtime_tool_calls_skipped_for_budget")
-        previous = current if isinstance(current, int) and current >= 0 else 0
-        metadata["native_runtime_tool_calls_skipped_for_budget"] = previous + skipped_count
-        metadata["native_runtime_tool_call_budget_exhausted"] = True
 
     def _select_graph(
         self,
@@ -1889,12 +855,6 @@ def _terminal_history_status(status: str) -> Literal["completed", "failed", "can
     return "completed"
 
 
-def _phase_status(status: str) -> str:
-    if status in {"failed", "cancelled"}:
-        return status
-    return "succeeded"
-
-
 def _latest_state_error(state: AgentState) -> dict[str, Any] | None:
     if not state.errors:
         return None
@@ -1924,172 +884,6 @@ def _update_memory_core_status_from_recall(metadata: dict[str, Any]) -> None:
     )
 
 
-def _chat_result_error(result: Any) -> dict[str, Any] | None:
-    errors = getattr(result, "errors", None)
-    if not errors:
-        return None
-    first = errors[0]
-    code = getattr(first, "code", "provider_unknown_error")
-    return {
-        "code": code,
-        "message": getattr(first, "message", "provider error"),
-        "recoverable": True if code in _MAIN_LLM_NO_ANSWER_ERROR_CODES else getattr(first, "recoverable", False),
-    }
-
-
-def _main_llm_no_answer_error(result: Any) -> Any | None:
-    errors = getattr(result, "errors", None)
-    if not errors:
-        return None
-    first = errors[0]
-    code = getattr(first, "code", "")
-    if code not in _MAIN_LLM_NO_ANSWER_ERROR_CODES:
-        return None
-    if (getattr(result, "response_text", "") or "").strip():
-        return None
-    if getattr(result, "tool_calls", None):
-        return None
-    if getattr(result, "refusal", None):
-        return None
-    return first
-
-
-def _main_llm_no_answer_fallback_message(code: str) -> str:
-    return _MAIN_LLM_NO_ANSWER_FALLBACK_MESSAGES.get(
-        code,
-        "抱歉，刚才主模型没有返回可用回答，请再说一遍。",
-    )
-
-
-def _chat_error_dump(error: Any) -> dict[str, Any]:
-    if hasattr(error, "model_dump"):
-        dumped = error.model_dump(mode="json")
-        if isinstance(dumped, dict):
-            if dumped.get("code") in _MAIN_LLM_NO_ANSWER_ERROR_CODES:
-                dumped["recoverable"] = True
-            return dumped
-    code = getattr(error, "code", "provider_unknown_error")
-    return {
-        "code": code,
-        "message": getattr(error, "message", "provider error"),
-        "recoverable": True if code in _MAIN_LLM_NO_ANSWER_ERROR_CODES else getattr(error, "recoverable", False),
-    }
-
-
-def _native_schedule_is_parallel(schedule: Any) -> bool:
-    if not getattr(schedule, "groups", None):
-        return False
-    first_group = schedule.groups[0]
-    return first_group.mode == "parallel" and len(first_group.calls) > 1
-
-
-def _native_tool_call_public_payload(call: NativeToolCall) -> dict[str, Any]:
-    return call.model_dump(mode="json")
-
-
-def _native_tool_call_replay_payload(
-    call: NativeToolCall,
-    *,
-    result: ChatResult,
-    iteration: int,
-) -> dict[str, Any]:
-    payload = call.model_dump(mode="json")
-    payload[_NATIVE_ASSISTANT_TURN_ID_KEY] = f"native_runtime_assistant_turn_{iteration + 1}"
-    if result.reasoning_content:
-        payload[_NATIVE_ASSISTANT_REASONING_CONTENT_KEY] = result.reasoning_content
-    return payload
-
-
-def _native_provider_budget_parallel_safe(state: AgentState, call_count: int) -> bool:
-    budget = state.provider_budget
-    if budget.max_calls_per_capability:
-        return False
-    if budget.max_estimated_cost_per_run is not None or budget.max_input_bytes_per_run is not None:
-        return False
-    remaining_provider_calls = budget.max_provider_calls_per_run - budget.provider_call_count
-    return remaining_provider_calls >= call_count
-
-
-def _run_native_parallel_tool_call(
-    tool_executor: ToolExecutor,
-    branch_state: AgentState,
-    scheduled_call: Any,
-    step_id: str,
-    *,
-    trace_store: TraceStore | None,
-    trace_id: str | None,
-) -> _ParallelToolRunResult:
-    event_buffer = _BufferedEventSink()
-    branch_executor = ToolExecutor(
-        registry=tool_executor.registry,
-        tool_history=tool_executor.tool_history,
-        event_sink=event_buffer,
-        recovery_policy=tool_executor.recovery_policy,
-        execution_policy=tool_executor.execution_policy,
-        context_metadata=tool_executor.context_metadata,
-        cancel_token=tool_executor.cancel_token,
-        idempotency_ledger=tool_executor.idempotency_ledger,
-    )
-    result = branch_executor.run_tool(
-        branch_state,
-        step_id,
-        scheduled_call.decision.tool_name or "",
-        scheduled_call.decision.tool_input or {},
-        None,
-        trace_store,
-        trace_id,
-        "native_runtime",
-    )
-    return _ParallelToolRunResult(
-        call_index=scheduled_call.call_index,
-        state=branch_state,
-        tool_result=result,
-        events=list(event_buffer.events),
-    )
-
-
-def _merge_native_parallel_state_records(
-    state: AgentState,
-    *,
-    base_tool_call_count: int,
-    base_tool_result_count: int,
-    base_error_count: int,
-    base_provider_call_count: int,
-    ordered_results: list[_ParallelToolRunResult],
-) -> None:
-    state.tool_calls = list(state.tool_calls[:base_tool_call_count])
-    state.tool_results = list(state.tool_results[:base_tool_result_count])
-    state.errors = list(state.errors[:base_error_count])
-    state.provider_budget.call_records = list(state.provider_budget.call_records[:base_provider_call_count])
-    failed = False
-    any_tool_record = False
-    for result in ordered_results:
-        state.tool_calls.extend(result.state.tool_calls[base_tool_call_count:])
-        state.tool_results.extend(result.state.tool_results[base_tool_result_count:])
-        state.errors.extend(result.state.errors[base_error_count:])
-        state.provider_budget.call_records.extend(
-            result.state.provider_budget.call_records[base_provider_call_count:]
-        )
-        any_tool_record = any_tool_record or len(result.state.tool_calls) > base_tool_call_count
-        failed = failed or result.state.status == "failed"
-    if failed:
-        state.status = "failed"
-    elif any_tool_record:
-        state.status = "running"
-
-
-def _replay_native_parallel_events(
-    ordered_results: list[_ParallelToolRunResult],
-    *,
-    event_sink: EventSink | None,
-) -> None:
-    if event_sink is None:
-        return
-    for result in ordered_results:
-        for event in result.events:
-            event_sink.emit(event)
-
-
 class _ResponseDeltaTrackingEventSink:
     """Forward events while tracking whether user-visible response chunks exist."""
 
@@ -2101,50 +895,6 @@ class _ResponseDeltaTrackingEventSink:
         if event.type == "response_delta":
             self.response_delta_emitted = True
         self.inner.emit(event)
-
-
-class _NativeRuntimeResponseBuffer:
-    """Buffer first-call model text until the runtime knows it is not a tool call."""
-
-    def __init__(self, state: AgentState, event_sink: EventSink) -> None:
-        self.state = state
-        self.event_sink = event_sink
-        self.events: list[AgentEvent] = []
-
-    def emit_delta(self, text: str, payload: dict[str, Any]) -> None:
-        event = stream_delta_to_agent_event(
-            text,
-            payload,
-            session_id=self.state.session_id,
-            run_id=self.state.run_id,
-            source="assistant_native_final_answer",
-        )
-        if event is None:
-            return
-        self.events.append(event)
-
-    def flush(self) -> None:
-        for event in self.events:
-            self.event_sink.emit(event)
-        self.events.clear()
-
-    def discard(self) -> None:
-        self.events.clear()
-
-
-def _is_mock_chat_adapter(chat_adapter: ChatAdapter) -> bool:
-    return getattr(chat_adapter, "provider", "") == "mock"
-
-
-def _system_prompt_profile_from_request(request: UserRequest) -> SystemPromptProfile:
-    metadata = request.metadata
-    explicit = _metadata_text(metadata.get("system_prompt_profile"))
-    if explicit:
-        try:
-            return SystemPromptProfile(explicit)
-        except ValueError:
-            return SystemPromptProfile.TEXT_DEFAULT
-    return SystemPromptProfile.TEXT_DEFAULT
 
 
 def _system_prompt_options_from_request(request: UserRequest) -> SystemPromptOptions:
@@ -2160,14 +910,7 @@ def _metadata_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
-def _chat_adapter_supports_native_tools(chat_adapter: ChatAdapter) -> bool:
-    capabilities = getattr(chat_adapter, "capabilities", None)
-    if capabilities is None:
-        return True
-    return bool(getattr(capabilities, "supports_native_tools", True))
-
-
-def _native_runtime_tool_specs(registry: Any, state: AgentState) -> list[ToolSpec] | None:
+def _durable_quantum_tool_specs(registry: Any, state: AgentState) -> list[ToolSpec] | None:
     try:
         if hasattr(registry, "list_specs"):
             specs = registry.list_specs()
@@ -2178,11 +921,11 @@ def _native_runtime_tool_specs(registry: Any, state: AgentState) -> list[ToolSpe
             normalized = [spec for spec in normalized if spec.name != "task_plan_submit"]
         return normalized
     except Exception as exc:
-        _set_native_tool_description_failure_response(state, exc)
+        _set_durable_tool_description_failure_response(state, exc)
         return None
 
 
-def _set_native_tool_description_failure_response(state: AgentState, exc: Exception) -> None:
+def _set_durable_tool_description_failure_response(state: AgentState, exc: Exception) -> None:
     message = f"工具描述读取失败：{exc}"
     state.request.metadata["tool_description_error"] = {
         "code": "tool_description_unavailable",
@@ -2190,91 +933,19 @@ def _set_native_tool_description_failure_response(state: AgentState, exc: Except
     }
     error = AgentError(
         message=message,
-        source="native_runtime",
+        source="durable_task_quantum",
         details={"code": "tool_description_unavailable", "recovery_action": "stop_with_error"},
     )
     state.errors.append(error)
     state.response = AgentResponse(
         message="工具描述不可用，无法安全执行 agent runtime。",
         data={
-            "native_runtime": True,
+            "durable_task_quantum": True,
             "errors": [{"code": error.details["code"], "message": message}],
             "provider_budget": state.provider_budget.summary(),
         },
     )
     state.status = "failed"
-
-
-def _set_native_tooling_unsupported_response(state: AgentState, chat_adapter: ChatAdapter) -> None:
-    provider = str(getattr(chat_adapter, "provider", "unknown") or "unknown")
-    model = getattr(chat_adapter, "model", None)
-    message = f"{provider} chat adapter does not support provider-native tool calling."
-    error = AgentError(
-        message=message,
-        source="native_runtime",
-        details={
-            "code": "native_tool_calling_unsupported",
-            "provider": provider,
-            "model": model,
-            "recovery_action": "configure_native_tool_provider",
-        },
-    )
-    state.errors.append(error)
-    state.response = AgentResponse(
-        message="当前模型不支持原生工具调用，无法执行 agent runtime。",
-        data={
-            "native_runtime": True,
-            "provider": provider,
-            "model": model,
-            "errors": [
-                {
-                    "code": error.details["code"],
-                    "message": message,
-                    "provider": provider,
-                    "model": model,
-                }
-            ],
-        },
-    )
-    state.status = "failed"
-
-
-def _set_native_validation_rejection_response(
-    state: AgentState,
-    validator_result: dict[str, Any],
-) -> None:
-    message = str(validator_result.get("message") or "工具调用未通过校验。")
-    code = str(validator_result.get("code") or "invalid_tool_call")
-    state.errors.append(
-        AgentError(
-            message=message,
-            source="native_runtime",
-            details={
-                "code": code,
-                "recovery_action": "stop_with_error",
-                "validator_result": validator_result,
-            },
-        )
-    )
-    state.set_response(
-        AgentResponse(
-            message=f"我没有执行这个工具调用：{message}",
-            data={
-                "native_runtime": True,
-                "assistant_decision": "final_answer",
-                "validator_result": validator_result,
-                "tool_count": len(state.tool_calls),
-                "errors": [{"code": code, "message": message}],
-                "provider_budget": state.provider_budget.summary(),
-            },
-        )
-    )
-
-
-def _invalid_durable_plan_batch(tool_calls: list[Any]) -> bool:
-    names = [str(getattr(call, "name", "")) for call in tool_calls]
-    return "task_plan_submit" in names and names != ["task_plan_submit"]
-
 
 def _durable_step_id_for_call(
     snapshot: DurableTaskSnapshot,
@@ -2338,30 +1009,6 @@ def _durable_tool_result_summary(result: ToolResult) -> str:
     return f"{result.tool_name} completed successfully."
 
 
-def _set_durable_plan_batch_rejection_response(state: AgentState) -> None:
-    code = "durable_plan_must_be_standalone"
-    message = "task_plan_submit must be the only call in a provider tool-call batch."
-    state.errors.append(
-        AgentError(message=message, source="native_runtime", details={"code": code})
-    )
-    state.response = AgentResponse(
-        message="任务计划必须单独提交，本次没有执行任何工具。",
-        data={"native_runtime": True, "errors": [{"code": code, "message": message}]},
-    )
-    state.status = "failed"
-
-
-def _set_durable_task_accepted_response(state: AgentState, result: ToolResult) -> None:
-    task = dict((result.data or {}).get("task") or {})
-    state.set_response(
-        AgentResponse(
-            message="任务已创建，我会按计划继续处理。",
-            data={"task": task, "native_runtime": True},
-            output_refs=[result.output_ref] if result.output_ref else [],
-        )
-    )
-
-
 def _set_durable_tasks_disabled_response(state: AgentState) -> None:
     code = "durable_tasks_disabled"
     message = "Durable task execution is disabled for this runtime."
@@ -2371,173 +1018,3 @@ def _set_durable_tasks_disabled_response(state: AgentState) -> None:
         data={"errors": [{"code": code, "message": message}]},
     )
     state.status = "failed"
-
-
-def _record_native_decision_metadata(
-    state: AgentState,
-    *,
-    request: UserRequest,
-    decision: AssistantDecision,
-    iteration: int,
-    max_iterations: int,
-    safety_notes: list[str] | None = None,
-) -> None:
-    audit = build_memory_tool_selection_audit(
-        request=request,
-        decision=decision,
-        state=state,
-        iteration=iteration,
-        max_iterations=max_iterations,
-        is_mock=False,
-    )
-    record_memory_tool_selection_audit(request, audit)
-    steps = request.metadata.setdefault("assistant_loop_steps", [])
-    if not isinstance(steps, list):
-        steps = []
-        request.metadata["assistant_loop_steps"] = steps
-    steps.append(
-        {
-            "iteration": iteration + 1,
-            "decision_type": decision.type,
-            "tool_name": decision.tool_name,
-            "message": decision.message,
-            "reason": decision.reason,
-            "safety_notes": safety_notes or decision.safety_notes,
-        }
-    )
-    trace = request.metadata.setdefault("decision_trace", [])
-    if not isinstance(trace, list):
-        trace = []
-        request.metadata["decision_trace"] = trace
-    trace.append(
-        {
-            "iteration": iteration + 1,
-            "decision_type": decision.type,
-            "tool_name": decision.tool_name,
-            "answer": decision.message if decision.type in {"final_answer", "ask_followup"} else None,
-            "reason": decision.reason,
-        }
-    )
-
-
-def _record_native_observation_metadata(state: AgentState, observation: dict[str, Any]) -> None:
-    steps = state.request.metadata.setdefault("assistant_loop_steps", [])
-    if not isinstance(steps, list):
-        steps = []
-        state.request.metadata["assistant_loop_steps"] = steps
-    steps.append(
-        {
-            "observation_tool": observation.get("tool_name"),
-            "status": observation.get("status"),
-            "success": observation.get("status") == "succeeded",
-            "output_ref": observation.get("output_ref"),
-            "summary": observation.get("summary"),
-            "next_step_hint": observation.get("next_step_hint"),
-            "error": observation.get("error_message"),
-        }
-    )
-
-
-def _append_native_tool_observation_event(
-    runtime: AgentGraphRuntime,
-    state: AgentState,
-    observation: dict[str, Any],
-) -> None:
-    runtime._append_observability_event(
-        state,
-        canonical_event="tool.observation",
-        node_name="native_runtime",
-        status=observation.get("status"),
-        tool_name=observation.get("tool_name"),
-        attributes={
-            "summary": observation.get("summary"),
-            "output_ref": observation.get("output_ref"),
-            "next_step_hint": observation.get("next_step_hint"),
-        },
-        output_summary={
-            "summary": observation.get("summary"),
-            "output_ref": observation.get("output_ref"),
-            "next_step_hint": observation.get("next_step_hint"),
-        },
-        error={
-            "code": observation.get("error_code"),
-            "message": observation.get("error_message"),
-        }
-        if observation.get("error_code")
-        else None,
-    )
-
-
-def _record_native_tool_call_preamble(state: AgentState, *, tool_name: str, content: str) -> None:
-    normalized = content.strip()
-    if not normalized:
-        return
-    preambles = state.request.metadata.setdefault("native_tool_call_preambles", [])
-    if not isinstance(preambles, list):
-        preambles = []
-        state.request.metadata["native_tool_call_preambles"] = preambles
-    preambles.append({"tool_name": tool_name, "content": normalized})
-
-
-def _emit_native_tool_progress_message(
-    state: AgentState,
-    *,
-    tool_name: str,
-    event_sink: EventSink | None,
-    tool_spec: ToolSpec | None = None,
-) -> None:
-    if event_sink is None:
-        return
-    text = progress_message_for_tool(tool_name, tool_spec=tool_spec)
-    event_sink.emit(
-        AgentEvent(
-            type="progress_message",
-            session_id=state.session_id,
-            run_id=state.run_id,
-            tool_name=tool_name,
-            text=text,
-            payload={
-                "source": "native_tool_wait",
-                "replaceable": True,
-                "tool_name": tool_name,
-            },
-        )
-    )
-
-
-def _native_finish_reason(result: Any, *, fallback: str) -> str:
-    if result.finish_reason:
-        return f"{fallback} finish_reason={result.finish_reason}."
-    if result.message_kind:
-        return f"{fallback} message_kind={result.message_kind}."
-    return fallback
-
-
-def _native_runtime_stream_callback(state: AgentState, event_sink: EventSink | None) -> Any | None:
-    if event_sink is None:
-        return None
-
-    def emit_delta(text: str, payload: dict[str, Any]) -> None:
-        event = stream_delta_to_agent_event(
-            text,
-            payload,
-            session_id=state.session_id,
-            run_id=state.run_id,
-            source="assistant_native_final_answer",
-        )
-        if event is None:
-            return
-        event_sink.emit(event)
-
-    return emit_delta
-
-
-def _response_streaming_enabled(request: UserRequest) -> bool:
-    if not is_trusted_agent_service_request(request):
-        return True
-    gateway = request.metadata.get("gateway")
-    session_config = gateway.get("session_config") if isinstance(gateway, dict) else None
-    return not (
-        isinstance(session_config, dict)
-        and session_config.get("response_streaming") is False
-    )

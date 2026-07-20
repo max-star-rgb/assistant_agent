@@ -14,10 +14,7 @@ from assistant_agent.schemas.context import AssistantContextPack, RenderedAssist
 from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.chat_adapter import ChatRequest, ChatStreamCallback
-from assistant_agent.services.context.renderer import (
-    render_final_only_context,
-    render_native_tool_context,
-)
+from assistant_agent.services.context.renderer import render_native_tool_context
 
 _ASSISTANT_REASONING_CONTENT_KEY = "assistant_reasoning_content"
 _ASSISTANT_TURN_ID_KEY = "assistant_turn_id"
@@ -27,8 +24,6 @@ class PromptCompileMode(StrEnum):
     """Supported production provider-request compilation modes."""
 
     NATIVE_TOOL = "native_tool"
-    NATIVE_FINAL_ONLY = "native_final_only"
-    SUMMARY_FINAL_ONLY = "summary_final_only"
 
 
 @dataclass(frozen=True)
@@ -75,25 +70,20 @@ class PromptCompiler:
             {"role": "system", "content": system_instruction},
             {"role": "user", "content": user_content},
         ]
-        if request.mode != PromptCompileMode.SUMMARY_FINAL_ONLY:
-            messages.extend(_native_tool_messages(request))
+        messages.extend(_native_tool_messages(request))
 
         selected_tool_specs = prompt_tool_specs_for_mode(
             request.context_pack,
             request.mode,
         )
-        user_query = (
-            user_content
-            if request.mode == PromptCompileMode.SUMMARY_FINAL_ONLY
-            else (request.context_pack.request.text or request.user_query_fallback)
-        )
+        user_query = request.context_pack.request.text or request.user_query_fallback
         chat_request = ChatRequest(
             user_id=request.user_id,
             session_id=request.session_id,
             user_query=user_query,
             messages=messages,
             tools=tool_specs_to_openai_tools(selected_tool_specs),
-            tool_choice=_tool_choice(request.mode),
+            tool_choice="auto" if selected_tool_specs else None,
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             stream_callback=request.stream_callback,
@@ -112,8 +102,6 @@ def prompt_tool_specs_for_mode(
 ) -> tuple[ToolSpec, ...]:
     """Return the already-governed tool subset exposed for this mode."""
 
-    if mode != PromptCompileMode.NATIVE_TOOL:
-        return ()
     if pack.run_tool_set.registered_tool_names:
         return tuple(pack.prompt_tool_specs)
     return tuple(pack.prompt_tool_specs or pack.tool_specs)
@@ -133,8 +121,6 @@ def owner_persona_for_pack(pack: AssistantContextPack) -> str:
 
 
 def _render_context(request: PromptCompileRequest) -> RenderedAssistantContext:
-    if request.mode == PromptCompileMode.SUMMARY_FINAL_ONLY:
-        return render_final_only_context(request.context_pack)
     return render_native_tool_context(request.context_pack)
 
 
@@ -142,8 +128,6 @@ def _rendered_user_content(
     rendered: RenderedAssistantContext,
     mode: PromptCompileMode,
 ) -> str:
-    if mode == PromptCompileMode.SUMMARY_FINAL_ONLY:
-        return rendered.final_only_prompt or ""
     return rendered.native_user_message or ""
 
 
@@ -264,11 +248,3 @@ def _arguments_json(value: Any, fallback: dict[str, Any]) -> str:
     if isinstance(value, str) and value.strip():
         return value
     return json.dumps(fallback, ensure_ascii=False)
-
-
-def _tool_choice(mode: PromptCompileMode) -> str | None:
-    if mode == PromptCompileMode.NATIVE_TOOL:
-        return "auto"
-    if mode == PromptCompileMode.NATIVE_FINAL_ONLY:
-        return "none"
-    return None

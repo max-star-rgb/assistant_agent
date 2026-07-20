@@ -63,7 +63,8 @@ run with an honest user-visible retry prompt instead of emitting `task_failed`:
 Tool providers, vision/search providers, durable-task provider calls, and
 cancellation paths do not use this fallback.
 
-Native provider-stream consumption is selective and opt-in through
+Foreground provider turns are consumed inside the shared LangGraph assistant
+loop. Provider-stream consumption is selective and opt-in through
 `ProviderConfig.native_provider_streaming`. When enabled and the adapter exposes
 `stream_chat()`, `ProviderStreamingTurnRunner` consumes the async stream for one
 runtime turn. Visible token deltas pass through the existing stream callback and
