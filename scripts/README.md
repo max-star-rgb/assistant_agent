@@ -36,6 +36,9 @@ These are useful, but they are not the main product path:
 - `scripts/run_assistant_cli.py`: local in-process offline developer smoke.
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: eval harness for lower-layer behavior checks.
+- `scripts/run_real_provider_evals.py`: opt-in real chat provider eval harness
+  for end-to-end Agent behavior; requires `provider_smoke` or `pilot` runtime
+  profile and writes machine logs under `.data/evals/real_provider/`.
 - `scripts/check_env.py`: environment sanity check.
 - `scripts/run_tavily_search_relay.py`: opt-in local HTTP relay that adapts the
   generic `web_search` and `web_fetch` HTTP protocols to Tavily Search/Extract APIs.

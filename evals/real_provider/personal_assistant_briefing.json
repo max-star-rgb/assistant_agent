@@ -1,0 +1,150 @@
+{
+  "schema_version": "real_provider_eval_cases_v1",
+  "description": "Real chat provider eval seed set for personal realtime assistant departure and morning briefings. Non-chat tools stay controlled/mock by default.",
+  "defaults": {
+    "suite": "personal_assistant_briefing",
+    "category": "departure_briefing",
+    "user_id": "eval_personal_assistant",
+    "expected_status": "completed",
+    "expected_tools": ["weather", "calendar_search"],
+    "expected_exposed_tools": ["weather", "calendar_search"],
+    "must_not_call": [
+      "web_search",
+      "web_fetch",
+      "shopping_search",
+      "price_compare",
+      "calendar_create",
+      "reminder_create"
+    ],
+    "min_tool_calls": 2,
+    "max_tool_calls": 4,
+    "response_must_include_any": [
+      ["天气", "气温", "降雨", "下雨", "雨"],
+      ["日程", "会议", "安排"],
+      ["出门", "通勤", "路上", "提前"]
+    ],
+    "metadata": {
+      "transport": "agent_service_websocket",
+      "channel": "voice",
+      "locale": "zh-CN",
+      "gateway": {
+        "session_config": {
+          "entry_profile": "agent_service"
+        }
+      },
+      "agent_service": {
+        "client": {
+          "client_type": "run_client"
+        },
+        "chat_index": "real-provider-eval"
+      },
+      "realtime_task_state": {
+        "schema_version": "realtime_task_state_v1",
+        "status": "active",
+        "summary": "Eval context: user is in Shanghai, timezone Asia/Shanghai, today is 2026-07-20, normal commute is subway, home-to-office travel usually takes 35 minutes.",
+        "location": "上海",
+        "timezone": "Asia/Shanghai",
+        "local_date": "2026-07-20",
+        "commute_mode": "subway"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "personal_departure_morning_001",
+      "text": "早上好，帮我说下今天出门前要注意什么"
+    },
+    {
+      "id": "personal_departure_morning_002",
+      "text": "早，我准备出门上班了，今天有什么需要注意的？"
+    },
+    {
+      "id": "personal_departure_morning_003",
+      "text": "帮我做个出门前简报，重点说天气和今天安排"
+    },
+    {
+      "id": "personal_departure_morning_004",
+      "text": "我一小时后出门，先提醒我天气和日程有没有风险"
+    },
+    {
+      "id": "personal_departure_morning_005",
+      "text": "今天去公司前帮我看一下要不要带伞，以及上午有没有会议"
+    },
+    {
+      "id": "personal_departure_morning_006",
+      "text": "出门前帮我快速过一遍今天要注意的事"
+    },
+    {
+      "id": "personal_departure_morning_007",
+      "text": "我马上下楼了，今天穿什么、带什么、时间上要注意什么？"
+    },
+    {
+      "id": "personal_departure_morning_008",
+      "text": "早上好，今天出门前提醒我一下天气和日程"
+    },
+    {
+      "id": "personal_departure_morning_009",
+      "text": "我准备坐地铁去办公室，今天出门前有什么提醒？"
+    },
+    {
+      "id": "personal_departure_morning_010",
+      "text": "别讲新闻，帮我看下今天出门前要注意什么"
+    },
+    {
+      "id": "personal_departure_morning_011",
+      "text": "今天上午出门前，帮我确认天气、会议和是否要提前走"
+    },
+    {
+      "id": "personal_departure_morning_012",
+      "text": "我要去上班了，帮我综合看下今天的天气和日历"
+    },
+    {
+      "id": "personal_departure_morning_013",
+      "text": "帮我用一句话先说结论，再说出门前注意事项"
+    },
+    {
+      "id": "personal_departure_morning_014",
+      "text": "现在准备出发，今天要不要带外套或雨伞，日程有没有紧的？"
+    },
+    {
+      "id": "personal_departure_morning_015",
+      "text": "早，给我一个今天出门前的语音版提醒"
+    },
+    {
+      "id": "personal_departure_morning_016",
+      "text": "我今天要按正常通勤去公司，出门前帮我查一下该注意什么"
+    },
+    {
+      "id": "personal_departure_morning_017",
+      "text": "上午安排会不会影响我出门时间？顺便看看天气"
+    },
+    {
+      "id": "personal_departure_morning_018",
+      "text": "今天出门前提醒：天气、日历、要带的东西都说一下"
+    },
+    {
+      "id": "personal_departure_morning_019",
+      "text": "我刚起床，帮我判断今天什么时候出门比较稳"
+    },
+    {
+      "id": "personal_departure_morning_020",
+      "text": "我不想听泛泛建议，直接基于天气和今天日程告诉我出门注意事项"
+    },
+    {
+      "id": "personal_departure_morning_021",
+      "text": "帮我检查一下今天出门有没有会迟到的风险"
+    },
+    {
+      "id": "personal_departure_morning_022",
+      "text": "出门前帮我看下今天天气和上午行程，回答要简短"
+    },
+    {
+      "id": "personal_departure_morning_023",
+      "text": "我现在在上海，今天出门上班有什么要注意？"
+    },
+    {
+      "id": "personal_departure_morning_024",
+      "text": "给我一个早晨通勤提醒，别搜索网页，只看天气和日历"
+    }
+  ]
+}
