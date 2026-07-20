@@ -92,6 +92,7 @@
 - `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`README.md` 是人类轻导航入口。
 - 当前架构权威文档只保留在 `docs/*.md`；新增、删除或重命名 root authority 时，同步更新第 1 节路由表和 README。
 - 普通开发默认不读 `docs/development/**`、`docs/superpowers/**`、`docs/interview/**`，除非用户点名或任务属于这些材料。
+- 当用户基于真实测试、真实通话、真实 run/trace 或机器日志提问“为什么失败/为什么这样表现”时，必须先读取最新 `.data/**` 机器级日志作为第一事实源，再结合用户贴出的片段和源码回答；不要先用本地 mock 复现、经验判断或过期上下文替代真实日志。回答中应注明依据的日志文件、时间或 run/trace id；若 `.data` 日志缺失或无法对应到该问题，必须明确说明限制。
 - 执行中先读相关代码和文档，保持 scope 小；搜索优先用 `rg` / `rg --files`，手工编辑默认用 `apply_patch`。
 - 功能实现、缺陷修复和行为重构使用 `.codex/skills/assistant-agent-development-testing` 做测试决策；只有窄层无法证明 wiring 时才增加离线跨层验收。
 - 不回滚用户已有改动；提交时只包含本任务相关文件；新增设计文档默认不提交，除非用户明确要求纳入版本控制。
