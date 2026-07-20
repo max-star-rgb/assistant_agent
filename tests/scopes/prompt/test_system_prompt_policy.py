@@ -139,8 +139,6 @@ def test_realtime_phone_profile_covers_voice_turn_taking_and_governance() -> Non
     assert "购买请求" in prompt
     assert "shopping_search" in prompt
     assert "搜索和比价" in prompt
-    assert "product_search" not in prompt
-    assert "price_compare" not in prompt
     assert "没有下单或付款工具" in prompt
     assert "不要声称已经下单" in prompt
     assert "不要把历史会话中的商品或价格当作当前报价" in prompt

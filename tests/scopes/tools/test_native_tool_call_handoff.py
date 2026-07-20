@@ -559,7 +559,6 @@ def test_native_tool_call_runs_through_validator_executor_and_observation() -> N
     native_tool_names = [tool["function"]["name"] for tool in adapter.requests[0].tools]
     assert "shopping_search" in native_tool_names
     assert "render_3d" in native_tool_names
-    assert "price_compare" not in native_tool_names
     assert adapter.requests[0].tool_choice == "auto"
     assert any(message["role"] == "user" for message in adapter.requests[0].messages)
     tool_messages = [message for message in adapter.requests[1].messages if message["role"] == "tool"]

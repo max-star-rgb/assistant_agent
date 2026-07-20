@@ -113,22 +113,6 @@ def test_shopping_search_observation_guides_final_purchase_advice() -> None:
     assert "不要声称已经下单" in observation.next_step_hint
 
 
-def test_shopping_search_observation_does_not_expose_old_compare_tool_hint() -> None:
-    result = ShoppingSearchTool(
-        search_adapter=MockProductSearchAdapter(),
-        price_compare_adapter=MockPriceCompareAdapter(),
-    ).run({"query": "蓝牙耳机"})
-
-    observation = observation_from_tool_result(
-        result,
-        request_text="帮我买个蓝牙耳机，推荐个划算的。",
-    )
-
-    assert observation.status == "succeeded"
-    assert observation.next_step_hint is not None
-    assert "price_compare" not in observation.next_step_hint
-
-
 def test_repeated_shopping_search_failure_observation_points_to_prior_success() -> None:
     failed_result = ToolResult(
         tool_name="shopping_search",

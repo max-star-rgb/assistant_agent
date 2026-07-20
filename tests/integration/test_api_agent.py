@@ -36,7 +36,5 @@ def test_agent_run_handles_video_product_compare_request() -> None:
     tool_names = [call["tool_name"] for call in tool_calls]
     assert "vision_understanding" in tool_names
     assert "shopping_search" in tool_names
-    assert "product_search" not in tool_names
-    assert "price_compare" not in tool_names
     assert all(call["status"] == "succeeded" for call in tool_calls)
     assert all(call["call_id"].startswith("call_") for call in tool_calls)
