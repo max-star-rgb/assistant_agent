@@ -21,11 +21,7 @@
 | trace、observability、redaction | `docs/observability-harness.md` |
 | 测试分层和 scope 选择 | `tests/README.md`；`tests/scope-map.toml` |
 
-涉及 DeepSeek、阿里百炼/DashScope、火山方舟/豆包的模型接入、工具调用、API 参数、兼容性或 Provider 适配时，优先联网查阅以下官方文档或其站内相关页面；这些 Provider 文档可能更新，不要只凭记忆判断：
-
-- DeepSeek tool calls：`https://api-docs.deepseek.com/zh-cn/guides/tool_calls`
-- 阿里百炼模型文档：`https://bailian.console.aliyun.com/cn-beijing/?spm=a2c4g.11186623.0.0.60393ba2UI7e5t&tab=doc#/doc/?type=model&url=2963787`
-- 火山引擎模型文档：`https://docs.volcengine.com/docs/82379/1099455?lang=zh`
+- 遇到 Provider 相关实现/调试时，优先联网核对官方文档，重点包括 DeepSeek tool calls（`https://api-docs.deepseek.com/zh-cn/guides/tool_calls`）、阿里百炼模型文档（`https://bailian.console.aliyun.com/cn-beijing/?spm=a2c4g.11186623.0.0.60393ba2UI7e5t&tab=doc#/doc/?type=model&url=2963787`）和火山引擎模型文档（`https://docs.volcengine.com/docs/82379/1099455?lang=zh`）。
 
 `docs/development/**`、`docs/superpowers/**` 和 `docs/interview/**` 都不是普通开发默认权威；只有用户点名、运行 runbook 或做历史/面试任务时才读。
 
