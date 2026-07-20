@@ -17,23 +17,6 @@ Core project docs:
 - Media-Agent WebSocket contract: [docs/media-agent-service-websocket.md](docs/media-agent-service-websocket.md)
 - Test scopes and markers: [tests/README.md](tests/README.md)
 
-Memory operation runbooks:
-
-- [docs/development/memory-dual-core-operator-runbook.md](docs/development/memory-dual-core-operator-runbook.md)
-- [docs/development/memory-sqlite-operator-runbook.md](docs/development/memory-sqlite-operator-runbook.md)
-- [docs/development/memory-framework-bakeoff-runbook.md](docs/development/memory-framework-bakeoff-runbook.md)
-
-Pilot and realtime operation runbooks:
-
-- [docs/development/agent-pilot-operator-runbook.md](docs/development/agent-pilot-operator-runbook.md)
-- [docs/development/realtime-runtime-operator-runbook.md](docs/development/realtime-runtime-operator-runbook.md)
-
-Personal assistant planning material:
-
-- [docs/development/tool-roadmap-personal-assistant.md](docs/development/tool-roadmap-personal-assistant.md)
-
-Interview training material lives under `docs/interview/` and is separate from normal development routing.
-
 ## Local Environment
 
 The Python package is `assistant_agent` under `src/assistant_agent/`. The local conda environment remains `hello_agent`.

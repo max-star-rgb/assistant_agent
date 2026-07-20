@@ -107,6 +107,9 @@ provider adapter 本身的配置解析、真实 provider 选择和 provider-spec
 `tests/scopes/providers/`；需要实际联网、真实凭据或高延迟服务的验证只能放
 `tests/integration/tools/` 并显式 opt-in。
 
+mock/local/fake-provider 测试是默认离线证据，证明本地 contract、治理链路、解析和失败语义；
+它不证明真实 provider 可用。真实 provider 成功性只能由显式 opt-in 的 smoke/pilot 给出。
+
 执行规则：
 
 - TDD：先观察正确原因的失败，再写最小实现并验证 GREEN。

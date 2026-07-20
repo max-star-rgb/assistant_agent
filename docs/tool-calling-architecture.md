@@ -572,7 +572,7 @@ MCP wrapper、API route 或 `AgentGraphRuntime` node。它只读取脱敏 trace 
 
 工具作者默认按现有低抽象分层落地：Pydantic schema 定义稳定契约，service/provider adapter 处理 mock/local/real provider 和错误归一化，tool 模块只做薄包装并返回 `ToolResult`，`registry.py` 负责注册、ToolSpec、side-effect、execution 和 visibility 元数据。不是每个小工具都必须机械拆成三四个文件；纯本地、无 provider、无共享契约的小工具可以把私有 schema 放在工具模块内。但只要能力涉及真实外部 API、mock fallback、结构化 provider 结果或后续模型推理，就应拆出 schema 与 adapter，避免把 provider 逻辑写进 tool 层。
 
-mock/local adapter 是同契约的离线替身，不是“看起来成功”的演示分支。mock 与真实 provider 必须共享输入/输出 schema、错误 envelope、`ToolResult`、contract 和 observation 语义；不要求模拟真实 provider 的全部排序、延迟或覆盖率，但必须覆盖配置缺失、provider 失败、schema mismatch、空结果等关键边界。真实 provider 仍必须显式 opt-in：默认 local/offline/mock 运行即使检测到 key 也不能启用真实调用，选中真实 provider 时缺配置要返回结构化 `provider_unconfigured`，不能静默 fallback 到 mock。
+mock/local adapter 是同契约的离线替身，不是“看起来成功”的演示分支。mock/local 测试证明本地治理链路、契约解析、脱敏和失败语义正确；它不证明真实 provider 的账号、模型、网络、限流或服务端行为一定成功。mock 与真实 provider 必须共享输入/输出 schema、错误 envelope、`ToolResult`、contract 和 observation 语义；不要求模拟真实 provider 的全部排序、延迟或覆盖率，但必须覆盖配置缺失、provider 失败、schema mismatch、空结果等关键边界。真实 provider 成功性只能通过显式 opt-in 的 `provider_smoke` / `pilot` 验证；默认 local/offline/mock 运行即使检测到 key 也不能启用真实调用，选中真实 provider 时缺配置要返回结构化 `provider_unconfigured`，不能静默 fallback 到 mock。
 
 新增工具时按这个顺序做：
 
@@ -592,7 +592,7 @@ mock/local adapter 是同契约的离线替身，不是“看起来成功”的�
 
 - registry spec 暴露和 schema 转换。
 - ActionValidator 接受合法输入、拒绝缺参/未知工具/危险输入。
-- mock/local adapter 成功路径、空结果和结构化错误；真实 provider adapter 的 payload parser 使用 fake HTTP/fixture 覆盖成功、`provider_unconfigured`、`provider_schema_mismatch` 和 provider error，不在默认测试中联网。
+- mock/local adapter 成功路径、空结果和结构化错误；真实 provider adapter 的 payload parser 使用 fake HTTP/fixture 覆盖成功、`provider_unconfigured`、`provider_schema_mismatch` 和 provider error，不在默认测试中联网，也不把 mock 通过解读为真实 provider smoke 通过。
 - Tool 层只包装 adapter 结果，失败返回结构化 `ToolResult`、contract 和脱敏 error，不抛 provider 原始异常。
 - ToolExecutor 成功、失败、预算阻断、retry/recovery 和 cooperative cancellation。
 - native direct-answer 路径必须只有一次 chat call，且首个用户可见 delta 来自 provider content。
