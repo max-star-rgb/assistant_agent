@@ -29,6 +29,10 @@ Pilot and realtime operation runbooks (not authority):
 - [docs/development/agent-pilot-operator-runbook.md](docs/development/agent-pilot-operator-runbook.md)
 - [docs/development/realtime-runtime-operator-runbook.md](docs/development/realtime-runtime-operator-runbook.md)
 
+Personal assistant planning material (not authority):
+
+- [docs/development/tool-roadmap-personal-assistant.md](docs/development/tool-roadmap-personal-assistant.md)
+
 Interview training material lives under `docs/interview/` and is separate from normal development routing.
 
 ## Local Environment

@@ -236,13 +236,22 @@ Runtime gate 映射：
 - `shopping_search`
 - `product_search`
 - `price_compare`
+- `weather`
+- `calendar_search`
+- `calendar_create`
+- `contacts_search`
+- `reminder_create`
 - `image_generation`
 - `render_3d`
 - `memory`
 - `memory_retrieval`
 - `memory_save`
+- `memory_media_ingest`
+- `memory_ingest_status`
 
 `delegate_to_agent` 是 opt-in 工具，仅在 `enable_agent_delegation=True` 且传入 `AgentCommunicationService` 时注册。它的通信路由和 A2A 边界以 `docs/agent-communication-routing.md` 为准。
+
+个人实时通话助理第一批工具的任务来源和扩展边界见 `docs/development/tool-roadmap-personal-assistant.md`。其中 `calendar_create` 和 `reminder_create` 是 confirmation-sensitive 写操作，必须由 runtime confirmation 和 idempotency gate 放行；模型参数中的确认字段不构成授权。
 
 Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are LLM-driven capability metadata, not execution plugins. The `skills/workflows/` subdirectory is reserved for deterministic `workflow_skill_v1` JSON manifests and must not contain `SKILL.md`; those workflow manifests are loaded only by explicit workflow launcher/API/CLI paths. A `SKILL.md` skill can declare governed tools and `tool:<name>` permissions；`request.metadata.tool_visibility.enabled_skills` 可显式启用该 skill，`skill_recall` 也可根据 prompt-safe `name`、`description`、`when_to_use` 和 `safe_examples` 从请求文本确定性召回 descriptor。无论显式还是自动召回，只有 manifest 有效、permission 匹配且 governed tools 已 qualified/exposed 时，context capability catalog 才暴露 prompt-safe descriptor。自动召回不激活 `skill_only` 工具，不改变 `RunToolSet.executable_tool_names`，也不是 tool semantic recall。Skill runtime constraints 可以说明 governed tool execution 会在 ToolExecutor policy 下对 retryable transient failures 做安全重试；该说明不是 retry permission，不能改变 `ExecutionPolicy.retry_count`、全局 retry policy 或幂等 gate。Unknown permission vocabulary is rejected before prompt rendering, and a repo-local skill id suppresses same-name built-in fallback even when the local manifest is disabled or invalid. Skill exposure is reported through prompt-safe `skill_report_v1`, including explicit skill ids, auto candidate ids, and auto recall reasons; skills do not register `run_skill`, do not call `ToolRegistry.run(...)`, and do not bypass `ActionValidator -> ToolExecutor -> ToolRegistry`.
 
@@ -256,19 +265,21 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 
 默认副作用分类：
 
-- `vision_understanding`、`video_understanding`、`web_search`、`web_fetch`、`shopping_search`、`product_search`、`price_compare`: `external_read`。
+- `vision_understanding`、`video_understanding`、`web_search`、`web_fetch`、`shopping_search`、`product_search`、`price_compare`、`weather`、`calendar_search`、`contacts_search`: `external_read`。
 - `memory_retrieval`: `local_read`。
 - `memory_ingest_status`: `external_read`。
 - `image_generation`、`render_3d`: `compensatable`。
 - `memory`、`memory_save`: `pending_confirmation`，成功提交后从 realtime interrupt 视角记为 `committed`。
+- `calendar_create`、`reminder_create`: `committed` / confirmation-sensitive，执行前必须有 runtime confirmation 和 idempotency key。
 - `memory_media_ingest`: `committed` / confirmation-sensitive because it submits media to an external Memory Server task that may create durable remote memories. It is only selected for explicit media-ingestion-into-memory requests and returns `provider_unconfigured` unless remote memory is explicitly configured.
 - `delegate_to_agent`: `compensatable`，因为子任务可能已经开始，需要取消、覆盖或补发修正。
 
 默认执行属性：
 
-- `web_search`、`shopping_search`、`product_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`、`artifact_reuse=reusable`。
+- `web_search`、`shopping_search`、`product_search`、`weather`、`calendar_search`、`contacts_search`、`memory_retrieval`、`memory_ingest_status`、`vision_understanding`、`video_understanding`: `dependency_mode=independent`、`realtime_safety=safe`、`artifact_reuse=reusable`。
 - `web_fetch`: `dependency_mode=requires_prior_observation`，因为通常需要先消费用户提供的 URL 或 `web_search` 返回的 URL。
 - `price_compare`: `dependency_mode=requires_prior_observation`，因为同一批次中通常需要先消费商品候选或先前 observation。
+- `calendar_create`、`reminder_create`: `dependency_mode=terminal`、`realtime_safety=needs_confirmation`、`artifact_reuse=do_not_reuse`。
 - `image_generation`、`render_3d`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=requires_validation`。
 - `delegate_to_agent`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=do_not_reuse`。
 - `memory_save`、`memory_media_ingest`: `dependency_mode=independent`、`realtime_safety=needs_confirmation`、`artifact_reuse=do_not_reuse`，并声明 memory 资源写入。

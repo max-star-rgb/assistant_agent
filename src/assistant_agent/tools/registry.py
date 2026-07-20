@@ -18,6 +18,13 @@ from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
 from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
 from assistant_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool, MemoryTool
+from assistant_agent.tools.personal_assistant_tools import (
+    CalendarCreateTool,
+    CalendarSearchTool,
+    ContactsSearchTool,
+    ReminderCreateTool,
+    WeatherTool,
+)
 from assistant_agent.tools.price_compare_tool import PriceCompareTool
 from assistant_agent.tools.product_search_tool import ProductSearchTool
 from assistant_agent.tools.render_tool import Render3DTool
@@ -477,6 +484,141 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
+    "weather": {
+        "when_to_use": [
+            "User asks for current weather, short-range forecast, rain, temperature, or 出门天气 for a named location.",
+            "Use for morning or departure briefings that need weather facts.",
+        ],
+        "when_not_to_use": [
+            "User asks for general news or arbitrary web facts; use web_search when current web facts are needed.",
+            "No location is available; ask for the location or use a trusted runtime location when one exists.",
+        ],
+        "runtime_constraints": [
+            "Requires location.",
+            "Default adapter is deterministic mock/offline; real weather providers must be explicitly configured in a future provider boundary.",
+        ],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads weather provider data and does not mutate external state.",
+        },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["weather.forecast"],
+            "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我查一下天气。",
+        },
+    },
+    "calendar_search": {
+        "when_to_use": [
+            "User asks to inspect calendar events, meetings, free/busy context, or 日程.",
+            "Use before scheduling workflows that need existing events or availability context.",
+        ],
+        "when_not_to_use": [
+            "User asks to create, update, or delete an event; use a mutating calendar tool with confirmation.",
+            "User asks for a reminder/todo rather than a calendar event.",
+        ],
+        "runtime_constraints": [
+            "Requires query, time window, or a clear natural-language calendar search.",
+            "Return prompt-safe event summaries only; do not expose raw provider payloads.",
+        ],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads calendar provider data and does not mutate external state.",
+        },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["calendar.events"],
+            "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我查一下日历。",
+        },
+    },
+    "calendar_create": {
+        "when_to_use": [
+            "User asks to create a calendar event after event details are known.",
+            "Use in meeting scheduling workflows only after availability/contact context is gathered and the user confirms the write.",
+        ],
+        "when_not_to_use": [
+            "User only asks to inspect schedule; use calendar_search.",
+            "Event title or start time is missing; ask for missing details before attempting the write.",
+        ],
+        "runtime_constraints": [
+            "Requires title, start_time, runtime confirmation metadata, and idempotency_key.",
+            "Model-supplied confirmation flags do not authorize execution.",
+        ],
+        "side_effect": {
+            "level": "committed",
+            "requires_confirmation": True,
+            "description": "Creates an external calendar event after runtime confirmation.",
+            "confirmation_kind": "calendar_write",
+            "compensation_hint": "Report the created event reference and offer an explicit follow-up change or deletion path.",
+        },
+        "execution": {
+            "dependency_mode": "terminal",
+            "resource_reads": ["calendar.events"],
+            "resource_writes": ["calendar.events"],
+            "realtime_safety": "needs_confirmation",
+            "artifact_reuse": "do_not_reuse",
+            "progress_message": "需要你确认后我再创建日程。",
+        },
+    },
+    "contacts_search": {
+        "when_to_use": [
+            "User asks to find a contact, candidate attendee, phone number, or email address.",
+            "Use in scheduling workflows when attendee names must be resolved before creating an event.",
+        ],
+        "when_not_to_use": [
+            "User asks to send a message, email, or call someone; those actions are not implemented.",
+            "No contact query or candidate name is available.",
+        ],
+        "runtime_constraints": [
+            "Requires query.",
+            "Return candidate contact details only; do not expose raw provider payloads.",
+        ],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads contacts provider data and does not mutate external state.",
+        },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["contacts"],
+            "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我查一下联系人。",
+        },
+    },
+    "reminder_create": {
+        "when_to_use": [
+            "User asks to create a reminder, todo, or action item from the current conversation.",
+            "Use after extracting a concrete task title and optional due time.",
+        ],
+        "when_not_to_use": [
+            "User only asks to brainstorm or summarize action items without saving them.",
+            "The reminder title is missing; ask for the missing task.",
+        ],
+        "runtime_constraints": [
+            "Requires title, runtime confirmation metadata, and idempotency_key.",
+            "Model-supplied confirmation flags do not authorize execution.",
+        ],
+        "side_effect": {
+            "level": "committed",
+            "requires_confirmation": True,
+            "description": "Creates a reminder/todo after runtime confirmation.",
+            "confirmation_kind": "reminder_write",
+            "compensation_hint": "Report the created reminder reference and offer an explicit follow-up change or deletion path.",
+        },
+        "execution": {
+            "dependency_mode": "terminal",
+            "resource_writes": ["reminders"],
+            "realtime_safety": "needs_confirmation",
+            "artifact_reuse": "do_not_reuse",
+            "progress_message": "需要你确认后我再创建提醒。",
+        },
+    },
     "memory": {
         "when_to_use": ["Legacy memory retrieve/save compatibility tool."],
         "when_not_to_use": ["Prefer memory_retrieval or memory_save in the assistant loop."],
@@ -697,6 +839,11 @@ def create_default_registry(
         ),
         ProductSearchTool(adapter=product_search_adapter),
         PriceCompareTool(adapter=price_compare_adapter),
+        WeatherTool(),
+        CalendarSearchTool(),
+        CalendarCreateTool(),
+        ContactsSearchTool(),
+        ReminderCreateTool(),
         WebSearchTool(adapter=create_web_search_adapter(config)),
         WebFetchTool(adapter=create_web_fetch_adapter(config)),
         ImageGenerationTool(adapter=create_image_generation_adapter(config)),

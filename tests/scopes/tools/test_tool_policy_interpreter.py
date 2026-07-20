@@ -15,7 +15,13 @@ def test_policy_interpreter_matches_existing_default_tool_risk_rules() -> None:
         assert view.requires_confirmation is spec.side_effect.requires_confirmation
         assert view.confirmation_kind == spec.side_effect.confirmation_kind
         assert view.risk_gate_level == risk_gate_level_for_policy(spec.side_effect)
-        assert view.idempotency_required is (view.risk_gate_level == "soft_gate")
+        expected_idempotency_required = view.risk_gate_level == "soft_gate"
+        if spec.policy is not None:
+            expected_idempotency_required = (
+                expected_idempotency_required
+                or spec.policy.execution.idempotency == "required"
+            )
+        assert view.idempotency_required is expected_idempotency_required
         assert view.auto_executable is (view.risk_gate_level == "auto")
         assert view.dependency_mode == spec.execution.dependency_mode
         assert view.concurrency_group == spec.execution.concurrency_group
