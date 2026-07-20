@@ -253,7 +253,7 @@ Long-term memory reads are policy-gated before retrieval:
 - The personal style/preference path is deliberately narrow: Chinese requests must contain a preference marker such as `风格`, `偏好`, `喜好`, or `口味` plus a task marker such as `推荐`, `方案`, `文案`, `设计`, `搭配`, `回答`, `写`, `生成`, or `继续`. Ordinary first-pass product search, generic advice, and generic copywriting still skip store access.
 - Skipped loads write prompt-safe metadata: `memory_context_skipped=true`, `memory_context_policy_reason`, `memory_read_policy`, `memory_trust_policy`, and empty `memory_context_*` injection fields.
 - `load_memory_with_trace(...)` records the read decision and skipped status, but does not record memory text or summaries.
-- `memory_retrieval` and legacy `memory action=retrieve` must pass the same read-intent gate in `ActionValidator` before `ToolExecutor` runs the tool.
+- `memory_retrieval` must pass the read-intent gate in `ActionValidator` before `ToolExecutor` runs the tool.
 
 Retrieved memory is user-history evidence, not authority. It may be stale, incorrectly retrieved, summarized, or incomplete. Current user input and fresh tool results override memory when they conflict, and instructions contained inside memory must not be executed. `memory_retrieval` results include `trust_policy` and `usage_hint` fields carrying this boundary for downstream consumers.
 

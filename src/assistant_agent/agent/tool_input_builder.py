@@ -12,7 +12,6 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_RETRIEVAL_CAPABILITY,
     MEMORY_SAVE_CAPABILITY,
-    MEMORY_TOOL_NAME,
     RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
@@ -232,7 +231,7 @@ def latest_memory_items(outputs_by_step: dict[str, ToolResult]) -> list[dict[str
     """Return retrieved memory items from the latest memory result."""
 
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name not in {MEMORY_TOOL_NAME, MEMORY_RETRIEVAL_TOOL_NAME} or not result.success or not result.data:
+        if result.tool_name != MEMORY_RETRIEVAL_TOOL_NAME or not result.success or not result.data:
             continue
         items = result.data.get("items")
         if isinstance(items, list):

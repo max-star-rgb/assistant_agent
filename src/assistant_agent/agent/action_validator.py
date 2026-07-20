@@ -22,7 +22,6 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_MEDIA_INGEST_TOOL_NAME,
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_TOOL_NAME,
-    MEMORY_TOOL_NAME,
     PYTHON_INTERPRETER_TOOL_NAME,
     RENDER_3D_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
@@ -255,10 +254,6 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
             )
     if tool_name == MEMORY_RETRIEVAL_TOOL_NAME and not tool_input.get("query"):
         return _reject("invalid_tool_input", "memory_retrieval requires query.")
-    if tool_name == MEMORY_TOOL_NAME:
-        memory_error = _validate_legacy_memory_tool_input(tool_input)
-        if memory_error is not None:
-            return memory_error
     if tool_name == MEMORY_SAVE_TOOL_NAME and not _has_memory_save_text(tool_input):
         return _reject("invalid_tool_input", "memory_save requires query, content.text, or content.summary.")
     if tool_name == MEMORY_SAVE_TOOL_NAME:
@@ -314,19 +309,6 @@ def _is_http_url(value: str) -> bool:
     return lowered.startswith("http://") or lowered.startswith("https://")
 
 
-def _validate_legacy_memory_tool_input(tool_input: dict[str, Any]) -> ActionValidationResult | None:
-    action = tool_input.get("action")
-    if action == "retrieve":
-        if not tool_input.get("query"):
-            return _reject("invalid_tool_input", "memory retrieve requires query.")
-        return None
-    if action == "save":
-        if not _has_memory_save_text(tool_input):
-            return _reject("invalid_tool_input", "memory save requires query, content.text, or content.summary.")
-        return _validate_memory_save_source(tool_input)
-    return _reject("invalid_tool_input", "memory tool requires action=retrieve or action=save.")
-
-
 def _validate_memory_save_source(tool_input: dict[str, Any]) -> ActionValidationResult | None:
     source_intent = tool_input.get("source_intent")
     if not isinstance(source_intent, str) or not source_intent.strip():
@@ -346,12 +328,9 @@ def _memory_read_decision(
     tool_input: dict[str, Any],
     request: UserRequest,
 ):
-    if tool_name == MEMORY_RETRIEVAL_TOOL_NAME:
-        query = str(tool_input.get("query") or "")
-    elif tool_name == MEMORY_TOOL_NAME and tool_input.get("action") == "retrieve":
-        query = str(tool_input.get("query") or "")
-    else:
+    if tool_name != MEMORY_RETRIEVAL_TOOL_NAME:
         return None
+    query = str(tool_input.get("query") or "")
     content = tool_input.get("content")
     content = content if isinstance(content, dict) else {}
     return MemoryReadPolicy().decide_tool_retrieval(

@@ -37,7 +37,6 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_CAPABILITY,
     MEMORY_SAVE_TOOL_NAME,
-    MEMORY_TOOL_NAME,
     RENDER_3D_CAPABILITY,
     RENDER_3D_TOOL_NAME,
     VIDEO_UNDERSTANDING_TOOL_NAME,
@@ -1025,7 +1024,6 @@ def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: Ag
     """Bind memory ownership to the authenticated runtime state, not model arguments."""
 
     if tool_name not in {
-        MEMORY_TOOL_NAME,
         MEMORY_RETRIEVAL_TOOL_NAME,
         MEMORY_SAVE_TOOL_NAME,
         MEMORY_MEDIA_INGEST_TOOL_NAME,

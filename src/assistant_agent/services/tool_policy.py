@@ -18,7 +18,7 @@ from assistant_agent.schemas.tools import (
     ToolSpec,
     VisibilityPolicy,
 )
-from assistant_agent.services.tool_manifest import MEMORY_SAVE_TOOL_NAME, MEMORY_TOOL_NAME
+from assistant_agent.services.tool_manifest import MEMORY_SAVE_TOOL_NAME
 from assistant_agent.tools.registry import tool_execution_policy, tool_side_effect_policy
 
 
@@ -26,7 +26,7 @@ TOOL_POLICY_VIEW_SCHEMA_VERSION = "tool_policy_view_v1"
 ToolConfirmationOwner = Literal["none", "tool", "runtime"]
 ToolRiskGateLevel = Literal["auto", "soft_gate", "hard_gate", "block"]
 
-_TOOL_OWNED_CONFIRMATION_TOOLS = {MEMORY_TOOL_NAME, MEMORY_SAVE_TOOL_NAME}
+_TOOL_OWNED_CONFIRMATION_TOOLS = {MEMORY_SAVE_TOOL_NAME}
 
 
 class ToolPolicyView(BaseModel):

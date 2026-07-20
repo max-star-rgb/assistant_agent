@@ -11,11 +11,11 @@ from typing import Any
 
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.tool_manifest import MEMORY_RETRIEVAL_TOOL_NAME, MEMORY_SAVE_TOOL_NAME, MEMORY_TOOL_NAME
+from assistant_agent.services.tool_manifest import MEMORY_RETRIEVAL_TOOL_NAME, MEMORY_SAVE_TOOL_NAME
 
 
 STRATEGY_NAME = "llm_first_hybrid"
-MEMORY_TOOL_NAMES = {MEMORY_TOOL_NAME, MEMORY_RETRIEVAL_TOOL_NAME, MEMORY_SAVE_TOOL_NAME}
+MEMORY_TOOL_NAMES = {MEMORY_RETRIEVAL_TOOL_NAME, MEMORY_SAVE_TOOL_NAME}
 
 
 def build_memory_tool_selection_audit(
@@ -71,7 +71,7 @@ def _selected_memory_tool(decision: AssistantDecision) -> str | None:
 
 
 def _is_memory_save_selection(selected_tool: str | None, tool_input: dict[str, Any]) -> bool:
-    return selected_tool == MEMORY_SAVE_TOOL_NAME or (selected_tool == MEMORY_TOOL_NAME and tool_input.get("action") == "save")
+    return selected_tool == MEMORY_SAVE_TOOL_NAME
 
 
 def _source_detail_present(tool_input: dict[str, Any]) -> bool:

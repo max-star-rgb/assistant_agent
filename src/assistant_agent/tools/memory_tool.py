@@ -1,4 +1,4 @@
-"""Mock memory tool."""
+"""Governed memory retrieval and save tools."""
 
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -22,12 +22,11 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_CAPABILITY,
     MEMORY_SAVE_TOOL_NAME,
-    MEMORY_TOOL_NAME,
 )
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
-class MemoryInput(BaseModel):
+class _MemoryOperationInput(BaseModel):
     action: Literal["retrieve", "save"]
     user_id: str = Field(min_length=1)
     session_id: str | None = None
@@ -69,13 +68,15 @@ class MemorySaveInput(BaseModel):
     evidence: str | None = None
 
 
-class MemoryTool(MockTool):
-    name = MEMORY_TOOL_NAME
-    description = "Mock memory save and retrieval."
-    input_schema = MemoryInput
+class _MemoryOperationTool(MockTool):
+    """Shared implementation for the dedicated memory tools."""
+
+    name = "memory_operation"
+    description = "Internal memory save and retrieval implementation."
+    input_schema = _MemoryOperationInput
     output_schema = MemoryItem
 
-    def _run(self, input: MemoryInput, context: ToolContext) -> ToolResult:
+    def _run(self, input: _MemoryOperationInput, context: ToolContext) -> ToolResult:
         input = _bind_context_identity(input, context)
         if input.action == "retrieve":
             if not input.query:
@@ -173,7 +174,7 @@ class MemoryTool(MockTool):
         return _mock_memory_saved_result(self.name, input, text)
 
 
-class MemoryRetrievalTool(MemoryTool):
+class MemoryRetrievalTool(_MemoryOperationTool):
     name = MEMORY_RETRIEVAL_TOOL_NAME
     input_schema = MemoryRetrievalInput
 
@@ -184,7 +185,7 @@ class MemoryRetrievalTool(MemoryTool):
         return super()._run(payload, context)
 
 
-class MemorySaveTool(MemoryTool):
+class MemorySaveTool(_MemoryOperationTool):
     name = MEMORY_SAVE_TOOL_NAME
     input_schema = MemorySaveInput
 
@@ -205,7 +206,7 @@ def _dedicated_memory_input(
     input: MemoryRetrievalInput | MemorySaveInput,
     context: ToolContext,
     tool_name: str,
-) -> MemoryInput | ToolResult:
+) -> _MemoryOperationInput | ToolResult:
     user_id = context.user_id or input.user_id
     if not user_id:
         return ToolResult(
@@ -217,7 +218,7 @@ def _dedicated_memory_input(
             ),
             error="缺少用户身份，无法访问记忆",
         )
-    return MemoryInput(
+    return _MemoryOperationInput(
         action=action,
         user_id=user_id,
         session_id=context.session_id or input.session_id,
@@ -230,7 +231,10 @@ def _dedicated_memory_input(
     )
 
 
-def _bind_context_identity(input: MemoryInput, context: ToolContext) -> MemoryInput:
+def _bind_context_identity(
+    input: _MemoryOperationInput,
+    context: ToolContext,
+) -> _MemoryOperationInput:
     updates: dict[str, str] = {}
     if context.user_id:
         updates["user_id"] = context.user_id
@@ -240,7 +244,7 @@ def _bind_context_identity(input: MemoryInput, context: ToolContext) -> MemoryIn
 
 
 def _retrieve_with_manager(
-    input: MemoryInput,
+    input: _MemoryOperationInput,
     manager: MemoryManager,
     tool_name: str,
     context: ToolContext,
@@ -365,7 +369,7 @@ def _memory_read_rejected_result(
 
 
 def _save_with_manager(
-    input: MemoryInput,
+    input: _MemoryOperationInput,
     context: ToolContext,
     manager: MemoryManager,
     tool_name: str,
@@ -537,7 +541,7 @@ def _memory_save_rejected_result(tool_name: str, reason: str) -> ToolResult:
 
 
 def _mock_memory_saved_result(
-    tool_name: str, input: MemoryInput, text: str
+    tool_name: str, input: _MemoryOperationInput, text: str
 ) -> ToolResult:
     memory_id = "m_saved_1"
     session_id = input.session_id or str(input.content.get("session_id") or "default")
@@ -619,7 +623,7 @@ def _candidate_recorded_result(
     )
 
 
-def _explicit_save_text(input: MemoryInput) -> str:
+def _explicit_save_text(input: _MemoryOperationInput) -> str:
     return str(
         input.query or input.content.get("text") or input.content.get("summary") or ""
     ).strip()

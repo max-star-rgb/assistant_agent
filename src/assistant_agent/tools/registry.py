@@ -17,7 +17,7 @@ from assistant_agent.tools.base import BaseTool, ToolContext
 from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
 from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
-from assistant_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool, MemoryTool
+from assistant_agent.tools.memory_tool import MemoryRetrievalTool, MemorySaveTool
 from assistant_agent.tools.personal_assistant_tools import (
     CalendarCreateTool,
     CalendarSearchTool,
@@ -46,7 +46,6 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_MEDIA_INGEST_TOOL_NAME,
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_TOOL_NAME,
-    MEMORY_TOOL_NAME,
     PYTHON_INTERPRETER_TOOL_NAME,
     REMINDER_CREATE_TOOL_NAME,
     RENDER_3D_TOOL_NAME,
@@ -722,24 +721,6 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "progress_message": "需要你确认后我再创建提醒。",
         },
     },
-    MEMORY_TOOL_NAME: {
-        "when_to_use": ["Legacy memory retrieve/save compatibility tool."],
-        "when_not_to_use": ["Prefer memory_retrieval or memory_save in the assistant loop."],
-        "runtime_constraints": ["Legacy compatibility only; use dedicated memory tools when possible."],
-        "side_effect": {
-            "level": "pending_confirmation",
-            "requires_confirmation": True,
-            "description": "May write durable user memory depending on action; treat as confirmation-sensitive.",
-            "confirmation_kind": "memory_write",
-        },
-        "execution": {
-            "dependency_mode": "requires_prior_observation",
-            "resource_reads": ["memory"],
-            "resource_writes": ["memory"],
-            "realtime_safety": "needs_confirmation",
-            "artifact_reuse": "do_not_reuse",
-        },
-    },
     MEMORY_RETRIEVAL_TOOL_NAME: {
         "when_to_use": [
             "User explicitly asks to use prior chats, saved memory, remembered preferences, or previous/last context.",
@@ -763,6 +744,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "reusable",
         },
         "visibility": {
+            "toolset": "memory",
             "allowed_entry_profiles": ["agent_service"],
         },
     },
@@ -796,6 +778,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "do_not_reuse",
         },
         "visibility": {
+            "toolset": "memory",
             "allowed_entry_profiles": ["agent_service"],
         },
     },
@@ -827,6 +810,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "realtime_safety": "needs_confirmation",
             "artifact_reuse": "do_not_reuse",
         },
+        "visibility": {"toolset": "memory"},
     },
     MEMORY_INGEST_STATUS_TOOL_NAME: {
         "when_to_use": [
@@ -851,6 +835,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "realtime_safety": "safe",
             "artifact_reuse": "reusable",
         },
+        "visibility": {"toolset": "memory"},
     },
     "delegate_to_agent": {
         "when_to_use": [
@@ -970,7 +955,6 @@ def create_default_registry(
         ImageGenerationTool(adapter=create_image_generation_adapter(config)),
         Render3DTool(adapter=create_render_adapter(config)),
         PythonInterpreterTool(),
-        MemoryTool(),
         MemoryRetrievalTool(),
         MemorySaveTool(),
         MemoryMediaIngestTool(memory_media_service),

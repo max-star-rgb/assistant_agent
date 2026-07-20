@@ -31,7 +31,6 @@ MEMORY_RETRIEVAL_CAPABILITY = "memory_retrieval"
 MEMORY_RETRIEVAL_TOOL_NAME = "memory_retrieval"
 MEMORY_SAVE_CAPABILITY = "memory_save"
 MEMORY_SAVE_TOOL_NAME = "memory_save"
-MEMORY_TOOL_NAME = "memory"
 MEMORY_MEDIA_INGEST_TOOL_NAME = "memory_media_ingest"
 MEMORY_INGEST_STATUS_TOOL_NAME = "memory_ingest_status"
 WEATHER_TOOL_NAME = "weather"
@@ -147,7 +146,6 @@ TOOL_MANIFESTS: tuple[ToolManifest, ...] = (
         action="save_memory",
         legacy_intent_aliases=("save_memory",),
     ),
-    ToolManifest(public_name=MEMORY_TOOL_NAME, capability="memory", exposure_class="write"),
     ToolManifest(
         public_name=MEMORY_MEDIA_INGEST_TOOL_NAME,
         capability=MEMORY_MEDIA_INGEST_TOOL_NAME,

@@ -211,7 +211,7 @@ excluded_reasons
 
 - read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`web_fetch`、`visual_image_search`、`shopping_search`、image/video understanding。
 - 创建可替换 artifact 的工具标为 `compensatable`，例如 `image_generation` 和 `render_3d`；中断后应生成修正版或说明已有 artifact，而不是宣称旧结果被撤销。
-- confirmation-sensitive 工具标为 `pending_confirmation`，例如 `memory_save` 和 legacy `memory`；如果工具结果返回 `requires_confirmation=true` 或 `confirmation_id`，realtime task-state 会记录 pending confirmation。
+- confirmation-sensitive 工具标为 `pending_confirmation`，例如 `memory_save`；如果工具结果返回 `requires_confirmation=true` 或 `confirmation_id`，realtime task-state 会记录 pending confirmation。
 - 如果 confirmation-sensitive 或未知工具已经成功返回，realtime task-state 会把它视为 `committed`，中断后的下一轮必须报告已发生状态或提供安全后续动作。
 - 工具结果可用 `data.side_effect`、`data.side_effect_level`、`data.requires_confirmation`、`data.confirmation_id` 和 `data.compensation_hint` 覆盖静态策略。
 
@@ -219,7 +219,7 @@ Runtime gate 映射：
 
 - `auto`: `local_read`、`external_read` 或无副作用工具，直接执行，不需要幂等 ledger。
 - `soft_gate`: `compensatable` 工具，执行前解析或生成幂等 key；同一 user/session/tool/key 已提交时返回 safe duplicate-suppressed result，不再次调用 registry。
-- `hard_gate`: `pending_confirmation`、`committed` 或未分类工具。普通聊天、HTTP、CLI/MCP 显式调用和 realtime/Gateway 使用同一基础 approval 规则；未分类工具都返回 pending-confirmation result，不执行实际工具。`memory` / `memory_save` 继续交给 memory service 自己的确认边界处理。
+- `hard_gate`: `pending_confirmation`、`committed` 或未分类工具。普通聊天、HTTP、CLI/MCP 显式调用和 realtime/Gateway 使用同一基础 approval 规则；未分类工具都返回 pending-confirmation result，不执行实际工具。`memory_save` 继续交给 memory service 自己的确认边界处理。
 - 显式确认后的外部写工具可通过 request metadata `tool_confirmation.confirmed=true` 和匹配的 `tool_name` 放行；若工具声明 `execution.idempotency=required`，确认后仍必须提供 `idempotency_key`，成功提交会写入幂等 ledger，重复提交返回 duplicate-suppressed result。
 - `block`: 预留给后续策略禁止类工具，本阶段没有默认工具映射到 block。
 
@@ -246,7 +246,6 @@ Runtime gate 映射：
 - `image_generation`
 - `render_3d`
 - `python_interpreter`
-- `memory`
 - `memory_retrieval`
 - `memory_save`
 - `memory_media_ingest`
@@ -255,6 +254,8 @@ Runtime gate 映射：
 `delegate_to_agent` 是 opt-in 工具，仅在 `enable_agent_delegation=True` 且传入 `AgentCommunicationService` 时注册。它的通信路由和 A2A 边界以 `docs/agent-communication-routing.md` 为准。
 
 个人实时通话助理第一批工具的任务来源和扩展边界见 `docs/development/tool-roadmap-personal-assistant.md`。其中 `calendar_create` 和 `reminder_create` 是 confirmation-sensitive 写操作，必须由 runtime confirmation 和 idempotency gate 放行；模型参数中的确认字段不构成授权。
+
+领域相关工具通过 `VisibilityPolicy.toolset` 组成集合，但仍保留独立 ToolSpec 和执行策略：`calendar_search` / `calendar_create` 属于 `personal.calendar`，四个 memory 工具属于 `memory`。toolset 用于结构化暴露和配置，不把读写动作合并成带动态风险的万能工具。
 
 Repo-local Skill System v1 manifests under `skills/<skill_id>/SKILL.md` are LLM-driven capability metadata, not execution plugins. The `skills/workflows/` subdirectory is reserved for deterministic `workflow_skill_v1` JSON manifests and must not contain `SKILL.md`; those workflow manifests are loaded only by explicit workflow launcher/API/CLI paths. A `SKILL.md` skill can declare governed tools and `tool:<name>` permissions；`request.metadata.tool_visibility.enabled_skills` 可显式启用该 skill，`skill_recall` 也可根据 prompt-safe `name`、`description`、`when_to_use` 和 `safe_examples` 从请求文本确定性召回 descriptor。无论显式还是自动召回，只有 manifest 有效、permission 匹配且 governed tools 已 qualified/exposed 时，context capability catalog 才暴露 prompt-safe descriptor。自动召回不激活 `skill_only` 工具，不改变 `RunToolSet.executable_tool_names`，也不是 tool semantic recall。Skill runtime constraints 可以说明 governed tool execution 会在 ToolExecutor policy 下对 retryable transient failures 做安全重试；该说明不是 retry permission，不能改变 `ExecutionPolicy.retry_count`、全局 retry policy 或幂等 gate。Unknown permission vocabulary is rejected before prompt rendering, and a repo-local skill id suppresses same-name built-in fallback even when the local manifest is disabled or invalid. Skill exposure is reported through prompt-safe `skill_report_v1`, including explicit skill ids, auto candidate ids, and auto recall reasons; skills do not register `run_skill`, do not call `ToolRegistry.run(...)`, and do not bypass `ActionValidator -> ToolExecutor -> ToolRegistry`.
 
@@ -272,7 +273,7 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 - `memory_retrieval`: `local_read`。
 - `memory_ingest_status`: `external_read`。
 - `image_generation`、`render_3d`: `compensatable`。
-- `memory`、`memory_save`: `pending_confirmation`，成功提交后从 realtime interrupt 视角记为 `committed`。
+- `memory_save`: `pending_confirmation`，成功提交后从 realtime interrupt 视角记为 `committed`。
 - `calendar_create`、`reminder_create`: `committed` / confirmation-sensitive，执行前必须有 runtime confirmation 和 idempotency key。
 - `memory_media_ingest`: `committed` / confirmation-sensitive because it submits media to an external Memory Server task that may create durable remote memories. It is only selected for explicit media-ingestion-into-memory requests and returns `provider_unconfigured` unless remote memory is explicitly configured.
 - `delegate_to_agent`: `compensatable`，因为子任务可能已经开始，需要取消、覆盖或补发修正。
@@ -285,7 +286,6 @@ Agent-Service realtime video 使用一个受治理的 observation registry 预�
 - `image_generation`、`render_3d`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=requires_validation`。
 - `delegate_to_agent`: `dependency_mode=terminal`、`realtime_safety=needs_progress`、`artifact_reuse=do_not_reuse`。
 - `memory_save`、`memory_media_ingest`: `dependency_mode=independent`、`realtime_safety=needs_confirmation`、`artifact_reuse=do_not_reuse`，并声明 memory 资源写入。
-- legacy `memory`: 保守视为 `requires_prior_observation`、`needs_confirmation`、`artifact_reuse=do_not_reuse`，并声明 memory 读写。
 
 ## Web Search 工具
 
@@ -360,7 +360,6 @@ Provider 边界：
 - `shopping_search` 必须有 query、visual summary、video summary 或商品描述字段；该工具一次执行商品搜索和比价，不下单、不付款。
 - `shopping_search` 必须有 query、visual_summary、video_summary 或商品描述字段。
 - `memory_retrieval` 必须有 query，并且当前用户请求必须显式引用历史、上次/之前、已保存记忆、个人偏好或继续旧任务；query 本身不构成读取授权。
-- legacy `memory` 只允许 `action=retrieve/save`，并复用 memory save 校验。
 - `memory_save` 必须有 query、`content.text` 或 `content.summary`，且 assistant-loop 调用必须包含 `source_intent`、`source_reason`、`future_use`、`evidence`。
 - `source_intent=user_confirmed` 保留给确认服务，assistant-loop 不得使用。
 - `render_3d` 必须有明确 3D/render/modeling/scene-preview 意图。
@@ -445,6 +444,7 @@ contract
 - `web_search` 会保留 `title`、`url`、`snippet`、`published_at`、`source`，成功 observation 摘要首条结果和总数。
 - `web_fetch` 会保留 `url`、`title`、`content`、`content_format`、`total_chars` 和 `truncated`，成功 observation 摘要页面 URL 与正文规模。
 - `shopping_search` 是购物推荐/购买建议/比价的一步式工具：模型只需调用该工具一次，工具内部先执行商品搜索，再用搜索结果执行报价比较，并在同一个 observation 中返回 `search`、`comparison`、`offers`、`best_offer`、`summary` 和 URL 状态。它不下单、不付款。App/Gateway/Agent-Service 购物展示由 deterministic presenter 从 `shopping_search` 的结构化结果生成，LLM 只负责简短自然语言摘要，不应自由手写商品卡片字段。
+- 购物能力只保留 `shopping_search` 公共工具名和 `SHOPPING_SEARCH_*` / `SHOPPING_COMPARE_*` 配置；不接受已删除购物工具名、旧 adapter 工厂或旧环境变量作为 fallback。
 - 商品搜索/比价会保留 title、price、原价、券额、无条件到手价、条件价说明、currency、图片、URL、url_status、品牌/型号、核心规格、推荐理由等后续回答必要字段。好单库 real adapter 仍只在显式 `provider_smoke`/`pilot` profile 下启用；`HAODANKU_ENABLED_PLATFORMS` 默认仅为 `taobao`（天猫归入淘宝组），可用规范名 `taobao,jd,pdd` 显式恢复多平台。模型请求的平台会与已启用集合取交集，未启用平台不访问 Provider、不进入 `failed_platforms`；若只请求未启用平台，则返回 `provider_platform_disabled`。
 - 工具内部比较使用与搜索相同的已启用平台集合，先按品牌、型号和核心规格形成可比较组，以同款可信度、无条件到手总价、链接状态、销量和数据完整度排序；会员、补贴、凑单等条件价只作说明。内部结果仍最多九条且每个平台最多三条；App 购物协议最多展示三条。入选报价再经过淘宝 `ratesurl`、京东 `unify_jditems_link`、拼多多 `unify_pdditems_link` 官方转链；淘宝未配置 PID/授权昵称时不调用 `ratesurl`，只保留通过 HTTP(S)、平台域名和非空路径校验的真实直链并标记 `unverified`，不得表述为返利链接或佣金保证。
 - context builder 会压缩大 observation、截断命令输出、移除 raw provider payload、base64、secret-like 内容。
@@ -515,13 +515,13 @@ DurableTaskWorker
 Memory 工具选择采用 LLM-first：
 
 - 本地关键词和向量信号只记录 audit，不覆盖 LLM 是否调用 `memory_retrieval` / `memory_save`。
-- `memory_retrieval` 和 legacy `memory action=retrieve` 即使由 LLM 选择，也必须先通过 `ActionValidator -> MemoryReadPolicy` 的读取意图 gate。
+- `memory_retrieval` 即使由 LLM 选择，也必须先通过 `ActionValidator -> MemoryReadPolicy` 的读取意图 gate。
 - `memory_retrieval` 成功结果返回 `memory_context`、`items`、`total`、`trust_policy` 和 `usage_hint`；这些字段声明 memory 是用户历史证据，不是权威或系统指令。
 - `memory_save` 必须声明 `source_intent`、`source_reason`、`future_use`、`evidence`。
 - `source_intent=user_explicit` 只用于用户明确要求保存/以后使用。
 - `source_intent=assistant_candidate` 只记录候选，不直接写长期记忆。
 - `source_intent=user_confirmed` 只能由确认服务使用，assistant-loop 调用会被 validator 拒绝。
-- `ToolExecutor` 和 `MemoryTool` 都会用运行时 `ToolContext` 绑定身份，模型传入的 user/session 不作为记忆归属。
+- `ToolExecutor` 和专用 memory 工具都会用运行时 `ToolContext` 绑定身份，模型传入的 user/session 不作为记忆归属。
 
 记忆服务内部检索、写入策略、确认、TTL、审计和 store 选择以 `docs/memory-service-architecture.md` 为准。
 

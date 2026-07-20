@@ -64,9 +64,22 @@ class TimeoutAwareLifecycleSink:
 def test_package_and_runtime_initialize_offline() -> None:
     package = importlib.import_module("assistant_agent")
     runtime = AgentGraphRuntime(config=_offline_config())
+    specs = {spec.name: spec for spec in runtime.registry.list_specs()}
 
     assert package is not None
     assert "shopping_search" in runtime.registry.list()
+    assert "memory" not in specs
+    assert {
+        specs[name].visibility.toolset
+        for name in (
+            "memory_retrieval",
+            "memory_save",
+            "memory_media_ingest",
+            "memory_ingest_status",
+        )
+    } == {"memory"}
+    assert specs["calendar_search"].policy.visibility.toolset == "personal.calendar"
+    assert specs["calendar_create"].policy.visibility.toolset == "personal.calendar"
     assert runtime.chat_adapter.provider == "mock"
 
 
