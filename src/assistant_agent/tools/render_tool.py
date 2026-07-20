@@ -10,11 +10,12 @@ from assistant_agent.services.render_adapter import (
     RenderRequest,
     create_render_adapter,
 )
+from assistant_agent.services.tool_manifest import RENDER_3D_CAPABILITY, RENDER_3D_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class Render3DTool(MockTool):
-    name = "render_3d"
+    name = RENDER_3D_TOOL_NAME
     description = "3D and scene rendering through an adapter."
     input_schema = RenderRequest
     output_schema = RenderResult
@@ -33,7 +34,7 @@ class Render3DTool(MockTool):
         data = result.model_dump(mode="json")
         output_ref = result.output_ref or result.preview_url
         contract = build_capability_output_contract(
-            capability="render_3d",
+            capability=RENDER_3D_CAPABILITY,
             status="succeeded" if success else "failed",
             output_ref=output_ref,
             data={

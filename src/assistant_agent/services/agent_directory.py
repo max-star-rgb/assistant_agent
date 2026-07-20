@@ -12,6 +12,14 @@ from assistant_agent.schemas.agent_communication import (
     AgentRouteRequest,
     AgentRouteResult,
 )
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEMORY_TOOL_NAME,
+    RENDER_3D_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+)
 
 
 class AgentDirectory:
@@ -117,12 +125,12 @@ def default_agent_instance(
         capabilities=[
             "chat",
             "tool_calling",
-            "vision_understanding",
-            "video_understanding",
-            "shopping_search",
-            "image_generation",
-            "render_3d",
-            "memory",
+            IMAGE_UNDERSTANDING_TOOL_NAME,
+            VIDEO_UNDERSTANDING_TOOL_NAME,
+            SHOPPING_SEARCH_TOOL_NAME,
+            IMAGE_GENERATION_TOOL_NAME,
+            RENDER_3D_TOOL_NAME,
+            MEMORY_TOOL_NAME,
         ],
         transports=["local"],
         can_delegate=can_delegate,

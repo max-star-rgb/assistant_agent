@@ -9,11 +9,12 @@ from assistant_agent.services.web_search_adapter import (
     WebSearchAdapter,
     create_web_search_adapter,
 )
+from assistant_agent.services.tool_manifest import WEB_SEARCH_CAPABILITY, WEB_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class WebSearchTool(MockTool):
-    name = "web_search"
+    name = WEB_SEARCH_TOOL_NAME
     description = (
         "Search public web pages for current facts when no dedicated personal tool covers the request."
     )
@@ -28,7 +29,7 @@ class WebSearchTool(MockTool):
         data = result.model_dump(mode="json")
         model_observation = _web_search_model_observation(data)
         contract = build_capability_output_contract(
-            capability="web_search",
+            capability=WEB_SEARCH_CAPABILITY,
             status="failed" if result.errors else "succeeded",
             output_ref=result.output_ref,
             data={

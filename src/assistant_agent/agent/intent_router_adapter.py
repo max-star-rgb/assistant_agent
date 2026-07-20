@@ -12,6 +12,12 @@ from assistant_agent.agent.intent import IntentDetector
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.intent_decision import IntentDecision
 from assistant_agent.schemas.intent_router import IntentRouterRequest
+from assistant_agent.services.tool_manifest import (
+    ASK_FOLLOWUP_CAPABILITY,
+    IMAGE_GENERATION_CAPABILITY,
+    MULTI_STEP_ORCHESTRATION_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+)
 
 
 class IntentRouterAdapter(Protocol):
@@ -64,15 +70,15 @@ class MockLLMIntentRouter:
         query = request.user_query or ""
         if "卖" in query or "营销" in query:
             return {
-                "primary_intent": "multi_step_orchestration",
-                "capabilities": ["shopping_search", "image_generation"],
+                "primary_intent": MULTI_STEP_ORCHESTRATION_CAPABILITY,
+                "capabilities": [SHOPPING_SEARCH_CAPABILITY, IMAGE_GENERATION_CAPABILITY],
                 "confidence": 0.72,
                 "source": "mock_llm",
                 "reason": "mock LLM 判断用户需要商品信息和生成营销素材。",
                 "matched_rules": ["mock_llm_sales_improvement"],
             }
         return {
-            "primary_intent": "ask_followup",
+            "primary_intent": ASK_FOLLOWUP_CAPABILITY,
             "capabilities": ["ask_followup"],
             "missing_inputs": ["clarification"],
             "confidence": 0.45,

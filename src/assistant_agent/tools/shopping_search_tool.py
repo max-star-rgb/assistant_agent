@@ -13,18 +13,19 @@ from assistant_agent.schemas.products import (
 )
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.product_adapter import (
-    PriceCompareAdapter,
-    ProductSearchAdapter,
-    create_price_compare_adapter,
-    create_product_search_adapter,
+    ShoppingCompareAdapter,
+    ShoppingSearchAdapter,
+    create_shopping_compare_adapter,
+    create_shopping_search_adapter,
 )
+from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class ShoppingSearchTool(MockTool):
     """Search current product candidates and compare their offers in one call."""
 
-    name = "shopping_search"
+    name = SHOPPING_SEARCH_TOOL_NAME
     description = (
         "Search for current shopping candidates and compare prices/offers in one call. "
         "Use this for product recommendations, purchase advice, price checks, and value comparisons."
@@ -35,12 +36,12 @@ class ShoppingSearchTool(MockTool):
     def __init__(
         self,
         *,
-        search_adapter: ProductSearchAdapter | None = None,
-        price_compare_adapter: PriceCompareAdapter | None = None,
+        search_adapter: ShoppingSearchAdapter | None = None,
+        price_compare_adapter: ShoppingCompareAdapter | None = None,
     ) -> None:
-        self.search_adapter = search_adapter or create_product_search_adapter()
+        self.search_adapter = search_adapter or create_shopping_search_adapter()
         self.price_compare_adapter = (
-            price_compare_adapter or create_price_compare_adapter()
+            price_compare_adapter or create_shopping_compare_adapter()
         )
 
     def _run(self, input: ProductSearchInput, context: ToolContext) -> ToolResult:
@@ -56,7 +57,7 @@ class ShoppingSearchTool(MockTool):
         errors = [error.model_dump(mode="json") for error in result.errors]
         model_observation = _shopping_search_model_observation(data)
         contract = build_capability_output_contract(
-            capability="shopping_search",
+            capability=SHOPPING_SEARCH_CAPABILITY,
             status="succeeded" if result.success else "failed",
             output_ref=result.output_ref,
             data={
@@ -115,7 +116,7 @@ def _compare_input_from_search(
     platforms = search_result.succeeded_platforms or input.platforms
     return PriceCompareInput(
         items=search_result.items,
-        query=search_result.query_used or _query_text(input) or "shopping_search",
+        query=search_result.query_used or _query_text(input) or SHOPPING_SEARCH_CAPABILITY,
         budget_min=input.budget_min,
         budget_max=input.budget_max if input.budget_max is not None else input.budget,
         platforms=platforms,
@@ -136,7 +137,7 @@ def _shopping_result(
         search_result.query_used
         or (comparison_result.query if comparison_result is not None else None)
         or _query_text(input)
-        or "shopping_search"
+        or SHOPPING_SEARCH_CAPABILITY
     )
     items = (
         comparison_result.items

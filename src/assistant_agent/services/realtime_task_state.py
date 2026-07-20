@@ -16,6 +16,7 @@ from assistant_agent.schemas.realtime_turn_arbitration import (
 )
 from assistant_agent.schemas.tools import ToolResult, ToolSideEffectLevel, ToolSideEffectPolicy
 from assistant_agent.services.context.compaction import compact_observation_for_context
+from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.tools.registry import tool_execution_policy, tool_side_effect_policy
 
 
@@ -762,7 +763,7 @@ def _checkpoint_artifacts_from_tool_artifacts(
         for artifact in tool_artifacts
         if artifact.kind == "observation" and artifact.reuse_policy == "reusable"
     ]
-    if len(reusable_steps) < 2:
+    if len(reusable_steps) < 2 and not _single_step_checkpointable(reusable_steps):
         return []
 
     refs = [
@@ -804,7 +805,7 @@ def _checkpoint_artifacts_from_tool_artifacts(
 
 def _checkpoint_artifact_summary(artifact: TaskArtifact) -> str:
     structured_output = artifact.context.get("structured_output")
-    if artifact.tool_name == "shopping_search" and isinstance(structured_output, dict):
+    if artifact.tool_name == SHOPPING_SEARCH_TOOL_NAME and isinstance(structured_output, dict):
         items = structured_output.get("items")
         if isinstance(items, list) and items:
             first = items[0]
@@ -814,6 +815,21 @@ def _checkpoint_artifact_summary(artifact: TaskArtifact) -> str:
                     return _clip_text(title, max_chars=180)
     summary = _metadata_string(artifact.context.get("summary")) or artifact.summary
     return _clip_text(summary, max_chars=180)
+
+
+def _single_step_checkpointable(reusable_steps: list[TaskArtifact]) -> bool:
+    if len(reusable_steps) != 1:
+        return False
+    artifact = reusable_steps[0]
+    if artifact.tool_name != SHOPPING_SEARCH_TOOL_NAME:
+        return False
+    structured_output = artifact.context.get("structured_output")
+    if not isinstance(structured_output, dict):
+        return False
+    return isinstance(structured_output.get("search"), dict) and isinstance(
+        structured_output.get("comparison"),
+        dict,
+    )
 
 
 def _side_effect_records_from_state(state: Any, *, task_state: RealtimeTaskState) -> list[SideEffectRecord]:

@@ -14,14 +14,20 @@ from typing import Any, Literal
 
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
+from assistant_agent.services.tool_manifest import (
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    PYTHON_INTERPRETER_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    VISUAL_IMAGE_SEARCH_TOOL_NAME,
+)
 from assistant_agent.services.tool_policy import ToolPolicyView
 
 ToolExposureCategory = Literal["read", "generate", "write", "dangerous"]
-_DANGEROUS_TOOL_NAMES = {"python_interpreter"}
+_DANGEROUS_TOOL_NAMES = {PYTHON_INTERPRETER_TOOL_NAME}
 _MEDIA_BOUND_TOOL_TYPES = {
-    "video_understanding": {"video"},
-    "vision_understanding": {"image", "video"},
-    "visual_image_search": {"image"},
+    VIDEO_UNDERSTANDING_TOOL_NAME: {"video"},
+    IMAGE_UNDERSTANDING_TOOL_NAME: {"image", "video"},
+    VISUAL_IMAGE_SEARCH_TOOL_NAME: {"image"},
 }
 
 

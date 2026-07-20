@@ -19,6 +19,7 @@ from assistant_agent.services.context.skill_loader import (
     load_repo_skill_descriptors,
 )
 from assistant_agent.services.context.skill_recall import recall_skill_descriptors
+from assistant_agent.services.tool_manifest import WEB_SEARCH_TOOL_NAME
 
 _TOOL_EXECUTOR_CONSTRAINT = "Selection context only; execute governed tools only through ToolExecutor."
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -27,9 +28,9 @@ _DEFAULT_CAPABILITIES: tuple[ToolCapabilityDescriptor, ...] = (
     ToolCapabilityDescriptor(
         name="realtime_web_search",
         description="Look up current or web-backed information during a realtime call.",
-        governed_tools=["web_search"],
-        permissions=["tool:web_search"],
-        required_inputs_by_tool={"web_search": ["query"]},
+        governed_tools=[WEB_SEARCH_TOOL_NAME],
+        permissions=[f"tool:{WEB_SEARCH_TOOL_NAME}"],
+        required_inputs_by_tool={WEB_SEARCH_TOOL_NAME: ["query"]},
         when_to_use=[
             "User asks for latest, current, today, news, or web-backed information.",
         ],

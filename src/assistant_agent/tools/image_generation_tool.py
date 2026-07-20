@@ -17,11 +17,12 @@ from assistant_agent.services.generated_artifacts import (
     materialize_image_generation_result,
 )
 from assistant_agent.services.prompt_builder import build_text_capability_output
+from assistant_agent.services.tool_manifest import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class ImageGenerationTool(MockTool):
-    name = "image_generation"
+    name = IMAGE_GENERATION_TOOL_NAME
     description = "Image generation through an adapter."
     input_schema = ImageGenerationInput
     output_schema = ImageGenerationResult
@@ -95,7 +96,7 @@ def _image_generation_output_contract(
         "model": result.model,
     }
     public = build_text_capability_output(
-        capability="image_generation",
+        capability=IMAGE_GENERATION_CAPABILITY,
         status=result.status,
         output_ref=result.output_ref or result.image_url,
         data=data,
@@ -115,7 +116,7 @@ def _image_generation_error_contract(
     message: str,
 ) -> tuple[dict, CapabilityOutputContract]:
     public = build_text_capability_output(
-        capability="image_generation",
+        capability=IMAGE_GENERATION_CAPABILITY,
         status="failed",
         errors=[
             {"code": "missing_required_input", "message": message, "recoverable": True}
@@ -132,7 +133,7 @@ def _image_generation_provider_error_contract(
     error: ProviderAdapterError,
 ) -> tuple[dict, CapabilityOutputContract]:
     public = build_text_capability_output(
-        capability="image_generation",
+        capability=IMAGE_GENERATION_CAPABILITY,
         status="failed",
         errors=[{"code": error.code, "message": error.message, "recoverable": False}],
     )

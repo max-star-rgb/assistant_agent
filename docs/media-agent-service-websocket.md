@@ -515,23 +515,13 @@ provider 选择入口。启动前应确认 chat readiness 和 `video_understandi
 绝对路径、Provider 请求体或原始响应。`videoResponse body.code=0` 只证明帧已成功
 校验、解码、注册和调度；后台视觉理解成功还必须由 provider/model/status 证据确认。
 
-仓库的 opt-in smoke 覆盖单帧、连续五帧后最终完成 sequence、主动断线后的新 session
-恢复，以及首 delta/完整观察耗时。只有同时设置 `RUN_INTEGRATION_TESTS=1`、
-`MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke|pilot`、
-`MULTIMODAL_AGENT_VISION_PROVIDER=qwen` 和 `QWEN_API_KEY`（兼容 `DASHSCOPE_API_KEY`，
-迁移期也接受旧 `QWEN_VISION_API_KEY`）时才会联网：
-
-```bash
-RUN_INTEGRATION_TESTS=1 \
-MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke \
-MULTIMODAL_AGENT_VISION_PROVIDER=qwen \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
-  tests/integration/test_qwen_realtime_vision_provider_smoke.py -q -s
-```
+真实联调通过 `scripts/run_server.py` 与 `scripts/run_client.py` 的显式 operator 流程执行，不放入
+pytest。只有同时选择 `provider_smoke|pilot` runtime profile、显式配置 Qwen vision provider 和
+本机未跟踪凭据时才允许联网；具体入口和参数见 `scripts/README.md`。
 
 当前性能目标是 first delta `<500ms`、total observation `<1s`。smoke 始终输出实际值和
 是否达到目标；目标未达到时不得伪造通过数据，也不把环境延迟与协议正确性混为一谈。
-未满足任一 opt-in 条件时用例必须 skip，默认测试不得加载真实 `.env` 或调用网络。
+默认 pytest 不加载真实 `.env` 或调用网络。
 
 ### 7.1 单轮耗时诊断
 

@@ -15,6 +15,12 @@ from assistant_agent.services.prompt_builder import (
     clip_list,
     clip_text,
 )
+from assistant_agent.services.tool_manifest import (
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEMORY_RETRIEVAL_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+)
 
 
 def build_direct_chat_request(
@@ -81,7 +87,7 @@ def _latest_product(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]:
     for result in reversed(list(outputs_by_step.values())):
         if not result.data:
             continue
-        if result.tool_name == "shopping_search":
+        if result.tool_name == SHOPPING_SEARCH_TOOL_NAME:
             best_offer = result.data.get("best_offer")
             if isinstance(best_offer, dict) and best_offer:
                 return best_offer
@@ -95,7 +101,7 @@ def _latest_product(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]:
 
 def _latest_visual_summary(outputs_by_step: dict[str, ToolResult]) -> str | None:
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name in {"vision_understanding", "video_understanding"} and result.data:
+        if result.tool_name in {IMAGE_UNDERSTANDING_TOOL_NAME, VIDEO_UNDERSTANDING_TOOL_NAME} and result.data:
             summary = result.data.get("summary")
             if isinstance(summary, str):
                 return summary
@@ -104,7 +110,7 @@ def _latest_visual_summary(outputs_by_step: dict[str, ToolResult]) -> str | None
 
 def _latest_memory_items(outputs_by_step: dict[str, ToolResult]) -> list[dict[str, Any]]:
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name == "memory_retrieval" and result.data:
+        if result.tool_name == MEMORY_RETRIEVAL_TOOL_NAME and result.data:
             items = result.data.get("items")
             if isinstance(items, list):
                 return items

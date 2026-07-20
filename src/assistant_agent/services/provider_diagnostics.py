@@ -11,6 +11,14 @@ from assistant_agent.services.provider_config_validation import validate_provide
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.provider_policy import ProviderExecutionPolicy
 from assistant_agent.services.provider_readiness import build_provider_readiness_report
+from assistant_agent.services.tool_manifest import (
+    DIRECT_CHAT_CAPABILITY,
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+)
 
 
 class ProviderSelectionSummary(BaseModel):
@@ -76,12 +84,12 @@ def build_provider_diagnostics_summary(
             timeout_seconds_by_capability={
                 capability: policy.timeout.for_capability(capability)
                 for capability in (
-                    "direct_chat",
-                    "image_generation",
-                    "image_understanding",
-                    "video_understanding",
-                    "shopping_search",
-                    "render_3d",
+                    DIRECT_CHAT_CAPABILITY,
+                    IMAGE_GENERATION_CAPABILITY,
+                    IMAGE_UNDERSTANDING_CAPABILITY,
+                    VIDEO_UNDERSTANDING_CAPABILITY,
+                    SHOPPING_SEARCH_CAPABILITY,
+                    RENDER_3D_CAPABILITY,
                 )
             },
         ),

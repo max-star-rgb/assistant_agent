@@ -20,7 +20,17 @@ from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatAdapter
 from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
 from assistant_agent.services.response_observability import append_response_final_event
-from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_CAPABILITY
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    MEMORY_RETRIEVAL_CAPABILITY,
+    MEMORY_SAVE_CAPABILITY,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+    WEB_FETCH_CAPABILITY,
+    WEB_SEARCH_CAPABILITY,
+)
 from assistant_agent.services.trace_store import TraceStore
 
 
@@ -78,15 +88,15 @@ def route_by_intent(graph_state: AgentGraphState) -> str:
     if intent is None:
         return "chat_node"
     capability = canonical_intent(intent.intent)
-    if capability in {"image_understanding", "video_understanding"}:
+    if capability in {IMAGE_UNDERSTANDING_CAPABILITY, VIDEO_UNDERSTANDING_CAPABILITY}:
         return "vision_node"
-    if capability in {SHOPPING_SEARCH_CAPABILITY, "web_search", "web_fetch"}:
+    if capability in {SHOPPING_SEARCH_CAPABILITY, WEB_SEARCH_CAPABILITY, WEB_FETCH_CAPABILITY}:
         return "search_node"
-    if capability == "image_generation":
+    if capability == IMAGE_GENERATION_CAPABILITY:
         return "image_generation_node"
-    if capability == "render_3d":
+    if capability == RENDER_3D_CAPABILITY:
         return "render_node"
-    if capability in {"memory_retrieval", "memory_save"}:
+    if capability in {MEMORY_RETRIEVAL_CAPABILITY, MEMORY_SAVE_CAPABILITY}:
         return "memory_node"
     if capability == "multi_step_orchestration":
         return "multi_tool_node"

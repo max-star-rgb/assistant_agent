@@ -25,6 +25,7 @@ from assistant_agent.services.realtime_video_memory import (
     RealtimeVideoObservationDiagnostics,
     SemanticKeyframeRecord,
 )
+from assistant_agent.services.tool_manifest import VIDEO_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.video_context import VideoFrame
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.video_ai.keyframe.collector import AdaptiveKeyframeCollector
@@ -422,7 +423,7 @@ class RealtimeVideoObserver:
         }
         decision = AssistantDecision(
             type="tool_call",
-            tool_name="video_understanding",
+            tool_name=VIDEO_UNDERSTANDING_TOOL_NAME,
             tool_input=tool_input,
             reason="Observe a selected realtime video keyframe.",
         )
@@ -434,7 +435,7 @@ class RealtimeVideoObserver:
         )
         if not validation.accepted:
             return ToolResult(
-                tool_name="video_understanding",
+                tool_name=VIDEO_UNDERSTANDING_TOOL_NAME,
                 success=False,
                 error=f"{validation.code}: {validation.message}",
             )
@@ -445,14 +446,14 @@ class RealtimeVideoObserver:
         return executor.run_tool(
             state,
             f"video-observation-{item.sequence}",
-            "video_understanding",
+            VIDEO_UNDERSTANDING_TOOL_NAME,
             tool_input,
             node_name="realtime_video_observer",
         )
 
     async def _close_video_adapter(self) -> None:
         try:
-            tool = self.registry.get("video_understanding")
+            tool = self.registry.get(VIDEO_UNDERSTANDING_TOOL_NAME)
         except KeyError:
             return
         adapter = getattr(tool, "adapter", None)
@@ -493,7 +494,7 @@ class RealtimeVideoObserver:
 
     def _provider_diagnostics(self) -> dict[str, Any]:
         try:
-            tool = self.registry.get("video_understanding")
+            tool = self.registry.get(VIDEO_UNDERSTANDING_TOOL_NAME)
         except KeyError:
             return {}
         adapter = getattr(tool, "adapter", None)

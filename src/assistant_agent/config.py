@@ -46,12 +46,15 @@ VisionEmbeddingProviderName = Literal["mock", "dashscope"]
 ChatProviderName = str
 ImageGenerationProviderName = str
 ShoppingProviderName = Literal["mock", "http", "haodanku"]
-ProductSearchProviderName = Literal["mock", "local_json", "http", "haodanku"]
-PriceCompareProviderName = Literal["mock", "local", "http", "haodanku"]
+ShoppingSearchProviderName = Literal["mock", "local_json", "http", "haodanku"]
+ShoppingCompareProviderName = Literal["mock", "local", "http", "haodanku"]
+ProductSearchProviderName = ShoppingSearchProviderName
+PriceCompareProviderName = ShoppingCompareProviderName
 RenderProviderName = Literal["mock", "http"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
 SearchProviderName = Literal["mock", "http"]
 VisualImageSearchProviderName = Literal["mock", "qwen"]
+PersonalAssistantProviderName = Literal["mock", "mcp"]
 
 
 @dataclass(frozen=True)
@@ -170,7 +173,19 @@ class ProviderConfig:
     qwen_image_search_base_url: str = DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL
     qwen_image_search_model: str = DEFAULT_QWEN_IMAGE_SEARCH_MODEL
     qwen_image_search_timeout_seconds: float = 30.0
+    personal_assistant_provider: PersonalAssistantProviderName = "mock"
     shopping_provider: ShoppingProviderName = "mock"
+    shopping_search_provider: ShoppingSearchProviderName = "mock"
+    shopping_search_local_path: str | None = None
+    shopping_search_base_url: str | None = None
+    shopping_search_api_key: str | None = None
+    shopping_search_timeout_seconds: float = 10.0
+    shopping_compare_provider: ShoppingCompareProviderName = "mock"
+    shopping_compare_base_url: str | None = None
+    shopping_compare_api_key: str | None = None
+    shopping_compare_timeout_seconds: float = 10.0
+    # Legacy compatibility: keep old constructor attributes readable, but sync
+    # them from the shopping_* fields in __post_init__.
     product_search_provider: ProductSearchProviderName = "mock"
     product_search_local_path: str | None = None
     product_search_base_url: str | None = None
@@ -213,6 +228,49 @@ class ProviderConfig:
             object.__setattr__(self, "memory_framework_version", expected)
         elif self.memory_framework_version != expected:
             raise ValueError(f"unsupported {self.memory_framework} version: {self.memory_framework_version}")
+        self._sync_shopping_config_aliases()
+
+    def _sync_shopping_config_aliases(self) -> None:
+        search_provider = self.shopping_search_provider
+        if search_provider == "mock" and self.product_search_provider != "mock":
+            search_provider = self.product_search_provider
+        search_local_path = self.shopping_search_local_path or self.product_search_local_path
+        search_base_url = self.shopping_search_base_url or self.product_search_base_url
+        search_api_key = self.shopping_search_api_key or self.product_search_api_key
+        search_timeout_seconds = self.shopping_search_timeout_seconds
+        if search_timeout_seconds == 10.0 and self.product_search_timeout_seconds != 10.0:
+            search_timeout_seconds = self.product_search_timeout_seconds
+
+        compare_provider = self.shopping_compare_provider
+        if compare_provider == "mock" and self.price_compare_provider != "mock":
+            compare_provider = self.price_compare_provider
+        compare_base_url = self.shopping_compare_base_url or self.price_compare_base_url
+        compare_api_key = self.shopping_compare_api_key or self.price_compare_api_key
+        compare_timeout_seconds = self.shopping_compare_timeout_seconds
+        if compare_timeout_seconds == 10.0 and self.price_compare_timeout_seconds != 10.0:
+            compare_timeout_seconds = self.price_compare_timeout_seconds
+
+        for name, value in (
+            ("shopping_search_provider", search_provider),
+            ("shopping_search_local_path", search_local_path),
+            ("shopping_search_base_url", search_base_url),
+            ("shopping_search_api_key", search_api_key),
+            ("shopping_search_timeout_seconds", search_timeout_seconds),
+            ("shopping_compare_provider", compare_provider),
+            ("shopping_compare_base_url", compare_base_url),
+            ("shopping_compare_api_key", compare_api_key),
+            ("shopping_compare_timeout_seconds", compare_timeout_seconds),
+            ("product_search_provider", search_provider),
+            ("product_search_local_path", search_local_path),
+            ("product_search_base_url", search_base_url),
+            ("product_search_api_key", search_api_key),
+            ("product_search_timeout_seconds", search_timeout_seconds),
+            ("price_compare_provider", compare_provider),
+            ("price_compare_base_url", compare_base_url),
+            ("price_compare_api_key", compare_api_key),
+            ("price_compare_timeout_seconds", compare_timeout_seconds),
+        ):
+            object.__setattr__(self, name, value)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
@@ -480,22 +538,40 @@ class ProviderConfig:
                 source.get("QWEN_IMAGE_SEARCH_TIMEOUT_SECONDS"),
                 30.0,
             ),
+            personal_assistant_provider=_personal_assistant_provider(
+                source.get("MULTIMODAL_AGENT_PERSONAL_ASSISTANT_PROVIDER"),
+                allow_real=allow_real_providers,
+            ),
             shopping_provider=shopping_provider,
-            product_search_provider=_product_search_provider(
-                source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER") or shopping_provider,
+            shopping_search_provider=_shopping_search_provider(
+                source.get("MULTIMODAL_AGENT_SHOPPING_SEARCH_PROVIDER")
+                or source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER")
+                or shopping_provider,
                 allow_real=allow_real_providers,
             ),
-            product_search_local_path=source.get("PRODUCT_SEARCH_LOCAL_PATH"),
-            product_search_base_url=source.get("PRODUCT_SEARCH_BASE_URL") or source.get("SEARCH_API_BASE_URL"),
-            product_search_api_key=source.get("PRODUCT_SEARCH_API_KEY"),
-            product_search_timeout_seconds=_float_env(source.get("PRODUCT_SEARCH_TIMEOUT_SECONDS"), 10.0),
-            price_compare_provider=_price_compare_provider(
-                source.get("MULTIMODAL_AGENT_PRICE_PROVIDER") or shopping_provider,
+            shopping_search_local_path=source.get("SHOPPING_SEARCH_LOCAL_PATH") or source.get("PRODUCT_SEARCH_LOCAL_PATH"),
+            shopping_search_base_url=(
+                source.get("SHOPPING_SEARCH_BASE_URL")
+                or source.get("PRODUCT_SEARCH_BASE_URL")
+                or source.get("SEARCH_API_BASE_URL")
+            ),
+            shopping_search_api_key=source.get("SHOPPING_SEARCH_API_KEY") or source.get("PRODUCT_SEARCH_API_KEY"),
+            shopping_search_timeout_seconds=_float_env(
+                source.get("SHOPPING_SEARCH_TIMEOUT_SECONDS") or source.get("PRODUCT_SEARCH_TIMEOUT_SECONDS"),
+                10.0,
+            ),
+            shopping_compare_provider=_shopping_compare_provider(
+                source.get("MULTIMODAL_AGENT_SHOPPING_COMPARE_PROVIDER")
+                or source.get("MULTIMODAL_AGENT_PRICE_PROVIDER")
+                or shopping_provider,
                 allow_real=allow_real_providers,
             ),
-            price_compare_base_url=source.get("PRICE_COMPARE_BASE_URL"),
-            price_compare_api_key=source.get("PRICE_COMPARE_API_KEY"),
-            price_compare_timeout_seconds=_float_env(source.get("PRICE_COMPARE_TIMEOUT_SECONDS"), 10.0),
+            shopping_compare_base_url=source.get("SHOPPING_COMPARE_BASE_URL") or source.get("PRICE_COMPARE_BASE_URL"),
+            shopping_compare_api_key=source.get("SHOPPING_COMPARE_API_KEY") or source.get("PRICE_COMPARE_API_KEY"),
+            shopping_compare_timeout_seconds=_float_env(
+                source.get("SHOPPING_COMPARE_TIMEOUT_SECONDS") or source.get("PRICE_COMPARE_TIMEOUT_SECONDS"),
+                10.0,
+            ),
             haodanku_api_key=source.get("HAODANKU_API_KEY"),
             haodanku_base_url=source.get("HAODANKU_BASE_URL") or "https://v3.api.haodanku.com",
             haodanku_timeout_seconds=_float_env(source.get("HAODANKU_TIMEOUT_SECONDS"), 10.0),
@@ -552,8 +628,9 @@ class ProviderConfig:
                 self.web_search_base_url,
                 self.web_search_api_key,
                 self.qwen_image_search_api_key,
-                self.product_search_api_key,
-                self.price_compare_api_key,
+                self.personal_assistant_provider == "mcp",
+                self.shopping_search_api_key,
+                self.shopping_compare_api_key,
                 self.haodanku_api_key,
                 self.render_api_key,
             )
@@ -904,6 +981,12 @@ def _visual_image_search_provider(value: str | None, *, allow_real: bool = True)
     return "mock"
 
 
+def _personal_assistant_provider(value: str | None, *, allow_real: bool = True) -> PersonalAssistantProviderName:
+    if allow_real and value == "mcp":
+        return "mcp"
+    return "mock"
+
+
 def _shopping_provider(value: str | None, *, allow_real: bool = True) -> ShoppingProviderName:
     if not allow_real:
         return "mock"
@@ -912,7 +995,7 @@ def _shopping_provider(value: str | None, *, allow_real: bool = True) -> Shoppin
     return "mock"
 
 
-def _product_search_provider(value: str | None, *, allow_real: bool = True) -> ProductSearchProviderName:
+def _shopping_search_provider(value: str | None, *, allow_real: bool = True) -> ShoppingSearchProviderName:
     if value == "local_json":
         return "local_json"
     if not allow_real:
@@ -922,7 +1005,7 @@ def _product_search_provider(value: str | None, *, allow_real: bool = True) -> P
     return "mock"
 
 
-def _price_compare_provider(value: str | None, *, allow_real: bool = True) -> PriceCompareProviderName:
+def _shopping_compare_provider(value: str | None, *, allow_real: bool = True) -> ShoppingCompareProviderName:
     if value == "local":
         return "local"
     if not allow_real:
@@ -930,6 +1013,14 @@ def _price_compare_provider(value: str | None, *, allow_real: bool = True) -> Pr
     if value in {"http", "haodanku"}:
         return value
     return "mock"
+
+
+def _product_search_provider(value: str | None, *, allow_real: bool = True) -> ProductSearchProviderName:
+    return _shopping_search_provider(value, allow_real=allow_real)
+
+
+def _price_compare_provider(value: str | None, *, allow_real: bool = True) -> PriceCompareProviderName:
+    return _shopping_compare_provider(value, allow_real=allow_real)
 
 
 def _haodanku_enabled_platforms(value: str | None) -> tuple[str, ...]:

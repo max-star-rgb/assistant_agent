@@ -7,6 +7,14 @@ from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.schemas.capability_output import CapabilityOutputContract
 from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    MEMORY_SAVE_CAPABILITY,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+)
 
 
 MemoryType = Literal[
@@ -159,15 +167,15 @@ def memory_item_from_capability_contract(
 
 
 def _memory_type_from_capability(capability: str) -> MemoryType:
-    if capability in {"image_generation", "image_understanding"}:
+    if capability in {IMAGE_GENERATION_CAPABILITY, IMAGE_UNDERSTANDING_CAPABILITY}:
         return "image"
-    if capability == "video_understanding":
+    if capability == VIDEO_UNDERSTANDING_CAPABILITY:
         return "video"
-    if capability == "shopping_search":
+    if capability == SHOPPING_SEARCH_CAPABILITY:
         return "product"
-    if capability == "render_3d":
+    if capability == RENDER_3D_CAPABILITY:
         return "render"
-    if capability == "memory_save":
+    if capability == MEMORY_SAVE_CAPABILITY:
         return "task"
     return "artifact"
 

@@ -24,11 +24,12 @@ from assistant_agent.services.tool_python_sandbox import (
     PythonSandbox,
     is_python_interpreter_enabled,
 )
+from assistant_agent.services.tool_manifest import PYTHON_INTERPRETER_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class PythonInterpreterTool(MockTool):
-    name = "python_interpreter"
+    name = PYTHON_INTERPRETER_TOOL_NAME
     description = (
         "Run short, local, restricted Python code for math, scientific, data, "
         "or code analysis."
@@ -80,7 +81,7 @@ def _tool_result(tool_name: str, result: PythonInterpreterResult) -> ToolResult:
     errors = [error.model_dump(mode="json") for error in result.errors]
     summary = _summary(result)
     contract = build_capability_output_contract(
-        capability="python_interpreter",
+        capability=PYTHON_INTERPRETER_TOOL_NAME,
         status="succeeded" if success else "failed",
         data={
             "status": result.status,

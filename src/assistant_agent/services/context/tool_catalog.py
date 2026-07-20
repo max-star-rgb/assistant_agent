@@ -19,11 +19,12 @@ from assistant_agent.services.context.tool_exposure import (
     entry_profile_tool_exposure,
     tool_exposure_category,
 )
+from assistant_agent.services.tool_manifest import MEMORY_MEDIA_INGEST_TOOL_NAME, MEMORY_SAVE_TOOL_NAME
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 
 
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
-_CODE_CONFIGURED_WRITE_TOOL_NAMES = {"memory_save", "memory_media_ingest"}
+_CODE_CONFIGURED_WRITE_TOOL_NAMES = {MEMORY_SAVE_TOOL_NAME, MEMORY_MEDIA_INGEST_TOOL_NAME}
 
 
 @dataclass(frozen=True)
@@ -134,9 +135,13 @@ def qualify_tool_specs(
         policy = interpreter.view_for_spec(spec)
         category = tool_exposure_category(policy)
         durable_ready = trusted_durable_execution and spec.name in durable_ready_tool_names
+        durable_plan_submission = (
+            request.task_execution_mode == "durable" and spec.name == "task_plan_submit"
+        )
         configured_for_exposure = (
             _code_configured_tool_exposure(category=category, tool_name=spec.name)
             or durable_ready
+            or durable_plan_submission
             or spec.name in visibility_overrides.configured_tools
             or bool(
                 policy.toolset

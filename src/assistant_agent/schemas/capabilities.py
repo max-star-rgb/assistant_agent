@@ -1,8 +1,22 @@
 """Assistant capability taxonomy and contracts."""
 
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, Field
+
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEMORY_RETRIEVAL_TOOL_NAME,
+    MEMORY_SAVE_TOOL_NAME,
+    RENDER_3D_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    VISUAL_IMAGE_SEARCH_TOOL_NAME,
+    WEB_FETCH_TOOL_NAME,
+    WEB_SEARCH_TOOL_NAME,
+    legacy_intent_aliases,
+)
 
 
 CapabilityName = Literal[
@@ -33,25 +47,24 @@ CANONICAL_INTENTS: tuple[CapabilityName, ...] = (
     "shopping_search",
     "render_3d",
     "memory_retrieval",
+    "memory_save",
     "multi_step_orchestration",
     "ask_followup",
 )
 
 
-LEGACY_INTENT_ALIASES: dict[str, CapabilityName] = {
+_NON_TOOL_INTENT_ALIASES: dict[str, CapabilityName] = {
     "chat": "direct_chat",
-    "generate_image": "image_generation",
-    "understand_image": "image_understanding",
-    "understand_video": "video_understanding",
-    "search_web": "web_search",
-    "fetch_web": "web_fetch",
-    "read_url": "web_fetch",
-    "search_image_by_image": "visual_image_search",
-    "render_3d": "render_3d",
-    "retrieve_memory": "memory_retrieval",
     "multi_tool_task": "multi_step_orchestration",
     "ask_followup": "ask_followup",
-    "save_memory": "memory_save",
+}
+LEGACY_INTENT_ALIASES: dict[str, CapabilityName] = {
+    **_NON_TOOL_INTENT_ALIASES,
+    **{
+        alias: cast(CapabilityName, capability)
+        for alias, capability in legacy_intent_aliases().items()
+        if capability in CANONICAL_INTENTS
+    },
 }
 
 
@@ -81,7 +94,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="image_generation",
         input_requirements=["text"],
         output_contract="ImageGenerationResult",
-        tool_name="image_generation",
+        tool_name=IMAGE_GENERATION_TOOL_NAME,
         text_required=True,
         media_optional=True,
     ),
@@ -89,7 +102,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="image_understanding",
         input_requirements=["image"],
         output_contract="VisualUnderstandingResult",
-        tool_name="vision_understanding",
+        tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
         image_required=True,
         media_optional=False,
     ),
@@ -97,7 +110,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="video_understanding",
         input_requirements=["video"],
         output_contract="VideoUnderstandingResult",
-        tool_name="video_understanding",
+        tool_name=VIDEO_UNDERSTANDING_TOOL_NAME,
         video_required=True,
         media_optional=False,
     ),
@@ -105,7 +118,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="web_search",
         input_requirements=["query"],
         output_contract="WebSearchResult",
-        tool_name="web_search",
+        tool_name=WEB_SEARCH_TOOL_NAME,
         text_required=True,
         media_optional=False,
     ),
@@ -113,7 +126,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="web_fetch",
         input_requirements=["url"],
         output_contract="WebFetchResult",
-        tool_name="web_fetch",
+        tool_name=WEB_FETCH_TOOL_NAME,
         text_required=True,
         media_optional=False,
     ),
@@ -121,7 +134,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="visual_image_search",
         input_requirements=["public image_url or http(s) image_ids"],
         output_contract="VisualImageSearchResult",
-        tool_name="visual_image_search",
+        tool_name=VISUAL_IMAGE_SEARCH_TOOL_NAME,
         text_required=False,
         image_required=True,
         media_optional=False,
@@ -130,7 +143,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="shopping_search",
         input_requirements=["text or visual_summary"],
         output_contract="ShoppingSearchResult",
-        tool_name="shopping_search",
+        tool_name=SHOPPING_SEARCH_TOOL_NAME,
         text_required=False,
         media_optional=True,
     ),
@@ -138,7 +151,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="render_3d",
         input_requirements=["scene description"],
         output_contract="RenderResult",
-        tool_name="render_3d",
+        tool_name=RENDER_3D_TOOL_NAME,
         text_required=True,
         media_optional=True,
     ),
@@ -146,7 +159,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="memory_retrieval",
         input_requirements=["text", "user_id", "session_id"],
         output_contract="list[MemoryItem]",
-        tool_name="memory_retrieval",
+        tool_name=MEMORY_RETRIEVAL_TOOL_NAME,
         text_required=True,
         media_optional=False,
     ),
@@ -169,7 +182,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="memory_save",
         input_requirements=["text or content", "user_id", "session_id", "source_intent for assistant-loop calls"],
         output_contract="saved MemoryItem or candidate/confirmation/rejection status",
-        tool_name="memory_save",
+        tool_name=MEMORY_SAVE_TOOL_NAME,
         media_optional=False,
     ),
 }

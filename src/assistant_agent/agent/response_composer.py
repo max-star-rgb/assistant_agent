@@ -9,6 +9,12 @@ from assistant_agent.agent.response_templates import (
 )
 from assistant_agent.schemas.capabilities import canonical_intent
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_TOOL_NAME,
+    MEMORY_SAVE_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+)
 
 
 def save_demo_memory(request: UserRequest, state: AgentState, tool_executor: ToolExecutor) -> None:
@@ -19,9 +25,9 @@ def save_demo_memory(request: UserRequest, state: AgentState, tool_executor: Too
     if not request.video_ids:
         return
     completed_tools = {result.tool_name for result in state.tool_results if result.success}
-    if not {"video_understanding", "shopping_search", "image_generation"}.issubset(completed_tools):
+    if not {VIDEO_UNDERSTANDING_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME}.issubset(completed_tools):
         return
-    if any(result.tool_name == "memory_save" for result in state.tool_results):
+    if any(result.tool_name == MEMORY_SAVE_TOOL_NAME for result in state.tool_results):
         return
     memory_input = {
         "action": "save",
@@ -35,7 +41,7 @@ def save_demo_memory(request: UserRequest, state: AgentState, tool_executor: Too
             "text": request.text,
         },
     }
-    tool_executor.run_tool(state, "memory_save", "memory_save", memory_input)
+    tool_executor.run_tool(state, MEMORY_SAVE_TOOL_NAME, MEMORY_SAVE_TOOL_NAME, memory_input)
 
 
 def compose_response(state: AgentState) -> AgentResponse:
@@ -86,13 +92,13 @@ def compose_response(state: AgentState) -> AgentResponse:
     for result in state.tool_results:
         if not result.success or not result.data:
             continue
-        if result.tool_name == "shopping_search" and result.data.get("items") and not product_title:
+        if result.tool_name == SHOPPING_SEARCH_TOOL_NAME and result.data.get("items") and not product_title:
             first_item = result.data["items"][0]
             product_title = first_item.get("title")
             best_price = first_item.get("price")
-        elif result.tool_name == "image_generation" and not image_url:
+        elif result.tool_name == IMAGE_GENERATION_TOOL_NAME and not image_url:
             image_url = result.data.get("image_url")
-        elif result.tool_name == "memory_save":
+        elif result.tool_name == MEMORY_SAVE_TOOL_NAME:
             memory_ref = result.output_ref
             if isinstance(result.data, dict):
                 memory_status = result.data.get("status")

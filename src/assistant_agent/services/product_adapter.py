@@ -18,6 +18,7 @@ from assistant_agent.schemas.products import (
     RankingReason,
 )
 from assistant_agent.services.provider_errors import build_provider_error
+from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_CAPABILITY
 from assistant_agent.utils.product_matching import compare_products
 
 
@@ -33,6 +34,10 @@ class PriceCompareAdapter(Protocol):
 
     def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
         """Return structured price offers."""
+
+
+ShoppingSearchAdapter = ProductSearchAdapter
+ShoppingCompareAdapter = PriceCompareAdapter
 
 
 class MockProductSearchAdapter:
@@ -86,7 +91,7 @@ class LocalPriceCompareAdapter(MockPriceCompareAdapter):
 
 
 class HttpPriceCompareAdapter:
-    """HTTP price compare skeleton. It never performs network IO in Phase 5C Task 057."""
+    """HTTP shopping compare skeleton. It never performs network IO in Phase 5C Task 057."""
 
     provider = "http"
 
@@ -103,22 +108,22 @@ class HttpPriceCompareAdapter:
     def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
         missing = []
         if not self.base_url:
-            missing.append("PRICE_COMPARE_BASE_URL")
+            missing.append("SHOPPING_COMPARE_BASE_URL")
         if not self.api_key:
-            missing.append("PRICE_COMPARE_API_KEY")
+            missing.append("SHOPPING_COMPARE_API_KEY")
         if missing:
             return _failed_price_result(
                 provider=self.provider,
                 query=request.query,
                 code="provider_unconfigured",
-                message=f"http price compare provider is missing {', '.join(missing)}.",
+                message=f"http shopping compare provider is missing {', '.join(missing)}.",
                 recoverable=True,
             )
         return _failed_price_result(
             provider=self.provider,
             query=request.query,
             code="provider_unavailable",
-            message="http price compare provider is a Phase 5C skeleton and does not perform network IO.",
+            message="http shopping compare provider is a Phase 5C skeleton and does not perform network IO.",
             recoverable=False,
         )
 
@@ -136,7 +141,7 @@ class LocalJsonProductSearchAdapter:
             return _failed_search_result(
                 provider=self.provider,
                 code="provider_unconfigured",
-                message="local_json product search provider is missing PRODUCT_SEARCH_LOCAL_PATH.",
+                message="local_json shopping search provider is missing SHOPPING_SEARCH_LOCAL_PATH.",
                 recoverable=True,
             )
         if not self.path.exists():
@@ -177,7 +182,7 @@ class LocalJsonProductSearchAdapter:
 
 
 class HttpProductSearchAdapter:
-    """HTTP product search skeleton. It never performs network IO in Phase 5C Task 056."""
+    """HTTP shopping search skeleton. It never performs network IO in Phase 5C Task 056."""
 
     provider = "http"
 
@@ -194,26 +199,26 @@ class HttpProductSearchAdapter:
     def search(self, request: ProductSearchRequest) -> ProductSearchResult:
         missing = []
         if not self.base_url:
-            missing.append("PRODUCT_SEARCH_BASE_URL")
+            missing.append("SHOPPING_SEARCH_BASE_URL")
         if not self.api_key:
-            missing.append("PRODUCT_SEARCH_API_KEY")
+            missing.append("SHOPPING_SEARCH_API_KEY")
         if missing:
             return _failed_search_result(
                 provider=self.provider,
                 code="provider_unconfigured",
-                message=f"http product search provider is missing {', '.join(missing)}.",
+                message=f"http shopping search provider is missing {', '.join(missing)}.",
                 recoverable=True,
             )
         return _failed_search_result(
             provider=self.provider,
             code="provider_unavailable",
-            message="http product search provider is a Phase 5C skeleton and does not perform network IO.",
+            message="http shopping search provider is a Phase 5C skeleton and does not perform network IO.",
             recoverable=False,
         )
 
 
 class UnconfiguredProductSearchAdapter:
-    """Adapter returned when a selected product provider lacks configuration."""
+    """Adapter returned when a selected shopping search provider lacks configuration."""
 
     def __init__(self, provider: str, missing: str) -> None:
         self.provider = provider
@@ -223,20 +228,20 @@ class UnconfiguredProductSearchAdapter:
         return _failed_search_result(
             provider=self.provider,
             code="provider_unconfigured",
-            message=f"{self.provider} product search provider is missing {self.missing}.",
+            message=f"{self.provider} shopping search provider is missing {self.missing}.",
             recoverable=True,
         )
 
 
-def create_product_search_adapter(config: ProviderConfig | None = None) -> ProductSearchAdapter:
-    """Create a product search adapter without initializing real provider clients."""
+def create_shopping_search_adapter(config: ProviderConfig | None = None) -> ShoppingSearchAdapter:
+    """Create a shopping search adapter without initializing real provider clients."""
 
     resolved = config or ProviderConfig.from_env()
-    if resolved.product_search_provider == "local_json":
-        if not resolved.product_search_local_path:
-            return UnconfiguredProductSearchAdapter("local_json", "PRODUCT_SEARCH_LOCAL_PATH")
-        return LocalJsonProductSearchAdapter(resolved.product_search_local_path)
-    if resolved.product_search_provider == "haodanku":
+    if resolved.shopping_search_provider == "local_json":
+        if not resolved.shopping_search_local_path:
+            return UnconfiguredProductSearchAdapter("local_json", "SHOPPING_SEARCH_LOCAL_PATH")
+        return LocalJsonProductSearchAdapter(resolved.shopping_search_local_path)
+    if resolved.shopping_search_provider == "haodanku":
         if not resolved.haodanku_api_key:
             return UnconfiguredProductSearchAdapter("haodanku", "HAODANKU_API_KEY")
         from assistant_agent.providers.haodanku_product_search import (
@@ -256,22 +261,28 @@ def create_product_search_adapter(config: ProviderConfig | None = None) -> Produ
                 pdd_channel=resolved.haodanku_pdd_channel,
             )
         )
-    if resolved.product_search_provider == "http":
+    if resolved.shopping_search_provider == "http":
         return HttpProductSearchAdapter(
-            base_url=resolved.product_search_base_url,
-            api_key=resolved.product_search_api_key,
-            timeout_seconds=resolved.product_search_timeout_seconds,
+            base_url=resolved.shopping_search_base_url,
+            api_key=resolved.shopping_search_api_key,
+            timeout_seconds=resolved.shopping_search_timeout_seconds,
         )
     return MockProductSearchAdapter()
 
 
-def create_price_compare_adapter(config: ProviderConfig | None = None) -> PriceCompareAdapter:
-    """Create a price compare adapter without initializing real provider clients."""
+def create_product_search_adapter(config: ProviderConfig | None = None) -> ProductSearchAdapter:
+    """Create a product search adapter without initializing real provider clients."""
+
+    return create_shopping_search_adapter(config)
+
+
+def create_shopping_compare_adapter(config: ProviderConfig | None = None) -> ShoppingCompareAdapter:
+    """Create a shopping compare adapter without initializing real provider clients."""
 
     resolved = config or ProviderConfig.from_env()
-    if resolved.price_compare_provider == "local":
+    if resolved.shopping_compare_provider == "local":
         return LocalPriceCompareAdapter()
-    if resolved.price_compare_provider == "haodanku":
+    if resolved.shopping_compare_provider == "haodanku":
         from assistant_agent.providers.haodanku_product_search import (
             HaodankuConfig,
             HaodankuPriceCompareAdapter,
@@ -289,13 +300,19 @@ def create_price_compare_adapter(config: ProviderConfig | None = None) -> PriceC
                 pdd_channel=resolved.haodanku_pdd_channel,
             )
         )
-    if resolved.price_compare_provider == "http":
+    if resolved.shopping_compare_provider == "http":
         return HttpPriceCompareAdapter(
-            base_url=resolved.price_compare_base_url,
-            api_key=resolved.price_compare_api_key,
-            timeout_seconds=resolved.price_compare_timeout_seconds,
+            base_url=resolved.shopping_compare_base_url,
+            api_key=resolved.shopping_compare_api_key,
+            timeout_seconds=resolved.shopping_compare_timeout_seconds,
         )
     return MockPriceCompareAdapter()
+
+
+def create_price_compare_adapter(config: ProviderConfig | None = None) -> PriceCompareAdapter:
+    """Create a price compare adapter without initializing real provider clients."""
+
+    return create_shopping_compare_adapter(config)
 
 
 def _mock_products() -> list[ProductResult]:
@@ -456,7 +473,7 @@ def _failed_search_result(
         message,
         recoverable=recoverable,
         provider=provider,
-        capability="shopping_search",
+        capability=SHOPPING_SEARCH_CAPABILITY,
     )
     return ProductSearchResult(
         provider=provider,
@@ -607,10 +624,10 @@ def _failed_price_result(
         message,
         recoverable=recoverable,
         provider=provider,
-        capability="shopping_search",
+        capability=SHOPPING_SEARCH_CAPABILITY,
     )
     return PriceCompareResult(
-        query=query or "shopping_search",
+        query=query or SHOPPING_SEARCH_CAPABILITY,
         summary=error.message,
         provider=provider,
         errors=[ProductProviderError(code=error.code, message=error.message, recoverable=error.recoverable)],

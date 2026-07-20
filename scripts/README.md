@@ -42,6 +42,9 @@ These are useful, but they are not the main product path:
 - `scripts/check_env.py`: environment sanity check.
 - `scripts/run_tavily_search_relay.py`: opt-in local HTTP relay that adapts the
   generic `web_search` and `web_fetch` HTTP protocols to Tavily Search/Extract APIs.
+- `scripts/smoke_text_observability_trace.py`: offline text trace smoke that
+  runs one mock turn through the OpenTelemetry and Langfuse-score observer chain
+  without sending data to an external endpoint.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.
 - `scripts/memory_audit.py`, `scripts/agentruntime_view.py`, and

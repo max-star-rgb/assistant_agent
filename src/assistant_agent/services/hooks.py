@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from inspect import Parameter, signature
 from typing import Protocol
 
 from assistant_agent.schemas.events import AgentEvent
@@ -123,3 +124,34 @@ class HookTraceStore:
 
     def delete_by_user(self, user_id: str) -> int:
         return 0
+
+    def close(self, *, timeout: float = 1.0) -> bool:
+        closed = True
+        for observer in reversed(self.manager.observers):
+            method = getattr(observer, "close", None)
+            if not callable(method):
+                method = getattr(observer, "shutdown", None)
+            if not callable(method):
+                continue
+            result = _call_lifecycle(method, timeout=timeout)
+            if result is False:
+                closed = False
+        return closed
+
+
+def _call_lifecycle(method: Callable[..., object], *, timeout: float) -> bool:
+    if _accepts_timeout(method):
+        result = method(timeout=timeout)
+    else:
+        result = method()
+    return result is not False
+
+
+def _accepts_timeout(method: Callable[..., object]) -> bool:
+    try:
+        parameters = signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    return "timeout" in parameters or any(
+        parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )

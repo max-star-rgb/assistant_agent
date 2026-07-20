@@ -13,6 +13,15 @@ from assistant_agent.services.provider_errors import (
     sanitize_error_detail,
     sanitize_error_message,
 )
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    RENDER_3D_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    WEB_FETCH_TOOL_NAME,
+    WEB_SEARCH_TOOL_NAME,
+)
 
 
 ObservationStatus = Literal["succeeded", "failed", "rejected"]
@@ -124,7 +133,7 @@ def _summary_from_result(
 
 
 def _shopping_summary(tool_name: str, data: dict[str, Any]) -> str:
-    if tool_name == "shopping_search":
+    if tool_name == SHOPPING_SEARCH_TOOL_NAME:
         best_offer = data.get("best_offer")
         if isinstance(best_offer, dict) and best_offer:
             return _format_product_item_summary(
@@ -134,7 +143,7 @@ def _shopping_summary(tool_name: str, data: dict[str, Any]) -> str:
 
 
 def _web_search_summary(tool_name: str, data: dict[str, Any]) -> str:
-    if tool_name != "web_search":
+    if tool_name != WEB_SEARCH_TOOL_NAME:
         return ""
     results = data.get("results")
     if not isinstance(results, list) or not results:
@@ -157,7 +166,7 @@ def _web_search_summary(tool_name: str, data: dict[str, Any]) -> str:
 
 
 def _web_fetch_summary(tool_name: str, data: dict[str, Any]) -> str:
-    if tool_name != "web_fetch":
+    if tool_name != WEB_FETCH_TOOL_NAME:
         return ""
     url = data.get("url")
     if not isinstance(url, str) or not url.strip():
@@ -217,19 +226,19 @@ def _next_step_hint(
                 "answer with partial results, or choose a different action instead of failing the run solely on this repeat."
             )
         return "Explain the failure, use a different action, or ask the user for clarification."
-    if tool_name in {"vision_understanding", "video_understanding"}:
+    if tool_name in {IMAGE_UNDERSTANDING_TOOL_NAME, VIDEO_UNDERSTANDING_TOOL_NAME}:
         return (
             "If the user only asked for a description, final_answer is likely enough."
         )
-    if tool_name == "shopping_search":
+    if tool_name == SHOPPING_SEARCH_TOOL_NAME:
         return "已完成商品搜索和比价；请基于 structured_output.best_offer、offers 和 URL 状态给出最终购物建议，不要声称已经下单。"
-    if tool_name == "web_search":
+    if tool_name == WEB_SEARCH_TOOL_NAME:
         return "Use the web search results in the final answer; include source URLs and published dates when present."
-    if tool_name == "web_fetch":
+    if tool_name == WEB_FETCH_TOOL_NAME:
         return "Use the fetched page content in the final answer; cite the source URL when it informs the answer."
-    if tool_name == "image_generation":
+    if tool_name == IMAGE_GENERATION_TOOL_NAME:
         return "Return the generated image reference to the user."
-    if tool_name == "render_3d":
+    if tool_name == RENDER_3D_TOOL_NAME:
         return "Return the 3D preview reference to the user."
     return "Use this observation to decide whether to answer or call another action."
 

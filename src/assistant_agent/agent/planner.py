@@ -5,8 +5,16 @@ import re
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEMORY_RETRIEVAL_TOOL_NAME,
+    MEMORY_SAVE_TOOL_NAME,
+    RENDER_3D_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    WEB_FETCH_TOOL_NAME,
+    WEB_SEARCH_TOOL_NAME,
 )
 
 
@@ -75,7 +83,7 @@ class RuleBasedTaskPlanner:
             self._append_step(
                 steps,
                 action="retrieve_memory",
-                tool_name="memory_retrieval",
+                tool_name=MEMORY_RETRIEVAL_TOOL_NAME,
                 required_inputs=["user_id", "session_id", "reference_phrase"],
                 reason="用户引用历史上下文，先检索记忆。",
             )
@@ -85,7 +93,7 @@ class RuleBasedTaskPlanner:
             self._append_step(
                 steps,
                 action="understand_video" if is_video else "understand_image",
-                tool_name="video_understanding" if is_video else "vision_understanding",
+                tool_name=VIDEO_UNDERSTANDING_TOOL_NAME if is_video else IMAGE_UNDERSTANDING_TOOL_NAME,
                 required_inputs=["video"] if is_video else ["image"],
                 reason="用户提供了媒体输入，先理解媒体内容。",
             )
@@ -94,7 +102,7 @@ class RuleBasedTaskPlanner:
             self._append_step(
                 steps,
                 action="fetch_web",
-                tool_name="web_fetch",
+                tool_name=WEB_FETCH_TOOL_NAME,
                 required_inputs=["url"],
                 reason="用户要求读取已知 URL 的网页正文。",
             )
@@ -103,7 +111,7 @@ class RuleBasedTaskPlanner:
             self._append_step(
                 steps,
                 action="search_web",
-                tool_name="web_search",
+                tool_name=WEB_SEARCH_TOOL_NAME,
                 required_inputs=["query"],
                 reason="用户要求检索最新、实时或联网信息。",
             )
@@ -130,7 +138,7 @@ class RuleBasedTaskPlanner:
             self._append_step(
                 steps,
                 action="generate_image",
-                tool_name="image_generation",
+                tool_name=IMAGE_GENERATION_TOOL_NAME,
                 required_inputs=["prompt"],
                 reason="用户要求生成图片或海报。",
             )
@@ -138,8 +146,8 @@ class RuleBasedTaskPlanner:
         if self._has_render_intent(text):
             self._append_step(
                 steps,
-                action="render_3d",
-                tool_name="render_3d",
+                action=RENDER_3D_CAPABILITY,
+                tool_name=RENDER_3D_TOOL_NAME,
                 required_inputs=["scene_description"],
                 reason="用户要求 3D 展示或渲染场景。",
             )
@@ -148,7 +156,7 @@ class RuleBasedTaskPlanner:
             self._append_step(
                 steps,
                 action="save_memory",
-                tool_name="memory_save",
+                tool_name=MEMORY_SAVE_TOOL_NAME,
                 required_inputs=["content", "user_id"],
                 reason="用户要求保存视频或偏好信息。",
             )

@@ -20,6 +20,7 @@ from assistant_agent.services.provider_errors import (
     build_provider_error,
     map_exception_to_provider_error,
 )
+from assistant_agent.services.tool_manifest import WEB_FETCH_CAPABILITY
 
 
 class WebFetchAdapter(Protocol):
@@ -39,7 +40,7 @@ class MockWebFetchAdapter:
         if not url:
             return _failed_web_fetch_result(
                 provider=self.provider,
-                url=request.url or "web_fetch",
+                url=request.url or WEB_FETCH_CAPABILITY,
                 code="provider_request_invalid",
                 message="web_fetch requires url.",
                 recoverable=False,
@@ -304,7 +305,7 @@ def _errors_from_payload(payload: Any, *, provider: str) -> list[WebFetchProvide
             message,
             recoverable=recoverable,
             provider=provider,
-            capability="web_fetch",
+            capability=WEB_FETCH_CAPABILITY,
         )
         errors.append(
             WebFetchProviderError(
@@ -333,7 +334,7 @@ def _failed_from_exception(
     latency_ms: int,
 ) -> WebFetchResult:
     error = map_exception_to_provider_error(
-        exc, provider="http", capability="web_fetch", code=code
+        exc, provider="http", capability=WEB_FETCH_CAPABILITY, code=code
     )
     return WebFetchResult(
         url=request.url,
@@ -364,10 +365,10 @@ def _failed_web_fetch_result(
         message,
         recoverable=recoverable,
         provider=provider,
-        capability="web_fetch",
+        capability=WEB_FETCH_CAPABILITY,
     )
     return WebFetchResult(
-        url=url or "web_fetch",
+        url=url or WEB_FETCH_CAPABILITY,
         provider=provider,
         content_format=content_format,  # type: ignore[arg-type]
         errors=[

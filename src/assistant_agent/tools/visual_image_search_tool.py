@@ -13,11 +13,12 @@ from assistant_agent.services.tool_visual_image_search_adapter import (
     VisualImageSearchAdapter,
     create_visual_image_search_adapter,
 )
+from assistant_agent.services.tool_manifest import VISUAL_IMAGE_SEARCH_CAPABILITY, VISUAL_IMAGE_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class VisualImageSearchTool(MockTool):
-    name = "visual_image_search"
+    name = VISUAL_IMAGE_SEARCH_TOOL_NAME
     description = (
         "Search the internet for visually similar images from a public image URL."
     )
@@ -32,7 +33,7 @@ class VisualImageSearchTool(MockTool):
         data = result.model_dump(mode="json")
         model_observation = _visual_image_search_model_observation(data)
         contract = build_capability_output_contract(
-            capability="visual_image_search",
+            capability=VISUAL_IMAGE_SEARCH_CAPABILITY,
             status="failed" if result.errors else "succeeded",
             output_ref=result.output_ref,
             data={

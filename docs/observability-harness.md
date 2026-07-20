@@ -1,6 +1,6 @@
 # Observability Harness
 
-Last updated: 2026-07-17
+Last updated: 2026-07-20
 
 This document is the current entry for assistant run status, logs, monitoring,
 trace, and ReAct checkpoint observability. It defines the developer-facing
@@ -158,9 +158,12 @@ session、queue、admission、run、cancel、interrupt 和 terminal 边界。它
 query key、session 摘要和聚合计数，不记录 query value、原始 session ID 或媒体内容。
 
 Assistant runtime 不再投影到 operational text log，也不再创建 `.data/logs/runtime.log`。
-server `CompositeTraceStore` 只保留进程内 primary 与后台 JSONL persistence；`.data/graph_trace.jsonl`
-和 trace query API 是机器查询与调试重建权威，`scripts/agentruntime_view.py last --follow`
-是唯一 runtime 开发观察视图。
+server `CompositeTraceStore` 默认只保留进程内 primary 与后台 JSONL persistence；
+`.data/graph_trace.jsonl` 和 trace query API 是机器查询与调试重建权威，
+`scripts/agentruntime_view.py last --follow` 是唯一 runtime 开发观察视图。显式设置
+`ASSISTANT_AGENT_OTEL_EXPORT_ENABLED=true` 且提供 OTLP HTTP endpoint 时，server 会追加
+一个 optional text OpenTelemetry observer secondary；依赖缺失、endpoint 缺失或导出失败必须
+fail-open，不影响 primary trace store、JSONL persistence 或 turn 响应。
 
 `scripts/run_server.py` 提供 `--console-level`、`--file-log-level`、
 `--console-mode {concise,verbose}`、`--log-dir PATH` 与 `--gateway-event-path PATH`，
@@ -401,8 +404,9 @@ run
   llm.chat(iteration=1)
   react.decision(iteration=1)
   action.validation
-  tool.execute(product_search)
-    provider.call(product_search_provider)
+  tool.execute(shopping_search)
+    provider.call(shopping_search.search)
+    provider.call(shopping_search.compare)
   tool.observation
   llm.chat(iteration=2)
   response.final
@@ -546,7 +550,7 @@ Turn Overview
 
 Performance
   Total latency    27790ms
-  First response   first_text=unknown first_audio=unknown dead_air=unknown
+  First response   first_text=unknown
   web_search       x3 8560ms
   web_fetch        x2 3470ms
   LLM chat x4      14624ms
@@ -562,12 +566,12 @@ Decision path
 Main issues
   P0 LLM overhead 6840ms exceeds provider latency
   P1 Context peak 81.3%
-  P1 realtime first-text/first-audio latency is missing
+  P1 first text latency is missing
 
 Suggested actions
   1. Break down LLM queue, request build, TTFT, stream consume, parse, and finalize timing.
   2. Inspect system prompt, tool schemas, and tool observations as primary context contributors.
-  3. Record first text delta, first audio, playback start, and longest silence for realtime turns.
+  3. Record first text response latency for text turns.
 ```
 
 Developer output should group errors first when requested, then show the full
@@ -689,12 +693,11 @@ Regression tests should enforce these invariants:
   invariant set in-process: run terminal events, tool terminal events,
   `tool.observation` provenance, failed-tool error detail, and hook dispatch
   error redaction.
-- Phase 0 trace invariant gate tests live in
-  `tests/scopes/runtime/test_observability_harness.py` and
-  `tests/scopes/runtime/test_hook_invariants.py`.
-- Current harness development should stop after these invariant tests pass.
-  Future work should be driven by a concrete debugging gap rather than adding
-  more event types, dashboards, exporters, or debug endpoints preemptively.
+- The default pytest safety net does not enumerate trace internals. Add a minimal regression only for a
+  concrete redaction, terminal-event or public trace-contract defect. Broader evidence comes from local
+  trace smoke scripts and machine logs.
+- Future work should be driven by a concrete debugging gap rather than adding more event types, dashboards,
+  exporters, debug endpoints or assertion matrices preemptively.
 
 ## Phase Plan
 
@@ -729,6 +732,51 @@ Regression tests should enforce these invariants:
 - Add optional OpenTelemetry-compatible export only after local harness semantics
   are stable.
 - Export should be disabled by default and must use the same redaction boundary.
+- The Python packages live behind the `observability` extra:
+  `assistant_agent[observability]` installs `opentelemetry-api`,
+  `opentelemetry-sdk`, and `opentelemetry-exporter-otlp-proto-http`.
+- Runtime OTLP export is opt-in through environment variables only:
+  `ASSISTANT_AGENT_OTEL_EXPORT_ENABLED=true`,
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=<endpoint>/v1/traces`,
+  `OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Basic ...`, optional
+  `OTEL_SERVICE_NAME`, and optional
+  `ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY`. If only generic
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the text trace exporter derives the
+  trace endpoint by appending `/v1/traces`.
+- Disabled export must not import OpenTelemetry packages. Missing optional
+  dependencies, missing endpoint, full queues, and exporter exceptions are
+  observability failures only; they must not block local trace persistence or
+  assistant turn delivery.
+- Text Agent export design and phased execution live in
+  `docs/development/text-agent-otel-langfuse-observability.md`; it deliberately
+  excludes audio, TTS, playback, speech, and dead-air metrics.
+
+### Text Turn Scores
+
+Text turn evaluation scores are separate from OTLP span attributes. When
+`ASSISTANT_AGENT_LANGFUSE_SCORE_ENABLED=true` and Langfuse API configuration is
+present, the server appends an optional Langfuse score observer secondary after
+local JSONL persistence. It uses the same `TurnDiagnostic` evidence as Turn
+Overview and OTel metadata, writes only prompt-safe values, and never writes a
+score when `task_outcome=unknown`.
+
+Supported built-in score names are:
+
+- `assistant_agent.task_outcome`;
+- `assistant_agent.prerequisites_resolved`;
+- `assistant_agent.clarification_too_late`;
+- `assistant_agent.unnecessary_tool_calls`.
+
+Score writing is disabled by default. Enable it with environment variables only:
+`ASSISTANT_AGENT_LANGFUSE_SCORE_ENABLED=true`,
+`LANGFUSE_HOST=http://localhost:3000` or
+`ASSISTANT_AGENT_LANGFUSE_SCORE_URL=<host>/api/public/scores`,
+`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, optional
+`ASSISTANT_AGENT_LANGFUSE_SCORE_TIMEOUT`, and optional
+`ASSISTANT_AGENT_LANGFUSE_SCORE_QUEUE_CAPACITY`. Missing credentials, missing
+URL, full queues, HTTP failures, or writer exceptions are observability failures
+only; they must not block OTLP export, local trace persistence, or assistant
+turn delivery.
 
 ### Phase 5: Trajectory Debug Gate
 

@@ -9,6 +9,14 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.services.provider_errors import ProviderError, build_provider_error
+from assistant_agent.services.tool_manifest import (
+    DIRECT_CHAT_CAPABILITY,
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+)
 
 
 ValidationSeverity = Literal["error", "warning"]
@@ -46,43 +54,43 @@ def validate_provider_config(config: ProviderConfig) -> ProviderConfigValidation
 
     _add_issue_if_missing(
         issues,
-        capability="image_understanding",
+        capability=IMAGE_UNDERSTANDING_CAPABILITY,
         provider=config.vision_provider,
         missing=_vision_missing(config),
     )
     _add_issue_if_missing(
         issues,
-        capability="direct_chat",
+        capability=DIRECT_CHAT_CAPABILITY,
         provider=config.chat_provider,
         missing=_chat_missing(config),
     )
     _add_issue_if_missing(
         issues,
-        capability="image_generation",
+        capability=IMAGE_GENERATION_CAPABILITY,
         provider=config.image_generation_provider,
         missing=_image_generation_missing(config),
     )
     _add_issue_if_missing(
         issues,
-        capability="shopping_search",
-        provider=config.product_search_provider,
-        missing=_product_search_missing(config),
+        capability=SHOPPING_SEARCH_CAPABILITY,
+        provider=config.shopping_search_provider,
+        missing=_shopping_search_missing(config),
     )
     _add_issue_if_missing(
         issues,
-        capability="shopping_search",
-        provider=config.price_compare_provider,
-        missing=_price_compare_missing(config),
+        capability=SHOPPING_SEARCH_CAPABILITY,
+        provider=config.shopping_compare_provider,
+        missing=_shopping_compare_missing(config),
     )
     _add_issue_if_missing(
         issues,
-        capability="render_3d",
+        capability=RENDER_3D_CAPABILITY,
         provider=config.render_provider,
         missing=_render_missing(config),
     )
     _add_issue_if_missing(
         issues,
-        capability="video_understanding",
+        capability=VIDEO_UNDERSTANDING_CAPABILITY,
         provider=config.vision_provider,
         missing=_vision_missing(config),
     )
@@ -140,22 +148,22 @@ def _image_generation_missing(config: ProviderConfig) -> list[str]:
     return config.resolved_image_generation_provider().missing_required_env()
 
 
-def _product_search_missing(config: ProviderConfig) -> list[str]:
-    if config.product_search_provider == "local_json":
-        return _missing(("PRODUCT_SEARCH_LOCAL_PATH", config.product_search_local_path))
-    if config.product_search_provider == "http":
+def _shopping_search_missing(config: ProviderConfig) -> list[str]:
+    if config.shopping_search_provider == "local_json":
+        return _missing(("SHOPPING_SEARCH_LOCAL_PATH", config.shopping_search_local_path))
+    if config.shopping_search_provider == "http":
         return _missing(
-            ("PRODUCT_SEARCH_BASE_URL", config.product_search_base_url),
-            ("PRODUCT_SEARCH_API_KEY", config.product_search_api_key),
+            ("SHOPPING_SEARCH_BASE_URL", config.shopping_search_base_url),
+            ("SHOPPING_SEARCH_API_KEY", config.shopping_search_api_key),
         )
     return []
 
 
-def _price_compare_missing(config: ProviderConfig) -> list[str]:
-    if config.price_compare_provider == "http":
+def _shopping_compare_missing(config: ProviderConfig) -> list[str]:
+    if config.shopping_compare_provider == "http":
         return _missing(
-            ("PRICE_COMPARE_BASE_URL", config.price_compare_base_url),
-            ("PRICE_COMPARE_API_KEY", config.price_compare_api_key),
+            ("SHOPPING_COMPARE_BASE_URL", config.shopping_compare_base_url),
+            ("SHOPPING_COMPARE_API_KEY", config.shopping_compare_api_key),
         )
     return []
 

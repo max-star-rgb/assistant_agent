@@ -252,23 +252,13 @@ development records, not current architecture authority.
 
 ## Offline Validation
 
-Runtime, provider, and shared service stream contracts:
+Run the minimal risk-driven safety net:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
-  tests/scopes/runtime/test_agent_runtime_stream.py tests/scopes/runtime/test_async_chat_stream.py \
-  tests/scopes/runtime/test_llm_events.py tests/scopes/runtime/test_runtime_provider_streaming.py \
-  tests/scopes/context/test_shared_assistant_run_service.py -q
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-When realtime mapping or backend consumption changes:
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
-  tests/scopes/gateway/test_realtime_agent_backend.py tests/scopes/gateway/test_realtime_event_mapping.py -q
-```
-
-When Gateway-facing behavior changes, also run the Gateway suites named in
-`docs/gateway-architecture.md`. All default validation remains mock/local/
-offline; real provider streaming requires an explicit `provider_smoke` or
-`pilot` profile and local untracked credentials.
+It protects runtime completion, provider timeout termination, cancellation, and the core event-to-Gateway
+conversion contract. Broader realtime behavior is validated through the explicit offline simulators in
+`scripts/README.md`; real provider streaming requires a `provider_smoke` or `pilot` profile and local
+untracked credentials.

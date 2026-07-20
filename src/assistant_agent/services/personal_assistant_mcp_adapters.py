@@ -32,6 +32,13 @@ from assistant_agent.services.personal_assistant_adapters import (
     ReminderAdapter,
     WeatherAdapter,
 )
+from assistant_agent.services.tool_manifest import (
+    CALENDAR_CREATE_TOOL_NAME,
+    CALENDAR_SEARCH_TOOL_NAME,
+    CONTACTS_SEARCH_TOOL_NAME,
+    REMINDER_CREATE_TOOL_NAME,
+    WEATHER_TOOL_NAME,
+)
 from assistant_agent.services.provider_errors import (
     normalize_provider_error_code,
     sanitize_error_detail,
@@ -369,34 +376,34 @@ def create_personal_assistant_adapter_bundle(
     calendar = (
         MCPPersonalAssistantCalendarAdapter(
             runner=runner,
-            search_binding=bindings.get("calendar_search"),
-            create_binding=bindings.get("calendar_create"),
+            search_binding=bindings.get(CALENDAR_SEARCH_TOOL_NAME),
+            create_binding=bindings.get(CALENDAR_CREATE_TOOL_NAME),
         )
-        if bindings.get("calendar_search") or bindings.get("calendar_create")
+        if bindings.get(CALENDAR_SEARCH_TOOL_NAME) or bindings.get(CALENDAR_CREATE_TOOL_NAME)
         else UnconfiguredMCPPersonalAssistantAdapter("personal_assistant_tools.calendar_*")
     )
     contacts = (
         MCPPersonalAssistantContactsAdapter(
-            binding=bindings["contacts_search"],
+            binding=bindings[CONTACTS_SEARCH_TOOL_NAME],
             runner=runner,
         )
-        if bindings.get("contacts_search")
+        if bindings.get(CONTACTS_SEARCH_TOOL_NAME)
         else UnconfiguredMCPPersonalAssistantAdapter("personal_assistant_tools.contacts_search")
     )
     reminder = (
         MCPPersonalAssistantReminderAdapter(
-            binding=bindings["reminder_create"],
+            binding=bindings[REMINDER_CREATE_TOOL_NAME],
             runner=runner,
         )
-        if bindings.get("reminder_create")
+        if bindings.get(REMINDER_CREATE_TOOL_NAME)
         else UnconfiguredMCPPersonalAssistantAdapter("personal_assistant_tools.reminder_create")
     )
     weather = (
         MCPPersonalAssistantWeatherAdapter(
-            binding=bindings["weather_lookup"],
+            binding=bindings[WEATHER_TOOL_NAME],
             runner=runner,
         )
-        if bindings.get("weather_lookup")
+        if bindings.get(WEATHER_TOOL_NAME)
         else MockWeatherAdapter()
     )
     return PersonalAssistantAdapterBundle(
@@ -456,11 +463,11 @@ def _personal_bindings(
         mapping = server.personal_assistant_tools
         adapter_config = server.adapter_config()
         for capability, tool_name in (
-            ("weather_lookup", mapping.weather_lookup),
-            ("calendar_search", mapping.calendar_search),
-            ("calendar_create", mapping.calendar_create),
-            ("contacts_search", mapping.contacts_search),
-            ("reminder_create", mapping.reminder_create),
+            (WEATHER_TOOL_NAME, mapping.weather_lookup),
+            (CALENDAR_SEARCH_TOOL_NAME, mapping.calendar_search),
+            (CALENDAR_CREATE_TOOL_NAME, mapping.calendar_create),
+            (CONTACTS_SEARCH_TOOL_NAME, mapping.contacts_search),
+            (REMINDER_CREATE_TOOL_NAME, mapping.reminder_create),
         ):
             if not tool_name or capability in bindings:
                 continue

@@ -41,6 +41,7 @@ from assistant_agent.services.realtime_task_state import (
     realtime_task_state_enabled,
     record_realtime_task_state_run_artifacts,
 )
+from assistant_agent.services.tool_manifest import IMAGE_GENERATION_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.services.trace_store import TraceStore, trace_debug_summary
 from assistant_agent.services.video_context import load_demo_video_frames
 
@@ -450,7 +451,7 @@ def resolve_runtime_config(
 
     if config is not None:
         return config
-    if _is_pytest():
+    if _offline_env_requested():
         return ProviderConfig.from_env({})
     if load_env and not _skip_dotenv_load():
         load_env_file()
@@ -792,11 +793,11 @@ def runtime_info(config: ProviderConfig) -> dict[str, Any]:
         "providers": {
             "chat": config.chat_provider,
             "vision": config.vision_provider,
-            "shopping_search": {
-                "search": config.product_search_provider,
-                "compare": config.price_compare_provider,
+            SHOPPING_SEARCH_TOOL_NAME: {
+                "search": config.shopping_search_provider,
+                "compare": config.shopping_compare_provider,
             },
-            "image_generation": config.image_generation_provider,
+            IMAGE_GENERATION_TOOL_NAME: config.image_generation_provider,
             "render": config.render_provider,
         },
         "offline_default": not config.runtime_profile.allows_real_providers,
@@ -1207,8 +1208,8 @@ def _safe_steps(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _is_pytest() -> bool:
-    return "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("MULTIMODAL_AGENT_DISABLE_DOTENV") == "1"
+def _offline_env_requested() -> bool:
+    return os.environ.get("MULTIMODAL_AGENT_DISABLE_DOTENV") == "1"
 
 
 def _skip_dotenv_load() -> bool:

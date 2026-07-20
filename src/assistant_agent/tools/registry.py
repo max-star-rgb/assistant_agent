@@ -34,9 +34,30 @@ from assistant_agent.services.web_fetch_adapter import create_web_fetch_adapter
 from assistant_agent.services.image_generation_adapter import create_image_generation_adapter
 from assistant_agent.services.memory_media_ingestion import create_memory_media_ingestion_service
 from assistant_agent.services.personal_assistant_mcp_adapters import create_personal_assistant_adapter_bundle
-from assistant_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
+from assistant_agent.services.product_adapter import create_shopping_compare_adapter, create_shopping_search_adapter
 from assistant_agent.services.render_adapter import create_render_adapter
-from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.services.tool_manifest import (
+    CALENDAR_CREATE_TOOL_NAME,
+    CALENDAR_SEARCH_TOOL_NAME,
+    CONTACTS_SEARCH_TOOL_NAME,
+    IMAGE_GENERATION_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEMORY_INGEST_STATUS_TOOL_NAME,
+    MEMORY_MEDIA_INGEST_TOOL_NAME,
+    MEMORY_RETRIEVAL_TOOL_NAME,
+    MEMORY_SAVE_TOOL_NAME,
+    MEMORY_TOOL_NAME,
+    PYTHON_INTERPRETER_TOOL_NAME,
+    REMINDER_CREATE_TOOL_NAME,
+    RENDER_3D_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
+    TOOL_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    VISUAL_IMAGE_SEARCH_TOOL_NAME,
+    WEATHER_TOOL_NAME,
+    WEB_FETCH_TOOL_NAME,
+    WEB_SEARCH_TOOL_NAME,
+)
 from assistant_agent.services.tool_visual_image_search_adapter import create_visual_image_search_adapter
 from assistant_agent.services.vision_client import (
     create_realtime_vision_understanding_client,
@@ -177,7 +198,7 @@ def _close_object_schemas(value: Any) -> Any:
 
 
 def _hide_runtime_identity_field(tool_name: str | None, field_name: str) -> bool:
-    if tool_name in {"vision_understanding", "video_understanding"} and field_name in {
+    if tool_name in {IMAGE_UNDERSTANDING_TOOL_NAME, VIDEO_UNDERSTANDING_TOOL_NAME} and field_name in {
         "frame_refs",
         "context_id",
         "metadata",
@@ -188,10 +209,10 @@ def _hide_runtime_identity_field(tool_name: str | None, field_name: str) -> bool
     }:
         return True
     return tool_name in {
-        "memory_retrieval",
-        "memory_save",
-        "memory_media_ingest",
-        "memory_ingest_status",
+        MEMORY_RETRIEVAL_TOOL_NAME,
+        MEMORY_SAVE_TOOL_NAME,
+        MEMORY_MEDIA_INGEST_TOOL_NAME,
+        MEMORY_INGEST_STATUS_TOOL_NAME,
     } and field_name in {"user_id", "session_id"}
 
 
@@ -270,7 +291,7 @@ def tool_execution_metadata(tool: BaseTool) -> ToolExecutionPolicy | None:
 
 
 _ACTION_USAGE: dict[str, dict[str, Any]] = {
-    "vision_understanding": {
+    IMAGE_UNDERSTANDING_TOOL_NAME: {
         "when_to_use": [
             "Describe, analyze, or identify image content.",
             "Summarize or analyze an explicit video_ref or video_ids supplied by the current request.",
@@ -299,7 +320,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "progress_message": "我看一下。",
         },
     },
-    "video_understanding": {
+    VIDEO_UNDERSTANDING_TOOL_NAME: {
         "when_to_use": [
             "Answer visual-fact questions about the current realtime camera when this tool is exposed for an active-video turn.",
             "Summarize or analyze an explicit video_ref or video_ids supplied by the current request.",
@@ -333,7 +354,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "requires_media": ["video"],
         },
     },
-    "image_generation": {
+    IMAGE_GENERATION_TOOL_NAME: {
         "when_to_use": ["Generate an image, poster, product hero image, or visual creative from text."],
         "when_not_to_use": ["User asks to describe an existing image or video."],
         "runtime_constraints": ["Prompt must describe the image to generate."],
@@ -351,7 +372,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "progress_message": "我开始生成，可能需要一点时间。",
         },
     },
-    "render_3d": {
+    RENDER_3D_TOOL_NAME: {
         "when_to_use": ["User explicitly asks for 3D, rendering, modeling, scene preview, or displaying an object in a space."],
         "when_not_to_use": ["User only asks to describe the scene in an image or video.", "Do not trigger from the word 场景 alone."],
         "runtime_constraints": ["Requires explicit render intent."],
@@ -394,7 +415,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
-    "python_interpreter": {
+    PYTHON_INTERPRETER_TOOL_NAME: {
         "when_to_use": [
             "Run short local Python snippets for math, scientific, data, or code analysis when the tool is explicitly enabled.",
             "Use when deterministic computation or parsing is needed and the required input data is already in the prompt or tool input.",
@@ -417,7 +438,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
         },
         "execution": {
             "dependency_mode": "requires_prior_observation",
-            "concurrency_group": "python_interpreter",
+            "concurrency_group": PYTHON_INTERPRETER_TOOL_NAME,
             "resource_reads": ["analysis:input_data"],
             "realtime_safety": "needs_progress",
             "artifact_reuse": "requires_validation",
@@ -430,7 +451,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "enabled_by_default": False,
         },
     },
-    "tool_search": {
+    TOOL_SEARCH_TOOL_NAME: {
         "when_to_use": [
             "Only when the exposed core tools cannot satisfy the user request.",
             "Inspect configured MCP servers for additional allowlisted tools, including tools that are configured but not enabled by default.",
@@ -463,7 +484,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "tags": ["tool_search", "mcp"],
         },
     },
-    "web_search": {
+    WEB_SEARCH_TOOL_NAME: {
         "when_to_use": [
             "Answer current, latest, recent, realtime, news, or public web lookup requests when no dedicated tool covers the requested fact.",
             "User explicitly asks to search the web, look up online information, or check current information.",
@@ -486,7 +507,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
         },
         "execution": {
             "dependency_mode": "independent",
-            "resource_reads": ["web_search"],
+            "resource_reads": [WEB_SEARCH_TOOL_NAME],
             "realtime_safety": "safe",
             "artifact_reuse": "reusable",
             "progress_message": "我联网查一下。",
@@ -495,7 +516,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
-    "visual_image_search": {
+    VISUAL_IMAGE_SEARCH_TOOL_NAME: {
         "when_to_use": [
             "Search the internet for visually similar images from a public image URL.",
             "User asks to search by image, find visually similar images, trace an image source, or find same-style images online.",
@@ -524,7 +545,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "progress_message": "我找一下相似图片。",
         },
     },
-    "web_fetch": {
+    WEB_FETCH_TOOL_NAME: {
         "when_to_use": [
             "Fetch readable page content from a specific HTTP(S) URL provided by the user or returned by web_search.",
             "Use when search snippets are insufficient and the answer needs content from a known web page.",
@@ -555,7 +576,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
-    "weather": {
+    WEATHER_TOOL_NAME: {
         "when_to_use": [
             "User asks for current weather, short-range forecast, rain, temperature, or 出门天气 for a named location.",
             "Use for morning or departure briefings that need weather facts.",
@@ -584,7 +605,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
-    "calendar_search": {
+    CALENDAR_SEARCH_TOOL_NAME: {
         "when_to_use": [
             "User asks to inspect calendar events, meetings, free/busy context, or 日程.",
             "Use for morning or departure briefings to inspect today's personal schedule before advising travel timing or conflicts.",
@@ -615,7 +636,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
-    "calendar_create": {
+    CALENDAR_CREATE_TOOL_NAME: {
         "when_to_use": [
             "User asks to create a calendar event after event details are known.",
             "Use in meeting scheduling workflows only after availability/contact context is gathered and the user confirms the write.",
@@ -644,7 +665,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "progress_message": "需要你确认后我再创建日程。",
         },
     },
-    "contacts_search": {
+    CONTACTS_SEARCH_TOOL_NAME: {
         "when_to_use": [
             "User asks to find a contact, candidate attendee, phone number, or email address.",
             "Use in scheduling workflows when attendee names must be resolved before creating an event.",
@@ -673,7 +694,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
-    "reminder_create": {
+    REMINDER_CREATE_TOOL_NAME: {
         "when_to_use": [
             "User asks to create a reminder, todo, or action item from the current conversation.",
             "Use after extracting a concrete task title and optional due time.",
@@ -701,7 +722,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "progress_message": "需要你确认后我再创建提醒。",
         },
     },
-    "memory": {
+    MEMORY_TOOL_NAME: {
         "when_to_use": ["Legacy memory retrieve/save compatibility tool."],
         "when_not_to_use": ["Prefer memory_retrieval or memory_save in the assistant loop."],
         "runtime_constraints": ["Legacy compatibility only; use dedicated memory tools when possible."],
@@ -719,7 +740,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "do_not_reuse",
         },
     },
-    "memory_retrieval": {
+    MEMORY_RETRIEVAL_TOOL_NAME: {
         "when_to_use": [
             "User explicitly asks to use prior chats, saved memory, remembered preferences, or previous/last context.",
             "User asks to continue a prior task or says to follow their saved preferences.",
@@ -745,7 +766,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
-    "memory_save": {
+    MEMORY_SAVE_TOOL_NAME: {
         "when_to_use": [
             "User explicitly asks to remember or save a preference, project fact, or task context; set source_intent=user_explicit.",
             "The assistant infers a stable, non-sensitive user preference or project fact may be useful later; set source_intent=assistant_candidate.",
@@ -778,7 +799,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
-    "memory_media_ingest": {
+    MEMORY_MEDIA_INGEST_TOOL_NAME: {
         "when_to_use": [
             "User explicitly asks to upload, ingest, or import media into long-term memory for later retrieval.",
             "The request contains safe file references and asks for Memory Server media ingestion.",
@@ -797,7 +818,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "level": "committed",
             "requires_confirmation": True,
             "description": "Submits media to an external Memory Server ingestion task that may create durable remote memories.",
-            "confirmation_kind": "memory_media_ingest",
+            "confirmation_kind": MEMORY_MEDIA_INGEST_TOOL_NAME,
             "compensation_hint": "Report the submitted task id and use memory_ingest_status to monitor completion.",
         },
         "execution": {
@@ -807,7 +828,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "do_not_reuse",
         },
     },
-    "memory_ingest_status": {
+    MEMORY_INGEST_STATUS_TOOL_NAME: {
         "when_to_use": [
             "Check the processing state of a previously submitted Memory Server media ingestion task.",
         ],
@@ -916,8 +937,8 @@ def create_default_registry(
         mcp_runner=mcp_runner,
     )
     memory_media_service = create_memory_media_ingestion_service(config)
-    product_search_adapter = create_product_search_adapter(config)
-    price_compare_adapter = create_price_compare_adapter(config)
+    shopping_search_adapter = create_shopping_search_adapter(config)
+    shopping_compare_adapter = create_shopping_compare_adapter(config)
     vision_client = create_vision_understanding_client(config)
     for tool in (
         VisionUnderstandingTool(
@@ -931,8 +952,8 @@ def create_default_registry(
             memory_store=realtime_video_memory_store,
         ),
         ShoppingSearchTool(
-            search_adapter=product_search_adapter,
-            price_compare_adapter=price_compare_adapter,
+            search_adapter=shopping_search_adapter,
+            price_compare_adapter=shopping_compare_adapter,
         ),
         WeatherTool(adapter=personal_adapters.weather),
         CalendarSearchTool(adapter=personal_adapters.calendar),

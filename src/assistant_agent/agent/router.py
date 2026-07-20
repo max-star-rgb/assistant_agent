@@ -6,55 +6,17 @@ from assistant_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSelection
 from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    canonical_action_for_capability,
+    canonical_tool_for_capability,
 )
 
 
 class ToolRouter:
     """Build a task plan and tool selections from an intent."""
-
-    tool_by_intent = {
-        "image_understanding": "vision_understanding",
-        "video_understanding": "video_understanding",
-        "image_generation": "image_generation",
-        "memory_retrieval": "memory_retrieval",
-        "web_search": "web_search",
-        "web_fetch": "web_fetch",
-        SHOPPING_SEARCH_CAPABILITY: SHOPPING_SEARCH_TOOL_NAME,
-        "multi_step_orchestration": None,
-        "direct_chat": None,
-        "understand_image": "vision_understanding",
-        "understand_video": "video_understanding",
-        "search_web": "web_search",
-        "fetch_web": "web_fetch",
-        "read_url": "web_fetch",
-        "generate_image": "image_generation",
-        "render_3d": "render_3d",
-        "retrieve_memory": "memory_retrieval",
-        "save_memory": "memory_save",
-    }
-
-    action_by_intent = {
-        "image_understanding": "understand_image",
-        "video_understanding": "understand_video",
-        "image_generation": "generate_image",
-        "memory_retrieval": "retrieve_memory",
-        "web_search": "search_web",
-        "web_fetch": "fetch_web",
-        SHOPPING_SEARCH_CAPABILITY: SHOPPING_SEARCH_CAPABILITY,
-        "multi_step_orchestration": "multi_tool_task",
-        "direct_chat": "chat",
-        "understand_image": "understand_image",
-        "understand_video": "understand_video",
-        "search_web": "search_web",
-        "fetch_web": "fetch_web",
-        "read_url": "fetch_web",
-        "generate_image": "generate_image",
-        "render_3d": "render_3d",
-        "retrieve_memory": "retrieve_memory",
-        "save_memory": "save_memory",
-    }
 
     def route(self, intent: IntentResult, request: UserRequest | None = None) -> TaskPlan:
         canonical = canonical_intent(intent.intent)
@@ -83,7 +45,7 @@ class ToolRouter:
                     TaskStep(
                         step_id="step_1",
                         action="understand_video",
-                        tool_name="video_understanding",
+                        tool_name=VIDEO_UNDERSTANDING_TOOL_NAME,
                     ),
                     TaskStep(
                         step_id="step_2",
@@ -95,20 +57,21 @@ class ToolRouter:
                     TaskStep(
                         step_id="step_3",
                         action="generate_image",
-                        tool_name="image_generation",
+                        tool_name=IMAGE_GENERATION_TOOL_NAME,
                         input_refs=["step_1", "step_2"],
                         depends_on=["step_2"],
                     ),
                 ],
             )
 
-        tool_name = self.tool_by_intent[intent.intent]
+        tool_name = canonical_tool_for_capability(canonical)
+        action = canonical_action_for_capability(canonical) or canonical
         return TaskPlan(
             goal=intent.rationale,
             steps=[
                 TaskStep(
                     step_id="step_1",
-                    action=self.action_by_intent[intent.intent],
+                    action=action,
                     tool_name=tool_name,
                 )
             ],

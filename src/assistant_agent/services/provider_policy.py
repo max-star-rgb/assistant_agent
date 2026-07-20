@@ -8,6 +8,15 @@ from collections.abc import Mapping
 from pydantic import BaseModel, Field
 
 from assistant_agent.services.provider_errors import normalize_provider_error_code
+from assistant_agent.services.tool_manifest import (
+    DIRECT_CHAT_CAPABILITY,
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+)
 
 
 DEFAULT_RETRYABLE_PROVIDER_ERRORS = (
@@ -69,13 +78,13 @@ class TimeoutPolicy(BaseModel):
         """Return timeout seconds for a capability name."""
 
         mapping = {
-            "direct_chat": self.chat_timeout_seconds,
-            "image_generation": self.image_timeout_seconds,
-            "image_understanding": self.vision_timeout_seconds,
-            "vision_understanding": self.vision_timeout_seconds,
-            "video_understanding": self.video_timeout_seconds,
-            "shopping_search": self.search_timeout_seconds,
-            "render_3d": self.render_timeout_seconds,
+            DIRECT_CHAT_CAPABILITY: self.chat_timeout_seconds,
+            IMAGE_GENERATION_CAPABILITY: self.image_timeout_seconds,
+            IMAGE_UNDERSTANDING_CAPABILITY: self.vision_timeout_seconds,
+            IMAGE_UNDERSTANDING_TOOL_NAME: self.vision_timeout_seconds,
+            VIDEO_UNDERSTANDING_CAPABILITY: self.video_timeout_seconds,
+            SHOPPING_SEARCH_CAPABILITY: self.search_timeout_seconds,
+            RENDER_3D_CAPABILITY: self.render_timeout_seconds,
         }
         return mapping.get(capability or "", self.default_provider_timeout_seconds)
 

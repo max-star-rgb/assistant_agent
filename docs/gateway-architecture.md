@@ -134,14 +134,13 @@ connection, but keeps the vendor `message` / optional `sessionId` / stringified
 `body` envelope. Every WebSocket connection allocates a fresh internal
 Agent/Gateway `session_id`; the vendor `sessionId` remains only the protocol
 correlation value returned to the media side and cannot resume conversation
-history from an older call. Its Gateway session uses the trusted
-`realtime_phone` profile
-and a trusted AgentRuntime tool set: `web_search`, `shopping_search`,
+history from an older call. Its Gateway session uses the trusted Agent-Service
+entry profile and a trusted AgentRuntime tool set: `web_search`, `shopping_search`,
 `memory_retrieval`, `memory_save`, plus dynamically exposed `video_understanding`
 when active-video state makes it valid. These tools enter the Agent-Service
 catalog through their own visibility metadata, not through catalog-side
 business-tool name rules. `shopping_search` is the only
-AgentRuntime shopping entry for this phone profile and internally performs product
+AgentRuntime shopping entry for this Agent-Service profile and internally performs product
 search plus price comparison. Tool qualification is derived from trusted session
 config and structured request media, never user text. `assistantControl`
 validates and records media control state,
@@ -541,7 +540,7 @@ path.
 
 Invalid JSON, unsupported event types, unknown config fields, missing transcript content, identity mismatch, or session mismatch produce an `error` frame and do not enter the assistant backend.
 
-System prompt profile selection is a session configuration concern. Realtime call entries may set trusted session config such as `system_prompt_profile=realtime_phone` and `channel=realtime_phone`; message payload metadata cannot promote a normal turn into `realtime_phone` or `final_only`.
+System prompt profile selection is a session configuration concern, but AgentRuntime profiles remain channel-agnostic. Realtime entries use `system_prompt_profile=text_default`; `channel=realtime_phone` stays Gateway metadata for transport and lifecycle handling and does not alter the AgentRuntime identity or system prompt. Gateway accepts legacy trusted `system_prompt_profile=realtime_phone` configuration only by normalizing it to `text_default`; message payload metadata cannot promote a normal turn into another profile.
 
 Phase 1 realtime work in this repository is text orchestration only. The Media Relay or upstream media service owns ASR, TTS, VAD, telephony SDK state, audio transport, and playback. `assistant_agent` accepts finalized text events, maps them into Gateway lifecycle frames, runs the existing assistant runtime, and emits text Gateway frames that an entry adapter may pass to TTS. The local gate for this contract is `scripts/run_realtime_call_simulator.py`, which runs `basic`, `interrupt`, `hangup`, `cancel`, and `tool_interrupt` scenarios in process without a server, real provider, audio bytes, or media refs.
 
@@ -638,10 +637,9 @@ Phase 0 treats these entry classifications as architecture contracts:
 | MCP `tool_run` | `ActionValidator -> ToolExecutor -> ToolRegistry` | Tool adapter path, not assistant entry. |
 | Removed legacy Web Chat | `/demo/console`, `/static/index.html`, and `/ws/agent/{session_id}` are not registered or shipped | Ordinary browser chat is out of scope until the realtime assistant runtime is stable. |
 
-Gateway entry and lifecycle convergence contracts live in `tests/critical/test_gateway.py`,
-`tests/critical/test_gateway_session.py`, and `tests/scopes/gateway/test_gateway_api.py`.
-Active-run hangup, inactive-run hangup, trusted entry source, and realtime media behavior are
-covered by the `gateway` scope.
+The default pytest safety net protects cancellation termination and the core realtime-event to Gateway-frame
+conversion contract. Wider hangup, reconnect, media and queue behavior is checked with the explicit offline
+Gateway simulators; add pytest only for a concrete regression or changed stable protocol contract.
 
 ## OpenClaw Reference Boundary
 

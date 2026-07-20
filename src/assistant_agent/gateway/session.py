@@ -1968,8 +1968,10 @@ def _trusted_entry_source(metadata: Mapping[str, Any]) -> str | None:
 
 def _apply_trusted_system_prompt_config(metadata: dict[str, Any], session_config: Mapping[str, Any]) -> None:
     profile = _optional_string(session_config.get("system_prompt_profile"))
-    if profile in {"text_default", "realtime_phone"}:
+    if profile == "text_default":
         metadata["system_prompt_profile"] = profile
+    elif profile == "realtime_phone":
+        metadata["system_prompt_profile"] = "text_default"
     channel = _optional_string(session_config.get("channel"))
     if channel in {"text", "phone", "realtime_phone"}:
         metadata["channel"] = channel

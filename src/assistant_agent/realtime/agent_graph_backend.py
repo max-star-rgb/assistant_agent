@@ -28,7 +28,7 @@ from assistant_agent.schemas.realtime_cancellation import (
 )
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.products import ShoppingSearchResult
+from assistant_agent.schemas.products import PriceCompareResult, ShoppingSearchResult
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.assistant_run_service import (
     run_assistant_request,
@@ -36,6 +36,7 @@ from assistant_agent.services.assistant_run_service import (
 )
 from assistant_agent.services.realtime_task_state import realtime_metadata_requests_interrupt
 from assistant_agent.services.shopping_detail_presenter import ShoppingDetailPresenter
+from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.services.trace_store import append_observability_event
 
 
@@ -82,11 +83,11 @@ def shopping_detail_enabled(metadata: dict[str, Any]) -> bool:
     return is_trusted_agent_service_request(metadata)
 
 
-ShoppingDetailResult = ShoppingSearchResult
+ShoppingDetailResult = PriceCompareResult | ShoppingSearchResult
 
 
 def _successful_shopping_detail_event(event: AgentEvent) -> bool:
-    if event.type not in {"tool_finished", "tool_completed"} or event.tool_name != "shopping_search":
+    if event.type not in {"tool_finished", "tool_completed"} or event.tool_name != SHOPPING_SEARCH_TOOL_NAME:
         return False
     post_tool_call = event.payload.get("post_tool_call")
     return isinstance(post_tool_call, dict) and post_tool_call.get("status") == "succeeded"
@@ -96,7 +97,7 @@ def _successful_shopping_detail_result(state: Any) -> ShoppingDetailResult | Non
     first_successful: ShoppingDetailResult | None = None
     presenter = ShoppingDetailPresenter()
     for result in getattr(state, "tool_results", []):
-        if result.tool_name != "shopping_search":
+        if result.tool_name != SHOPPING_SEARCH_TOOL_NAME:
             continue
         if not result.success or not isinstance(result.data, dict):
             continue
@@ -114,9 +115,12 @@ def _successful_shopping_detail_result(state: Any) -> ShoppingDetailResult | Non
 
 
 def _parse_shopping_detail_result(tool_name: str, data: dict[str, Any]) -> ShoppingDetailResult | None:
-    if tool_name == "shopping_search":
+    if tool_name != SHOPPING_SEARCH_TOOL_NAME:
+        return None
+    try:
         return ShoppingSearchResult.model_validate(data)
-    return None
+    except ValueError:
+        return PriceCompareResult.model_validate(data)
 
 
 class AgentGraphRealtimeBackend:

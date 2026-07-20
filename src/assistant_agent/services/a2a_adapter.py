@@ -18,6 +18,14 @@ from assistant_agent.schemas.a2a import (
 from assistant_agent.agent_routing import ROUTER_METADATA_KEY, AgentRouter
 from assistant_agent.schemas.agent_router import AgentCollaborationMode, AgentRouteRequest
 from assistant_agent.schemas.api import AgentRunResponse
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEMORY_TOOL_NAME,
+    RENDER_3D_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+)
 
 
 DEFAULT_A2A_USER_ID = "a2a_user"
@@ -25,13 +33,13 @@ DEFAULT_A2A_SESSION_ID = "a2a_session"
 PUBLIC_CAPABILITY_TAGS = {
     "agent_delegation",
     "chat",
-    "image_generation",
-    "memory",
-    "render_3d",
-    "shopping_search",
+    IMAGE_GENERATION_TOOL_NAME,
+    MEMORY_TOOL_NAME,
+    RENDER_3D_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
     "tool_calling",
-    "video_understanding",
-    "vision_understanding",
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
 }
 PRIVATE_TEXT_MARKERS = (
     "AgentGraphRuntime",

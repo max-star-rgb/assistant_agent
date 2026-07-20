@@ -30,10 +30,9 @@ Basic checks:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-Full offline validation:
+Additional deterministic offline checks:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_demo_flows.py
 ```

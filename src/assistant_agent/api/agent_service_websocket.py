@@ -1308,7 +1308,7 @@ async def _run_agent_service_chat_turn(
                 content_count=len(contents),
             ),
             config={
-                "system_prompt_profile": "realtime_phone",
+                "system_prompt_profile": "text_default",
                 "channel": "realtime_phone",
                 "entry_profile": "agent_service",
                 "response_streaming": stream_requested,

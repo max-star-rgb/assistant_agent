@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.generation import RenderResult
 from assistant_agent.services.provider_errors import build_provider_error
+from assistant_agent.services.tool_manifest import RENDER_3D_CAPABILITY
 
 
 class RenderRequest(BaseModel):
@@ -185,7 +186,7 @@ def _failed_result(
         message,
         recoverable=recoverable,
         provider=provider,
-        capability="render_3d",
+        capability=RENDER_3D_CAPABILITY,
     )
     return RenderResult(
         task_id=task_id,

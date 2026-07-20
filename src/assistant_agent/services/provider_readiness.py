@@ -11,6 +11,14 @@ from assistant_agent.services.provider_config_validation import (
     ProviderConfigIssue,
     validate_provider_config,
 )
+from assistant_agent.services.tool_manifest import (
+    DIRECT_CHAT_CAPABILITY,
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+)
 
 
 ReadinessStatus = Literal["ready", "not_ready", "disabled"]
@@ -56,13 +64,13 @@ def build_provider_readiness_report(config: ProviderConfig) -> ProviderReadiness
         issues_by_key.setdefault((issue.capability, issue.provider), []).append(issue)
 
     checks = [
-        _check("image_understanding", config.vision_provider, config, issues_by_key),
-        _check("direct_chat", config.chat_provider, config, issues_by_key),
-        _check("image_generation", config.image_generation_provider, config, issues_by_key),
-        _check("shopping_search", config.product_search_provider, config, issues_by_key),
-        _check("shopping_search", config.price_compare_provider, config, issues_by_key),
-        _check("render_3d", config.render_provider, config, issues_by_key),
-        _check("video_understanding", config.vision_provider, config, issues_by_key),
+        _check(IMAGE_UNDERSTANDING_CAPABILITY, config.vision_provider, config, issues_by_key),
+        _check(DIRECT_CHAT_CAPABILITY, config.chat_provider, config, issues_by_key),
+        _check(IMAGE_GENERATION_CAPABILITY, config.image_generation_provider, config, issues_by_key),
+        _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_search_provider, config, issues_by_key),
+        _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_compare_provider, config, issues_by_key),
+        _check(RENDER_3D_CAPABILITY, config.render_provider, config, issues_by_key),
+        _check(VIDEO_UNDERSTANDING_CAPABILITY, config.vision_provider, config, issues_by_key),
     ]
 
     return ProviderReadinessReport(
@@ -158,11 +166,11 @@ def _readiness_for(config: ProviderConfig, capability: str, provider: str) -> Pr
 
 def _offline_providers(capability: str) -> set[str]:
     local_by_capability = {
-        "image_understanding": {"mock"},
-        "direct_chat": {"mock"},
-        "image_generation": {"mock"},
-        "shopping_search": {"mock", "local_json", "local"},
-        "render_3d": {"mock"},
-        "video_understanding": {"mock"},
+        IMAGE_UNDERSTANDING_CAPABILITY: {"mock"},
+        DIRECT_CHAT_CAPABILITY: {"mock"},
+        IMAGE_GENERATION_CAPABILITY: {"mock"},
+        SHOPPING_SEARCH_CAPABILITY: {"mock", "local_json", "local"},
+        RENDER_3D_CAPABILITY: {"mock"},
+        VIDEO_UNDERSTANDING_CAPABILITY: {"mock"},
     }
     return local_by_capability.get(capability, {"mock"})

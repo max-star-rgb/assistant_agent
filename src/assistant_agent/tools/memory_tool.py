@@ -17,6 +17,13 @@ from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.schemas.capability_output import build_capability_output_contract
+from assistant_agent.services.tool_manifest import (
+    MEMORY_RETRIEVAL_CAPABILITY,
+    MEMORY_RETRIEVAL_TOOL_NAME,
+    MEMORY_SAVE_CAPABILITY,
+    MEMORY_SAVE_TOOL_NAME,
+    MEMORY_TOOL_NAME,
+)
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
@@ -63,7 +70,7 @@ class MemorySaveInput(BaseModel):
 
 
 class MemoryTool(MockTool):
-    name = "memory"
+    name = MEMORY_TOOL_NAME
     description = "Mock memory save and retrieval."
     input_schema = MemoryInput
     output_schema = MemoryItem
@@ -73,7 +80,7 @@ class MemoryTool(MockTool):
         if input.action == "retrieve":
             if not input.query:
                 contract = build_capability_output_contract(
-                    capability="memory_retrieval",
+                    capability=MEMORY_RETRIEVAL_CAPABILITY,
                     status="failed",
                     errors=[
                         {
@@ -110,7 +117,7 @@ class MemoryTool(MockTool):
             )
             data = {"items": [item.model_dump()]}
             contract = build_capability_output_contract(
-                capability="memory_retrieval",
+                capability=MEMORY_RETRIEVAL_CAPABILITY,
                 status="succeeded",
                 output_ref="mock://memory/m1",
                 data={
@@ -167,7 +174,7 @@ class MemoryTool(MockTool):
 
 
 class MemoryRetrievalTool(MemoryTool):
-    name = "memory_retrieval"
+    name = MEMORY_RETRIEVAL_TOOL_NAME
     input_schema = MemoryRetrievalInput
 
     def _run(self, input: MemoryRetrievalInput, context: ToolContext) -> ToolResult:
@@ -178,7 +185,7 @@ class MemoryRetrievalTool(MemoryTool):
 
 
 class MemorySaveTool(MemoryTool):
-    name = "memory_save"
+    name = MEMORY_SAVE_TOOL_NAME
     input_schema = MemorySaveInput
 
     def _run(self, input: MemorySaveInput, context: ToolContext) -> ToolResult:
@@ -292,7 +299,7 @@ def _retrieve_with_manager(
         "usage_hint": usage_hint,
     }
     contract = build_capability_output_contract(
-        capability="memory_retrieval",
+        capability=MEMORY_RETRIEVAL_CAPABILITY,
         status="succeeded",
         output_ref=output_ref,
         data=data,
@@ -330,7 +337,7 @@ def _memory_read_rejected_result(
         "read_policy": decision,
     }
     contract = build_capability_output_contract(
-        capability="memory_retrieval",
+        capability=MEMORY_RETRIEVAL_CAPABILITY,
         status="failed",
         data=data,
         errors=[
@@ -405,7 +412,7 @@ def _save_with_manager(
     }
     output_ref = f"local://memory/{item.memory_id}"
     contract = build_capability_output_contract(
-        capability="memory_save",
+        capability=MEMORY_SAVE_CAPABILITY,
         status="partial" if framework_queued else "succeeded",
         output_ref=output_ref,
         data={
@@ -466,7 +473,7 @@ def _memory_confirmation_required_result(
     }
     output_ref = f"local://memory/confirmations/{confirmation.confirmation_id}"
     contract = build_capability_output_contract(
-        capability="memory_save",
+        capability=MEMORY_SAVE_CAPABILITY,
         status="partial",
         output_ref=output_ref,
         data=data,
@@ -497,7 +504,7 @@ def _memory_confirmation_required_result(
 
 def _memory_save_rejected_result(tool_name: str, reason: str) -> ToolResult:
     contract = build_capability_output_contract(
-        capability="memory_save",
+        capability=MEMORY_SAVE_CAPABILITY,
         status="failed",
         errors=[
             {
@@ -550,7 +557,7 @@ def _mock_memory_saved_result(
         "text_chars": len(text),
     }
     contract = build_capability_output_contract(
-        capability="memory_save",
+        capability=MEMORY_SAVE_CAPABILITY,
         status="succeeded",
         output_ref=f"mock://memory/{memory_id}",
         data={
@@ -595,7 +602,7 @@ def _candidate_recorded_result(
     }
     output_ref = f"local://memory/candidates/{candidate.candidate_id}"
     contract = build_capability_output_contract(
-        capability="memory_save",
+        capability=MEMORY_SAVE_CAPABILITY,
         status="skipped",
         output_ref=output_ref,
         data=data,
@@ -620,7 +627,7 @@ def _explicit_save_text(input: MemoryInput) -> str:
 
 def _missing_memory_save_content(tool_name: str) -> ToolResult:
     contract = build_capability_output_contract(
-        capability="memory_save",
+        capability=MEMORY_SAVE_CAPABILITY,
         status="failed",
         errors=[
             {

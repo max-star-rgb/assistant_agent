@@ -8,6 +8,20 @@ from assistant_agent.schemas.capabilities import CapabilityName
 from assistant_agent.schemas.intent_decision import IntentDecision, PlanStep
 from assistant_agent.schemas.planning import IntentResult
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.tool_manifest import (
+    ASK_FOLLOWUP_CAPABILITY,
+    DIRECT_CHAT_CAPABILITY,
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    MEMORY_RETRIEVAL_CAPABILITY,
+    MEMORY_SAVE_CAPABILITY,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+    WEB_FETCH_CAPABILITY,
+    WEB_SEARCH_CAPABILITY,
+    canonical_tool_for_capability,
+)
 
 
 @dataclass(frozen=True)
@@ -131,21 +145,21 @@ class IntentDetector:
 
         if self._contains(text, self.save_memory_keywords):
             return IntentResult(
-                intent="save_memory",
+                intent=MEMORY_SAVE_CAPABILITY,
                 confidence=0.85,
                 rationale="用户明确要求保存偏好或信息。",
             )
 
         if self._contains(text, self.memory_keywords):
             return IntentResult(
-                intent="memory_retrieval",
+                intent=MEMORY_RETRIEVAL_CAPABILITY,
                 confidence=0.9,
                 rationale="用户提到历史上下文，需要检索记忆。",
             )
 
         if self._needs_followup(text, request):
             return IntentResult(
-                intent="ask_followup",
+                intent=ASK_FOLLOWUP_CAPABILITY,
                 confidence=0.7,
                 missing_slots=["context"],
                 rationale="用户使用了指代词，但当前请求缺少可解析上下文。",
@@ -153,7 +167,7 @@ class IntentDetector:
 
         if not request.video_ids and self._contains(text, self.video_understanding_keywords):
             return IntentResult(
-                intent="ask_followup",
+                intent=ASK_FOLLOWUP_CAPABILITY,
                 confidence=0.7,
                 missing_slots=["video"],
                 rationale="用户请求理解视频，但当前请求没有视频输入。",
@@ -167,7 +181,7 @@ class IntentDetector:
             and not self._contains(text, self.generation_keywords)
         ):
             return IntentResult(
-                intent="ask_followup",
+                intent=ASK_FOLLOWUP_CAPABILITY,
                 confidence=0.7,
                 missing_slots=["image"],
                 rationale="用户请求理解图片，但当前请求没有图片输入。",
@@ -175,62 +189,62 @@ class IntentDetector:
 
         if request.video_ids and self._contains(text, self.video_understanding_keywords):
             return IntentResult(
-                intent="video_understanding",
+                intent=VIDEO_UNDERSTANDING_CAPABILITY,
                 confidence=0.9,
                 rationale="用户提供视频并询问视频内容。",
             )
 
         if request.image_ids and self._contains(text, self.image_understanding_keywords):
             return IntentResult(
-                intent="image_understanding",
+                intent=IMAGE_UNDERSTANDING_CAPABILITY,
                 confidence=0.9,
                 rationale="用户提供图片并询问图片内容。",
             )
 
         if self._contains(text, self.compare_keywords):
             return IntentResult(
-                intent="shopping_search",
+                intent=SHOPPING_SEARCH_CAPABILITY,
                 confidence=0.85,
                 rationale="用户询问价格、便宜程度或平台比较。",
             )
 
         if self._has_web_fetch_intent(text):
             return IntentResult(
-                intent="web_fetch",
+                intent=WEB_FETCH_CAPABILITY,
                 confidence=0.85,
                 rationale="用户要求读取已知 URL 的网页正文。",
             )
 
         if self._has_web_search_intent(text):
             return IntentResult(
-                intent="web_search",
+                intent=WEB_SEARCH_CAPABILITY,
                 confidence=0.85,
                 rationale="用户要求检索最新、实时或联网信息。",
             )
 
         if self._has_shopping_search_intent(text):
             return IntentResult(
-                intent="shopping_search",
+                intent=SHOPPING_SEARCH_CAPABILITY,
                 confidence=0.85,
                 rationale="用户要求查找同款、相似商品或购物信息。",
             )
 
         if self._has_render_intent(text):
             return IntentResult(
-                intent="render_3d",
+                intent=RENDER_3D_CAPABILITY,
                 confidence=0.85,
                 rationale="用户要求放入场景、3D 渲染或查看效果。",
             )
 
         if self._contains(text, self.generation_keywords):
             return IntentResult(
-                intent="image_generation",
+                intent=IMAGE_GENERATION_CAPABILITY,
                 confidence=0.85,
                 rationale="用户要求生成图片或海报。",
             )
 
         return IntentResult(
-            intent="direct_chat",
+            intent=DIRECT_CHAT_CAPABILITY,
             confidence=0.6,
             rationale="未命中特定工具意图，按普通对话处理。",
         )
@@ -242,7 +256,7 @@ class IntentDetector:
             return [
                 RuleMatch(
                     rule_name="media_without_text",
-                    intent="ask_followup",
+                    intent=ASK_FOLLOWUP_CAPABILITY,
                     confidence=0.55,
                     reason="用户提供了媒体输入，但没有说明希望执行什么任务。",
                 )
@@ -252,7 +266,7 @@ class IntentDetector:
             return [
                 RuleMatch(
                     rule_name="vague_reference",
-                    intent="ask_followup",
+                    intent=ASK_FOLLOWUP_CAPABILITY,
                     confidence=0.55,
                     reason="用户使用了指代词，但当前请求缺少可解析上下文。",
                 )
@@ -260,45 +274,45 @@ class IntentDetector:
 
         if self._contains(text, self.save_memory_keywords):
             matches.append(
-                RuleMatch("save_memory_keywords", "memory_save", 0.9, "用户明确要求保存偏好或信息。")
+                RuleMatch("save_memory_keywords", MEMORY_SAVE_CAPABILITY, 0.9, "用户明确要求保存偏好或信息。")
             )
         if self._contains(text, self.memory_keywords):
             matches.append(
-                RuleMatch("memory_reference_keywords", "memory_retrieval", 0.9, "用户提到历史上下文，需要检索记忆。")
+                RuleMatch("memory_reference_keywords", MEMORY_RETRIEVAL_CAPABILITY, 0.9, "用户提到历史上下文，需要检索记忆。")
             )
         if self._contains(text, self.video_understanding_keywords):
             matches.append(
-                RuleMatch("media_understanding_keywords", "video_understanding", 0.9, "用户询问视频内容。")
+                RuleMatch("media_understanding_keywords", VIDEO_UNDERSTANDING_CAPABILITY, 0.9, "用户询问视频内容。")
             )
         if self._contains(text, self.image_understanding_keywords) and self._contains(
             text, self.media_reference_keywords + ("看图", "图中", "图上", "图像")
         ):
             matches.append(
-                RuleMatch("media_understanding_keywords", "image_understanding", 0.9, "用户询问图片内容。")
+                RuleMatch("media_understanding_keywords", IMAGE_UNDERSTANDING_CAPABILITY, 0.9, "用户询问图片内容。")
             )
         if self._has_web_fetch_intent(text):
             matches.append(
-                RuleMatch("web_fetch_url_keywords", "web_fetch", 0.9, "用户要求读取已知 URL 的网页正文。")
+                RuleMatch("web_fetch_url_keywords", WEB_FETCH_CAPABILITY, 0.9, "用户要求读取已知 URL 的网页正文。")
             )
         if self._has_web_search_intent(text) and not self._has_web_fetch_intent(text):
             matches.append(
-                RuleMatch("web_search_keywords", "web_search", 0.9, "用户要求检索最新、实时或联网信息。")
+                RuleMatch("web_search_keywords", WEB_SEARCH_CAPABILITY, 0.9, "用户要求检索最新、实时或联网信息。")
             )
         if self._has_shopping_search_intent(text):
             matches.append(
-                RuleMatch("shopping_search_keywords", "shopping_search", 0.9, "用户要求查找同款或相似商品。")
+                RuleMatch("shopping_search_keywords", SHOPPING_SEARCH_CAPABILITY, 0.9, "用户要求查找同款或相似商品。")
             )
         if self._contains(text, self.compare_keywords):
             matches.append(
-                RuleMatch("shopping_search_compare_keywords", "shopping_search", 0.9, "用户询问价格、便宜程度或平台比较。")
+                RuleMatch("shopping_search_compare_keywords", SHOPPING_SEARCH_CAPABILITY, 0.9, "用户询问价格、便宜程度或平台比较。")
             )
         if self._contains(text, self.generation_keywords) and not self._has_render_intent(text):
             matches.append(
-                RuleMatch("generate_image_keywords", "image_generation", 0.95, "用户明确要求生成图片。")
+                RuleMatch("generate_image_keywords", IMAGE_GENERATION_CAPABILITY, 0.95, "用户明确要求生成图片。")
             )
         if self._has_render_intent(text):
             matches.append(
-                RuleMatch("render_scene_keywords", "render_3d", 0.9, "用户要求放入场景、3D 渲染或查看效果。")
+                RuleMatch("render_scene_keywords", RENDER_3D_CAPABILITY, 0.9, "用户要求放入场景、3D 渲染或查看效果。")
             )
 
         if not matches:
@@ -344,18 +358,25 @@ class IntentDetector:
             return ["ask_followup"]
 
         ordered: list[CapabilityName] = []
-        if any(match.intent == "memory_retrieval" for match in matches):
-            ordered.append("memory_retrieval")
-        if request.video_ids and any(match.intent == "video_understanding" for match in matches):
-            ordered.append("video_understanding")
-        elif request.image_ids and any(match.intent == "image_understanding" for match in matches):
-            ordered.append("image_understanding")
+        if any(match.intent == MEMORY_RETRIEVAL_CAPABILITY for match in matches):
+            ordered.append(MEMORY_RETRIEVAL_CAPABILITY)
+        if request.video_ids and any(match.intent == VIDEO_UNDERSTANDING_CAPABILITY for match in matches):
+            ordered.append(VIDEO_UNDERSTANDING_CAPABILITY)
+        elif request.image_ids and any(match.intent == IMAGE_UNDERSTANDING_CAPABILITY for match in matches):
+            ordered.append(IMAGE_UNDERSTANDING_CAPABILITY)
         elif request.video_ids and self._contains(text, self.media_reference_keywords):
-            ordered.append("video_understanding")
+            ordered.append(VIDEO_UNDERSTANDING_CAPABILITY)
         elif request.image_ids and self._contains(text, self.media_reference_keywords):
-            ordered.append("image_understanding")
+            ordered.append(IMAGE_UNDERSTANDING_CAPABILITY)
 
-        for capability in ("web_fetch", "web_search", "shopping_search", "image_generation", "render_3d", "memory_save"):
+        for capability in (
+            WEB_FETCH_CAPABILITY,
+            WEB_SEARCH_CAPABILITY,
+            SHOPPING_SEARCH_CAPABILITY,
+            IMAGE_GENERATION_CAPABILITY,
+            RENDER_3D_CAPABILITY,
+            MEMORY_SAVE_CAPABILITY,
+        ):
             if any(match.intent == capability for match in matches):
                 ordered.append(capability)
 
@@ -377,20 +398,7 @@ class IntentDetector:
         ]
 
     def _tool_for_capability(self, capability: CapabilityName) -> str | None:
-        return {
-            "direct_chat": None,
-            "image_generation": "image_generation",
-            "image_understanding": "vision_understanding",
-            "video_understanding": "video_understanding",
-            "web_search": "web_search",
-            "web_fetch": "web_fetch",
-            "shopping_search": "shopping_search",
-            "render_3d": "render_3d",
-            "memory_retrieval": "memory_retrieval",
-            "memory_save": "memory_save",
-            "multi_step_orchestration": None,
-            "ask_followup": None,
-        }[capability]
+        return canonical_tool_for_capability(capability)
 
     def _missing_inputs_from_matches(self, matches: list[RuleMatch]) -> list[str]:
         missing_by_rule = {

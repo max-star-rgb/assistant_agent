@@ -22,6 +22,7 @@ from assistant_agent.services.provider_errors import (
     map_exception_to_provider_error,
     sanitize_error_message,
 )
+from assistant_agent.services.tool_manifest import VISUAL_IMAGE_SEARCH_CAPABILITY
 
 
 DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -472,7 +473,7 @@ def _failed_from_exception(
     error = map_exception_to_provider_error(
         exc,
         provider="qwen",
-        capability="visual_image_search",
+        capability=VISUAL_IMAGE_SEARCH_CAPABILITY,
         code=code,
     )
     return _failed_visual_image_search_result(
@@ -501,7 +502,7 @@ def _failed_visual_image_search_result(
         message,
         recoverable=recoverable,
         provider=provider,
-        capability="visual_image_search",
+        capability=VISUAL_IMAGE_SEARCH_CAPABILITY,
     )
     return VisualImageSearchResult(
         image_used=image_used if _is_http_url(image_used) else "unsupported_image_ref",

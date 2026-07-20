@@ -137,13 +137,6 @@ Implemented files:
 | `scripts/check_pilot_readiness.py` | implemented | Local operator command for read-only pilot readiness checks without server startup, provider calls, or remote-agent calls. |
 | `scripts/collect_pilot_evidence.py` | implemented | Strict local/offline evidence package collector covering `/agent/run`, `/agents/run`, inbound `/a2a/rpc`, readiness, route, delegation, budget, audit, replay-preview, and trace summaries without server startup, real provider calls, remote-agent calls, or raw trace bodies. |
 | `docs/development/agent-pilot-operator-runbook.md` | implemented | Operator runbook for local/pilot startup, auth/readiness verification, smoke requests, redacted evidence collection, and backout. |
-| `tests/scopes/runtime/test_agent_communication_routing.py` | implemented | Offline tests for default routing, local transport, disabled/unknown agents, depth limits, opt-in registration, and local delegation tool behavior. |
-| `tests/scopes/runtime/test_a2a_json_rpc_transport.py` | implemented | Offline fake-server tests for outbound A2A allowlist, HTTPS/local opt-in, Agent Card validation, timeout, payload limit, protocol errors, and business failure normalization. |
-| `tests/scopes/runtime/test_agent_pilot_readiness.py` | implemented | Offline tests for pilot readiness checks, redacted metrics summaries, and failure replay payload redaction. |
-| `tests/scopes/runtime/test_agent_routing_policy.py` | implemented | Offline tests for deterministic router policy, routing-table overrides, ambiguous capabilities, and config loading. |
-| `tests/scopes/runtime/test_agent_router.py` | implemented | Offline tests for router routing, controller delegation registry shape, structured unknown-agent failure, single-agent compatibility, metadata, and control-plane records. |
-| `tests/scopes/api/test_api_agent_graph_runtime.py` | implemented | Offline API tests for read-only control-plane run, route, delegation tree, budget, audit events, replay preview, readiness, and trace-only summaries. |
-| `tests/scopes/api/test_api_a2a.py` | implemented | Offline API tests for public agent card filtering, JSON-RPC `SendMessage`, parse/invalid/method/params/internal errors, context mapping, artifacts, and failed task mapping. |
 
 ## Protocol Boundary
 
@@ -231,12 +224,6 @@ Module ownership:
 | `src/assistant_agent/tools/agent_delegation_tool.py` | Agent-callable delegation tool registered in `ToolRegistry` only when enabled with an `AgentCommunicationService`. |
 | `src/assistant_agent/api/routes_agent.py` | HTTP interface for `/agent/run` and the separate `/agents/run` router route. |
 | `src/assistant_agent/api/routes_a2a.py` | Inbound A2A-compatible agent card and local JSON-RPC endpoint. |
-| `tests/scopes/runtime/test_agent_communication_*.py` | Offline deterministic tests for directory, routing, transport, delegation, and safety policy. |
-| `tests/scopes/runtime/test_agent_router.py` | Offline deterministic tests for router naming and metadata behavior. |
-| `tests/scopes/api/test_api_agent_graph_runtime.py` | Offline deterministic API tests for `/agent/run`, `/agents/run`, and `/control-plane/...` views. |
-| `tests/scopes/api/test_api_a2a.py` | Offline deterministic tests for inbound A2A API behavior. |
-| `tests/scopes/runtime/test_a2a_json_rpc_transport.py` | Offline deterministic tests for the default-disabled outbound A2A pilot transport. |
-| `tests/scopes/runtime/test_agent_pilot_readiness.py` | Offline deterministic tests for readiness checks, redacted summaries, and replay payload redaction. |
 
 If file names change during implementation, keep the same ownership boundaries and update this table.
 
@@ -347,29 +334,21 @@ The inbound MVP exposes this repository as an agent without changing default `/a
 - If implementation affects architecture layering, update the boundary rules in `AGENTS.md`.
 - If delegation affects prompt/context content, also read and update `docs/CONTEXT_ENGINEERING_STATUS.md`.
 - If delegation reads or writes memory, also read and update `docs/memory-service-architecture.md`.
-- Any implementation change should include offline tests first. Real remote-agent or network smoke tests must be explicit opt-in.
+- Follow `AGENTS.md` `Testing Policy`; real remote-agent or network smoke checks must be explicit opt-in.
 
 ## Validation
 
-For the current AgentRouter, A2A adapter, outbound pilot transport, and pilot-readiness state:
+Default pytest safety net:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
-  tests/scopes/runtime/test_agent_communication_routing.py \
-  tests/scopes/runtime/test_agent_pilot_readiness.py \
-  tests/scopes/runtime/test_a2a_json_rpc_transport.py \
-  tests/scopes/runtime/test_agent_router.py \
-  tests/scopes/runtime/test_agent_routing_policy.py \
-  tests/scopes/api/test_api_agent_graph_runtime.py \
-  tests/scopes/api/test_api_a2a.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-For broader behavior changes, run:
+For broader behavior checks, run the deterministic eval/demo and explicit pilot evidence tools:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_scoped_tests.py --scope runtime -- -q
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_demo_flows.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/collect_pilot_evidence.py
 ```

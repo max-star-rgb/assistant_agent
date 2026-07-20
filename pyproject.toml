@@ -14,22 +14,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["httpx2>=0.0.1", "pytest>=8.0"]
+dev = ["pytest>=8.0"]
+observability = [
+    "opentelemetry-api>=1.25,<2",
+    "opentelemetry-sdk>=1.25,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.25,<2",
+]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/critical"]
+testpaths = ["tests"]
 pythonpath = ["src"]
-markers = [
-    "critical: cross-scope offline safety and contract baseline",
-    "fast: critical offline checks suitable for the shortest feedback loop",
-    "unit: isolated tests for local data models, helpers, and small services",
-    "contract: adapter and tool contract checks",
-    "api: HTTP, WebSocket, CLI, or external entry-layer checks",
-    "runtime: assistant loop, graph runtime, gateway, realtime, or routing behavior",
-    "eval: offline evaluation case checks",
-    "smoke: smoke scripts and operator-facing smoke checks",
-    "slow: broader regression checks that are not part of the small-change fast path",
-    "integration: opt-in integration checks that may require explicit environment setup",
-    "e2e: end-to-end demo or multi-layer workflow checks",
-    "regression: named historical defect or compatibility behavior guards",
-]

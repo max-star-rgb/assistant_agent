@@ -162,7 +162,7 @@ Last updated: 2026-07-17
 
 - Agent-Service 的后台 observer 继续通过工具治理链执行 Qwen；“后台受治理工具执行”和“AgentRuntime 可见工具目录”是两个边界。有 active video 的可信 AgentRuntime turn 可以通过动态工具目录暴露 `video_understanding`，但主 LLM 只看到工具 schema 和 prompt-safe 文本上下文，不见帧、内部媒体路径或 VLM 角色模板。
 - `AgentGraphRuntime` 在每次模型 context build 前按请求中最后一个 `video_id` 重新投影共享 `RealtimeVideoMemoryStore`，生成 `ready`、`refreshing`、`pending`、`stale`、`failed` 或 `unavailable` 状态。
-- 可信 Agent-Service 入口把 `video_ids` 渲染为“当前通话的实时镜头”而不是上传式“附带视频 ID”；`realtime_phone` prompt 只保留共享镜头措辞边界，禁止“你刚发送的视频”、视频 ID、快照或内部实现等说法。普通上传/API 仍保留上传语义。
+- 可信 Agent-Service 入口把 `video_ids` 渲染为“当前共享的实时画面”而不是上传式“附带视频 ID”；AgentRuntime system prompt 保持入口和通道无关，不注入电话、口播、挂断或传输层规则。普通上传/API 仍保留上传语义。
 - observer 首帧必选、明显变化立即候选、静态画面最长 2 秒产生一次候选；队列保持一个 Qwen in-flight 和一个 latest-wins pending。每轮 Provider 请求只含当前单帧和最多 2,000 字符的上一成功语义摘要，不重发多帧历史。
 - 明确指代当前画面的问题由 AgentRuntime 主 LLM 通过动态暴露的 `video_understanding` 表达；入口不放视觉分析提示词，也不基于文本自行完成 VLM 判断。问候/闲聊不应主动提及视觉。
 - 每个 `video_id` 复用一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后轮换，断线按 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；关闭或切换 video id 会关闭 Provider session 并清理 pending、语义状态和帧文件。
@@ -240,32 +240,14 @@ Last updated: 2026-07-17
 - `src/assistant_agent/memory/retrieval.py`
 - `src/assistant_agent/agent/assistant_loop_nodes.py`
 
-## Relevant Tests
+## Validation Boundary
 
-- `tests/scopes/context/test_conversation_context_compaction.py`
-- `tests/scopes/context/test_assistant_context_renderer.py`
-- `tests/scopes/gateway/test_realtime_task_state.py`
-- `tests/scopes/gateway/test_realtime_video_memory.py`
-- `tests/scopes/gateway/test_realtime_video_observer.py`
-- `tests/scopes/gateway/test_video_context.py`
-- `tests/scopes/context/test_durable_task_context.py`
-- `tests/scopes/context/test_shared_assistant_run_service.py`
-- `tests/scopes/memory/test_memory_manager.py`
-- `tests/scopes/memory/test_memory_context_builder.py`
-- `tests/scopes/runtime/test_agent_communication_routing.py`
-- `tests/scopes/runtime/test_react_action_quality.py`
-- `tests/scopes/api/test_trace_query_api.py`
-- `tests/scopes/context/test_context_sources.py`
-- `tests/scopes/context/test_soul_context_source.py`
-- `tests/scopes/runtime/test_improvement_evidence.py`
-- `tests/scopes/runtime/test_improvement_detector.py`
-- `tests/scopes/runtime/test_improvement_proposer.py`
-- `tests/scopes/runtime/test_improvement_evaluator.py`
-
-Current small regression coverage includes budget trimming order, product observation field preservation, prompt data-boundary labels, empty-query memory browsing, conversation compaction, trace context summaries, and run-summary context reporting.
+The default pytest suite does not mirror context internals. It protects the complete text run, tool loop and
+identity isolation only. Context budgeting, compaction and retrieval quality use deterministic evals and runtime
+traces; add a pytest regression only after a concrete user-visible failure or stable protocol change.
 
 ## Next Steps
 
-- Keep adding small regression tests when a concrete context failure appears.
+- Add one minimal regression test when a concrete context failure appears and the existing safety net cannot detect it.
 - Consider broader token-aware control decisions only if recent transcript and reporting token fields show real provider failures that character budgeting cannot prevent.
 - Consider semantic summary or embedding retrieval only after local relevance tests show keyword retrieval is insufficient.

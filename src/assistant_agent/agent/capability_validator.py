@@ -7,6 +7,20 @@ import re
 from assistant_agent.schemas.capabilities import CapabilityName, contract_for_intent
 from assistant_agent.schemas.intent_decision import IntentDecision, PlanStep
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.tool_manifest import (
+    ASK_FOLLOWUP_CAPABILITY,
+    DIRECT_CHAT_CAPABILITY,
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    MEMORY_RETRIEVAL_CAPABILITY,
+    MEMORY_SAVE_CAPABILITY,
+    MULTI_STEP_ORCHESTRATION_CAPABILITY,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+    WEB_FETCH_CAPABILITY,
+    WEB_SEARCH_CAPABILITY,
+)
 
 
 class CapabilityValidator:
@@ -31,14 +45,14 @@ class CapabilityValidator:
 
     def _normalize_decision(self, decision: IntentDecision) -> IntentDecision:
         capabilities = list(decision.capabilities)
-        if not capabilities and decision.primary_intent != "ask_followup":
+        if not capabilities and decision.primary_intent != ASK_FOLLOWUP_CAPABILITY:
             capabilities = [decision.primary_intent]
 
-        if decision.primary_intent == "multi_step_orchestration" and decision.plan_steps:
+        if decision.primary_intent == MULTI_STEP_ORCHESTRATION_CAPABILITY and decision.plan_steps:
             capabilities = [step.capability for step in decision.plan_steps]
 
         plan_steps = list(decision.plan_steps)
-        if not plan_steps and capabilities and capabilities != ["ask_followup"]:
+        if not plan_steps and capabilities and capabilities != [ASK_FOLLOWUP_CAPABILITY]:
             plan_steps = [
                 self._step_for_capability(index=index, capability=capability)
                 for index, capability in enumerate(capabilities)
@@ -52,32 +66,32 @@ class CapabilityValidator:
         decision: IntentDecision,
         request: UserRequest,
     ) -> list[str]:
-        if capability in {"ask_followup", "multi_step_orchestration"}:
+        if capability in {ASK_FOLLOWUP_CAPABILITY, MULTI_STEP_ORCHESTRATION_CAPABILITY}:
             return []
-        if capability == "direct_chat":
+        if capability == DIRECT_CHAT_CAPABILITY:
             return [] if self._has_query(request) else ["text"]
-        if capability == "image_generation":
+        if capability == IMAGE_GENERATION_CAPABILITY:
             return [] if self._has_query(request) else ["prompt"]
-        if capability == "image_understanding":
+        if capability == IMAGE_UNDERSTANDING_CAPABILITY:
             return [] if request.image_ids else ["image"]
-        if capability == "video_understanding":
+        if capability == VIDEO_UNDERSTANDING_CAPABILITY:
             return [] if request.video_ids else ["video"]
-        if capability == "web_search":
+        if capability == WEB_SEARCH_CAPABILITY:
             return [] if self._has_query(request) else ["query"]
-        if capability == "web_fetch":
+        if capability == WEB_FETCH_CAPABILITY:
             return [] if self._has_url(request) else ["url"]
-        if capability == "shopping_search":
+        if capability == SHOPPING_SEARCH_CAPABILITY:
             return [] if self._has_search_input(request) else ["search_query"]
-        if capability == "render_3d":
+        if capability == RENDER_3D_CAPABILITY:
             return [] if self._has_render_goal(request) else ["scene_description"]
-        if capability == "memory_retrieval":
+        if capability == MEMORY_RETRIEVAL_CAPABILITY:
             missing = []
             if not getattr(request, "user_id", None):
                 missing.append("user_id")
             if not getattr(request, "session_id", None):
                 missing.append("session_id")
             return missing
-        if capability == "memory_save":
+        if capability == MEMORY_SAVE_CAPABILITY:
             missing = []
             if not self._has_query(request):
                 missing.append("content")
@@ -91,8 +105,8 @@ class CapabilityValidator:
     def _ask_followup(self, decision: IntentDecision, missing_inputs: list[str]) -> IntentDecision:
         deduped_missing = self._dedupe(missing_inputs)
         return IntentDecision(
-            primary_intent="ask_followup",
-            capabilities=["ask_followup"],
+            primary_intent=ASK_FOLLOWUP_CAPABILITY,
+            capabilities=[ASK_FOLLOWUP_CAPABILITY],
             plan_steps=[],
             missing_inputs=deduped_missing,
             confidence=decision.confidence,

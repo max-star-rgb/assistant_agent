@@ -9,6 +9,9 @@ from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Any
 
+from assistant_agent.services.hooks import HookManager, HookTraceStore
+from assistant_agent.services.langfuse_scores import create_langfuse_score_trace_observer_from_env
+from assistant_agent.services.otel_exporter import create_text_otel_trace_observer_from_env
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.trace_store import (
     CompositeTraceStore,
@@ -196,7 +199,14 @@ def create_server_trace_store(
 
     primary = InMemoryTraceStore()
     secondary = BufferedJsonlTraceStore(JsonlTraceStore(path), capacity=capacity)
-    return CompositeTraceStore(primary, [secondary])
+    secondaries: list[TraceStore] = [secondary]
+    otel_observer = create_text_otel_trace_observer_from_env()
+    if otel_observer is not None:
+        secondaries.append(HookTraceStore(HookManager([otel_observer])))
+    score_observer = create_langfuse_score_trace_observer_from_env()
+    if score_observer is not None:
+        secondaries.append(HookTraceStore(HookManager([score_observer])))
+    return CompositeTraceStore(primary, secondaries)
 
 
 def close_trace_store(

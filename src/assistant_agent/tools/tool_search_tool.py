@@ -24,13 +24,14 @@ from assistant_agent.schemas.tools import (
     VisibilityPolicy,
 )
 from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.services.tool_manifest import TOOL_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class ToolSearchTool(MockTool):
     """Inspect configured MCP servers for fallback tools without executing them."""
 
-    name = "tool_search"
+    name = TOOL_SEARCH_TOOL_NAME
     description = (
         "Search configured MCP servers for additional tools only when the exposed core tools "
         "cannot satisfy the user request. This discovers candidates; it does not execute them "

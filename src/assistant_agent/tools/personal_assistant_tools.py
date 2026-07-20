@@ -37,13 +37,20 @@ from assistant_agent.services.personal_assistant_adapters import (
     ReminderAdapter,
     WeatherAdapter,
 )
+from assistant_agent.services.tool_manifest import (
+    CALENDAR_CREATE_TOOL_NAME,
+    CALENDAR_SEARCH_TOOL_NAME,
+    CONTACTS_SEARCH_TOOL_NAME,
+    REMINDER_CREATE_TOOL_NAME,
+    WEATHER_TOOL_NAME,
+)
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class WeatherTool(MockTool):
     """Look up weather through the configured personal weather adapter."""
 
-    name = "weather"
+    name = WEATHER_TOOL_NAME
     description = "Look up current or short-range weather for a location."
     input_schema = WeatherRequest
     output_schema = WeatherResult
@@ -88,7 +95,7 @@ class WeatherTool(MockTool):
 class CalendarSearchTool(MockTool):
     """Search calendar events through the configured calendar adapter."""
 
-    name = "calendar_search"
+    name = CALENDAR_SEARCH_TOOL_NAME
     description = "Search the user's calendar events."
     input_schema = CalendarSearchRequest
     output_schema = CalendarSearchResult
@@ -138,7 +145,7 @@ class CalendarSearchTool(MockTool):
 class CalendarCreateTool(MockTool):
     """Create calendar events after ToolExecutor confirmation."""
 
-    name = "calendar_create"
+    name = CALENDAR_CREATE_TOOL_NAME
     description = "Create a calendar event after explicit user confirmation."
     input_schema = CalendarCreateRequest
     output_schema = CalendarCreateResult
@@ -199,7 +206,7 @@ class CalendarCreateTool(MockTool):
 class ContactsSearchTool(MockTool):
     """Search personal contacts through the configured contacts adapter."""
 
-    name = "contacts_search"
+    name = CONTACTS_SEARCH_TOOL_NAME
     description = "Search the user's contacts for candidate people or contact details."
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
@@ -249,7 +256,7 @@ class ContactsSearchTool(MockTool):
 class ReminderCreateTool(MockTool):
     """Create reminders after ToolExecutor confirmation."""
 
-    name = "reminder_create"
+    name = REMINDER_CREATE_TOOL_NAME
     description = "Create a reminder or todo after explicit user confirmation."
     input_schema = ReminderCreateRequest
     output_schema = ReminderCreateResult

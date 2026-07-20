@@ -5,7 +5,7 @@
 ## 新对话快速交接
 
 - 默认真实 LLM 运行时是 `AgentGraphRuntime` 内的 provider-native loop；非 mock chat adapter 不再进入 prompt-json 控制面调用。
-- 工具稳定身份由轻量 `ToolManifest` 表达，只保存 public tool name、capability 和 removed alias 这类迁移事实；工具执行契约仍由 `ToolSpec` 表达，inventory 来源是 `ToolRegistry.list_specs()`；执行边界通过 `ToolRegistry.get_spec()` 读取同一路径生成的单工具契约，并由 `ToolPolicyInterpreter` 编译成只读 `ToolPolicyView`。真实 LLM 路径把 exposed ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
+- 工具稳定身份由轻量 `ToolManifest` 表达，覆盖默认 public tool name、capability、planner action、removed alias 和少量 provider binding/legacy field 迁移事实；工具执行契约仍由 `ToolSpec` 表达，inventory 来源是 `ToolRegistry.list_specs()`；执行边界通过 `ToolRegistry.get_spec()` 读取同一路径生成的单工具契约，并由 `ToolPolicyInterpreter` 编译成只读 `ToolPolicyView`。真实 LLM 路径把 exposed ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
 - `select_prompt_tool_specs()` 会把 registry inventory 装配成 prompt-safe `RunToolSet`，分别记录 registered、qualified、exposed、executable 工具和排除原因。默认按工具分类暴露：`read` 默认暴露；`generate` 默认不按文本暴露，但当前代码配置为可暴露；`write` 默认不暴露，当前只把记忆写入工具 `memory_save` / `memory_media_ingest` 代码配置为可暴露；`dangerous` 默认不暴露。`generate` / `write` 的暴露优先级从低到高是默认不暴露、代码配置可暴露（代码内置或 `configured_tools` / `configured_toolsets`）、结构化显式指定暴露（`enabled_tools` / `enabled_toolsets` / `enabled_skills`）。工具目录不得读取用户话术触发 `generate` 或 `write` 暴露；`dangerous` 只接受结构化显式启用和自身 env/profile gate。provider-native 模型只能执行本轮 `executable_tool_names` 中的工具。
 - Skill capability catalog 可在不改变工具资格的前提下，按显式 `enabled_skills` 或确定性 `skill_recall` 把 prompt-safe skill descriptor 注入上下文；自动召回不会激活 `skill_only` 工具、不会新增 `run_skill`，也不会绕过工具治理链路。结构化 `workflow_skill_v1` 先显式注册进 `WorkflowSkillCatalog`，再由 `WorkflowSkillLauncher` 按 manifest name 启动并交给 `WorkflowSkillRunner` 执行；launcher 可通过 process-local 或 JSONL-backed run store 查询和 resume 运行记录，每个 resumed step 仍先经 `ActionValidator` 再进 `ToolExecutor`。产品化 HTTP 入口默认关闭，只能通过 `scripts/run_server.py --enable-workflow-skills` 或 `MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED=1` 显式启用，并只暴露 manifest list、launch、resume 和 run summary，不提供通用 `run_skill`。
 - `tool_search` 是 fallback discovery 工具，只在当前已暴露核心工具无法满足用户需求时查看已配置 MCP server 的 allowlisted tool catalog。它返回 prompt-safe MCP 候选、输入摘要和 permission 状态；allowed 但未默认 enabled 的 MCP 工具会标记为 `permission_required`，未 allowlist 的 server 工具不回传给模型。`tool_search` 不执行 MCP 工具、不注册新工具、不授予权限；后续执行仍必须显式启用并重新经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
@@ -245,6 +245,7 @@ Runtime gate 映射：
 - `reminder_create`
 - `image_generation`
 - `render_3d`
+- `python_interpreter`
 - `memory`
 - `memory_retrieval`
 - `memory_save`
@@ -374,8 +375,9 @@ Provider 边界：
 
 MCP `tool_run`、local tools CLI 等显式工具入口不经过 assistant prompt 装配，因此不会伪造 `RunToolSet`；它们继续使用各自入口 allowlist/config，再统一进入 `ActionValidator -> ToolExecutor`。新增模型驱动入口必须创建并传递 run-scoped tool set，不能退回只检查 registry。
 
-Tool governance rejection contracts live in `tests/critical/test_tool_call_boundaries.py`,
-`tests/critical/test_tool_executor.py`, and `tests/critical/test_tool_risk_gate.py`.
+The default pytest safety net protects one complete provider-native tool-call loop at the public runtime
+boundary. More detailed tool validation is added only for a concrete regression or changed stable contract,
+following `AGENTS.md` `Testing Policy`.
 
 ## ToolExecutor 边界
 
@@ -588,37 +590,20 @@ mock/local adapter 是同契约的离线替身，不是“看起来成功”的�
 7. 如有语义必需参数或安全条件，在 `ActionValidator` 增加执行前校验。
 8. 如旧 mock/rule plan 需要支持，在 `tool_input_builder.py` 增加 action 到 tool input 的兼容构造。
 9. 如 observation 后续会驱动另一个工具，更新 `tool_observation.py` 的 summary/next_step_hint/保留字段；`model_observation` 不得暴露 provider raw response、base64、大媒体 payload、本地路径、API key、Authorization、Bearer token 或真实用户数据 dump。
-10. 如涉及 provider-native 或 MCP schema，补充 `tool_spec_adapters` 相关测试。
+10. 如涉及 provider-native 或 MCP schema，先判断是否改变稳定外部契约；只有满足 `AGENTS.md`
+    `Testing Policy` 时才扩展最小安全网。
 11. 如涉及 memory 或 agent delegation，先按对应权威文档确认服务边界。
 
-最小测试覆盖：
-
-- registry spec 暴露和 schema 转换。
-- ActionValidator 接受合法输入、拒绝缺参/未知工具/危险输入。
-- mock/local adapter 成功路径、空结果和结构化错误；真实 provider adapter 的 payload parser 使用 fake HTTP/fixture 覆盖成功、`provider_unconfigured`、`provider_schema_mismatch` 和 provider error，不在默认测试中联网，也不把 mock 通过解读为真实 provider smoke 通过。
-- Tool 层只包装 adapter 结果，失败返回结构化 `ToolResult`、contract 和脱敏 error，不抛 provider 原始异常。
-- ToolExecutor 成功、失败、预算阻断、retry/recovery 和 cooperative cancellation。
-- native direct-answer 路径必须只有一次 chat call，且首个用户可见 delta 来自 provider content。
-- native tool 路径第一轮必须是 provider `tool_calls`，工具执行后第二轮生成自然语言回答。
-- provider 不支持 native tools 时必须 fail immediately，不能回退到 JSON 控制面。
-- observation 和 trace/event 中不出现 raw provider payload、API key、Authorization、Bearer token。
-- 若工具可默认注册，离线 pytest 和 demo flow 不能依赖真实 provider。
+默认 pytest 只保护完整 native tool-call loop 是否能够执行并形成最终回答，不枚举 registry、validator、
+executor、adapter 和 schema 的内部组合。真实 Provider、payload parser 和 MCP server 可用性由显式
+operator smoke/pilot 验证；默认 pytest 不联网，也不把 mock 通过解读为真实 Provider 可用。
 
 ## 当前验证入口
 
-优先跑这些离线测试：
+默认 pytest：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest \
-  tests/critical/test_tool_executor.py \
-  tests/scopes/tools/test_provider_budget_in_tool_executor.py \
-  tests/scopes/tools/test_retry_policy.py \
-  tests/scopes/runtime/test_react_action_quality.py \
-  tests/scopes/tools/test_native_tool_call_handoff.py \
-  tests/scopes/context/test_assistant_context_renderer.py \
-  tests/critical/test_tool_spec_adapters.py \
-  tests/scopes/tools/test_mcp_server_skeleton.py \
-  tests/critical/test_architecture_boundaries.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
 更大范围验收：

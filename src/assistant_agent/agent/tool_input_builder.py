@@ -6,6 +6,21 @@ from typing import Any
 from assistant_agent.agent.prompt_builder import build_image_generation_request
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEMORY_RETRIEVAL_TOOL_NAME,
+    MEMORY_RETRIEVAL_CAPABILITY,
+    MEMORY_SAVE_CAPABILITY,
+    MEMORY_TOOL_NAME,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    WEB_FETCH_CAPABILITY,
+    WEB_SEARCH_CAPABILITY,
+    canonical_capability_for_action,
+)
 
 
 _URL_RE = re.compile(r"https?://\S+")
@@ -18,6 +33,8 @@ def build_tool_input(
 ) -> dict[str, Any]:
     """Build the input payload for one planned tool action."""
 
+    capability = canonical_capability_for_action(action) or action
+
     if action == "understand_video":
         return {
             "video_ref": request.video_ids[0] if request.video_ids else None,
@@ -29,7 +46,7 @@ def build_tool_input(
         }
     if action == "understand_image":
         return {"image_ids": request.image_ids, "video_ids": request.video_ids, "question": request.text}
-    if action == "shopping_search":
+    if capability == SHOPPING_SEARCH_CAPABILITY:
         visual = latest_visual_data(outputs_by_step)
         summary = visual.get("summary") if visual else None
         payload = {
@@ -41,17 +58,17 @@ def build_tool_input(
             "materials": visual.get("materials", []) if visual else [],
         }
         return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
-    if action == "search_web":
+    if capability == WEB_SEARCH_CAPABILITY:
         return build_web_search_input(request)
-    if action == "fetch_web":
+    if capability == WEB_FETCH_CAPABILITY:
         return build_web_fetch_input(request)
-    if action == "generate_image":
+    if capability == IMAGE_GENERATION_CAPABILITY:
         return build_image_generation_request(request, outputs_by_step).model_dump()
-    if action == "render_3d":
+    if capability == RENDER_3D_CAPABILITY:
         return build_render_request_input(request, outputs_by_step)
-    if action == "retrieve_memory":
+    if capability == MEMORY_RETRIEVAL_CAPABILITY:
         return {"user_id": request.user_id, "query": request.text}
-    if action == "save_memory":
+    if capability == MEMORY_SAVE_CAPABILITY:
         return {
             "user_id": request.user_id,
             "session_id": request.session_id,
@@ -111,7 +128,7 @@ def latest_items(outputs_by_step: dict[str, ToolResult]) -> list[dict[str, Any]]
     """Return the latest list of product-like items from previous results."""
 
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name == "shopping_search" and result.data:
+        if result.tool_name == SHOPPING_SEARCH_TOOL_NAME and result.data:
             search = result.data.get("search")
             if isinstance(search, dict) and isinstance(search.get("items"), list):
                 return search["items"]
@@ -169,7 +186,7 @@ def latest_visual_data(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]
     """Return the latest visual/video understanding data payload."""
 
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name in {"vision_understanding", "video_understanding"} and result.success and result.data:
+        if result.tool_name in {IMAGE_UNDERSTANDING_TOOL_NAME, VIDEO_UNDERSTANDING_TOOL_NAME} and result.success and result.data:
             return result.data
     return {}
 
@@ -178,7 +195,7 @@ def latest_video_data(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]:
     """Return the latest video understanding data payload."""
 
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name == "video_understanding" and result.success and result.data:
+        if result.tool_name == VIDEO_UNDERSTANDING_TOOL_NAME and result.success and result.data:
             return result.data
     return {}
 
@@ -187,7 +204,7 @@ def latest_visual_output_ref(outputs_by_step: dict[str, ToolResult]) -> str | No
     """Return the latest visual/video understanding output ref."""
 
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name in {"vision_understanding", "video_understanding"} and result.success:
+        if result.tool_name in {IMAGE_UNDERSTANDING_TOOL_NAME, VIDEO_UNDERSTANDING_TOOL_NAME} and result.success:
             return result.output_ref
     return None
 
@@ -215,7 +232,7 @@ def latest_memory_items(outputs_by_step: dict[str, ToolResult]) -> list[dict[str
     """Return retrieved memory items from the latest memory result."""
 
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name not in {"memory", "memory_retrieval"} or not result.success or not result.data:
+        if result.tool_name not in {MEMORY_TOOL_NAME, MEMORY_RETRIEVAL_TOOL_NAME} or not result.success or not result.data:
             continue
         items = result.data.get("items")
         if isinstance(items, list):

@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.assistant_decision import NativeToolCall
+from assistant_agent.services.tool_manifest import replacement_for_removed_tool
 
 
 LLMEventType = Literal["token_delta", "tool_call_delta", "completed", "error"]
@@ -125,18 +126,19 @@ class LLMEventAccumulator:
         for _, current in sorted(self._tool_calls.items()):
             if not current.name:
                 continue
+            tool_name = replacement_for_removed_tool(current.name) or current.name
             raw = {
                 "id": current.id,
                 "type": current.type or "function",
                 "function": {
-                    "name": current.name,
+                    "name": tool_name,
                     "arguments": current.arguments,
                 },
             }
             calls.append(
                 NativeToolCall(
                     id=current.id,
-                    name=current.name,
+                    name=tool_name,
                     arguments=_parse_arguments(current.arguments),
                     provider_format=provider_format,
                     raw=raw,

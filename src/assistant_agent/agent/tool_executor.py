@@ -29,7 +29,19 @@ from assistant_agent.services.tool_call_boundary import (
 )
 from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.tool_manifest import (
-    SHOPPING_SEARCH_CAPABILITY,
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_GENERATION_TOOL_NAME,
+    MEMORY_INGEST_STATUS_TOOL_NAME,
+    MEMORY_MEDIA_INGEST_TOOL_NAME,
+    MEMORY_RETRIEVAL_CAPABILITY,
+    MEMORY_RETRIEVAL_TOOL_NAME,
+    MEMORY_SAVE_CAPABILITY,
+    MEMORY_SAVE_TOOL_NAME,
+    MEMORY_TOOL_NAME,
+    RENDER_3D_CAPABILITY,
+    RENDER_3D_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    canonical_capability_for_action,
     canonical_capability_for_tool,
 )
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
@@ -969,30 +981,14 @@ def _preserve_success_after_cancel(risk_decision: Any) -> bool:
 
 def _capability_name(tool_name: str, step: TaskStep | None) -> str:
     if step is not None:
-        action_map = {
-            "understand_image": "image_understanding",
-            "understand_video": "video_understanding",
-            "search_web": "web_search",
-            "fetch_web": "web_fetch",
-            "search_image_by_image": "visual_image_search",
-            SHOPPING_SEARCH_CAPABILITY: SHOPPING_SEARCH_CAPABILITY,
-            "generate_image": "image_generation",
-            "render_3d": "render_3d",
-            "retrieve_memory": "memory_retrieval",
-            "save_memory": "memory_save",
-        }
-        if step.action in action_map:
-            return action_map[step.action]
+        manifest_capability = canonical_capability_for_action(step.action)
+        if manifest_capability is not None:
+            return manifest_capability
     tool_map = {
-        "vision_understanding": "image_understanding",
-        "video_understanding": "video_understanding",
-        "web_search": "web_search",
-        "web_fetch": "web_fetch",
-        "visual_image_search": "visual_image_search",
-        "image_generation": "image_generation",
-        "render_3d": "render_3d",
-        "memory_retrieval": "memory_retrieval",
-        "memory_save": "memory_save",
+        IMAGE_GENERATION_TOOL_NAME: IMAGE_GENERATION_CAPABILITY,
+        RENDER_3D_TOOL_NAME: RENDER_3D_CAPABILITY,
+        MEMORY_RETRIEVAL_TOOL_NAME: MEMORY_RETRIEVAL_CAPABILITY,
+        MEMORY_SAVE_TOOL_NAME: MEMORY_SAVE_CAPABILITY,
     }
     manifest_capability = canonical_capability_for_tool(tool_name)
     if manifest_capability is not None:
@@ -1029,11 +1025,11 @@ def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: Ag
     """Bind memory ownership to the authenticated runtime state, not model arguments."""
 
     if tool_name not in {
-        "memory",
-        "memory_retrieval",
-        "memory_save",
-        "memory_media_ingest",
-        "memory_ingest_status",
+        MEMORY_TOOL_NAME,
+        MEMORY_RETRIEVAL_TOOL_NAME,
+        MEMORY_SAVE_TOOL_NAME,
+        MEMORY_MEDIA_INGEST_TOOL_NAME,
+        MEMORY_INGEST_STATUS_TOOL_NAME,
     }:
         return tool_input
     return {
@@ -1046,7 +1042,7 @@ def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: Ag
 def _bind_runtime_media_inputs(tool_name: str, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
     """Bind request-scoped media refs for tools without exposing them as model-visible facts."""
 
-    if tool_name != "video_understanding":
+    if tool_name != VIDEO_UNDERSTANDING_TOOL_NAME:
         return tool_input
     if state.request.video_ids and is_trusted_agent_service_request(state.request):
         sanitized = dict(tool_input)

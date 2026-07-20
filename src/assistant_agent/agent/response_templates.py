@@ -2,6 +2,17 @@
 
 from typing import Any
 
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_CAPABILITY,
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    MEMORY_RETRIEVAL_CAPABILITY,
+    MEMORY_SAVE_CAPABILITY,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+    WEB_SEARCH_CAPABILITY,
+)
+
 
 def compose_followup_message(question: str | None) -> str:
     """Return a clear follow-up question for ambiguous requests."""
@@ -44,13 +55,13 @@ def extract_response_fields(contracts: list[dict[str, Any]]) -> dict[str, Any]:
     for contract in contracts:
         capability = contract.get("capability")
         data = contract.get("data") or {}
-        if capability == "shopping_search":
+        if capability == SHOPPING_SEARCH_CAPABILITY:
             best_offer = data.get("best_offer") or {}
             product_title = best_offer.get("title") or product_title
             best_price = best_offer.get("total_price") or best_offer.get("price") or best_price
-        elif capability == "image_generation":
+        elif capability == IMAGE_GENERATION_CAPABILITY:
             image_url = data.get("image_url") or contract.get("output_ref") or image_url
-        elif capability == "render_3d":
+        elif capability == RENDER_3D_CAPABILITY:
             render_ref = data.get("preview_url") or contract.get("output_ref") or render_ref
     return {"product_title": product_title, "best_price": best_price, "image_url": image_url, "render_ref": render_ref}
 
@@ -59,18 +70,18 @@ def _summary_for_contract(contract: dict[str, Any]) -> str:
     capability = contract.get("capability")
     data = contract.get("data") or {}
     output_ref = contract.get("output_ref")
-    if capability in {"image_understanding", "video_understanding"}:
+    if capability in {IMAGE_UNDERSTANDING_CAPABILITY, VIDEO_UNDERSTANDING_CAPABILITY}:
         return _vision_summary(capability, data)
-    if capability == "web_search":
+    if capability == WEB_SEARCH_CAPABILITY:
         return _web_search_summary(data)
-    if capability == "shopping_search":
+    if capability == SHOPPING_SEARCH_CAPABILITY:
         return _shopping_search_summary(data)
-    if capability == "image_generation":
+    if capability == IMAGE_GENERATION_CAPABILITY:
         image_url = data.get("download_url") or data.get("image_url") or output_ref
         if image_url:
             return f"已根据你的需求生成图片，图片生成结果为 {image_url}。"
         return "已根据你的需求生成图片。"
-    if capability == "render_3d":
+    if capability == RENDER_3D_CAPABILITY:
         preview_url = data.get("preview_url") or output_ref
         scene = data.get("scene_description")
         if preview_url and scene:
@@ -78,13 +89,13 @@ def _summary_for_contract(contract: dict[str, Any]) -> str:
         if preview_url:
             return f"已创建 3D 场景预览，结果为 {preview_url}。"
         return "已创建 3D 场景预览。"
-    if capability == "memory_retrieval":
+    if capability == MEMORY_RETRIEVAL_CAPABILITY:
         items = data.get("items") or []
         if items:
             summary = items[0].get("summary") or data.get("memory_context")
             return f"已检索到相关记忆：{summary}。" if summary else "已检索到相关记忆。"
         return "已检索记忆。"
-    if capability == "memory_save":
+    if capability == MEMORY_SAVE_CAPABILITY:
         summary = data.get("summary")
         return f"记忆已保存：{summary}。" if summary else "记忆已保存。"
     return ""
@@ -92,7 +103,7 @@ def _summary_for_contract(contract: dict[str, Any]) -> str:
 
 def _vision_summary(capability: str, data: dict[str, Any]) -> str:
     summary = data.get("summary")
-    subject = "视频" if capability == "video_understanding" else "图片"
+    subject = "视频" if capability == VIDEO_UNDERSTANDING_CAPABILITY else "图片"
     if summary:
         return f"我先理解了{subject}内容：{summary}"
     objects = data.get("objects") or []
@@ -127,8 +138,8 @@ def _shopping_search_summary(data: dict[str, Any]) -> str:
     platform = best_offer.get("platform") or "mock 平台"
     url_text = _product_link_text(best_offer)
     if total is not None:
-        return f"已完成比价，当前推荐 {title}，最低价格为 {total} {currency}，来源为 {platform}{url_text}。"
-    return f"已完成比价，当前推荐 {title}，来源为 {platform}{url_text}。"
+        return f"已找到匹配商品并完成比价，当前推荐 {title}，最低价格为 {total} {currency}，来源为 {platform}{url_text}。"
+    return f"已找到匹配商品并完成比价，当前推荐 {title}，来源为 {platform}{url_text}。"
 
 
 def _product_link_text(item: dict[str, Any]) -> str:

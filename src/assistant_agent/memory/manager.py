@@ -55,6 +55,7 @@ from assistant_agent.schemas.memory_audit import (
 from assistant_agent.schemas.memory_intelligence import MemoryConflictDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+from assistant_agent.services.tool_manifest import MEMORY_SAVE_TOOL_NAME
 
 
 _VALID_MEMORY_SCOPES = {"session", "task", "project", "user_profile", "video", "product"}
@@ -2017,7 +2018,7 @@ def _is_pure_memory_save_run(state: Any) -> bool:
         for result in getattr(state, "tool_results", [])
         if getattr(result, "success", False)
     }
-    return successful_tool_names == {"memory_save"}
+    return successful_tool_names == {MEMORY_SAVE_TOOL_NAME}
 
 
 def _record_no_promotion_candidate(state: Any, reason: str) -> None:

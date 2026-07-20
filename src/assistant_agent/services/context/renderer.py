@@ -81,7 +81,7 @@ def render_request_context(request: UserRequest) -> str:
         lines.append(f"附带图片 ID：{request.image_ids}")
     if request.video_ids:
         if is_trusted_agent_service_request(request):
-            lines.append("当前通话的实时镜头已连接。")
+            lines.append("当前共享的实时画面已连接。")
         else:
             lines.append(f"附带视频 ID：{request.video_ids}")
     if request_prefers_plan_mode(request):

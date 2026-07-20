@@ -10,11 +10,61 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from assistant_agent.services.tool_manifest import (
+    CALENDAR_CREATE_TOOL_NAME,
+    CALENDAR_SEARCH_TOOL_NAME,
+    CONTACTS_SEARCH_TOOL_NAME,
+    REMINDER_CREATE_TOOL_NAME,
+)
+
 
 MCP_ENABLED_ENV = "MULTIMODAL_AGENT_MCP_ENABLED"
 MCP_CONFIG_PATH_ENV = "MULTIMODAL_AGENT_MCP_CONFIG_PATH"
 DEFAULT_MCP_CONFIG_PATH = ".local/mcp_servers.json"
 MCPTransport = Literal["stdio"]
+MCPServerPreset = Literal["google_workspace", "todoist", "notion", "slack"]
+
+
+class MCPPersonalAssistantToolMapping(BaseModel):
+    """Map stable personal assistant tools to provider-specific MCP tools."""
+
+    weather_lookup: str | None = None
+    calendar_search: str | None = None
+    calendar_create: str | None = None
+    contacts_search: str | None = None
+    reminder_create: str | None = None
+
+    def mapped_tool_names(self) -> list[str]:
+        """Return all remote MCP tool names referenced by this mapping."""
+
+        return _dedupe(
+            [
+                item
+                for item in (
+                    self.weather_lookup,
+                    self.calendar_search,
+                    self.calendar_create,
+                    self.contacts_search,
+                    self.reminder_create,
+                )
+                if item
+            ]
+        )
+
+    def read_only_tool_names(self) -> list[str]:
+        """Return mapped tools used behind stable read-only assistant tools."""
+
+        return _dedupe(
+            [
+                item
+                for item in (
+                    self.weather_lookup,
+                    self.calendar_search,
+                    self.contacts_search,
+                )
+                if item
+            ]
+        )
 
 
 class MCPToolAdapterConfig(BaseModel):
@@ -40,6 +90,7 @@ class MCPServerConfig(BaseModel):
     """Explicit configuration for one external MCP server."""
 
     server_name: str = Field(min_length=1)
+    preset: MCPServerPreset | None = None
     transport: MCPTransport = "stdio"
     command: list[str] = Field(default_factory=list)
     cwd: str | None = None
@@ -47,8 +98,35 @@ class MCPServerConfig(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     read_only_tools: list[str] = Field(default_factory=list)
     enabled_tools: list[str] = Field(default_factory=list)
+    personal_assistant_tools: MCPPersonalAssistantToolMapping = Field(
+        default_factory=MCPPersonalAssistantToolMapping
+    )
     namespace_prefix: str = "mcp"
     timeout_seconds: float = Field(default=10.0, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_preset_defaults(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        preset = data.get("preset")
+        preset_defaults = _MCP_SERVER_PRESETS.get(str(preset)) if preset else None
+        if not preset_defaults:
+            return data
+        merged = dict(data)
+        for key, value in preset_defaults.items():
+            if key == "personal_assistant_tools":
+                mapping = dict(value)
+                explicit = merged.get(key)
+                if isinstance(explicit, dict):
+                    mapping.update(explicit)
+                elif isinstance(explicit, MCPPersonalAssistantToolMapping):
+                    mapping.update(explicit.model_dump(exclude_none=True))
+                merged[key] = mapping
+                continue
+            if not merged.get(key):
+                merged[key] = list(value) if isinstance(value, list) else value
+        return merged
 
     @model_validator(mode="after")
     def validate_tool_sets(self) -> "MCPServerConfig":
@@ -63,6 +141,20 @@ class MCPServerConfig(BaseModel):
             unknown = sorted(set(values) - allowed)
             if unknown:
                 raise ValueError(f"{field_name} contains tools outside allowed_tools: {unknown}")
+        mapped_tools = set(self.personal_assistant_tools.mapped_tool_names())
+        mapped_unknown = sorted(mapped_tools - allowed)
+        if mapped_unknown:
+            raise ValueError(
+                f"personal_assistant_tools contains tools outside allowed_tools: {mapped_unknown}"
+            )
+        read_only = set(self.read_only_tools)
+        mapped_read_tools = set(self.personal_assistant_tools.read_only_tool_names())
+        mapped_not_read_only = sorted(mapped_read_tools - read_only)
+        if mapped_not_read_only:
+            raise ValueError(
+                "personal_assistant_tools read mappings must also be in read_only_tools: "
+                f"{mapped_not_read_only}"
+            )
         if self.transport == "stdio" and not self.command:
             raise ValueError("stdio MCP server requires command.")
         return self
@@ -127,3 +219,40 @@ def _bool_env(value: str | None, default: bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+_MCP_SERVER_PRESETS: dict[str, dict[str, object]] = {
+    "google_workspace": {
+        "allowed_tools": [
+            "search_events",
+            "create_event",
+            "search_contacts",
+            "search_files",
+        ],
+        "read_only_tools": ["search_events", "search_contacts", "search_files"],
+        "enabled_tools": ["search_events", "search_contacts", "search_files"],
+        "personal_assistant_tools": {
+            CALENDAR_SEARCH_TOOL_NAME: "search_events",
+            CALENDAR_CREATE_TOOL_NAME: "create_event",
+            CONTACTS_SEARCH_TOOL_NAME: "search_contacts",
+        },
+    },
+    "todoist": {
+        "allowed_tools": ["search_tasks", "create_task"],
+        "read_only_tools": ["search_tasks"],
+        "enabled_tools": ["search_tasks"],
+        "personal_assistant_tools": {
+            REMINDER_CREATE_TOOL_NAME: "create_task",
+        },
+    },
+    "notion": {
+        "allowed_tools": ["search_pages", "fetch_page", "create_page"],
+        "read_only_tools": ["search_pages", "fetch_page"],
+        "enabled_tools": ["search_pages", "fetch_page"],
+    },
+    "slack": {
+        "allowed_tools": ["search_messages", "list_channels", "post_message"],
+        "read_only_tools": ["search_messages", "list_channels"],
+        "enabled_tools": ["search_messages", "list_channels"],
+    },
+}

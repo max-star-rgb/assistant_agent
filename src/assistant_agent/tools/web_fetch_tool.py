@@ -9,11 +9,12 @@ from assistant_agent.services.web_fetch_adapter import (
     WebFetchAdapter,
     create_web_fetch_adapter,
 )
+from assistant_agent.services.tool_manifest import WEB_FETCH_CAPABILITY, WEB_FETCH_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class WebFetchTool(MockTool):
-    name = "web_fetch"
+    name = WEB_FETCH_TOOL_NAME
     description = (
         "Fetch readable page content from a specific HTTP(S) URL."
     )
@@ -28,7 +29,7 @@ class WebFetchTool(MockTool):
         data = result.model_dump(mode="json")
         model_observation = _web_fetch_model_observation(data)
         contract = build_capability_output_contract(
-            capability="web_fetch",
+            capability=WEB_FETCH_CAPABILITY,
             status="failed" if result.errors else "succeeded",
             output_ref=result.output_ref,
             data={

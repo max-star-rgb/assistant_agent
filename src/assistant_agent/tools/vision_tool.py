@@ -28,12 +28,13 @@ from assistant_agent.services.provider_errors import (
     ProviderAdapterError,
     build_provider_error,
 )
+from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
 class VisionUnderstandingTool(MockTool):
-    name = "vision_understanding"
+    name = IMAGE_UNDERSTANDING_TOOL_NAME
     description = "Image and video understanding through a vision adapter."
     input_schema = VisionUnderstandingRequest
     output_schema = VisionUnderstandingResult
@@ -74,7 +75,7 @@ class VisionUnderstandingTool(MockTool):
         try:
             result = self.client.understand(input)
         except ProviderAdapterError as exc:
-            capability = "image_understanding"
+            capability = IMAGE_UNDERSTANDING_CAPABILITY
             provider = getattr(
                 getattr(self.adapter, "config", None), "provider", "unknown"
             )
@@ -100,7 +101,7 @@ class VisionUnderstandingTool(MockTool):
                 "provider_request_invalid", str(exc), recoverable=True
             ).message
             contract = build_capability_output_contract(
-                capability="image_understanding",
+                capability=IMAGE_UNDERSTANDING_CAPABILITY,
                 status="failed",
                 errors=[
                     {
@@ -128,7 +129,7 @@ class VisionUnderstandingTool(MockTool):
             )
 
         output_ref = result.output_ref
-        capability = "image_understanding"
+        capability = IMAGE_UNDERSTANDING_CAPABILITY
         data = result.model_dump(mode="json")
         contract = build_capability_output_contract(
             capability=capability,

@@ -6,6 +6,12 @@ from assistant_agent.memory.facts import fact_from_item, memory_fact_status
 from assistant_agent.memory.retriever import KeywordMemoryRetriever
 from assistant_agent.memory.store import MemoryStore
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, memory_item_matches_query_scope
+from assistant_agent.services.tool_manifest import (
+    DIRECT_CHAT_CAPABILITY,
+    IMAGE_GENERATION_CAPABILITY,
+    RENDER_3D_CAPABILITY,
+    SHOPPING_SEARCH_CAPABILITY,
+)
 
 
 TYPE_PRIORITY = {
@@ -21,26 +27,26 @@ TYPE_PRIORITY = {
 }
 
 CAPABILITY_TYPE_PRIORITY = {
-    "image_generation": {
+    IMAGE_GENERATION_CAPABILITY: {
         "preference": 0,
         "artifact": 1,
         "image": 2,
         "product": 3,
         "conversation": 4,
     },
-    "shopping_search": {
+    SHOPPING_SEARCH_CAPABILITY: {
         "preference": 0,
         "product": 1,
         "conversation": 2,
     },
-    "render_3d": {
+    RENDER_3D_CAPABILITY: {
         "preference": 0,
         "product": 1,
         "artifact": 2,
         "render": 3,
         "image": 4,
     },
-    "direct_chat": {
+    DIRECT_CHAT_CAPABILITY: {
         "conversation": 0,
         "preference": 1,
     },

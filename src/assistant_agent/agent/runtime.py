@@ -88,6 +88,14 @@ from assistant_agent.services.response_observability import append_response_fina
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
 from assistant_agent.services.tool_history import ToolHistoryStore
+from assistant_agent.services.tool_manifest import (
+    IMAGE_GENERATION_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
+    VIDEO_UNDERSTANDING_TOOL_NAME,
+    WEB_FETCH_TOOL_NAME,
+    WEB_SEARCH_TOOL_NAME,
+)
 from assistant_agent.services.tool_policy import max_result_chars_for_registered_tool
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.turn_summary import append_runtime_turn_summary
@@ -101,12 +109,12 @@ if TYPE_CHECKING:
 
 
 PROGRESS_MESSAGES = {
-    "shopping_search": "我查一下并比一下价格。",
-    "vision_understanding": "我看一下。",
-    "video_understanding": "我分析一下。",
-    "web_search": "我联网查一下。",
-    "web_fetch": "我打开这个网页看一下。",
-    "image_generation": "我开始生成，可能需要一点时间。",
+    SHOPPING_SEARCH_TOOL_NAME: "我查一下并比一下价格。",
+    IMAGE_UNDERSTANDING_TOOL_NAME: "我看一下。",
+    VIDEO_UNDERSTANDING_TOOL_NAME: "我分析一下。",
+    WEB_SEARCH_TOOL_NAME: "我联网查一下。",
+    WEB_FETCH_TOOL_NAME: "我打开这个网页看一下。",
+    IMAGE_GENERATION_TOOL_NAME: "我开始生成，可能需要一点时间。",
 }
 
 _NATIVE_ASSISTANT_REASONING_CONTENT_KEY = "assistant_reasoning_content"
@@ -133,7 +141,7 @@ def progress_message_for_tool(tool_name: str, *, tool_spec: ToolSpec | None = No
 
 def _shopping_search_completed(state: AgentState) -> bool:
     return any(
-        result.tool_name == "shopping_search" and result.success
+        result.tool_name == SHOPPING_SEARCH_TOOL_NAME and result.success
         for result in state.tool_results
     )
 
@@ -203,7 +211,7 @@ class AgentGraphRuntime:
         registry_get = getattr(self.registry, "get", None)
         if registry is not None and callable(registry_get):
             try:
-                video_tool = registry_get("video_understanding")
+                video_tool = registry_get(VIDEO_UNDERSTANDING_TOOL_NAME)
             except KeyError:
                 pass
             else:
@@ -2136,26 +2144,15 @@ def _system_prompt_profile_from_request(request: UserRequest) -> SystemPromptPro
             return SystemPromptProfile(explicit)
         except ValueError:
             return SystemPromptProfile.TEXT_DEFAULT
-    channel = _metadata_text(metadata.get("channel"))
-    if channel == SystemPromptProfile.REALTIME_PHONE.value:
-        return SystemPromptProfile.REALTIME_PHONE
-    source = _metadata_text(metadata.get("source"))
-    if source in {"phone_runtime"}:
-        return SystemPromptProfile.REALTIME_PHONE
     return SystemPromptProfile.TEXT_DEFAULT
 
 
 def _system_prompt_options_from_request(request: UserRequest) -> SystemPromptOptions:
     metadata = request.metadata
-    locale = _metadata_text(metadata.get("locale")) or _metadata_text(metadata.get("language")) or "zh-CN"
-    channel = _metadata_text(metadata.get("channel")) or "text"
     return SystemPromptOptions(
-        locale=locale,
-        channel=channel,
         product_mode=metadata.get("product_mode") is True,
         allow_web_search=metadata.get("allow_web_search") is not False,
         allow_memory_tools=metadata.get("allow_memory_tools") is not False,
-        shared_live_camera=is_trusted_agent_service_request(request),
     )
 
 

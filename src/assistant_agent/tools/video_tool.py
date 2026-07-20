@@ -31,11 +31,12 @@ from assistant_agent.services.realtime_video_memory import (
     RealtimeVideoMemoryStore,
     RealtimeVideoSnapshot,
 )
+from assistant_agent.services.tool_manifest import VIDEO_UNDERSTANDING_CAPABILITY, VIDEO_UNDERSTANDING_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
 class VideoUnderstandingTool(MockTool):
-    name = "video_understanding"
+    name = VIDEO_UNDERSTANDING_TOOL_NAME
     description = (
         "查询当前实时镜头或显式视频引用中的视觉事实。当前 turn 已有 active video 时，"
         "可只提供 user_query，由运行时绑定当前 turn 的视频引用；普通上传/API 场景使用 "
@@ -99,7 +100,7 @@ class VideoUnderstandingTool(MockTool):
             )
         except ValueError as exc:
             contract = build_capability_output_contract(
-                capability="video_understanding",
+                capability=VIDEO_UNDERSTANDING_CAPABILITY,
                 status="failed",
                 errors=[
                     {
@@ -122,7 +123,7 @@ class VideoUnderstandingTool(MockTool):
         output_ref = result.output_ref
         status = "failed" if result.errors else "succeeded"
         contract = build_capability_output_contract(
-            capability="video_understanding",
+            capability=VIDEO_UNDERSTANDING_CAPABILITY,
             status=status,
             output_ref=output_ref,
             data=payload,
@@ -190,7 +191,7 @@ class VideoUnderstandingTool(MockTool):
             "keyframe_count": len(snapshot.keyframes),
         }
         contract = build_capability_output_contract(
-            capability="video_understanding",
+            capability=VIDEO_UNDERSTANDING_CAPABILITY,
             status="succeeded",
             output_ref=output_ref,
             data=payload,
@@ -284,7 +285,7 @@ class VideoUnderstandingTool(MockTool):
             "usable_visual_text": False,
         }
         contract = build_capability_output_contract(
-            capability="video_understanding",
+            capability=VIDEO_UNDERSTANDING_CAPABILITY,
             status="partial",
             output_ref=output_ref,
             data=payload,

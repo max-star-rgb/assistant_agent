@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_TOOL_NAME
+
 
 MAX_ITEMS_PER_LIST = 3
 MAX_TEXT_CHARS = 1200
@@ -233,7 +235,7 @@ def _compact_structured_output(tool_name: str, value: Any, *, stats: _Compaction
     if not isinstance(value, Mapping):
         return {}
     data = dict(value)
-    if tool_name == "shopping_search":
+    if tool_name == SHOPPING_SEARCH_TOOL_NAME:
         return _compact_shopping_search_output(data, stats=stats)
     return _compact_generic_mapping(data, stats=stats, key_path=("structured_output",))
 

@@ -27,6 +27,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from assistant_agent.services.trace_store import TraceEvent, trace_debug_summary
+from assistant_agent.services.turn_evaluator import build_turn_diagnostic
 from assistant_agent.services.turn_summary import (
     ASSISTANT_TURN_SUMMARY_EVENT,
     ASSISTANT_TURN_SUMMARY_KEY,
@@ -801,14 +802,12 @@ def _format_turn_overview(payload: dict[str, Any]) -> list[str]:
         f"execution={diagnostic['execution_status']} "
         f"delivery={diagnostic['delivery_status']} "
         f"task_outcome={diagnostic['task_outcome']} "
-        f"ux_outcome={diagnostic['realtime_ux_status']}",
+        f"ux_outcome={diagnostic['text_ux_status']}",
         "",
         "Performance",
         f"  Total latency    {_milliseconds(diagnostic.get('total_latency_ms'))}",
         "  "
-        f"First response   first_text={_milliseconds_or_unknown(diagnostic.get('first_text_latency_ms'))} "
-        f"first_audio={_milliseconds_or_unknown(diagnostic.get('first_audio_latency_ms'))} "
-        f"dead_air={_milliseconds_or_unknown(diagnostic.get('dead_air_ms'))}",
+        f"First response   first_text={_milliseconds_or_unknown(diagnostic.get('first_text_latency_ms'))}",
     ]
     for tool in diagnostic["tool_summary"]:
         lines.append(
@@ -861,48 +860,7 @@ def _format_turn_overview(payload: dict[str, Any]) -> list[str]:
 def _turn_diagnostic(payload: dict[str, Any]) -> dict[str, Any]:
     events = payload.get("events")
     event_items = [item for item in events if isinstance(item, dict)] if isinstance(events, list) else []
-    turn_summary = payload.get("turn_summary") if isinstance(payload.get("turn_summary"), dict) else {}
-    turn_latency = payload.get("turn_latency") if isinstance(payload.get("turn_latency"), dict) else {}
-    llm_summary = _llm_latency_summary(event_items)
-    context_peak = _context_peak_ratio(event_items)
-    tool_summary = _tool_latency_summary(event_items)
-    first_text_latency_ms = _first_int(
-        turn_latency,
-        ("first_text_latency_ms", "first_stream_chunk_latency_ms", "first_token_latency_ms"),
-    )
-    first_audio_latency_ms = _first_int(
-        turn_latency,
-        ("first_audio_latency_ms", "first_tts_audio_latency_ms", "first_playback_latency_ms"),
-    )
-    dead_air_ms = _first_int(turn_latency, ("dead_air_ms", "max_silence_ms", "longest_silence_ms"))
-    flags = _diagnostic_flags(
-        llm_summary=llm_summary,
-        context_peak=context_peak,
-        turn_latency=turn_latency,
-        first_text_latency_ms=first_text_latency_ms,
-        first_audio_latency_ms=first_audio_latency_ms,
-        tool_summary=tool_summary,
-    )
-    return {
-        "execution_status": _execution_status(payload),
-        "delivery_status": _delivery_status(turn_latency, turn_summary),
-        "task_outcome": _task_outcome(payload, turn_summary),
-        "realtime_ux_status": _realtime_ux_status(
-            first_text_latency_ms=first_text_latency_ms,
-            first_audio_latency_ms=first_audio_latency_ms,
-            dead_air_ms=dead_air_ms,
-        ),
-        "total_latency_ms": _first_int(turn_latency, ("total_ms",)) or payload.get("duration_ms"),
-        "first_text_latency_ms": first_text_latency_ms,
-        "first_audio_latency_ms": first_audio_latency_ms,
-        "dead_air_ms": dead_air_ms,
-        "llm_summary": llm_summary,
-        "tool_summary": tool_summary,
-        "context_peak_ratio": context_peak,
-        "decision_path": _decision_path(event_items, llm_summary=llm_summary, tool_summary=tool_summary),
-        "diagnostic_flags": flags,
-        "suggested_actions": _suggested_actions(flags),
-    }
+    return build_turn_diagnostic(event_items, payload=payload).model_dump(mode="python")
 
 
 def _execution_status(payload: dict[str, Any]) -> str:
@@ -940,13 +898,8 @@ def _task_outcome(payload: dict[str, Any], turn_summary: Any) -> str:
     return "unknown"
 
 
-def _realtime_ux_status(
-    *,
-    first_text_latency_ms: int | None,
-    first_audio_latency_ms: int | None,
-    dead_air_ms: int | None,
-) -> str:
-    if first_text_latency_ms is None and first_audio_latency_ms is None and dead_air_ms is None:
+def _text_ux_status(*, first_text_latency_ms: int | None) -> str:
+    if first_text_latency_ms is None:
         return "unknown"
     return "measured"
 
@@ -1058,7 +1011,6 @@ def _diagnostic_flags(
     context_peak: float | None,
     turn_latency: Any,
     first_text_latency_ms: int | None,
-    first_audio_latency_ms: int | None,
     tool_summary: list[dict[str, Any]],
 ) -> list[str]:
     flags: list[str] = []
@@ -1069,9 +1021,9 @@ def _diagnostic_flags(
     if isinstance(context_peak, float) and context_peak >= 0.8:
         flags.append(f"P1 Context peak {_percent(context_peak)}")
     if isinstance(turn_latency, dict):
-        ack_status = str(turn_latency.get("ack_status") or "").lower()
-        if ack_status in {"not_negotiated", "none", "unknown"} and first_text_latency_ms is None and first_audio_latency_ms is None:
-            flags.append("P1 realtime first-text/first-audio latency is missing")
+        delivery_status = str(turn_latency.get("status") or "").lower()
+        if delivery_status in {"sent", "acked", "success", "completed"} and first_text_latency_ms is None:
+            flags.append("P1 first text latency is missing")
     if any(
         tool["tool_name"] in {"web_search", "web_fetch"}
         and tool["count"] >= 3
@@ -1088,8 +1040,8 @@ def _suggested_actions(flags: list[str]) -> list[str]:
         suggestions.append("Break down LLM queue, request build, TTFT, stream consume, parse, and finalize timing.")
     if any("Context peak" in flag for flag in flags):
         suggestions.append("Inspect system prompt, tool schemas, and tool observations as primary context contributors.")
-    if any("first-text/first-audio" in flag for flag in flags):
-        suggestions.append("Record first text delta, first audio, playback start, and longest silence for realtime turns.")
+    if any("first text latency" in flag for flag in flags):
+        suggestions.append("Record first text response latency for text turns.")
     if any("read-only tool calls" in flag for flag in flags):
         suggestions.append("Review whether same-batch read-only tool calls can run concurrently or be narrowed.")
     return suggestions

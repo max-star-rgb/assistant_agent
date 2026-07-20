@@ -30,21 +30,19 @@ from assistant_agent.services.improvement.paths import ImprovementTargetPathErro
 from assistant_agent.services.improvement.evidence import validate_prompt_safe_payload
 
 
+_MINIMAL_PYTEST_COMMAND = ("python", "-m", "pytest", "-q")
+
 TEST_SUITE_COMMANDS: dict[str, tuple[str, ...]] = {
-    "skill_manifest": ("python", "-m", "pytest", "tests/scopes/context/test_skill_loader.py", "-q"),
-    "skill_tool_contract": (
-        "python",
-        "-m",
-        "pytest",
-        "tests/scopes/context/test_skill_loader.py",
-        "tests/scopes/context/test_tool_catalog.py",
-        "-q",
-    ),
-    "tool_catalog": ("python", "-m", "pytest", "tests/scopes/context/test_tool_catalog.py", "-q"),
-    "assistant_loop": ("python", "-m", "pytest", "tests/scopes/runtime/test_assistant_loop_graph.py", "-q"),
-    "context_budget": ("python", "-m", "pytest", "tests/scopes/context/test_assistant_context_renderer.py", "-q"),
-    "provider_adapter": ("python", "-m", "pytest", "tests/scopes/providers/test_direct_chat_adapter.py", "-q"),
-    "targeted_pytest": ("python", "-m", "pytest", "-m", "fast", "-q"),
+    name: _MINIMAL_PYTEST_COMMAND
+    for name in (
+        "skill_manifest",
+        "skill_tool_contract",
+        "tool_catalog",
+        "assistant_loop",
+        "context_budget",
+        "provider_adapter",
+        "targeted_pytest",
+    )
 }
 
 _BYPASS_MARKERS = (

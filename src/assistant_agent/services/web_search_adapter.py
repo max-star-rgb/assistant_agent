@@ -21,6 +21,7 @@ from assistant_agent.services.provider_errors import (
     build_provider_error,
     map_exception_to_provider_error,
 )
+from assistant_agent.services.tool_manifest import WEB_SEARCH_CAPABILITY
 
 
 class WebSearchAdapter(Protocol):
@@ -40,7 +41,7 @@ class MockWebSearchAdapter:
         if not query:
             return _failed_web_search_result(
                 provider=self.provider,
-                query_used=request.query or "web_search",
+                query_used=request.query or WEB_SEARCH_CAPABILITY,
                 code="web_search_query_empty",
                 message="web_search requires query.",
                 recoverable=True,
@@ -330,7 +331,7 @@ def _errors_from_payload(payload: Any, *, provider: str) -> list[WebSearchProvid
             message,
             recoverable=recoverable,
             provider=provider,
-            capability="web_search",
+            capability=WEB_SEARCH_CAPABILITY,
         )
         errors.append(
             WebSearchProviderError(
@@ -381,7 +382,7 @@ def _failed_from_exception(
     latency_ms: int,
 ) -> WebSearchResult:
     error = map_exception_to_provider_error(
-        exc, provider="http", capability="web_search", code=code
+        exc, provider="http", capability=WEB_SEARCH_CAPABILITY, code=code
     )
     return WebSearchResult(
         query_used=request.query,
@@ -410,10 +411,10 @@ def _failed_web_search_result(
         message,
         recoverable=recoverable,
         provider=provider,
-        capability="web_search",
+        capability=WEB_SEARCH_CAPABILITY,
     )
     return WebSearchResult(
-        query_used=query_used or "web_search",
+        query_used=query_used or WEB_SEARCH_CAPABILITY,
         provider=provider,
         errors=[
             WebSearchProviderError(

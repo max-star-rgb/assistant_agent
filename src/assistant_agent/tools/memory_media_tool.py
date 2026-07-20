@@ -15,6 +15,7 @@ from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaIngestionService,
     MemoryMediaTaskStatusResult,
 )
+from assistant_agent.services.tool_manifest import MEMORY_INGEST_STATUS_TOOL_NAME, MEMORY_MEDIA_INGEST_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
 
 
@@ -39,7 +40,7 @@ class MemoryIngestStatusInput(BaseModel):
 
 
 class MemoryMediaIngestTool(MockTool):
-    name = "memory_media_ingest"
+    name = MEMORY_MEDIA_INGEST_TOOL_NAME
     description = "Submit safe media file references to the configured Memory Server ingestion pipeline."
     input_schema = MemoryMediaIngestInput
     output_schema = MemoryMediaIngestionResult
@@ -52,13 +53,13 @@ class MemoryMediaIngestTool(MockTool):
             context, input.user_id, input.session_id
         )
         if identity is None:
-            return _missing_identity_result(self.name, capability="memory_media_ingest")
+            return _missing_identity_result(self.name, capability=MEMORY_MEDIA_INGEST_TOOL_NAME)
         result = self.service.ingest(identity=identity, files=input.files)
         return _ingest_tool_result(result)
 
 
 class MemoryIngestStatusTool(MockTool):
-    name = "memory_ingest_status"
+    name = MEMORY_INGEST_STATUS_TOOL_NAME
     description = "Check the status of a Memory Server media ingestion task."
     input_schema = MemoryIngestStatusInput
     output_schema = MemoryMediaTaskStatusResult
@@ -72,7 +73,7 @@ class MemoryIngestStatusTool(MockTool):
         )
         if identity is None:
             return _missing_identity_result(
-                self.name, capability="memory_ingest_status"
+                self.name, capability=MEMORY_INGEST_STATUS_TOOL_NAME
             )
         result = self.service.task_status(identity=identity, task_id=input.task_id)
         return _status_tool_result(result)
@@ -99,7 +100,7 @@ def _ingest_tool_result(result: MemoryMediaIngestionResult) -> ToolResult:
         "provider_unconfigured",
     }
     contract = build_capability_output_contract(
-        capability="memory_media_ingest",
+        capability=MEMORY_MEDIA_INGEST_TOOL_NAME,
         status="succeeded" if success else "failed",
         output_ref=result.output_ref,
         data=data,
@@ -125,7 +126,7 @@ def _status_tool_result(result: MemoryMediaTaskStatusResult) -> ToolResult:
         "not_found",
     }
     contract = build_capability_output_contract(
-        capability="memory_ingest_status",
+        capability=MEMORY_INGEST_STATUS_TOOL_NAME,
         status="succeeded" if success else "failed",
         output_ref=result.output_ref,
         data=data,
