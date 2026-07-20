@@ -34,6 +34,8 @@ DEFAULT_SQLITE_MEMORY_PATH = ".local/memory/long_term_memories.sqlite3"
 DEFAULT_FRAMEWORK_LEDGER_PATH = ".local/memory/framework_governance.sqlite3"
 DEFAULT_QWEN_REALTIME_VISION_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 DEFAULT_QWEN_REALTIME_VISION_REGION = "cn-beijing"
+DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_QWEN_IMAGE_SEARCH_MODEL = "qwen3.7-plus"
 SUPPORTED_QWEN_REALTIME_VISION_REGIONS = {"cn-beijing", "ap-southeast-1"}
 _REMOTE_MEMORY_BACKENDS = {"hybrid_remote", "dual_core", "remote_service"}
 _MEMORY_BACKEND_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -48,6 +50,7 @@ PriceCompareProviderName = Literal["mock", "local", "http", "haodanku"]
 RenderProviderName = Literal["mock", "http"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
 SearchProviderName = Literal["mock", "http"]
+VisualImageSearchProviderName = Literal["mock", "qwen"]
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,11 @@ class ProviderConfig:
     web_search_base_url: str | None = None
     web_search_api_key: str | None = None
     web_search_timeout_seconds: float = 10.0
+    visual_image_search_provider: VisualImageSearchProviderName = "mock"
+    qwen_image_search_api_key: str | None = None
+    qwen_image_search_base_url: str = DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL
+    qwen_image_search_model: str = DEFAULT_QWEN_IMAGE_SEARCH_MODEL
+    qwen_image_search_timeout_seconds: float = 30.0
     product_search_provider: ProductSearchProviderName = "mock"
     product_search_local_path: str | None = None
     product_search_base_url: str | None = None
@@ -450,6 +458,27 @@ class ProviderConfig:
             web_search_base_url=source.get("WEB_SEARCH_BASE_URL"),
             web_search_api_key=source.get("WEB_SEARCH_API_KEY"),
             web_search_timeout_seconds=_float_env(source.get("WEB_SEARCH_TIMEOUT_SECONDS"), 10.0),
+            visual_image_search_provider=_visual_image_search_provider(
+                source.get("MULTIMODAL_AGENT_VISUAL_IMAGE_SEARCH_PROVIDER"),
+                allow_real=allow_real_providers,
+            ),
+            qwen_image_search_api_key=(
+                source.get("QWEN_IMAGE_SEARCH_API_KEY")
+                or source.get("QWEN_API_KEY")
+                or source.get("DASHSCOPE_API_KEY")
+            ),
+            qwen_image_search_base_url=source.get(
+                "QWEN_IMAGE_SEARCH_BASE_URL",
+                DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL,
+            ),
+            qwen_image_search_model=source.get(
+                "QWEN_IMAGE_SEARCH_MODEL",
+                DEFAULT_QWEN_IMAGE_SEARCH_MODEL,
+            ),
+            qwen_image_search_timeout_seconds=_float_env(
+                source.get("QWEN_IMAGE_SEARCH_TIMEOUT_SECONDS"),
+                30.0,
+            ),
             product_search_provider=_product_search_provider(
                 source.get("MULTIMODAL_AGENT_PRODUCT_PROVIDER"),
                 allow_real=allow_real_providers,
@@ -520,6 +549,7 @@ class ProviderConfig:
                 self.search_api_base_url,
                 self.web_search_base_url,
                 self.web_search_api_key,
+                self.qwen_image_search_api_key,
                 self.product_search_api_key,
                 self.price_compare_api_key,
                 self.haodanku_api_key,
@@ -819,6 +849,12 @@ def _image_generation_provider(value: str | None, *, allow_real: bool = True) ->
 def _search_provider(value: str | None, *, allow_real: bool = True) -> SearchProviderName:
     if allow_real and value == "http":
         return "http"
+    return "mock"
+
+
+def _visual_image_search_provider(value: str | None, *, allow_real: bool = True) -> VisualImageSearchProviderName:
+    if allow_real and value == "qwen":
+        return "qwen"
     return "mock"
 
 

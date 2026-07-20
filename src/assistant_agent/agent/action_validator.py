@@ -217,6 +217,15 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
         return _reject("invalid_tool_input", "price_compare requires query or items.")
     if tool_name == "web_search" and not _non_empty_string(tool_input.get("query")):
         return _reject("invalid_tool_input", "web_search requires query.")
+    if tool_name == "visual_image_search":
+        image_refs = _visual_image_search_refs(tool_input)
+        if not image_refs:
+            return _reject("missing_required_input", "visual_image_search requires image_url or image_ids.")
+        if not all(_is_http_url(item) for item in image_refs):
+            return _reject(
+                "invalid_tool_input",
+                "visual_image_search v1 only supports public http or https image URLs.",
+            )
     if tool_name == "web_fetch":
         url = tool_input.get("url")
         if not _non_empty_string(url):
@@ -268,6 +277,17 @@ def _has_memory_save_text(tool_input: dict[str, Any]) -> bool:
 
 def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _visual_image_search_refs(tool_input: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    image_url = tool_input.get("image_url")
+    if isinstance(image_url, str) and image_url.strip():
+        refs.append(image_url.strip())
+    image_ids = tool_input.get("image_ids")
+    if isinstance(image_ids, list):
+        refs.extend(item.strip() if isinstance(item, str) else "" for item in image_ids)
+    return [item for item in refs if item]
 
 
 def _is_http_url(value: str) -> bool:

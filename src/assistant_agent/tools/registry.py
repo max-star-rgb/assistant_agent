@@ -35,6 +35,7 @@ from assistant_agent.services.image_generation_adapter import create_image_gener
 from assistant_agent.services.memory_media_ingestion import create_memory_media_ingestion_service
 from assistant_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
 from assistant_agent.services.render_adapter import create_render_adapter
+from assistant_agent.services.tool_visual_image_search_adapter import create_visual_image_search_adapter
 from assistant_agent.services.vision_client import (
     create_realtime_vision_understanding_client,
     create_vision_understanding_client,
@@ -43,6 +44,7 @@ from assistant_agent.services.video_context import VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 from assistant_agent.tools.vision_tool import VisionUnderstandingTool
+from assistant_agent.tools.visual_image_search_tool import VisualImageSearchTool
 from assistant_agent.tools.web_search_tool import WebSearchTool
 from assistant_agent.tools.web_fetch_tool import WebFetchTool
 from assistant_agent.tools.task_plan_tool import TaskPlanSubmitTool
@@ -453,6 +455,35 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "allowed_entry_profiles": ["agent_service"],
         },
     },
+    "visual_image_search": {
+        "when_to_use": [
+            "Search the internet for visually similar images from a public image URL.",
+            "User asks to search by image, find visually similar images, trace an image source, or find same-style images online.",
+        ],
+        "when_not_to_use": [
+            "User asks to describe or understand image content; use vision_understanding instead.",
+            "User asks for text web search; use web_search instead.",
+            "Only local paths, base64 payloads, private media IDs, or non-public image references are available.",
+        ],
+        "runtime_constraints": [
+            "Requires image_url or image_ids containing public http or https image URLs.",
+            "v1 uses Qwen Responses API image_search only; do not fallback to vision_understanding or text web_search.",
+            "Do not pass local media paths, base64 payloads, provider raw responses, API keys, or private media IDs.",
+            "Real Qwen image_search requires provider_smoke or pilot runtime profile plus explicit MULTIMODAL_AGENT_VISUAL_IMAGE_SEARCH_PROVIDER=qwen.",
+        ],
+        "side_effect": {
+            "level": "external_read",
+            "requires_confirmation": False,
+            "description": "Reads public image search/provider data and does not mutate external state.",
+        },
+        "execution": {
+            "dependency_mode": "independent",
+            "resource_reads": ["media:image", "web_image_search"],
+            "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我找一下相似图片。",
+        },
+    },
     "web_fetch": {
         "when_to_use": [
             "Fetch readable page content from a specific HTTP(S) URL provided by the user or returned by web_search.",
@@ -845,6 +876,7 @@ def create_default_registry(
         ContactsSearchTool(),
         ReminderCreateTool(),
         WebSearchTool(adapter=create_web_search_adapter(config)),
+        VisualImageSearchTool(adapter=create_visual_image_search_adapter(config)),
         WebFetchTool(adapter=create_web_fetch_adapter(config)),
         ImageGenerationTool(adapter=create_image_generation_adapter(config)),
         Render3DTool(adapter=create_render_adapter(config)),

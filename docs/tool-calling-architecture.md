@@ -207,7 +207,7 @@ excluded_reasons
 
 工具副作用策略是工具治理元数据，不属于 Gateway 协议。
 
-- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`web_fetch`、`shopping_search`、`product_search`、`price_compare`、image/video understanding。
+- read-only 工具应标为 `local_read` 或 `external_read`，例如 `memory_retrieval`、`web_search`、`web_fetch`、`visual_image_search`、`shopping_search`、`product_search`、`price_compare`、image/video understanding。
 - 创建可替换 artifact 的工具标为 `compensatable`，例如 `image_generation` 和 `render_3d`；中断后应生成修正版或说明已有 artifact，而不是宣称旧结果被撤销。
 - confirmation-sensitive 工具标为 `pending_confirmation`，例如 `memory_save` 和 legacy `memory`；如果工具结果返回 `requires_confirmation=true` 或 `confirmation_id`，realtime task-state 会记录 pending confirmation。
 - 如果 confirmation-sensitive 或未知工具已经成功返回，realtime task-state 会把它视为 `committed`，中断后的下一轮必须报告已发生状态或提供安全后续动作。
@@ -232,6 +232,7 @@ Runtime gate 映射：
 - `vision_understanding`
 - `video_understanding`
 - `web_search`
+- `visual_image_search`
 - `web_fetch`
 - `shopping_search`
 - `product_search`
