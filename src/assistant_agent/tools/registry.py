@@ -36,6 +36,7 @@ from assistant_agent.services.memory_media_ingestion import create_memory_media_
 from assistant_agent.services.personal_assistant_mcp_adapters import create_personal_assistant_adapter_bundle
 from assistant_agent.services.product_adapter import create_price_compare_adapter, create_product_search_adapter
 from assistant_agent.services.render_adapter import create_render_adapter
+from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.services.tool_visual_image_search_adapter import create_visual_image_search_adapter
 from assistant_agent.services.vision_client import (
     create_realtime_vision_understanding_client,
@@ -367,7 +368,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "requires_validation",
         },
     },
-    "shopping_search": {
+    SHOPPING_SEARCH_TOOL_NAME: {
         "when_to_use": [
             "Search current product candidates and compare prices or offers in one call.",
             "User asks for shopping recommendations, purchase advice, value judgement, or price comparison.",

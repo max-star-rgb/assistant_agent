@@ -20,6 +20,7 @@ from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatAdapter
 from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
 from assistant_agent.services.response_observability import append_response_final_event
+from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_CAPABILITY
 from assistant_agent.services.trace_store import TraceStore
 
 
@@ -79,7 +80,7 @@ def route_by_intent(graph_state: AgentGraphState) -> str:
     capability = canonical_intent(intent.intent)
     if capability in {"image_understanding", "video_understanding"}:
         return "vision_node"
-    if capability in {"shopping_search", "web_search", "web_fetch"}:
+    if capability in {SHOPPING_SEARCH_CAPABILITY, "web_search", "web_fetch"}:
         return "search_node"
     if capability == "image_generation":
         return "image_generation_node"

@@ -4,6 +4,10 @@ import re
 
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.tool_manifest import (
+    SHOPPING_SEARCH_CAPABILITY,
+    SHOPPING_SEARCH_TOOL_NAME,
+)
 
 
 class RuleBasedTaskPlanner:
@@ -107,17 +111,17 @@ class RuleBasedTaskPlanner:
         if self._has_shopping_search_intent(text):
             self._append_step(
                 steps,
-                action="shopping_search",
-                tool_name="shopping_search",
+                action=SHOPPING_SEARCH_CAPABILITY,
+                tool_name=SHOPPING_SEARCH_TOOL_NAME,
                 required_inputs=["query or visual_summary"],
                 reason="用户要求查找商品，执行购物搜索。",
             )
 
-        if self._contains(text, self.compare_keywords) and not self._has_step(steps, "shopping_search"):
+        if self._contains(text, self.compare_keywords) and not self._has_step(steps, SHOPPING_SEARCH_TOOL_NAME):
             self._append_step(
                 steps,
-                action="shopping_search",
-                tool_name="shopping_search",
+                action=SHOPPING_SEARCH_CAPABILITY,
+                tool_name=SHOPPING_SEARCH_TOOL_NAME,
                 required_inputs=["query"],
                 reason="用户要求比价但没有候选商品，先执行购物搜索。",
             )

@@ -5,7 +5,7 @@
 ## 新对话快速交接
 
 - 默认真实 LLM 运行时是 `AgentGraphRuntime` 内的 provider-native loop；非 mock chat adapter 不再进入 prompt-json 控制面调用。
-- 工具声明契约由 `ToolSpec` 表达，inventory 来源是 `ToolRegistry.list_specs()`；执行边界通过 `ToolRegistry.get_spec()` 读取同一路径生成的单工具契约，并由 `ToolPolicyInterpreter` 编译成只读 `ToolPolicyView`。真实 LLM 路径把 exposed ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
+- 工具稳定身份由轻量 `ToolManifest` 表达，只保存 public tool name、capability 和 removed alias 这类迁移事实；工具执行契约仍由 `ToolSpec` 表达，inventory 来源是 `ToolRegistry.list_specs()`；执行边界通过 `ToolRegistry.get_spec()` 读取同一路径生成的单工具契约，并由 `ToolPolicyInterpreter` 编译成只读 `ToolPolicyView`。真实 LLM 路径把 exposed ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
 - `select_prompt_tool_specs()` 会把 registry inventory 装配成 prompt-safe `RunToolSet`，分别记录 registered、qualified、exposed、executable 工具和排除原因。默认按工具分类暴露：`read` 默认暴露；`generate` 默认不按文本暴露，但当前代码配置为可暴露；`write` 默认不暴露，当前只把记忆写入工具 `memory_save` / `memory_media_ingest` 代码配置为可暴露；`dangerous` 默认不暴露。`generate` / `write` 的暴露优先级从低到高是默认不暴露、代码配置可暴露（代码内置或 `configured_tools` / `configured_toolsets`）、结构化显式指定暴露（`enabled_tools` / `enabled_toolsets` / `enabled_skills`）。工具目录不得读取用户话术触发 `generate` 或 `write` 暴露；`dangerous` 只接受结构化显式启用和自身 env/profile gate。provider-native 模型只能执行本轮 `executable_tool_names` 中的工具。
 - Skill capability catalog 可在不改变工具资格的前提下，按显式 `enabled_skills` 或确定性 `skill_recall` 把 prompt-safe skill descriptor 注入上下文；自动召回不会激活 `skill_only` 工具、不会新增 `run_skill`，也不会绕过工具治理链路。结构化 `workflow_skill_v1` 先显式注册进 `WorkflowSkillCatalog`，再由 `WorkflowSkillLauncher` 按 manifest name 启动并交给 `WorkflowSkillRunner` 执行；launcher 可通过 process-local 或 JSONL-backed run store 查询和 resume 运行记录，每个 resumed step 仍先经 `ActionValidator` 再进 `ToolExecutor`。产品化 HTTP 入口默认关闭，只能通过 `scripts/run_server.py --enable-workflow-skills` 或 `MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED=1` 显式启用，并只暴露 manifest list、launch、resume 和 run summary，不提供通用 `run_skill`。
 - `tool_search` 是 fallback discovery 工具，只在当前已暴露核心工具无法满足用户需求时查看已配置 MCP server 的 allowlisted tool catalog。它返回 prompt-safe MCP 候选、输入摘要和 permission 状态；allowed 但未默认 enabled 的 MCP 工具会标记为 `permission_required`，未 allowlist 的 server 工具不回传给模型。`tool_search` 不执行 MCP 工具、不注册新工具、不授予权限；后续执行仍必须显式启用并重新经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
@@ -111,6 +111,7 @@ the validated rule; no LLM chooses a proactive probe tool in this phase.
 - `src/assistant_agent/agent/assistant_loop_nodes.py`: mock/offline assistant loop、native tool handoff 兼容节点、validator 调用、observation 回传和 loop guard。
 - `src/assistant_agent/agent/action_validator.py`: 工具执行前的本地校验边界。
 - `src/assistant_agent/agent/tool_executor.py`: 工具执行、预算、retry/recovery、event/history/trace 的统一边界。
+- `src/assistant_agent/services/tool_manifest.py`: 工具 public name / capability / removed alias 的轻量身份权威；用于减少工具重命名、删除或替换时的字符串散落。
 - `src/assistant_agent/tools/registry.py`: 工具注册、ToolSpec 生成和默认工具集合。
 - `src/assistant_agent/tools/base.py`: `ToolContext`、`BaseTool`、`MockTool` 基础契约。
 - `src/assistant_agent/schemas/tools.py`: `ToolSpec`、`RunToolSet`、`ToolExecutionPolicy`、`ToolResult`、`ToolCallRecord`。

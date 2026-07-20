@@ -28,6 +28,10 @@ from assistant_agent.services.tool_call_boundary import (
     build_pre_tool_call_summary,
 )
 from assistant_agent.services.tool_history import ToolHistoryStore
+from assistant_agent.services.tool_manifest import (
+    SHOPPING_SEARCH_CAPABILITY,
+    canonical_capability_for_tool,
+)
 from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
 from assistant_agent.services.tool_risk_gate import (
     ToolIdempotencyLedger,
@@ -971,7 +975,7 @@ def _capability_name(tool_name: str, step: TaskStep | None) -> str:
             "search_web": "web_search",
             "fetch_web": "web_fetch",
             "search_image_by_image": "visual_image_search",
-            "shopping_search": "shopping_search",
+            SHOPPING_SEARCH_CAPABILITY: SHOPPING_SEARCH_CAPABILITY,
             "generate_image": "image_generation",
             "render_3d": "render_3d",
             "retrieve_memory": "memory_retrieval",
@@ -985,12 +989,14 @@ def _capability_name(tool_name: str, step: TaskStep | None) -> str:
         "web_search": "web_search",
         "web_fetch": "web_fetch",
         "visual_image_search": "visual_image_search",
-        "shopping_search": "shopping_search",
         "image_generation": "image_generation",
         "render_3d": "render_3d",
         "memory_retrieval": "memory_retrieval",
         "memory_save": "memory_save",
     }
+    manifest_capability = canonical_capability_for_tool(tool_name)
+    if manifest_capability is not None:
+        return manifest_capability
     return tool_map.get(tool_name, tool_name)
 
 

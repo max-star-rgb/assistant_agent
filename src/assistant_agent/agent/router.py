@@ -5,6 +5,10 @@ from assistant_agent.schemas.capabilities import canonical_intent
 from assistant_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSelection
+from assistant_agent.services.tool_manifest import (
+    SHOPPING_SEARCH_CAPABILITY,
+    SHOPPING_SEARCH_TOOL_NAME,
+)
 
 
 class ToolRouter:
@@ -17,7 +21,7 @@ class ToolRouter:
         "memory_retrieval": "memory_retrieval",
         "web_search": "web_search",
         "web_fetch": "web_fetch",
-        "shopping_search": "shopping_search",
+        SHOPPING_SEARCH_CAPABILITY: SHOPPING_SEARCH_TOOL_NAME,
         "multi_step_orchestration": None,
         "direct_chat": None,
         "understand_image": "vision_understanding",
@@ -38,7 +42,7 @@ class ToolRouter:
         "memory_retrieval": "retrieve_memory",
         "web_search": "search_web",
         "web_fetch": "fetch_web",
-        "shopping_search": "shopping_search",
+        SHOPPING_SEARCH_CAPABILITY: SHOPPING_SEARCH_CAPABILITY,
         "multi_step_orchestration": "multi_tool_task",
         "direct_chat": "chat",
         "understand_image": "understand_image",
@@ -83,8 +87,8 @@ class ToolRouter:
                     ),
                     TaskStep(
                         step_id="step_2",
-                        action="shopping_search",
-                        tool_name="shopping_search",
+                        action=SHOPPING_SEARCH_CAPABILITY,
+                        tool_name=SHOPPING_SEARCH_TOOL_NAME,
                         input_refs=["step_1"],
                         depends_on=["step_1"],
                     ),

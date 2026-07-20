@@ -2,6 +2,11 @@ import pytest
 
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.agent_communication import AgentCommunicationService
+from assistant_agent.services.tool_manifest import (
+    SHOPPING_SEARCH_TOOL_NAME,
+    public_tool_names,
+    removed_tool_names,
+)
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 
@@ -12,8 +17,8 @@ def test_register_get_and_list_tool() -> None:
 
     registry.register(tool)
 
-    assert registry.get("shopping_search") is tool
-    assert registry.list() == ["shopping_search"]
+    assert registry.get(SHOPPING_SEARCH_TOOL_NAME) is tool
+    assert registry.list() == [SHOPPING_SEARCH_TOOL_NAME]
 
 
 def test_duplicate_registration_fails() -> None:
@@ -36,7 +41,7 @@ def test_get_spec_uses_the_same_contract_as_list_specs() -> None:
 
     listed = {spec.name: spec for spec in registry.list_specs()}
 
-    assert registry.get_spec("shopping_search") == listed["shopping_search"]
+    assert registry.get_spec(SHOPPING_SEARCH_TOOL_NAME) == listed[SHOPPING_SEARCH_TOOL_NAME]
 
 
 def test_get_spec_missing_tool_fails() -> None:
@@ -51,13 +56,15 @@ def test_default_registry_contains_mock_tools() -> None:
 
     assert set(registry.list()) >= {
         "vision_understanding",
-        "shopping_search",
+        SHOPPING_SEARCH_TOOL_NAME,
         "image_generation",
         "render_3d",
         "memory",
     }
-    assert "product_search" not in registry.list()
-    assert "price_compare" not in registry.list()
+    for tool_name in public_tool_names():
+        assert tool_name in registry.list()
+    for removed_tool_name in removed_tool_names():
+        assert removed_tool_name not in registry.list()
 
 
 def test_registry_list_specs_is_the_canonical_tool_description() -> None:
@@ -93,16 +100,16 @@ def test_registry_list_specs_is_the_canonical_tool_description() -> None:
     assert memory_save.execution.resource_writes == ["memory"]
     assert memory_save.execution.artifact_reuse == "do_not_reuse"
 
-    assert all(spec.name != "product_search" for spec in specs)
+    assert all(spec.name not in removed_tool_names() for spec in specs)
 
-    shopping_search = next(spec for spec in specs if spec.name == "shopping_search")
+    shopping_search = next(spec for spec in specs if spec.name == SHOPPING_SEARCH_TOOL_NAME)
     assert shopping_search.execution.dependency_mode == "independent"
     assert shopping_search.execution.realtime_safety == "safe"
     assert shopping_search.execution.resource_reads == ["product_catalog", "offers"]
     assert shopping_search.execution.artifact_reuse == "reusable"
     assert shopping_search.execution.progress_message == "我查一下并比一下价格。"
 
-    assert all(spec.name != "price_compare" for spec in specs)
+    assert all(spec.name not in removed_tool_names() for spec in specs)
 
     memory_ingest_status = next(spec for spec in specs if spec.name == "memory_ingest_status")
     assert memory_ingest_status.execution.dependency_mode == "independent"
@@ -134,9 +141,9 @@ def test_opt_in_delegate_tool_uses_terminal_execution_policy() -> None:
 def test_registry_run_returns_tool_result() -> None:
     registry = create_default_registry()
 
-    result = registry.run("shopping_search", {"query": "白色低帮运动鞋"})
+    result = registry.run(SHOPPING_SEARCH_TOOL_NAME, {"query": "白色低帮运动鞋"})
 
     assert isinstance(result, ToolResult)
-    assert result.tool_name == "shopping_search"
+    assert result.tool_name == SHOPPING_SEARCH_TOOL_NAME
     assert result.success is True
     assert result.data is not None
