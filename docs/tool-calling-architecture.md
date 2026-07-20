@@ -8,6 +8,7 @@
 - 工具声明契约由 `ToolSpec` 表达，inventory 来源是 `ToolRegistry.list_specs()`；执行边界通过 `ToolRegistry.get_spec()` 读取同一路径生成的单工具契约，并由 `ToolPolicyInterpreter` 编译成只读 `ToolPolicyView`。真实 LLM 路径把 exposed ToolSpec 转成 OpenAI-compatible tools schema，并通过 provider 原生 `content` / `tool_calls` 判断本轮响应类型。
 - `select_prompt_tool_specs()` 会把 registry inventory 装配成 prompt-safe `RunToolSet`，分别记录 registered、qualified、exposed、executable 工具和排除原因。资格只由 `skill_only`、`enabled_by_default`、`requires_env`、显式 `tool_visibility` override 等结构化事实决定，不读取 `request.text` 推断用户意图；provider-native 模型只能执行本轮 `executable_tool_names` 中的工具。
 - Skill capability catalog 可在不改变工具资格的前提下，按显式 `enabled_skills` 或确定性 `skill_recall` 把 prompt-safe skill descriptor 注入上下文；自动召回不会激活 `skill_only` 工具、不会新增 `run_skill`，也不会绕过工具治理链路。结构化 `workflow_skill_v1` 先显式注册进 `WorkflowSkillCatalog`，再由 `WorkflowSkillLauncher` 按 manifest name 启动并交给 `WorkflowSkillRunner` 执行；launcher 可通过 process-local 或 JSONL-backed run store 查询和 resume 运行记录，每个 resumed step 仍先经 `ActionValidator` 再进 `ToolExecutor`。产品化 HTTP 入口默认关闭，只能通过 `scripts/run_server.py --enable-workflow-skills` 或 `MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED=1` 显式启用，并只暴露 manifest list、launch、resume 和 run summary，不提供通用 `run_skill`。
+- `tool_search` 是 fallback discovery 工具，只在当前已暴露核心工具无法满足用户需求时查看已配置 MCP server 的 allowlisted tool catalog。它返回 prompt-safe MCP 候选、输入摘要和 permission 状态；allowed 但未默认 enabled 的 MCP 工具会标记为 `permission_required`，未 allowlist 的 server 工具不回传给模型。`tool_search` 不执行 MCP 工具、不注册新工具、不授予权限；后续执行仍必须显式启用并重新经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
 - `ToolSpec.side_effect` 表达工具副作用策略，`ToolSpec.execution` 表达稳定调度/依赖/资源事实；未知工具默认按 confirmation-sensitive 且需要串行观察处理。realtime task-state 会消费 side-effect 策略判断 interrupt 后应重规划、等待确认、补偿还是报告已提交动作。
 - 真实 LLM 只能返回自然语言 `content` 或 provider-native `tool_calls`。native tool call 会先归一化成内部 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
 - 当第一轮 native response 是 `tool_calls` 时，runtime 不把该轮模型 `content` 当作正式回答输出；它只记录为内部 preamble，并发出一条可替换的 `progress_message` 事件（例如 `shopping_search` -> “我查一下并比一下价格。”）。该事件不写入 LLM messages，也不参与第二轮回答生成。
@@ -231,6 +232,7 @@ Runtime gate 映射：
 
 - `vision_understanding`
 - `video_understanding`
+- `tool_search`
 - `web_search`
 - `visual_image_search`
 - `web_fetch`

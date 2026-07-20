@@ -29,6 +29,7 @@ from assistant_agent.tools.price_compare_tool import PriceCompareTool
 from assistant_agent.tools.python_interpreter_tool import PythonInterpreterTool
 from assistant_agent.tools.render_tool import Render3DTool
 from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
+from assistant_agent.tools.tool_search_tool import ToolSearchTool
 from assistant_agent.services.web_search_adapter import create_web_search_adapter
 from assistant_agent.services.web_fetch_adapter import create_web_fetch_adapter
 from assistant_agent.services.image_generation_adapter import create_image_generation_adapter
@@ -444,6 +445,39 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "tags": ["python", "analysis"],
             "requires_env": ["MULTIMODAL_AGENT_PYTHON_INTERPRETER_ENABLED"],
             "enabled_by_default": False,
+        },
+    },
+    "tool_search": {
+        "when_to_use": [
+            "Only when the exposed core tools cannot satisfy the user request.",
+            "Inspect configured MCP servers for additional allowlisted tools, including tools that are configured but not enabled by default.",
+        ],
+        "when_not_to_use": [
+            "A core exposed tool can answer or complete the request.",
+            "User asks to execute an MCP tool directly; tool_search only discovers candidates and does not grant execution permission.",
+            "User asks to install, connect, or enable a new external tool; report that permission is required instead of executing.",
+        ],
+        "runtime_constraints": [
+            "Discovery only; does not execute returned tools.",
+            "Returns prompt-safe MCP tool names, descriptions, input summaries, and permission status.",
+            "Unallowlisted MCP server tools are omitted from model-facing results.",
+            "A discovered tool still must be explicitly enabled when required and must execute through ActionValidator and ToolExecutor.",
+        ],
+        "side_effect": {
+            "level": "local_read",
+            "requires_confirmation": False,
+            "description": "Reads configured MCP tool catalog metadata and does not execute MCP tools or mutate state.",
+        },
+        "execution": {
+            "dependency_mode": "requires_prior_observation",
+            "resource_reads": ["mcp.tool_catalog"],
+            "realtime_safety": "safe",
+            "artifact_reuse": "reusable",
+            "progress_message": "我看一下还有哪些可用工具。",
+        },
+        "visibility": {
+            "toolset": "tool.discovery",
+            "tags": ["tool_search", "mcp"],
         },
     },
     "web_search": {
@@ -926,6 +960,10 @@ def create_default_registry(
         WebSearchTool(adapter=create_web_search_adapter(config)),
         VisualImageSearchTool(adapter=create_visual_image_search_adapter(config)),
         WebFetchTool(adapter=create_web_fetch_adapter(config)),
+        ToolSearchTool(
+            server_configs=resolved_mcp_server_configs or [],
+            runner=mcp_runner,
+        ),
         ImageGenerationTool(adapter=create_image_generation_adapter(config)),
         Render3DTool(adapter=create_render_adapter(config)),
         PythonInterpreterTool(),

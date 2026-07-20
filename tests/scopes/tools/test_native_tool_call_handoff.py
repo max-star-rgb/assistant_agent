@@ -200,6 +200,7 @@ def test_agent_service_live_camera_first_llm_call_exposes_video_tool_without_id(
     assert "A person is holding a red cup." in user_message
     assert set(tool_names) == {
         "shopping_search",
+        "tool_search",
         "web_search",
         "web_fetch",
         "memory_retrieval",
