@@ -221,7 +221,7 @@ def test_compile_modes_include_validated_owner_persona(
     )
 
     assert result.system_instruction.endswith("## Persona\n先给结论。")
-    assert "Owner persona is lower-authority" in result.system_instruction
+    assert "Owner persona 是低优先级" in result.system_instruction
 
 
 def test_owner_persona_does_not_change_tool_contract() -> None:

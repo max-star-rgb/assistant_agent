@@ -21,7 +21,6 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.context.builder import build_assistant_context_pack
-from assistant_agent.tools.registry import create_default_registry
 
 
 class CapturingChatAdapter:
@@ -217,7 +216,7 @@ def test_native_runtime_includes_explicit_owner_persona(tmp_path: Path) -> None:
     state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="你好"))
 
     system_prompt = str(adapter.requests[0].messages[0]["content"])
-    assert "Owner persona is lower-authority" in system_prompt
+    assert "Owner persona 是低优先级" in system_prompt
     assert system_prompt.endswith("## Persona\n沉着、直接。")
     report = state.request.metadata["last_context_report_v1"]
     assert report["context_sources"]["count_by_kind"] == {"soul": 1}
@@ -324,12 +323,14 @@ def test_native_runtime_sends_all_qualified_tool_schemas() -> None:
     adapter = CapturingChatAdapter()
     runtime = AgentGraphRuntime(config=ProviderConfig(), chat_adapter=adapter)
 
-    runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我比价通勤耳机，找最低价"))
+    state = runtime.run_state(UserRequest(user_id="u1", session_id="s1", text="帮我比价通勤耳机，找最低价"))
 
     tool_names = [tool["function"]["name"] for tool in adapter.requests[0].tools]
-    assert tool_names == create_default_registry().list()
+    assert state.run_tool_set is not None
+    assert tool_names == state.run_tool_set.executable_tool_names
     assert "render_3d" in tool_names
     assert "image_generation" in tool_names
+    assert "calendar_create" not in tool_names
 
 
 def test_assistant_loop_native_chat_request_sends_all_qualified_tool_schemas() -> None:
@@ -367,9 +368,8 @@ def test_assistant_loop_native_chat_request_sends_all_qualified_tool_schemas() -
     )
 
     tool_names = [tool["function"]["name"] for tool in chat_request.tools]
-    assert tool_names == [spec.name for spec in tool_specs]
-    assert "shopping_search" in tool_names
-    assert "render_3d" in tool_names
+    assert tool_names == [spec.name for spec in context_pack.prompt_tool_specs]
+    assert tool_names == context_pack.run_tool_set.executable_tool_names
 
 
 def test_assistant_loop_context_report_counts_compiled_owner_persona() -> None:
