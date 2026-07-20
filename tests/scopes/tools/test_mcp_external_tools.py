@@ -8,6 +8,7 @@ from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.mcp.adapter import MCPToolDefinition
 from assistant_agent.mcp.config import MCPServerConfig, load_mcp_server_configs_from_env
 from assistant_agent.mcp.registration import register_configured_mcp_tools
+from assistant_agent.mcp.sdk_client import SdkMCPClientRunner
 from assistant_agent.mcp.stdio_client import StdioMCPClientRunner
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
@@ -286,6 +287,64 @@ def test_stdio_mcp_client_runner_lists_and_calls_fake_server(tmp_path: Path) -> 
     assert "qwen-" not in serialized_payload
 
 
+def test_sdk_mcp_client_runner_lists_and_calls_fake_server(tmp_path: Path) -> None:
+    server_script = tmp_path / "fastmcp_server.py"
+    server_script.write_text(_FASTMCP_SERVER_SCRIPT, encoding="utf-8")
+    server = MCPServerConfig(
+        server_name="fake",
+        command=[sys.executable, str(server_script)],
+        allowed_tools=["echo"],
+        read_only_tools=["echo"],
+        enabled_tools=["echo"],
+        timeout_seconds=3,
+    )
+    runner = SdkMCPClientRunner([server])
+
+    definitions = runner.list_tools(server=server)
+    result = runner.run_tool(
+        server_name="fake",
+        tool_name="echo",
+        tool_input={"query": "hello from sdk"},
+    )
+
+    assert [definition.name for definition in definitions] == ["echo"]
+    assert definitions[0].input_schema["required"] == ["query"]
+    assert result.success is True
+    assert result.tool_name == "mcp.fake.echo"
+    assert result.model_observation == {"summary": "echo: hello from sdk"}
+    serialized_payload = json.dumps(
+        {
+            "data": result.data,
+            "model_observation": result.model_observation,
+            "error": result.error,
+        }
+    ).lower()
+    assert "raw" not in serialized_payload
+    assert "qwen-" not in serialized_payload
+
+
+def test_default_mcp_registration_uses_sdk_client_runner(tmp_path: Path) -> None:
+    server_script = tmp_path / "fastmcp_server.py"
+    server_script.write_text(_FASTMCP_SERVER_SCRIPT, encoding="utf-8")
+    server = MCPServerConfig(
+        server_name="fake",
+        command=[sys.executable, str(server_script)],
+        allowed_tools=["echo"],
+        read_only_tools=["echo"],
+        enabled_tools=["echo"],
+        timeout_seconds=3,
+    )
+    registry = ToolRegistry()
+
+    summary = register_configured_mcp_tools(registry, [server])
+    result = registry.run("mcp.fake.echo", {"query": "default sdk"})
+
+    assert summary.registered_tool_names == ["mcp.fake.echo"]
+    assert summary.issues == []
+    assert result.success is True
+    assert result.model_observation == {"summary": "echo: default sdk"}
+
+
 _FAKE_MCP_SERVER_SCRIPT = r'''
 import json
 import sys
@@ -360,4 +419,26 @@ while True:
                 },
             },
         })
+'''
+
+
+_FASTMCP_SERVER_SCRIPT = r'''
+from mcp.server.fastmcp import FastMCP
+
+
+mcp = FastMCP("Fake SDK MCP Server")
+
+
+@mcp.tool()
+def echo(query: str) -> dict[str, object]:
+    """Echo query."""
+
+    return {
+        "summary": f"echo: {query}",
+        "provider_raw_response": {"api_key": "qwen-secret"},
+    }
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
 '''

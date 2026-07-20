@@ -545,7 +545,7 @@ The external HTTP contract for these Memory Server endpoints is owned by
 
 MCP server 不直接依赖 provider SDK，不直接访问 OpenAI/DashScope/httpx/requests。错误 envelope 会脱敏。新增外部入口必须遵守同样边界：先归一成内部 request/decision，再走 validator/executor。
 
-外部 MCP 工具调用是显式 opt-in 路径：`create_default_registry(enable_mcp_tools=True, ...)` 或 `MULTIMODAL_AGENT_MCP_ENABLED=1` 加本地未跟踪配置文件后，才会读取 `MCPServerConfig` 并通过 stdio MCP client 执行 discovery。每个外部工具必须出现在 `allowed_tools` 中才会注册；未声明 read-only 的工具保持 `external_write` hard gate，只有同时列入 `read_only_tools` 和 `enabled_tools` 的工具才作为默认可见的 `external_read` 工具自动执行。MCP proxy 仍只通过 `ActionValidator -> ToolExecutor -> ToolRegistry` 调用，不暴露 server env、命令、provider raw payload 或本地路径。
+外部 MCP 工具调用是显式 opt-in 路径：`create_default_registry(enable_mcp_tools=True, ...)` 或 `MULTIMODAL_AGENT_MCP_ENABLED=1` 加本地未跟踪配置文件后，才会读取 `MCPServerConfig` 并执行 discovery。默认 client runner 使用官方 MCP Python SDK；仅在 SDK 不可导入时降级到项目内 minimal stdio runner。每个外部工具必须出现在 `allowed_tools` 中才会注册；未声明 read-only 的工具保持 `external_write` hard gate，只有同时列入 `read_only_tools` 和 `enabled_tools` 的工具才作为默认可见的 `external_read` 工具自动执行。MCP proxy 仍只通过 `ActionValidator -> ToolExecutor -> ToolRegistry` 调用，不暴露 server env、命令、provider raw payload 或本地路径。
 
 ## Improvement Lab 边界
 

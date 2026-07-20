@@ -47,9 +47,14 @@ def register_configured_mcp_tools(
         return summary
     discovery_runner = runner
     if discovery_runner is None:
-        from assistant_agent.mcp.stdio_client import StdioMCPClientRunner
+        try:
+            from assistant_agent.mcp.sdk_client import SdkMCPClientRunner
 
-        discovery_runner = StdioMCPClientRunner(server_configs)
+            discovery_runner = SdkMCPClientRunner(server_configs)
+        except ImportError:
+            from assistant_agent.mcp.stdio_client import StdioMCPClientRunner
+
+            discovery_runner = StdioMCPClientRunner(server_configs)
     register = getattr(registry, "register", None)
     if not callable(register):
         summary.issues.append("registry does not expose register(tool).")
