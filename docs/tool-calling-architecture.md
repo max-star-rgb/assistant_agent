@@ -570,6 +570,10 @@ MCP wrapper、API route 或 `AgentGraphRuntime` node。它只读取脱敏 trace 
 
 ## 新增或修改工具清单
 
+工具作者默认按现有低抽象分层落地：Pydantic schema 定义稳定契约，service/provider adapter 处理 mock/local/real provider 和错误归一化，tool 模块只做薄包装并返回 `ToolResult`，`registry.py` 负责注册、ToolSpec、side-effect、execution 和 visibility 元数据。不是每个小工具都必须机械拆成三四个文件；纯本地、无 provider、无共享契约的小工具可以把私有 schema 放在工具模块内。但只要能力涉及真实外部 API、mock fallback、结构化 provider 结果或后续模型推理，就应拆出 schema 与 adapter，避免把 provider 逻辑写进 tool 层。
+
+mock/local adapter 是同契约的离线替身，不是“看起来成功”的演示分支。mock 与真实 provider 必须共享输入/输出 schema、错误 envelope、`ToolResult`、contract 和 observation 语义；不要求模拟真实 provider 的全部排序、延迟或覆盖率，但必须覆盖配置缺失、provider 失败、schema mismatch、空结果等关键边界。真实 provider 仍必须显式 opt-in：默认 local/offline/mock 运行即使检测到 key 也不能启用真实调用，选中真实 provider 时缺配置要返回结构化 `provider_unconfigured`，不能静默 fallback 到 mock。
+
 新增工具时按这个顺序做：
 
 1. 定义 Pydantic input/output schema。通用 schema 放 `schemas/`，工具私有 schema 可放工具模块。
@@ -577,10 +581,10 @@ MCP wrapper、API route 或 `AgentGraphRuntime` node。它只读取脱敏 trace 
 3. 真实能力先建 service/provider adapter interface 和 mock/local implementation；工具只调用 adapter/service。
 4. 返回结构化 `ToolResult`，失败也要返回可解释错误和可选 contract，不抛未处理异常。
 5. 在 `ToolRegistry.create_default_registry()` 注册。默认注册只放 mock/local/offline 安全工具；高风险或跨 agent 工具用显式开关。
-6. 在 `_ACTION_USAGE` 增加 `when_to_use`、`when_not_to_use`、`runtime_constraints`。
+6. 在 `_ACTION_USAGE` 增加 `when_to_use`、`when_not_to_use`、`runtime_constraints`、`side_effect`、`execution` 和必要的 `visibility`。
 7. 如有语义必需参数或安全条件，在 `ActionValidator` 增加执行前校验。
 8. 如旧 mock/rule plan 需要支持，在 `tool_input_builder.py` 增加 action 到 tool input 的兼容构造。
-9. 如 observation 后续会驱动另一个工具，更新 `tool_observation.py` 的 summary/next_step_hint/保留字段。
+9. 如 observation 后续会驱动另一个工具，更新 `tool_observation.py` 的 summary/next_step_hint/保留字段；`model_observation` 不得暴露 provider raw response、base64、大媒体 payload、本地路径、API key、Authorization、Bearer token 或真实用户数据 dump。
 10. 如涉及 provider-native 或 MCP schema，补充 `tool_spec_adapters` 相关测试。
 11. 如涉及 memory 或 agent delegation，先按对应权威文档确认服务边界。
 
@@ -588,6 +592,8 @@ MCP wrapper、API route 或 `AgentGraphRuntime` node。它只读取脱敏 trace 
 
 - registry spec 暴露和 schema 转换。
 - ActionValidator 接受合法输入、拒绝缺参/未知工具/危险输入。
+- mock/local adapter 成功路径、空结果和结构化错误；真实 provider adapter 的 payload parser 使用 fake HTTP/fixture 覆盖成功、`provider_unconfigured`、`provider_schema_mismatch` 和 provider error，不在默认测试中联网。
+- Tool 层只包装 adapter 结果，失败返回结构化 `ToolResult`、contract 和脱敏 error，不抛 provider 原始异常。
 - ToolExecutor 成功、失败、预算阻断、retry/recovery 和 cooperative cancellation。
 - native direct-answer 路径必须只有一次 chat call，且首个用户可见 delta 来自 provider content。
 - native tool 路径第一轮必须是 provider `tool_calls`，工具执行后第二轮生成自然语言回答。

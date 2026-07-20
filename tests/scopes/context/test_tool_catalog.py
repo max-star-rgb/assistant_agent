@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.python_interpreter import PYTHON_INTERPRETER_ENABLED_ENV
 from assistant_agent.schemas.tools import (
     RunToolSet,
     ToolPolicyMetadata,
@@ -254,7 +255,8 @@ def test_default_registry_declares_agent_service_visibility_metadata() -> None:
     assert specs["price_compare"].visibility.allowed_entry_profiles == []
 
 
-def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text() -> None:
+def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text(monkeypatch) -> None:
+    monkeypatch.delenv(PYTHON_INTERPRETER_ENABLED_ENV, raising=False)
     specs = create_default_registry().list_specs()
     requests = [
         UserRequest(user_id="u1", session_id="s1", text="帮我找耳机"),
@@ -264,7 +266,7 @@ def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text() 
 
     selections = [select_prompt_tool_specs(request, specs) for request in requests]
 
-    expected = [spec.name for spec in specs]
+    expected = [spec.name for spec in specs if spec.name != "python_interpreter"]
     assert [[spec.name for spec in item.qualified_tool_specs] for item in selections] == [
         expected,
         expected,
@@ -277,6 +279,11 @@ def test_tool_catalog_exposes_all_qualified_tools_independent_of_request_text() 
     ]
     assert all(item.run_tool_set.executable_tool_names == expected for item in selections)
     assert all(item.summary.selection_reasons == ["recall_identity"] for item in selections)
+    assert all(
+        item.run_tool_set.excluded_reasons["python_interpreter"]
+        == [f"missing_required_env:{PYTHON_INTERPRETER_ENABLED_ENV}"]
+        for item in selections
+    )
 
 
 def test_identity_recall_preserves_qualified_tool_order() -> None:

@@ -12,6 +12,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.memory.read_policy import MemoryReadPolicy
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.tool_python_sandbox import validate_python_code_safety
 from assistant_agent.services.tool_call_boundary import build_pre_tool_call_summary
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -215,6 +216,10 @@ def _validate_required_semantic_inputs(tool_name: str, tool_input: dict[str, Any
         )
     if tool_name == "price_compare" and not (tool_input.get("query") or tool_input.get("items")):
         return _reject("invalid_tool_input", "price_compare requires query or items.")
+    if tool_name == "python_interpreter":
+        safety_error = validate_python_code_safety(str(tool_input.get("code") or ""))
+        if safety_error is not None:
+            return _reject(safety_error.code, safety_error.message)
     if tool_name == "web_search" and not _non_empty_string(tool_input.get("query")):
         return _reject("invalid_tool_input", "web_search requires query.")
     if tool_name == "visual_image_search":

@@ -27,6 +27,7 @@ from assistant_agent.tools.personal_assistant_tools import (
 )
 from assistant_agent.tools.price_compare_tool import PriceCompareTool
 from assistant_agent.tools.product_search_tool import ProductSearchTool
+from assistant_agent.tools.python_interpreter_tool import PythonInterpreterTool
 from assistant_agent.tools.render_tool import Render3DTool
 from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
 from assistant_agent.services.web_search_adapter import create_web_search_adapter
@@ -422,6 +423,42 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "realtime_safety": "safe",
             "artifact_reuse": "reusable",
             "progress_message": "我比一下价格。",
+        },
+    },
+    "python_interpreter": {
+        "when_to_use": [
+            "Run short local Python snippets for math, scientific, data, or code analysis when the tool is explicitly enabled.",
+            "Use when deterministic computation or parsing is needed and the required input data is already in the prompt or tool input.",
+        ],
+        "when_not_to_use": [
+            "The task needs network access, package installation, shell commands, browser automation, or access to arbitrary local files.",
+            "The analysis can be answered directly without executing code.",
+            "The Python interpreter is not explicitly enabled for this run.",
+        ],
+        "runtime_constraints": [
+            "Requires code and explicit MULTIMODAL_AGENT_PYTHON_INTERPRETER_ENABLED opt-in.",
+            "Code runs in a short-lived restricted local subprocess with timeout and output limits.",
+            "Only prompt-provided JSON input_data is available; do not request local paths, network, shell, or package installation.",
+            "Assign the final structured value to result; printed stdout is truncated.",
+        ],
+        "side_effect": {
+            "level": "local_read",
+            "requires_confirmation": False,
+            "description": "Runs restricted local analysis code and does not intentionally read/write local or external state.",
+        },
+        "execution": {
+            "dependency_mode": "requires_prior_observation",
+            "concurrency_group": "python_interpreter",
+            "resource_reads": ["analysis:input_data"],
+            "realtime_safety": "needs_progress",
+            "artifact_reuse": "requires_validation",
+            "progress_message": "我用本地 Python 算一下。",
+        },
+        "visibility": {
+            "toolset": "analysis.local",
+            "tags": ["python", "analysis"],
+            "requires_env": ["MULTIMODAL_AGENT_PYTHON_INTERPRETER_ENABLED"],
+            "enabled_by_default": False,
         },
     },
     "web_search": {
@@ -880,6 +917,7 @@ def create_default_registry(
         WebFetchTool(adapter=create_web_fetch_adapter(config)),
         ImageGenerationTool(adapter=create_image_generation_adapter(config)),
         Render3DTool(adapter=create_render_adapter(config)),
+        PythonInterpreterTool(),
         MemoryTool(),
         MemoryRetrievalTool(),
         MemorySaveTool(),

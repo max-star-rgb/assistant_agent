@@ -98,6 +98,15 @@ STAGE 测试只允许在开发阶段暂存。阶段结束时，稳定契约必�
 4. 可直接定位的单一失败原因；
 5. 时间、随机值、网络和全局状态的确定性处理。
 
+新增外部工具能力时，最低测试覆盖按 `docs/tool-calling-architecture.md` 的工具作者规则落实，
+不把真实 provider smoke 当作默认证据。通常应在 `tests/scopes/tools/` 覆盖
+registry/ToolSpec、ActionValidator 缺参或安全拒绝、tool 对 adapter 结果的包装、
+mock/local adapter 成功和空结果、fake provider payload parser 的成功与结构化错误、
+observation/trace 不泄漏 raw provider payload、base64、本地路径或 secret-like 内容。只有
+provider adapter 本身的配置解析、真实 provider 选择和 provider-specific payload 映射归
+`tests/scopes/providers/`；需要实际联网、真实凭据或高延迟服务的验证只能放
+`tests/integration/tools/` 并显式 opt-in。
+
 执行规则：
 
 - TDD：先观察正确原因的失败，再写最小实现并验证 GREEN。

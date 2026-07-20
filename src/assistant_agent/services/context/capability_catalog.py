@@ -44,6 +44,7 @@ _DEFAULT_CAPABILITIES: tuple[ToolCapabilityDescriptor, ...] = (
         runtime_constraints=[
             _TOOL_EXECUTOR_CONSTRAINT,
             "Read-only external lookup; do not execute raw HTTP from this descriptor.",
+            "ToolExecutor may retry retryable transient failures once.",
         ],
     ),
 )
