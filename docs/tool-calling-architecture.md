@@ -291,7 +291,7 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - `schemas/tool_spec_adapters.py`：OpenAI/MCP schema 转换；
 - `agent/action_validator.py`：run catalog、Pydantic、media、durable 校验；
 - `agent/tool_executor.py`：身份绑定、简单确认、调用和提交；
-- `tests/test_tool_governance.py`：工具治理稳定契约。
+- `tests/critical/test_tool_governance.py`：工具治理稳定契约。
 
 ## 9. 不变量
 

@@ -19,7 +19,7 @@
 | context、prompt、conversation history、context budget | `docs/CONTEXT_ENGINEERING_STATUS.md` |
 | multi-agent、A2A、delegation | `docs/agent-communication-routing.md` |
 | trace、observability、redaction | `docs/observability-harness.md` |
-| pytest 最小安全网和新增测试规则 | `tests/README.md` |
+| pytest 分层、目录归属、默认收集、最小安全网和新增测试规则 | `tests/README.md` |
 
 - 遇到 Provider 相关实现/调试时，优先联网核对官方文档，重点包括 DeepSeek tool calls（`https://api-docs.deepseek.com/zh-cn/guides/tool_calls`）、阿里百炼模型文档（`https://bailian.console.aliyun.com/cn-beijing/?spm=a2c4g.11186623.0.0.60393ba2UI7e5t&tab=doc#/doc/?type=model&url=2963787`）和火山引擎模型文档（`https://docs.volcengine.com/docs/82379/1099455?lang=zh`）。
 
@@ -71,7 +71,7 @@ pytest 默认只运行最小离线安全网；测试决策、文件组织和新�
 | path | responsibility |
 | --- | --- |
 | `src/assistant_agent/` | 主源码；具体归属先看第 1 节任务路由和对应架构文档 |
-| `tests/`, `scripts/` | 最小 pytest 安全网、eval 数据、服务、demo 和 smoke 入口 |
+| `tests/`, `scripts/` | 测试先读 `tests/README.md`；该文件是分层、目录归属和运行规则的唯一权威。其余为 eval 数据、服务、demo 和 smoke 入口 |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
 | `docs/development/`, `docs/superpowers/`, `docs/interview/` | 非默认材料：开发阶段记录、历史计划/spec、面试资料；不作为当前规则入口 |
 | `.codex/skills/` | 少量项目 workflow、检查清单和脚本；不作为事实权威 |

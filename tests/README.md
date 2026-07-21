@@ -1,7 +1,20 @@
-# 测试策略与最小安全网
+# 测试分层与最小安全网
 
-本目录只保留由真实风险驱动的默认离线安全网。它不承担覆盖率证明、模块枚举、实现细节验证或
-第三方框架验证，也不按源码目录建立镜像 scope。
+本文件是 pytest 测试分层、目录归属、默认收集、测试决策、验证范围和任务汇报的唯一权威；
+`AGENTS.md` 只提供导航，skill 只提供 workflow 入口，不复制本文件规则。
+
+测试按运行目的分为三个目录，不再将不同生命周期的用例平铺混放：
+
+```text
+tests/
+  critical/      # 基础必要测试；裸 pytest 默认收集
+  feature/       # 功能开发验证；稳定后仅按需运行
+  tools_plugin/  # 真实 Provider/MCP 配置装配；显式 opt-in
+  evals/         # 离线 eval 数据，不属于 pytest
+```
+
+`critical` 只保留由真实风险驱动、需要长期守住的默认离线安全网。它不承担覆盖率证明、模块枚举、
+实现细节验证或第三方框架验证，也不按源码目录建立镜像 scope。
 
 默认命令：
 
@@ -17,13 +30,31 @@
 - provider-native tool call 可以经过治理链路并返回最终回答；
 - 主 LLM 超时会形成可终止的重试响应；
 - cancel token 会终止 run；
+- Agent-Service interrupt 会取消活动 turn、抑制旧输出并保持连接；
+- 入口超时仍保留 trace correlation 和可诊断的部分 trace；
 - `LLMEvent -> AgentEvent -> RealtimeAgentEvent -> Gateway frame` 的核心转换可用；
-- session、run 与 memory 按用户身份隔离。
+- session、run 与 memory 按用户身份隔离；
+- 跳过自动 memory read 时不会访问持久化 store；
+- Tool schema、catalog、validation、confirmation 和 execution 保持治理边界。
+
+`feature` 保存某次功能实现期间有价值、但功能稳定后不需要在每次普通开发中重复执行的 pytest。
+它们不会被裸 `pytest` 收集；修改对应功能、排查相关回归或准备较宽验证时，显式指定文件或目录：
+
+- `test_runtime_provider_streaming.py`：Provider 原生 streaming 功能验证；
+- `test_tool_plugin_runtime.py`：mock plugin Tool 的跨层 runtime 装配闭环。
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/feature
+```
+
+不要因为用例已进入 `feature` 就假设它必须永久保留。对应功能稳定且不再提供独立风险证据时，
+可以在后续相关变更中删除；若它保护的是稳定外部契约、具名缺陷或高风险机制，则应移入
+`critical`，而不是长期留在模糊的中间状态。
 
 `tests/evals/eval_cases.json` 是 `scripts/run_evals.py` 的离线评测数据，不属于 pytest。
 真实 Provider、付费 API 和外部服务验证使用显式 operator smoke/pilot 脚本，不进入默认 pytest。
 
-`tests/tools_plugin/test_*_plugin.py` 是例外的显式 opt-in 插件装配测试：它们读取真实 Provider/MCP
+`tests/tools_plugin/test_*_plugin.py` 是显式 opt-in 插件装配测试：它们读取真实 Provider/MCP
 配置并构造真实 adapter，但不发起外部调用。默认 pytest 会跳过这些用例；需要验证本机真实配置时运行：
 
 ```bash
@@ -34,10 +65,10 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 ```
 
 未配置某项可选能力时，对应插件测试会单独 skip；主 chat Provider 配置不完整则直接失败，避免把
-错误的 mock 配置误报为真实 Provider 验证通过。`tests/test_tool_plugin_runtime.py` 始终使用 mock，
+错误的 mock 配置误报为真实 Provider 验证通过。`tests/feature/test_tool_plugin_runtime.py` 始终使用 mock，
 验证插件 Tool 经 `AgentGraphRuntime` 治理链路完成一次原生 tool-call 闭环。
 
-## Testing Policy
+## 测试策略
 
 本项目采用风险驱动测试，而不是覆盖率驱动测试。不要因为实现了新代码，就自动新增 pytest。
 
@@ -55,7 +86,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 
 测试文件按稳定行为边界组织，不按“文件数量最少”组织，也不按源码目录机械镜像：
 
-- `tests/test_safety_net.py` 只承载跨层启动、核心运行闭环和少量全局不变量，不是所有新测试的默认落点；
+- `tests/critical/test_safety_net.py` 只承载跨层启动、核心运行闭环和少量全局不变量，不是所有新测试的默认落点；
+- 新用例先判断其生命周期：长期必要边界进入 `critical`，开发期功能验证进入 `feature`，真实外部配置验证进入 `tools_plugin`；
 - 现有测试已经覆盖同一个行为边界，且新增场景共享相同入口、fixture 和失败语义时，扩展现有文件；
 - 新测试属于独立契约、独立故障域或需要不同 fixture 时，创建聚焦命名的新测试文件；
 - 一个测试文件开始混合多个无关领域，或失败时无法从文件名和测试名判断责任边界时，应拆分而不是继续追加；
