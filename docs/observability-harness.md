@@ -661,6 +661,15 @@ Trace and monitoring records must not include:
 - Base64, inline media payloads, full command outputs, or large binary/text blobs.
 - Real user data dumps.
 
+默认 OTLP export 同样遵守上述边界。仅本地开发允许一个显式例外：当
+`ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT=true`、
+`MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 且 OTLP endpoint host 是
+`localhost`、`127.0.0.1` 或 `::1` 时，Langfuse root observation 和
+`response.final` 可以接收当前轮用户/助手原文。内容来自独立的进程内
+`TraceConversationStore`，单侧最多导出 4000 字符并继续执行 secret sanitizer；它不写入
+`.data/graph_trace.jsonl`，也不允许导出 system prompt、完整 rendered context、memory
+原文、Provider 原始响应或隐藏推理。任一条件不满足时自动回退到结构化摘要。
+
 Safe trace data includes:
 
 - IDs, statuses, event names, error codes, recoverability, and component names.
@@ -747,6 +756,13 @@ Regression tests should enforce these invariants:
   `ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY`. If only generic
   `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the text trace exporter derives the
   trace endpoint by appending `/v1/traces`.
+- Root、`react.decision`、`llm.chat`、`tool.execute`、`tool.observation` 和
+  `response.final` 使用 Langfuse 的 `langfuse.observation.input/output` 映射结构化 JSON；
+  root 同时写入 `langfuse.trace.input/output`。工具字段仅使用 prompt-safe 参数摘要、
+  decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
+  请求体或 Provider payload。
+- 本地原文模式还需显式设置 `ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT=true`，并同时满足
+  local trace content 与 loopback endpoint 限制；该开关不能用于远程 OTLP endpoint。
 - Disabled export must not import OpenTelemetry packages. Missing optional
   dependencies, missing endpoint, full queues, and exporter exceptions are
   observability failures only; they must not block local trace persistence or

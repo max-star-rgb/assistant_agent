@@ -19,8 +19,11 @@ from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.hooks import HookManager, HookTraceStore
 from assistant_agent.services.langfuse_scores import LangfuseScoreTraceObserver
 from assistant_agent.services.otel_exporter import TextOtelTraceObserver
-from assistant_agent.services.otel_mapping import langfuse_trace_id
+from assistant_agent.services.otel_exporter import OtlpHttpTextExporterConfig
+from assistant_agent.services.otel_mapping import build_text_otel_span_specs, langfuse_trace_id
 from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.services.trace_conversation import TraceConversationText, TraceConversationView
+from assistant_agent.services.trace_store import TraceEvent
 
 
 def _offline_config() -> ProviderConfig:
@@ -124,6 +127,106 @@ def test_external_trace_id_maps_to_stable_langfuse_trace_id() -> None:
 
     assert trace_id == "38a6c223d755e35a0593e9ea0b7fdb54"
     assert len(trace_id) == 32
+
+
+def test_otel_content_export_requires_explicit_local_loopback_configuration() -> None:
+    base = {
+        "ASSISTANT_AGENT_OTEL_EXPORT_ENABLED": "true",
+        "ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT": "true",
+        "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT": "1",
+    }
+
+    local = OtlpHttpTextExporterConfig.from_env(
+        {**base, "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:3000/api/public/otel"}
+    )
+    remote = OtlpHttpTextExporterConfig.from_env(
+        {**base, "OTEL_EXPORTER_OTLP_ENDPOINT": "https://cloud.langfuse.com/api/public/otel"}
+    )
+    missing_local_opt_in = OtlpHttpTextExporterConfig.from_env(
+        {
+            **base,
+            "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT": "0",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:3000/api/public/otel",
+        }
+    )
+
+    assert local.include_content is True
+    assert remote.include_content is False
+    assert missing_local_opt_in.include_content is False
+
+
+def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
+    created_at = datetime(2026, 7, 21, tzinfo=timezone.utc)
+    common = {
+        "trace_id": "trace-tool",
+        "run_id": "run-tool",
+        "user_id": "user-1",
+        "session_id": "session-1",
+        "created_at": created_at,
+    }
+    events = [
+        TraceEvent(
+            **common,
+            node_name="runtime",
+            event_type="observability",
+            canonical_event="run.started",
+            span_id="root-span",
+            status="started",
+        ),
+        TraceEvent(
+            **common,
+            node_name="assistant",
+            event_type="assistant_decision",
+            canonical_event="react.decision",
+            status="tool_call",
+            tool_name="weather",
+            attributes={"iteration": 1, "decision_type": "tool_call"},
+            output_summary={"decision_type": "tool_call", "reason": "需要查询实时天气。"},
+        ),
+        TraceEvent(
+            **common,
+            node_name="tool_executor",
+            event_type="observability",
+            canonical_event="tool.finished",
+            status="succeeded",
+            tool_name="weather",
+            latency_ms=12,
+            input_summary={"field_count": 1, "prompt_length": 7},
+            output_summary={"success": True, "result_count": 1, "output_ref": "weather://beijing"},
+        ),
+        TraceEvent(
+            **common,
+            node_name="assistant",
+            event_type="tool_observation",
+            canonical_event="tool.observation",
+            status="succeeded",
+            tool_name="weather",
+            output_summary={"summary": "北京晴，最高温 30 摄氏度。", "output_ref": "weather://beijing"},
+        ),
+    ]
+    conversation = TraceConversationView(
+        trace_id="trace-tool",
+        user=TraceConversationText(text="北京今天天气怎么样？", chars=10),
+        assistant=TraceConversationText(text="北京今天晴。", chars=7),
+    )
+
+    spans = build_text_otel_span_specs(events, conversation=conversation)
+    by_name = {span.name: span for span in spans}
+
+    assert "北京今天天气怎么样？" in by_name["assistant.turn"].attributes["langfuse.trace.input"]
+    assert "北京今天晴。" in by_name["assistant.turn"].attributes["langfuse.trace.output"]
+    assert '"decision_type":"tool_call"' in by_name["react.decision"].attributes[
+        "langfuse.observation.output"
+    ]
+    assert "gen_ai.tool.name" not in by_name["react.decision"].attributes
+    assert '"tool_name":"weather"' in by_name["tool.execute"].attributes[
+        "langfuse.observation.input"
+    ]
+    assert by_name["tool.execute"].attributes["gen_ai.tool.name"] == "weather"
+    assert '"result_count":1' in by_name["tool.execute"].attributes[
+        "langfuse.observation.output"
+    ]
+    assert "北京晴" in by_name["tool.observation"].attributes["langfuse.observation.output"]
 
 
 def test_plain_text_run_completes() -> None:

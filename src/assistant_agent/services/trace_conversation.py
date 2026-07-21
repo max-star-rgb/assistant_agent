@@ -68,6 +68,15 @@ class InMemoryTraceConversationStore:
             user_text=user_text,
             assistant_text=assistant_text,
         )
+        self._records = [
+            existing
+            for existing in self._records
+            if not (
+                existing.user_id == user_id
+                and existing.session_id == session_id
+                and existing.trace_id == trace_id
+            )
+        ]
         self._records = [*self._records, record][-self.max_records :]
 
     def get(

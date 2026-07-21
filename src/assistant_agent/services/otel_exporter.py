@@ -13,6 +13,7 @@ from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Any, Literal, Protocol
+from urllib.parse import urlparse
 
 from assistant_agent.services.otel_mapping import (
     OtelSpanSpec,
@@ -36,6 +37,8 @@ ASSISTANT_AGENT_OTEL_EXPORT_HEADERS_ENV = "ASSISTANT_AGENT_OTEL_EXPORT_HEADERS"
 ASSISTANT_AGENT_OTEL_EXPORT_TIMEOUT_ENV = "ASSISTANT_AGENT_OTEL_EXPORT_TIMEOUT"
 ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY_ENV = "ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY"
 ASSISTANT_AGENT_OTEL_SERVICE_NAME_ENV = "ASSISTANT_AGENT_OTEL_SERVICE_NAME"
+ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT_ENV = "ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT"
+LOCAL_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"
 OTEL_EXPORTER_OTLP_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 OTEL_EXPORTER_OTLP_HEADERS_ENV = "OTEL_EXPORTER_OTLP_HEADERS"
 OTEL_EXPORTER_OTLP_TIMEOUT_ENV = "OTEL_EXPORTER_OTLP_TIMEOUT"
@@ -59,13 +62,15 @@ class OtlpHttpTextExporterConfig:
     timeout_seconds: float | None = None
     service_name: str = DEFAULT_OTEL_SERVICE_NAME
     queue_capacity: int = DEFAULT_EXPORT_QUEUE_CAPACITY
+    include_content: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "OtlpHttpTextExporterConfig":
         values = os.environ if env is None else env
+        endpoint = _trace_endpoint_from_env(values)
         return cls(
             enabled=_truthy_env_value(values.get(ASSISTANT_AGENT_OTEL_EXPORT_ENABLED_ENV)),
-            endpoint=_trace_endpoint_from_env(values),
+            endpoint=endpoint,
             headers=_parse_otlp_headers(
                 _first_non_empty(
                     values,
@@ -92,6 +97,11 @@ class OtlpHttpTextExporterConfig:
                 values.get(ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY_ENV)
             )
             or DEFAULT_EXPORT_QUEUE_CAPACITY,
+            include_content=(
+                _truthy_env_value(values.get(ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT_ENV))
+                and values.get(LOCAL_TRACE_CONTENT_ENV) == "1"
+                and _is_loopback_endpoint(endpoint)
+            ),
         )
 
 
@@ -192,6 +202,7 @@ def create_text_otel_trace_observer_from_env() -> TextOtelTraceObserver | None:
     return TextOtelTraceObserver(
         BufferedTextOtelSpanExporter(setup.exporter, capacity=config.queue_capacity),
         enabled=True,
+        include_content=config.include_content,
     )
 
 
@@ -422,6 +433,7 @@ class TextOtelTraceObserver:
         max_buffered_runs: int = DEFAULT_MAX_BUFFERED_RUNS,
         max_events_per_run: int = DEFAULT_MAX_EVENTS_PER_RUN,
         continue_on_error: bool = True,
+        include_content: bool = False,
     ) -> None:
         if max_buffered_runs <= 0:
             raise ValueError("max_buffered_runs must be positive")
@@ -432,6 +444,7 @@ class TextOtelTraceObserver:
         self.max_buffered_runs = max_buffered_runs
         self.max_events_per_run = max_events_per_run
         self.continue_on_error = continue_on_error
+        self.include_content = include_content
         self._lock = Lock()
         self._events_by_run: dict[str, list[TraceEvent]] = {}
         self._exported_run_ids: set[str] = set()
@@ -528,7 +541,8 @@ class TextOtelTraceObserver:
 
     def _export_events(self, events: list[TraceEvent]) -> None:
         try:
-            spans = build_text_otel_span_specs(events)
+            conversation = self._trace_conversation(events) if self.include_content else None
+            spans = build_text_otel_span_specs(events, conversation=conversation)
             if spans:
                 self.exporter.export(spans)
         except Exception as exc:
@@ -538,6 +552,23 @@ class TextOtelTraceObserver:
             return
         with self._lock:
             self._exported_run_count += 1
+
+    @staticmethod
+    def _trace_conversation(events: list[TraceEvent]):
+        identity = next(
+            (event for event in events if event.user_id and event.session_id and event.trace_id),
+            None,
+        )
+        if identity is None:
+            return None
+        from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
+
+        return get_default_trace_conversation_store().get(
+            user_id=str(identity.user_id),
+            session_id=str(identity.session_id),
+            trace_id=identity.trace_id,
+            limit=4000,
+        )
 
     def _call_exporter_lifecycle(self, method_name: str, *, timeout: float) -> bool:
         method = getattr(self.exporter, method_name, None)
@@ -560,6 +591,13 @@ class TextOtelTraceObserver:
 
 def _truthy_env_value(value: str | None) -> bool:
     return value is not None and value.strip().lower() in _TRUTHY_ENV_VALUES
+
+
+def _is_loopback_endpoint(endpoint: str | None) -> bool:
+    if not endpoint:
+        return False
+    host = urlparse(endpoint).hostname
+    return host in {"localhost", "127.0.0.1", "::1"}
 
 
 def _accepts_timeout(method: Callable[..., object]) -> bool:

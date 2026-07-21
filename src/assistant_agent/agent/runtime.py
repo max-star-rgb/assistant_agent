@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter, time
@@ -360,6 +361,7 @@ class AgentGraphRuntime:
             },
             error=_latest_state_error(state),
         )
+        _record_local_trace_conversation(state)
         append_runtime_turn_summary(self.trace_store, state=state)
         if state.status == "failed":
             self._emit(
@@ -908,6 +910,26 @@ def _system_prompt_options_from_request(request: UserRequest) -> SystemPromptOpt
 
 def _metadata_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def _record_local_trace_conversation(state: AgentState) -> None:
+    if os.environ.get("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT") != "1":
+        return
+    user_text = (state.request.text or "").strip()
+    assistant_text = (state.response.message if state.response is not None else "").strip()
+    if not assistant_text and state.errors:
+        assistant_text = state.errors[-1].message.strip()
+    if not user_text or not assistant_text:
+        return
+    from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
+
+    get_default_trace_conversation_store().append(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=state.trace_id,
+        user_text=user_text,
+        assistant_text=assistant_text,
+    )
 
 
 def _durable_quantum_tool_specs(registry: Any, state: AgentState) -> list[ToolSpec] | None:
