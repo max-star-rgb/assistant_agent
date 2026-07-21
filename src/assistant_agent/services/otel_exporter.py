@@ -14,7 +14,11 @@ from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Any, Literal, Protocol
 
-from assistant_agent.services.otel_mapping import OtelSpanSpec, build_text_otel_span_specs
+from assistant_agent.services.otel_mapping import (
+    OtelSpanSpec,
+    build_text_otel_span_specs,
+    langfuse_trace_id,
+)
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.trace_store import TraceEvent, redact_trace_event
 from assistant_agent.services.turn_summary import ASSISTANT_TURN_SUMMARY_EVENT
@@ -225,8 +229,18 @@ class _OtelSdkSpanBridge:
     def export(self, spans: Sequence[OtelSpanSpec]) -> None:
         contexts_by_span_id: dict[str, Any] = {}
         created_spans: list[tuple[OtelSpanSpec, Any]] = []
+        root_context: Any = None
         for spec in spans:
-            parent_context = contexts_by_span_id.get(spec.parent_span_id or "")
+            if root_context is None:
+                parent_context = _otel_trace_parent_context(
+                    self._trace_module,
+                    trace_id=langfuse_trace_id(spec.trace_id),
+                )
+            else:
+                parent_context = contexts_by_span_id.get(
+                    spec.parent_span_id or "",
+                    root_context,
+                )
             span = self._tracer.start_span(
                 spec.name,
                 context=parent_context,
@@ -235,6 +249,8 @@ class _OtelSdkSpanBridge:
             )
             _set_otel_status(self._trace_module, span, spec.status)
             contexts_by_span_id[spec.span_id] = self._trace_module.set_span_in_context(span)
+            if root_context is None:
+                root_context = contexts_by_span_id[spec.span_id]
             created_spans.append((spec, span))
         for spec, span in sorted(created_spans, key=lambda item: item[0].end_time):
             span.end(end_time=_datetime_to_epoch_ns(spec.end_time))
@@ -652,6 +668,17 @@ def _set_otel_status(trace_module: Any, span: Any, status: str) -> None:
         return
     code = status_code.ERROR if status == "error" else status_code.OK
     span.set_status(status_class(code))
+
+
+def _otel_trace_parent_context(trace_module: Any, *, trace_id: str) -> Any:
+    span_context = trace_module.SpanContext(
+        trace_id=int(trace_id, 16),
+        span_id=1,
+        is_remote=True,
+        trace_flags=trace_module.TraceFlags(1),
+        trace_state=trace_module.TraceState(),
+    )
+    return trace_module.set_span_in_context(trace_module.NonRecordingSpan(span_context))
 
 
 def _sanitize_exporter_error(value: object) -> str:

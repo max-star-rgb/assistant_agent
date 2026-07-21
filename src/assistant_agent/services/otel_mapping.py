@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta
+from hashlib import sha256
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -96,6 +97,12 @@ class OtelSpanSpec(BaseModel):
     end_time: datetime
     status: Literal["ok", "error", "unset"] = "unset"
     attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+def langfuse_trace_id(seed: str) -> str:
+    """Return Langfuse's deterministic W3C trace id for an external trace id."""
+
+    return sha256(seed.encode("utf-8")).digest()[:16].hex()
 
 
 def build_text_otel_span_specs(events: Iterable[TraceEvent]) -> list[OtelSpanSpec]:

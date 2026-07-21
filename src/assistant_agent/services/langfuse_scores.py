@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.services.otel_mapping import langfuse_trace_id
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.trace_store import TraceEvent, redact_trace_event
 from assistant_agent.services.turn_evaluator import TurnDiagnostic, build_turn_diagnostic
@@ -620,9 +621,10 @@ def _score(
     value: ScoreValue,
     comment: str | None,
 ) -> LangfuseScoreSpec:
+    target_trace_id = langfuse_trace_id(trace_id)
     return LangfuseScoreSpec(
-        score_id=f"{trace_id}:{name}",
-        trace_id=trace_id,
+        score_id=f"{target_trace_id}:{name}",
+        trace_id=target_trace_id,
         session_id=session_id,
         name=name,
         data_type=data_type,

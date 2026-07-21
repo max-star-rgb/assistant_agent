@@ -170,7 +170,8 @@ fail-open，不影响 primary trace store、JSONL persistence 或 turn 响应。
 默认分别为 `INFO`、`DEBUG`、`concise`、`.data/logs` 和 `.data/gateway_events.jsonl`；
 `--file-log-level` 只控制兼容 `gateway.log`。旧
 `--log-level` 仍作为同时覆盖 console/file level 的兼容 shorthand。共享 PyCharm 配置
-`.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器和 mock Provider 启动：
+`.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器并读取本机未跟踪 `.env` 中的
+runtime profile 和 Provider 配置启动：
 Run console 只保留 launcher 输出与 WARNING/ERROR。该配置显式设置 operational logging
 环境变量，确保 launcher 与 reload 后的 server 子进程写入同一 Gateway JSONL/text 文件，但不再
 声明 PyCharm `log_file` 页签。Gateway 开发观察统一运行 `.run/Gateway.run.xml`，
@@ -180,6 +181,9 @@ runtime 开发观察统一运行 `.run/AgentRuntime.run.xml`，它常驻跟随
 session，但不单独渲染 Turn summary 块。Human view 默认先输出 Turn Overview；
 Conversation、Decision Trace 和 Raw events 作为显式层级展开。ReAct 决策、
 validator 和 tool 证据在 Decision Trace 中按 iteration 聚合，Raw events 保留完整事件线。
+`.run/Langfuse.run.xml` 无需参数，通过 `scripts/run_langfuse.py` 启停本机 Compose stack；
+停止该 Run 配置只执行 `docker compose stop`，不会删除数据卷。`.run/Assistant Client.run.xml`
+同样固化本机 8089 server、stream、progress、ACK 和 interactive 参数，作为文本手工测试入口。
 
 对应关系保持明确：
 
@@ -747,6 +751,10 @@ Regression tests should enforce these invariants:
   dependencies, missing endpoint, full queues, and exporter exceptions are
   observability failures only; they must not block local trace persistence or
   assistant turn delivery.
+- 本地 `trace_id` 继续作为 runtime/Gateway 查询键；OTLP 使用该值作为 seed，按
+  Langfuse 的确定性规则 `SHA-256(seed)[:16].hex()` 生成符合 W3C 的 32 位 trace ID。
+  原始值保留在 `langfuse.trace.metadata.assistant_trace_id`，Langfuse Score API 必须
+  使用同一个确定性 ID，确保 span 与评测分数挂在同一条 trace 上。
 - Text Agent export design and phased execution live in
   `docs/development/text-agent-otel-langfuse-observability.md`; it deliberately
   excludes audio, TTS, playback, speech, and dead-air metrics.

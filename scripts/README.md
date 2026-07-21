@@ -9,6 +9,9 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
   memory, trace, and tool-governed runtime routes. For local Tavily web search/fetch
   development, pass `--start-web-search-relay` to start the relay child process
   and wire `WEB_SEARCH_BASE_URL` for this run.
+- `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
+  the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
+  one Run process, and stops the containers without deleting data when terminated.
 - `scripts/realtime_media_client.py`: server-backed Media Relay protocol smoke
   client and manual text-call operator for `/ws/realtime/media`.
 - `scripts/run_client.py`: server-backed Media-Agent protocol console client for

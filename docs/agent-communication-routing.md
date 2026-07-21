@@ -334,7 +334,7 @@ The inbound MVP exposes this repository as an agent without changing default `/a
 - If implementation affects architecture layering, update the boundary rules in `AGENTS.md`.
 - If delegation affects prompt/context content, also read and update `docs/CONTEXT_ENGINEERING_STATUS.md`.
 - If delegation reads or writes memory, also read and update `docs/memory-service-architecture.md`.
-- Follow `AGENTS.md` `Testing Policy`; real remote-agent or network smoke checks must be explicit opt-in.
+- Follow `tests/README.md`; real remote-agent or network smoke checks must be explicit opt-in.
 
 ## Validation
 

@@ -19,7 +19,7 @@
 | context、prompt、conversation history、context budget | `docs/CONTEXT_ENGINEERING_STATUS.md` |
 | multi-agent、A2A、delegation | `docs/agent-communication-routing.md` |
 | trace、observability、redaction | `docs/observability-harness.md` |
-| pytest 最小安全网和新增测试规则 | `tests/README.md`；本文件 `Testing Policy` |
+| pytest 最小安全网和新增测试规则 | `tests/README.md` |
 
 - 遇到 Provider 相关实现/调试时，优先联网核对官方文档，重点包括 DeepSeek tool calls（`https://api-docs.deepseek.com/zh-cn/guides/tool_calls`）、阿里百炼模型文档（`https://bailian.console.aliyun.com/cn-beijing/?spm=a2c4g.11186623.0.0.60393ba2UI7e5t&tab=doc#/doc/?type=model&url=2963787`）和火山引擎模型文档（`https://docs.volcengine.com/docs/82379/1099455?lang=zh`）。
 
@@ -64,7 +64,7 @@
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-pytest 只保留 `tests/test_safety_net.py` 中的最小离线安全网；新增测试规则以本文件 `Testing Policy` 为准。服务、demo、eval、smoke 命令按 README、`scripts/README.md` 或对应 `docs/*.md` 执行；历史 runbook 只有用户点名时才读取。只有在需要 conda 激活环境变量时才使用 `conda run -n hello_agent <command>`。
+pytest 默认只运行最小离线安全网；测试决策、文件组织和新增测试规则以 `tests/README.md` 为准。服务、demo、eval、smoke 命令按 README、`scripts/README.md` 或对应 `docs/*.md` 执行；历史 runbook 只有用户点名时才读取。只有在需要 conda 激活环境变量时才使用 `conda run -n hello_agent <command>`。
 
 ## 5. 目录导航
 
@@ -76,7 +76,7 @@ pytest 只保留 `tests/test_safety_net.py` 中的最小离线安全网；新增
 | `docs/development/`, `docs/superpowers/`, `docs/interview/` | 非默认材料：开发阶段记录、历史计划/spec、面试资料；不作为当前规则入口 |
 | `.codex/skills/` | 少量项目 workflow、检查清单和脚本；不作为事实权威 |
 
-修改行为时按 `Testing Policy` 判断是否需要维护测试，并同步维护相关文档。若用户设定更严格 scope，以用户当前约束为准。
+修改行为时按 `tests/README.md` 判断是否需要维护测试，并同步维护相关文档。若用户设定更严格 scope，以用户当前约束为准。
 
 ## 6. 开发规则
 
@@ -98,61 +98,10 @@ pytest 只保留 `tests/test_safety_net.py` 中的最小离线安全网；新增
 - 完成修改后需要判断是否应该提交本任务改动；Codex 处于计划模式时，完成后直接提交本任务改动；除非用户明确要求，否则不 push、不合并、不创建 PR。
 - 结束任务时报告完成内容、验证结果、未完成/限制和下一步建议。
 
-## 8. Testing Policy
+## 8. 测试导航
 
-本项目采用风险驱动测试，而不是覆盖率驱动测试。
-
-不要因为实现了新代码，就自动新增 pytest。
-
-只有出现以下情况时，才允许新增或修改测试：
-
-1. 发现了真实 bug，需要增加最小回归测试；
-2. 新增或修改了稳定、可观察的外部行为或协议契约；
-3. 修改了高风险机制，例如并发、取消、超时、重试、状态机、持久化兼容性、事件顺序或身份隔离；
-4. 修改了关键主链路，并且现有最小安全网无法发现该链路的严重故障。
-
-以下情况默认不写测试：
-
-- 重命名；
-- 移动文件；
-- 内部重构但行为不变；
-- 日志、注释或文档修改；
-- 简单数据类、getter、setter、wrapper 或转发方法；
-- 私有实现细节；
-- 已被现有测试覆盖的行为；
-- 第三方框架自身的行为；
-- 没有真实风险依据的假设性边缘场景。
-
-新增测试前必须：
-
-1. 搜索现有测试，确认没有重复覆盖；
-2. 优先修改已有测试，而不是新增测试；
-3. 优先在已有测试文件中增加场景，而不是创建新文件；
-4. 确认测试针对的是有意义的缺陷，而不是当前实现细节；
-5. 在最稳定、最低成本的边界进行验证。
-
-测试编写规则：
-
-- 测试外部可观察行为、状态转换、事件、持久化结果和副作用；
-- 不要 mock 项目内部方法；
-- 不要以私有方法调用次数作为主要断言；
-- 外部边界优先使用 reusable fake 或 in-memory adapter；
-- 默认测试不得访问远程或付费服务；
-- 外部集成验证必须显式标记，并默认跳过；
-- 不得新增或提高覆盖率门槛；
-- 修改某个行为时，应同步删除或合并已经冗余的测试；
-- 不允许仅因为“最佳实践”或“提高信心”而机械新增测试文件。
-
-修复真实 bug 时，新增能够复现该 bug 的最小回归测试，并选择最稳定的可观察边界。
-
-每次任务结束时，必须在总结中明确写出以下之一：
-
-- `Tests: existing tests were sufficient.`
-- `Tests: updated <test name> because <observable behavior changed>.`
-- `Tests: added <test name> as a regression for <specific bug>.`
-- `Tests: not added because the change does not affect observable behavior or a high-risk boundary.`
-
-不要创建新的测试文件，除非现有测试模块无法合理承载一个真正独立的测试边界。
+本项目采用风险驱动测试。是否新增测试、测试文件如何组织、默认验证范围和任务结束时的
+`Tests:` 汇报格式，统一以 `tests/README.md` 为准。`AGENTS.md` 只提供入口，不复制具体测试规则。
 
 ## 9. 业务专项
 
