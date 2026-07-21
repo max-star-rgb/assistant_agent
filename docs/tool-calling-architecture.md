@@ -111,14 +111,20 @@ LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在�
 不属于 Provider，不受“真实调用”伪分类。weather、calendar、contacts 等 MCP 能力在 real 模式按实际
 MCP mapping 逐个注册，未映射的能力不进入 Registry。
 
-内置工具按能力域由 `tools/builtin_plugins.py` 中的受信任进程内 `ToolPlugin` 构造，再统一注册到
-`ToolRegistry`。插件只负责基于结构化配置和已注入依赖创建 Tool 实例；不能直接暴露或执行工具，也
-不能绕过 `ActionValidator -> ToolExecutor -> ToolRegistry` 治理链路。默认插件集合是显式、固定顺序的
-代码列表，不扫描目录或自动导入第三方模块。MCP 和显式本地 module loader 仍是独立扩展入口。
+内置工具按能力域拆分在 `tools/plugins/`：`contracts.py` 只定义 `ToolPlugin` 和依赖上下文，每个能力
+模块独立负责自己的 Tool 构造与 Provider readiness，`defaults.py` 只保留受信任内置插件的显式组合
+顺序。插件模块之间不相互导入，包级 `__init__.py` 也不急切导入全部插件，因此单个插件可以独立加载
+和测试。
+
+插件产出的 Tool 仍统一注册到 `ToolRegistry`。插件只负责基于结构化配置和已注入依赖创建 Tool
+实例；不能直接暴露或执行工具，也不能绕过 `ActionValidator -> ToolExecutor -> ToolRegistry` 治理
+链路。默认插件集合不扫描目录或自动导入第三方模块。MCP 和显式本地 module loader 仍是独立扩展
+入口。
 
 `ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 builder，因此 provider schema、validator 和
-executor 读取的是同一份契约。新增或移除一个内置能力包时，修改对应 `ToolPlugin` 及默认插件列表，
-不再向 `create_default_registry()` 添加领域工具的实例化和 Provider readiness 分支。
+executor 读取的是同一份契约。新增或移除一个内置能力包时，只修改对应插件模块及 `defaults.py`
+组合列表；修改已有插件内的 Tool 时只改该能力模块，不再向 `create_default_registry()` 添加领域工具
+的实例化和 Provider readiness 分支。
 
 `visual_image_search` 与 `vision_understanding` 同属 `VisionToolPlugin`，但在 real 模式下仍分别检查各自
 Provider 配置。`delegate_to_agent` 不属于默认工具插件；显式 multi-agent 入口需要时在自己的 Registry

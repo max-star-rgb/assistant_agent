@@ -19,11 +19,9 @@ from assistant_agent.services.tool_manifest import (
 from assistant_agent.services.vision_client import create_realtime_vision_understanding_client
 from assistant_agent.services.video_context import VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
-from assistant_agent.tools.builtin_plugins import (
-    ToolPluginContext,
-    build_default_tools,
-    real_provider_ready,
-)
+from assistant_agent.tools.plugins.contracts import ToolPluginContext
+from assistant_agent.tools.plugins.defaults import build_default_tools
+from assistant_agent.tools.plugins.vision import vision_provider_ready
 from assistant_agent.tools.vision_tool import VisionUnderstandingTool
 
 if TYPE_CHECKING:
@@ -240,7 +238,7 @@ def create_realtime_video_observation_registry(
     """Create the governed realtime observer registry with one visual tool."""
 
     config = config or ProviderConfig()
-    if config.provider_mode == "real" and not real_provider_ready(config, "vision"):
+    if config.provider_mode == "real" and not vision_provider_ready(config):
         raise ValueError("real provider mode requires a configured vision provider")
     registry = ToolRegistry()
     registry.register(
