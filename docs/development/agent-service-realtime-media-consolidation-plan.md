@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 单入口迁移实施计划
 
-状态：实施中
+状态：代码迁移完成，待真实 Media Service 联调确认
 
 创建时间：2026-07-21
 
@@ -189,3 +189,32 @@ rg -n '/ws/realtime/media|realtime_media_websocket' \
 - `/ws/realtime/media` 路由及非历史代码、脚本和权威文档引用全部删除。
 - `/ws/gateway` 和 `AgentGraphRuntime` 架构边界保持不变。
 - 定向中断测试和默认离线 pytest 全部通过。
+
+## 10. 实施记录
+
+2026-07-21 已完成仓库内迁移：
+
+- `e3bcea2 docs: plan media websocket entry consolidation`
+  - 创建本实施计划并固定 `/agent-service/v1` 单入口决策。
+- `2f559a9 fix: make agent service interrupt cancel gateway turns`
+  - 厂商 `interrupt` 先取消活动 Gateway turn 和本地排队 turn，再返回 ACK；
+  - 被中断 delivery 结算为 `interrupted`，旧输出不再发送；
+  - 新增 WebSocket 中断、连接复用和幂等 ACK 回归测试。
+- `fde399e refactor: remove legacy realtime media websocket`
+  - 删除 `/ws/realtime/media` route、Media Relay mapper、旧 capability 和 source 分支；
+  - 删除旧 Media Relay 客户端与 simulator；
+  - 启动提示、脚本导航和 Gateway 权威文档统一到 `/agent-service/v1`；
+  - 保留 `/ws/gateway` normalized Gateway 入口。
+
+验证结果：
+
+```text
+tests/test_agent_service_interrupt.py: 2 passed
+default pytest: 50 passed, 8 skipped
+scripts/run_server.py --help: passed
+git diff --check: passed
+```
+
+仓库内实现已经收敛；尚未在本轮启动真实 Provider，也未连接仓库外真实 Media Service。
+部署完成前仍需从 Media Service 配置和机器日志确认实际连接 URL 为
+`/agent-service/v1`，并执行一次 H.264、chat、interrupt、后续新 chat 的真实联调。
