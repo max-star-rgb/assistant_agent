@@ -111,14 +111,12 @@ class AssistantRuntimeApp:
         memory_items = runtime.memory_manager.list_by_user(user_id)
         runtime.memory_manager.clear_user(user_id)
         run_history_deleted = runtime.run_history.delete_by_user(user_id) if runtime.run_history is not None else 0
-        tool_history_deleted = runtime.tool_history.delete_by_user(user_id) if runtime.tool_history is not None else 0
         trace_deleted = runtime.trace_store.delete_by_user(user_id)
         conversation_sessions_deleted = clear_user_conversation_history(user_id, config=runtime.config)
         session_records_deleted = runtime.session_store.delete_by_user(user_id)
         return {
             "memory_items": len(memory_items),
             "run_history_records": run_history_deleted,
-            "tool_history_records": tool_history_deleted,
             "trace_events": trace_deleted,
             "conversation_sessions": conversation_sessions_deleted,
             "session_records": session_records_deleted,

@@ -24,12 +24,12 @@ from assistant_agent.schemas.tool_spec_adapters import (
     tool_spec_to_openai_tool,
 )
 from assistant_agent.services.event_sink import ListEventSink
-from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.tool_manifest import (
     PYTHON_INTERPRETER_TOOL_NAME,
     MEMORY_MEDIA_INGEST_TOOL_NAME,
     WEATHER_TOOL_NAME,
 )
+from assistant_agent.services.trace_store import InMemoryTraceStore
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
@@ -260,42 +260,48 @@ def test_validated_tool_input_is_reused_by_executor() -> None:
     assert _SingleValidationInput.validation_count == 1
 
 
-def test_tool_history_content_requires_explicit_local_opt_in(
+def test_tool_trace_content_requires_explicit_local_opt_in(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
 ) -> None:
     registry = ToolRegistry()
     registry.register(_ExecutionBoundaryTool())
 
     monkeypatch.delenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", raising=False)
-    safe_history = ToolHistoryStore(tmp_path / "safe_tool_calls.jsonl")
-    ToolExecutor(registry=registry, tool_history=safe_history).run_tool(
-        AgentState.from_request(
-            UserRequest(user_id="user-1", session_id="session-1", text="execute")
-        ),
+    safe_trace = InMemoryTraceStore()
+    safe_state = AgentState.from_request(
+        UserRequest(user_id="user-1", session_id="session-1", text="execute")
+    )
+    ToolExecutor(registry=registry).run_tool(
+        safe_state,
         "safe-step",
         _ExecutionBoundaryTool.name,
         {"value": "private-value"},
+        trace_store=safe_trace,
+        trace_id=safe_state.trace_id,
     )
 
-    safe_records = safe_history.read_all()
-    assert safe_records[0].input_summary["redacted"] is True
-    assert "private-value" not in str(safe_records)
+    safe_events = safe_trace.list_by_run(safe_state.run_id)
+    assert safe_events[0].input_summary["redacted"] is True
+    assert safe_events[0].attributes["tool_call_id"] == safe_state.tool_calls[0].call_id
+    assert "private-value" not in str(safe_events)
 
     monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
-    local_history = ToolHistoryStore(tmp_path / "local_tool_calls.jsonl")
-    ToolExecutor(registry=registry, tool_history=local_history).run_tool(
-        AgentState.from_request(
-            UserRequest(user_id="user-1", session_id="session-1", text="execute")
-        ),
+    local_trace = InMemoryTraceStore()
+    local_state = AgentState.from_request(
+        UserRequest(user_id="user-1", session_id="session-1", text="execute")
+    )
+    ToolExecutor(registry=registry).run_tool(
+        local_state,
         "local-step",
         _ExecutionBoundaryTool.name,
         {"value": "visible-value"},
+        trace_store=local_trace,
+        trace_id=local_state.trace_id,
     )
 
-    local_records = local_history.read_all()
-    assert local_records[0].input_summary == {"value": "visible-value"}
-    assert local_records[1].output_summary["data"] == {"value": "visible-value"}
+    local_events = local_trace.list_by_run(local_state.run_id)
+    assert local_events[0].input_summary == {"value": "visible-value"}
+    assert local_events[1].output_summary["data"] == {"value": "visible-value"}
 
 
 def test_available_catalog_is_the_execution_boundary() -> None:

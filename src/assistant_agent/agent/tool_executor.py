@@ -29,7 +29,6 @@ from assistant_agent.services.tool_call_boundary import (
     build_post_tool_call_summary,
     build_pre_tool_call_summary,
 )
-from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.tool_manifest import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_GENERATION_TOOL_NAME,
@@ -73,7 +72,7 @@ class PreparedToolCall:
 
 @dataclass(frozen=True)
 class ToolInvocationResult:
-    """Tool-body outcome awaiting ordered state/history/trace commit."""
+    """Tool-body outcome awaiting ordered state/trace commit."""
 
     result: ToolResult
     retry_count: int = 0
@@ -87,7 +86,6 @@ class ToolExecutor:
     def __init__(
         self,
         registry: ToolRegistry | None = None,
-        tool_history: ToolHistoryStore | None = None,
         event_sink: EventSink | None = None,
         recovery_policy: RecoveryPolicy | None = None,
         execution_policy: ProviderExecutionPolicy | None = None,
@@ -95,7 +93,6 @@ class ToolExecutor:
         cancel_token: Any | None = None,
     ) -> None:
         self.registry = registry or create_default_registry()
-        self.tool_history = tool_history
         self.event_sink = event_sink
         self.recovery_policy = recovery_policy or RecoveryPolicy()
         self.execution_policy = execution_policy or ProviderExecutionPolicy.from_env()
@@ -220,16 +217,6 @@ class ToolExecutor:
                 },
             )
         )
-        if self.tool_history is not None:
-            self.tool_history.record_start(
-                state.run_id,
-                call.call_id,
-                tool_name,
-                _policy_safe_input_summary(bound_input),
-                user_id=state.user_id,
-                session_id=state.session_id,
-            )
-
         disposition: Literal["invoke", "confirmation"] = "invoke"
         prepared_result = None
         context = None
@@ -384,20 +371,6 @@ class ToolExecutor:
                 payload=event_payload,
             )
         )
-        if self.tool_history is not None:
-            self.tool_history.record_end(
-                state.run_id,
-                prepared.call_id,
-                prepared.tool_name,
-                "succeeded",
-                latency_ms,
-                output_ref=result.output_ref,
-                user_id=state.user_id,
-                session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result),
-                audit_payload=_policy_safe_audit_payload(result),
-                raw_data_ref=result.raw_data_ref,
-            )
         _append_tool_trace_event(
             prepared.trace_store,
             trace_id=prepared.trace_id,
@@ -481,20 +454,6 @@ class ToolExecutor:
                 },
             )
         )
-        if self.tool_history is not None:
-            self.tool_history.record_end(
-                state.run_id,
-                prepared.call_id,
-                prepared.tool_name,
-                "failed",
-                latency_ms,
-                error=_policy_safe_error(decision.message),
-                user_id=state.user_id,
-                session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result),
-                audit_payload=_policy_safe_audit_payload(result),
-                raw_data_ref=result.raw_data_ref,
-            )
         _append_tool_trace_event(
             prepared.trace_store,
             trace_id=prepared.trace_id,
@@ -573,20 +532,6 @@ class ToolExecutor:
                 },
             )
         )
-        if self.tool_history is not None:
-            self.tool_history.record_end(
-                state.run_id,
-                prepared.call_id,
-                prepared.tool_name,
-                "failed",
-                latency_ms,
-                error=_policy_safe_error(DEFAULT_CANCELLATION_MESSAGE),
-                user_id=state.user_id,
-                session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result),
-                audit_payload=_policy_safe_audit_payload(result),
-                raw_data_ref=result.raw_data_ref,
-            )
         _append_tool_trace_event(
             prepared.trace_store,
             trace_id=prepared.trace_id,
@@ -1003,10 +948,12 @@ def _policy_safe_output_summary(
             {
                 "success": result.success,
                 "output_ref": result.output_ref,
+                "raw_data_ref": result.raw_data_ref,
                 "error": result.error,
                 "data": safe_data,
                 "model_observation": result.model_observation,
                 "trace_summary": result.trace_summary,
+                "audit_payload": _policy_safe_audit_payload(result),
             }
         )
         if isinstance(payload, dict):
@@ -1019,6 +966,7 @@ def _policy_safe_output_summary(
         "redacted": True,
         "success": result.success,
         "output_ref": result.output_ref,
+        "raw_data_ref": sanitize_trace_value(result.raw_data_ref) if result.raw_data_ref else None,
         "error_code": classify_error(result.error or "") if result.error else None,
         "summary": (
             sanitize_error_message(approved_summary)[:240]
@@ -1027,6 +975,7 @@ def _policy_safe_output_summary(
         ),
         "data_field_names": sorted(str(key) for key in data),
         "trace_field_names": sorted(str(key) for key in trace),
+        "audit_payload": _policy_safe_audit_payload(result),
         "result_size_bytes": len(str(data).encode("utf-8")),
     }
 

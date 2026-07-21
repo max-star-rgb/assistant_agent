@@ -11,7 +11,6 @@ from assistant_agent.agent.tool_input_builder import build_tool_input
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.run_history import RunHistoryStore
-from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
@@ -24,15 +23,13 @@ class AgentWorkflow:
         intent_detector: IntentDetector | None = None,
         router: ToolRouter | None = None,
         run_history: RunHistoryStore | None = None,
-        tool_history: ToolHistoryStore | None = None,
         use_graph_runtime: bool = True,
     ) -> None:
         self.registry = registry or create_default_registry()
         self.intent_detector = intent_detector or IntentDetector()
         self.router = router or ToolRouter()
         self.run_history = run_history
-        self.tool_history = tool_history
-        self.tool_executor = ToolExecutor(registry=self.registry, tool_history=self.tool_history)
+        self.tool_executor = ToolExecutor(registry=self.registry)
         self.use_graph_runtime = use_graph_runtime
 
     def run(self, request: UserRequest) -> AgentState:
@@ -44,7 +41,6 @@ class AgentWorkflow:
                 intent_detector=self.intent_detector,
                 router=self.router,
                 run_history=self.run_history,
-                tool_history=self.tool_history,
             ).run_state(request)
         return self.run_legacy(request)
 

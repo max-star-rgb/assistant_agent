@@ -68,7 +68,6 @@ from assistant_agent.services.memory_observability import load_memory_with_trace
 from assistant_agent.services.memory_core_status import build_memory_core_status, update_memory_core_status_errors
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
-from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.turn_summary import append_runtime_turn_summary
@@ -93,7 +92,6 @@ class AgentGraphRuntime:
         router: ToolRouter | None = None,
         run_history: RunHistoryStore | None = None,
         session_store: SessionStore | None = None,
-        tool_history: ToolHistoryStore | None = None,
         event_sink: EventSink | None = None,
         trace_store: TraceStore | None = None,
         chat_adapter: ChatAdapter | None = None,
@@ -138,7 +136,6 @@ class AgentGraphRuntime:
         self.router = router or ToolRouter()
         self.run_history = run_history
         self.session_store = session_store or create_session_store(self.config)
-        self.tool_history = tool_history
         self.event_sink = event_sink
         self.trace_store = trace_store or InMemoryTraceStore()
         self.chat_adapter = chat_adapter or create_chat_adapter(self.config)
@@ -149,7 +146,6 @@ class AgentGraphRuntime:
         )
         self.tool_executor = ToolExecutor(
             registry=self.registry,
-            tool_history=self.tool_history,
             event_sink=self.event_sink,
             context_metadata={
                 "memory_manager": self.memory_manager,
@@ -187,7 +183,6 @@ class AgentGraphRuntime:
         # trace events emitted via graph_state["tool_executor"] reach it.
         tool_executor = ToolExecutor(
             registry=self.registry,
-            tool_history=self.tool_history,
             event_sink=run_event_sink,
             context_metadata={
                 "memory_manager": self.memory_manager,
@@ -450,7 +445,6 @@ class AgentGraphRuntime:
         state.request.metadata["durable_task_quantum"] = True
         tool_executor = ToolExecutor(
             registry=self.registry,
-            tool_history=self.tool_history,
             event_sink=event_sink,
             context_metadata={
                 "memory_manager": self.memory_manager,

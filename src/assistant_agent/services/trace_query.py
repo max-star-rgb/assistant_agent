@@ -144,8 +144,11 @@ class TraceQueryService:
 
 def _tool_call_summary(event: TraceEvent) -> dict[str, Any]:
     summary = trace_event_summary(event)
+    attributes = summary["attributes"]
     return {
         "trace_id": summary["trace_id"],
+        "tool_call_id": attributes.get("tool_call_id"),
+        "step_id": attributes.get("step_id"),
         "node_name": summary["node_name"],
         "event_type": summary["event_type"],
         "capability": summary["capability"],

@@ -225,9 +225,10 @@ step、工具名与 step 匹配，并且已确认输入的 digest 没有在确�
 - 若 `ToolSpec.requires_confirmation=true`，检查
   `request.metadata.tool_confirmation={confirmed: true, tool_name: ...}`；
 - 传播 cancel，read 工具按全局 provider retry policy 重试，非 read 工具不自动重试；
-- 写入 tool call history、event 和 trace；
-- 默认只向 history/trace 写入安全摘要；本地显式设置
+- 写入运行态 tool call state、event 和 trace；持久化工具调用查询统一从 trace 派生；
+- 默认只向 trace 写入安全摘要；本地显式设置
   `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 时，统一记录经过 secret sanitizer 的工具输入输出；
+- `audit_payload` 与 `raw_data_ref` 只通过同一 trace 脱敏边界保留安全投影，不再写入独立工具历史；
 - 将结构化 `ToolResult` 转成下一轮模型 observation。
 
 executor 仍采用 `prepare_tool_call -> invoke_tool -> commit_tool_result` 三段形式。该分段用于保证状态、
@@ -235,7 +236,7 @@ event 和 trace 的提交顺序，不代表存在独立 scheduler 或并发 poli
 
 - prepare：绑定运行时输入、检查简单确认并创建 call record；
 - invoke：只执行工具主体，不修改共享 `AgentState`；
-- commit：写回 state/history/event/trace。
+- commit：写回 state/event/trace。
 
 幂等语义不再由通用 ToolSpec 治理。具体 provider 若需要 idempotency key，应在领域 schema/adapter 或
 durable task 协议中处理；通用 executor 不维护进程内重复调用 ledger。

@@ -919,7 +919,6 @@ def delete_beta_user_data(
         "deleted": {
             "memory_items": runtime_deleted["memory_items"],
             "run_history_records": runtime_deleted["run_history_records"],
-            "tool_history_records": runtime_deleted["tool_history_records"],
             "trace_events": runtime_deleted["trace_events"],
             "feedback_records": feedback_deleted,
             "conversation_sessions": runtime_deleted["conversation_sessions"],

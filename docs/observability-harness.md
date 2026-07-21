@@ -299,7 +299,7 @@ require an external APM stack for normal development.
 | `TraceStore` / `TraceQueryService` | services | Redacted run and trace summaries for `/runs/{run_id}`, `/traces/{trace_id}`, and tool-call debug views. |
 | Operational text logs | services / gateway | Combined console plus isolated rotating Gateway lifecycle logs; runtime development uses `agentruntime_view.py last --follow` over canonical trace JSONL. |
 | `react_steps` / `decision_trace` | API response metadata | Compact per-response ReAct timeline for developer UI and CLI output. |
-| `RunHistoryStore` / `ToolHistoryStore` / `SessionStore` | services | Local JSONL/session indexes and lifecycle ledgers. |
+| `RunHistoryStore` / `SessionStore` | services | Local JSONL/session indexes and lifecycle ledgers. Tool-call history queries are derived from the canonical trace timeline. |
 | Gateway frames | gateway | Realtime wire lifecycle: `run.started`, `event.progress`, `stream.chunk`, `run.end`, `run.cancel`, call hangup, and config updates. |
 
 These surfaces may expose the same fact at different fidelity. The canonical

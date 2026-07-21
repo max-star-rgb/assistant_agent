@@ -104,5 +104,4 @@ def run_conditional_agent_graph(request: UserRequest, workflow: AgentWorkflow | 
         intent_detector=workflow.intent_detector if workflow is not None else None,
         router=workflow.router if workflow is not None else None,
         run_history=workflow.run_history if workflow is not None else None,
-        tool_history=workflow.tool_history if workflow is not None else None,
     ).run_state(request)
