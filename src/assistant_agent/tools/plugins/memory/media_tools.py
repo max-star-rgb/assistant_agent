@@ -47,6 +47,9 @@ class MemoryMediaIngestTool(ToolBase):
     category = "write"
     toolset = "memory"
     requires_confirmation = True
+    model_hidden_input_fields = ("user_id", "session_id")
+    runtime_identity_fields = ("user_id", "session_id")
+    host_configured_exposure = True
 
     def __init__(self, service: Any | None = None) -> None:
         self.service = service or MemoryMediaIngestionService(remote_client=None)
@@ -69,6 +72,8 @@ class MemoryIngestStatusTool(ToolBase):
     category = "read"
     toolset = "memory"
     requires_confirmation = False
+    model_hidden_input_fields = ("user_id", "session_id")
+    runtime_identity_fields = ("user_id", "session_id")
 
     def __init__(self, service: Any | None = None) -> None:
         self.service = service or MemoryMediaIngestionService(remote_client=None)

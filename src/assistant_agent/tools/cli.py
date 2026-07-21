@@ -9,13 +9,15 @@ from typing import Any
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
+from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tool_observation import observation_from_tool_result
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.tools.loader import LocalToolLoadIssue, load_local_tools
 from assistant_agent.tools.loader import register_local_tools
-from assistant_agent.tools.registry import ToolRegistry
+from assistant_agent.tools.plugins.assembly import ToolPluginAssemblyError
+from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +27,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_validate(args.module)
     if args.command == "simulate":
         return _run_simulate(args)
+    if args.command == "plugins":
+        return _run_plugins(args.module or None)
     parser.print_help()
     return 2
 
@@ -52,7 +56,34 @@ def _build_parser() -> argparse.ArgumentParser:
     simulate.add_argument("--user-id", default="local-tools-cli", help="Simulation user id.")
     simulate.add_argument("--session-id", default="local-tools-cli", help="Simulation session id.")
     simulate.add_argument("--realtime", action="store_true", help="Enable realtime risk-gate metadata.")
+    plugins = subparsers.add_parser(
+        "plugins",
+        help="Inspect startup Tool plugins without executing tools.",
+    )
+    plugins.add_argument(
+        "--module",
+        action="append",
+        default=[],
+        help="Override configured plugin modules; repeat for multiple modules.",
+    )
     return parser
+
+
+def _run_plugins(module_names: list[str] | None) -> int:
+    try:
+        registry = create_default_registry(
+            ProviderConfig.from_env(),
+            plugin_modules=module_names,
+        )
+    except ToolPluginAssemblyError as exc:
+        report = exc.report.model_dump(mode="json")
+        report.update({"sealed": False, "generation": None})
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        return 1
+    report = registry.assembly_report.model_dump(mode="json")
+    report.update({"sealed": registry.sealed, "generation": registry.generation})
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
 
 
 def _run_validate(module_names: list[str]) -> int:

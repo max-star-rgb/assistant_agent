@@ -44,6 +44,16 @@ class VisionUnderstandingTool(ToolBase):
     category = "read"
     requires_confirmation = False
     requires_media = ["image", "video"]
+    model_hidden_input_fields = (
+        "frame_refs",
+        "context_id",
+        "metadata",
+        "memory_context",
+        "sample_strategy",
+        "user_id",
+        "session_id",
+    )
+    bind_request_video_ids = True
 
     def __init__(
         self,

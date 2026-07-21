@@ -6,12 +6,12 @@ from assistant_agent.services.product_adapter import (
     create_shopping_search_adapter,
 )
 from assistant_agent.tools.base import Tool
-from assistant_agent.tools.plugins.contracts import ToolPluginContext
+from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
 from assistant_agent.tools.plugins.shopping.tool import ShoppingSearchTool
 
 
 class ShoppingToolPlugin:
-    plugin_id = "shopping"
+    descriptor = ToolPluginDescriptor(plugin_id="shopping", plugin_version="1")
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
         if not context.mock_mode and not shopping_provider_ready(context.config):

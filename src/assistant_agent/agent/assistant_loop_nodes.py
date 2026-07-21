@@ -255,6 +255,14 @@ def _build_decision_context(
         iteration=iterations,
         max_iterations=max_iterations,
         context_compactor=graph_state.get("context_compactor"),
+        registry_generation=getattr(
+            graph_state["tool_executor"].registry,
+            "generation",
+            None,
+        ),
+        host_configured_tool_names=_host_configured_tool_names(
+            graph_state["tool_executor"].registry
+        ),
     )
     return AssistantDecisionContext(
         context_pack=context_pack,
@@ -277,6 +285,13 @@ def _list_tool_specs(registry: Any) -> list[ToolSpec]:
         return [spec if isinstance(spec, ToolSpec) else ToolSpec.model_validate(spec) for spec in specs]
     descriptions = registry.describe_tools()
     return [ToolSpec.model_validate(item) for item in descriptions]
+
+
+def _host_configured_tool_names(registry: Any) -> set[str]:
+    provider = getattr(registry, "host_configured_tool_names", None)
+    if not callable(provider):
+        return set()
+    return set(provider())
 
 
 def _decide_next_action(

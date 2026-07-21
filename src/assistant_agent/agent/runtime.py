@@ -74,7 +74,6 @@ from assistant_agent.services.turn_summary import append_runtime_turn_summary
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
-from assistant_agent.tools.plugins.durable_task.tool import TaskPlanSubmitTool
 
 if TYPE_CHECKING:
     from assistant_agent.services.durable_tasks.worker import TaskQuantumResult
@@ -107,22 +106,39 @@ class AgentGraphRuntime:
         self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
         self.memory_store = memory_store or create_memory_store(self.config)
         self.memory_manager = MemoryManager(self.memory_store)
-        self.registry = registry or create_default_registry(
-            self.config,
-            video_context_store=self.video_context_store,
-            realtime_video_memory_store=self.realtime_video_memory_store,
-        )
         self.durable_task_service = durable_task_service
-        if self.config.durable_tasks_enabled:
-            self.durable_task_service = self.durable_task_service or DurableTaskService(
-                store=SQLiteTaskStore(self.config.durable_task_path),
-                registry=self.registry,
-                max_plan_steps=self.config.max_plan_steps,
-                max_plan_revisions=self.config.max_plan_revisions,
-                lease_seconds=self.config.durable_task_lease_seconds,
+        if registry is None:
+            if self.config.durable_tasks_enabled and self.durable_task_service is None:
+                bootstrap_registry = ToolRegistry()
+                self.durable_task_service = DurableTaskService(
+                    store=SQLiteTaskStore(self.config.durable_task_path),
+                    registry=bootstrap_registry,
+                    max_plan_steps=self.config.max_plan_steps,
+                    max_plan_revisions=self.config.max_plan_revisions,
+                    lease_seconds=self.config.durable_task_lease_seconds,
+                )
+            self.registry = create_default_registry(
+                self.config,
+                video_context_store=self.video_context_store,
+                realtime_video_memory_store=self.realtime_video_memory_store,
+                durable_task_service=self.durable_task_service,
             )
-            if "task_plan_submit" not in self.registry.list():
-                self.registry.register(TaskPlanSubmitTool(self.durable_task_service))
+            if self.durable_task_service is not None:
+                self.durable_task_service.registry = self.registry
+        else:
+            self.registry = registry
+            if self.config.durable_tasks_enabled:
+                self.durable_task_service = self.durable_task_service or DurableTaskService(
+                    store=SQLiteTaskStore(self.config.durable_task_path),
+                    registry=self.registry,
+                    max_plan_steps=self.config.max_plan_steps,
+                    max_plan_revisions=self.config.max_plan_revisions,
+                    lease_seconds=self.config.durable_task_lease_seconds,
+                )
+                if "task_plan_submit" not in self.registry.list():
+                    raise ValueError(
+                        "A custom Registry for durable tasks must include task_plan_submit before runtime startup."
+                    )
         registry_get = getattr(self.registry, "get", None)
         if registry is not None and callable(registry_get):
             try:

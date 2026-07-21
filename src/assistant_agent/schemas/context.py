@@ -296,6 +296,7 @@ class ToolCatalogSummary(BaseModel):
     selected_tool_names: list[str] = Field(default_factory=list)
     selection_reasons: list[str] = Field(default_factory=list)
     fallback_used: bool = False
+    registry_generation: str | None = None
 
 
 class ToolCapabilityDescriptor(BaseModel):

@@ -28,6 +28,8 @@ def build_traced_assistant_context_pack(
     memory_summaries: list[str] | None = None,
     memory_text: str | None = None,
     context_compactor: ContextCompactor | None = None,
+    registry_generation: str | None = None,
+    host_configured_tool_names: set[str] | None = None,
 ) -> AssistantContextPack:
     """Build an assistant context pack and emit redacted canonical trace events."""
 
@@ -63,6 +65,8 @@ def build_traced_assistant_context_pack(
             memory_summaries=memory_summaries,
             memory_text=memory_text,
             context_compactor=context_compactor,
+            registry_generation=registry_generation,
+            host_configured_tool_names=host_configured_tool_names,
         )
     except Exception as exc:
         append_observability_event(

@@ -187,6 +187,8 @@ class MemoryRetrievalTool(_MemoryOperationTool):
     category = "read"
     toolset = "memory"
     requires_confirmation = False
+    model_hidden_input_fields = ("user_id", "session_id")
+    runtime_identity_fields = ("user_id", "session_id")
 
     def _run(self, input: MemoryRetrievalInput, context: ToolContext) -> ToolResult:
         payload = _dedicated_memory_input("retrieve", input, context, self.name)
@@ -202,6 +204,9 @@ class MemorySaveTool(_MemoryOperationTool):
     category = "write"
     toolset = "memory"
     requires_confirmation = False
+    model_hidden_input_fields = ("user_id", "session_id")
+    runtime_identity_fields = ("user_id", "session_id")
+    host_configured_exposure = True
 
     def _run(self, input: MemorySaveInput, context: ToolContext) -> ToolResult:
         payload = _dedicated_memory_input("save", input, context, self.name)

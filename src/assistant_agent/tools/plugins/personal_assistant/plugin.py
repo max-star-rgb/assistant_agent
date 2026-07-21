@@ -11,7 +11,7 @@ from assistant_agent.schemas.tool_ids import (
     WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import Tool
-from assistant_agent.tools.plugins.contracts import ToolPluginContext
+from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
 from assistant_agent.tools.plugins.personal_assistant.tools import (
     CalendarCreateTool,
     CalendarSearchTool,
@@ -21,7 +21,7 @@ from assistant_agent.tools.plugins.personal_assistant.tools import (
 
 
 class PersonalAssistantToolPlugin:
-    plugin_id = "personal_assistant"
+    descriptor = ToolPluginDescriptor(plugin_id="personal_assistant", plugin_version="1")
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
         tool_names = configured_personal_assistant_tools(context.mcp_server_configs)

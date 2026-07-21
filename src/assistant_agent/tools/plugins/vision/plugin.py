@@ -10,13 +10,13 @@ from assistant_agent.services.vision_client import (
     create_vision_understanding_client,
 )
 from assistant_agent.tools.base import Tool
-from assistant_agent.tools.plugins.contracts import ToolPluginContext
+from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
 from assistant_agent.tools.plugins.vision.tool import VisionUnderstandingTool
 from assistant_agent.tools.plugins.vision.visual_search import VisualImageSearchTool
 
 
 class VisionToolPlugin:
-    plugin_id = "vision"
+    descriptor = ToolPluginDescriptor(plugin_id="vision", plugin_version="1")
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
         tools: list[Tool] = []

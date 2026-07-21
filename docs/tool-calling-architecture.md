@@ -114,20 +114,36 @@ LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在�
 不属于 Provider，不受“真实调用”伪分类。weather、calendar、contacts 等 MCP 能力在 real 模式按实际
 MCP mapping 逐个注册，未映射的能力不进入 Registry。
 
-内置工具按能力域自包含在 `tools/plugins/<capability>/`：每个插件目录拥有自己的 `plugin.py` 和具体
-Tool 实现，`contracts.py` 只定义 `ToolPlugin` 和依赖上下文，`defaults.py` 只保留受信任内置插件的
-显式组合顺序。插件目录之间不相互导入，包级 `__init__.py` 也不急切导入全部插件，因此单个插件可以
-独立加载和测试。`tools/` 根目录只保留 Registry、Tool 基础协议以及显式本地扩展的 loader/decorator/CLI。
+进程内 Tool 插件采用 L2 启动时可插拔协议。每个插件声明
+`ToolPluginDescriptor(plugin_id, plugin_version, api_version="tool_plugin_v1")`，并通过
+`build_tools(context)` 构造 Tool。内置工具继续按能力域自包含在 `tools/plugins/<capability>/`，
+`defaults.py` 只保留受信任内置插件的显式清单，不扫描目录。
 
-插件产出的 Tool 仍统一注册到 `ToolRegistry`。插件只负责基于结构化配置和已注入依赖创建 Tool
-实例；不能直接暴露或执行工具，也不能绕过 `ActionValidator -> ToolExecutor -> ToolRegistry` 治理
-链路。默认插件集合不扫描目录或自动导入第三方模块。MCP 和显式本地 module loader 仍是独立扩展
-入口。
+部署方可以通过逗号分隔的 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 显式列出可信 Python module；每个
+module 必须导出单个 `__assistant_tool_plugin__`。未配置 module 不会被 import，配置错误、协议不兼容、
+重复 plugin id、重复 Tool name 或构造失败都会使启动 fail closed。import Python module 等同于执行进程内
+代码，因此该入口只适用于 operator 信任的部署代码，不是不可信插件沙箱；不可信或跨进程能力应使用
+MCP/独立服务边界。
+
+内置和配置插件经过相同的“发现、构造、全量校验、原子提交”流程。`ToolRegistry` 保存每个 Tool 的
+plugin/source/version ownership；默认 runtime 装配结束后 Registry 会 seal，并根据安全契约生成稳定
+generation。运行期间不能继续 `register()`，配置变化需要重启生效；当前不支持 unload、replace、drain
+或热更新。MCP 仍是外部 Tool source，但其 allowlist proxy 与进程内 Tool 一起在最终 Registry seal 前
+提交。
+
+插件只负责基于结构化配置和已注入依赖创建 Tool；不能直接暴露或执行工具，也不能绕过
+`ActionValidator -> ToolExecutor -> ToolRegistry` 治理链路。插件加载不等于本轮授权，write/dangerous
+Tool 仍默认不暴露，必须由宿主配置或每轮结构化显式 opt-in。`tools.loader` 的 `__assistant_tools__` 保留给
+本地 workflow/CLI 兼容入口，不会自动并入默认 runtime 插件协议。
+
+可用 `python -m assistant_agent.tools.cli plugins` 只读查看启动装配结果、ownership、issue、seal 状态和
+generation；该命令不会执行 Tool。`--module` 可重复传入并覆盖环境 module 列表用于部署前验证。
 
 `ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 builder，因此 provider schema、validator 和
 executor 读取的是同一份契约。新增或移除一个内置能力包时，只增删对应插件目录及 `defaults.py`
-组合项；修改已有插件内的 Tool 时只改该插件目录，不再向 `create_default_registry()` 添加领域工具
-的实现、实例化或 Provider readiness 分支。
+可信清单；新增普通外部插件只需提供 module 导出并修改部署配置，无需修改 Registry、Executor、
+`tool_ids.py` 或中心 Tool name 表。修改已有插件内的 Tool 时只改该插件目录，不再向
+`create_default_registry()` 添加领域工具的实现、实例化或 Provider readiness 分支。
 
 `visual_image_search` 与 `vision_understanding` 同属 `VisionToolPlugin`，但在 real 模式下仍分别检查各自
 Provider 配置。原 `delegate_to_agent` 工具已暂时删除；multi-agent 路由与通信服务保留，但不会向任何

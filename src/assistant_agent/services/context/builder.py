@@ -58,6 +58,8 @@ def build_assistant_context_pack(
     memory_summaries: list[str] | None = None,
     memory_text: str | None = None,
     context_compactor: ContextCompactor | None = None,
+    registry_generation: str | None = None,
+    host_configured_tool_names: set[str] | None = None,
 ) -> AssistantContextPack:
     """Collect state and request materials for assistant prompt rendering."""
 
@@ -79,7 +81,12 @@ def build_assistant_context_pack(
     active_observations = observations or []
     context_observations = compact_observations_for_context(active_observations)
     active_tool_specs = tool_specs or []
-    tool_catalog = select_prompt_tool_specs(active_request, active_tool_specs)
+    tool_catalog = select_prompt_tool_specs(
+        active_request,
+        active_tool_specs,
+        registry_generation=registry_generation,
+        host_configured_tool_names=host_configured_tool_names,
+    )
     prompt_tool_specs = tool_catalog.available_tool_specs
     state.run_tool_catalog = tool_catalog.run_tool_catalog
     tool_capability_catalog = select_tool_capability_descriptors(

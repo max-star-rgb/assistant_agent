@@ -18,11 +18,7 @@ from assistant_agent.services.context.tool_exposure import (
     evaluate_tool_exposure,
     tool_exposure_category,
 )
-from assistant_agent.schemas.tool_ids import MEMORY_MEDIA_INGEST_TOOL_NAME, MEMORY_SAVE_TOOL_NAME
-
-
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
-_CODE_CONFIGURED_WRITE_TOOL_NAMES = {MEMORY_SAVE_TOOL_NAME, MEMORY_MEDIA_INGEST_TOOL_NAME}
 
 
 @dataclass(frozen=True)
@@ -60,6 +56,8 @@ def select_prompt_tool_specs(
     tool_specs: list[ToolSpec],
     *,
     skill_catalog: SkillCatalog | None = None,
+    registry_generation: str | None = None,
+    host_configured_tool_names: set[str] | None = None,
 ) -> ToolCatalogSelection:
     """Qualify registered tools, then expose all qualified tools via identity recall."""
 
@@ -72,6 +70,7 @@ def select_prompt_tool_specs(
         request,
         tool_specs,
         catalog=catalog,
+        host_configured_tool_names=host_configured_tool_names,
     )
     available_specs = recall_qualified_tool_specs(
         request,
@@ -98,6 +97,7 @@ def select_prompt_tool_specs(
             selected_tool_names=available_names,
             selection_reasons=reasons,
             fallback_used=False,
+            registry_generation=registry_generation,
         ),
         active_skill_ids=qualification.active_skill_ids,
     )
@@ -108,10 +108,12 @@ def qualify_tool_specs(
     tool_specs: list[ToolSpec],
     *,
     catalog: SkillCatalog | None = None,
+    host_configured_tool_names: set[str] | None = None,
 ) -> ToolQualificationSelection:
     """Return tools allowed by environment, visibility policy, and exposure class."""
 
     visibility_overrides = _visibility_overrides(request)
+    host_configured = host_configured_tool_names or set()
     active_skill_ids, active_skill_tools = _explicit_skill_activation(
         catalog or SkillCatalog(),
         visibility_overrides.explicit_skills,
@@ -129,7 +131,11 @@ def qualify_tool_specs(
             request.task_execution_mode == "durable" and spec.name == "task_plan_submit"
         )
         configured_for_exposure = (
-            _code_configured_tool_exposure(category=category, tool_name=spec.name)
+            _code_configured_tool_exposure(
+                category=category,
+                tool_name=spec.name,
+                host_configured_tool_names=host_configured,
+            )
             or durable_ready
             or durable_plan_submission
             or spec.name in visibility_overrides.configured_tools
@@ -199,10 +205,11 @@ def _code_configured_tool_exposure(
     *,
     category: ToolExposureCategory,
     tool_name: str,
+    host_configured_tool_names: set[str],
 ) -> bool:
     if category == "generate":
         return True
-    if category == "write" and tool_name in _CODE_CONFIGURED_WRITE_TOOL_NAMES:
+    if category == "write" and tool_name in host_configured_tool_names:
         return True
     return False
 

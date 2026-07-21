@@ -36,13 +36,10 @@ from assistant_agent.services.tool_call_boundary import (
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_GENERATION_TOOL_NAME,
-    MEMORY_INGEST_STATUS_TOOL_NAME,
-    MEMORY_MEDIA_INGEST_TOOL_NAME,
     MEMORY_RETRIEVAL_CAPABILITY,
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_CAPABILITY,
     MEMORY_SAVE_TOOL_NAME,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
 )
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
 from assistant_agent.services.trace_content_policy import local_trace_content_enabled
@@ -162,8 +159,9 @@ class ToolExecutor:
             if validated_input is not None
             else tool_input
         )
-        bound_input = _bind_runtime_identity(tool_name, normalized_input, state)
-        bound_input = _bind_runtime_media_inputs(tool_name, bound_input, state)
+        tool = self.registry.get(tool_name)
+        bound_input = _bind_runtime_identity(tool, normalized_input, state)
+        bound_input = _bind_runtime_media_inputs(tool, bound_input, state)
         bound_input = _bind_durable_idempotency(
             bound_input,
             step_id=step_id,
@@ -818,27 +816,24 @@ def _cancelled_tool_result(
     )
 
 
-def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
-    """Bind memory ownership to the authenticated runtime state, not model arguments."""
+def _bind_runtime_identity(tool: Any, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
+    """Bind declared identity fields from authenticated runtime state."""
 
-    if tool_name not in {
-        MEMORY_RETRIEVAL_TOOL_NAME,
-        MEMORY_SAVE_TOOL_NAME,
-        MEMORY_MEDIA_INGEST_TOOL_NAME,
-        MEMORY_INGEST_STATUS_TOOL_NAME,
-    }:
+    fields = set(getattr(tool, "runtime_identity_fields", ()))
+    if not fields:
         return tool_input
-    return {
-        **tool_input,
-        "user_id": state.user_id,
-        "session_id": state.session_id,
-    }
+    bound = dict(tool_input)
+    if "user_id" in fields:
+        bound["user_id"] = state.user_id
+    if "session_id" in fields:
+        bound["session_id"] = state.session_id
+    return bound
 
 
-def _bind_runtime_media_inputs(tool_name: str, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
+def _bind_runtime_media_inputs(tool: Any, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
     """Bind request-scoped media refs for tools without exposing them as model-visible facts."""
 
-    if tool_name != IMAGE_UNDERSTANDING_TOOL_NAME:
+    if getattr(tool, "bind_request_video_ids", False) is not True:
         return tool_input
     if state.request.video_ids and is_trusted_agent_service_request(state.request):
         sanitized = dict(tool_input)

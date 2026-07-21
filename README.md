@@ -23,6 +23,10 @@ The Python package is `assistant_agent` under `src/assistant_agent/`. The local 
 
 Provider profiles and external-provider configuration are documented in [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md).
 
+可信 Python Tool 插件可通过 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 显式配置，重启后生效。可用
+`python -m assistant_agent.tools.cli plugins` 查看只读装配报告；该机制会执行所配置 module 的进程内代码，
+不是不可信代码沙箱。具体协议和治理边界见 Tool calling 文档。
+
 Basic checks:
 
 ```bash
