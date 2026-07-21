@@ -111,10 +111,10 @@ LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在�
 不属于 Provider，不受“真实调用”伪分类。weather、calendar、contacts 等 MCP 能力在 real 模式按实际
 MCP mapping 逐个注册，未映射的能力不进入 Registry。
 
-内置工具按能力域拆分在 `tools/plugins/`：`contracts.py` 只定义 `ToolPlugin` 和依赖上下文，每个能力
-模块独立负责自己的 Tool 构造与 Provider readiness，`defaults.py` 只保留受信任内置插件的显式组合
-顺序。插件模块之间不相互导入，包级 `__init__.py` 也不急切导入全部插件，因此单个插件可以独立加载
-和测试。
+内置工具按能力域自包含在 `tools/plugins/<capability>/`：每个插件目录拥有自己的 `plugin.py` 和具体
+Tool 实现，`contracts.py` 只定义 `ToolPlugin` 和依赖上下文，`defaults.py` 只保留受信任内置插件的
+显式组合顺序。插件目录之间不相互导入，包级 `__init__.py` 也不急切导入全部插件，因此单个插件可以
+独立加载和测试。`tools/` 根目录只保留 Registry、Tool 基础协议以及显式本地扩展的 loader/decorator/CLI。
 
 插件产出的 Tool 仍统一注册到 `ToolRegistry`。插件只负责基于结构化配置和已注入依赖创建 Tool
 实例；不能直接暴露或执行工具，也不能绕过 `ActionValidator -> ToolExecutor -> ToolRegistry` 治理
@@ -122,13 +122,13 @@ MCP mapping 逐个注册，未映射的能力不进入 Registry。
 入口。
 
 `ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 builder，因此 provider schema、validator 和
-executor 读取的是同一份契约。新增或移除一个内置能力包时，只修改对应插件模块及 `defaults.py`
-组合列表；修改已有插件内的 Tool 时只改该能力模块，不再向 `create_default_registry()` 添加领域工具
-的实例化和 Provider readiness 分支。
+executor 读取的是同一份契约。新增或移除一个内置能力包时，只增删对应插件目录及 `defaults.py`
+组合项；修改已有插件内的 Tool 时只改该插件目录，不再向 `create_default_registry()` 添加领域工具
+的实现、实例化或 Provider readiness 分支。
 
 `visual_image_search` 与 `vision_understanding` 同属 `VisionToolPlugin`，但在 real 模式下仍分别检查各自
-Provider 配置。`delegate_to_agent` 不属于默认工具插件；显式 multi-agent 入口需要时在自己的 Registry
-上直接注册该工具。
+Provider 配置。原 `delegate_to_agent` 工具已暂时删除；multi-agent 路由与通信服务保留，但不会向任何
+Registry 暴露 delegation tool。
 
 本轮目录由以下链路生成：
 
@@ -283,7 +283,8 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 ## 8. 代码导航
 
 - `schemas/tools.py`：`ToolSpec`、`RunToolCatalog`、`ToolResult`、`ToolCallRecord`；
-- `tools/*.py`：每个工具自身的 schema、description、category 和确认等静态契约；
+- `tools/plugins/<capability>/`：插件装配及其 Tool 实现、description、category 和确认等静态契约；
+- `tools/base.py`：公共 Tool 协议；
 - `tools/registry.py`：工具注册、查找和 Pydantic schema 提取；
 - `services/context/tool_catalog.py`：结构化目录装配；
 - `services/context/tool_exposure.py`：category/profile/media 暴露规则；

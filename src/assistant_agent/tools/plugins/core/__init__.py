@@ -1,0 +1,1 @@
+"""Core local tool plugin."""

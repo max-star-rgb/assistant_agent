@@ -1,10 +1,10 @@
 # Agent Communication Routing
 
-Last updated: 2026-07-09
+Last updated: 2026-07-21
 
-This document is the current canonical entry for multi-agent instance routing, agent-to-agent communication, and A2A-style protocol adapter boundaries. Update it whenever agent directory/router behavior, agent communication services, `delegate_to_agent` tools, cross-instance sessions, A2A routes, JSON-RPC transport, or related safety policy changes.
+This document is the current canonical entry for multi-agent instance routing, agent-to-agent communication, and A2A-style protocol adapter boundaries. Update it whenever agent directory/router behavior, agent communication services, cross-instance sessions, A2A routes, JSON-RPC transport, or related safety policy changes.
 
-Current status: opt-in local AgentRouter/delegation boundary, inbound A2A JSON-RPC adapter, default-disabled outbound A2A JSON-RPC pilot transport, read-only control-plane observability, explicit local JSONL durable delegation trace for readiness/pilot use, first-pass pilot operator workflow, strict local pilot evidence package, and breaking cleanup of old router/runtime compatibility imports implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and realtime Gateway paths on one default `AgentGraphRuntime` and does not register delegation in the default `ToolRegistry`. It now has a public `assistant_agent.agent_routing` aggregate entrypoint, protocol-neutral schemas, an `AgentDirectory`, deterministic `AgentRoutingPolicy`, `AgentDelegationPolicy`, `LocalAgentTransport`, `A2AJsonRpcTransport`, `AgentCommunicationService`, a local multi-runtime factory, an opt-in `delegate_to_agent` tool, an `AgentRouter` service with a default process-local redacted control-plane store plus opt-in `JsonlAgentControlPlaneStore`, a separate `POST /agents/run` API for same-process multi-agent routing/debugging, read-only `/control-plane/...` route/delegation/budget/readiness/audit/replay-preview APIs, `scripts/check_pilot_readiness.py`, `scripts/collect_pilot_evidence.py`, inbound `/.well-known/agent-card.json` plus `/a2a/rpc` routes with public card filtering and JSON-RPC error taxonomy, and outbound allowlist/timeout/payload/protocol-error controls. It does not implement public remote agent fabric, automatic Agent Card discovery/enablement, Web UI remote-control actions, or LLM target-agent selection.
+Current status: opt-in local AgentRouter boundary, inbound A2A JSON-RPC adapter, default-disabled outbound A2A JSON-RPC pilot transport, read-only control-plane observability, explicit local JSONL durable delegation trace for readiness/pilot use, first-pass pilot operator workflow, strict local pilot evidence package, and breaking cleanup of old router/runtime compatibility imports implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and realtime Gateway paths on one default `AgentGraphRuntime`. It now has a public `assistant_agent.agent_routing` aggregate entrypoint, protocol-neutral schemas, an `AgentDirectory`, deterministic `AgentRoutingPolicy`, `AgentDelegationPolicy`, `LocalAgentTransport`, `A2AJsonRpcTransport`, `AgentCommunicationService`, a local multi-runtime factory, and an `AgentRouter` service with a default process-local redacted control-plane store plus opt-in `JsonlAgentControlPlaneStore`. The former `delegate_to_agent` Tool is temporarily removed, so no Registry exposes model-driven delegation. Explicit `/agents/run` routing, read-only control-plane APIs, pilot scripts, inbound A2A routes, and outbound transport controls remain available.
 
 Current stage boundary:
 
@@ -13,7 +13,7 @@ Current stage implements a local same-process AgentRouter, not a full OpenClaw c
 Default product entrypoints still call agent.default through existing `/agent/run`, CLI, eval, and realtime Gateway paths.
 `/agents/run` is the explicit multi-agent router/debug entrypoint.
 `/.well-known/agent-card.json` and `/a2a/rpc` expose an inbound A2A-compatible JSON-RPC adapter over the local AgentRouter.
-delegate_to_agent exists only as an explicit registry-level opt-in local tool, enabled for the gateway controller runtime.
+delegate_to_agent is temporarily unavailable; explicit target/capability routing remains available through AgentRouter.
 outbound A2A exists only as an explicitly configured transport on an enabled AgentDirectory entry.
 durable delegation trace exists only when code explicitly provides JsonlAgentControlPlaneStore.
 Any implementation must not change default single-agent behavior.
@@ -58,7 +58,7 @@ User / API / Web UI
   -> Gateway when call/session lifecycle is involved, otherwise existing API route
   -> GatewayAgentAdapter / AgentGraphRealtimeBackend when a realtime Gateway turn enters assistant execution
   -> AgentGraphRuntime / assistant loop
-  -> delegate_to_agent tool only when the main runtime chooses delegation
+  -> no model-callable delegation tool (temporarily removed)
   -> AgentCommunicationService
   -> AgentTransport
   -> worker AgentGraphRuntime
@@ -85,7 +85,7 @@ Agent A assistant decision
   -> ActionValidator
   -> ToolExecutor
   -> ToolRegistry
-  -> delegate_to_agent tool
+  -> no model-callable delegation tool (temporarily removed)
   -> AgentCommunicationService
   -> AgentTransport
   -> Agent B
@@ -131,7 +131,6 @@ Implemented files:
 | `src/assistant_agent/schemas/agent_control_plane.py` | implemented | Stable redacted response schemas for read-only control-plane run, route, delegation, budget, audit-event, and replay-preview views. |
 | `src/assistant_agent/services/agent_control_plane.py` | implemented | Process-local control-plane record/audit-event store and query service over router records plus trace summaries. |
 | `src/assistant_agent/services/a2a_adapter.py` | implemented | Inbound A2A adapter that maps public agent card and JSON-RPC `SendMessage` requests to/from `AgentRouter`, with public skill filtering. |
-| `src/assistant_agent/tools/agent_delegation_tool.py` | implemented | Opt-in `delegate_to_agent` tool backed by `AgentCommunicationService`. |
 | `src/assistant_agent/api/routes_agent.py` | implemented | Existing `/agent/run` plus separate `/agents/run` router/debug endpoint sharing trial access rules. |
 | `src/assistant_agent/api/routes_a2a.py` | implemented | Inbound A2A-compatible agent card and JSON-RPC endpoint over local AgentRouter, including parse/invalid/method/params/internal error mapping. |
 | `scripts/check_pilot_readiness.py` | implemented | Local operator command for read-only pilot readiness checks without server startup, provider calls, or remote-agent calls. |
@@ -180,10 +179,9 @@ Rules:
 - `MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY=true` rejects request-derived identity at the API boundary. HTTP routes return `403` with stable `IDENTITY_NOT_AUTH_BOUND` detail, WebSocket sends `agent_error` and closes with policy violation, and `/a2a/rpc` returns JSON-RPC invalid params `-32602`.
 - A2A metadata may carry `user_id`, `session_id`, `target_agent_id`, `capability`, and `collaboration_mode`. Missing user/session fields use local defaults and still pass through the same `AuthContext` dependency, request-identity resolver, and trial-access gate. When header auth is enabled, the resolved auth-bound `user_id`/`session_id` and safe `request_identity` provenance are written back into the internal `AgentRouteRequest` before dispatch.
 - `collaboration_mode="single"` directly runs the resolved target agent. If no target or capability is provided, the target is `agent.default`.
-- `collaboration_mode="controller_delegate"` enters the controller path when no explicit target is supplied. The controller runtime uses the `agent.default` identity with `delegate_to_agent` registered. The normal single-mode `agent.default` runtime and worker runtimes do not register that tool by default.
+- `collaboration_mode="controller_delegate"` remains a compatible controller-route value, but the controller currently has no delegation tool and reports `delegation_enabled=false`.
 - If `target_agent_id` is supplied, it remains the explicit initial route even when `collaboration_mode` is set.
-- `create_default_registry()` 不装配 `delegate_to_agent`；显式 multi-agent 入口在自己的 Registry 上注册
-  `AgentDelegationTool` 并注入 `AgentCommunicationService`。
+- `create_default_registry()` 和显式 multi-agent 入口都不装配 `delegate_to_agent`；该 Tool 已暂时删除。
 - Use `create_local_agent_communication_service({...})` to build a same-process multi-runtime service for tests or explicit local experiments.
 - Local multi-runtime factory marks `agent.default` as a controller that can delegate only to non-default local workers; workers default to `can_delegate=False`.
 - The current opt-in is code/registry-level or the explicit `/agents/run` router. There is no default runtime environment variable that exposes delegation in normal `/agent/run` API/CLI runs.
@@ -221,7 +219,6 @@ Module ownership:
 | `src/assistant_agent/services/a2a_adapter.py` | Protocol adapter between inbound A2A agent card/JSON-RPC payloads and internal router requests/responses. |
 | `src/assistant_agent/services/agent_communication.py` | Service boundary for sending messages/tasks through transports. |
 | `src/assistant_agent/services/agent_transports.py` | `LocalAgentTransport`, `A2AJsonRpcTransport`, outbound allowlist/card/timeout/payload/circuit-breaker controls, and transport result normalization. |
-| `src/assistant_agent/tools/agent_delegation_tool.py` | Agent-callable delegation tool registered in `ToolRegistry` only when enabled with an `AgentCommunicationService`. |
 | `src/assistant_agent/api/routes_agent.py` | HTTP interface for `/agent/run` and the separate `/agents/run` router route. |
 | `src/assistant_agent/api/routes_a2a.py` | Inbound A2A-compatible agent card and local JSON-RPC endpoint. |
 
@@ -229,25 +226,7 @@ If file names change during implementation, keep the same ownership boundaries a
 
 ## Local Multi-Instance Example
 
-The supported local shape is explicit and same-process:
-
-```python
-from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
-from assistant_agent.services.agent_communication import create_local_agent_communication_service
-from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
-from assistant_agent.tools.registry import create_default_registry
-
-service = create_local_agent_communication_service(
-    {
-        DEFAULT_AGENT_ID: default_runtime,
-        "agent.worker": worker_runtime,
-    }
-)
-registry = create_default_registry()
-registry.register(AgentDelegationTool(service))
-```
-
-This makes `delegate_to_agent` visible only in that explicit registry. It does not change the default API/CLI/Web demo registry, does not create an `AgentRouter`, and does not use A2A or network transport.
+The local router and `AgentCommunicationService` remain explicit, same-process boundaries. They are not exposed as a model-callable Tool while `delegate_to_agent` is removed.
 
 ## Local AgentRouter API
 
@@ -260,7 +239,7 @@ POST /agents/run
 It reuses `AgentRunResponse` and adds `agent_router` metadata under `data` and `runtime_info`. It supports:
 
 - `collaboration_mode="single"`: route directly to `target_agent_id`, capability match, or `agent.default`.
-- `collaboration_mode="controller_delegate"`: route to the `agent.default` controller when no explicit target is supplied; this controller registry includes `delegate_to_agent`.
+- `collaboration_mode="controller_delegate"`: retained for compatibility and routes to `agent.default` when no explicit target is supplied, but delegation is currently disabled.
 - `target_agent_id="agent.worker"`: explicit direct route to the local worker runtime.
 
 Route decisions are reported with these deterministic reasons:
@@ -313,7 +292,7 @@ Implementation order:
 2. Add deterministic `AgentRoutingPolicy`, directory config, and routing-table tests. Done.
 3. Add `LocalAgentTransport` and same-process multi-runtime tests. Done.
 4. Add `AgentCommunicationService`. Done.
-5. Add an opt-in `delegate_to_agent` tool. Done for local transport.
+5. Add an opt-in `delegate_to_agent` tool. Previously implemented, now temporarily removed.
 6. Add service-layer `AgentDelegationPolicy` for allowed targets, depth, timeout, loop control, budget metadata, redaction, and audit events. Done.
 7. Add a local multi-runtime factory for `agent.default -> agent.worker` style tests. Done.
 8. Add local `AgentRouter` and separate `/agents/run` API. Done.

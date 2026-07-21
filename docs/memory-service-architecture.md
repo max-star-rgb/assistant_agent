@@ -1,6 +1,6 @@
 # Local Memory Service Architecture
 
-Last updated: 2026-07-16
+Last updated: 2026-07-21
 
 This document is the current authority for assistant_agent's local/project-side memory service architecture. Update it whenever `MemoryManager`, built-in memory stores, local retrieval, write policy, user profile behavior, memory tools, local memory APIs, or memory context boundaries change.
 
@@ -173,9 +173,9 @@ failure and degradation events retain their durable audit behavior.
 | `src/assistant_agent/memory/quality_eval.py` | Offline write-quality eval helpers over `MemoryWritePolicy`. Produces deterministic policy feedback metrics for write/reject/confirmation behavior without training, network calls, or policy mutation. |
 | `src/assistant_agent/memory/profile.py` | Compact `user_profile` memory derived from explicit preference/product/task memories. |
 | `src/assistant_agent/schemas/identity.py` | `RequestIdentity` contract for request/auth-derived user, tenant, project, session, and allowed memory scopes. |
-| `src/assistant_agent/tools/memory_tool.py` | Agent-callable `memory`, `memory_retrieval`, and `memory_save` tools. Uses `MemoryManager` from tool context when present. |
+| `src/assistant_agent/tools/plugins/memory/tools.py` | Agent-callable `memory`, `memory_retrieval`, and `memory_save` tools. Uses `MemoryManager` from tool context when present. |
 | `src/assistant_agent/services/memory_media_ingestion.py` | Governed service boundary for Memory Server media ingestion. Binds trusted `RequestIdentity`, generates globally unique upload `file_id` values, calls `RemoteMemoryClient.upload_media(...)` / `task_status(...)`, and returns structured prompt-safe results. |
-| `src/assistant_agent/tools/memory_media_tool.py` | Agent-callable `memory_media_ingest` and `memory_ingest_status` tool adapters. They bind runtime identity from `ToolContext`, call `MemoryMediaIngestionService`, and wrap structured `ToolResult` / capability contracts. They do not implement `memory_save`. |
+| `src/assistant_agent/tools/plugins/memory/media_tools.py` | Agent-callable `memory_media_ingest` and `memory_ingest_status` tool adapters. They bind runtime identity from `ToolContext`, call `MemoryMediaIngestionService`, and wrap structured `ToolResult` / capability contracts. They do not implement `memory_save`. |
 | `src/assistant_agent/services/memory_audit.py` | User-scoped list/get/export/retention-sweep/delete/audit/event/metrics/confirmation service over `MemoryManager`. |
 | `src/assistant_agent/services/memory_snapshot.py` | Read-only snapshot combining memory context, session records, conversation history, audit, and storage boundary info. |
 | `src/assistant_agent/schemas/memory.py` | Public memory contracts and payload safety validation. |
@@ -233,7 +233,7 @@ Use this routing matrix:
 | API audit/export/retention/snapshot/delete | `API route -> MemoryAuditService / MemorySnapshotService -> MemoryManager` |
 | Unit tests for storage/retrieval/policy | direct `MemoryManager` or store instantiation is allowed only inside focused tests |
 
-`src/assistant_agent/tools/memory_tool.py` must stay a thin tool adapter. It may:
+`src/assistant_agent/tools/plugins/memory/tools.py` must stay a thin tool adapter. It may:
 
 - Bind `ToolContext.user_id` and `ToolContext.session_id`.
 - Validate tool-facing required input.

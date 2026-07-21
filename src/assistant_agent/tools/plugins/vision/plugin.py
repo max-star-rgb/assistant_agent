@@ -1,14 +1,18 @@
 """Vision understanding and visual search tool plugin."""
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.services.tool_visual_image_search_adapter import (
     create_visual_image_search_adapter,
 )
-from assistant_agent.services.vision_client import create_vision_understanding_client
+from assistant_agent.services.vision_client import (
+    create_realtime_vision_understanding_client,
+    create_vision_understanding_client,
+)
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
-from assistant_agent.tools.vision_tool import VisionUnderstandingTool
-from assistant_agent.tools.visual_image_search_tool import VisualImageSearchTool
+from assistant_agent.tools.plugins.vision.tool import VisionUnderstandingTool
+from assistant_agent.tools.plugins.vision.visual_search import VisualImageSearchTool
 
 
 class VisionToolPlugin:
@@ -31,6 +35,21 @@ class VisionToolPlugin:
                 )
             )
         return tools
+
+
+def build_realtime_video_observation_tool(
+    config: ProviderConfig,
+    *,
+    realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
+) -> Tool:
+    """Build the specialized governed vision tool used by the realtime observer."""
+
+    if config.provider_mode == "real" and not vision_provider_ready(config):
+        raise ValueError("real provider mode requires a configured vision provider")
+    return VisionUnderstandingTool(
+        client=create_realtime_vision_understanding_client(config),
+        memory_store=realtime_video_memory_store,
+    )
 
 
 def vision_provider_ready(config: ProviderConfig) -> bool:

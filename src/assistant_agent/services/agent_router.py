@@ -38,9 +38,6 @@ from assistant_agent.services.agent_directory import AgentDirectory, default_age
 from assistant_agent.services.agent_routing_policy import AgentRoutingPolicy
 from assistant_agent.services.assistant_run_service import resolve_runtime_config, run_assistant_request
 from assistant_agent.services.trace_store import new_trace_id
-from assistant_agent.services.video_context import InMemoryVideoContextStore
-from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
-from assistant_agent.tools.registry import create_default_registry
 
 
 WORKER_AGENT_ID = "agent.worker"
@@ -179,7 +176,7 @@ def create_default_agent_router(
     default_runtime = AgentGraphRuntime(config=resolved_config)
     worker_runtime = AgentGraphRuntime(config=resolved_config)
     instances = [
-        default_agent_instance(can_delegate=True, allowed_targets=[worker_agent_id]),
+        default_agent_instance(can_delegate=False, allowed_targets=[]),
         AgentInstance(
             agent_id=worker_agent_id,
             display_name="Worker Agent",
@@ -196,18 +193,6 @@ def create_default_agent_router(
         {worker_agent_id: worker_runtime},
         instances=instances,
     )
-    controller_video_context = InMemoryVideoContextStore()
-    controller_registry = create_default_registry(
-        resolved_config,
-        video_context_store=controller_video_context,
-    )
-    if resolved_config.provider_mode != "mock":
-        controller_registry.register(AgentDelegationTool(communication_service))
-    controller_runtime = AgentGraphRuntime(
-        config=resolved_config,
-        registry=controller_registry,
-        video_context_store=controller_video_context,
-    )
     return AgentRouter(
         {
             DEFAULT_AGENT_ID: default_runtime,
@@ -215,7 +200,7 @@ def create_default_agent_router(
         },
         directory=communication_service.directory,
         communication_service=communication_service,
-        controller_runtime=controller_runtime,
+        controller_runtime=default_runtime,
     )
 
 

@@ -16,13 +16,13 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_TOOL_NAME,
 )
-from assistant_agent.services.vision_client import create_realtime_vision_understanding_client
 from assistant_agent.services.video_context import VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 from assistant_agent.tools.plugins.defaults import build_default_tools
-from assistant_agent.tools.plugins.vision import vision_provider_ready
-from assistant_agent.tools.vision_tool import VisionUnderstandingTool
+from assistant_agent.tools.plugins.vision.plugin import (
+    build_realtime_video_observation_tool,
+)
 
 if TYPE_CHECKING:
     from assistant_agent.mcp.config import MCPServerConfig
@@ -238,13 +238,11 @@ def create_realtime_video_observation_registry(
     """Create the governed realtime observer registry with one visual tool."""
 
     config = config or ProviderConfig()
-    if config.provider_mode == "real" and not vision_provider_ready(config):
-        raise ValueError("real provider mode requires a configured vision provider")
     registry = ToolRegistry()
     registry.register(
-        VisionUnderstandingTool(
-            client=create_realtime_vision_understanding_client(config),
-            memory_store=realtime_video_memory_store,
+        build_realtime_video_observation_tool(
+            config,
+            realtime_video_memory_store=realtime_video_memory_store,
         )
     )
     return registry

@@ -2,7 +2,7 @@
 
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
-from assistant_agent.tools.task_plan_tool import TaskPlanSubmitTool
+from assistant_agent.tools.plugins.durable_task.tool import TaskPlanSubmitTool
 
 
 class DurableTaskToolPlugin:

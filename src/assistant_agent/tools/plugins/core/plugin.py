@@ -2,8 +2,8 @@
 
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
-from assistant_agent.tools.python_interpreter_tool import PythonInterpreterTool
-from assistant_agent.tools.tool_search_tool import ToolSearchTool
+from assistant_agent.tools.plugins.core.python_interpreter import PythonInterpreterTool
+from assistant_agent.tools.plugins.core.tool_search import ToolSearchTool
 
 
 class CoreToolPlugin:

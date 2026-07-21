@@ -30,7 +30,7 @@ from assistant_agent.services.provider_errors import (
 )
 from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.video_tool import VideoUnderstandingBranch
+from assistant_agent.tools.plugins.vision.video_branch import VideoUnderstandingBranch
 
 
 class VisionUnderstandingTool(ToolBase):

@@ -7,7 +7,7 @@ from assistant_agent.services.product_adapter import (
 )
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
-from assistant_agent.tools.shopping_search_tool import ShoppingSearchTool
+from assistant_agent.tools.plugins.shopping.tool import ShoppingSearchTool
 
 
 class ShoppingToolPlugin:

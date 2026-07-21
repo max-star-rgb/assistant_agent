@@ -5,8 +5,8 @@ from assistant_agent.services.web_fetch_adapter import create_web_fetch_adapter
 from assistant_agent.services.web_search_adapter import create_web_search_adapter
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
-from assistant_agent.tools.web_fetch_tool import WebFetchTool
-from assistant_agent.tools.web_search_tool import WebSearchTool
+from assistant_agent.tools.plugins.web.fetch_tool import WebFetchTool
+from assistant_agent.tools.plugins.web.search_tool import WebSearchTool
 
 
 class WebToolPlugin:

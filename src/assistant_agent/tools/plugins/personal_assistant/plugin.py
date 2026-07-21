@@ -11,13 +11,13 @@ from assistant_agent.services.tool_manifest import (
     WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import Tool
-from assistant_agent.tools.personal_assistant_tools import (
+from assistant_agent.tools.plugins.contracts import ToolPluginContext
+from assistant_agent.tools.plugins.personal_assistant.tools import (
     CalendarCreateTool,
     CalendarSearchTool,
     ContactsSearchTool,
     WeatherTool,
 )
-from assistant_agent.tools.plugins.contracts import ToolPluginContext
 
 
 class PersonalAssistantToolPlugin:

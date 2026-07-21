@@ -3,8 +3,8 @@
 from assistant_agent.config import ProviderConfig
 from assistant_agent.services.image_generation_adapter import create_image_generation_adapter
 from assistant_agent.tools.base import Tool
-from assistant_agent.tools.image_generation_tool import ImageGenerationTool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
+from assistant_agent.tools.plugins.image_generation.tool import ImageGenerationTool
 
 
 class ImageGenerationToolPlugin:
