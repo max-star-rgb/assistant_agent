@@ -29,11 +29,11 @@ from assistant_agent.services.provider_errors import (
     build_provider_error,
 )
 from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.video_tool import VideoUnderstandingTool
 
 
-class VisionUnderstandingTool(MockTool):
+class VisionUnderstandingTool(ToolBase):
     name = IMAGE_UNDERSTANDING_TOOL_NAME
     description = "Image and video understanding through a vision adapter."
     input_schema = VisionUnderstandingRequest

@@ -24,7 +24,7 @@ from assistant_agent.services.tool_manifest import (
     RENDER_3D_TOOL_NAME,
     WEATHER_TOOL_NAME,
 )
-from assistant_agent.tools.base import MockTool, ToolContext, ToolInputValidationError
+from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
@@ -32,7 +32,7 @@ class _DeclaredValidationInput(BaseModel):
     value: str = Field(min_length=1)
 
 
-class _DeclaredValidationTool(MockTool):
+class _DeclaredValidationTool(ToolBase):
     name = "declared_validation_tool"
     description = "Test-only tool with declarative media and tool-owned validation."
     input_schema = _DeclaredValidationInput
@@ -68,7 +68,7 @@ class _SingleValidationInput(BaseModel):
         return self
 
 
-class _ExecutionBoundaryTool(MockTool):
+class _ExecutionBoundaryTool(ToolBase):
     name = "execution_boundary_tool"
     description = "Test-only tool for staged execution."
     input_schema = _ExecutionBoundaryInput

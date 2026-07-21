@@ -34,7 +34,7 @@ category: read | generate | write | dangerous
 toolset
 requires_confirmation
 requires_env / enabled_by_default / skill_only
-allowed_entry_profiles / requires_media
+requires_media
 progress_message / redact_trace
 ```
 
@@ -107,7 +107,7 @@ ToolRegistry.list_specs()
 - `generate` 需要代码配置或显式启用，当前内置生成工具由代码配置启用；
 - `write` 需要代码配置或显式启用，当前 memory 写入工具由代码配置启用；
 - `dangerous` 必须结构化显式启用，并继续满足 env/profile 条件；
-- `requires_env`、`allowed_entry_profiles`、`requires_media`、`skill_only` 可以排除工具；
+- `requires_env`、`requires_media`、`skill_only` 可以排除工具；
 - `enabled_tools`、`enabled_toolsets`、`enabled_skills` 等 metadata 是显式结构化 opt-in。
 
 LLM 决定是否调用、调用哪个已暴露工具以及参数内容。category/toolset/profile 只定义候选空间，不替

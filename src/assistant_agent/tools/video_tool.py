@@ -32,10 +32,10 @@ from assistant_agent.services.realtime_video_memory import (
     RealtimeVideoSnapshot,
 )
 from assistant_agent.services.tool_manifest import VIDEO_UNDERSTANDING_CAPABILITY, VIDEO_UNDERSTANDING_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
-class VideoUnderstandingTool(MockTool):
+class VideoUnderstandingTool(ToolBase):
     name = VIDEO_UNDERSTANDING_TOOL_NAME
     description = (
         "查询当前实时镜头或显式视频引用中的视觉事实。当前 turn 已有 active video 时，"
@@ -49,7 +49,6 @@ class VideoUnderstandingTool(MockTool):
     category = "read"
     requires_confirmation = False
     requires_media = ["video"]
-    allowed_entry_profiles = ["agent_service"]
     progress_message = "我分析一下。"
 
     def __init__(

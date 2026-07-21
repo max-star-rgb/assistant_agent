@@ -17,10 +17,10 @@ from assistant_agent.services.tool_python_sandbox import (
     validate_python_code_safety,
 )
 from assistant_agent.services.tool_manifest import PYTHON_INTERPRETER_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext, ToolInputValidationError
+from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
 
 
-class PythonInterpreterTool(MockTool):
+class PythonInterpreterTool(ToolBase):
     name = PYTHON_INTERPRETER_TOOL_NAME
     description = (
         "Run short, local, restricted Python code for math, scientific, data, "

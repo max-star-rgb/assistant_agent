@@ -11,10 +11,10 @@ from assistant_agent.services.render_adapter import (
     create_render_adapter,
 )
 from assistant_agent.services.tool_manifest import RENDER_3D_CAPABILITY, RENDER_3D_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
-class Render3DTool(MockTool):
+class Render3DTool(ToolBase):
     name = RENDER_3D_TOOL_NAME
     description = "3D and scene rendering through an adapter."
     input_schema = RenderRequest

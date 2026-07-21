@@ -16,7 +16,7 @@ from assistant_agent.schemas.capability_output import build_capability_output_co
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.agent_communication import AgentCommunicationService
 from assistant_agent.services.provider_errors import sanitize_error_detail
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
 class DelegateToAgentInput(BaseModel):
@@ -58,7 +58,7 @@ class DelegateToAgentOutput(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class AgentDelegationTool(MockTool):
+class AgentDelegationTool(ToolBase):
     """Delegate one request to another agent through the communication service."""
 
     name = "delegate_to_agent"

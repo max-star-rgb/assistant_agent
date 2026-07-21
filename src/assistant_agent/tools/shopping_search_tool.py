@@ -19,10 +19,10 @@ from assistant_agent.services.product_adapter import (
     create_shopping_search_adapter,
 )
 from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
-class ShoppingSearchTool(MockTool):
+class ShoppingSearchTool(ToolBase):
     """Search current product candidates and compare their offers in one call."""
 
     name = SHOPPING_SEARCH_TOOL_NAME
@@ -34,7 +34,6 @@ class ShoppingSearchTool(MockTool):
     output_schema = ShoppingSearchResult
     category = "read"
     requires_confirmation = False
-    allowed_entry_profiles = ["agent_service"]
     progress_message = "我查一下并比一下价格。"
 
     def __init__(

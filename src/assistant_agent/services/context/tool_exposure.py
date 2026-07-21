@@ -10,10 +10,9 @@ already exposed tools.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.schemas.tools import ToolSpec
 
 ToolExposureCategory = Literal["read", "generate", "write", "dangerous"]
@@ -23,8 +22,6 @@ ToolExposureCategory = Literal["read", "generate", "write", "dangerous"]
 class ToolExposureFacts:
     """Prompt-safe structured facts used to expose entry-profile tools."""
 
-    trusted_agent_service: bool
-    entry_profile: str | None
     active_image_ids: tuple[str, ...] = ()
     active_video_ids: tuple[str, ...] = ()
     active_audio_id: str | None = None
@@ -59,38 +56,26 @@ def tool_exposure_facts(request: UserRequest) -> ToolExposureFacts:
     """Extract bounded structured facts for tool exposure."""
 
     return ToolExposureFacts(
-        trusted_agent_service=is_trusted_agent_service_request(request),
-        entry_profile=_entry_profile(request.metadata),
         active_image_ids=tuple(_string_list(request.image_ids)),
         active_video_ids=tuple(_string_list(request.video_ids)),
         active_audio_id=_string_value(request.audio_id),
     )
 
 
-def entry_profile_tool_exposure(
+def evaluate_tool_exposure(
     request: UserRequest,
     spec: ToolSpec,
     *,
     configured_for_exposure: bool = False,
     explicitly_enabled: bool = False,
 ) -> ToolExposureDecision:
-    """Return whether one tool is exposed by the current entry profile."""
+    """Return whether one tool is exposed for the current turn."""
 
     facts = tool_exposure_facts(request)
-    if (
-        facts.trusted_agent_service
-        and spec.allowed_entry_profiles
-        and facts.entry_profile not in spec.allowed_entry_profiles
-    ):
-        return ToolExposureDecision(
-            exposed=False,
-            excluded_reasons=("entry_profile_not_exposed",),
-            facts=facts,
-        )
     if not _has_required_media(spec, facts):
         return ToolExposureDecision(
             exposed=False,
-            excluded_reasons=("entry_profile_not_exposed",),
+            excluded_reasons=("required_media_not_available",),
             facts=facts,
         )
     category = tool_exposure_category(spec)
@@ -172,17 +157,6 @@ def _has_required_media(spec: ToolSpec, facts: ToolExposureFacts) -> bool:
     if required:
         return bool(required.intersection(facts.active_media_types))
     return True
-
-
-def _entry_profile(metadata: dict[str, Any]) -> str | None:
-    gateway = metadata.get("gateway")
-    if not isinstance(gateway, dict):
-        return None
-    session_config = gateway.get("session_config")
-    if not isinstance(session_config, dict):
-        return None
-    value = session_config.get("entry_profile")
-    return value if isinstance(value, str) and value else None
 
 
 def _string_list(value: list[str]) -> list[str]:

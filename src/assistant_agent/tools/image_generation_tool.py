@@ -18,10 +18,10 @@ from assistant_agent.services.generated_artifacts import (
 )
 from assistant_agent.services.prompt_builder import build_text_capability_output
 from assistant_agent.services.tool_manifest import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
-class ImageGenerationTool(MockTool):
+class ImageGenerationTool(ToolBase):
     name = IMAGE_GENERATION_TOOL_NAME
     description = "Image generation through an adapter."
     input_schema = ImageGenerationInput

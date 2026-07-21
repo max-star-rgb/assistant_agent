@@ -51,7 +51,7 @@ from assistant_agent.services.trace_store import InMemoryTraceStore
 from assistant_agent.services.durable_tasks.service import DurableTaskService
 from assistant_agent.services.durable_tasks.store import InMemoryTaskStore
 from assistant_agent.services.durable_tasks.worker import _binding_for_lease, _resume_request
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.registry import create_default_registry
 from assistant_agent.api.routes_tasks import _task_response
 from assistant_agent.mcp.server import OfflineMCPServer
@@ -97,7 +97,7 @@ class _EvalProbeInput(BaseModel):
     text: str
 
 
-class _EvalProbeTool(MockTool):
+class _EvalProbeTool(ToolBase):
     name = "custom_notification"
     description = "Offline durable-task confirmation probe."
     input_schema = _EvalProbeInput

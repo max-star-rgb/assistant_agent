@@ -1,4 +1,4 @@
-"""Tool registry and default mock tool registration."""
+"""Tool registry and default tool registration."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
-from assistant_agent.tools.base import BaseTool, ToolContext
+from assistant_agent.tools.base import Tool, ToolContext
 from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
 from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
@@ -80,9 +80,9 @@ class ToolRegistry:
     """In-memory registry for tool lookup and execution."""
 
     def __init__(self) -> None:
-        self._tools: dict[str, BaseTool] = {}
+        self._tools: dict[str, Tool] = {}
 
-    def register(self, tool: BaseTool) -> None:
+    def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
             raise ValueError(f"Tool already registered: {tool.name}")
         spec = self._tool_spec(tool)
@@ -92,7 +92,7 @@ class ToolRegistry:
             "requires_confirmation": spec.requires_confirmation,
         }
 
-    def get(self, name: str) -> BaseTool:
+    def get(self, name: str) -> Tool:
         try:
             return self._tools[name]
         except KeyError as exc:
@@ -120,7 +120,7 @@ class ToolRegistry:
         return [self._tool_spec(self._tools[name]) for name in sorted(self._tools)]
 
     @staticmethod
-    def _tool_spec(tool: BaseTool) -> ToolSpec:
+    def _tool_spec(tool: Tool) -> ToolSpec:
         return ToolSpec(
             name=tool.name,
             description=tool.description,
@@ -220,7 +220,7 @@ def _required_inputs(schema_type) -> list[str]:
         return []
 
 
-def _declared_contract(tool: BaseTool) -> dict[str, Any]:
+def _declared_contract(tool: Tool) -> dict[str, Any]:
     """Read the small set of ToolSpec fields a local or MCP tool may declare."""
 
     fields = (
@@ -230,7 +230,6 @@ def _declared_contract(tool: BaseTool) -> dict[str, Any]:
         "requires_env",
         "enabled_by_default",
         "skill_only",
-        "allowed_entry_profiles",
         "requires_media",
         "progress_message",
         "redact_trace",

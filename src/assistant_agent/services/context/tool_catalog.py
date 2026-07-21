@@ -16,7 +16,7 @@ from assistant_agent.services.context.skill_loader import (
 )
 from assistant_agent.services.context.tool_exposure import (
     ToolExposureCategory,
-    entry_profile_tool_exposure,
+    evaluate_tool_exposure,
     tool_exposure_category,
 )
 from assistant_agent.services.tool_manifest import MEMORY_MEDIA_INGEST_TOOL_NAME, MEMORY_SAVE_TOOL_NAME
@@ -161,7 +161,7 @@ def qualify_tool_specs(
         ):
             excluded_reasons[spec.name] = ["disabled_by_default"]
             continue
-        exposure = entry_profile_tool_exposure(
+        exposure = evaluate_tool_exposure(
             request,
             spec,
             configured_for_exposure=configured_for_exposure,

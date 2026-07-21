@@ -26,7 +26,7 @@ from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.memory_audit import MemoryAuditService
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
 
 
@@ -188,7 +188,7 @@ class _ProbeOutput(BaseModel):
     count: int = Field(default=0, ge=0)
 
 
-class _MemoryBakeoffProbeTool(MockTool):
+class _MemoryBakeoffProbeTool(ToolBase):
     """Internal-only governed probe; it is never registered in the default catalog."""
 
     name = "memory_framework_bakeoff_probe"

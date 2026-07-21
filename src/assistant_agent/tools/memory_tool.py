@@ -23,7 +23,7 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_SAVE_CAPABILITY,
     MEMORY_SAVE_TOOL_NAME,
 )
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
 class _MemoryOperationInput(BaseModel):
@@ -74,7 +74,7 @@ class MemorySaveInput(BaseModel):
         raise ValueError("memory_save requires query, content.text, or content.summary")
 
 
-class _MemoryOperationTool(MockTool):
+class _MemoryOperationTool(ToolBase):
     """Shared implementation for the dedicated memory tools."""
 
     name = "memory_operation"
@@ -187,7 +187,6 @@ class MemoryRetrievalTool(_MemoryOperationTool):
     category = "read"
     toolset = "memory"
     requires_confirmation = False
-    allowed_entry_profiles = ["agent_service"]
 
     def _run(self, input: MemoryRetrievalInput, context: ToolContext) -> ToolResult:
         payload = _dedicated_memory_input("retrieve", input, context, self.name)
@@ -203,7 +202,6 @@ class MemorySaveTool(_MemoryOperationTool):
     category = "write"
     toolset = "memory"
     requires_confirmation = False
-    allowed_entry_profiles = ["agent_service"]
 
     def _run(self, input: MemorySaveInput, context: ToolContext) -> ToolResult:
         payload = _dedicated_memory_input("save", input, context, self.name)

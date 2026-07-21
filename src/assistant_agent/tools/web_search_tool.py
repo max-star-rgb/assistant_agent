@@ -10,10 +10,10 @@ from assistant_agent.services.web_search_adapter import (
     create_web_search_adapter,
 )
 from assistant_agent.services.tool_manifest import WEB_SEARCH_CAPABILITY, WEB_SEARCH_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
-class WebSearchTool(MockTool):
+class WebSearchTool(ToolBase):
     name = WEB_SEARCH_TOOL_NAME
     description = (
         "Search public web pages for current facts when no dedicated personal tool covers the request."
@@ -22,7 +22,6 @@ class WebSearchTool(MockTool):
     output_schema = WebSearchResult
     category = "read"
     requires_confirmation = False
-    allowed_entry_profiles = ["agent_service"]
     progress_message = "我联网查一下。"
 
     def __init__(self, adapter: WebSearchAdapter | None = None) -> None:

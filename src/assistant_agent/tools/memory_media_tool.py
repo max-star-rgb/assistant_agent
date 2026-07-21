@@ -16,7 +16,7 @@ from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaTaskStatusResult,
 )
 from assistant_agent.services.tool_manifest import MEMORY_INGEST_STATUS_TOOL_NAME, MEMORY_MEDIA_INGEST_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
 class MemoryMediaIngestInput(BaseModel):
@@ -39,7 +39,7 @@ class MemoryIngestStatusInput(BaseModel):
     task_id: str = Field(min_length=1)
 
 
-class MemoryMediaIngestTool(MockTool):
+class MemoryMediaIngestTool(ToolBase):
     name = MEMORY_MEDIA_INGEST_TOOL_NAME
     description = "Submit safe media file references to the configured Memory Server ingestion pipeline."
     input_schema = MemoryMediaIngestInput
@@ -61,7 +61,7 @@ class MemoryMediaIngestTool(MockTool):
         return _ingest_tool_result(result)
 
 
-class MemoryIngestStatusTool(MockTool):
+class MemoryIngestStatusTool(ToolBase):
     name = MEMORY_INGEST_STATUS_TOOL_NAME
     description = "Check the status of a Memory Server media ingestion task."
     input_schema = MemoryIngestStatusInput

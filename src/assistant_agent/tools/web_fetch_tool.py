@@ -10,10 +10,10 @@ from assistant_agent.services.web_fetch_adapter import (
     create_web_fetch_adapter,
 )
 from assistant_agent.services.tool_manifest import WEB_FETCH_CAPABILITY, WEB_FETCH_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
-class WebFetchTool(MockTool):
+class WebFetchTool(ToolBase):
     name = WEB_FETCH_TOOL_NAME
     description = (
         "Fetch readable page content from a specific HTTP(S) URL."
@@ -22,7 +22,6 @@ class WebFetchTool(MockTool):
     output_schema = WebFetchResult
     category = "read"
     requires_confirmation = False
-    allowed_entry_profiles = ["agent_service"]
     progress_message = "我打开这个网页看一下。"
 
     def __init__(self, adapter: WebFetchAdapter | None = None) -> None:

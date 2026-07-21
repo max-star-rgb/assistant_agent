@@ -10,7 +10,7 @@ from assistant_agent.schemas.durable_tasks import TrustedTaskBinding
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.planning import TaskPlan
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 if TYPE_CHECKING:
     from assistant_agent.services.durable_tasks.service import DurableTaskService
@@ -25,7 +25,7 @@ class TaskPlanSubmitOutput(BaseModel):
     task: dict
 
 
-class TaskPlanSubmitTool(MockTool):
+class TaskPlanSubmitTool(ToolBase):
     """Create or revise the task bound by trusted execution context."""
 
     name = "task_plan_submit"

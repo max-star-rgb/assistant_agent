@@ -39,7 +39,7 @@ class ToolContext(BaseModel):
         return bool(cancelled) if isinstance(cancelled, bool) else False
 
 
-class BaseTool(Protocol):
+class Tool(Protocol):
     """Common tool interface."""
 
     name: str
@@ -52,7 +52,6 @@ class BaseTool(Protocol):
     requires_env: list[str]
     enabled_by_default: bool
     skill_only: bool
-    allowed_entry_profiles: list[str]
     requires_media: list[ToolMediaRequirement]
     progress_message: str | None
     redact_trace: bool
@@ -61,9 +60,7 @@ class BaseTool(Protocol):
         """Execute the tool and return a structured result."""
 
 
-class MockTool:
-    """Base class for deterministic local mock tools."""
-
+class ToolBase:
     name: str
     description: str
     input_schema: type[BaseModel]
@@ -74,7 +71,6 @@ class MockTool:
     requires_env: list[str] = []
     enabled_by_default = True
     skill_only = False
-    allowed_entry_profiles: list[str] = []
     requires_media: list[ToolMediaRequirement] = []
     progress_message: str | None = None
     redact_trace = False

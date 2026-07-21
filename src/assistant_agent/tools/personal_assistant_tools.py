@@ -35,10 +35,10 @@ from assistant_agent.services.tool_manifest import (
     REMINDER_CREATE_TOOL_NAME,
     WEATHER_TOOL_NAME,
 )
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
-class WeatherTool(MockTool):
+class WeatherTool(ToolBase):
     """Look up weather through the configured personal weather adapter."""
 
     name = WEATHER_TOOL_NAME
@@ -51,7 +51,6 @@ class WeatherTool(MockTool):
     category = "read"
     toolset = "personal.readonly"
     requires_confirmation = False
-    allowed_entry_profiles = ["agent_service"]
     progress_message = "我查一下天气。"
     redact_trace = True
 
@@ -73,7 +72,7 @@ class WeatherTool(MockTool):
         )
 
 
-class CalendarSearchTool(MockTool):
+class CalendarSearchTool(ToolBase):
     """Search calendar events through the configured calendar adapter."""
 
     name = CALENDAR_SEARCH_TOOL_NAME
@@ -83,7 +82,6 @@ class CalendarSearchTool(MockTool):
     category = "read"
     toolset = "personal.calendar"
     requires_confirmation = False
-    allowed_entry_profiles = ["agent_service"]
     progress_message = "我查一下日历。"
     redact_trace = True
 
@@ -106,7 +104,7 @@ class CalendarSearchTool(MockTool):
         )
 
 
-class CalendarCreateTool(MockTool):
+class CalendarCreateTool(ToolBase):
     """Create calendar events after ToolExecutor confirmation."""
 
     name = CALENDAR_CREATE_TOOL_NAME
@@ -144,7 +142,7 @@ class CalendarCreateTool(MockTool):
         )
 
 
-class ContactsSearchTool(MockTool):
+class ContactsSearchTool(ToolBase):
     """Search personal contacts through the configured contacts adapter."""
 
     name = CONTACTS_SEARCH_TOOL_NAME
@@ -154,7 +152,6 @@ class ContactsSearchTool(MockTool):
     category = "read"
     toolset = "personal.contacts"
     requires_confirmation = False
-    allowed_entry_profiles = ["agent_service"]
     progress_message = "我查一下联系人。"
     redact_trace = True
 
@@ -177,7 +174,7 @@ class ContactsSearchTool(MockTool):
         )
 
 
-class ReminderCreateTool(MockTool):
+class ReminderCreateTool(ToolBase):
     """Create reminders after ToolExecutor confirmation."""
 
     name = REMINDER_CREATE_TOOL_NAME

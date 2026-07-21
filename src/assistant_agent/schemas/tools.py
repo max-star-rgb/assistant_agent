@@ -55,7 +55,6 @@ class ToolSpec(BaseModel):
     requires_env: list[str] = Field(default_factory=list)
     enabled_by_default: bool = True
     skill_only: bool = False
-    allowed_entry_profiles: list[str] = Field(default_factory=list)
     requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
     progress_message: str | None = None
     redact_trace: bool = False

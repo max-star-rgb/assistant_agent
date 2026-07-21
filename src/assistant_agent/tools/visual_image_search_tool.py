@@ -14,10 +14,10 @@ from assistant_agent.services.tool_visual_image_search_adapter import (
     create_visual_image_search_adapter,
 )
 from assistant_agent.services.tool_manifest import VISUAL_IMAGE_SEARCH_CAPABILITY, VISUAL_IMAGE_SEARCH_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import ToolBase, ToolContext
 
 
-class VisualImageSearchTool(MockTool):
+class VisualImageSearchTool(ToolBase):
     name = VISUAL_IMAGE_SEARCH_TOOL_NAME
     description = (
         "Search the internet for visually similar images from a public image URL."
