@@ -46,6 +46,11 @@ class VideoUnderstandingTool(MockTool):
     )
     input_schema = VideoUnderstandingRequest
     output_schema = VideoUnderstandingResult
+    category = "read"
+    requires_confirmation = False
+    requires_media = ["video"]
+    allowed_entry_profiles = ["agent_service"]
+    progress_message = "我分析一下。"
 
     def __init__(
         self,

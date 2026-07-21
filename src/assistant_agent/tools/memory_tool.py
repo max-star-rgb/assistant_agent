@@ -182,7 +182,12 @@ class _MemoryOperationTool(MockTool):
 
 class MemoryRetrievalTool(_MemoryOperationTool):
     name = MEMORY_RETRIEVAL_TOOL_NAME
+    description = "Retrieve prior user memory when the request needs saved context."
     input_schema = MemoryRetrievalInput
+    category = "read"
+    toolset = "memory"
+    requires_confirmation = False
+    allowed_entry_profiles = ["agent_service"]
 
     def _run(self, input: MemoryRetrievalInput, context: ToolContext) -> ToolResult:
         payload = _dedicated_memory_input("retrieve", input, context, self.name)
@@ -193,7 +198,12 @@ class MemoryRetrievalTool(_MemoryOperationTool):
 
 class MemorySaveTool(_MemoryOperationTool):
     name = MEMORY_SAVE_TOOL_NAME
+    description = "Save an explicit memory or record a candidate stable preference for later review."
     input_schema = MemorySaveInput
+    category = "write"
+    toolset = "memory"
+    requires_confirmation = False
+    allowed_entry_profiles = ["agent_service"]
 
     def _run(self, input: MemorySaveInput, context: ToolContext) -> ToolResult:
         payload = _dedicated_memory_input("save", input, context, self.name)

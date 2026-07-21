@@ -560,6 +560,7 @@ class WorkflowSkillRunner:
                 tool_input,
                 trace_id=state.trace_id,
                 node_name="workflow_skill_runner",
+                validated_input=validation.validated_input,
             )
             status = _attempt_status(result)
             attempts.append(

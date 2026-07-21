@@ -32,6 +32,9 @@ class TaskPlanSubmitTool(MockTool):
     description = "Submit a bounded structured plan for durable asynchronous execution."
     input_schema = TaskPlanSubmitInput
     output_schema = TaskPlanSubmitOutput
+    category = "write"
+    requires_confirmation = False
+    progress_message = "我先把任务整理成可恢复的执行计划。"
 
     def __init__(self, service: DurableTaskService) -> None:
         self.service = service

@@ -101,7 +101,6 @@ class MCPToolAdapter:
             description=definition.description,
             input_schema=_schema_to_fields(input_model),
             required_inputs=_required_inputs(definition.input_schema),
-            runtime_constraints=["MCP proxy tool; execute only through ToolExecutor."],
             category="read" if self.config.is_read_only(definition.name) else "write",
             requires_confirmation=not self.config.is_read_only(definition.name),
             toolset=f"mcp.{_safe_name(self.config.server_name)}",

@@ -49,9 +49,6 @@ class ToolSpec(BaseModel):
     description: str = Field(default="")
     input_schema: dict[str, Any] = Field(default_factory=dict)
     required_inputs: list[str] = Field(default_factory=list)
-    when_to_use: list[str] = Field(default_factory=list)
-    when_not_to_use: list[str] = Field(default_factory=list)
-    runtime_constraints: list[str] = Field(default_factory=list)
     category: ToolCategory = "dangerous"
     toolset: str | None = None
     requires_confirmation: bool = True

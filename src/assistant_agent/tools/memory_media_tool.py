@@ -44,6 +44,9 @@ class MemoryMediaIngestTool(MockTool):
     description = "Submit safe media file references to the configured Memory Server ingestion pipeline."
     input_schema = MemoryMediaIngestInput
     output_schema = MemoryMediaIngestionResult
+    category = "write"
+    toolset = "memory"
+    requires_confirmation = True
 
     def __init__(self, service: Any | None = None) -> None:
         self.service = service or MemoryMediaIngestionService(remote_client=None)
@@ -63,6 +66,9 @@ class MemoryIngestStatusTool(MockTool):
     description = "Check the status of a Memory Server media ingestion task."
     input_schema = MemoryIngestStatusInput
     output_schema = MemoryMediaTaskStatusResult
+    category = "read"
+    toolset = "memory"
+    requires_confirmation = False
 
     def __init__(self, service: Any | None = None) -> None:
         self.service = service or MemoryMediaIngestionService(remote_client=None)

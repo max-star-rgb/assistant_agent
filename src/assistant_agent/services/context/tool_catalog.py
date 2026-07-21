@@ -256,9 +256,6 @@ def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
             "description",
             "input_schema",
             "required_inputs",
-            "when_to_use",
-            "when_not_to_use",
-            "runtime_constraints",
         },
     )
     input_schema = payload.get("input_schema")

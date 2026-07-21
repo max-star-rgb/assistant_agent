@@ -1,9 +1,10 @@
 """Focused offline checks for stable tool-governance behavior."""
 
 from datetime import datetime, timezone
+from typing import ClassVar
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.state import AgentState
@@ -55,6 +56,16 @@ class _DeclaredValidationTool(MockTool):
 
 class _ExecutionBoundaryInput(BaseModel):
     value: str
+
+
+class _SingleValidationInput(BaseModel):
+    value: str
+    validation_count: ClassVar[int] = 0
+
+    @model_validator(mode="after")
+    def count_validation(self) -> "_SingleValidationInput":
+        type(self).validation_count += 1
+        return self
 
 
 class _ExecutionBoundaryTool(MockTool):
@@ -151,6 +162,44 @@ def test_registry_exposes_one_simple_tool_contract() -> None:
     assert spec.requires_media == ["image"]
     assert not hasattr(spec, "policy")
     assert not hasattr(spec, "execution")
+    assert not hasattr(spec, "when_to_use")
+    assert not hasattr(spec, "runtime_constraints")
+
+
+def test_validated_tool_input_is_reused_by_executor() -> None:
+    class SingleValidationTool(_ExecutionBoundaryTool):
+        name = "single_validation_tool"
+        input_schema = _SingleValidationInput
+
+    _SingleValidationInput.validation_count = 0
+    tool = SingleValidationTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    request = UserRequest(user_id="user-1", session_id="session-1", text="execute")
+    state = AgentState.from_request(request)
+    decision = AssistantDecision(
+        type="tool_call",
+        tool_name=tool.name,
+        tool_input={"value": "ok"},
+    )
+
+    validation = ActionValidator().validate(
+        decision=decision,
+        registry=registry,
+        request=request,
+        state=state,
+    )
+    result = ToolExecutor(registry=registry).run_tool(
+        state,
+        "step-1",
+        tool.name,
+        decision.tool_input,
+        validated_input=validation.validated_input,
+    )
+
+    assert validation.accepted is True
+    assert result.success is True
+    assert _SingleValidationInput.validation_count == 1
 
 
 def test_available_catalog_is_the_execution_boundary() -> None:

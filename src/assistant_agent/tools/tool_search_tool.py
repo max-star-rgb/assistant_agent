@@ -30,6 +30,11 @@ class ToolSearchTool(MockTool):
     )
     input_schema = ToolSearchInput
     output_schema = ToolSearchResult
+    category = "read"
+    toolset = "tool.discovery"
+    requires_confirmation = False
+    progress_message = "我看一下还有哪些可用工具。"
+    redact_trace = True
 
     def __init__(
         self,

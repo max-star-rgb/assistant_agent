@@ -65,6 +65,8 @@ class AgentDelegationTool(MockTool):
     description = "Delegate a bounded task to another enabled local agent instance."
     input_schema = DelegateToAgentInput
     output_schema = DelegateToAgentOutput
+    category = "generate"
+    requires_confirmation = False
 
     def __init__(self, service: AgentCommunicationService | None = None) -> None:
         self.service = service

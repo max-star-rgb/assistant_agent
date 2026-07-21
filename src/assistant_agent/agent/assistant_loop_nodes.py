@@ -1365,6 +1365,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             trace_store=graph_state.get("trace_store"),
             trace_id=graph_state.get("trace_id"),
             node_name=graph_state.get("current_node_name", "execute_tool"),
+            validated_input=validation.validated_input,
         )
 
         observation = observation_from_tool_result(

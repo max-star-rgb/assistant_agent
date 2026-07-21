@@ -38,6 +38,10 @@ class VisionUnderstandingTool(MockTool):
     description = "Image and video understanding through a vision adapter."
     input_schema = VisionUnderstandingRequest
     output_schema = VisionUnderstandingResult
+    category = "read"
+    requires_confirmation = False
+    requires_media = ["image", "video"]
+    progress_message = "我看一下。"
 
     def __init__(
         self,

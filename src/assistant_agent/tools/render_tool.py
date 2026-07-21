@@ -19,6 +19,8 @@ class Render3DTool(MockTool):
     description = "3D and scene rendering through an adapter."
     input_schema = RenderRequest
     output_schema = RenderResult
+    category = "generate"
+    requires_confirmation = False
 
     def __init__(self, adapter: RenderAdapter | None = None) -> None:
         self.adapter = adapter or create_render_adapter()

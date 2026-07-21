@@ -91,11 +91,4 @@ def _field_to_json_schema(field_info: dict[str, Any]) -> dict[str, Any]:
 
 
 def _native_description(spec: ToolSpec) -> str:
-    parts = [spec.description.strip()] if spec.description.strip() else []
-    if spec.when_to_use:
-        parts.append("Use when: " + "; ".join(spec.when_to_use))
-    if spec.when_not_to_use:
-        parts.append("Do not use when: " + "; ".join(spec.when_not_to_use))
-    if spec.runtime_constraints:
-        parts.append("Runtime constraints: " + "; ".join(spec.runtime_constraints))
-    return "\n".join(parts)
+    return spec.description.strip()

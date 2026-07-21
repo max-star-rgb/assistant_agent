@@ -4,7 +4,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ToolCategory, ToolMediaRequirement, ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
 
 
@@ -46,6 +46,16 @@ class BaseTool(Protocol):
     description: str
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
+    category: ToolCategory
+    toolset: str | None
+    requires_confirmation: bool
+    requires_env: list[str]
+    enabled_by_default: bool
+    skill_only: bool
+    allowed_entry_profiles: list[str]
+    requires_media: list[ToolMediaRequirement]
+    progress_message: str | None
+    redact_trace: bool
 
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         """Execute the tool and return a structured result."""
@@ -58,6 +68,16 @@ class MockTool:
     description: str
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
+    category: ToolCategory = "dangerous"
+    toolset: str | None = None
+    requires_confirmation = True
+    requires_env: list[str] = []
+    enabled_by_default = True
+    skill_only = False
+    allowed_entry_profiles: list[str] = []
+    requires_media: list[ToolMediaRequirement] = []
+    progress_message: str | None = None
+    redact_trace = False
 
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         try:

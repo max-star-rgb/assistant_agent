@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, List, Dict
 
+from pydantic import BaseModel
+
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.tools.base import BaseTool, ToolContext
@@ -71,6 +73,9 @@ if TYPE_CHECKING:
     from assistant_agent.services.durable_tasks.service import DurableTaskService
 
 
+_REGISTERED_TOOL_CONTRACTS: dict[str, dict[str, Any]] = {}
+
+
 class ToolRegistry:
     """In-memory registry for tool lookup and execution."""
 
@@ -80,8 +85,12 @@ class ToolRegistry:
     def register(self, tool: BaseTool) -> None:
         if tool.name in self._tools:
             raise ValueError(f"Tool already registered: {tool.name}")
-        self._tool_spec(tool)
+        spec = self._tool_spec(tool)
         self._tools[tool.name] = tool
+        _REGISTERED_TOOL_CONTRACTS[tool.name] = {
+            "category": spec.category,
+            "requires_confirmation": spec.requires_confirmation,
+        }
 
     def get(self, name: str) -> BaseTool:
         try:
@@ -95,7 +104,7 @@ class ToolRegistry:
     def run(
         self,
         name: str,
-        input: dict[str, Any],
+        input: BaseModel | dict[str, Any],
         context: ToolContext | None = None,
     ) -> ToolResult:
         return self.get(name).run(input, context)
@@ -112,17 +121,12 @@ class ToolRegistry:
 
     @staticmethod
     def _tool_spec(tool: BaseTool) -> ToolSpec:
-        usage = _ACTION_USAGE.get(tool.name, {})
-        contract = {**_TOOL_CONTRACTS.get(tool.name, {}), **_declared_contract(tool)}
         return ToolSpec(
             name=tool.name,
             description=tool.description,
             input_schema=_schema_to_dict(tool.input_schema, tool_name=tool.name),
             required_inputs=_required_inputs(tool.input_schema),
-            when_to_use=usage.get("when_to_use", []),
-            when_not_to_use=usage.get("when_not_to_use", []),
-            runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
-            **contract,
+            **_declared_contract(tool),
         )
 
     def describe_tools(self) -> List[Dict[str, Any]]:
@@ -235,452 +239,14 @@ def _declared_contract(tool: BaseTool) -> dict[str, Any]:
 
 
 def tool_contract_fields(tool_name: str) -> dict[str, Any]:
-    """Return the compact built-in contract used outside a live registry."""
+    """Return the last registered contract for legacy realtime projections."""
 
     return {
         "category": "dangerous",
         "requires_confirmation": True,
-        **_TOOL_CONTRACTS.get(tool_name, {}),
+        **_REGISTERED_TOOL_CONTRACTS.get(tool_name, {}),
     }
 
-
-_TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
-    IMAGE_UNDERSTANDING_TOOL_NAME: {
-        "category": "read",
-        "requires_confirmation": False,
-        "requires_media": ["image", "video"],
-        "progress_message": "我看一下。",
-    },
-    VIDEO_UNDERSTANDING_TOOL_NAME: {
-        "category": "read",
-        "requires_confirmation": False,
-        "requires_media": ["video"],
-        "allowed_entry_profiles": ["agent_service"],
-        "progress_message": "我分析一下。",
-    },
-    IMAGE_GENERATION_TOOL_NAME: {
-        "category": "generate",
-        "requires_confirmation": False,
-        "progress_message": "我开始生成，可能需要一点时间。",
-    },
-    RENDER_3D_TOOL_NAME: {"category": "generate", "requires_confirmation": False},
-    SHOPPING_SEARCH_TOOL_NAME: {
-        "category": "read",
-        "requires_confirmation": False,
-        "allowed_entry_profiles": ["agent_service"],
-        "progress_message": "我查一下并比一下价格。",
-    },
-    PYTHON_INTERPRETER_TOOL_NAME: {
-        "category": "dangerous",
-        "toolset": "analysis.local",
-        "requires_confirmation": False,
-        "requires_env": ["MULTIMODAL_AGENT_PYTHON_INTERPRETER_ENABLED"],
-        "enabled_by_default": False,
-        "progress_message": "我用本地 Python 算一下。",
-        "redact_trace": True,
-    },
-    TOOL_SEARCH_TOOL_NAME: {
-        "category": "read",
-        "toolset": "tool.discovery",
-        "requires_confirmation": False,
-        "progress_message": "我看一下还有哪些可用工具。",
-        "redact_trace": True,
-    },
-    WEB_SEARCH_TOOL_NAME: {
-        "category": "read",
-        "requires_confirmation": False,
-        "allowed_entry_profiles": ["agent_service"],
-        "progress_message": "我联网查一下。",
-    },
-    VISUAL_IMAGE_SEARCH_TOOL_NAME: {
-        "category": "read",
-        "requires_confirmation": False,
-        "requires_media": ["image"],
-        "progress_message": "我找一下相似图片。",
-    },
-    WEB_FETCH_TOOL_NAME: {
-        "category": "read",
-        "requires_confirmation": False,
-        "allowed_entry_profiles": ["agent_service"],
-        "progress_message": "我打开这个网页看一下。",
-    },
-    WEATHER_TOOL_NAME: {
-        "category": "read",
-        "toolset": "personal.readonly",
-        "requires_confirmation": False,
-        "allowed_entry_profiles": ["agent_service"],
-        "progress_message": "我查一下天气。",
-        "redact_trace": True,
-    },
-    CALENDAR_SEARCH_TOOL_NAME: {
-        "category": "read",
-        "toolset": "personal.calendar",
-        "requires_confirmation": False,
-        "allowed_entry_profiles": ["agent_service"],
-        "progress_message": "我查一下日历。",
-        "redact_trace": True,
-    },
-    CALENDAR_CREATE_TOOL_NAME: {
-        "category": "write",
-        "toolset": "personal.calendar",
-        "requires_confirmation": True,
-        "progress_message": "需要你确认后我再创建日程。",
-        "redact_trace": True,
-    },
-    CONTACTS_SEARCH_TOOL_NAME: {
-        "category": "read",
-        "toolset": "personal.contacts",
-        "requires_confirmation": False,
-        "allowed_entry_profiles": ["agent_service"],
-        "progress_message": "我查一下联系人。",
-        "redact_trace": True,
-    },
-    REMINDER_CREATE_TOOL_NAME: {
-        "category": "write",
-        "toolset": "personal.reminders",
-        "requires_confirmation": True,
-        "progress_message": "需要你确认后我再创建提醒。",
-        "redact_trace": True,
-    },
-    MEMORY_RETRIEVAL_TOOL_NAME: {
-        "category": "read",
-        "toolset": "memory",
-        "requires_confirmation": False,
-        "allowed_entry_profiles": ["agent_service"],
-    },
-    MEMORY_SAVE_TOOL_NAME: {
-        "category": "write",
-        "toolset": "memory",
-        "requires_confirmation": False,
-        "allowed_entry_profiles": ["agent_service"],
-    },
-    MEMORY_MEDIA_INGEST_TOOL_NAME: {
-        "category": "write",
-        "toolset": "memory",
-        "requires_confirmation": True,
-    },
-    MEMORY_INGEST_STATUS_TOOL_NAME: {
-        "category": "read",
-        "toolset": "memory",
-        "requires_confirmation": False,
-    },
-    "delegate_to_agent": {
-        "category": "generate",
-        "requires_confirmation": False,
-    },
-    "task_plan_submit": {
-        "category": "write",
-        "requires_confirmation": False,
-        "progress_message": "我先把任务整理成可恢复的执行计划。",
-    },
-}
-
-
-_ACTION_USAGE: dict[str, dict[str, Any]] = {
-    IMAGE_UNDERSTANDING_TOOL_NAME: {
-        "when_to_use": [
-            "Describe, analyze, or identify image content.",
-            "Summarize or analyze an explicit video_ref or video_ids supplied by the current request.",
-            "Use as the primary visual understanding tool for image or explicit video inputs.",
-        ],
-        "when_not_to_use": [
-            "User asks to generate a new image.",
-            "User asks to render or build a 3D scene.",
-            "No image, active video, or explicit video reference exists in the current turn.",
-        ],
-        "runtime_constraints": [
-            "Requires image_ids, video_ref, video_ids, or a trusted active video reference.",
-            "Do not pass internal frame paths, JPEG/base64 payloads, local media paths, metadata, or provider fields.",
-            "If evidence is insufficient, stale, or uncertain, report that uncertainty from the tool result.",
-        ],
-    },
-    VIDEO_UNDERSTANDING_TOOL_NAME: {
-        "when_to_use": [
-            "Answer visual-fact questions about the current realtime camera when this tool is exposed for an active-video turn.",
-            "Summarize or analyze an explicit video_ref or video_ids supplied by the current request.",
-            "Call when the current answer needs fresh visual facts rather than relying only on passive realtime_video_context.",
-        ],
-        "when_not_to_use": [
-            "User only asks for image generation.",
-            "User asks for 3D rendering without video context.",
-            "No active realtime camera or explicit video reference exists in the current turn.",
-        ],
-        "runtime_constraints": [
-            "Requires current active video from the request, video_ref, or video_ids.",
-            "Do not pass internal frame paths, JPEG/base64 payloads, local media paths, or provider fields.",
-            "Use the current turn's video reference; runtime binds trusted active-video turns.",
-            "If evidence is insufficient, stale, or uncertain, report that uncertainty from the tool result.",
-        ],
-    },
-    IMAGE_GENERATION_TOOL_NAME: {
-        "when_to_use": ["Generate an image, poster, product hero image, or visual creative from text."],
-        "when_not_to_use": ["User asks to describe an existing image or video."],
-        "runtime_constraints": ["Prompt must describe the image to generate."],
-    },
-    RENDER_3D_TOOL_NAME: {
-        "when_to_use": ["User explicitly asks for 3D, rendering, modeling, scene preview, or displaying an object in a space."],
-        "when_not_to_use": ["User only asks to describe the scene in an image or video.", "Do not trigger from the word 场景 alone."],
-        "runtime_constraints": ["Requires valid render inputs accepted by the tool schema."],
-    },
-    SHOPPING_SEARCH_TOOL_NAME: {
-        "when_to_use": [
-            "Search current product candidates and compare prices or offers in one call.",
-            "User asks for shopping recommendations, purchase advice, value judgement, or price comparison.",
-        ],
-        "when_not_to_use": ["User only asks for general chat, image description, or non-shopping web facts."],
-        "runtime_constraints": [
-            "Requires query, visual summary, video summary, or product descriptors.",
-            "Does not place orders or perform payment.",
-        ],
-    },
-    PYTHON_INTERPRETER_TOOL_NAME: {
-        "when_to_use": [
-            "Run short local Python snippets for math, scientific, data, or code analysis when the tool is explicitly enabled.",
-            "Use when deterministic computation or parsing is needed and the required input data is already in the prompt or tool input.",
-        ],
-        "when_not_to_use": [
-            "The task needs network access, package installation, shell commands, browser automation, or access to arbitrary local files.",
-            "The analysis can be answered directly without executing code.",
-            "The Python interpreter is not explicitly enabled for this run.",
-        ],
-        "runtime_constraints": [
-            "Requires code and explicit MULTIMODAL_AGENT_PYTHON_INTERPRETER_ENABLED opt-in.",
-            "Code runs in a short-lived restricted local subprocess with timeout and output limits.",
-            "Only prompt-provided JSON input_data is available; do not request local paths, network, shell, or package installation.",
-            "Assign the final structured value to result; printed stdout is truncated.",
-        ],
-    },
-    TOOL_SEARCH_TOOL_NAME: {
-        "when_to_use": [
-            "Only when the exposed core tools cannot satisfy the user request.",
-            "Inspect configured MCP servers for additional allowlisted tools, including tools that are configured but not enabled by default.",
-        ],
-        "when_not_to_use": [
-            "A core exposed tool can answer or complete the request.",
-            "User asks to execute an MCP tool directly; tool_search only discovers candidates and does not grant execution permission.",
-            "User asks to install, connect, or enable a new external tool; report that permission is required instead of executing.",
-        ],
-        "runtime_constraints": [
-            "Discovery only; does not execute returned tools.",
-            "Returns prompt-safe MCP tool names, descriptions, input summaries, and permission status.",
-            "Unallowlisted MCP server tools are omitted from model-facing results.",
-            "A discovered tool still must be explicitly enabled when required and must execute through ActionValidator and ToolExecutor.",
-        ],
-    },
-    WEB_SEARCH_TOOL_NAME: {
-        "when_to_use": [
-            "Answer current, latest, recent, realtime, news, or public web lookup requests when no dedicated tool covers the requested fact.",
-            "User explicitly asks to search the web, look up online information, or check current information.",
-        ],
-        "when_not_to_use": [
-            "User asks for weather, calendar, contacts, commute, morning, or departure briefing facts that can be handled by weather, calendar_search, or contacts_search.",
-            "User asks for shopping/product candidates; use shopping_search instead.",
-            "User asks to use saved preferences or prior chats; memory tools may be relevant but do not replace web_search for current facts.",
-            "Do not use for ordinary chat or timeless explanations that can be answered from available context.",
-        ],
-        "runtime_constraints": [
-            "Requires query.",
-            "Read-only search result retrieval; v1 does not fetch full pages or run a browser.",
-            "Real HTTP search requires provider_smoke or pilot runtime profile plus explicit MULTIMODAL_AGENT_SEARCH_PROVIDER=http.",
-        ],
-    },
-    VISUAL_IMAGE_SEARCH_TOOL_NAME: {
-        "when_to_use": [
-            "Search the internet for visually similar images from a public image URL.",
-            "User asks to search by image, find visually similar images, trace an image source, or find same-style images online.",
-        ],
-        "when_not_to_use": [
-            "User asks to describe or understand image content; use vision_understanding instead.",
-            "User asks for text web search; use web_search instead.",
-            "Only local paths, base64 payloads, private media IDs, or non-public image references are available.",
-        ],
-        "runtime_constraints": [
-            "Requires image_url or image_ids containing public http or https image URLs.",
-            "v1 uses Qwen Responses API image_search only; do not fallback to vision_understanding or text web_search.",
-            "Do not pass local media paths, base64 payloads, provider raw responses, API keys, or private media IDs.",
-            "Real Qwen image_search requires provider_smoke or pilot runtime profile plus explicit MULTIMODAL_AGENT_VISUAL_IMAGE_SEARCH_PROVIDER=qwen.",
-        ],
-    },
-    WEB_FETCH_TOOL_NAME: {
-        "when_to_use": [
-            "Fetch readable page content from a specific HTTP(S) URL provided by the user or returned by web_search.",
-            "Use when search snippets are insufficient and the answer needs content from a known web page.",
-        ],
-        "when_not_to_use": [
-            "No specific URL is available; use web_search first for general web lookup.",
-            "User asks for browser automation, form submission, login-only content, or JavaScript-rendered interaction.",
-            "User asks for shopping/product candidates; use shopping_search instead.",
-        ],
-        "runtime_constraints": [
-            "Requires an http or https URL.",
-            "Returns extracted readable text only; does not render a browser, submit forms, or crawl multiple pages.",
-            "Real HTTP fetch requires provider_smoke or pilot runtime profile plus explicit MULTIMODAL_AGENT_SEARCH_PROVIDER=http.",
-        ],
-    },
-    WEATHER_TOOL_NAME: {
-        "when_to_use": [
-            "User asks for current weather, short-range forecast, rain, temperature, or 出门天气 for a named location.",
-            "Use for morning or departure briefings that need weather facts.",
-        ],
-        "when_not_to_use": [
-            "User asks for general news or arbitrary web facts; use web_search when current web facts are needed.",
-            "No location is available; ask for the location or use a trusted runtime location when one exists.",
-        ],
-        "runtime_constraints": [
-            "Requires location.",
-            "When the user specifies a relative or absolute date, pass target_date as YYYY-MM-DD; omit it only when no date was specified.",
-            "Default adapter is deterministic mock/offline; real weather providers must be explicitly configured in a future provider boundary.",
-        ],
-    },
-    CALENDAR_SEARCH_TOOL_NAME: {
-        "when_to_use": [
-            "User asks to inspect calendar events, meetings, free/busy context, or 日程.",
-            "Use for morning or departure briefings to inspect today's personal schedule before advising travel timing or conflicts.",
-            "Use before scheduling workflows that need existing events or availability context.",
-        ],
-        "when_not_to_use": [
-            "User asks to create, update, or delete an event; use a mutating calendar tool with confirmation.",
-            "User asks for a reminder/todo rather than a calendar event.",
-        ],
-        "runtime_constraints": [
-            "Query may be omitted or blank for today's calendar in morning/departure briefings.",
-            "Use explicit query, time window, or a clear natural-language calendar search when available.",
-            "Return prompt-safe event summaries only; do not expose raw provider payloads.",
-        ],
-    },
-    CALENDAR_CREATE_TOOL_NAME: {
-        "when_to_use": [
-            "User asks to create a calendar event after event details are known.",
-            "Use in meeting scheduling workflows only after availability/contact context is gathered and the user confirms the write.",
-        ],
-        "when_not_to_use": [
-            "User only asks to inspect schedule; use calendar_search.",
-            "Event title or start time is missing; ask for missing details before attempting the write.",
-        ],
-        "runtime_constraints": [
-            "Requires title, start_time, runtime confirmation metadata, and idempotency_key.",
-            "Model-supplied confirmation flags do not authorize execution.",
-        ],
-    },
-    CONTACTS_SEARCH_TOOL_NAME: {
-        "when_to_use": [
-            "User asks to find a contact, candidate attendee, phone number, or email address.",
-            "Use in scheduling workflows when attendee names must be resolved before creating an event.",
-        ],
-        "when_not_to_use": [
-            "User asks to send a message, email, or call someone; those actions are not implemented.",
-            "No contact query or candidate name is available.",
-        ],
-        "runtime_constraints": [
-            "Requires query.",
-            "Return candidate contact details only; do not expose raw provider payloads.",
-        ],
-    },
-    REMINDER_CREATE_TOOL_NAME: {
-        "when_to_use": [
-            "User asks to create a reminder, todo, or action item from the current conversation.",
-            "Use after extracting a concrete task title and optional due time.",
-        ],
-        "when_not_to_use": [
-            "User only asks to brainstorm or summarize action items without saving them.",
-            "The reminder title is missing; ask for the missing task.",
-        ],
-        "runtime_constraints": [
-            "Requires title, runtime confirmation metadata, and idempotency_key.",
-            "Model-supplied confirmation flags do not authorize execution.",
-        ],
-    },
-    MEMORY_RETRIEVAL_TOOL_NAME: {
-        "when_to_use": [
-            "User explicitly asks to use prior chats, saved memory, remembered preferences, or previous/last context.",
-            "User asks to continue a prior task or says to follow their saved preferences.",
-        ],
-        "when_not_to_use": [
-            "No historical context is needed.",
-            "User asks for a first-pass answer, copywriting, product search, image generation, or general advice without referencing saved context.",
-            "Do not infer memory need from broad words like preference/style/tone unless the user refers to their own saved preference or prior conversation.",
-        ],
-        "runtime_constraints": ["Requires user_id and query.", "Return final_answer directly when the current request can be answered without prior context."],
-    },
-    MEMORY_SAVE_TOOL_NAME: {
-        "when_to_use": [
-            "User explicitly asks to remember or save a preference, project fact, or task context; set source_intent=user_explicit.",
-            "The assistant infers a stable, non-sensitive user preference or project fact may be useful later; set source_intent=assistant_candidate.",
-        ],
-        "when_not_to_use": [
-            "Do not save sensitive data or incidental content without intent.",
-            "Do not save ordinary one-off task outputs, generated copy, search results, or transient wording unless the user asks to remember them.",
-            "Do not use source_intent=user_confirmed; it is reserved for the confirmation service.",
-        ],
-        "runtime_constraints": [
-            "Requires user_id and query, content.text, or content.summary.",
-            "Assistant-loop calls must include source_intent, source_reason, future_use, and evidence.",
-            "source_intent must be user_explicit or assistant_candidate for LLM calls.",
-            "Memory writes must remain concise, auditable, and about long-term user/project value.",
-        ],
-    },
-    MEMORY_MEDIA_INGEST_TOOL_NAME: {
-        "when_to_use": [
-            "User explicitly asks to upload, ingest, or import media into long-term memory for later retrieval.",
-            "The request contains safe file references and asks for Memory Server media ingestion.",
-        ],
-        "when_not_to_use": [
-            "Do not use for ordinary video/image understanding; use video_understanding or vision_understanding instead.",
-            "Do not use for explicit text memory saves; use memory_save instead.",
-            "Do not use unless the user asks for durable media ingestion into memory.",
-        ],
-        "runtime_constraints": [
-            "Requires runtime user identity and at least one file reference.",
-            "Requires explicit Memory Server remote configuration.",
-            "Must execute through ToolExecutor; this is not memory_save.",
-        ],
-    },
-    MEMORY_INGEST_STATUS_TOOL_NAME: {
-        "when_to_use": [
-            "Check the processing state of a previously submitted Memory Server media ingestion task.",
-        ],
-        "when_not_to_use": [
-            "Do not use to submit media; use memory_media_ingest.",
-            "Do not use for general memory retrieval; use memory_retrieval.",
-        ],
-        "runtime_constraints": [
-            "Requires runtime user identity and task_id.",
-            "Current external Memory Server task lookup accepts user_id but is not user-enforced.",
-        ],
-    },
-    "delegate_to_agent": {
-        "when_to_use": [
-            "A task must be delegated to another enabled local agent instance.",
-            "The caller has an explicit target_agent_id and a bounded delegation task.",
-        ],
-        "when_not_to_use": [
-            "Default single-agent runs.",
-            "No target_agent_id is provided.",
-            "The target is the current/source agent.",
-            "Remote A2A or network agent calls are needed; this local tool does not perform network transport.",
-        ],
-        "runtime_constraints": [
-            "Opt-in only; not registered in the default ToolRegistry.",
-            "Requires target_agent_id and text, image_ids, video_ids, or audio_id.",
-            "Must execute through ActionValidator and ToolExecutor.",
-        ],
-    },
-    "task_plan_submit": {
-        "when_to_use": [
-            "The request explicitly requires durable execution.",
-            "A complex task must survive the current request or client connection.",
-        ],
-        "when_not_to_use": [
-            "A simple request can be answered or completed in the foreground.",
-            "The request explicitly selects foreground execution.",
-        ],
-        "runtime_constraints": [
-            "Must be the only provider-native tool call in its batch.",
-            "Task identity and revision binding come only from ToolContext.",
-            "Use only through ToolExecutor.",
-        ],
-    },
-}
 
 
 def create_default_registry(

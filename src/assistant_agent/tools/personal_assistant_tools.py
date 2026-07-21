@@ -42,9 +42,18 @@ class WeatherTool(MockTool):
     """Look up weather through the configured personal weather adapter."""
 
     name = WEATHER_TOOL_NAME
-    description = "Look up current or short-range weather for a location."
+    description = (
+        "Look up current or short-range weather for a location. Pass target_date as "
+        "YYYY-MM-DD when the user specifies a date."
+    )
     input_schema = WeatherRequest
     output_schema = WeatherResult
+    category = "read"
+    toolset = "personal.readonly"
+    requires_confirmation = False
+    allowed_entry_profiles = ["agent_service"]
+    progress_message = "我查一下天气。"
+    redact_trace = True
 
     def __init__(self, adapter: WeatherAdapter | None = None) -> None:
         self.adapter = adapter or MockWeatherAdapter()
@@ -71,6 +80,12 @@ class CalendarSearchTool(MockTool):
     description = "Search the user's calendar events."
     input_schema = CalendarSearchRequest
     output_schema = CalendarSearchResult
+    category = "read"
+    toolset = "personal.calendar"
+    requires_confirmation = False
+    allowed_entry_profiles = ["agent_service"]
+    progress_message = "我查一下日历。"
+    redact_trace = True
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
         self.adapter = adapter or MockCalendarAdapter()
@@ -98,6 +113,11 @@ class CalendarCreateTool(MockTool):
     description = "Create a calendar event after explicit user confirmation."
     input_schema = CalendarCreateRequest
     output_schema = CalendarCreateResult
+    category = "write"
+    toolset = "personal.calendar"
+    requires_confirmation = True
+    progress_message = "需要你确认后我再创建日程。"
+    redact_trace = True
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
         self.adapter = adapter or MockCalendarAdapter()
@@ -131,6 +151,12 @@ class ContactsSearchTool(MockTool):
     description = "Search the user's contacts for candidate people or contact details."
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
+    category = "read"
+    toolset = "personal.contacts"
+    requires_confirmation = False
+    allowed_entry_profiles = ["agent_service"]
+    progress_message = "我查一下联系人。"
+    redact_trace = True
 
     def __init__(self, adapter: ContactsAdapter | None = None) -> None:
         self.adapter = adapter or MockContactsAdapter()
@@ -158,6 +184,11 @@ class ReminderCreateTool(MockTool):
     description = "Create a reminder or todo after explicit user confirmation."
     input_schema = ReminderCreateRequest
     output_schema = ReminderCreateResult
+    category = "write"
+    toolset = "personal.reminders"
+    requires_confirmation = True
+    progress_message = "需要你确认后我再创建提醒。"
+    redact_trace = True
 
     def __init__(self, adapter: ReminderAdapter | None = None) -> None:
         self.adapter = adapter or MockReminderAdapter()

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from time import monotonic, perf_counter, sleep
 from typing import Any, Literal
 
+from pydantic import BaseModel
+
 from assistant_agent.agent.cancellation import (
     AgentRunCancelled,
     CANCELLATION_ERROR_CODE,
@@ -57,6 +59,7 @@ class PreparedToolCall:
     step_id: str
     tool_name: str
     tool_input: dict[str, Any]
+    invocation_input: BaseModel | dict[str, Any]
     step: TaskStep | None
     call_id: str
     capability: str
@@ -114,6 +117,7 @@ class ToolExecutor:
         trace_store: TraceStore | None = None,
         trace_id: str | None = None,
         node_name: str | None = None,
+        validated_input: BaseModel | None = None,
     ) -> ToolResult:
         """Run one governed tool through serial prepare/invoke/commit stages."""
 
@@ -126,6 +130,7 @@ class ToolExecutor:
             trace_store=trace_store,
             trace_id=trace_id,
             node_name=node_name,
+            validated_input=validated_input,
         )
         invocation = self.invoke_tool(prepared)
         return self.commit_tool_result(state, prepared, invocation)
@@ -140,6 +145,7 @@ class ToolExecutor:
         trace_store: TraceStore | None = None,
         trace_id: str | None = None,
         node_name: str | None = None,
+        validated_input: BaseModel | None = None,
     ) -> PreparedToolCall:
         """Prepare governance, lifecycle start, and budget reservation in serial order."""
 
@@ -152,7 +158,17 @@ class ToolExecutor:
             details={"tool_name": tool_name, "step_id": step_id},
             state=state,
         )
-        bound_input = _bind_runtime_identity(tool_name, tool_input, state)
+        if validated_input is not None and not isinstance(
+            validated_input,
+            self.registry.get(tool_name).input_schema,
+        ):
+            raise TypeError(f"validated_input does not match {tool_name} input_schema")
+        normalized_input = (
+            validated_input.model_dump(mode="python")
+            if validated_input is not None
+            else tool_input
+        )
+        bound_input = _bind_runtime_identity(tool_name, normalized_input, state)
         bound_input = _bind_runtime_media_inputs(tool_name, bound_input, state)
         bound_input = _bind_durable_idempotency(
             bound_input,
@@ -270,10 +286,14 @@ class ToolExecutor:
                 if reservation is not None:
                     state.provider_budget.release_reservation(reservation.reservation_id)
                 raise
+        invocation_input: BaseModel | dict[str, Any] = bound_input
+        if validated_input is not None:
+            invocation_input = validated_input.model_copy(update=bound_input)
         return PreparedToolCall(
             step_id=step_id,
             tool_name=tool_name,
             tool_input=bound_input,
+            invocation_input=invocation_input,
             step=step,
             call_id=call.call_id,
             capability=capability,
@@ -300,7 +320,7 @@ class ToolExecutor:
         try:
             result, retry_count = self._run_with_retry(
                 prepared.tool_name,
-                prepared.tool_input,
+                prepared.invocation_input,
                 prepared.context,
                 step_id=prepared.step_id,
                 preserve_success_after_cancel=_preserve_success_after_cancel(
@@ -760,7 +780,7 @@ class ToolExecutor:
     def _run_with_retry(
         self,
         tool_name: str,
-        tool_input: dict[str, Any],
+        tool_input: BaseModel | dict[str, Any],
         context: ToolContext,
         *,
         step_id: str,
@@ -805,7 +825,12 @@ class ToolExecutor:
                     retry_count=retry_count,
                 )
 
-    def _run_once(self, tool_name: str, tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
+    def _run_once(
+        self,
+        tool_name: str,
+        tool_input: BaseModel | dict[str, Any],
+        context: ToolContext,
+    ) -> ToolResult:
         try:
             return self.registry.run(tool_name, tool_input, context)
         except AgentRunCancelled:

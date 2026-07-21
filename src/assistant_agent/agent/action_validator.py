@@ -24,6 +24,7 @@ class ActionValidationResult(BaseModel):
     code: str = Field(min_length=1)
     message: str = Field(min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    validated_input: BaseModel | None = Field(default=None, exclude=True)
 
 
 class ActionValidator:
@@ -108,7 +109,13 @@ class ActionValidator:
             except ToolInputValidationError as exc:
                 return _reject(exc.code, exc.message, metadata=metadata)
 
-        return ActionValidationResult(accepted=True, code="accepted", message="Action accepted.", metadata=metadata)
+        return ActionValidationResult(
+            accepted=True,
+            code="accepted",
+            message="Action accepted.",
+            metadata=metadata,
+            validated_input=validated_input,
+        )
 
 
 def _validate_task_execution_mode(

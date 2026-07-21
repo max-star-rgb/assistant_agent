@@ -26,6 +26,9 @@ class ImageGenerationTool(MockTool):
     description = "Image generation through an adapter."
     input_schema = ImageGenerationInput
     output_schema = ImageGenerationResult
+    category = "generate"
+    requires_confirmation = False
+    progress_message = "我开始生成，可能需要一点时间。"
 
     def __init__(self, adapter: ImageGenerationAdapter | None = None) -> None:
         self.adapter = adapter or MockImageGenerationAdapter()

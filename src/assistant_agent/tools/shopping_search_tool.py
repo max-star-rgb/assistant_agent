@@ -32,6 +32,10 @@ class ShoppingSearchTool(MockTool):
     )
     input_schema = ProductSearchInput
     output_schema = ShoppingSearchResult
+    category = "read"
+    requires_confirmation = False
+    allowed_entry_profiles = ["agent_service"]
+    progress_message = "我查一下并比一下价格。"
 
     def __init__(
         self,

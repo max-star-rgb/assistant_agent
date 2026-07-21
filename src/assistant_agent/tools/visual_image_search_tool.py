@@ -24,6 +24,10 @@ class VisualImageSearchTool(MockTool):
     )
     input_schema = VisualImageSearchInput
     output_schema = VisualImageSearchResult
+    category = "read"
+    requires_confirmation = False
+    requires_media = ["image"]
+    progress_message = "我找一下相似图片。"
 
     def __init__(self, adapter: VisualImageSearchAdapter | None = None) -> None:
         self.adapter = adapter or create_visual_image_search_adapter()

@@ -20,6 +20,10 @@ class WebFetchTool(MockTool):
     )
     input_schema = WebFetchInput
     output_schema = WebFetchResult
+    category = "read"
+    requires_confirmation = False
+    allowed_entry_profiles = ["agent_service"]
+    progress_message = "我打开这个网页看一下。"
 
     def __init__(self, adapter: WebFetchAdapter | None = None) -> None:
         self.adapter = adapter or create_web_fetch_adapter()

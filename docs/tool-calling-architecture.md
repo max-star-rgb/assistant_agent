@@ -30,7 +30,6 @@ run-scoped 可用集合，不再另建 executable allowlist。
 ```text
 name / description
 input_schema / required_inputs
-when_to_use / when_not_to_use / runtime_constraints
 category: read | generate | write | dangerous
 toolset
 requires_confirmation
@@ -38,6 +37,10 @@ requires_env / enabled_by_default / skill_only
 allowed_entry_profiles / requires_media
 progress_message / redact_trace
 ```
+
+工具类直接声明这些字段；Registry 不再维护按工具名索引的 `_TOOL_CONTRACTS` 或
+`_ACTION_USAGE` 副本。`description` 同时承担 provider 可见的简短使用说明，避免再造一套
+`when_to_use/when_not_to_use/runtime_constraints` 元数据。
 
 这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。读写行为明显不同的能力应
 拆成不同工具，例如 `memory_retrieval` 与 `memory_save`；它们可以共享 `toolset="memory"`，但保持
@@ -157,6 +160,10 @@ native tool_calls
 - 工具自己的 `validate_call()` 通过，例如 Python 安全代码检查；
 - durable mode 的计划和可信 step 绑定有效。
 
+校验成功时 validator 会保留已构造的 Pydantic input model。主 assistant loop 和 workflow runner 把它
+交给 executor，executor 只在该对象上补充可信运行时字段，`tool.run()` 不再重复解析同一份模型输入。
+直接调用 executor 的兼容入口没有已验证对象时，工具边界仍执行一次 Pydantic 兜底校验。
+
 durable step 绑定只在 durable task 已启用时生效，用于保证 worker 当前执行的仍是计划中 ready 的
 step、工具名与 step 匹配，并且已确认输入的 digest 没有在确认后被替换。普通前台调用不承担这套
 检查。
@@ -222,7 +229,8 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 ## 8. 代码导航
 
 - `schemas/tools.py`：`ToolSpec`、`RunToolCatalog`、`ToolResult`、`ToolCallRecord`；
-- `tools/registry.py`：工具注册、schema 提取和内置扁平契约；
+- `tools/*.py`：每个工具自身的 schema、description、category 和确认等静态契约；
+- `tools/registry.py`：工具注册、查找和 Pydantic schema 提取；
 - `services/context/tool_catalog.py`：结构化目录装配；
 - `services/context/tool_exposure.py`：category/profile/media 暴露规则；
 - `schemas/tool_spec_adapters.py`：OpenAI/MCP schema 转换；
@@ -236,6 +244,7 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - 暴露给模型的工具一定可进入执行链路，未暴露工具一定被 validator 拒绝；
 - category/toolset/profile/env/media 只基于结构化事实，不从自然语言推断；
 - Pydantic schema 是工具参数形状的权威；
+- 主模型工具调用链对同一输入只构造一次 Pydantic model；
 - 工具级确认只读可信 request metadata，不信任模型输入；
 - Memory、MCP、durable task、workflow、CLI 和 Gateway 不绕过统一工具边界；
 - 默认测试与 eval 保持 mock/local/offline，真实 provider 必须显式启用。
