@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from assistant_agent.services.tool_manifest import IMAGE_GENERATION_TOOL_NAME
+from assistant_agent.schemas.tool_ids import IMAGE_GENERATION_TOOL_NAME
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,7 @@ from assistant_agent.services.provider_config_validation import (
     ProviderConfigIssue,
     validate_provider_config,
 )
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,

@@ -13,7 +13,7 @@ from assistant_agent.services.provider_errors import (
     sanitize_error_detail,
     sanitize_error_message,
 )
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,

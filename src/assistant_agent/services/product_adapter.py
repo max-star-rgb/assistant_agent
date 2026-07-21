@@ -18,7 +18,7 @@ from assistant_agent.schemas.products import (
     RankingReason,
 )
 from assistant_agent.services.provider_errors import build_provider_error
-from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_CAPABILITY
+from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_CAPABILITY
 from assistant_agent.utils.product_matching import compare_products
 
 

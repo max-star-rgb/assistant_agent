@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_TOOL_NAME
+from assistant_agent.schemas.tool_ids import IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, new_span_id
 
 

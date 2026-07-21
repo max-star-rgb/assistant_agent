@@ -16,7 +16,7 @@ from assistant_agent.services.tool_python_sandbox import (
     is_python_interpreter_enabled,
     validate_python_code_safety,
 )
-from assistant_agent.services.tool_manifest import PYTHON_INTERPRETER_TOOL_NAME
+from assistant_agent.schemas.tool_ids import PYTHON_INTERPRETER_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
 
 

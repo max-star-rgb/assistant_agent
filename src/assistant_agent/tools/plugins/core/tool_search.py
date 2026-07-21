@@ -15,7 +15,7 @@ from assistant_agent.schemas.tool_search import (
 )
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
-from assistant_agent.services.tool_manifest import TOOL_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import TOOL_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 

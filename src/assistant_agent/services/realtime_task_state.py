@@ -16,7 +16,7 @@ from assistant_agent.schemas.realtime_turn_arbitration import (
 )
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.context.compaction import compact_observation_for_context
-from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.tools.registry import tool_contract_fields
 
 

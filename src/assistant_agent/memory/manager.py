@@ -55,7 +55,7 @@ from assistant_agent.schemas.memory_audit import (
 from assistant_agent.schemas.memory_intelligence import MemoryConflictDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
-from assistant_agent.services.tool_manifest import MEMORY_SAVE_TOOL_NAME
+from assistant_agent.schemas.tool_ids import MEMORY_SAVE_TOOL_NAME
 
 
 _VALID_MEMORY_SCOPES = {"session", "task", "project", "user_profile", "video", "product"}

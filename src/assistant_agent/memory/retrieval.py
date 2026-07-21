@@ -6,7 +6,7 @@ from assistant_agent.memory.facts import fact_from_item, memory_fact_status
 from assistant_agent.memory.retriever import KeywordMemoryRetriever
 from assistant_agent.memory.store import MemoryStore
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, memory_item_matches_query_scope
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,

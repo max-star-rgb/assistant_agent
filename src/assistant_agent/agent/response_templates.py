@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
     MEMORY_RETRIEVAL_CAPABILITY,

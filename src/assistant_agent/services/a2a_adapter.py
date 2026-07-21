@@ -18,7 +18,7 @@ from assistant_agent.schemas.a2a import (
 from assistant_agent.agent_routing import ROUTER_METADATA_KEY, AgentRouter
 from assistant_agent.schemas.agent_router import AgentCollaborationMode, AgentRouteRequest
 from assistant_agent.schemas.api import AgentRunResponse
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_RETRIEVAL_TOOL_NAME,

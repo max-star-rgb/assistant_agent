@@ -22,7 +22,7 @@ from assistant_agent.services.provider_errors import (
     map_exception_to_provider_error,
     sanitize_error_message,
 )
-from assistant_agent.services.tool_manifest import VISUAL_IMAGE_SEARCH_CAPABILITY
+from assistant_agent.schemas.tool_ids import VISUAL_IMAGE_SEARCH_CAPABILITY
 
 
 DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"

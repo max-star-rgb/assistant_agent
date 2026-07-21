@@ -28,7 +28,7 @@ from assistant_agent.services.provider_errors import (
     ProviderAdapterError,
     build_provider_error,
 )
-from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
+from assistant_agent.schemas.tool_ids import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.plugins.vision.video_branch import VideoUnderstandingBranch
 

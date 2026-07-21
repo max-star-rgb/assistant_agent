@@ -11,7 +11,7 @@ from typing import Any
 
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.tool_manifest import MEMORY_RETRIEVAL_TOOL_NAME, MEMORY_SAVE_TOOL_NAME
+from assistant_agent.schemas.tool_ids import MEMORY_RETRIEVAL_TOOL_NAME, MEMORY_SAVE_TOOL_NAME
 
 
 STRATEGY_NAME = "llm_first_hybrid"

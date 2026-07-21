@@ -5,7 +5,7 @@ from typing import Protocol
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.generation import ImageGenerationInput, ImageGenerationRequest, ImageGenerationResult
 from assistant_agent.services.provider_errors import build_provider_error
-from assistant_agent.services.tool_manifest import IMAGE_GENERATION_CAPABILITY
+from assistant_agent.schemas.tool_ids import IMAGE_GENERATION_CAPABILITY
 from assistant_agent.utils.prompting import build_image_prompt
 
 

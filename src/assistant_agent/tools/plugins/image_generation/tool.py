@@ -17,7 +17,7 @@ from assistant_agent.services.generated_artifacts import (
     materialize_image_generation_result,
 )
 from assistant_agent.services.prompt_builder import build_text_capability_output
-from assistant_agent.services.tool_manifest import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
+from assistant_agent.schemas.tool_ids import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 

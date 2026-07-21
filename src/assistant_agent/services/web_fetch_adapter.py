@@ -20,7 +20,7 @@ from assistant_agent.services.provider_errors import (
     build_provider_error,
     map_exception_to_provider_error,
 )
-from assistant_agent.services.tool_manifest import WEB_FETCH_CAPABILITY
+from assistant_agent.schemas.tool_ids import WEB_FETCH_CAPABILITY
 
 
 class WebFetchAdapter(Protocol):

@@ -15,7 +15,7 @@ from assistant_agent.services.memory_media_ingestion import (
     MemoryMediaIngestionService,
     MemoryMediaTaskStatusResult,
 )
-from assistant_agent.services.tool_manifest import MEMORY_INGEST_STATUS_TOOL_NAME, MEMORY_MEDIA_INGEST_TOOL_NAME
+from assistant_agent.schemas.tool_ids import MEMORY_INGEST_STATUS_TOOL_NAME, MEMORY_MEDIA_INGEST_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 

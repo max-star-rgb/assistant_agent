@@ -19,7 +19,7 @@ from assistant_agent.services.context.skill_loader import (
     load_repo_skill_descriptors,
 )
 from assistant_agent.services.context.skill_recall import recall_skill_descriptors
-from assistant_agent.services.tool_manifest import WEB_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import WEB_SEARCH_TOOL_NAME
 
 _TOOL_EXECUTOR_CONSTRAINT = "Selection context only; execute governed tools only through ToolExecutor."
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]

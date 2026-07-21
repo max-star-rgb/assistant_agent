@@ -41,7 +41,7 @@ from assistant_agent.services.realtime_task_state import (
     realtime_task_state_enabled,
     record_realtime_task_state_run_artifacts,
 )
-from assistant_agent.services.tool_manifest import IMAGE_GENERATION_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import IMAGE_GENERATION_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.services.trace_store import TraceStore, trace_debug_summary
 from assistant_agent.services.video_context import load_demo_video_frames
 

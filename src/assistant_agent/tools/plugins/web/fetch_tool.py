@@ -9,7 +9,7 @@ from assistant_agent.services.web_fetch_adapter import (
     WebFetchAdapter,
     create_web_fetch_adapter,
 )
-from assistant_agent.services.tool_manifest import WEB_FETCH_CAPABILITY, WEB_FETCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import WEB_FETCH_CAPABILITY, WEB_FETCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 

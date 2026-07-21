@@ -18,7 +18,7 @@ from assistant_agent.services.context.tool_exposure import (
     evaluate_tool_exposure,
     tool_exposure_category,
 )
-from assistant_agent.services.tool_manifest import MEMORY_MEDIA_INGEST_TOOL_NAME, MEMORY_SAVE_TOOL_NAME
+from assistant_agent.schemas.tool_ids import MEMORY_MEDIA_INGEST_TOOL_NAME, MEMORY_SAVE_TOOL_NAME
 
 
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]

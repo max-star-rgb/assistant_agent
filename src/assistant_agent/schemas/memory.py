@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.schemas.capability_output import CapabilityOutputContract
 from assistant_agent.services.provider_errors import sanitize_error_message
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
     MEMORY_SAVE_CAPABILITY,

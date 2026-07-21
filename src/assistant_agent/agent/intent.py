@@ -4,11 +4,12 @@ from dataclasses import dataclass
 import re
 
 from assistant_agent.agent.capability_validator import CapabilityValidator
+from assistant_agent.agent.legacy_tool_mapping import canonical_tool_for_capability
 from assistant_agent.schemas.capabilities import CapabilityName
 from assistant_agent.schemas.intent_decision import IntentDecision, PlanStep
 from assistant_agent.schemas.planning import IntentResult
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     ASK_FOLLOWUP_CAPABILITY,
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
@@ -19,7 +20,6 @@ from assistant_agent.services.tool_manifest import (
     VIDEO_UNDERSTANDING_CAPABILITY,
     WEB_FETCH_CAPABILITY,
     WEB_SEARCH_CAPABILITY,
-    canonical_tool_for_capability,
 )
 
 

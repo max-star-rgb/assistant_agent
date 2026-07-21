@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pydantic import BaseModel, Field
 
 from assistant_agent.services.provider_errors import normalize_provider_error_code
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,

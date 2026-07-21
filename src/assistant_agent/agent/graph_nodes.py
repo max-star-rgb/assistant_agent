@@ -20,7 +20,7 @@ from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatAdapter
 from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
 from assistant_agent.services.response_observability import append_response_final_event
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
     MEMORY_RETRIEVAL_CAPABILITY,

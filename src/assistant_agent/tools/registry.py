@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.tools.base import Tool, ToolContext
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_INGEST_STATUS_TOOL_NAME,
     MEMORY_MEDIA_INGEST_TOOL_NAME,

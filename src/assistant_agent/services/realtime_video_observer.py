@@ -25,7 +25,7 @@ from assistant_agent.services.realtime_video_memory import (
     RealtimeVideoObservationDiagnostics,
     SemanticKeyframeRecord,
 )
-from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_TOOL_NAME
+from assistant_agent.schemas.tool_ids import IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.video_context import VideoFrame
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.video_ai.keyframe.collector import AdaptiveKeyframeCollector

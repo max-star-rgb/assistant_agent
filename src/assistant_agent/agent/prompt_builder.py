@@ -15,7 +15,7 @@ from assistant_agent.services.prompt_builder import (
     clip_list,
     clip_text,
 )
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_RETRIEVAL_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,

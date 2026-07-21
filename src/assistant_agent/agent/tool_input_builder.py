@@ -4,9 +4,10 @@ import re
 from typing import Any
 
 from assistant_agent.agent.prompt_builder import build_image_generation_request
+from assistant_agent.agent.legacy_tool_mapping import canonical_capability_for_action
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_RETRIEVAL_CAPABILITY,
@@ -16,7 +17,6 @@ from assistant_agent.services.tool_manifest import (
     VIDEO_UNDERSTANDING_CAPABILITY,
     WEB_FETCH_CAPABILITY,
     WEB_SEARCH_CAPABILITY,
-    canonical_capability_for_action,
 )
 
 

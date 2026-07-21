@@ -12,7 +12,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.tool_call_boundary import build_pre_tool_call_summary
-from assistant_agent.services.tool_manifest import TASK_PLAN_SUBMIT_TOOL_NAME
+from assistant_agent.schemas.tool_ids import TASK_PLAN_SUBMIT_TOOL_NAME
 from assistant_agent.tools.base import ToolInputValidationError
 from assistant_agent.tools.registry import ToolRegistry
 

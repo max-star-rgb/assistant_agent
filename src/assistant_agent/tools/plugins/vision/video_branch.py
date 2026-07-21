@@ -31,7 +31,7 @@ from assistant_agent.services.realtime_video_memory import (
     RealtimeVideoMemoryStore,
     RealtimeVideoSnapshot,
 )
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_UNDERSTANDING_TOOL_NAME,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )

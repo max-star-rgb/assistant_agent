@@ -13,7 +13,7 @@ from assistant_agent.services.tool_visual_image_search_adapter import (
     VisualImageSearchAdapter,
     create_visual_image_search_adapter,
 )
-from assistant_agent.services.tool_manifest import VISUAL_IMAGE_SEARCH_CAPABILITY, VISUAL_IMAGE_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import VISUAL_IMAGE_SEARCH_CAPABILITY, VISUAL_IMAGE_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 

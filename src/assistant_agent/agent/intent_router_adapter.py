@@ -12,7 +12,7 @@ from assistant_agent.agent.intent import IntentDetector
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.intent_decision import IntentDecision
 from assistant_agent.schemas.intent_router import IntentRouterRequest
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     ASK_FOLLOWUP_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     MULTI_STEP_ORCHESTRATION_CAPABILITY,

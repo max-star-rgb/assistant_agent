@@ -1,17 +1,19 @@
 """Intent to tool route mapping."""
 
 from assistant_agent.agent.planner import RuleBasedTaskPlanner
+from assistant_agent.agent.legacy_tool_mapping import (
+    canonical_action_for_capability,
+    canonical_tool_for_capability,
+)
 from assistant_agent.schemas.capabilities import canonical_intent
 from assistant_agent.schemas.planning import IntentResult, TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSelection
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
-    canonical_action_for_capability,
-    canonical_tool_for_capability,
 )
 
 

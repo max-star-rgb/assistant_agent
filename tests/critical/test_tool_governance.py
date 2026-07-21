@@ -7,6 +7,12 @@ import pytest
 from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.agent.action_validator import ActionValidator
+from assistant_agent.agent.legacy_tool_mapping import (
+    canonical_action_for_capability,
+    canonical_capability_for_action,
+    canonical_capability_for_tool,
+    canonical_tool_for_capability,
+)
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.mcp.adapter import MCPToolAdapter, MCPToolDefinition
@@ -19,16 +25,20 @@ from assistant_agent.schemas.tools import (
     ToolResult,
     ToolSpec,
 )
+from assistant_agent.schemas.tool_ids import (
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEMORY_MEDIA_INGEST_TOOL_NAME,
+    PYTHON_INTERPRETER_TOOL_NAME,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+    WEATHER_TOOL_NAME,
+    WEB_FETCH_CAPABILITY,
+)
 from assistant_agent.schemas.tool_spec_adapters import (
     tool_spec_to_mcp_tool,
     tool_spec_to_openai_tool,
 )
 from assistant_agent.services.event_sink import ListEventSink
-from assistant_agent.services.tool_manifest import (
-    PYTHON_INTERPRETER_TOOL_NAME,
-    MEMORY_MEDIA_INGEST_TOOL_NAME,
-    WEATHER_TOOL_NAME,
-)
 from assistant_agent.services.trace_store import InMemoryTraceStore
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
@@ -226,6 +236,22 @@ def test_registry_exposes_one_simple_tool_contract() -> None:
     assert not hasattr(spec, "skill_only")
     assert not hasattr(spec, "progress_message")
     assert spec.enabled_by_default is True
+
+
+def test_legacy_tool_mapping_remains_compatible_without_a_tool_manifest() -> None:
+    assert canonical_tool_for_capability(IMAGE_UNDERSTANDING_CAPABILITY) == (
+        IMAGE_UNDERSTANDING_TOOL_NAME
+    )
+    assert canonical_tool_for_capability(VIDEO_UNDERSTANDING_CAPABILITY) == (
+        IMAGE_UNDERSTANDING_TOOL_NAME
+    )
+    assert canonical_capability_for_tool(IMAGE_UNDERSTANDING_TOOL_NAME) == (
+        IMAGE_UNDERSTANDING_CAPABILITY
+    )
+    assert canonical_action_for_capability(VIDEO_UNDERSTANDING_CAPABILITY) == (
+        "understand_video"
+    )
+    assert canonical_capability_for_action("read_url") == WEB_FETCH_CAPABILITY
 
 
 def test_validated_tool_input_is_reused_by_executor() -> None:

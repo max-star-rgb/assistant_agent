@@ -9,7 +9,7 @@ from assistant_agent.services.web_search_adapter import (
     WebSearchAdapter,
     create_web_search_adapter,
 )
-from assistant_agent.services.tool_manifest import WEB_SEARCH_CAPABILITY, WEB_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import WEB_SEARCH_CAPABILITY, WEB_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 

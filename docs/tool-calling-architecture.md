@@ -41,6 +41,10 @@ requires_media
 `_ACTION_USAGE` 副本。`description` 同时承担 provider 可见的简短使用说明，避免再造一套
 `when_to_use/when_not_to_use/runtime_constraints` 元数据。
 
+系统不维护中心 Tool manifest。`schemas/tool_ids.py` 只保存已经成为跨层协议的稳定字符串，不枚举
+Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入。旧 planner/intent 所需的 action、alias
+与 capability 映射隔离在 `agent/legacy_tool_mapping.py`，不能作为新增 Tool 的登记入口。
+
 `input_schema` 是工具输入描述的唯一事实源，必填字段只由标准 JSON Schema 的 `required` 表达。
 `ToolSpec` 不再维护独立的 `required_inputs` 或自定义 `fields` 视图；prompt 若需要压缩，只在渲染时
 临时移除 title、截短 description，不改变原始 schema。
@@ -278,11 +282,13 @@ MCP 定义先经过 server allowlist，再转换成 namespace tool name 和简�
 合法 ToolSpec；simulate 仍通过 validator/executor 执行。
 
 workflow skill 只能调用已注册且 permission 匹配的工具。read 工具允许按 workflow retry 配置重试；
-非 read step 若声明重试，manifest 必须显式声明 idempotency，由 workflow/领域实现承担该语义。
+非 read step 的幂等与重试语义由 workflow/领域实现显式承担，不由中心 Tool manifest 声明。
 
 ## 8. 代码导航
 
 - `schemas/tools.py`：`ToolSpec`、`RunToolCatalog`、`ToolResult`、`ToolCallRecord`；
+- `schemas/tool_ids.py`：仅供既有跨层协议共享的稳定 Tool/capability 字符串；
+- `agent/legacy_tool_mapping.py`：旧 planner/intent action 与 capability 兼容映射；
 - `tools/plugins/<capability>/`：插件装配及其 Tool 实现、description、category 和确认等静态契约；
 - `tools/base.py`：公共 Tool 协议；
 - `tools/registry.py`：工具注册、查找和 Pydantic schema 提取；
@@ -297,7 +303,7 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 
 - 所有模型驱动工具调用必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`；
 - 暴露给模型的工具一定可进入执行链路，未暴露工具一定被 validator 拒绝；
-- category/toolset/profile/env/media 只基于结构化事实，不从自然语言推断；
+- category/toolset/profile/media 只基于结构化事实，不从自然语言推断；
 - Pydantic schema 是工具参数形状的权威；
 - 主模型工具调用链对同一输入只构造一次 Pydantic model；
 - 工具级确认只读可信 request metadata，不信任模型输入；

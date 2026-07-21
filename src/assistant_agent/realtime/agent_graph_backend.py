@@ -36,7 +36,7 @@ from assistant_agent.services.assistant_run_service import (
 )
 from assistant_agent.services.realtime_task_state import realtime_metadata_requests_interrupt
 from assistant_agent.services.shopping_detail_presenter import ShoppingDetailPresenter
-from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.services.trace_store import append_observability_event
 
 

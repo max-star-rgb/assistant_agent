@@ -12,6 +12,10 @@ from assistant_agent.agent.cancellation import (
     DEFAULT_CANCELLATION_MESSAGE,
     raise_if_cancelled,
 )
+from assistant_agent.agent.legacy_tool_mapping import (
+    canonical_capability_for_action,
+    canonical_capability_for_tool,
+)
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.recovery import RecoveryPolicy, classify_error
 from assistant_agent.schemas.api import api_error
@@ -29,7 +33,7 @@ from assistant_agent.services.tool_call_boundary import (
     build_post_tool_call_summary,
     build_pre_tool_call_summary,
 )
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_GENERATION_TOOL_NAME,
     MEMORY_INGEST_STATUS_TOOL_NAME,
@@ -39,8 +43,6 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_SAVE_CAPABILITY,
     MEMORY_SAVE_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
-    canonical_capability_for_action,
-    canonical_capability_for_tool,
 )
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
 from assistant_agent.services.trace_content_policy import local_trace_content_enabled

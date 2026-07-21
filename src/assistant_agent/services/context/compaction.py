@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_TOOL_NAME
 
 
 MAX_ITEMS_PER_LIST = 3

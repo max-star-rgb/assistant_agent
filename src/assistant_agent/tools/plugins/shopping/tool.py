@@ -18,7 +18,7 @@ from assistant_agent.services.product_adapter import (
     create_shopping_compare_adapter,
     create_shopping_search_adapter,
 )
-from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 

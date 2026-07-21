@@ -68,7 +68,7 @@ from assistant_agent.services.memory_observability import load_memory_with_trace
 from assistant_agent.services.memory_core_status import build_memory_core_status, update_memory_core_status_errors
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
-from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_TOOL_NAME
+from assistant_agent.schemas.tool_ids import IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.turn_summary import append_runtime_turn_summary
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore

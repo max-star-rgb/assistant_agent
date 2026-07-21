@@ -4,7 +4,7 @@ import re
 
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_RETRIEVAL_TOOL_NAME,

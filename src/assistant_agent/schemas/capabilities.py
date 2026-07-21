@@ -1,10 +1,10 @@
 """Assistant capability taxonomy and contracts."""
 
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_RETRIEVAL_TOOL_NAME,
@@ -13,7 +13,6 @@ from assistant_agent.services.tool_manifest import (
     VISUAL_IMAGE_SEARCH_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
     WEB_SEARCH_TOOL_NAME,
-    legacy_intent_aliases,
 )
 
 
@@ -56,11 +55,15 @@ _NON_TOOL_INTENT_ALIASES: dict[str, CapabilityName] = {
 }
 LEGACY_INTENT_ALIASES: dict[str, CapabilityName] = {
     **_NON_TOOL_INTENT_ALIASES,
-    **{
-        alias: cast(CapabilityName, capability)
-        for alias, capability in legacy_intent_aliases().items()
-        if capability in CANONICAL_INTENTS
-    },
+    "understand_image": "image_understanding",
+    "understand_video": "video_understanding",
+    "generate_image": "image_generation",
+    "search_web": "web_search",
+    "fetch_web": "web_fetch",
+    "read_url": "web_fetch",
+    "search_image_by_image": "visual_image_search",
+    "retrieve_memory": "memory_retrieval",
+    "save_memory": "memory_save",
 }
 
 

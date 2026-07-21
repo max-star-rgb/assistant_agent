@@ -7,7 +7,7 @@ import re
 from assistant_agent.schemas.capabilities import CapabilityName, contract_for_intent
 from assistant_agent.schemas.intent_decision import IntentDecision, PlanStep
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.tool_manifest import (
+from assistant_agent.schemas.tool_ids import (
     ASK_FOLLOWUP_CAPABILITY,
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
