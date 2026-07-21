@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from typing import Any, Literal
-from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+from assistant_agent.services.identifiers import new_prefixed_uuid7
 
 
 AgentTransportName = Literal["local", "a2a_json_rpc"]
@@ -26,19 +27,19 @@ DEFAULT_AGENT_ID = "agent.default"
 def new_agent_task_id() -> str:
     """Create an internal agent task identifier."""
 
-    return f"agent_task_{uuid4().hex}"
+    return new_prefixed_uuid7("agent_task")
 
 
 def new_agent_correlation_id() -> str:
     """Create a correlation identifier for cross-agent routing."""
 
-    return f"agent_corr_{uuid4().hex}"
+    return new_prefixed_uuid7("agent_corr")
 
 
 def new_agent_artifact_id() -> str:
     """Create an internal agent artifact identifier."""
 
-    return f"agent_artifact_{uuid4().hex}"
+    return new_prefixed_uuid7("agent_artifact")
 
 
 class AgentCommunicationError(BaseModel):

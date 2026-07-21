@@ -350,6 +350,25 @@ Required fields by layer:
 assistant execution. `span_id` and `parent_span_id` are the future-proof local
 shape for hierarchical traces and optional OpenTelemetry export.
 
+新生成 ID 统一由 `services.identifiers.IdFactory` 负责：
+
+| identity | new format | lifecycle |
+| --- | --- | --- |
+| Assistant `run_id` | `run_<uuid7-hex>` | 一次 Assistant 执行 |
+| Runtime `session_id` | `session_<uuid7-hex>`；外部可信 session 可保持原值 | 多轮会话 |
+| Gateway `turn_id` | `turn_<uuid7-hex>` | 一次入口用户轮次 |
+| Gateway `run_id` | `gateway_run_<uuid7-hex>` | 一次 Gateway 生命周期包装 |
+| `delivery_id` | `delivery_<uuid7-hex>` | 一次 Agent-Service 投递与 ACK |
+| `tool_call_id` / `event_id` | typed prefix + UUIDv7 hex | 一次工具调用或 Agent event |
+| `trace_id` | 32 lowercase hex / 128 bit | W3C Trace Context trace identity |
+| `span_id` | 16 lowercase hex / 64 bit | W3C Trace Context span identity |
+
+UUIDv7 business IDs preserve opaque identity while improving chronological sorting and
+database index locality. Trace/span IDs stay random W3C-native values rather than embedding
+business identity. ID values must not contain user identifiers, phone numbers, prompt text,
+provider names, host names, or other business data. Readers continue treating IDs as opaque
+strings and accept historical UUIDv4/prefixed values; existing persisted records are not rewritten.
+
 ## Canonical Timeline
 
 Use stable dotted event names for the internal trace timeline. Existing
@@ -767,10 +786,10 @@ Regression tests should enforce these invariants:
   dependencies, missing endpoint, full queues, and exporter exceptions are
   observability failures only; they must not block local trace persistence or
   assistant turn delivery.
-- 本地 `trace_id` 继续作为 runtime/Gateway 查询键；OTLP 使用该值作为 seed，按
-  Langfuse 的确定性规则 `SHA-256(seed)[:16].hex()` 生成符合 W3C 的 32 位 trace ID。
-  原始值保留在 `langfuse.trace.metadata.assistant_trace_id`，Langfuse Score API 必须
-  使用同一个确定性 ID，确保 span 与评测分数挂在同一条 trace 上。
+- 新生成的本地 `trace_id` 本身就是符合 W3C 的 32 位 lowercase hex，Runtime、Gateway、
+  Langfuse span 与 Langfuse Score 直接复用同一值，不再二次哈希。历史 `trace_*` 或其他
+  非 W3C ID 继续通过 `SHA-256(seed)[:16].hex()` 确定性映射，保证旧 Trace 和已有 Score
+  链接不失效。原始值仍保留在 `langfuse.trace.metadata.assistant_trace_id`。
 - Text Agent export design and phased execution live in
   `docs/development/text-agent-otel-langfuse-observability.md`; it deliberately
   excludes audio, TTS, playback, speech, and dead-air metrics.

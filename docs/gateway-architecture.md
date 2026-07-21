@@ -233,6 +233,9 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Accept validated media-entry events from `/ws/realtime/media` and adapt them to the normalized Gateway frames.
 - Validate Gateway-level modality support before dispatching to the assistant backend.
 - Bind or preserve `user_id`, `session_id`, `turn_id`, and `run_id`.
+- Generate missing Gateway-owned `turn_id` and `run_id` values as typed UUIDv7
+  identifiers. Caller-supplied and historical identifiers remain opaque strings;
+  Gateway must preserve accepted values instead of parsing or rewriting them.
 - Maintain per-session user text history for Gateway turns.
 - Register active runs and emit `run.started`, user-visible `event.progress`, `stream.chunk`, and `run.end`.
 - Include the assistant backend `trace_id` in `run.end.payload.trace_id` when available so developer/debug entry layers can load trace summaries without exposing raw provider payloads.

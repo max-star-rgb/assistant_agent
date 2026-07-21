@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Protocol
+
+from assistant_agent.services.identifiers import new_delivery_id
 
 
 DEFAULT_AUDIT_PATH = Path(".data/agent_service_delivery.jsonl")
@@ -72,7 +73,7 @@ class AgentServiceDeliveryRegistry:
 
     def accept(self, session_id: str, chat_index: object, *, expects_ack: bool) -> AgentServiceDelivery:
         delivery = AgentServiceDelivery(
-            delivery_id=f"delivery_{uuid.uuid4().hex}",
+            delivery_id=new_delivery_id(),
             session_digest=_digest(session_id),
             chat_index_digest=_digest(str(chat_index)),
             chat_index=str(chat_index),

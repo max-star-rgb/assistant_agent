@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
@@ -48,6 +47,7 @@ from assistant_agent.schemas.realtime_turn_arbitration import (
     prompt_safe_arbitration_task_state,
 )
 from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.services.identifiers import new_prefixed_uuid7, new_turn_id
 from assistant_agent.services.realtime_task_state import (
     RealtimeTaskStateStore,
     apply_cancel_only_arbitration_to_task_state,
@@ -283,8 +283,8 @@ class GatewaySessionService:
             await ep.send(frame(type="error", error={"code": "missing_session_id"}))
             return
         session_id = str(raw_session_id)
-        turn_id = str(payload.get("turn_id") or uuid.uuid4())
-        run_id = str(payload.get("run_id") or uuid.uuid4())
+        turn_id = str(payload.get("turn_id") or new_turn_id())
+        run_id = str(payload.get("run_id") or new_prefixed_uuid7("gateway_run"))
         now = time.monotonic()
         turn = QueuedTurn(
             user_id=user_id,
@@ -387,7 +387,7 @@ class GatewaySessionService:
                     and self._semantic_interrupt_enabled(payload)
                 ):
                     turn.arbitration_pending = True
-                    turn.arbitration_decision_id = str(uuid.uuid4())
+                    turn.arbitration_decision_id = new_prefixed_uuid7("arbitration")
                     turn.arbitration_expected_run_id = active.run_id
                 turn.state = "session_queued"
                 turn.queue_reason = "session_busy"

@@ -103,8 +103,14 @@ class OtelSpanSpec(BaseModel):
 
 
 def langfuse_trace_id(seed: str) -> str:
-    """Return Langfuse's deterministic W3C trace id for an external trace id."""
+    """Return a native W3C trace id or map a legacy external trace id."""
 
+    if len(seed) == 32 and seed == seed.lower():
+        try:
+            if int(seed, 16) != 0:
+                return seed
+        except ValueError:
+            pass
     return sha256(seed.encode("utf-8")).digest()[:16].hex()
 
 

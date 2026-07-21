@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import sys
-import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+
+from assistant_agent.services.identifiers import new_prefixed_uuid7
 
 JsonObject = dict[str, Any]
 
@@ -372,7 +373,7 @@ def _print_protocol_error(body: JsonObject) -> None:
 
 
 def new_session_id() -> str:
-    return f"media-client-{uuid.uuid4().hex[:12]}"
+    return new_prefixed_uuid7("media-client", separator="-")
 
 
 def build_parser() -> argparse.ArgumentParser:

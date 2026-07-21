@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import importlib
+from uuid import UUID
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.system_prompt_policy import SystemPromptProfile, render_system_instruction
@@ -17,6 +18,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatProviderError, ChatRequest, ChatResult, MockChatAdapter
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.hooks import HookManager, HookTraceStore
+from assistant_agent.services.identifiers import IdFactory, new_run_id, new_session_id, new_span_id, new_trace_id
 from assistant_agent.services.langfuse_scores import LangfuseScoreTraceObserver
 from assistant_agent.services.otel_exporter import TextOtelTraceObserver
 from assistant_agent.services.otel_exporter import OtlpHttpTextExporterConfig
@@ -127,6 +129,35 @@ def test_external_trace_id_maps_to_stable_langfuse_trace_id() -> None:
 
     assert trace_id == "38a6c223d755e35a0593e9ea0b7fdb54"
     assert len(trace_id) == 32
+
+
+def test_canonical_ids_use_uuid7_and_native_w3c_formats() -> None:
+    factory = IdFactory(clock_ms=lambda: 1_721_526_400_123, randbits=lambda _bits: 0)
+
+    first = factory.uuid7()
+    second = factory.uuid7()
+
+    assert first.version == 7
+    assert first.variant == "specified in RFC 4122"
+    assert first.int >> 80 == 1_721_526_400_123
+    assert second.int > first.int
+    run_id = new_run_id()
+    session_id = new_session_id()
+    trace_id = new_trace_id()
+    span_id = new_span_id()
+
+    assert run_id.startswith("run_") and len(run_id) == 36
+    assert session_id.startswith("session_") and len(session_id) == 40
+    assert UUID(hex=run_id.removeprefix("run_")).version == 7
+    assert UUID(hex=session_id.removeprefix("session_")).version == 7
+    assert len(trace_id) == 32 and trace_id == trace_id.lower() and int(trace_id, 16) != 0
+    assert len(span_id) == 16 and span_id == span_id.lower() and int(span_id, 16) != 0
+
+
+def test_native_w3c_trace_id_is_not_rehashed_for_langfuse() -> None:
+    trace_id = "d7dd01a3493379032b4d5e926fe6e2af"
+
+    assert langfuse_trace_id(trace_id) == trace_id
 
 
 def test_otel_content_export_requires_explicit_local_loopback_configuration() -> None:

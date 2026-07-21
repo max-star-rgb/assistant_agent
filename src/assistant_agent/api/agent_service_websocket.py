@@ -9,7 +9,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from time import perf_counter_ns
 from typing import Any, ClassVar
-from uuid import uuid4
 
 from anyio import CancelScope
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -28,6 +27,7 @@ from assistant_agent.services.agent_service_latency import (
     report_turn_latency,
 )
 from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
+from assistant_agent.services.identifiers import new_prefixed_uuid7
 from assistant_agent.services.operational_logging import digest_identifier, record_gateway_lifecycle
 from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.services.video_context import VideoFrame
@@ -456,7 +456,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     state = AgentServiceConnectionState(
         session_id=_optional_text(websocket.query_params.get("sessionId")),
         query_params={str(key): str(value) for key, value in websocket.query_params.items()},
-        runtime_session_id=f"agent-service-{uuid4().hex}",
+        runtime_session_id=new_prefixed_uuid7("agent-service", separator="-"),
         delivery_registry=_create_delivery_registry(),
         trace_store=_get_agent_service_trace_store(),
     )

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from assistant_agent.gateway.protocol import Frame, frame
 from assistant_agent.gateway.session import GatewaySessionManager
+from assistant_agent.services.identifiers import new_prefixed_uuid7, new_turn_id
 
 GatewayStreamChunkConsumer = Callable[[str, Frame], Awaitable[None]]
 
@@ -147,8 +147,8 @@ class GatewayTurnFacade:
             user_id=request.user_id,
             config=request.config,
         )
-        turn_id = str(uuid.uuid4())
-        run_id = str(uuid.uuid4())
+        turn_id = new_turn_id()
+        run_id = new_prefixed_uuid7("gateway_run")
         dispatcher = await self._dispatcher_for(request.user_id, handle.endpoint)
         inbox = await dispatcher.register(run_id)
         try:

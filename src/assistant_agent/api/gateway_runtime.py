@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import math
 import os
-import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from threading import RLock
@@ -23,6 +22,7 @@ from assistant_agent.gateway import (
 from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
 from assistant_agent.schemas.api import AgentRunResponse
 from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade
+from assistant_agent.services.identifiers import new_prefixed_uuid7
 from assistant_agent.services.operational_logging import record_gateway_lifecycle
 from assistant_agent.services.realtime_turn_arbiter import (
     RealtimeTurnArbiter,
@@ -267,7 +267,7 @@ def _run_assistant_request_with_http_runtime(request: Any, **kwargs: Any) -> Any
 def new_gateway_http_response_capture_id() -> str:
     """Create an opaque id for one in-process HTTP Gateway response capture."""
 
-    return str(uuid.uuid4())
+    return new_prefixed_uuid7("gateway_response")
 
 
 def gateway_http_capture_metadata(capture_id: str) -> dict[str, Any]:

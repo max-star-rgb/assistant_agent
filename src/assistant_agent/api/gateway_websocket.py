@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
-import uuid
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -33,6 +32,7 @@ from assistant_agent.services.api_identity import (
     enforce_identity_policy,
     resolve_request_identity,
 )
+from assistant_agent.services.identifiers import new_prefixed_uuid7
 from assistant_agent.services.provider_errors import sanitize_error_detail
 
 router = APIRouter()
@@ -122,7 +122,7 @@ async def gateway_websocket(
         mapper=_gateway_frame_mapper,
     )
     await get_gateway_bridge().bridge(
-        client_id=f"gateway-ws-{uuid.uuid4()}",
+        client_id=new_prefixed_uuid7("gateway-ws", separator="-"),
         client_ep=endpoint,  # type: ignore[arg-type]
         user_id=identity.identity.user_id,
         session_id=identity.identity.session_id or session_id,
@@ -155,7 +155,7 @@ async def realtime_media_websocket(
         mapper=_media_event_mapper,
     )
     await get_gateway_bridge().bridge(
-        client_id=f"media-ws-{uuid.uuid4()}",
+        client_id=new_prefixed_uuid7("media-ws", separator="-"),
         client_ep=endpoint,  # type: ignore[arg-type]
         user_id=identity.identity.user_id,
         session_id=identity.identity.session_id or session_id,

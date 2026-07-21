@@ -6,12 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any, Literal, Protocol, TypeVar
-from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.hook_dispatch import HookDispatchError, build_hook_dispatch_error
+from assistant_agent.services.identifiers import new_span_id, new_trace_id
 
 
 TraceEventType = Literal[
@@ -288,18 +288,6 @@ class CompositeTraceStore:
                 exc=exc,
             )
         )
-
-
-def new_trace_id() -> str:
-    """Create a new graph trace identifier."""
-
-    return f"trace_{uuid4().hex}"
-
-
-def new_span_id() -> str:
-    """Create a local span identifier for redacted trace timelines."""
-
-    return f"span_{uuid4().hex}"
 
 
 def append_observability_event(

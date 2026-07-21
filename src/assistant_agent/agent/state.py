@@ -2,7 +2,6 @@
 
 from datetime import datetime, timezone
 from typing import Any, Literal
-from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -14,7 +13,12 @@ from assistant_agent.schemas.planning import IntentResult, TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import RunToolCatalog, ToolCallRecord, ToolResult, ToolSelection
 from assistant_agent.services.provider_budget import ProviderCallBudget
-from assistant_agent.services.trace_store import new_trace_id
+from assistant_agent.services.identifiers import (
+    new_run_id,
+    new_session_id,
+    new_tool_call_id,
+    new_trace_id,
+)
 
 
 AgentStatus = Literal["created", "running", "waiting_user", "completed", "failed", "cancelled"]
@@ -29,18 +33,6 @@ class AgentError(BaseModel):
     source: str | None = None
     details: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-def new_run_id() -> str:
-    """Create a new run identifier."""
-
-    return f"run_{uuid4().hex}"
-
-
-def new_session_id() -> str:
-    """Create a new session identifier."""
-
-    return f"session_{uuid4().hex}"
 
 
 class AgentState(BaseModel):
@@ -93,7 +85,7 @@ class AgentState(BaseModel):
         """Append a running tool call record and mark the run as active."""
 
         record = ToolCallRecord(
-            call_id=call_id or f"call_{uuid4().hex}",
+            call_id=call_id or new_tool_call_id(),
             tool_name=tool_name,
             input=input or {},
             status="running",

@@ -7,13 +7,13 @@ import hashlib
 import json
 import math
 import time
-import uuid
 from collections import OrderedDict, deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from assistant_agent.gateway.transport import Endpoint
+from assistant_agent.services.identifiers import new_prefixed_uuid7
 
 QueueMode = Literal["followup", "interrupt"]
 QueueReason = Literal["session_busy", "global_capacity"]
@@ -294,7 +294,7 @@ class GatewayRunAdmissionController:
                     limit=self.policy.max_queued_turns_global,
                 )
             reservation = QueueReservation(
-                reservation_id=str(uuid.uuid4()),
+                reservation_id=new_prefixed_uuid7("reservation"),
                 user_id=user_id,
                 session_id=session_id,
                 turn_id=turn_id,
@@ -311,7 +311,7 @@ class GatewayRunAdmissionController:
             if reservation.released or reservation.reservation_id not in self._reservations:
                 raise RuntimeError("queue reservation is not active")
             ticket = AdmissionTicket(
-                ticket_id=str(uuid.uuid4()),
+                ticket_id=new_prefixed_uuid7("ticket"),
                 reservation=reservation,
                 ready=loop.create_future(),
                 enqueued_at_monotonic=time.monotonic(),
@@ -380,7 +380,7 @@ class GatewayRunAdmissionController:
                 continue
             self._release_reservation_locked(ticket.reservation)
             permit = RunPermit(
-                permit_id=str(uuid.uuid4()),
+                permit_id=new_prefixed_uuid7("permit"),
                 run_id=ticket.reservation.run_id,
                 acquired_at_monotonic=time.monotonic(),
             )

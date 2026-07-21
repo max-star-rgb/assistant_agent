@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.services.identifiers import new_prefixed_uuid7
 from assistant_agent.services.provider_errors import ProviderError, build_provider_error
 
 
@@ -28,7 +28,7 @@ class ProviderCallRecord(BaseModel):
 class ProviderCallReservation(BaseModel):
     """One budget slot reserved before a provider-capability invocation starts."""
 
-    reservation_id: str = Field(default_factory=lambda: f"budget_{uuid4().hex}")
+    reservation_id: str = Field(default_factory=lambda: new_prefixed_uuid7("budget"))
     capability: str = Field(min_length=1)
     provider: str | None = None
     estimated_cost: float | None = Field(default=None, ge=0.0)
