@@ -23,6 +23,20 @@
 `tests/evals/eval_cases.json` 是 `scripts/run_evals.py` 的离线评测数据，不属于 pytest。
 真实 Provider、付费 API 和外部服务验证使用显式 operator smoke/pilot 脚本，不进入默认 pytest。
 
+`tests/tools_plugin/test_*_plugin.py` 是例外的显式 opt-in 插件装配测试：它们读取真实 Provider/MCP
+配置并构造真实 adapter，但不发起外部调用。默认 pytest 会跳过这些用例；需要验证本机真实配置时运行：
+
+```bash
+ASSISTANT_AGENT_RUN_REAL_TOOL_PLUGIN_TESTS=1 \
+MULTIMODAL_AGENT_PROVIDER_MODE=real \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tools_plugin/test_*_plugin.py
+```
+
+未配置某项可选能力时，对应插件测试会单独 skip；主 chat Provider 配置不完整则直接失败，避免把
+错误的 mock 配置误报为真实 Provider 验证通过。`tests/test_tool_plugin_runtime.py` 始终使用 mock，
+验证插件 Tool 经 `AgentGraphRuntime` 治理链路完成一次原生 tool-call 闭环。
+
 ## Testing Policy
 
 本项目采用风险驱动测试，而不是覆盖率驱动测试。不要因为实现了新代码，就自动新增 pytest。
