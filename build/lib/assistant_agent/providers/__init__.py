@@ -1,1 +1,0 @@
-"""Optional real provider adapters."""

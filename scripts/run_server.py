@@ -42,7 +42,7 @@ from assistant_agent.services.operational_logging import (
     configure_operational_logging_from_env,
     record_gateway_lifecycle,
 )
-from assistant_agent.services.provider_specs import (
+from assistant_agent.schemas.provider_specs import (
     supported_chat_providers,
     supported_image_generation_providers,
 )
