@@ -4,7 +4,6 @@ from assistant_agent.gateway.bridge import GatewayBridge
 from assistant_agent.gateway.capabilities import (
     AGENT_SERVICE_ENTRY_CAPABILITIES,
     GATEWAY_WEBSOCKET_CAPABILITIES,
-    REALTIME_MEDIA_ENTRY_CAPABILITIES,
     EntryAdapterCapabilities,
 )
 from assistant_agent.gateway.observability import (
@@ -79,7 +78,6 @@ __all__ = [
     "GatewayTurnArbitrationOutcome",
     "GatewayTurnArbitrationPolicy",
     "InMemoryDuplex",
-    "REALTIME_MEDIA_ENTRY_CAPABILITIES",
     "QueueOverflowError",
     "RunEndReason",
     "WsEndpoint",

@@ -1,11 +1,10 @@
-"""Gateway WebSocket entry adapters."""
+"""Normalized Gateway WebSocket entry adapter."""
 
 from __future__ import annotations
 
 import asyncio
 import ipaddress
-import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -14,12 +13,7 @@ from assistant_agent.api.auth import get_websocket_auth_context, require_auth_bo
 from assistant_agent.api.gateway_runtime import get_gateway_bridge
 from assistant_agent.api.routes_agent import get_trial_access_gate
 from assistant_agent.gateway import (
-    CALL_HANGUP,
-    CALL_INCOMING,
-    CONFIG_UPDATE,
     GATEWAY_WEBSOCKET_CAPABILITIES,
-    REALTIME_MEDIA_ENTRY_CAPABILITIES,
-    EntryAdapterCapabilities,
     Frame,
     dumps_frame,
     frame,
@@ -33,67 +27,10 @@ from assistant_agent.services.api_identity import (
     resolve_request_identity,
 )
 from assistant_agent.services.identifiers import new_prefixed_uuid7
-from assistant_agent.services.provider_errors import sanitize_error_detail
 
 router = APIRouter()
 
 GatewayFrameMapper = Callable[[str], list[Frame]]
-
-MEDIA_EVENT_SESSION_START = "session.start"
-MEDIA_EVENT_TRANSCRIPT_FINAL = "transcript.final"
-MEDIA_EVENT_RUN_CANCEL = "run.cancel"
-MEDIA_EVENT_CONFIG_UPDATE = "config.update"
-MEDIA_EVENT_SESSION_END = "session.end"
-MEDIA_EVENT_PING = "ping"
-
-SUPPORTED_MEDIA_EVENT_TYPES = frozenset(
-    {
-        MEDIA_EVENT_SESSION_START,
-        MEDIA_EVENT_TRANSCRIPT_FINAL,
-        MEDIA_EVENT_RUN_CANCEL,
-        MEDIA_EVENT_CONFIG_UPDATE,
-        MEDIA_EVENT_SESSION_END,
-        MEDIA_EVENT_PING,
-    }
-)
-
-MEDIA_CONFIG_STRING_KEYS = frozenset(
-    {
-        "language",
-        "locale",
-        "mode",
-        "entry",
-        "interrupt_policy",
-        "turn_detection",
-        "tts_voice",
-        "stt_language",
-        "call_id",
-    }
-)
-MEDIA_CONFIG_BOOL_KEYS = frozenset(
-    {"identity_bound", "barge_in_enabled", "semantic_interrupt_enabled"}
-)
-MEDIA_CONFIG_INT_KEYS = frozenset(
-    {"run_timeout_ms", "idle_timeout_ms", "response_timeout_ms", "timeout_ms"}
-)
-MEDIA_CONFIG_DICT_KEYS = frozenset({"media", "relay", "stt", "tts"})
-MEDIA_EDGE_STT_KEYS = ("provider", "language", "confidence", "model", "transcript_id", "latency_ms")
-MEDIA_EDGE_TTS_KEYS = ("provider", "voice", "format", "sample_rate_hz", "latency_ms")
-
-
-class MediaEventProtocolError(WsProtocolError):
-    """Protocol error for `/ws/realtime/media` event validation."""
-
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        detail: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.detail = detail or {}
 
 
 @router.websocket("/ws/gateway")
@@ -123,39 +60,6 @@ async def gateway_websocket(
     )
     await get_gateway_bridge().bridge(
         client_id=new_prefixed_uuid7("gateway-ws", separator="-"),
-        client_ep=endpoint,  # type: ignore[arg-type]
-        user_id=identity.identity.user_id,
-        session_id=identity.identity.session_id or session_id,
-    )
-
-
-@router.websocket("/ws/realtime/media")
-async def realtime_media_websocket(
-    websocket: WebSocket,
-    user_id: str = Query(default="media_user"),
-    session_id: str | None = Query(default=None),
-    client_kind: str = Query(default="media_service", alias="client"),
-) -> None:
-    """Accept media-service events and adapt them to Gateway frames."""
-
-    identity = await _authorize_gateway_websocket(
-        websocket,
-        user_id=user_id,
-        session_id=session_id,
-        client_kind=client_kind,
-    )
-    if identity is None:
-        return
-    await websocket.accept()
-    endpoint = _FastAPIGatewayEndpoint(
-        websocket=websocket,
-        identity=identity,
-        default_session_id=session_id or identity.identity.session_id,
-        source="realtime_media_websocket",
-        mapper=_media_event_mapper,
-    )
-    await get_gateway_bridge().bridge(
-        client_id=new_prefixed_uuid7("media-ws", separator="-"),
         client_ep=endpoint,  # type: ignore[arg-type]
         user_id=identity.identity.user_id,
         session_id=identity.identity.session_id or session_id,
@@ -202,16 +106,6 @@ class _FastAPIGatewayEndpoint:
                 return
             try:
                 frames = self._mapper(raw)
-            except MediaEventProtocolError as exc:
-                await self.send(
-                    _error_frame(
-                        exc.code,
-                        str(exc),
-                        user_id=self._identity.identity.user_id,
-                        detail=exc.detail,
-                    )
-                )
-                continue
             except WsProtocolError as exc:
                 await self.send(
                     _error_frame("invalid_frame", str(exc), user_id=self._identity.identity.user_id)
@@ -258,17 +152,6 @@ class _FastAPIGatewayEndpoint:
         normalized["user_id"] = identity.user_id
         if self._default_session_id and not normalized.get("session_id"):
             normalized["session_id"] = self._default_session_id
-        if self._source == "realtime_media_websocket":
-            normalized_session_id = _optional_string(normalized.get("session_id"))
-            if normalized.get("type") != "ping" and not normalized_session_id:
-                await self.send(
-                    _error_frame(
-                        "missing_session_id",
-                        "media events require session_id in the event or websocket query",
-                        user_id=identity.user_id,
-                    )
-                )
-                return None
         if normalized.get("type") == "message.user":
             normalized["payload"] = _message_payload_with_metadata(
                 normalized.get("payload"),
@@ -357,179 +240,6 @@ def _gateway_frame_mapper(raw: str) -> list[Frame]:
     return [loads_frame(raw)]
 
 
-def _media_event_mapper(raw: str) -> list[Frame]:
-    try:
-        event = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise MediaEventProtocolError(
-            "invalid_media_event",
-            f"invalid json: {exc}",
-        ) from exc
-    if not isinstance(event, dict):
-        raise MediaEventProtocolError(
-            "invalid_media_event",
-            "media event must be a JSON object",
-        )
-
-    event_type = str(event.get("type") or "").strip()
-    if not event_type:
-        raise MediaEventProtocolError(
-            "invalid_media_event",
-            "media event type is required",
-        )
-    if event_type not in SUPPORTED_MEDIA_EVENT_TYPES:
-        raise MediaEventProtocolError(
-            "unknown_media_event",
-            f"unknown media event type: {event_type}",
-            detail={"supported_types": sorted(SUPPORTED_MEDIA_EVENT_TYPES)},
-        )
-
-    payload = _event_payload(event)
-    session_id = _optional_string(event.get("session_id") or payload.get("session_id"))
-    user_id = _optional_string(event.get("user_id") or payload.get("user_id"))
-
-    if event_type == MEDIA_EVENT_SESSION_START:
-        return [_media_session_start_frame(event, payload, session_id=session_id, user_id=user_id)]
-
-    if event_type == MEDIA_EVENT_SESSION_END:
-        return [
-            frame(
-                type=CALL_HANGUP,
-                session_id=session_id,
-                user_id=user_id,
-                payload=_media_session_end_payload(event, payload),
-            )
-        ]
-
-    if event_type == MEDIA_EVENT_RUN_CANCEL:
-        return [
-            frame(
-                type="run.cancel",
-                session_id=session_id,
-                run_id=_optional_string(event.get("run_id") or payload.get("run_id")),
-                user_id=user_id,
-            )
-        ]
-
-    if event_type == MEDIA_EVENT_CONFIG_UPDATE:
-        config = _config_from_media_event(event, payload, required=True)
-        return [
-            frame(
-                type=CONFIG_UPDATE,
-                session_id=session_id,
-                user_id=user_id,
-                payload={"config": config, "session_id": session_id},
-            )
-        ]
-
-    if event_type == MEDIA_EVENT_PING:
-        return [frame(type="ping", session_id=session_id, user_id=user_id)]
-
-    return [_media_transcript_final_frame(event, payload, session_id=session_id, user_id=user_id)]
-
-
-def _media_session_start_frame(
-    event: dict[str, Any],
-    payload: dict[str, Any],
-    *,
-    session_id: str | None,
-    user_id: str | None,
-) -> Frame:
-    call_id = _optional_string(event.get("call_id") or payload.get("call_id"))
-    config = _config_from_media_event(event, payload, required=False)
-    if call_id:
-        config.setdefault("call_id", call_id)
-    media_config = _media_technical_config(event, payload)
-    if media_config:
-        config.setdefault("media", media_config)
-    return frame(
-        type=CALL_INCOMING,
-        session_id=session_id,
-        user_id=user_id,
-        payload={
-            "config": config,
-            "session_id": session_id,
-            "call_id": call_id,
-        },
-    )
-
-
-def _media_transcript_final_frame(
-    event: dict[str, Any],
-    payload: dict[str, Any],
-    *,
-    session_id: str | None,
-    user_id: str | None,
-) -> Frame:
-    if event.get("final") is False or payload.get("final") is False:
-        raise MediaEventProtocolError(
-            "invalid_media_event",
-            "transcript.final cannot set final=false",
-        )
-
-    text = _optional_string(event.get("text") or payload.get("text"))
-    video_ids = _ids_from_event(event, payload, names=("video_ids", "video_id", "video_ref"))
-    image_ids = _ids_from_event(event, payload, names=("image_ids", "image_id", "image_ref"))
-    audio_id = _optional_string(event.get("audio_id") or payload.get("audio_id"))
-    if not text and not video_ids and not image_ids and not audio_id:
-        raise MediaEventProtocolError(
-            "invalid_media_event",
-            "transcript.final requires text, audio_id, video_ids, or image_ids",
-        )
-
-    media_payload: dict[str, Any] = {
-        "text": text
-        or _default_media_text(video_ids=video_ids, image_ids=image_ids, audio_id=audio_id),
-        "modality": "text",
-        "image_ids": image_ids,
-        "video_ids": video_ids,
-    }
-    if audio_id:
-        media_payload["audio_id"] = audio_id
-
-    media_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    metadata = _prompt_safe_media_metadata(media_metadata)
-    interrupt_requested = _media_interrupt_requested(event, payload, metadata)
-    technical = _media_technical_config(event, payload)
-    if technical:
-        metadata["media"] = technical
-    media_edge = _media_edge_metadata(event, payload, audio_id=audio_id)
-    if media_edge:
-        metadata["media_edge"] = media_edge
-    if metadata:
-        media_payload["metadata"] = metadata
-    if interrupt_requested:
-        media_payload["interrupt"] = True
-    return frame(
-        type="message.user",
-        session_id=session_id,
-        user_id=user_id,
-        payload=media_payload,
-    )
-
-
-def _media_session_end_payload(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    reason = _optional_string(event.get("reason") or payload.get("reason"))
-    call_id = _optional_string(event.get("call_id") or payload.get("call_id"))
-    result: dict[str, Any] = {}
-    if reason:
-        result["reason"] = reason
-    if call_id:
-        result["call_id"] = call_id
-    return result
-
-
-def _media_interrupt_requested(
-    event: dict[str, Any],
-    payload: dict[str, Any],
-    metadata: dict[str, Any],
-) -> bool:
-    if event.get("interrupt") is True or payload.get("interrupt") is True:
-        return True
-    control = _optional_string(event.get("control") or payload.get("control") or metadata.get("control"))
-    return control in {"interrupt", "barge_in", "cancel_previous"}
-
-
 def _message_payload_with_metadata(
     payload: Any,
     *,
@@ -544,300 +254,12 @@ def _message_payload_with_metadata(
     metadata["source"] = source
     metadata["transport"] = "websocket"
     metadata["request_identity"] = identity.metadata()
-    capabilities = _entry_capabilities_for_source(source)
-    if capabilities is not None:
+    if source == "gateway_websocket":
         gateway_metadata = dict(metadata.get("gateway") or {})
-        gateway_metadata["entry_capabilities"] = capabilities.to_metadata()
+        gateway_metadata["entry_capabilities"] = GATEWAY_WEBSOCKET_CAPABILITIES.to_metadata()
         metadata["gateway"] = gateway_metadata
     normalized["metadata"] = metadata
     return normalized
-
-
-def _entry_capabilities_for_source(source: str) -> EntryAdapterCapabilities | None:
-    if source == "gateway_websocket":
-        return GATEWAY_WEBSOCKET_CAPABILITIES
-    if source == "realtime_media_websocket":
-        return REALTIME_MEDIA_ENTRY_CAPABILITIES
-    return None
-
-
-def _event_payload(event: dict[str, Any]) -> dict[str, Any]:
-    payload = event.get("payload")
-    if payload is None:
-        return {}
-    if not isinstance(payload, dict):
-        raise MediaEventProtocolError(
-            "invalid_media_event",
-            "media event payload must be an object when provided",
-        )
-    return dict(payload)
-
-
-def _config_from_media_event(
-    event: dict[str, Any],
-    payload: dict[str, Any],
-    *,
-    required: bool,
-) -> dict[str, Any]:
-    raw_config = payload.get("config") if "config" in payload else event.get("config")
-    if raw_config is None:
-        if required:
-            raise MediaEventProtocolError(
-                "invalid_media_event",
-                "config.update requires a config object",
-            )
-        return {}
-    if not isinstance(raw_config, dict):
-        raise MediaEventProtocolError(
-            "invalid_media_event",
-            "media config must be an object",
-        )
-    config = _normalize_media_config(raw_config)
-    if required and not config:
-        raise MediaEventProtocolError(
-            "invalid_media_event",
-            "config.update requires at least one config field",
-        )
-    return config
-
-
-def _normalize_media_config(raw_config: dict[str, Any]) -> dict[str, Any]:
-    config: dict[str, Any] = {}
-    for raw_key, raw_value in raw_config.items():
-        key = str(raw_key).strip()
-        if not key:
-            raise MediaEventProtocolError(
-                "invalid_media_event",
-                "media config keys must be non-empty strings",
-            )
-        if key in MEDIA_CONFIG_STRING_KEYS:
-            value = _optional_string(raw_value)
-            if value is None:
-                raise MediaEventProtocolError(
-                    "invalid_media_event",
-                    f"media config field {key} must be a non-empty string",
-                    detail={"field": key},
-                )
-            config[key] = value
-        elif key in MEDIA_CONFIG_BOOL_KEYS:
-            if not isinstance(raw_value, bool):
-                raise MediaEventProtocolError(
-                    "invalid_media_event",
-                    f"media config field {key} must be a boolean",
-                    detail={"field": key},
-                )
-            config[key] = raw_value
-        elif key in MEDIA_CONFIG_INT_KEYS:
-            config[key] = _non_negative_int_config(raw_value, field=key)
-        elif key in MEDIA_CONFIG_DICT_KEYS:
-            if not isinstance(raw_value, dict):
-                raise MediaEventProtocolError(
-                    "invalid_media_event",
-                    f"media config field {key} must be an object",
-                    detail={"field": key},
-                )
-            safe_config = _safe_media_config_dict(key, raw_value)
-            if safe_config:
-                config[key] = safe_config
-        else:
-            raise MediaEventProtocolError(
-                "invalid_media_event",
-                f"unsupported media config field: {key}",
-                detail={
-                    "field": key,
-                    "supported_fields": sorted(
-                        MEDIA_CONFIG_STRING_KEYS
-                        | MEDIA_CONFIG_BOOL_KEYS
-                        | MEDIA_CONFIG_INT_KEYS
-                        | MEDIA_CONFIG_DICT_KEYS
-                    ),
-                },
-            )
-    return config
-
-
-def _non_negative_int_config(value: Any, *, field: str) -> int:
-    if isinstance(value, bool):
-        parsed = None
-    elif isinstance(value, int):
-        parsed = value
-    elif isinstance(value, float) and value.is_integer():
-        parsed = int(value)
-    elif isinstance(value, str):
-        try:
-            parsed = int(value)
-        except ValueError:
-            parsed = None
-    else:
-        parsed = None
-    if parsed is None or parsed < 0:
-        raise MediaEventProtocolError(
-            "invalid_media_event",
-            f"media config field {field} must be a non-negative integer",
-            detail={"field": field},
-        )
-    return parsed
-
-
-def _media_technical_config(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    media: dict[str, Any] = {}
-    for source in (event, payload):
-        raw_media = source.get("media")
-        if isinstance(raw_media, dict):
-            sanitized = sanitize_error_detail(raw_media)
-            if isinstance(sanitized, dict):
-                media.update(sanitized)
-    for key in (
-        "codec",
-        "sample_rate_hz",
-        "track_id",
-        "relay_id",
-        "stt_provider",
-        "audio_id",
-    ):
-        value = event.get(key) if key in event else payload.get(key)
-        if value is not None:
-            media[key] = value
-    return media
-
-
-def _prompt_safe_media_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    sanitized = sanitize_error_detail(metadata)
-    return sanitized if isinstance(sanitized, dict) else {}
-
-
-def _safe_media_config_dict(key: str, raw_value: dict[str, Any]) -> dict[str, Any]:
-    if key == "stt":
-        return _safe_media_edge_component(raw_value, allowed_keys=MEDIA_EDGE_STT_KEYS)
-    if key == "tts":
-        return _safe_media_edge_component(raw_value, allowed_keys=MEDIA_EDGE_TTS_KEYS)
-    sanitized = sanitize_error_detail(raw_value)
-    return sanitized if isinstance(sanitized, dict) else {}
-
-
-def _media_edge_metadata(
-    event: dict[str, Any],
-    payload: dict[str, Any],
-    *,
-    audio_id: str | None,
-) -> dict[str, Any]:
-    stt = _merged_safe_media_component(event, payload, key="stt", allowed_keys=MEDIA_EDGE_STT_KEYS)
-    tts = _merged_safe_media_component(event, payload, key="tts", allowed_keys=MEDIA_EDGE_TTS_KEYS)
-    transcript_id = _transcript_id_from_media_event(event, payload, stt=stt)
-
-    edge: dict[str, Any] = {}
-    if audio_id:
-        edge["audio_id"] = audio_id
-    if audio_id or transcript_id or stt:
-        transcript: dict[str, Any] = {"final": True, "source": "stt"}
-        if transcript_id:
-            transcript["id"] = transcript_id
-        edge["transcript"] = transcript
-    if stt:
-        edge["stt"] = stt
-    if tts:
-        edge["tts"] = tts
-    return edge
-
-
-def _merged_safe_media_component(
-    event: dict[str, Any],
-    payload: dict[str, Any],
-    *,
-    key: str,
-    allowed_keys: tuple[str, ...],
-) -> dict[str, Any]:
-    merged: dict[str, Any] = {}
-    for source in (event, payload):
-        value = source.get(key)
-        if isinstance(value, dict):
-            merged.update(_safe_media_edge_component(value, allowed_keys=allowed_keys))
-    return merged
-
-
-def _safe_media_edge_component(
-    value: dict[str, Any],
-    *,
-    allowed_keys: tuple[str, ...],
-) -> dict[str, Any]:
-    sanitized = sanitize_error_detail(value)
-    if not isinstance(sanitized, dict):
-        return {}
-    safe: dict[str, Any] = {}
-    for key in allowed_keys:
-        child = sanitized.get(key)
-        if _is_prompt_safe_media_scalar(child):
-            safe[key] = child
-    return safe
-
-
-def _transcript_id_from_media_event(
-    event: dict[str, Any],
-    payload: dict[str, Any],
-    *,
-    stt: dict[str, Any],
-) -> str | None:
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    return _optional_string(
-        event.get("transcript_id")
-        or payload.get("transcript_id")
-        or metadata.get("transcript_id")
-        or stt.get("transcript_id")
-    )
-
-
-def _is_prompt_safe_media_scalar(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    return isinstance(value, bool | int | float)
-
-
-def _ids_from_event(
-    event: dict[str, Any],
-    payload: dict[str, Any],
-    *,
-    names: Iterable[str],
-) -> list[str]:
-    values: list[str] = []
-    for name in names:
-        values.extend(_string_list(event.get(name)))
-        values.extend(_string_list(payload.get(name)))
-    deduped: list[str] = []
-    for value in values:
-        if value and value not in deduped:
-            deduped.append(value)
-    return deduped
-
-
-def _string_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        values: list[str] = []
-        for item in value:
-            values.extend(_string_list(item))
-        return values
-    text = str(value).strip()
-    if not text:
-        return []
-    return [item.strip() for item in text.replace("\n", ",").split(",") if item.strip()]
-
-
-def _default_media_text(
-    *,
-    video_ids: list[str],
-    image_ids: list[str],
-    audio_id: str | None,
-) -> str:
-    if video_ids:
-        return "请结合这段视频继续处理用户请求。"
-    if image_ids:
-        return "请结合这张图片继续处理用户请求。"
-    if audio_id:
-        return "请结合这段音频继续处理用户请求。"
-    return ""
 
 
 def _optional_string(value: Any) -> str | None:

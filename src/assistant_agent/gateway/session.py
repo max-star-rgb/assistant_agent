@@ -438,7 +438,7 @@ class GatewaySessionService:
         metadata = payload.get("metadata")
         if not isinstance(metadata, Mapping):
             return False
-        if _trusted_entry_source(metadata) != "realtime_media_websocket":
+        if _trusted_entry_source(metadata) is None:
             return False
         gateway = metadata.get("gateway")
         if not isinstance(gateway, Mapping):
@@ -2003,7 +2003,7 @@ def _user_message_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _trusted_entry_source(metadata: Mapping[str, Any]) -> str | None:
     source = _optional_string(metadata.get("source"))
-    if source not in {"gateway_websocket", "realtime_media_websocket"}:
+    if source != "gateway_websocket":
         return None
     if metadata.get("transport") != "websocket":
         return None

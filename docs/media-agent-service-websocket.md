@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-07-17
+Last updated: 2026-07-21
 
 本文档是媒体服务与 `assistant_agent` 之间 `/agent-service/v1` WebSocket 传输层协议的唯一权威文档，合并了旧临时 Mock Agent 协议说明和旧 H.264 视频传输专项说明。媒体侧协议为外部对接基准；Agent 侧负责兼容该协议，并在内部把 `chat` 文本请求转入 Gateway 和 assistant runtime。
 
@@ -635,7 +635,7 @@ if __name__ == "__main__":
 
 ## 8. 实现边界
 
-- `/agent-service/v1` 是媒体服务兼容入口，不是新的 Agent 主循环。
+- `/agent-service/v1` 是唯一 Media Service WebSocket 入口，不是新的 Agent 主循环。
 - `assistantControl` 建立媒体连接上下文，不绕过 provider/runtime policy。
 - `chat` 进入 Gateway 和 assistant runtime；`audio` 返回传输层 ACK；`interrupt` 取消活动 Gateway
   turn 和尚未进入 Gateway 的排队 chat turn 后返回 ACK。

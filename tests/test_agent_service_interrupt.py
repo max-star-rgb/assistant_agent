@@ -42,6 +42,14 @@ class _InterruptibleBackend:
         )
 
 
+def test_agent_service_is_the_only_media_websocket_route() -> None:
+    route_paths = {route.path for route in create_app().routes}
+
+    assert "/agent-service/{version}" in route_paths
+    assert "/ws/gateway" in route_paths
+    assert "/ws/realtime/media" not in route_paths
+
+
 def test_interrupt_cancels_active_turn_suppresses_old_output_and_keeps_connection(monkeypatch) -> None:
     backend = _InterruptibleBackend()
     manager = GatewaySessionManager(backend_factory=lambda: backend, start_reaper=False)

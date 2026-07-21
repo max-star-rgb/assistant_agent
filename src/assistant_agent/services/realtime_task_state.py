@@ -1214,12 +1214,6 @@ def _barge_in_source_from_request(request: UserRequest) -> RealtimeBargeInSource
     if cancel_source in {"gateway_cancel", "gateway_interrupt"}:
         return "explicit_cancel"
 
-    source = _metadata_string(metadata.get("source"))
-    if source == "realtime_media_websocket":
-        if request.audio_id or request.text:
-            return "transcript"
-        return "media_relay_control"
-
     control = _metadata_string(metadata.get("control"))
     if control in {"interrupt", "barge_in", "cancel_previous"}:
         return "explicit_cancel"

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Start the assistant backend server (FastAPI + uvicorn).
 
-This is the backend service for Gateway-first assistant entries. Realtime text
-call smoke should use `/ws/realtime/media`; normalized Gateway smoke should use
+This is the backend service for Gateway-first assistant entries. Media-Agent
+integration should use `/agent-service/v1`; normalized Gateway smoke should use
 `/ws/gateway`. The wrapper is intentionally thin so IDEs such as PyCharm can
 launch it without a module-based uvicorn run configuration.
 """
@@ -310,7 +310,7 @@ def _print_startup_summary(
     print(f"Provider mode: {config.provider_mode}")
     print(f"Main LLM: {config.chat_provider} / {model}")
     print("Services:")
-    print(f"  media: {ws_base}/ws/realtime/media")
+    print(f"  media_agent: {ws_base}/agent-service/v1")
     relay = _web_search_relay_url(args) if web_search_relay_started else "disabled"
     print(f"  web_search_relay: {relay}")
     print("Mock tools:")

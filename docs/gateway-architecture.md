@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-17
+Last updated: 2026-07-21
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes. Media-Agent `/agent-service/v1` wire-field details, examples, and H.264 payload constraints live in `docs/media-agent-service-websocket.md`.
 
@@ -19,8 +19,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
 - Durable structured tasks are a separate post-acceptance lifecycle owned by `DurableTaskService` and its worker. Gateway owns only the ingress turn that accepts and returns the task handle; it does not keep the durable task as an active Gateway run.
 - Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and local CLI `--scenario` through demo flows enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
-- The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/ws/realtime/media` for Media Relay events that are validated before being adapted into Gateway frames.
-- The main FastAPI app also exposes `/agent-service/v1` as a media-service compatibility WebSocket for the vendor `message` / optional `sessionId` / stringified `body` protocol. It accepts the media-side `assistantControl`, `chat`, `audio`, `video`, and `interrupt` messages, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, treats raw `audio` as entry-layer ACK traffic, and maps `interrupt` to cancellation of the active Gateway turn plus locally queued connection-owned turns before acknowledging it. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer pre-warms rolling semantics, while AgentRuntime may dynamically expose the unified `vision_understanding` tool for active-video turns. The main LLM knows only this single visual tool; it never receives VLM role instructions, frames, JPEG paths, base64 media, or provider raw responses. The exact Media-Agent wire contract is `docs/media-agent-service-websocket.md`.
+- The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/agent-service/v1` as the Media Service WebSocket. The vendor route preserves the `message` / optional `sessionId` / stringified `body` protocol, accepts `assistantControl`, `chat`, `audio`, `video`, and `interrupt`, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, treats raw `audio` as entry-layer ACK traffic, and maps `interrupt` to cancellation of the active Gateway turn plus locally queued connection-owned turns before acknowledging it. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer pre-warms rolling semantics, while AgentRuntime may dynamically expose the unified `vision_understanding` tool for active-video turns. The main LLM knows only this single visual tool; it never receives VLM role instructions, frames, JPEG paths, base64 media, or provider raw responses. The exact Media-Agent wire contract is `docs/media-agent-service-websocket.md`.
 - The old browser Web Chat console, `/demo/console`, `/static/index.html`, and legacy `/ws/agent/{session_id}` event stream are removed from the product app. `scripts/run_client.py` is only a local Media-Agent protocol console client for `/agent-service/v1`, not a browser chat runtime. It still uses the real Media-Agent compatibility route and marks `clientInfo.clientType=run_client` only for prompt-safe observability.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
 
@@ -35,16 +34,14 @@ CLI / Web UI / app / HTTP route / WebSocket route / realtime call transport
 entry adapter: auth, transport IO, product payload parsing, user experience contract
 ```
 
-For realtime calls, the product path is:
+For Media-Agent calls, the product path is:
 
 ```text
-App / telephony SDK
+Media Service
         |
+        | assistantControl / chat / audio / video(H.264) / interrupt
         v
-Media Relay: STT/TTS/media references, transport details, app identity forwarding
-        |
-        v
-/ws/realtime/media
+/agent-service/v1
         |
         v
 Gateway lifecycle and session config boundary
@@ -237,7 +234,6 @@ INFO/WARNING, with one close INFO carrying message/video/byte/failure counters.
 Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normalized traffic:
 
 - Accept normalized frames such as `message.user`, `run.cancel`, `ping`, `call.incoming`, `call.hangup`, and `config.update`.
-- Accept validated media-entry events from `/ws/realtime/media` and adapt them to the normalized Gateway frames.
 - Validate Gateway-level modality support before dispatching to the assistant backend.
 - Bind or preserve `user_id`, `session_id`, `turn_id`, and `run_id`.
 - Generate missing Gateway-owned `turn_id` and `run_id` values as typed UUIDv7
@@ -358,9 +354,9 @@ SQLite tasks survive app restart and expired leases can be reclaimed, but this i
 
 ## Realtime Semantic Interrupt Arbitration
 
-Realtime calls distinguish two interrupt sources:
+Gateway supports two interrupt models at the lifecycle layer:
 
-- `explicit_control`: a user button, Media Relay control, `interrupt=true`,
+- `explicit_control`: a user button, entry-adapter control, `interrupt=true`,
   `control=interrupt|barge_in|cancel_previous`, `run.cancel`, or hangup. Gateway
   applies these signals immediately and never waits for an LLM.
 - `semantic_llm`: an ordinary final transcript whose meaning may cancel, revise,
@@ -375,8 +371,10 @@ Semantic arbitration is eligible only when all of the following hold:
 4. the new turn is not already an explicit interrupt;
 5. the trusted session config has not set `semantic_interrupt_enabled=false`.
 
-Only `REALTIME_MEDIA_ENTRY_CAPABILITIES` declares this capability. Generic
-`/ws/gateway`, HTTP/CLI turns, and the agent-service compatibility entry do not.
+No current built-in entry declares `supports_semantic_interrupt=true`.
+`/agent-service/v1` uses the vendor's explicit `interrupt` message and never waits
+for semantic arbitration. The generic machinery remains capability-gated for a
+future trusted entry and is not a second media protocol.
 
 The control-plane flow is:
 
@@ -384,7 +382,7 @@ The control-plane flow is:
 ordinary realtime transcript while run R1 is active
     |
     |-- accepted as queued turn R2; no backend permit consumed
-    |-- Media Relay may already pause or duck TTS
+    |-- the entry adapter may already pause or duck TTS
     `-- bounded RealtimeTurnArbitrationController
             |
             v
@@ -433,10 +431,10 @@ the existing realtime task-state snapshot. `change_goal` clears old constraints
 and stales old artifacts while retaining side-effect records; cancellation
 cannot roll back committed external effects.
 
-Media Relay owns immediate audio experience. It may pause or duck TTS when the
-user speaks and later resume or supersede output based on the decision. The
-Python Gateway owns text/run visibility after cancellation but does not pretend
-to control a TTS provider that is outside this repository.
+The media-facing entry owns immediate audio experience. It may pause or duck TTS
+when the user speaks and later resume or supersede output based on the decision.
+The Python Gateway owns text/run visibility after cancellation but does not
+pretend to control a TTS provider that is outside this repository.
 
 The process policy is configured with strict values:
 
@@ -500,7 +498,7 @@ Entry adapters own product and transport concerns before a request reaches Gatew
 
 Entry adapters should not own assistant loop decisions, tool execution, memory policy, provider selection, or long-running run lifecycle rules that belong behind Gateway.
 
-Entry adapters may be implemented in TypeScript, Go, Rust, or another language when that better fits a Web UI, BFF, vendor WebSocket adapter, Media Relay adapter, edge deployment, or telephony/media SDK. Those non-Python layers should stay thin: parse product or transport payloads, enforce entry-layer auth and UX contracts, and forward normalized HTTP requests or Gateway frames to the Python `assistant_agent` Gateway/runtime boundary without reimplementing assistant loop, Gateway lifecycle, tool calling, memory, or provider policy.
+Entry adapters may be implemented in TypeScript, Go, Rust, or another language when that better fits a Web UI, BFF, vendor WebSocket adapter, edge deployment, or telephony/media SDK. Those non-Python layers should stay thin: parse product or transport payloads, enforce entry-layer auth and UX contracts, and forward normalized HTTP requests or Gateway frames to the Python `assistant_agent` Gateway/runtime boundary without reimplementing assistant loop, Gateway lifecycle, tool calling, memory, or provider policy.
 
 ## Entry Identity and Session Rules
 
@@ -508,14 +506,13 @@ Gateway entry adapters must bind identity before a user turn reaches the assista
 
 - HTTP `/agent/run` resolves authenticated request identity at the route boundary, then runs the turn through `GatewayTurnFacade` with the resolved `user_id` and `session_id`.
 - Gateway WebSocket `/ws/gateway` resolves the WebSocket identity from auth/query context, rejects mismatched frame `user_id` or `session_id`, and injects trusted `source=gateway_websocket` metadata only after the frame passes that check.
-- Media Relay WebSocket `/ws/realtime/media` requires a bound session for non-`ping` events, maps media events into normalized Gateway frames, and injects trusted `source=realtime_media_websocket` metadata only at the adapter boundary.
 - Vendor `/agent-service/v1` preserves the vendor envelope at the entry layer, but `chat` turns use a local `GatewayTurnFacade`. Raw `audio` remains entry-layer ACK traffic; `interrupt` cancels the active turn through Gateway, cancels locally queued connection-owned chat turns, and suppresses stale output before returning its ACK. Raw self-contained H.264 `video` is validated and decoded at the entry boundary into a bounded local frame context; only its stable `video_id` is promoted on a later Gateway chat turn.
 
 Entry adapters may attach prompt-safe `entry_capabilities` metadata so downstream code can distinguish text streaming, interrupt support, TTS state support, realtime task-state support, media reference support, raw media support, TTS edge event support, and App shopping-detail presentation without inferring behavior from transport names. These capability declarations are informational; they do not authorize tool calls, provider selection, memory access, or new modalities.
 
-`supports_shopping_detail_v1=true` is injected by trusted entries whose clients can render the App shopping card protocol: authenticated ordinary Gateway WebSocket and vendor Agent-Service. HTTP, CLI, and realtime media entries leave it false unless they explicitly add an equivalent display contract. For these entries the realtime backend buffers model response deltas until the terminal result is known. After a successful governed `shopping_search`, it discards those deltas, selects the first successful `ToolResult` that can produce eligible cards, and emits exactly one deterministic `stream.chunk` containing the natural-language summary plus the single `<detail>` protocol block; later model results cannot overwrite that original presentable result. If shopping presentation is not activated, buffered deltas are forwarded normally before the final event. Conversation history and `AgentResponse.message` retain only the natural-language summary; protocol tags are entry presentation and never become assistant context. The presenter omits offers without a valid price, HTTP(S) product link, or HTTP(S) image and renders at most three eligible offers; an empty eligible set produces only natural language and no empty `<detail>`.
+`supports_shopping_detail_v1=true` is injected by trusted entries whose clients can render the App shopping card protocol: authenticated ordinary Gateway WebSocket and vendor Agent-Service. HTTP and CLI entries leave it false unless they explicitly add an equivalent display contract. For these entries the realtime backend buffers model response deltas until the terminal result is known. After a successful governed `shopping_search`, it discards those deltas, selects the first successful `ToolResult` that can produce eligible cards, and emits exactly one deterministic `stream.chunk` containing the natural-language summary plus the single `<detail>` protocol block; later model results cannot overwrite that original presentable result. If shopping presentation is not activated, buffered deltas are forwarded normally before the final event. Conversation history and `AgentResponse.message` retain only the natural-language summary; protocol tags are entry presentation and never become assistant context. The presenter omits offers without a valid price, HTTP(S) product link, or HTTP(S) image and renders at most three eligible offers; an empty eligible set produces only natural language and no empty `<detail>`.
 
-Realtime task-state is opt-in at the request/capability level. Ordinary Gateway metadata, `source=gateway_*`, or a `realtime.run_id`/`turn_id` pair does not by itself enable phone/realtime task semantics. Realtime call adapters such as `/ws/realtime/media` and `/agent-service/v1` declare `supports_realtime_task_state=true`; ordinary request/response chat facades should leave that capability false unless they explicitly want realtime interruption, pending-tool, TTS/display, and artifact-reuse behavior.
+Realtime task-state is opt-in at the request/capability level. Ordinary Gateway metadata, `source=gateway_*`, or a `realtime.run_id`/`turn_id` pair does not by itself enable phone/realtime task semantics. `/agent-service/v1` declares `supports_realtime_task_state=true`; ordinary request/response chat facades should leave that capability false unless they explicitly want realtime interruption, pending-tool, TTS/display, and artifact-reuse behavior.
 
 ## Hermes-Inspired Boundaries
 
@@ -527,36 +524,34 @@ Hermes' message gateway is useful reference material for defensive edge handling
 - Hook-style lifecycle visibility maps to controlled Gateway lifecycle events and trace/observability records, not arbitrary user hook execution in the Gateway process.
 - Platform formatting, slash commands, memory flush, and external delivery routing remain outside Gateway unless implemented as thin entry adapters that forward normalized Gateway frames.
 
-## Media Relay WebSocket
+## Media-Agent WebSocket
 
-`/ws/realtime/media` is the primary realtime call entry for Media Relay integrations. It accepts media-entry events, validates identity and session binding against the WebSocket query/auth context, and maps valid events to Gateway frames:
+`/agent-service/v1` is the only Media Service WebSocket entry. Its external wire
+contract, H.264 constraints, streaming response format, ACK rules and examples
+live in `docs/media-agent-service-websocket.md`.
 
-Local Media Relay testing should use `scripts/realtime_media_client.py`,
-`scripts/run_client.py` for the vendor `/agent-service/v1` envelope, or
-`scripts/run_realtime_call_simulator.py`; see
-`docs/development/realtime-runtime-operator-runbook.md` for the operator loop. A
-future Web UI can be added as a thin entry adapter, but it must not reintroduce a
-separate browser chat runtime or make the browser a second primary Gateway client
-path.
+The entry adapter validates the vendor envelope, decodes bounded self-contained
+H.264 frames into runtime-owned video context, and maps `chat` into a local
+`GatewayTurnFacade`. The facade and `GatewaySessionManager` own run identifiers,
+history, cancellation and terminal lifecycle. A vendor `interrupt` cancels the
+active Gateway run and locally queued chat turns before its ACK is returned;
+stale output is not delivered. WebSocket disconnect closes the same owned
+resources and cancels an active run.
 
-| media event | required shape | Gateway mapping |
-| --- | --- | --- |
-| `session.start` | `session_id` from event/payload/query; optional `call_id`; optional `payload.config` | `call.incoming`; creates or resumes Gateway session and freezes session config |
-| `transcript.final` | `text`, `audio_id`, `video_ids`, or `image_ids`; optional `interrupt=true` or `metadata.control=interrupt` | `message.user`; ordinary turns queue behind the active run, explicit interrupt cancels the active run and starts the new turn |
-| `run.cancel` | `session_id` or `run_id` from event/payload/query | `run.cancel`; cooperative cancellation of the active run |
-| `config.update` | non-empty `config` object | `config.update`; updates live session config before future turns |
-| `session.end` | `session_id` from event/payload/query | `call.hangup`; cancels the active run and emits `call.hangup_ack` |
-| `ping` | no payload required | `pong` |
+Local Media-Agent testing uses `scripts/run_client.py`. A future Web UI or edge
+adapter may use `/ws/gateway` with normalized frames, but it must not introduce a
+second media wire protocol or a second assistant runtime.
 
-Invalid JSON, unsupported event types, unknown config fields, missing transcript content, identity mismatch, or session mismatch produce an `error` frame and do not enter the assistant backend.
+System prompt profile selection remains trusted session configuration.
+Agent-Service uses `system_prompt_profile=text_default` and
+`channel=realtime_phone`; channel metadata does not alter the AgentRuntime
+identity or system prompt. User payload metadata cannot promote a normal turn
+into another profile.
 
-System prompt profile selection is a session configuration concern, but AgentRuntime profiles remain channel-agnostic. Realtime entries use `system_prompt_profile=text_default`; `channel=realtime_phone` stays Gateway metadata for transport and lifecycle handling and does not alter the AgentRuntime identity or system prompt. Gateway accepts legacy trusted `system_prompt_profile=realtime_phone` configuration only by normalizing it to `text_default`; message payload metadata cannot promote a normal turn into another profile.
-
-Phase 1 realtime work in this repository is text orchestration only. The Media Relay or upstream media service owns ASR, TTS, VAD, telephony SDK state, audio transport, and playback. `assistant_agent` accepts finalized text events, maps them into Gateway lifecycle frames, runs the existing assistant runtime, and emits text Gateway frames that an entry adapter may pass to TTS. The local gate for this contract is `scripts/run_realtime_call_simulator.py`, which runs `basic`, `interrupt`, `hangup`, `cancel`, and `tool_interrupt` scenarios in process without a server, real provider, audio bytes, or media refs.
-
-Media Relay v1 does not stream raw audio or video through Gateway. It sends references such as `audio_id`, `video_ids`, and `image_ids`; the assistant runtime receives those references through `RealtimeAgentRequest`. STT/TTS edge metadata is kept prompt-safe: `transcript.final` may attach sanitized `media_edge` metadata for transcript/STT/TTS status, but raw audio, base64 payloads, provider raw responses, API keys, and SDK blobs are removed before the backend request is built.
-
-TTS is also an entry-adapter concern. `assistant_agent.realtime.audio_edge.gateway_frame_to_tts_event()` can map speakable Gateway frames (`stream.chunk` and display-only `event.progress`) into prompt-safe TTS edge events. It does not invoke a TTS provider, stream audio, or change assistant runtime behavior.
+TTS remains an entry-adapter concern.
+`assistant_agent.realtime.audio_edge.gateway_frame_to_tts_event()` can map
+speakable Gateway frames into prompt-safe TTS edge events. It does not invoke a
+TTS provider, stream audio, or change assistant runtime behavior.
 
 ## Realtime Adapter Contract
 
@@ -614,7 +609,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/realtime/` | Gateway-to-assistant adapter contract, `GatewayAgentAdapter` semantic alias, and `AgentGraphRealtimeBackend` compatibility class. |
 | `src/assistant_agent/realtime/audio_edge.py` | Prompt-safe helper for entry adapters that convert speakable Gateway text frames into TTS edge events without invoking a provider. |
 | `src/assistant_agent/api/gateway_runtime.py` | Process-local FastAPI-owned `GatewaySessionManager`, `GatewayBridge`, `GatewayTurnFacade`, HTTP response capture, and shutdown cleanup. |
-| `src/assistant_agent/api/gateway_websocket.py` | FastAPI entry adapters for `/ws/gateway` Gateway frames and `/ws/realtime/media` media-service events. |
+| `src/assistant_agent/api/gateway_websocket.py` | FastAPI entry adapter for normalized `/ws/gateway` frames. |
 | `src/assistant_agent/api/agent_service_websocket.py` | FastAPI compatibility adapter for the vendor `/agent-service/v1` media protocol; preserves `message` / optional `sessionId` / stringified `body` envelopes, accepts media `assistantControl` / `chat` / `audio` / `video` / `interrupt`, ingests self-contained H.264 video frames, and routes chat plus stable video references through a local `GatewayTurnFacade`. |
 | `src/assistant_agent/services/h264_video_ingestion.py` | Entry-layer H.264 validation, bounded FFmpeg I-frame decode, JPEG artifact lifecycle, and registration in the runtime-owned `VideoContextStore`; never calls an understanding provider. |
 | `src/assistant_agent/services/realtime_video_observer.py` | Per-connection local adaptive selection, retained-keyframe lifecycle, latest-wins background scheduling, and governed `vision_understanding` video-branch execution. |
@@ -625,9 +620,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/services/assistant_runtime_app.py` | Backend-to-runtime boundary used behind `GatewayAgentAdapter`; owns the internal runtime reference without becoming the target product entry boundary. |
 | `src/assistant_agent/services/assistant_run_service.py` | Shared assistant request/run service used behind `AssistantRuntimeApp`, plus eval and demo utilities. |
 | `scripts/run_demo_flows.py` | Offline demo/scenario entry adapter that runs scenarios through a local `GatewayTurnFacade` and formats the existing demo summary payload. |
-| `scripts/realtime_media_client.py` | Local Media Relay protocol smoke client for `/ws/realtime/media` scenarios. |
 | `scripts/run_client.py` | Local Media-Agent protocol console client for `/agent-service/v1`; supports repeated `chat` sends and `/new [sessionId]`. |
-| `scripts/run_realtime_call_simulator.py` | In-process text-only realtime call simulator for Phase 1 Gateway lifecycle gates. |
 
 ### Entry Convergence Inventory
 
@@ -637,7 +630,6 @@ Phase 0 treats these entry classifications as architecture contracts:
 | --- | --- | --- |
 | HTTP `POST /agent/run` | `routes_agent.run_agent -> _run_agent_through_gateway -> GatewayTurnFacade -> GatewaySessionManager -> GatewayAgentAdapter -> AssistantRuntimeApp -> run_assistant_request -> AgentGraphRuntime` | Canonical Gateway-first product entry. |
 | Gateway WS `/ws/gateway` | `gateway_websocket -> get_gateway_bridge().bridge(...) -> GatewaySessionManager` | Canonical normalized Gateway entry. |
-| Realtime media WS `/ws/realtime/media` | media event validation -> Gateway frame mapper -> `get_gateway_bridge().bridge(...)` | Canonical realtime entry adapter. |
 | Local CLI `--text` | local `GatewaySessionManager + GatewayTurnFacade + GatewayAgentAdapter` | Canonical local Gateway-first entry. |
 | CLI `--scenario` | demo matrix through local `GatewayTurnFacade` in `scripts/run_demo_flows.py` | Offline demo adapter, Gateway-first internally. Do not expand into product behavior. |
 | Vendor `/agent-service/v1` | vendor `message` / optional `sessionId` / stringified `body` protocol; `assistantControl` is the media handshake, legacy `assistantControlStart` remains accepted, raw H.264 I-frames become a bounded local JPEG context, and `chat` uses local `GatewayTurnFacade` with the stable session video reference | Compatibility vendor surface, Gateway-first internally for chat and video references. H.264 decode stays at the entry boundary; tool choice and provider calls stay in the assistant runtime. |
@@ -647,8 +639,8 @@ Phase 0 treats these entry classifications as architecture contracts:
 | Removed legacy Web Chat | `/demo/console`, `/static/index.html`, and `/ws/agent/{session_id}` are not registered or shipped | Ordinary browser chat is out of scope until the realtime assistant runtime is stable. |
 
 The default pytest safety net protects cancellation termination and the core realtime-event to Gateway-frame
-conversion contract. Wider hangup, reconnect, media and queue behavior is checked with the explicit offline
-Gateway simulators; add pytest only for a concrete regression or changed stable protocol contract.
+conversion contract. Stable Media-Agent interrupt behavior has a focused WebSocket regression test; add more
+pytest only for a concrete regression or changed stable protocol contract.
 
 ## OpenClaw Reference Boundary
 

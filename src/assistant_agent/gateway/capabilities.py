@@ -44,19 +44,7 @@ GATEWAY_WEBSOCKET_CAPABILITIES = EntryAdapterCapabilities(
     supports_shopping_detail_v1=True,
 )
 
-REALTIME_MEDIA_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
-    supports_tts_state=True,
-    supports_realtime_task_state=True,
-    supports_audio_refs=True,
-    supports_image_refs=True,
-    supports_video_refs=True,
-    supports_tts_edge_events=True,
-    supports_semantic_interrupt=True,
-)
-
 AGENT_SERVICE_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
-    supports_text_streaming=False,
-    supports_interrupt=False,
     supports_realtime_task_state=True,
     supports_video_refs=True,
     supports_raw_media=True,
