@@ -433,7 +433,11 @@ ffprobe -show_streams -select_streams v sample.h264
 }
 ```
 
-当前 `/agent-service/v1` 的 `interrupt` 是媒体兼容 ACK。Gateway 原生取消/打断语义仍由 normalized Gateway 或 `/ws/realtime/media` 路径承载。
+`interrupt` 会先取消本连接当前活动和排队中的 `chat` turn，再返回成功 ACK。活动 turn 的取消经
+`GatewayTurnFacade` 投递为 Gateway `run.cancel`，尚未进入 Gateway 的排队 turn 在入口层取消；
+已经被中断的旧 turn 不再发送后续
+`chatResponse` delta 或终包。没有活动 turn 时该操作保持幂等成功，连接不会关闭，媒体可以继续
+发送下一轮 `chat`。
 
 ## 5. 错误处理
 
@@ -633,7 +637,8 @@ if __name__ == "__main__":
 
 - `/agent-service/v1` 是媒体服务兼容入口，不是新的 Agent 主循环。
 - `assistantControl` 建立媒体连接上下文，不绕过 provider/runtime policy。
-- `chat` 进入 Gateway 和 assistant runtime；`audio`、`interrupt` 当前返回传输层 ACK。
+- `chat` 进入 Gateway 和 assistant runtime；`audio` 返回传输层 ACK；`interrupt` 取消活动 Gateway
+  turn 和尚未进入 Gateway 的排队 chat turn 后返回 ACK。
 - `video` 在入口层完成严格校验和 H.264 I-Frame 到 JPEG 的受控解码，后续 `chat` 只把稳定 `video_id` 送入 Gateway；入口层不直接调用视频 Provider。
 - 默认 mock/local/offline 运行不会调用真实外部 Provider；真实 Provider 只在显式 profile 和本机安全配置允许时启用。
 - 不要在该接口中传输 API key、token、provider 原始响应或未脱敏敏感数据；原始音视频大 payload 不进入 prompt。

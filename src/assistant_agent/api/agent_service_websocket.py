@@ -75,6 +75,8 @@ class AgentServiceConnectionState:
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     chat_run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     chat_tasks: set[asyncio.Task] = field(default_factory=set)
+    chat_task_deliveries: dict[asyncio.Task, str] = field(default_factory=dict)
+    interrupted_delivery_ids: set[str] = field(default_factory=set)
     delivery_registry: AgentServiceDeliveryRegistry = field(default_factory=AgentServiceDeliveryRegistry)
     trace_store: TraceStore | None = None
     turn_timings: dict[str, AgentServiceTurnTiming] = field(default_factory=dict)
@@ -425,6 +427,7 @@ class InterruptHandler(BaseHandler):
         _ = session_id
         self.required_text(body, "number")
         state.media_protocol = True
+        await _interrupt_chat_tasks(state)
         return _response_envelope(
             message=self.response_message,
             session_id=state.response_session_id,
@@ -560,7 +563,13 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     _run_chat_delivery(websocket, state=state, prepared=prepared, delivery=delivery)
                 )
                 state.chat_tasks.add(task)
-                task.add_done_callback(state.chat_tasks.discard)
+                state.chat_task_deliveries[task] = delivery.delivery_id
+                task.add_done_callback(
+                    lambda completed, connection_state=state: _discard_chat_task(
+                        connection_state,
+                        completed,
+                    )
+                )
                 continue
             response = await _handle_raw_message(raw, state=state)
             await _send_response(websocket, response, state=state)
@@ -677,6 +686,29 @@ async def _cleanup_agent_service_connection(
     if state.gateway_facade is not None:
         await state.gateway_facade.close()
     await gateway_manager.close()
+
+
+def _discard_chat_task(state: AgentServiceConnectionState, task: asyncio.Task) -> None:
+    state.chat_tasks.discard(task)
+    delivery_id = state.chat_task_deliveries.pop(task, None)
+    if delivery_id is not None:
+        state.interrupted_delivery_ids.discard(delivery_id)
+
+
+async def _interrupt_chat_tasks(state: AgentServiceConnectionState) -> None:
+    """Cancel active and queued vendor chat turns before acknowledging interrupt."""
+
+    targets = [
+        (task, delivery_id)
+        for task, delivery_id in list(state.chat_task_deliveries.items())
+        if not task.done()
+    ]
+    if not targets:
+        return
+    state.interrupted_delivery_ids.update(delivery_id for _, delivery_id in targets)
+    for task, _ in targets:
+        task.cancel()
+    await asyncio.gather(*(task for task, _ in targets), return_exceptions=True)
 
 
 async def _handle_raw_message(
@@ -855,6 +887,8 @@ async def _run_chat_delivery(
 
     async def send_delta(delta: str, chunk_frame: dict[str, Any]) -> None:
         nonlocal sequence
+        if delivery.delivery_id in state.interrupted_delivery_ids:
+            return
         if not _is_provider_token_delta(chunk_frame):
             return
         if timing is not None:
@@ -918,6 +952,8 @@ async def _run_chat_delivery(
                     "cancelled": "cancelled",
                     "error": "failed",
                 }.get(turn.status, "unknown")
+        if delivery.delivery_id in state.interrupted_delivery_ids:
+            return
         response = _prepared_chat_response(
             prepared,
             state=state,
@@ -955,6 +991,23 @@ async def _run_chat_delivery(
             if not timing.expects_ack or terminal_status != "sent":
                 state.turn_timings.pop(delivery.delivery_id, None)
     except asyncio.CancelledError:
+        if not state.closed and delivery.delivery_id in state.interrupted_delivery_ids:
+            if timing is not None:
+                timing.mark("interrupted", at_ns=state.clock_ns())
+                timing.mark_failure(
+                    code="media_interrupt",
+                    source="agent_service_interrupt",
+                    runtime_status="cancelled",
+                )
+            interrupted = state.delivery_registry.mark_interrupted(
+                delivery.delivery_id,
+                gateway_run_id=timing.gateway_run_id if timing is not None else None,
+                assistant_run_id=timing.assistant_run_id if timing is not None else None,
+                trace_id=timing.trace_id if timing is not None else None,
+            )
+            if timing is not None:
+                _observe_turn_terminal(state, timing, status=interrupted.status)
+                state.turn_timings.pop(delivery.delivery_id, None)
         raise
     except Exception as exc:  # noqa: BLE001 - delivery boundary.
         failure_code = getattr(exc, "error_code", "chat_turn_failed")

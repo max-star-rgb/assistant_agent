@@ -133,6 +133,22 @@ class AgentServiceDeliveryRegistry:
             failure_source=failure_source,
         )
 
+    def mark_interrupted(
+        self,
+        delivery_id: str,
+        *,
+        gateway_run_id: str | None = None,
+        assistant_run_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> AgentServiceDelivery:
+        return self._transition(
+            delivery_id,
+            "interrupted",
+            gateway_run_id=gateway_run_id,
+            assistant_run_id=assistant_run_id,
+            trace_id=trace_id,
+        )
+
     def ack(self, delivery_id: str, *, chat_index: object) -> AgentServiceDelivery:
         with self._lock:
             current = self._deliveries.get(delivery_id)
@@ -172,7 +188,7 @@ class AgentServiceDeliveryRegistry:
             return [
                 item
                 for item in self._deliveries.values()
-                if item.status not in {"acked", "failed"}
+                if item.status not in {"acked", "failed", "interrupted"}
                 and not (item.status == "sent" and not item.expects_ack)
             ]
 
