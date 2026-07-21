@@ -402,7 +402,7 @@ class ProviderConfig:
             chat_stream=_chat_stream(source, chat_provider),
             native_provider_streaming=_bool_env(
                 source.get("MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING"),
-                False,
+                chat_provider == "qwen" and _chat_stream(source, chat_provider),
             ),
             durable_tasks_enabled=_bool_env(
                 source.get("MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED"),
@@ -984,6 +984,8 @@ def _chat_stream(source: Mapping[str, str], chat_provider: ChatProviderName) -> 
     if provider_override is not None:
         return _bool_env(provider_override, True)
     if chat_provider == "deepseek":
+        return _bool_env(source.get("CHAT_STREAM"), True)
+    if chat_provider == "qwen":
         return _bool_env(source.get("CHAT_STREAM"), True)
     return _bool_env(source.get("CHAT_STREAM"), False)
 

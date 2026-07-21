@@ -230,6 +230,7 @@ class MemoryManager:
                     "budget_tokens": context.budget_tokens,
                 },
                 metadata={"read_policy": decision.prompt_safe_metadata()},
+                persist=False,
             )
             return context
         return self.load_context_for_identity(
@@ -1195,8 +1196,9 @@ class MemoryManager:
         summary: str = "",
         counts: dict[str, int] | None = None,
         metadata: dict[str, Any] | None = None,
+        persist: bool = True,
     ) -> MemoryAuditEvent:
-        """Record a prompt-safe, local memory audit event."""
+        """Record a prompt-safe memory audit event, optionally without backend I/O."""
 
         event = MemoryAuditEvent(
             event_id=f"memory_event_{uuid4().hex}",
@@ -1213,7 +1215,7 @@ class MemoryManager:
             metadata=_audit_metadata(metadata or {}),
         )
         save_audit_event = getattr(self.store, "save_audit_event", None)
-        if callable(save_audit_event):
+        if persist and callable(save_audit_event):
             save_audit_event(event)
         self._audit_events.append(event)
         del self._audit_events[:-self.max_audit_events]

@@ -124,7 +124,10 @@ UserRequest
   -> graph load_memory node
   -> MemoryManager.load_into_state(...)
        -> MemoryReadPolicy decides whether long-term memory may be read
-       -> if skipped: request.metadata["memory_context_skipped"]=true and no store search
+       -> if skipped: request.metadata["memory_context_skipped"]=true, no store search,
+          and no synchronous persistent-audit backend write; the prompt-safe skip
+          remains available in request metadata, the run trace and the process-local
+          manager audit buffer
   -> MemoryStore.search(MemoryQuery)
   -> MemoryRetrievalStrategy / KeywordMemoryRetriever
   -> AgentState.memory_context + request.metadata["memory_context_*"]
@@ -142,6 +145,12 @@ UserRequest
 ```
 
 Both assistant-loop and compatibility graph start with `load_memory` and finish with `save_memory`. In assistant-loop non-mock chat paths, automatic task-summary saving is skipped because long-term memory writes should be explicit LLM tool calls through `memory_save`.
+
+Read-policy rejection is a no-I/O fast path. It must not call the configured
+memory store, framework adapter, remote service, or persistent governance ledger.
+This prevents an ordinary greeting that cannot consume long-term memory from
+paying remote/framework latency. Allowed retrievals and all write, confirmation,
+failure and degradation events retain their durable audit behavior.
 
 ## Ownership
 

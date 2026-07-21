@@ -10,8 +10,9 @@ tool listing, native tool-call normalization, validation, execution, loop
 limits, trace recording, and state mutation.
 """
 
-from inspect import signature
 from dataclasses import dataclass
+from inspect import signature
+from time import perf_counter
 from typing import Any, NotRequired, TypedDict, cast
 
 from assistant_agent.agent.action_validator import ActionValidator
@@ -57,7 +58,12 @@ from assistant_agent.services.context.prompt_compiler import (
 )
 from assistant_agent.services.context.report import build_context_report
 from assistant_agent.services.context.token_budget import normalize_provider_token_usage
-from assistant_agent.services.trace_store import TraceEvent, sanitize_trace_value
+from assistant_agent.services.trace_store import (
+    TraceEvent,
+    append_observability_event,
+    new_span_id,
+    sanitize_trace_value,
+)
 
 
 MAX_PLAN_STEPS = 8
@@ -379,10 +385,106 @@ def _run_chat_turn(
     chat_adapter: ChatAdapter,
     request: ChatRequest,
 ) -> ChatResult:
+    state = graph_state["state"]
+    iteration = int(graph_state.get("assistant_iterations", 0)) + 1
+    span_id = new_span_id()
+    started_at = perf_counter()
+    provider = _safe_provider_label(getattr(chat_adapter, "provider", None))
+    model = _safe_provider_label(getattr(chat_adapter, "model", None))
+    append_observability_event(
+        graph_state.get("trace_store"),
+        trace_id=graph_state.get("trace_id") or state.trace_id,
+        run_id=state.run_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+        canonical_event="llm.chat.started",
+        node_name=graph_state.get("current_node_name", "assistant_loop"),
+        status="started",
+        provider=provider,
+        model=model,
+        span_id=span_id,
+        attributes={
+            "iteration": iteration,
+            "max_iterations": int(graph_state.get("max_tool_iterations", _get_max_tool_iterations())),
+            "tool_spec_count": len(request.tools),
+        },
+    )
     runner = graph_state.get("chat_turn")
-    if callable(runner):
-        return cast(ChatResult, runner(request))
-    return chat_adapter.chat(request)
+    try:
+        result = cast(ChatResult, runner(request)) if callable(runner) else chat_adapter.chat(request)
+    except Exception as exc:
+        wall_latency_ms = _elapsed_ms(started_at)
+        append_observability_event(
+            graph_state.get("trace_store"),
+            trace_id=graph_state.get("trace_id") or state.trace_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            canonical_event="llm.chat.finished",
+            node_name=graph_state.get("current_node_name", "assistant_loop"),
+            status="failed",
+            provider=provider,
+            model=model,
+            latency_ms=wall_latency_ms,
+            span_id=span_id,
+            attributes={"iteration": iteration, "wall_latency_ms": wall_latency_ms},
+            error={"code": "provider_call_failed", "message": sanitize_trace_value(str(exc))},
+        )
+        raise
+    wall_latency_ms = _elapsed_ms(started_at)
+    provider_latency_ms = result.latency_ms
+    state.provider_budget.record_call(
+        run_id=state.run_id,
+        capability="direct_chat" if not result.tool_calls else "assistant_native_tool_call",
+        provider=result.provider,
+        model=result.model,
+        input_size_bytes=len((state.request.text or "").encode("utf-8")),
+        latency_ms=provider_latency_ms,
+        status="succeeded" if result.success else "failed",
+    )
+    append_observability_event(
+        graph_state.get("trace_store"),
+        trace_id=graph_state.get("trace_id") or state.trace_id,
+        run_id=state.run_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+        canonical_event="llm.chat.finished",
+        node_name=graph_state.get("current_node_name", "assistant_loop"),
+        status="succeeded" if result.success else "failed",
+        provider=result.provider,
+        model=result.model,
+        latency_ms=provider_latency_ms if provider_latency_ms is not None else wall_latency_ms,
+        span_id=span_id,
+        attributes={
+            "iteration": iteration,
+            "message_kind": result.message_kind,
+            "finish_reason": result.finish_reason,
+            "tool_call_count": len(result.tool_calls),
+            "provider_latency_ms": provider_latency_ms,
+            "wall_latency_ms": wall_latency_ms,
+            "usage": normalize_provider_token_usage(result.usage),
+        },
+        error=_chat_result_trace_error(result),
+    )
+    return result
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((perf_counter() - started_at) * 1000))
+
+
+def _safe_provider_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned[:128] or None
+
+
+def _chat_result_trace_error(result: ChatResult) -> dict[str, Any] | None:
+    if not result.errors:
+        return None
+    error = result.errors[0]
+    return {"code": error.code, "message": sanitize_trace_value(error.message)}
 
 
 def _record_chat_usage_metadata(state: AgentState, result: ChatResult) -> None:

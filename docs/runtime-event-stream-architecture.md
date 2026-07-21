@@ -64,13 +64,24 @@ Tool providers, vision/search providers, durable-task provider calls, and
 cancellation paths do not use this fallback.
 
 Foreground provider turns are consumed inside the shared LangGraph assistant
-loop. Provider-stream consumption is selective and opt-in through
+loop. Qwen chat defaults to Provider token streaming. Set both
+`CHAT_STREAM=false` and `MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING=false` to
+opt out unambiguously: the first controls synchronous SDK stream aggregation,
+while the second controls the runtime's async-native stream consumer. Other providers remain opt-in through
 `ProviderConfig.native_provider_streaming`. When enabled and the adapter exposes
 `stream_chat()`, `ProviderStreamingTurnRunner` consumes the async stream for one
 runtime turn. Visible token deltas pass through the existing stream callback and
 `llm_event_mapping` to become `AgentEvent(type="response_delta")`. When the flag
 is disabled or the adapter is sync-only, the runtime continues to call
 `ChatAdapter.chat()`.
+
+Every foreground assistant-loop Provider turn emits a paired
+`llm.chat.started` / `llm.chat.finished` span. The finished event records bounded
+provider/model labels, iteration, result kind, tool-call count, Provider-reported
+latency, wall latency and normalized token usage; it never records prompt or
+response content. Agent-Service latency summaries use wall latency as the
+critical-path `llm_chat[n]` duration and keep Provider latency as a nested
+diagnostic.
 
 The compatibility contracts remain supported:
 

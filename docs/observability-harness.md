@@ -67,6 +67,13 @@ largest critical-path stage, including positive `unattributed`. ACK latency and
 background video diagnostics are secondary measurements and do not change the
 send-path bottleneck.
 
+The foreground assistant loop must emit one paired `llm.chat.started` /
+`llm.chat.finished` span for every Provider attempt. The finished event supplies
+`wall_latency_ms` and `provider_latency_ms`, allowing the turn summary to name
+`llm_chat[n]` instead of folding model time into `unattributed`. These events
+contain only bounded labels, counts, finish metadata and normalized usage; they
+must not contain prompts, response text or raw Provider payloads.
+
 The versioned `agent_service_turn_latency_v1` summary also exposes only bounded
 stream facts: `stream_requested`, `provider_token_stream_seen`,
 `stream_chunk_count`, `first_stream_chunk_latency_ms`, and
