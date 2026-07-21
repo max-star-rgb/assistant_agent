@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -19,6 +20,13 @@ class WeatherRequest(BaseModel):
     """Weather lookup input."""
 
     location: str = Field(min_length=1, description="City, address, or location name.")
+    target_date: date | None = Field(
+        default=None,
+        description=(
+            "Forecast start date in YYYY-MM-DD. Resolve relative dates from the "
+            "runtime current date; omit only when the user did not specify a date."
+        ),
+    )
     days: int = Field(default=1, ge=1, le=7, description="Forecast horizon in days.")
     units: Literal["metric"] = "metric"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 import re
 from typing import Protocol
 
@@ -67,24 +68,28 @@ class MockWeatherAdapter:
                 code="weather_location_empty",
                 message="weather requires location.",
             )
+        start_date = request.target_date or date.today()
         forecast = [
             WeatherForecast(
-                date="2026-07-20",
+                date=(start_date + timedelta(days=offset)).isoformat(),
                 condition="clear",
                 temperature_c=26,
                 high_c=29,
                 low_c=23,
                 precipitation_chance=0.1,
             )
-        ][: request.days]
+            for offset in range(request.days)
+        ]
         return WeatherResult(
             success=True,
             location=location,
-            query_used=location,
+            query_used=f"{location} from {start_date.isoformat()}",
             forecast=forecast,
             summary=f"Weather for {location}: clear, 26 C.",
             provider=self.provider,
-            output_ref=f"mock://weather/{_slugify(location)}",
+            output_ref=(
+                f"mock://weather/{_slugify(location)}/{start_date.isoformat()}"
+            ),
         )
 
 

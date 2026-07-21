@@ -75,8 +75,10 @@ excluded_reasons
 - 跨字段或领域安全规则由工具自己的 `validate_call()` 表达；
 - 缺少前置信息时，模型应先向用户询问，而不是用空值或猜测值调用工具。
 
-例如 `weather.location` 是必填且去除首尾空白后必须非空；`web_fetch.url` 的 URL 格式和访问安全
-分别由其 schema 与工具/adapter 的 URL 安全边界负责。
+例如 `weather.location` 是必填且去除首尾空白后必须非空。用户明确说“明天”或某个日期时，LLM
+必须结合 runtime 当前日期生成标准化的 `target_date=YYYY-MM-DD`；用户没有指定日期时才省略，由
+adapter 使用运行时当天。`web_fetch.url` 的 URL 格式和访问安全分别由其 schema 与工具/adapter 的
+URL 安全边界负责。
 
 ## 3. 注册与暴露
 

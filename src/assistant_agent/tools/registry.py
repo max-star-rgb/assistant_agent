@@ -528,6 +528,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
         ],
         "runtime_constraints": [
             "Requires location.",
+            "When the user specifies a relative or absolute date, pass target_date as YYYY-MM-DD; omit it only when no date was specified.",
             "Default adapter is deterministic mock/offline; real weather providers must be explicitly configured in a future provider boundary.",
         ],
     },

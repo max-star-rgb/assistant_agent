@@ -93,7 +93,7 @@ def test_provider_description_uses_simple_tool_spec() -> None:
     assert description == "Read canonical data."
 
 
-def test_weather_declares_and_validates_its_required_location() -> None:
+def test_weather_declares_location_and_normalized_target_date() -> None:
     registry = create_default_registry()
     openai_tool = tool_spec_to_openai_tool(registry.get_spec(WEATHER_TOOL_NAME))
     request = UserRequest(
@@ -113,9 +113,31 @@ def test_weather_declares_and_validates_its_required_location() -> None:
         state=AgentState.from_request(request),
     )
 
-    assert openai_tool["function"]["parameters"]["required"] == ["location"]
+    parameters = openai_tool["function"]["parameters"]
+    assert parameters["required"] == ["location"]
+    assert {
+        "format": "date",
+        "type": "string",
+    } in parameters["properties"]["target_date"]["anyOf"]
     assert result.accepted is False
     assert result.code == "invalid_tool_input"
+
+    dated_result = ToolExecutor(registry=registry).run_tool(
+        AgentState.from_request(request),
+        "step-weather",
+        WEATHER_TOOL_NAME,
+        {
+            "location": " 北京 ",
+            "target_date": "2026-07-22",
+            "days": 2,
+        },
+    )
+
+    assert dated_result.success is True
+    assert [item["date"] for item in dated_result.data["forecast"]] == [
+        "2026-07-22",
+        "2026-07-23",
+    ]
 
 
 def test_registry_exposes_one_simple_tool_contract() -> None:
