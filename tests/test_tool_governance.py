@@ -21,6 +21,7 @@ from assistant_agent.services.tool_manifest import (
     PYTHON_INTERPRETER_TOOL_NAME,
     MEMORY_MEDIA_INGEST_TOOL_NAME,
     RENDER_3D_TOOL_NAME,
+    WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import MockTool, ToolContext, ToolInputValidationError
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
@@ -90,6 +91,31 @@ def test_provider_description_uses_simple_tool_spec() -> None:
 
     description = payload["function"]["description"]
     assert description == "Read canonical data."
+
+
+def test_weather_declares_and_validates_its_required_location() -> None:
+    registry = create_default_registry()
+    openai_tool = tool_spec_to_openai_tool(registry.get_spec(WEATHER_TOOL_NAME))
+    request = UserRequest(
+        user_id="user-1",
+        session_id="session-1",
+        text="查一下天气",
+    )
+
+    result = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=WEATHER_TOOL_NAME,
+            tool_input={"location": "   "},
+        ),
+        registry=registry,
+        request=request,
+        state=AgentState.from_request(request),
+    )
+
+    assert openai_tool["function"]["parameters"]["required"] == ["location"]
+    assert result.accepted is False
+    assert result.code == "invalid_tool_input"
 
 
 def test_registry_exposes_one_simple_tool_contract() -> None:

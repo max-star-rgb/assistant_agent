@@ -22,6 +22,13 @@ class WeatherRequest(BaseModel):
     days: int = Field(default=1, ge=1, le=7, description="Forecast horizon in days.")
     units: Literal["metric"] = "metric"
 
+    @field_validator("location", mode="before")
+    @classmethod
+    def _normalize_location(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
 
 class WeatherForecast(BaseModel):
     """One weather forecast item."""

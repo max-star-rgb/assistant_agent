@@ -66,6 +66,18 @@ excluded_reasons
 目录中不存在 registered、qualified、exposed、executable 四份重复集合。registry inventory 仍可通过
 `ToolRegistry.list_specs()` 独立获得；排除原因只用于解释为什么某个已注册工具没有进入本轮目录。
 
+### 2.3 工具前置输入
+
+工具需要的业务前置信息属于该工具的输入契约，不进入通用治理分支：
+
+- 必填字段、类型、范围和非空规则由工具自己的 Pydantic schema 表达；
+- OpenAI/MCP adapter 会把 schema 的 required 字段原样转换给 provider；
+- 跨字段或领域安全规则由工具自己的 `validate_call()` 表达；
+- 缺少前置信息时，模型应先向用户询问，而不是用空值或猜测值调用工具。
+
+例如 `weather.location` 是必填且去除首尾空白后必须非空；`web_fetch.url` 的 URL 格式和访问安全
+分别由其 schema 与工具/adapter 的 URL 安全边界负责。
+
 ## 3. 注册与暴露
 
 内置工具在 `tools/registry.py` 中注册。`ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个
