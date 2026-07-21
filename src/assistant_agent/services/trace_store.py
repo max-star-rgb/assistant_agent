@@ -515,10 +515,6 @@ def trace_debug_summary(events: list[TraceEvent]) -> dict[str, Any]:
         "tools": tools,
         "providers": providers,
         "error_count": len(errors),
-        "budget_exceeded": any(
-            (event.error_code or (event.error or {}).get("code")) in {"provider_budget_exceeded", "provider_call_limit_exceeded"}
-            for event in events
-        ),
         "retry_count": sum(_retry_count(event) for event in events),
         "events": [trace_event_summary(event) for event in events],
     }

@@ -106,9 +106,6 @@ PROVIDER_ERROR_CODES = frozenset(
         "provider_execution_failed",
         "provider_cancelled",
         "provider_unknown_error",
-        "provider_budget_exceeded",
-        "provider_call_limit_exceeded",
-        "provider_input_size_exceeded",
     }
 )
 

@@ -22,7 +22,6 @@ from assistant_agent.schemas.agent_communication import AgentInstance
 from assistant_agent.services.agent_directory import AgentDirectory, default_agent_instance
 from assistant_agent.services.agent_pilot_readiness import PilotReadinessChecker
 from assistant_agent.services.api_identity import AuthContext, IdentityPolicy, resolve_request_identity
-from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_errors import sanitize_error_detail
 from assistant_agent.services.provider_readiness import build_provider_readiness_report
 
@@ -60,9 +59,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Allowlisted remote host. Repeat or comma-separate. Also reads MULTIMODAL_AGENT_REMOTE_A2A_ALLOWLIST.",
     )
-    parser.add_argument("--max-provider-calls-per-run", type=int, default=10)
-    parser.add_argument("--max-estimated-cost-per-run", type=float, default=None)
-    parser.add_argument("--max-input-bytes-per-run", type=int, default=None)
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -83,19 +79,12 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
     )
     production_required = args.require_auth_bound_identity or require_auth_bound_identity()
     identity_policy = IdentityPolicy().evaluate(identity, production_required=production_required)
-    provider_budget = ProviderCallBudget(
-        max_provider_calls_per_run=args.max_provider_calls_per_run,
-        max_estimated_cost_per_run=args.max_estimated_cost_per_run,
-        max_input_bytes_per_run=args.max_input_bytes_per_run,
-        allow_real_provider=config.provider_mode == "real",
-    )
     report = PilotReadinessChecker().evaluate(
         directory=_directory_from_remote_agents(args.remote_agent),
         provider_mode=config.provider_mode,
         allowlisted_hosts=_allowlisted_hosts(args.allowlisted_host),
         identity_policy=identity_policy,
         provider_readiness=build_provider_readiness_report(config),
-        provider_budget=provider_budget,
     )
     payload = report.model_dump(mode="json")
     payload["operator_context"] = sanitize_error_detail(

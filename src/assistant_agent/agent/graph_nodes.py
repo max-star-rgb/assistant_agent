@@ -8,7 +8,7 @@ from assistant_agent.agent.intent import IntentDetector
 from assistant_agent.agent.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from assistant_agent.agent.router import ToolRouter
-from assistant_agent.agent.state import AgentError, AgentState
+from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.response_composer import compose_response, save_demo_memory
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.agent.tool_input_builder import build_tool_input
@@ -163,42 +163,6 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
     state = graph_state["state"]
     intent = state.intent
     if intent is not None and canonical_intent(intent.intent) == "direct_chat":
-        input_size_bytes = len((graph_state["request"].text or "").encode("utf-8"))
-        budget_error = state.provider_budget.check_before_call(
-            capability="direct_chat",
-            input_size_bytes=input_size_bytes,
-        )
-        if budget_error is not None:
-            errors = [budget_error.model_dump(mode="json")]
-            contract = build_text_capability_output(
-                capability="direct_chat",
-                status="failed",
-                errors=errors,
-            )
-            state.errors.append(
-                AgentError(
-                    message=budget_error.message,
-                    source="direct_chat",
-                    details={
-                        "code": budget_error.code,
-                        "recovery_action": "stop_with_error",
-                        "retryable": False,
-                        "provider_budget": state.provider_budget.summary(),
-                    },
-                )
-            )
-            state.response = AgentResponse(
-                message=f"处理失败：{budget_error.code}: {budget_error.message}",
-                data={
-                    "intent": state.intent.intent if state.intent else None,
-                    "tool_count": len(state.tool_calls),
-                    "errors": errors,
-                    "contract": contract,
-                    "provider_budget": state.provider_budget.summary(),
-                },
-            )
-            state.status = "failed"
-            return graph_state
         memory_summaries = [item.summary for item in state.memory_context]
         memory_context_text = state.request.metadata.get("memory_context_text", "")
         chat_request = _with_response_stream_callback(
@@ -210,15 +174,6 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
             source="direct_chat",
         )
         result = graph_state["chat_adapter"].chat(chat_request)
-        state.provider_budget.record_call(
-            run_id=state.run_id,
-            capability="direct_chat",
-            provider=result.provider,
-            model=result.model,
-            input_size_bytes=input_size_bytes,
-            latency_ms=result.latency_ms,
-            status="succeeded" if result.success else "failed",
-        )
         message = (
             result.response_text
             if result.success
@@ -249,7 +204,6 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
                     "memory_context_text": memory_context_text,
                     "errors": errors,
                     "contract": contract,
-                    "provider_budget": state.provider_budget.summary(),
                 },
                 output_refs=[result.output_ref] if result.output_ref else [],
             )

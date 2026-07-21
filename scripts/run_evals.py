@@ -44,7 +44,6 @@ from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult, ProviderChatCapabilities
-from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_errors import build_provider_error
 from assistant_agent.services.provider_policy import RetryPolicy
 from assistant_agent.services.trace_store import InMemoryTraceStore
@@ -798,14 +797,6 @@ def _provider_safety_result(scenario: str | None) -> dict[str, Any]:
     if scenario == "provider_unconfigured":
         error = build_provider_error("provider_unconfigured", "missing OPENAI_API_KEY")
         return {"code": error.code, "message": error.message, "retryable": RetryPolicy().is_retryable(error.code)}
-    if scenario == "provider_budget_exceeded":
-        budget = ProviderCallBudget(max_provider_calls_per_run=0)
-        error = budget.check_before_call(capability="image_generation", provider="mock")
-        return {
-            "code": error.code if error is not None else "missing_error",
-            "message": error.message if error is not None else "",
-            "retryable": False,
-        }
     if scenario == "provider_rate_limited":
         policy = RetryPolicy(max_retries=1)
         error = build_provider_error("provider_rate_limited", "provider rate limit reached")

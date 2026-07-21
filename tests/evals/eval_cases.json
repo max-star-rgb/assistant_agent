@@ -1065,17 +1065,6 @@
     "must_not_call": []
   },
   {
-    "id": "provider_safety_budget_exceeded_001",
-    "category": "provider_safety",
-    "suite": "provider_safety",
-    "safety_scenario": "provider_budget_exceeded",
-    "expected_error_code": "provider_call_limit_exceeded",
-    "expected_intent": "provider_safety",
-    "expected_capability": "provider_safety",
-    "expected_tools": [],
-    "must_not_call": []
-  },
-  {
     "id": "provider_safety_rate_limited_001",
     "category": "provider_safety",
     "suite": "provider_safety",

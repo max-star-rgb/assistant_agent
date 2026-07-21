@@ -351,7 +351,6 @@ def build_agent_router_run_record(
     delegated_tasks = _delegated_tasks(response=response, router=router)
     identity = _identity_payload(request.metadata.get("request_identity"))
     budget = _budget_payload(response=response, delegated_tasks=delegated_tasks)
-    cost = _cost_payload(budget)
     errors = [error.model_dump(mode="json") for error in response.errors]
     return AgentControlPlaneRunRecord(
         run_id=response.run_id,
@@ -363,7 +362,7 @@ def build_agent_router_run_record(
         delegated_tasks=sanitize_error_detail(delegated_tasks),
         identity=identity,
         budget=budget,
-        cost=cost,
+        cost={},
         latency_ms=latency_ms,
         error_count=len(errors),
         errors=sanitize_error_detail(errors),
@@ -441,7 +440,6 @@ def audit_events_from_agent_router_record(record: AgentControlPlaneRunRecord) ->
                 "error_code": record.route_decision.get("error_code"),
             },
         ),
-        _provider_opt_in_event(record),
     ]
     for task in record.delegated_tasks:
         events.append(_delegation_event(record, task))
@@ -472,26 +470,6 @@ def _auth_outcome(identity: dict[str, Any]) -> str:
     if isinstance(warnings, list) and warnings:
         return "warning"
     return "local_request_identity"
-
-
-def _provider_opt_in_event(record: AgentControlPlaneRunRecord) -> AgentAuditEvent:
-    provider_budget = record.budget.get("provider_budget")
-    allow_real_provider = provider_budget.get("allow_real_provider") if isinstance(provider_budget, dict) else None
-    return audit_event(
-        event_type="provider_opt_in_decision",
-        component="provider_policy",
-        action="evaluate_provider_budget",
-        outcome="allowed" if allow_real_provider is True else "blocked_default",
-        user_id=record.user_id,
-        session_id=record.session_id,
-        run_id=record.run_id,
-        trace_id=record.trace_id,
-        detail={
-            "allow_real_provider": allow_real_provider,
-            "provider_call_count": provider_budget.get("provider_call_count") if isinstance(provider_budget, dict) else None,
-            "cost_unit": provider_budget.get("cost_unit") if isinstance(provider_budget, dict) else None,
-        },
-    )
 
 
 def _delegation_event(record: AgentControlPlaneRunRecord, task: dict[str, Any]) -> AgentAuditEvent:
@@ -717,33 +695,18 @@ def _budget_payload(
     response: AgentRunResponse,
     delegated_tasks: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    provider_budget = _find_dict_by_key(response.model_dump(mode="python"), "provider_budget")
     child_budgets = [
         task.get("metadata", {}).get("child_context_budget")
         for task in delegated_tasks
         if isinstance(task.get("metadata"), dict) and isinstance(task.get("metadata", {}).get("child_context_budget"), dict)
     ]
     payload = {
-        "provider_budget": provider_budget,
         "delegated_task_count": len(delegated_tasks),
         "child_context_budgets": child_budgets,
         "tool_call_count": len(response.tool_calls),
         "tool_result_count": len(response.tool_results),
     }
     return sanitize_error_detail(payload)
-
-
-def _cost_payload(budget: dict[str, Any]) -> dict[str, Any]:
-    provider_budget = budget.get("provider_budget")
-    if not isinstance(provider_budget, dict):
-        return {}
-    return sanitize_error_detail(
-        {
-            "estimated_cost": provider_budget.get("estimated_cost"),
-            "cost_unit": provider_budget.get("cost_unit"),
-            "provider_call_count": provider_budget.get("provider_call_count"),
-        }
-    )
 
 
 def _trace_budget(trace: RunSummary | TraceSummary) -> dict[str, Any]:
@@ -779,23 +742,6 @@ def _failure_class(
     if route_decision.get("collaboration_mode") == "controller_delegate":
         return "controller_failure"
     return "router_failure"
-
-
-def _find_dict_by_key(value: Any, key: str) -> dict[str, Any]:
-    if isinstance(value, dict):
-        found = value.get(key)
-        if isinstance(found, dict):
-            return sanitize_error_detail(found)
-        for item in value.values():
-            nested = _find_dict_by_key(item, key)
-            if nested:
-                return nested
-    if isinstance(value, list):
-        for item in value:
-            nested = _find_dict_by_key(item, key)
-            if nested:
-                return nested
-    return {}
 
 
 def _dict_or_empty(value: Any) -> dict[str, Any]:

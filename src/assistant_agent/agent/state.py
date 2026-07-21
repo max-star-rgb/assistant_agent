@@ -12,7 +12,6 @@ from assistant_agent.schemas.perception import PerceptionBundle
 from assistant_agent.schemas.planning import IntentResult, TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import RunToolCatalog, ToolCallRecord, ToolResult, ToolSelection
-from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.identifiers import (
     new_run_id,
     new_session_id,
@@ -58,8 +57,6 @@ class AgentState(BaseModel):
     run_tool_catalog: RunToolCatalog | None = None
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
-    provider_budget: ProviderCallBudget = Field(default_factory=ProviderCallBudget)
-
     response: AgentResponse | None = None
     errors: list[AgentError] = Field(default_factory=list)
     status: AgentStatus = "created"

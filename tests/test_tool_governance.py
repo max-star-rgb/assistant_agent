@@ -378,38 +378,6 @@ def test_tool_executor_stages_do_not_commit_during_invocation() -> None:
     assert [event.type for event in events.events] == ["tool_started", "tool_finished"]
 
 
-def test_prepare_reserves_budget_before_a_future_parallel_batch_invokes() -> None:
-    tool = _ExecutionBoundaryTool()
-    registry = ToolRegistry()
-    registry.register(tool)
-    executor = ToolExecutor(registry=registry)
-    request = UserRequest(
-        user_id="user-1",
-        session_id="session-1",
-        text="execute twice",
-    )
-    state = AgentState.from_request(request)
-    state.provider_budget.max_provider_calls_per_run = 1
-
-    first = executor.prepare_tool_call(state, "step-1", tool.name, {"value": "first"})
-    second = executor.prepare_tool_call(state, "step-2", tool.name, {"value": "second"})
-
-    assert first.budget_reservation is not None
-    assert first.budget_error is None
-    assert second.budget_reservation is None
-    assert second.budget_error is not None
-    assert second.budget_error.code == "provider_call_limit_exceeded"
-
-    first_result = executor.commit_tool_result(state, first, executor.invoke_tool(first))
-    second_result = executor.commit_tool_result(state, second, executor.invoke_tool(second))
-
-    assert first_result.success is True
-    assert second_result.success is False
-    assert tool.run_count == 1
-    assert state.provider_budget.provider_call_count == 1
-    assert state.provider_budget.pending_reservations == []
-
-
 def test_staged_executor_preserves_confirmation_without_invoking_tool() -> None:
     tool = _ConfirmationBoundaryTool()
     registry = ToolRegistry()
@@ -428,8 +396,6 @@ def test_staged_executor_preserves_confirmation_without_invoking_tool() -> None:
     assert result.success is True
     assert result.data["status"] == "confirmation_required"
     assert tool.run_count == 0
-    assert state.provider_budget.provider_call_count == 0
-    assert state.provider_budget.pending_reservations == []
     assert [event.type for event in events.events] == ["tool_started", "tool_finished"]
 
 

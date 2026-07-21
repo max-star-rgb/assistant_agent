@@ -10,7 +10,6 @@ from assistant_agent.provider_mode import ProviderMode, get_provider_mode
 from assistant_agent.schemas.agent_communication import AgentArtifact, AgentTask, AgentTaskResult
 from assistant_agent.services.agent_directory import AgentDirectory
 from assistant_agent.services.api_identity import IdentityPolicy, IdentityPolicyDecision
-from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.provider_readiness import ProviderReadinessReport
 
@@ -76,7 +75,6 @@ class PilotReadinessChecker:
         auth_bound_identity: bool = False,
         identity_policy: IdentityPolicyDecision | None = None,
         provider_readiness: ProviderReadinessReport | None = None,
-        provider_budget: ProviderCallBudget | None = None,
     ) -> PilotReadinessReport:
         mode = provider_mode or get_provider_mode()
         checks = [
@@ -88,10 +86,6 @@ class PilotReadinessChecker:
                     identity_source="auth_context" if auth_bound_identity else "request_body_or_local_context",
                     auth_bound_identity=auth_bound_identity,
                 )
-            ),
-            self._provider_budget_check(
-                provider_budget
-                or ProviderCallBudget(allow_real_provider=mode == "real")
             ),
             PilotReadinessCheck(
                 name="trace_redaction_default",
@@ -223,52 +217,15 @@ class PilotReadinessChecker:
             detail=detail,
         )
 
-    def _provider_budget_check(self, budget: ProviderCallBudget) -> PilotReadinessCheck:
-        detail = budget.summary()
-        detail.update(
-            {
-                "max_estimated_cost_per_run": budget.max_estimated_cost_per_run,
-                "max_input_bytes_per_run": budget.max_input_bytes_per_run,
-                "budget_gate": "provider_call_budget",
-            }
-        )
-        if budget.max_provider_calls_per_run == 0:
-            return PilotReadinessCheck(
-                name="provider_budget_defaults",
-                status="warning",
-                detail={**detail, "reason": "provider calls are disabled by budget"},
-            )
-        if (
-            budget.allow_real_provider
-            and budget.max_estimated_cost_per_run is None
-            and budget.max_input_bytes_per_run is None
-        ):
-            return PilotReadinessCheck(
-                name="provider_budget_defaults",
-                status="warning",
-                detail={**detail, "reason": "call-count budget is set; cost/input byte caps are not set"},
-            )
-        return PilotReadinessCheck(
-            name="provider_budget_defaults",
-            status="passed",
-            detail=detail,
-        )
-
-
 def build_pilot_run_summary(
     *,
     task: AgentTask,
     result: AgentTaskResult,
-    provider_budget: ProviderCallBudget | None = None,
 ) -> PilotRunSummary:
     """Build a redacted metrics summary for a delegated task result."""
 
     metadata = sanitize_error_detail(result.metadata)
-    cost = (
-        provider_budget.summary()
-        if provider_budget is not None
-        else _dict_or_empty(metadata.get("cost_summary"))
-    )
+    cost = _dict_or_empty(metadata.get("cost_summary"))
     return PilotRunSummary(
         task_id=task.task_id,
         source_agent_id=task.source_agent_id,
@@ -302,11 +259,10 @@ def build_failure_replay_payload(
     *,
     task: AgentTask,
     result: AgentTaskResult,
-    provider_budget: ProviderCallBudget | None = None,
 ) -> FailureReplayPayload:
     """Build a redacted failure replay payload without raw provider/tool bodies."""
 
-    summary = build_pilot_run_summary(task=task, result=result, provider_budget=provider_budget)
+    summary = build_pilot_run_summary(task=task, result=result)
     task_metadata = _replay_metadata({**task.message.metadata, **task.metadata})
     return FailureReplayPayload(
         task={

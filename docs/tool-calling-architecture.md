@@ -224,19 +224,18 @@ step、工具名与 step 匹配，并且已确认输入的 digest 没有在确�
 - 绑定可信 `user_id`、`session_id` 和 request-scoped media；
 - 若 `ToolSpec.requires_confirmation=true`，检查
   `request.metadata.tool_confirmation={confirmed: true, tool_name: ...}`；
-- 预留和结算 provider 调用预算；
 - 传播 cancel，read 工具按全局 provider retry policy 重试，非 read 工具不自动重试；
 - 写入 tool call history、event 和 trace；
 - 默认只向 history/trace 写入安全摘要；本地显式设置
   `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 时，统一记录经过 secret sanitizer 的工具输入输出；
 - 将结构化 `ToolResult` 转成下一轮模型 observation。
 
-executor 仍采用 `prepare_tool_call -> invoke_tool -> commit_tool_result` 三段形式。该分段用于保证预算、
-状态、event 和 trace 的提交顺序，不代表存在独立 scheduler 或并发 policy：
+executor 仍采用 `prepare_tool_call -> invoke_tool -> commit_tool_result` 三段形式。该分段用于保证状态、
+event 和 trace 的提交顺序，不代表存在独立 scheduler 或并发 policy：
 
-- prepare：绑定运行时输入、检查简单确认、创建 call record、预留预算；
+- prepare：绑定运行时输入、检查简单确认并创建 call record；
 - invoke：只执行工具主体，不修改共享 `AgentState`；
-- commit：结算预算并写回 state/history/event/trace。
+- commit：写回 state/history/event/trace。
 
 幂等语义不再由通用 ToolSpec 治理。具体 provider 若需要 idempotency key，应在领域 schema/adapter 或
 durable task 协议中处理；通用 executor 不维护进程内重复调用 ledger。
@@ -289,7 +288,7 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - `services/context/tool_exposure.py`：category/profile/media 暴露规则；
 - `schemas/tool_spec_adapters.py`：OpenAI/MCP schema 转换；
 - `agent/action_validator.py`：run catalog、Pydantic、media、durable 校验；
-- `agent/tool_executor.py`：身份绑定、简单确认、预算、调用和提交；
+- `agent/tool_executor.py`：身份绑定、简单确认、调用和提交；
 - `tests/test_tool_governance.py`：工具治理稳定契约。
 
 ## 9. 不变量

@@ -476,7 +476,6 @@ class AgentGraphRuntime:
                     state,
                 )
             result = self._run_native_chat_turn(chat_request)
-            self._record_provider_chat_call(state, request, result)
             if not result.success:
                 message = result.errors[0].message if result.errors else "Provider call failed."
                 return TaskQuantumResult(
@@ -685,22 +684,6 @@ class AgentGraphRuntime:
             )
         )
         return compilation.chat_request
-
-    def _record_provider_chat_call(
-        self,
-        state: AgentState,
-        request: UserRequest,
-        result: ChatResult,
-    ) -> None:
-        state.provider_budget.record_call(
-            run_id=state.run_id,
-            capability="direct_chat" if not result.tool_calls else "assistant_native_tool_call",
-            provider=result.provider,
-            model=result.model,
-            input_size_bytes=len((request.text or "").encode("utf-8")),
-            latency_ms=result.latency_ms,
-            status="succeeded" if result.success else "failed",
-        )
 
     def _refresh_realtime_video_context(self, request: UserRequest) -> None:
         """Refresh the passive rolling snapshot immediately before context build."""
@@ -968,7 +951,6 @@ def _set_durable_tool_description_failure_response(state: AgentState, exc: Excep
         data={
             "durable_task_quantum": True,
             "errors": [{"code": error.details["code"], "message": message}],
-            "provider_budget": state.provider_budget.summary(),
         },
     )
     state.status = "failed"

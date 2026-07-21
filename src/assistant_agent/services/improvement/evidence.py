@@ -30,18 +30,6 @@ _TRAJECTORY_SYMPTOMS: dict[str, tuple[str, str, str, str]] = {
         "context_budget",
         "Provider context overflow stopped the run.",
     ),
-    "provider_call_limit_exceeded": (
-        "tool_budget_exhausted",
-        "runtime",
-        "provider_budget",
-        "Provider call budget was exhausted.",
-    ),
-    "provider_budget_exceeded": (
-        "tool_budget_exhausted",
-        "runtime",
-        "provider_budget",
-        "Provider call budget was exhausted.",
-    ),
     "assistant_loop_limit_reached": (
         "assistant_loop_limit_reached",
         "runtime",

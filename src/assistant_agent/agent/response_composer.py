@@ -80,7 +80,6 @@ def compose_response(state: AgentState) -> AgentResponse:
                 "errors": failures,
                 "partial_success": False,
                 "contracts": contracts,
-                "provider_budget": state.provider_budget.summary(),
             },
             followup_question=state.plan.followup_question,
         )
@@ -132,6 +131,5 @@ def compose_response(state: AgentState) -> AgentResponse:
             "errors": failures,
             "partial_success": bool(successful_results and failures),
             "contracts": contracts,
-            "provider_budget": state.provider_budget.summary(),
         },
     )

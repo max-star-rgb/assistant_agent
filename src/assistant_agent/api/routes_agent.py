@@ -72,7 +72,6 @@ from assistant_agent.services.gateway_turn_facade import (
 from assistant_agent.services.memory_audit import MemoryAuditService
 from assistant_agent.services.memory_snapshot import MemorySnapshotService
 from assistant_agent.services.agent_pilot_readiness import PilotReadinessChecker, PilotReadinessReport
-from assistant_agent.services.provider_budget import ProviderCallBudget
 from assistant_agent.services.provider_readiness import build_provider_readiness_report
 from assistant_agent.services.trace_query import (
     ContextReportQueryResult,
@@ -471,7 +470,6 @@ def get_control_plane_readiness(auth_context: AuthContext = Depends(get_auth_con
         auth_bound_identity=auth_context.authenticated,
         identity_policy=identity_policy,
         provider_readiness=build_provider_readiness_report(config),
-        provider_budget=ProviderCallBudget(allow_real_provider=config.provider_mode == "real"),
     )
     _record_control_plane_audit_event(
         audit_event(

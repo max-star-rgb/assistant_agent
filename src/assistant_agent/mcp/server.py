@@ -237,7 +237,6 @@ class OfflineMCPServer:
                     **payload,
                     "run_id": state.run_id,
                     "trace_id": state.trace_id,
-                    "provider_budget": state.provider_budget.summary(),
                 }
             ),
             errors=errors,

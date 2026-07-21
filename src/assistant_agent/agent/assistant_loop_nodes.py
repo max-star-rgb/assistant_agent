@@ -74,7 +74,6 @@ PROVIDER_CONTEXT_OVERFLOW_CODES = {
     "context_overflow",
     "input_too_large",
     "provider_request_too_large",
-    "provider_input_size_exceeded",
 }
 MAIN_LLM_NO_ANSWER_MESSAGES = {
     "provider_timeout": "抱歉，刚才主模型没有及时响应，请再说一遍。",
@@ -433,15 +432,6 @@ def _run_chat_turn(
         raise
     wall_latency_ms = _elapsed_ms(started_at)
     provider_latency_ms = result.latency_ms
-    state.provider_budget.record_call(
-        run_id=state.run_id,
-        capability="direct_chat" if not result.tool_calls else "assistant_native_tool_call",
-        provider=result.provider,
-        model=result.model,
-        input_size_bytes=len((state.request.text or "").encode("utf-8")),
-        latency_ms=provider_latency_ms,
-        status="succeeded" if result.success else "failed",
-    )
     append_observability_event(
         graph_state.get("trace_store"),
         trace_id=graph_state.get("trace_id") or state.trace_id,
@@ -920,15 +910,6 @@ def _set_direct_chat_response(
         data={"response_text": result.response_text, "provider": result.provider, "model": result.model},
         errors=errors,
     )
-    state.provider_budget.record_call(
-        run_id=state.run_id,
-        capability="direct_chat",
-        provider=result.provider,
-        model=result.model,
-        input_size_bytes=len((request.text or "").encode("utf-8")),
-        latency_ms=result.latency_ms,
-        status="succeeded" if result.success else "failed",
-    )
     message = result.response_text if result.success else decision.message or "已处理请求。"
     if result.success and memory_summaries:
         message = f"{message}；参考记忆：{memory_summaries[0]}"
@@ -951,7 +932,6 @@ def _set_direct_chat_response(
                 "memory_context_text": memory_context_text,
                 "errors": errors,
                 "contract": contract,
-                "provider_budget": state.provider_budget.summary(),
                 "plan_status": state.plan_status,
                 "current_step_id": state.current_step_id,
                 "plan_revision_count": state.plan_revision_count,
@@ -1023,7 +1003,6 @@ def _set_assistant_final_answer_response(
                 "contracts": contracts,
                 "output_refs": output_refs,
                 "errors": failures,
-                "provider_budget": state.provider_budget.summary(),
                 "plan_status": state.plan_status,
                 "current_step_id": state.current_step_id,
                 "plan_revision_count": state.plan_revision_count,
@@ -1188,7 +1167,6 @@ def _exit_plan_mode(graph_state: AssistantLoopState, decision: AssistantDecision
                     "tool_count": len(state.tool_calls),
                     "tool_observations": len(graph_state.get("tool_observations", [])),
                     "output_refs": output_refs,
-                    "provider_budget": state.provider_budget.summary(),
                 },
                 followup_question=decision.message if next_action == "ask_followup" else None,
                 output_refs=output_refs,
@@ -1215,7 +1193,6 @@ def _fail_plan_mode_transition(graph_state: AssistantLoopState, validation: Plan
                 "assistant_decision": "final_answer",
                 "plan_status": state.plan_status,
                 "plan_validation": validation.model_dump(mode="json"),
-                "provider_budget": state.provider_budget.summary(),
             },
         )
     )

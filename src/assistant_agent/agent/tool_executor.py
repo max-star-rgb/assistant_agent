@@ -15,15 +15,13 @@ from assistant_agent.agent.cancellation import (
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.recovery import RecoveryPolicy, classify_error
 from assistant_agent.schemas.api import api_error
-from assistant_agent.schemas.capability_output import build_capability_output_contract, contract_summary
+from assistant_agent.schemas.capability_output import contract_summary
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.durable_tasks import TrustedTaskBinding
 from assistant_agent.schemas.planning import TaskStep
 from assistant_agent.schemas.realtime_cancellation import build_realtime_turn_cancellation_metadata
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.event_sink import EventSink
-from assistant_agent.services.provider_budget import ProviderCallReservation
-from assistant_agent.services.provider_errors import ProviderError
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.provider_policy import ProviderExecutionPolicy
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
@@ -66,10 +64,8 @@ class PreparedToolCall:
     started_at: float
     tool_span_id: str
     context: ToolContext | None
-    disposition: Literal["invoke", "confirmation", "budget_error"]
+    disposition: Literal["invoke", "confirmation"]
     prepared_result: ToolResult | None
-    budget_reservation: ProviderCallReservation | None
-    budget_error: ProviderError | None
     trace_store: TraceStore | None
     trace_id: str | None
     node_name: str
@@ -146,7 +142,7 @@ class ToolExecutor:
         node_name: str | None = None,
         validated_input: BaseModel | None = None,
     ) -> PreparedToolCall:
-        """Prepare governance, lifecycle start, and budget reservation in serial order."""
+        """Prepare governance and lifecycle state in serial order."""
 
         effective_node_name = node_name or "tool_executor"
         raise_if_cancelled(
@@ -234,10 +230,8 @@ class ToolExecutor:
                 session_id=state.session_id,
             )
 
-        disposition: Literal["invoke", "confirmation", "budget_error"] = "invoke"
+        disposition: Literal["invoke", "confirmation"] = "invoke"
         prepared_result = None
-        reservation = None
-        budget_error = None
         context = None
         if requires_confirmation:
             disposition = "confirmation"
@@ -246,45 +240,25 @@ class ToolExecutor:
                 latency_ms=int((perf_counter() - started_at) * 1000),
             )
         else:
-            reservation, budget_error = state.provider_budget.reserve_call(
-                capability=capability,
-                provider=_provider_name(bound_input),
-                estimated_cost=_estimated_cost(bound_input),
-                input_size_bytes=_input_size_bytes(bound_input),
+            before_tool_execution = self.context_metadata.get("_before_tool_execution")
+            if callable(before_tool_execution):
+                before_tool_execution()
+            context_metadata = {
+                **{
+                    key: value
+                    for key, value in self.context_metadata.items()
+                    if key != "_before_tool_execution"
+                },
+                "request_text": state.request.text or "",
+                "request_metadata": dict(state.request.metadata),
+            }
+            context = ToolContext(
+                run_id=state.run_id,
+                user_id=state.user_id,
+                session_id=state.session_id,
+                metadata=context_metadata,
+                cancel_token=self.cancel_token,
             )
-        if budget_error is not None:
-            disposition = "budget_error"
-            prepared_result = ToolResult(
-                tool_name=tool_name,
-                success=False,
-                error=f"{budget_error.code}: {budget_error.message}",
-                latency_ms=int((perf_counter() - started_at) * 1000),
-            )
-        elif disposition == "invoke":
-            try:
-                before_tool_execution = self.context_metadata.get("_before_tool_execution")
-                if callable(before_tool_execution):
-                    before_tool_execution()
-                context_metadata = {
-                    **{
-                        key: value
-                        for key, value in self.context_metadata.items()
-                        if key != "_before_tool_execution"
-                    },
-                    "request_text": state.request.text or "",
-                    "request_metadata": dict(state.request.metadata),
-                }
-                context = ToolContext(
-                    run_id=state.run_id,
-                    user_id=state.user_id,
-                    session_id=state.session_id,
-                    metadata=context_metadata,
-                    cancel_token=self.cancel_token,
-                )
-            except Exception:
-                if reservation is not None:
-                    state.provider_budget.release_reservation(reservation.reservation_id)
-                raise
         invocation_input: BaseModel | dict[str, Any] = bound_input
         if validated_input is not None:
             invocation_input = validated_input.model_copy(update=bound_input)
@@ -302,8 +276,6 @@ class ToolExecutor:
             context=context,
             disposition=disposition,
             prepared_result=prepared_result,
-            budget_reservation=reservation,
-            budget_error=budget_error,
             trace_store=trace_store,
             trace_id=trace_id,
             node_name=effective_node_name,
@@ -365,26 +337,10 @@ class ToolExecutor:
 
         if invocation.cancellation is not None:
             return self._commit_staged_cancellation(state, prepared, invocation)
-        if prepared.disposition == "budget_error":
-            return self._commit_staged_budget_failure(state, prepared, invocation.result)
         if prepared.disposition == "confirmation":
             return self._commit_staged_success(state, prepared, invocation)
 
         result = invocation.result
-        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
-        if prepared.budget_reservation is None:
-            raise RuntimeError("Prepared tool call is missing its provider budget reservation.")
-        state.provider_budget.record_reserved_call(
-            prepared.budget_reservation,
-            run_id=state.run_id,
-            provider=_provider_name(result.data or {}) or _provider_name(prepared.tool_input),
-            model=_model_name(result.data or {}),
-            estimated_cost=_estimated_cost(result.data or {}),
-            use_reserved_estimated_cost=False,
-            cost_unit=_cost_unit(result.data or {}),
-            latency_ms=latency_ms,
-            status="succeeded" if result.success else "failed",
-        )
         if result.success:
             return self._commit_staged_success(state, prepared, invocation)
         return self._commit_staged_failure(state, prepared, invocation)
@@ -567,113 +523,6 @@ class ToolExecutor:
         )
         return result
 
-    def _commit_staged_budget_failure(
-        self,
-        state: AgentState,
-        prepared: PreparedToolCall,
-        result: ToolResult,
-    ) -> ToolResult:
-        budget_error = prepared.budget_error
-        if budget_error is None:
-            raise RuntimeError("Budget failure commit requires a budget error.")
-        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
-        optional_step = bool(prepared.step.optional) if prepared.step is not None else False
-        recovery_action = "continue_with_partial_result" if optional_step else "stop_with_error"
-        contract = build_capability_output_contract(
-            capability=prepared.capability,
-            status="failed",
-            errors=[budget_error.model_dump(mode="json")],
-            metadata={"provider_budget": state.provider_budget.summary()},
-        )
-        result.data = {"provider_budget": state.provider_budget.summary()}
-        result.contract = contract
-        post_tool_call = build_post_tool_call_summary(
-            tool_name=prepared.tool_name,
-            result=result,
-            state=state,
-            step_id=prepared.step_id,
-            call_id=prepared.call_id,
-            latency_ms=latency_ms,
-            retry_count=0,
-            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            registry=self.registry,
-        )
-        state.fail_tool_call(
-            prepared.call_id,
-            budget_error.message,
-            result,
-            error_details={
-                "code": budget_error.code,
-                "recovery_action": recovery_action,
-                "optional_step": optional_step,
-                "retryable": False,
-                "step_id": prepared.step_id,
-                "provider_budget": state.provider_budget.summary(),
-            },
-            stop_run=not optional_step,
-        )
-        self._emit(
-            AgentEvent(
-                type="tool_failed",
-                session_id=state.session_id,
-                run_id=state.run_id,
-                tool_name=prepared.tool_name,
-                error=api_error(
-                    budget_error.code,
-                    budget_error.message,
-                    detail={"step_id": prepared.step_id, "recovery_action": recovery_action},
-                    recoverable=False,
-                ).model_dump(mode="json"),
-                payload={
-                    "call_id": prepared.call_id,
-                    "step_id": prepared.step_id,
-                    "latency_ms": latency_ms,
-                    "retry_count": 0,
-                    "code": budget_error.code,
-                    "recovery_action": recovery_action,
-                    "contract": contract_summary(contract),
-                    "post_tool_call": post_tool_call,
-                },
-            )
-        )
-        if self.tool_history is not None:
-            self.tool_history.record_end(
-                state.run_id,
-                prepared.call_id,
-                prepared.tool_name,
-                "failed",
-                latency_ms,
-                error=_policy_safe_error(budget_error.message),
-                user_id=state.user_id,
-                session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result),
-                audit_payload=_policy_safe_audit_payload(result),
-                raw_data_ref=result.raw_data_ref,
-            )
-        _append_tool_trace_event(
-            prepared.trace_store,
-            trace_id=prepared.trace_id,
-            state=state,
-            node_name=prepared.node_name,
-            event_type="tool_failed",
-            canonical_event="tool.failed",
-            status="failed",
-            capability=prepared.capability,
-            tool_name=prepared.tool_name,
-            call_id=prepared.call_id,
-            step_id=prepared.step_id,
-            span_id=prepared.tool_span_id,
-            latency_ms=latency_ms,
-            retry_count=0,
-            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            input_summary=_policy_safe_input_summary(prepared.tool_input),
-            output_summary={"provider_budget": state.provider_budget.summary()},
-            error_code=budget_error.code,
-            error_message=budget_error.message,
-            recovery_action=recovery_action,
-        )
-        return result
-
     def _commit_staged_cancellation(
         self,
         state: AgentState,
@@ -683,8 +532,6 @@ class ToolExecutor:
         result = invocation.result
         error_details = invocation.cancellation_metadata or {}
         latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
-        if prepared.budget_reservation is not None:
-            state.provider_budget.release_reservation(prepared.budget_reservation.reservation_id)
         post_tool_call = build_post_tool_call_summary(
             tool_name=prepared.tool_name,
             result=result,
@@ -1083,18 +930,6 @@ def _provider_name(payload: dict[str, Any]) -> str | None:
 
 def _model_name(payload: dict[str, Any]) -> str | None:
     value = payload.get("model")
-    return value if isinstance(value, str) and value else None
-
-
-def _estimated_cost(payload: dict[str, Any]) -> float | None:
-    value = payload.get("estimated_cost", payload.get("cost_estimate"))
-    if isinstance(value, int | float) and value >= 0:
-        return float(value)
-    return None
-
-
-def _cost_unit(payload: dict[str, Any]) -> str | None:
-    value = payload.get("cost_unit")
     return value if isinstance(value, str) and value else None
 
 
