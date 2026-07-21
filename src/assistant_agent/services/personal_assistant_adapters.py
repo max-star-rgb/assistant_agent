@@ -1,4 +1,4 @@
-"""Offline personal assistant adapters for weather, calendar, contacts, and reminders."""
+"""Offline personal assistant adapters for weather, calendar, and contacts."""
 
 from __future__ import annotations
 
@@ -15,8 +15,6 @@ from assistant_agent.schemas.personal_assistant import (
     ContactCandidate,
     ContactsSearchRequest,
     ContactsSearchResult,
-    ReminderCreateRequest,
-    ReminderCreateResult,
     WeatherForecast,
     WeatherRequest,
     WeatherResult,
@@ -45,13 +43,6 @@ class ContactsAdapter(Protocol):
 
     def search(self, request: ContactsSearchRequest) -> ContactsSearchResult:
         """Return matching contact candidates."""
-
-
-class ReminderAdapter(Protocol):
-    """Reminder/todo provider boundary."""
-
-    def create(self, request: ReminderCreateRequest) -> ReminderCreateResult:
-        """Create one reminder/todo."""
 
 
 class MockWeatherAdapter:
@@ -186,36 +177,6 @@ class MockContactsAdapter:
         )
 
 
-class MockReminderAdapter:
-    """Deterministic reminder adapter for offline tests and local demos."""
-
-    provider = "mock"
-
-    def __init__(self) -> None:
-        self.created_titles: list[str] = []
-
-    def create(self, request: ReminderCreateRequest) -> ReminderCreateResult:
-        title = request.title.strip()
-        if not title:
-            return _failed_reminder_result(
-                provider=self.provider,
-                code="reminder_title_empty",
-                message="reminder_create requires title.",
-            )
-        key = request.idempotency_key or _slugify(title)
-        self.created_titles.append(title)
-        return ReminderCreateResult(
-            success=True,
-            reminder_id=f"mock-reminder-{key}",
-            title=title,
-            due_time=request.due_time,
-            summary=f"Created reminder: {title}",
-            side_effect_level="committed",
-            provider=self.provider,
-            output_ref=f"mock://reminders/{key}",
-        )
-
-
 class UnconfiguredWeatherAdapter:
     """Explicit non-mock adapter boundary for unavailable weather providers."""
 
@@ -272,22 +233,6 @@ class UnconfiguredContactsAdapter:
             code="provider_unconfigured",
             message=f"{self.provider} contacts provider is missing {self.missing}.",
             output_ref=f"unconfigured://contacts/{self.provider}",
-        )
-
-
-class UnconfiguredReminderAdapter:
-    """Explicit non-mock adapter boundary for unavailable reminder providers."""
-
-    def __init__(self, provider: str, missing: str) -> None:
-        self.provider = provider
-        self.missing = missing
-
-    def create(self, request: ReminderCreateRequest) -> ReminderCreateResult:
-        return _failed_reminder_result(
-            provider=self.provider,
-            code="provider_unconfigured",
-            message=f"{self.provider} reminder provider is missing {self.missing}.",
-            output_ref=f"unconfigured://reminders/{self.provider}",
         )
 
 
@@ -365,23 +310,6 @@ def _failed_contacts_result(
         summary=message,
         provider=provider,
         output_ref=output_ref or f"{provider}://contacts/failed",
-        errors=[_error(code, message, recoverable=recoverable)],
-    )
-
-
-def _failed_reminder_result(
-    *,
-    provider: str,
-    code: str,
-    message: str,
-    recoverable: bool = True,
-    output_ref: str | None = None,
-) -> ReminderCreateResult:
-    return ReminderCreateResult(
-        success=False,
-        summary=message,
-        provider=provider,
-        output_ref=output_ref or f"{provider}://reminders/failed",
         errors=[_error(code, message, recoverable=recoverable)],
     )
 

@@ -1,4 +1,4 @@
-"""Schemas for personal assistant calendar, contacts, weather, and reminders."""
+"""Schemas for personal assistant calendar, contacts, and weather."""
 
 from __future__ import annotations
 
@@ -167,29 +167,4 @@ class ContactsSearchResult(BaseModel):
     latency_ms: int = Field(default=1, ge=0)
     output_ref: str = Field(min_length=1)
     raw_data_ref: str | None = None
-    errors: list[dict[str, object]] = Field(default_factory=list)
-
-
-class ReminderCreateRequest(BaseModel):
-    """Reminder/todo creation input."""
-
-    title: str = Field(min_length=1)
-    due_time: str | None = None
-    notes: str | None = None
-    list_name: str | None = None
-    idempotency_key: str | None = None
-
-
-class ReminderCreateResult(BaseModel):
-    """Reminder/todo creation result."""
-
-    success: bool
-    reminder_id: str | None = None
-    title: str | None = None
-    due_time: str | None = None
-    summary: str | None = None
-    side_effect_level: str | None = None
-    provider: str = "mock"
-    latency_ms: int = Field(default=1, ge=0)
-    output_ref: str = Field(min_length=1)
     errors: list[dict[str, object]] = Field(default_factory=list)

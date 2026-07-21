@@ -84,6 +84,7 @@ def test_package_and_runtime_initialize_offline() -> None:
 
     assert package is not None
     assert "shopping_search" in runtime.registry.list()
+    assert "reminder_create" not in runtime.registry.list()
     assert "memory" not in specs
     assert {
         specs[name].toolset

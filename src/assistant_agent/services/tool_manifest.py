@@ -37,7 +37,6 @@ WEATHER_TOOL_NAME = "weather"
 CALENDAR_SEARCH_TOOL_NAME = "calendar_search"
 CALENDAR_CREATE_TOOL_NAME = "calendar_create"
 CONTACTS_SEARCH_TOOL_NAME = "contacts_search"
-REMINDER_CREATE_TOOL_NAME = "reminder_create"
 TOOL_SEARCH_TOOL_NAME = "tool_search"
 PYTHON_INTERPRETER_TOOL_NAME = "python_interpreter"
 DELEGATE_TO_AGENT_TOOL_NAME = "delegate_to_agent"
@@ -159,11 +158,6 @@ TOOL_MANIFESTS: tuple[ToolManifest, ...] = (
         public_name=CONTACTS_SEARCH_TOOL_NAME,
         capability=CONTACTS_SEARCH_TOOL_NAME,
         exposure_class="read",
-    ),
-    ToolManifest(
-        public_name=REMINDER_CREATE_TOOL_NAME,
-        capability=REMINDER_CREATE_TOOL_NAME,
-        exposure_class="write",
     ),
     ToolManifest(
         public_name=TOOL_SEARCH_TOOL_NAME,

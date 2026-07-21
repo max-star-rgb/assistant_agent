@@ -12,8 +12,6 @@ from assistant_agent.schemas.personal_assistant import (
     CalendarSearchResult,
     ContactsSearchRequest,
     ContactsSearchResult,
-    ReminderCreateRequest,
-    ReminderCreateResult,
     WeatherRequest,
     WeatherResult,
 )
@@ -23,16 +21,13 @@ from assistant_agent.services.personal_assistant_adapters import (
     ContactsAdapter,
     MockCalendarAdapter,
     MockContactsAdapter,
-    MockReminderAdapter,
     MockWeatherAdapter,
-    ReminderAdapter,
     WeatherAdapter,
 )
 from assistant_agent.services.tool_manifest import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,
-    REMINDER_CREATE_TOOL_NAME,
     WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext
@@ -174,42 +169,6 @@ class ContactsSearchTool(ToolBase):
         )
 
 
-class ReminderCreateTool(ToolBase):
-    """Create reminders after ToolExecutor confirmation."""
-
-    name = REMINDER_CREATE_TOOL_NAME
-    description = "Create a reminder or todo after explicit user confirmation."
-    input_schema = ReminderCreateRequest
-    output_schema = ReminderCreateResult
-    category = "write"
-    toolset = "personal.reminders"
-    requires_confirmation = True
-    progress_message = "需要你确认后我再创建提醒。"
-    redact_trace = True
-
-    def __init__(self, adapter: ReminderAdapter | None = None) -> None:
-        self.adapter = adapter or MockReminderAdapter()
-
-    def _run(self, input: ReminderCreateRequest, context: ToolContext) -> ToolResult:
-        result = self.adapter.create(input)
-        return _tool_result(
-            tool_name=self.name,
-            capability=self.name,
-            success=result.success,
-            data={
-                **result.model_dump(mode="json"),
-                "idempotency": {
-                    "key": input.idempotency_key,
-                    "present": input.idempotency_key is not None,
-                    "required": True,
-                },
-            },
-            model_observation=_reminder_observation(result),
-            output_ref=result.output_ref,
-            latency_ms=result.latency_ms,
-            errors=result.errors,
-            provider=result.provider,
-        )
 
 
 def _tool_result(
@@ -313,17 +272,6 @@ def _contacts_observation(result: ContactsSearchResult) -> dict[str, Any]:
     )
 
 
-def _reminder_observation(result: ReminderCreateResult) -> dict[str, Any]:
-    return _drop_empty(
-        {
-            "summary": result.summary,
-            "reminder_id": result.reminder_id,
-            "title": result.title,
-            "due_time": result.due_time,
-            "provider": result.provider,
-            "errors": result.errors,
-        }
-    )
 
 
 def _drop_empty(payload: dict[str, Any]) -> dict[str, Any]:

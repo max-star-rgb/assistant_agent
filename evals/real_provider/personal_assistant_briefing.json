@@ -13,8 +13,7 @@
       "web_fetch",
       "shopping_search",
       "price_compare",
-      "calendar_create",
-      "reminder_create"
+      "calendar_create"
     ],
     "min_tool_calls": 2,
     "max_tool_calls": 4,

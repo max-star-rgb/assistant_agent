@@ -18,8 +18,6 @@ from assistant_agent.schemas.personal_assistant import (
     ContactCandidate,
     ContactsSearchRequest,
     ContactsSearchResult,
-    ReminderCreateRequest,
-    ReminderCreateResult,
     WeatherForecast,
     WeatherRequest,
     WeatherResult,
@@ -29,14 +27,12 @@ from assistant_agent.services.personal_assistant_adapters import (
     CalendarAdapter,
     ContactsAdapter,
     MockWeatherAdapter,
-    ReminderAdapter,
     WeatherAdapter,
 )
 from assistant_agent.services.tool_manifest import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,
-    REMINDER_CREATE_TOOL_NAME,
     WEATHER_TOOL_NAME,
 )
 from assistant_agent.services.provider_errors import (
@@ -70,7 +66,6 @@ class PersonalAssistantAdapterBundle:
     weather: WeatherAdapter
     calendar: CalendarAdapter
     contacts: ContactsAdapter
-    reminder: ReminderAdapter
 
 
 class UnconfiguredMCPPersonalAssistantAdapter:
@@ -119,16 +114,8 @@ class UnconfiguredMCPPersonalAssistantAdapter:
 
     def create(
         self,
-        request: CalendarCreateRequest | ReminderCreateRequest,
-    ) -> CalendarCreateResult | ReminderCreateResult:
-        if isinstance(request, ReminderCreateRequest):
-            return ReminderCreateResult(
-                success=False,
-                summary=self._message(),
-                provider=self.provider,
-                output_ref="unconfigured://mcp/reminders",
-                errors=[_error("provider_unconfigured", self._message(), recoverable=True)],
-            )
+        request: CalendarCreateRequest,
+    ) -> CalendarCreateResult:
         return CalendarCreateResult(
             success=False,
             summary=self._message(),
@@ -313,46 +300,6 @@ class MCPPersonalAssistantContactsAdapter:
         )
 
 
-class MCPPersonalAssistantReminderAdapter:
-    """Reminder/todo adapter backed by one explicitly mapped MCP tool."""
-
-    def __init__(self, *, binding: MCPPersonalAssistantToolBinding, runner: MCPToolRunner) -> None:
-        self.binding = binding
-        self.runner = runner
-
-    def create(self, request: ReminderCreateRequest) -> ReminderCreateResult:
-        started = time.monotonic()
-        result = _run_mcp_tool(
-            runner=self.runner,
-            binding=self.binding,
-            tool_input=request.model_dump(mode="json", exclude_none=True),
-        )
-        latency_ms = _latency_ms(started)
-        if not result.success:
-            return ReminderCreateResult(
-                success=False,
-                summary=result.error or "MCP reminder create failed.",
-                provider=self.binding.provider,
-                latency_ms=latency_ms,
-                output_ref=result.output_ref or self.binding.output_ref,
-                errors=_errors_from_tool_result(result),
-            )
-        payload = _safe_payload(result)
-        return ReminderCreateResult(
-            success=True,
-            reminder_id=_text(payload, "reminder_id", "task_id", "id"),
-            title=_text(payload, "title", "content", "name") or request.title,
-            due_time=_time_value(payload.get("due_time") or payload.get("due") or payload.get("due_date"))
-            or request.due_time,
-            summary=_text(payload, "summary") or f"Created reminder: {request.title}",
-            side_effect_level="committed",
-            provider=self.binding.provider,
-            latency_ms=latency_ms,
-            output_ref=result.output_ref or self.binding.output_ref,
-            errors=[],
-        )
-
-
 def create_personal_assistant_adapter_bundle(
     config: ProviderConfig | None = None,
     *,
@@ -366,7 +313,6 @@ def create_personal_assistant_adapter_bundle(
             weather=MockWeatherAdapter(),
             calendar=_mock_calendar_adapter(),
             contacts=_mock_contacts_adapter(),
-            reminder=_mock_reminder_adapter(),
         )
     server_configs = mcp_server_configs or []
     runner = mcp_runner or _default_mcp_runner(server_configs)
@@ -390,27 +336,18 @@ def create_personal_assistant_adapter_bundle(
         if bindings.get(CONTACTS_SEARCH_TOOL_NAME)
         else UnconfiguredMCPPersonalAssistantAdapter("personal_assistant_tools.contacts_search")
     )
-    reminder = (
-        MCPPersonalAssistantReminderAdapter(
-            binding=bindings[REMINDER_CREATE_TOOL_NAME],
-            runner=runner,
-        )
-        if bindings.get(REMINDER_CREATE_TOOL_NAME)
-        else UnconfiguredMCPPersonalAssistantAdapter("personal_assistant_tools.reminder_create")
-    )
     weather = (
         MCPPersonalAssistantWeatherAdapter(
             binding=bindings[WEATHER_TOOL_NAME],
             runner=runner,
         )
         if bindings.get(WEATHER_TOOL_NAME)
-        else MockWeatherAdapter()
+        else UnconfiguredMCPPersonalAssistantAdapter("personal_assistant_tools.weather")
     )
     return PersonalAssistantAdapterBundle(
         weather=weather,
         calendar=calendar,
         contacts=contacts,
-        reminder=reminder,
     )
 
 
@@ -426,19 +363,12 @@ def _mock_contacts_adapter() -> ContactsAdapter:
     return MockContactsAdapter()
 
 
-def _mock_reminder_adapter() -> ReminderAdapter:
-    from assistant_agent.services.personal_assistant_adapters import MockReminderAdapter
-
-    return MockReminderAdapter()
-
-
 def _unconfigured_bundle(missing: str) -> PersonalAssistantAdapterBundle:
     adapter = UnconfiguredMCPPersonalAssistantAdapter(missing)
     return PersonalAssistantAdapterBundle(
         weather=adapter,
         calendar=adapter,
         contacts=adapter,
-        reminder=adapter,
     )
 
 
@@ -467,7 +397,6 @@ def _personal_bindings(
             (CALENDAR_SEARCH_TOOL_NAME, mapping.calendar_search),
             (CALENDAR_CREATE_TOOL_NAME, mapping.calendar_create),
             (CONTACTS_SEARCH_TOOL_NAME, mapping.contacts_search),
-            (REMINDER_CREATE_TOOL_NAME, mapping.reminder_create),
         ):
             if not tool_name or capability in bindings:
                 continue

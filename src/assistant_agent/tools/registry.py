@@ -17,7 +17,6 @@ from assistant_agent.tools.personal_assistant_tools import (
     CalendarCreateTool,
     CalendarSearchTool,
     ContactsSearchTool,
-    ReminderCreateTool,
     WeatherTool,
 )
 from assistant_agent.tools.python_interpreter_tool import PythonInterpreterTool
@@ -42,7 +41,6 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_TOOL_NAME,
     PYTHON_INTERPRETER_TOOL_NAME,
-    REMINDER_CREATE_TOOL_NAME,
     RENDER_3D_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
     TOOL_SEARCH_TOOL_NAME,
@@ -296,7 +294,6 @@ def create_default_registry(
         CalendarSearchTool(adapter=personal_adapters.calendar),
         CalendarCreateTool(adapter=personal_adapters.calendar),
         ContactsSearchTool(adapter=personal_adapters.contacts),
-        ReminderCreateTool(adapter=personal_adapters.reminder),
         WebSearchTool(adapter=create_web_search_adapter(config)),
         VisualImageSearchTool(adapter=create_visual_image_search_adapter(config)),
         WebFetchTool(adapter=create_web_fetch_adapter(config)),

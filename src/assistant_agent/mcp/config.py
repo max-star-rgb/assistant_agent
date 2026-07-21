@@ -14,7 +14,6 @@ from assistant_agent.services.tool_manifest import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,
-    REMINDER_CREATE_TOOL_NAME,
 )
 
 
@@ -32,7 +31,6 @@ class MCPPersonalAssistantToolMapping(BaseModel):
     calendar_search: str | None = None
     calendar_create: str | None = None
     contacts_search: str | None = None
-    reminder_create: str | None = None
 
     def mapped_tool_names(self) -> list[str]:
         """Return all remote MCP tool names referenced by this mapping."""
@@ -45,7 +43,6 @@ class MCPPersonalAssistantToolMapping(BaseModel):
                     self.calendar_search,
                     self.calendar_create,
                     self.contacts_search,
-                    self.reminder_create,
                 )
                 if item
             ]
@@ -241,9 +238,6 @@ _MCP_SERVER_PRESETS: dict[str, dict[str, object]] = {
         "allowed_tools": ["search_tasks", "create_task"],
         "read_only_tools": ["search_tasks"],
         "enabled_tools": ["search_tasks"],
-        "personal_assistant_tools": {
-            REMINDER_CREATE_TOOL_NAME: "create_task",
-        },
     },
     "notion": {
         "allowed_tools": ["search_pages", "fetch_page", "create_page"],
