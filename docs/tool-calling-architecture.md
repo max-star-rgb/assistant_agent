@@ -13,7 +13,7 @@
 - 真实 LLM 只能返回自然语言 `content` 或 provider-native `tool_calls`。native tool call 会先归一化成内部 `AssistantDecision(type="tool_call")`，再走同一套校验和执行。
 - 当第一轮 native response 是 `tool_calls` 时，runtime 不把该轮模型 `content` 当作正式回答输出；它只记录为内部 preamble，并发出一条可替换的 `progress_message` 事件（例如 `shopping_search` -> “我查一下并比一下价格。”）。该事件不写入 LLM messages，也不参与第二轮回答生成。
 - 工具执行必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。API、WebSocket、MCP 或新增入口都不能直接 `registry.run(...)`。
-- `ToolExecutor` 是运行时治理边界：重新从 registry 解析 `ToolPolicyView`，绑定 user/session 身份，执行 approval/idempotency、安全 retry 和 deadline 传播，检查 provider budget，记录 state/tool history/event/trace，再调用 registry。
+- `ToolExecutor` 是运行时治理边界：重新从 registry 解析 `ToolPolicyView`，绑定 user/session 身份，执行 approval/idempotency、安全 retry 和 deadline 传播。内部统一按 `prepare_tool_call -> invoke_tool -> commit_tool_result` 分段：prepare 串行创建 call record、执行风险治理并预留 provider budget，invoke 只调用工具主体且不修改 `AgentState`、history 或 trace，commit 再按协调器给定顺序结算预算并写回 state/history/event/trace。`run_tool()` 当前仍按这三个阶段串行执行。
 - 工具实现应保持薄适配层：Pydantic input/output schema、调用 adapter/service、包装 `ToolResult` 和 `CapabilityOutputContract`。真实外部能力必须在 provider/service adapter 层受 runtime profile 控制。
 - 工具 observation 是下一轮 LLM 的数据，不是系统指令；写入 prompt 前会被摘要、脱敏、压缩。不要把 provider raw response、密钥、base64 大 payload 暴露给 assistant context。
 - Provider capability facts live in `src/assistant_agent/schemas/provider_specs.py` as `ProviderSpec.capabilities`; chat adapters read that matrix for native tools, response format, streaming and modality switches instead of maintaining a separate provider table. Adapter factories should prefer `ResolvedProviderSpec.adapter_kind` / `ResolvedProviderSpec.capabilities` and must not maintain parallel provider-name dispatch tables.
@@ -105,14 +105,14 @@ the validated rule; no LLM chooses a proactive probe tool in this phase.
 - 请求向 provider 发送 `messages`、`tools` 和 `tool_choice="auto"`。
 - `ChatRequest.tools` 只发送 `RunToolSet.exposed_tool_names` 对应的 ToolSpec；治理后明确为空的工具集合不会回退到完整 registry。当前 recall 是 identity，因此每个 qualified ToolSpec 都会进入 exposed；模型即使返回猜测到的未 qualified 或不可执行工具名，也会被 `ActionValidator` 拒绝。
 - provider 返回 `content` 或 `refusal` 时，runtime 直接作为用户可见回答输出；普通 direct answer 应只有一次 chat call。
-- provider 返回 `tool_calls` 时，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再把 batch 归一化为内部 `AssistantDecision(type="tool_call")` 并进入 `ToolScheduler`。调度器会批量预检 `ActionValidator`，并通过 `ToolPolicyInterpreter` 消费 `ToolSpec.side_effect + ToolSpec.execution`；只有明确 read-only、无确认需求、`dependency_mode=independent`、无重复工具名、无资源写入、无 concurrency/resource 冲突、预算检查可并发安全的 batch 才会并发调用 `ToolExecutor.run_tool()`。其他情况保持 provider 顺序串行。无论哪种模式，observation 都按 provider call 顺序回填；超过 `max_tool_iterations` 的剩余调用会记录为预算跳过，而不是绕过治理边界。
+- provider 返回 `tool_calls` 时，先丢弃/记录本轮模型 preamble，发出可替换 `progress_message`，再把 batch 归一化为内部 `AssistantDecision(type="tool_call")`。当前 assistant loop 按 provider 顺序逐个执行；每个调用独立进入 `ActionValidator -> ToolExecutor.prepare/invoke/commit`，observation 也按该顺序回填。超过 `max_tool_iterations` 的剩余调用会记录为预算跳过，而不是绕过治理边界。仓库保留的 `ToolScheduler` 目前只表达后续并行资格判定，尚未接入主执行节点。
 - 工具 observation 会作为后续 native messages 中的 `tool` role 内容回传；拿到工具结果后的第二次 LLM 调用是合理工具路径，不是隐藏控制面调用。
 - 如果 provider adapter 明确 `supports_native_tools=False`，runtime fails immediately，不静默 fallback 到旧 JSON 控制面。
 - `AssistantDecision` 仍是内部治理结构，用于复用 validator/executor/trace；真实 LLM 不再被要求输出自定义 `AssistantDecision` JSON。
 
 ## Backlog
 
-- 安全并行工具执行扩展：当前 v1 已支持单个 read-only independent native batch 的保守并发执行，并消费静态 `ToolSpec.execution` 做依赖、资源写入和 concurrency group 检查。后续如需扩展到多组调度、重复同名 read-only 工具、动态依赖声明、realtime 动态 `max_tool_iterations` 或 async executor，必须继续保持 `ToolExecutor` 为唯一执行入口，并保留每个工具独立的 trace、event、history、observation 和预算记录。副作用工具、confirmation-sensitive 工具、未知工具、资源或路径可能冲突的工具默认继续串行。
+- 安全并行工具执行扩展：当前已完成 `ToolExecutor.prepare/invoke/commit` 分段和 provider budget 预留，并在 `ToolSpec.execution.parallel_safe` 提供默认关闭的单工具白名单声明；主 assistant loop 仍保持串行。后续接入 `ToolScheduler` 时，只允许整个 batch 都显式 `parallel_safe=true`、read-only、无需确认、`dependency_mode=independent`、无资源写入或 concurrency 冲突的调用并行执行 invoke；prepare 与按 provider call index 排序后的 commit 继续串行。副作用工具、confirmation-sensitive 工具、未知工具、重复同名工具和可能冲突的工具默认继续串行。
 - ToolRegistry 延迟注册 / factory descriptor：当前不采用 Hermes 风格的模块级全局单例 `registry`，避免 provider profile、adapter、video context、agent delegation 和测试隔离被全局状态污染。后续如果默认工具数量或 import 耦合明显增长，可以引入保留依赖注入语义的 `ToolRegistryBuilder` 或 lazy tool factory descriptor：`registry.py` 只保存轻量工具定义和 factory，`create_default_registry()` 按 `ProviderConfig`、runtime context 和 opt-in capability 实例化工具。该方案不得绕过 `ActionValidator -> ToolExecutor -> ToolRegistry`，也不得把工具执行入口改成全局 `registry.run(...)`。
 
 ## ToolSpec 契约
@@ -174,7 +174,7 @@ excluded_reasons
 - `tool_spec_to_json_schema()` 会输出 object schema，并设置 `additionalProperties=False`。
 - provider-native tools 从规范 `ToolPolicyView` 生成副作用和 `terminal` / `requires_prior_observation` 等简短 prompt-safe 描述；旧 prompt-facing ToolSpec 子集只服务历史 renderer 测试和离线兼容材料，不是生产决策路径。
 - `side_effect` 包含 `level`、`requires_confirmation`、`description`、可选 `confirmation_kind` 和 `compensation_hint`；provider-native/MCP 描述也会包含该信息。
-- `execution` 包含 `dependency_mode`、可选 `concurrency_group`、`resource_reads`、`resource_writes`、`realtime_safety`、`artifact_reuse` 和可选 `progress_message`。它只表达调度/依赖/资源事实、realtime artifact 复用提示和等待提示，不表达“允许并发”命令。
+- `execution` 包含默认关闭的 `parallel_safe`、`dependency_mode`、可选 `concurrency_group`、`resource_reads`、`resource_writes`、`realtime_safety`、`artifact_reuse` 和可选 `progress_message`。`parallel_safe=true` 只表示工具实现经过并发安全审查，是未来调度的必要条件而非单独授权；当前没有默认工具开启它，assistant loop 也尚未并发执行。
 - `visibility` 是工具目录装配元数据，包含 `requires_env`、`enabled_by_default`、`skill_only`、`allowed_entry_profiles` 和 `requires_media`。可信 Agent-Service 入口仍受 `allowed_entry_profiles` 和 `requires_media` 限制；没有 profile 限制的 read 工具可默认暴露；当前 generate 和记忆写入由代码配置暴露，其他 write 仍需代码配置或结构化显式指定，dangerous 仍需结构化显式启用。
 - 未分类工具使用保守默认：`level=pending_confirmation`、`requires_confirmation=true`、`dependency_mode=requires_prior_observation`、`realtime_safety=needs_confirmation` 且 `artifact_reuse=requires_validation`。
 - MCP 工具 schema 通过 `tool_spec_to_mcp_tool()` 支持。`OfflineMCPServer.list_tools()` 暴露本地 MCP wrapper 工具；显式配置的外部 MCP server 可通过 `MCPToolAdapter` 归一成 registry proxy tool，再由同一套 ToolSpec/validator/executor 治理。

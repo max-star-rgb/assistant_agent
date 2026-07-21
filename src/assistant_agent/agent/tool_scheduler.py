@@ -25,6 +25,7 @@ class ScheduledToolCall:
     validation: ActionValidationResult
     side_effect_level: str
     requires_confirmation: bool
+    parallel_safe: bool = False
     dependency_mode: ToolDependencyMode = "requires_prior_observation"
     concurrency_group: str | None = None
     resource_reads: tuple[str, ...] = ()
@@ -49,6 +50,7 @@ class ScheduledToolCall:
             },
             "side_effect_level": self.side_effect_level,
             "requires_confirmation": self.requires_confirmation,
+            "parallel_safe": self.parallel_safe,
             "dependency_mode": self.dependency_mode,
             "concurrency_group": self.concurrency_group,
             "resource_reads": list(self.resource_reads),
@@ -128,6 +130,7 @@ def build_scheduled_tool_call(
         validation=validation,
         side_effect_level=policy.side_effect_level,
         requires_confirmation=policy.requires_confirmation,
+        parallel_safe=policy.parallel_safe,
         dependency_mode=policy.dependency_mode,
         concurrency_group=policy.concurrency_group,
         resource_reads=tuple(policy.resource_reads),
@@ -181,6 +184,9 @@ def plan_tool_schedule(
 
     if any(not _is_read_only(call) for call in calls):
         return _serial_schedule(calls, "non_read_only_tool")
+
+    if any(not call.parallel_safe for call in calls):
+        return _serial_schedule(calls, "parallel_not_allowlisted")
 
     if any(call.requires_confirmation for call in calls):
         return _serial_schedule(calls, "confirmation_required")

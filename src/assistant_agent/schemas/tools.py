@@ -48,6 +48,7 @@ class ToolSideEffectPolicy(BaseModel):
 class ToolExecutionPolicy(BaseModel):
     """Static scheduling and realtime execution metadata for one tool contract."""
 
+    parallel_safe: bool = False
     dependency_mode: ToolDependencyMode = "requires_prior_observation"
     concurrency_group: str | None = None
     resource_reads: list[str] = Field(default_factory=list)

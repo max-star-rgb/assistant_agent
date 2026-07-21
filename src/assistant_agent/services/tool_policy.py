@@ -40,6 +40,7 @@ class ToolPolicyView(BaseModel):
     confirmation_owner: ToolConfirmationOwner = "none"
     tool_owned_confirmation: bool = False
     auto_executable: bool = False
+    parallel_safe: bool = False
     dependency_mode: ToolDependencyMode = "requires_prior_observation"
     concurrency_group: str | None = None
     resource_reads: list[str] = Field(default_factory=list)
@@ -131,6 +132,7 @@ class ToolPolicyInterpreter:
             ),
             tool_owned_confirmation=tool_owned_confirmation,
             auto_executable=risk_gate_level == "auto",
+            parallel_safe=execution_policy.parallel_safe,
             dependency_mode=execution_policy.dependency_mode,
             concurrency_group=execution_policy.concurrency_group,
             resource_reads=list(execution_policy.resource_reads),
@@ -205,6 +207,7 @@ class ToolPolicyInterpreter:
             ),
             tool_owned_confirmation=tool_owned_confirmation,
             auto_executable=risk_gate_level == "auto",
+            parallel_safe=execution_policy.parallel_safe,
             dependency_mode=execution_policy.dependency_mode,
             concurrency_group=execution_policy.concurrency_group,
             resource_reads=list(execution_policy.resource_reads),

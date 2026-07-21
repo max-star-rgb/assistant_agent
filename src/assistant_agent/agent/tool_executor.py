@@ -1,7 +1,8 @@
 """Tool execution service used by workflows and LangGraph nodes."""
 
+from dataclasses import dataclass
 from time import monotonic, perf_counter, sleep
-from typing import Any
+from typing import Any, Literal
 
 from assistant_agent.agent.cancellation import (
     AgentRunCancelled,
@@ -19,7 +20,8 @@ from assistant_agent.schemas.planning import TaskStep
 from assistant_agent.schemas.realtime_cancellation import build_realtime_turn_cancellation_metadata
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.event_sink import EventSink
-from assistant_agent.services.provider_budget import ProviderCallBudget
+from assistant_agent.services.provider_budget import ProviderCallReservation
+from assistant_agent.services.provider_errors import ProviderError
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.provider_policy import ProviderExecutionPolicy
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
@@ -51,10 +53,45 @@ from assistant_agent.services.tool_risk_gate import (
     evaluate_tool_risk,
     get_default_tool_idempotency_ledger,
     record_successful_idempotent_result,
+    ToolRiskDecision,
 )
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
+
+
+@dataclass(frozen=True)
+class PreparedToolCall:
+    """Serially prepared call whose invocation no longer needs mutable AgentState."""
+
+    step_id: str
+    tool_name: str
+    tool_input: dict[str, Any]
+    step: TaskStep | None
+    call_id: str
+    capability: str
+    policy_view: ToolPolicyView
+    risk_decision: ToolRiskDecision
+    started_at: float
+    tool_span_id: str
+    context: ToolContext | None
+    disposition: Literal["invoke", "duplicate", "confirmation", "budget_error"]
+    prepared_result: ToolResult | None
+    budget_reservation: ProviderCallReservation | None
+    budget_error: ProviderError | None
+    trace_store: TraceStore | None
+    trace_id: str | None
+    node_name: str
+
+
+@dataclass(frozen=True)
+class ToolInvocationResult:
+    """Tool-body outcome awaiting ordered state/history/trace commit."""
+
+    result: ToolResult
+    retry_count: int = 0
+    cancellation: AgentRunCancelled | None = None
+    cancellation_metadata: dict[str, Any] | None = None
 
 
 class ToolExecutor:
@@ -91,25 +128,54 @@ class ToolExecutor:
         trace_id: str | None = None,
         node_name: str | None = None,
     ) -> ToolResult:
+        """Run one governed tool through serial prepare/invoke/commit stages."""
+
+        prepared = self.prepare_tool_call(
+            state,
+            step_id,
+            tool_name,
+            tool_input,
+            step=step,
+            trace_store=trace_store,
+            trace_id=trace_id,
+            node_name=node_name,
+        )
+        invocation = self.invoke_tool(prepared)
+        return self.commit_tool_result(state, prepared, invocation)
+
+    def prepare_tool_call(
+        self,
+        state: AgentState,
+        step_id: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        step: TaskStep | None = None,
+        trace_store: TraceStore | None = None,
+        trace_id: str | None = None,
+        node_name: str | None = None,
+    ) -> PreparedToolCall:
+        """Prepare governance, lifecycle start, and budget reservation in serial order."""
+
+        effective_node_name = node_name or "tool_executor"
         raise_if_cancelled(
             self.cancel_token,
             phase="before_tool",
-            node_name=node_name or "tool_executor",
+            node_name=effective_node_name,
             source="tool_executor",
             details={"tool_name": tool_name, "step_id": step_id},
             state=state,
         )
-        tool_input = _bind_runtime_identity(tool_name, tool_input, state)
-        tool_input = _bind_runtime_media_inputs(tool_name, tool_input, state)
-        tool_input = _bind_durable_idempotency(
-            tool_input,
+        bound_input = _bind_runtime_identity(tool_name, tool_input, state)
+        bound_input = _bind_runtime_media_inputs(tool_name, bound_input, state)
+        bound_input = _bind_durable_idempotency(
+            bound_input,
             step_id=step_id,
             context_metadata=self.context_metadata,
         )
         policy_view = ToolPolicyInterpreter().view_for_spec(self.registry.get_spec(tool_name))
         risk_decision = evaluate_tool_risk(
             tool_name=tool_name,
-            tool_input=tool_input,
+            tool_input=bound_input,
             request=state.request,
             state=state,
             step_id=step_id,
@@ -117,7 +183,7 @@ class ToolExecutor:
         )
         pre_tool_call = build_pre_tool_call_summary(
             tool_name=tool_name,
-            tool_input=tool_input,
+            tool_input=bound_input,
             registry=self.registry,
             request=state.request,
             state=state,
@@ -126,16 +192,15 @@ class ToolExecutor:
             risk_gate=risk_decision.risk_summary(),
             idempotency=risk_decision.idempotency_summary(),
         )
-        call = state.add_tool_call(tool_name, tool_input)
+        call = state.add_tool_call(tool_name, bound_input)
         capability = _capability_name(tool_name, step)
-        budget = state.provider_budget
         started_at = perf_counter()
         tool_span_id = f"span_{call.call_id}"
         _append_tool_trace_event(
             trace_store,
             trace_id=trace_id,
             state=state,
-            node_name=node_name or "tool_executor",
+            node_name=effective_node_name,
             canonical_event="tool.started",
             status="started",
             capability=capability,
@@ -145,7 +210,7 @@ class ToolExecutor:
             span_id=tool_span_id,
             risk_gate=risk_decision.risk_summary(),
             idempotency=risk_decision.idempotency_summary(),
-            input_summary=_input_summary(tool_input),
+            input_summary=_input_summary(bound_input),
         )
         self._emit(
             AgentEvent(
@@ -165,10 +230,16 @@ class ToolExecutor:
                 state.run_id,
                 call.call_id,
                 tool_name,
-                _policy_safe_input_summary(tool_input, policy_view),
+                _policy_safe_input_summary(bound_input, policy_view),
                 user_id=state.user_id,
                 session_id=state.session_id,
             )
+
+        disposition: Literal["invoke", "duplicate", "confirmation", "budget_error"] = "invoke"
+        prepared_result = None
+        reservation = None
+        budget_error = None
+        context = None
         idempotency_record = None
         if risk_decision.idempotency_required and risk_decision.idempotency_key is not None:
             idempotency_record = self.idempotency_ledger.get(
@@ -178,597 +249,584 @@ class ToolExecutor:
                 idempotency_key=risk_decision.idempotency_key,
             )
         if idempotency_record is not None:
-            latency_ms = int((perf_counter() - started_at) * 1000)
-            result = duplicate_suppressed_result(
+            disposition = "duplicate"
+            prepared_result = duplicate_suppressed_result(
                 tool_name=tool_name,
                 record=idempotency_record,
                 decision=risk_decision,
-                latency_ms=latency_ms,
+                latency_ms=int((perf_counter() - started_at) * 1000),
             )
-            state.complete_tool_call(call.call_id, result)
-            post_tool_call = build_post_tool_call_summary(
-                tool_name=tool_name,
-                result=result,
-                state=state,
-                step_id=step_id,
-                call_id=call.call_id,
-                latency_ms=latency_ms,
-                retry_count=0,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(duplicate_suppressed=True),
-                registry=self.registry,
-            )
-            self._emit(
-                AgentEvent(
-                    type="tool_finished",
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    tool_name=tool_name,
-                    output_ref=result.output_ref,
-                    payload={
-                        "call_id": call.call_id,
-                        "step_id": step_id,
-                        "latency_ms": latency_ms,
-                        "retry_count": 0,
-                        "post_tool_call": post_tool_call,
-                    },
-                )
-            )
-            if self.tool_history is not None:
-                self.tool_history.record_end(
-                    state.run_id,
-                    call.call_id,
-                    tool_name,
-                    "succeeded",
-                    latency_ms,
-                    output_ref=result.output_ref,
-                    user_id=state.user_id,
-                    session_id=state.session_id,
-                    output_summary=_policy_safe_output_summary(result, policy_view),
-                    audit_payload=_policy_safe_audit_payload(result, policy_view),
-                    raw_data_ref=result.raw_data_ref,
-                )
-            _append_tool_trace_event(
-                trace_store,
-                trace_id=trace_id,
-                state=state,
-                node_name=node_name or "tool_executor",
-                canonical_event="tool.finished",
-                status=str(post_tool_call.get("status") or "succeeded"),
-                capability=capability,
-                tool_name=tool_name,
-                call_id=call.call_id,
-                step_id=step_id,
-                span_id=tool_span_id,
-                latency_ms=latency_ms,
-                retry_count=0,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(duplicate_suppressed=True),
-                input_summary=_input_summary(tool_input),
-                output_summary=_policy_safe_output_summary(result, policy_view),
-                provider=_provider_name(result.data or {}),
-                model=_model_name(result.data or {}),
-            )
-            return result
-
-        if not risk_decision.allow_execute:
-            latency_ms = int((perf_counter() - started_at) * 1000)
-            result = confirmation_required_result(
+        elif not risk_decision.allow_execute:
+            disposition = "confirmation"
+            prepared_result = confirmation_required_result(
                 tool_name=tool_name,
                 decision=risk_decision,
-                latency_ms=latency_ms,
+                latency_ms=int((perf_counter() - started_at) * 1000),
             )
-            state.complete_tool_call(call.call_id, result)
-            post_tool_call = build_post_tool_call_summary(
-                tool_name=tool_name,
-                result=result,
-                state=state,
-                step_id=step_id,
-                call_id=call.call_id,
-                latency_ms=latency_ms,
-                retry_count=0,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(),
-                registry=self.registry,
-            )
-            self._emit(
-                AgentEvent(
-                    type="tool_finished",
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    tool_name=tool_name,
-                    output_ref=result.output_ref,
-                    payload={
-                        "call_id": call.call_id,
-                        "step_id": step_id,
-                        "latency_ms": latency_ms,
-                        "retry_count": 0,
-                        "post_tool_call": post_tool_call,
-                    },
-                )
-            )
-            if self.tool_history is not None:
-                self.tool_history.record_end(
-                    state.run_id,
-                    call.call_id,
-                    tool_name,
-                    "succeeded",
-                    latency_ms,
-                    output_ref=result.output_ref,
-                    user_id=state.user_id,
-                    session_id=state.session_id,
-                    output_summary=_policy_safe_output_summary(result, policy_view),
-                    audit_payload=_policy_safe_audit_payload(result, policy_view),
-                    raw_data_ref=result.raw_data_ref,
-                )
-            _append_tool_trace_event(
-                trace_store,
-                trace_id=trace_id,
-                state=state,
-                node_name=node_name or "tool_executor",
-                canonical_event="tool.finished",
-                status=str(post_tool_call.get("status") or "pending_confirmation"),
+        else:
+            reservation, budget_error = state.provider_budget.reserve_call(
                 capability=capability,
-                tool_name=tool_name,
-                call_id=call.call_id,
-                step_id=step_id,
-                span_id=tool_span_id,
-                latency_ms=latency_ms,
-                retry_count=0,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(),
-                input_summary=_input_summary(tool_input),
-                output_summary=_policy_safe_output_summary(result, policy_view),
-                provider=_provider_name(result.data or {}),
-                model=_model_name(result.data or {}),
+                provider=_provider_name(bound_input),
+                estimated_cost=_estimated_cost(bound_input),
+                input_size_bytes=_input_size_bytes(bound_input),
             )
-            return result
-
-        budget_error = budget.check_before_call(
-            capability=capability,
-            provider=_provider_name(tool_input),
-            estimated_cost=_estimated_cost(tool_input),
-            input_size_bytes=_input_size_bytes(tool_input),
-        )
         if budget_error is not None:
-            latency_ms = int((perf_counter() - started_at) * 1000)
-            optional_step = bool(step.optional) if step is not None else False
-            recovery_action = "continue_with_partial_result" if optional_step else "stop_with_error"
-            contract = build_capability_output_contract(
-                capability=capability,
-                status="failed",
-                errors=[budget_error.model_dump(mode="json")],
-                metadata={"provider_budget": budget.summary()},
-            )
-            result = ToolResult(
+            disposition = "budget_error"
+            prepared_result = ToolResult(
                 tool_name=tool_name,
                 success=False,
                 error=f"{budget_error.code}: {budget_error.message}",
-                data={"provider_budget": budget.summary()},
-                latency_ms=latency_ms,
-                contract=contract,
+                latency_ms=int((perf_counter() - started_at) * 1000),
             )
-            post_tool_call = build_post_tool_call_summary(
-                tool_name=tool_name,
-                result=result,
-                state=state,
-                step_id=step_id,
-                call_id=call.call_id,
-                latency_ms=latency_ms,
-                retry_count=0,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(),
-                registry=self.registry,
-            )
-            state.fail_tool_call(
-                call.call_id,
-                budget_error.message,
-                result,
-                error_details={
-                    "code": budget_error.code,
-                    "recovery_action": recovery_action,
-                    "optional_step": optional_step,
-                    "retryable": False,
-                    "step_id": step_id,
-                    "provider_budget": budget.summary(),
-                },
-                stop_run=not optional_step,
-            )
-            self._emit(
-                AgentEvent(
-                    type="tool_failed",
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    tool_name=tool_name,
-                    error=api_error(
-                        budget_error.code,
-                        budget_error.message,
-                        detail={"step_id": step_id, "recovery_action": recovery_action},
-                        recoverable=False,
-                    ).model_dump(mode="json"),
-                    payload={
-                        "call_id": call.call_id,
-                        "step_id": step_id,
-                        "latency_ms": latency_ms,
-                        "retry_count": 0,
-                        "code": budget_error.code,
-                        "recovery_action": recovery_action,
-                        "contract": contract_summary(result.contract),
-                        "post_tool_call": post_tool_call,
+        elif disposition == "invoke":
+            try:
+                before_tool_execution = self.context_metadata.get("_before_tool_execution")
+                if callable(before_tool_execution):
+                    before_tool_execution()
+                context_metadata = {
+                    **{
+                        key: value
+                        for key, value in self.context_metadata.items()
+                        if key != "_before_tool_execution"
                     },
-                )
-            )
-            if self.tool_history is not None:
-                self.tool_history.record_end(
-                    state.run_id,
-                    call.call_id,
-                    tool_name,
-                    "failed",
-                    latency_ms,
-                    error=_policy_safe_error(budget_error.message, policy_view),
-                    user_id=state.user_id,
-                    session_id=state.session_id,
-                    output_summary=_policy_safe_output_summary(result, policy_view),
-                    audit_payload=_policy_safe_audit_payload(result, policy_view),
-                    raw_data_ref=result.raw_data_ref,
-                )
-            _append_tool_trace_event(
-                trace_store,
-                trace_id=trace_id,
-                state=state,
-                node_name=node_name or "tool_executor",
-                event_type="tool_failed",
-                canonical_event="tool.failed",
-                status="failed",
-                capability=capability,
-                tool_name=tool_name,
-                call_id=call.call_id,
-                step_id=step_id,
-                span_id=tool_span_id,
-                latency_ms=latency_ms,
-                retry_count=0,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(),
-                input_summary=_input_summary(tool_input),
-                output_summary={"provider_budget": budget.summary()},
-                error_code=budget_error.code,
-                error_message=budget_error.message,
-                recovery_action=recovery_action,
-            )
-            return result
-
-        before_tool_execution = self.context_metadata.get("_before_tool_execution")
-        if callable(before_tool_execution):
-            before_tool_execution()
-        try:
-            context_metadata = {
-                **{
-                    key: value
-                    for key, value in self.context_metadata.items()
-                    if key != "_before_tool_execution"
-                },
-                "request_text": state.request.text or "",
-                "request_metadata": dict(state.request.metadata),
-            }
-            if risk_decision.idempotency_key is not None:
-                context_metadata["idempotency_key"] = risk_decision.idempotency_key
-            if policy_view.timeout_s is not None:
-                context_metadata["tool_execution"] = {
-                    "timeout_s": policy_view.timeout_s,
-                    "deadline_monotonic_s": monotonic() + policy_view.timeout_s,
+                    "request_text": state.request.text or "",
+                    "request_metadata": dict(state.request.metadata),
                 }
-            result, retry_count = self._run_with_retry(
-                tool_name,
-                tool_input,
-                ToolContext(
+                if risk_decision.idempotency_key is not None:
+                    context_metadata["idempotency_key"] = risk_decision.idempotency_key
+                if policy_view.timeout_s is not None:
+                    context_metadata["tool_execution"] = {
+                        "timeout_s": policy_view.timeout_s,
+                        "deadline_monotonic_s": monotonic() + policy_view.timeout_s,
+                    }
+                context = ToolContext(
                     run_id=state.run_id,
                     user_id=state.user_id,
                     session_id=state.session_id,
                     metadata=context_metadata,
                     cancel_token=self.cancel_token,
+                )
+            except Exception:
+                if reservation is not None:
+                    state.provider_budget.release_reservation(reservation.reservation_id)
+                raise
+        return PreparedToolCall(
+            step_id=step_id,
+            tool_name=tool_name,
+            tool_input=bound_input,
+            step=step,
+            call_id=call.call_id,
+            capability=capability,
+            policy_view=policy_view,
+            risk_decision=risk_decision,
+            started_at=started_at,
+            tool_span_id=tool_span_id,
+            context=context,
+            disposition=disposition,
+            prepared_result=prepared_result,
+            budget_reservation=reservation,
+            budget_error=budget_error,
+            trace_store=trace_store,
+            trace_id=trace_id,
+            node_name=effective_node_name,
+        )
+
+    def invoke_tool(self, prepared: PreparedToolCall) -> ToolInvocationResult:
+        """Invoke a prepared tool body without mutating AgentState/history/trace."""
+
+        if prepared.prepared_result is not None:
+            return ToolInvocationResult(result=prepared.prepared_result)
+        if prepared.context is None:
+            raise RuntimeError("Prepared tool call is missing its ToolContext.")
+        try:
+            result, retry_count = self._run_with_retry(
+                prepared.tool_name,
+                prepared.tool_input,
+                prepared.context,
+                step_id=prepared.step_id,
+                preserve_success_after_cancel=_preserve_success_after_cancel(
+                    prepared.risk_decision
                 ),
-                step_id=step_id,
-                preserve_success_after_cancel=_preserve_success_after_cancel(risk_decision),
                 max_retries=_effective_max_retries(
-                    policy_view=policy_view,
-                    risk_decision=risk_decision,
+                    policy_view=prepared.policy_view,
+                    risk_decision=prepared.risk_decision,
                     global_max_retries=self.execution_policy.retry.max_retries,
                 ),
             )
-            result = _mark_unknown_mutating_timeout(result, policy_view=policy_view)
+            result = _mark_unknown_mutating_timeout(result, policy_view=prepared.policy_view)
+            latency_ms = int((perf_counter() - prepared.started_at) * 1000)
+            if result.latency_ms is None:
+                result.latency_ms = latency_ms
+            return ToolInvocationResult(result=result, retry_count=retry_count)
         except AgentRunCancelled as exc:
-            latency_ms = int((perf_counter() - started_at) * 1000)
-            error_details = {
-                **exc.details,
-                "step_id": step_id,
-                "tool_name": tool_name,
-                "retryable": False,
-            }
+            latency_ms = int((perf_counter() - prepared.started_at) * 1000)
             error_details = build_realtime_turn_cancellation_metadata(
-                error_details,
+                {
+                    **exc.details,
+                    "step_id": prepared.step_id,
+                    "tool_name": prepared.tool_name,
+                    "retryable": False,
+                },
                 phase="tool_running",
             )
-            result = _cancelled_tool_result(
-                tool_name,
-                latency_ms=latency_ms,
-                cancel_metadata=error_details,
+            return ToolInvocationResult(
+                result=_cancelled_tool_result(
+                    prepared.tool_name,
+                    latency_ms=latency_ms,
+                    cancel_metadata=error_details,
+                ),
+                cancellation=exc,
+                cancellation_metadata=error_details,
             )
-            post_tool_call = build_post_tool_call_summary(
-                tool_name=tool_name,
-                result=result,
-                state=state,
-                step_id=step_id,
-                call_id=call.call_id,
-                latency_ms=latency_ms,
-                retry_count=0,
-                cancel_metadata=error_details,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(),
-                registry=self.registry,
-            )
-            state.fail_tool_call(
-                call.call_id,
-                DEFAULT_CANCELLATION_MESSAGE,
-                result,
-                error_details=error_details,
-                stop_run=True,
-            )
-            self._emit(
-                AgentEvent(
-                    type="tool_failed",
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    tool_name=tool_name,
-                    error=api_error(
-                        CANCELLATION_ERROR_CODE,
-                        DEFAULT_CANCELLATION_MESSAGE,
-                        detail={"step_id": step_id, "source": tool_name},
-                        recoverable=False,
-                    ).model_dump(mode="json"),
-                    payload={
-                        "call_id": call.call_id,
-                        "step_id": step_id,
-                        "latency_ms": latency_ms,
-                        "retry_count": 0,
-                        "code": CANCELLATION_ERROR_CODE,
-                        "post_tool_call": post_tool_call,
-                    },
-                )
-            )
-            if self.tool_history is not None:
-                self.tool_history.record_end(
-                    state.run_id,
-                    call.call_id,
-                    tool_name,
-                    "failed",
-                    latency_ms,
-                    error=_policy_safe_error(DEFAULT_CANCELLATION_MESSAGE, policy_view),
-                    user_id=state.user_id,
-                    session_id=state.session_id,
-                    output_summary=_policy_safe_output_summary(result, policy_view),
-                    audit_payload=_policy_safe_audit_payload(result, policy_view),
-                    raw_data_ref=result.raw_data_ref,
-                )
-            _append_tool_trace_event(
-                trace_store,
-                trace_id=trace_id,
-                state=state,
-                node_name=node_name or "tool_executor",
-                event_type="tool_failed",
-                canonical_event="tool.failed",
-                status="failed",
-                capability=capability,
-                tool_name=tool_name,
-                call_id=call.call_id,
-                step_id=step_id,
-                span_id=tool_span_id,
-                latency_ms=latency_ms,
-                retry_count=0,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(),
-                input_summary=_input_summary(tool_input),
-                output_summary={"cancelled": True},
-                error_code=CANCELLATION_ERROR_CODE,
-                error_message=DEFAULT_CANCELLATION_MESSAGE,
-                recovery_action="cancelled",
-            )
-            raise AgentRunCancelled(
-                DEFAULT_CANCELLATION_MESSAGE,
-                phase=exc.phase or "tool",
-                node_name=exc.node_name or node_name or "tool_executor",
-                source=exc.source,
-                details=error_details,
-                state=state,
-            ) from exc
-        latency_ms = int((perf_counter() - started_at) * 1000)
-        if result.latency_ms is None:
-            result.latency_ms = latency_ms
-        _record_provider_budget_call(
-            budget,
-            run_id=state.run_id,
-            capability=capability,
-            tool_input=tool_input,
-            result=result,
-            latency_ms=result.latency_ms or latency_ms,
-        )
 
+    def commit_tool_result(
+        self,
+        state: AgentState,
+        prepared: PreparedToolCall,
+        invocation: ToolInvocationResult,
+    ) -> ToolResult:
+        """Commit one invocation outcome to shared runtime stores in coordinator order."""
+
+        if invocation.cancellation is not None:
+            return self._commit_staged_cancellation(state, prepared, invocation)
+        if prepared.disposition == "budget_error":
+            return self._commit_staged_budget_failure(state, prepared, invocation.result)
+        if prepared.disposition in {"duplicate", "confirmation"}:
+            return self._commit_staged_success(state, prepared, invocation)
+
+        result = invocation.result
+        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
+        if prepared.budget_reservation is None:
+            raise RuntimeError("Prepared tool call is missing its provider budget reservation.")
+        state.provider_budget.record_reserved_call(
+            prepared.budget_reservation,
+            run_id=state.run_id,
+            provider=_provider_name(result.data or {}) or _provider_name(prepared.tool_input),
+            model=_model_name(result.data or {}),
+            estimated_cost=_estimated_cost(result.data or {}),
+            use_reserved_estimated_cost=False,
+            cost_unit=_cost_unit(result.data or {}),
+            latency_ms=latency_ms,
+            status="succeeded" if result.success else "failed",
+        )
         if result.success:
+            return self._commit_staged_success(state, prepared, invocation)
+        return self._commit_staged_failure(state, prepared, invocation)
+
+    def _commit_staged_success(
+        self,
+        state: AgentState,
+        prepared: PreparedToolCall,
+        invocation: ToolInvocationResult,
+    ) -> ToolResult:
+        result = invocation.result
+        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
+        idempotency_record = None
+        if prepared.disposition == "invoke":
             idempotency_record = record_successful_idempotent_result(
                 ledger=self.idempotency_ledger,
-                decision=risk_decision,
+                decision=prepared.risk_decision,
                 state=state,
                 result=result,
             )
-            state.complete_tool_call(call.call_id, result)
-            post_tool_call = build_post_tool_call_summary(
-                tool_name=tool_name,
-                result=result,
-                state=state,
-                step_id=step_id,
-                call_id=call.call_id,
-                latency_ms=result.latency_ms or latency_ms,
-                retry_count=retry_count,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency={
-                    **risk_decision.idempotency_summary(),
-                    "status": idempotency_record.status if idempotency_record is not None else None,
-                },
-                registry=self.registry,
+        idempotency_summary = prepared.risk_decision.idempotency_summary(
+            duplicate_suppressed=prepared.disposition == "duplicate"
+        )
+        if prepared.disposition == "invoke":
+            idempotency_summary = {
+                **idempotency_summary,
+                "status": (
+                    idempotency_record.status if idempotency_record is not None else None
+                ),
+            }
+        state.complete_tool_call(prepared.call_id, result)
+        post_tool_call = build_post_tool_call_summary(
+            tool_name=prepared.tool_name,
+            result=result,
+            state=state,
+            step_id=prepared.step_id,
+            call_id=prepared.call_id,
+            latency_ms=latency_ms,
+            retry_count=invocation.retry_count,
+            risk_gate=prepared.risk_decision.risk_summary(),
+            idempotency=idempotency_summary,
+            registry=self.registry,
+        )
+        event_payload = {
+            "call_id": prepared.call_id,
+            "step_id": prepared.step_id,
+            "latency_ms": latency_ms,
+            "retry_count": invocation.retry_count,
+            "post_tool_call": post_tool_call,
+        }
+        if prepared.disposition == "invoke":
+            event_payload["contract"] = contract_summary(result.contract)
+        self._emit(
+            AgentEvent(
+                type="tool_finished",
+                session_id=state.session_id,
+                run_id=state.run_id,
+                tool_name=prepared.tool_name,
+                output_ref=result.output_ref,
+                payload=event_payload,
             )
-            self._emit(
-                AgentEvent(
-                    type="tool_finished",
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    tool_name=tool_name,
-                    output_ref=result.output_ref,
-                    payload={
-                        "call_id": call.call_id,
-                        "step_id": step_id,
-                        "latency_ms": result.latency_ms or latency_ms,
-                        "retry_count": retry_count,
-                        "contract": contract_summary(result.contract),
-                        "post_tool_call": post_tool_call,
-                    },
-                )
+        )
+        if self.tool_history is not None:
+            self.tool_history.record_end(
+                state.run_id,
+                prepared.call_id,
+                prepared.tool_name,
+                "succeeded",
+                latency_ms,
+                output_ref=result.output_ref,
+                user_id=state.user_id,
+                session_id=state.session_id,
+                output_summary=_policy_safe_output_summary(result, prepared.policy_view),
+                audit_payload=_policy_safe_audit_payload(result, prepared.policy_view),
+                raw_data_ref=result.raw_data_ref,
             )
-            if self.tool_history is not None:
-                self.tool_history.record_end(
-                    state.run_id,
-                    call.call_id,
-                    tool_name,
-                    "succeeded",
-                    result.latency_ms or latency_ms,
-                    output_ref=result.output_ref,
-                    user_id=state.user_id,
-                    session_id=state.session_id,
-                    output_summary=_policy_safe_output_summary(result, policy_view),
-                    audit_payload=_policy_safe_audit_payload(result, policy_view),
-                    raw_data_ref=result.raw_data_ref,
-                )
-            _append_tool_trace_event(
-                trace_store,
-                trace_id=trace_id,
-                state=state,
-                node_name=node_name or "tool_executor",
-                canonical_event="tool.finished",
-                status=str(post_tool_call.get("status") or "succeeded"),
-                capability=capability,
-                tool_name=tool_name,
-                call_id=call.call_id,
-                step_id=step_id,
-                span_id=tool_span_id,
-                latency_ms=result.latency_ms or latency_ms,
-                retry_count=retry_count,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency={
-                    **risk_decision.idempotency_summary(),
-                    "status": idempotency_record.status if idempotency_record is not None else None,
-                },
-                input_summary=_input_summary(tool_input),
-                output_summary={
-                    **_policy_safe_output_summary(result, policy_view),
-                    **_deadline_trace_summary(policy_view=policy_view, result=result),
-                },
-                provider=_provider_name(result.data or {}),
-                model=_model_name(result.data or {}),
-            )
-        else:
-            decision = self.recovery_policy.decide(result, step)
-            result.error = decision.message
-            post_tool_call = build_post_tool_call_summary(
-                tool_name=tool_name,
-                result=result,
-                state=state,
-                step_id=step_id,
-                call_id=call.call_id,
-                latency_ms=result.latency_ms or latency_ms,
-                retry_count=retry_count,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(),
-                registry=self.registry,
-            )
-            state.fail_tool_call(
-                call.call_id,
-                decision.message,
-                result,
-                error_details={
+        _append_tool_trace_event(
+            prepared.trace_store,
+            trace_id=prepared.trace_id,
+            state=state,
+            node_name=prepared.node_name,
+            canonical_event="tool.finished",
+            status=str(post_tool_call.get("status") or "succeeded"),
+            capability=prepared.capability,
+            tool_name=prepared.tool_name,
+            call_id=prepared.call_id,
+            step_id=prepared.step_id,
+            span_id=prepared.tool_span_id,
+            latency_ms=latency_ms,
+            retry_count=invocation.retry_count,
+            risk_gate=prepared.risk_decision.risk_summary(),
+            idempotency=idempotency_summary,
+            input_summary=_input_summary(prepared.tool_input),
+            output_summary={
+                **_policy_safe_output_summary(result, prepared.policy_view),
+                **_deadline_trace_summary(policy_view=prepared.policy_view, result=result),
+            },
+            provider=_provider_name(result.data or {}),
+            model=_model_name(result.data or {}),
+        )
+        return result
+
+    def _commit_staged_failure(
+        self,
+        state: AgentState,
+        prepared: PreparedToolCall,
+        invocation: ToolInvocationResult,
+    ) -> ToolResult:
+        result = invocation.result
+        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
+        decision = self.recovery_policy.decide(result, prepared.step)
+        result.error = decision.message
+        post_tool_call = build_post_tool_call_summary(
+            tool_name=prepared.tool_name,
+            result=result,
+            state=state,
+            step_id=prepared.step_id,
+            call_id=prepared.call_id,
+            latency_ms=latency_ms,
+            retry_count=invocation.retry_count,
+            risk_gate=prepared.risk_decision.risk_summary(),
+            idempotency=prepared.risk_decision.idempotency_summary(),
+            registry=self.registry,
+        )
+        state.fail_tool_call(
+            prepared.call_id,
+            decision.message,
+            result,
+            error_details={
+                "code": decision.error_code,
+                "recovery_action": decision.action,
+                "optional_step": decision.optional_step,
+                "retryable": decision.retryable,
+                "step_id": prepared.step_id,
+                "retry_count": invocation.retry_count,
+            },
+            stop_run=decision.action == "stop_with_error",
+        )
+        self._emit(
+            AgentEvent(
+                type="tool_failed",
+                session_id=state.session_id,
+                run_id=state.run_id,
+                tool_name=prepared.tool_name,
+                error=api_error(
+                    decision.error_code,
+                    decision.message,
+                    detail={"step_id": prepared.step_id, "recovery_action": decision.action},
+                    recoverable=decision.retryable,
+                ).model_dump(mode="json"),
+                payload={
+                    "call_id": prepared.call_id,
+                    "step_id": prepared.step_id,
+                    "latency_ms": latency_ms,
+                    "retry_count": invocation.retry_count,
                     "code": decision.error_code,
                     "recovery_action": decision.action,
-                    "optional_step": decision.optional_step,
-                    "retryable": decision.retryable,
-                    "step_id": step_id,
-                    "retry_count": retry_count,
+                    "contract": contract_summary(result.contract),
+                    "post_tool_call": post_tool_call,
                 },
-                stop_run=decision.action == "stop_with_error",
             )
-            self._emit(
-                AgentEvent(
-                    type="tool_failed",
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    tool_name=tool_name,
-                    error=api_error(
-                        decision.error_code,
-                        decision.message,
-                        detail={"step_id": step_id, "recovery_action": decision.action},
-                        recoverable=decision.retryable,
-                    ).model_dump(mode="json"),
-                    payload={
-                        "call_id": call.call_id,
-                        "step_id": step_id,
-                        "latency_ms": result.latency_ms or latency_ms,
-                        "retry_count": retry_count,
-                        "code": decision.error_code,
-                        "recovery_action": decision.action,
-                        "contract": contract_summary(result.contract),
-                        "post_tool_call": post_tool_call,
-                    },
-                )
+        )
+        if self.tool_history is not None:
+            self.tool_history.record_end(
+                state.run_id,
+                prepared.call_id,
+                prepared.tool_name,
+                "failed",
+                latency_ms,
+                error=_policy_safe_error(decision.message, prepared.policy_view),
+                user_id=state.user_id,
+                session_id=state.session_id,
+                output_summary=_policy_safe_output_summary(result, prepared.policy_view),
+                audit_payload=_policy_safe_audit_payload(result, prepared.policy_view),
+                raw_data_ref=result.raw_data_ref,
             )
-            if self.tool_history is not None:
-                self.tool_history.record_end(
-                    state.run_id,
-                    call.call_id,
-                    tool_name,
-                    "failed",
-                    result.latency_ms or latency_ms,
-                    error=_policy_safe_error(decision.message, policy_view),
-                    user_id=state.user_id,
-                    session_id=state.session_id,
-                    output_summary=_policy_safe_output_summary(result, policy_view),
-                    audit_payload=_policy_safe_audit_payload(result, policy_view),
-                    raw_data_ref=result.raw_data_ref,
-                )
-            _append_tool_trace_event(
-                trace_store,
-                trace_id=trace_id,
-                state=state,
-                node_name=node_name or "tool_executor",
-                event_type="tool_failed",
-                canonical_event="tool.failed",
-                status="failed",
-                capability=capability,
-                tool_name=tool_name,
-                call_id=call.call_id,
-                step_id=step_id,
-                span_id=tool_span_id,
-                latency_ms=result.latency_ms or latency_ms,
-                retry_count=retry_count,
-                risk_gate=risk_decision.risk_summary(),
-                idempotency=risk_decision.idempotency_summary(),
-                input_summary=_input_summary(tool_input),
-                output_summary={
-                    **_policy_safe_output_summary(result, policy_view),
-                    **_deadline_trace_summary(policy_view=policy_view, result=result),
-                },
-                provider=_provider_name(result.data or {}),
-                model=_model_name(result.data or {}),
-                error_code=decision.error_code,
-                error_message=_policy_safe_error(decision.message, policy_view),
-                recovery_action=decision.action,
-            )
+        _append_tool_trace_event(
+            prepared.trace_store,
+            trace_id=prepared.trace_id,
+            state=state,
+            node_name=prepared.node_name,
+            event_type="tool_failed",
+            canonical_event="tool.failed",
+            status="failed",
+            capability=prepared.capability,
+            tool_name=prepared.tool_name,
+            call_id=prepared.call_id,
+            step_id=prepared.step_id,
+            span_id=prepared.tool_span_id,
+            latency_ms=latency_ms,
+            retry_count=invocation.retry_count,
+            risk_gate=prepared.risk_decision.risk_summary(),
+            idempotency=prepared.risk_decision.idempotency_summary(),
+            input_summary=_input_summary(prepared.tool_input),
+            output_summary={
+                **_policy_safe_output_summary(result, prepared.policy_view),
+                **_deadline_trace_summary(policy_view=prepared.policy_view, result=result),
+            },
+            provider=_provider_name(result.data or {}),
+            model=_model_name(result.data or {}),
+            error_code=decision.error_code,
+            error_message=_policy_safe_error(decision.message, prepared.policy_view),
+            recovery_action=decision.action,
+        )
         return result
+
+    def _commit_staged_budget_failure(
+        self,
+        state: AgentState,
+        prepared: PreparedToolCall,
+        result: ToolResult,
+    ) -> ToolResult:
+        budget_error = prepared.budget_error
+        if budget_error is None:
+            raise RuntimeError("Budget failure commit requires a budget error.")
+        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
+        optional_step = bool(prepared.step.optional) if prepared.step is not None else False
+        recovery_action = "continue_with_partial_result" if optional_step else "stop_with_error"
+        contract = build_capability_output_contract(
+            capability=prepared.capability,
+            status="failed",
+            errors=[budget_error.model_dump(mode="json")],
+            metadata={"provider_budget": state.provider_budget.summary()},
+        )
+        result.data = {"provider_budget": state.provider_budget.summary()}
+        result.contract = contract
+        post_tool_call = build_post_tool_call_summary(
+            tool_name=prepared.tool_name,
+            result=result,
+            state=state,
+            step_id=prepared.step_id,
+            call_id=prepared.call_id,
+            latency_ms=latency_ms,
+            retry_count=0,
+            risk_gate=prepared.risk_decision.risk_summary(),
+            idempotency=prepared.risk_decision.idempotency_summary(),
+            registry=self.registry,
+        )
+        state.fail_tool_call(
+            prepared.call_id,
+            budget_error.message,
+            result,
+            error_details={
+                "code": budget_error.code,
+                "recovery_action": recovery_action,
+                "optional_step": optional_step,
+                "retryable": False,
+                "step_id": prepared.step_id,
+                "provider_budget": state.provider_budget.summary(),
+            },
+            stop_run=not optional_step,
+        )
+        self._emit(
+            AgentEvent(
+                type="tool_failed",
+                session_id=state.session_id,
+                run_id=state.run_id,
+                tool_name=prepared.tool_name,
+                error=api_error(
+                    budget_error.code,
+                    budget_error.message,
+                    detail={"step_id": prepared.step_id, "recovery_action": recovery_action},
+                    recoverable=False,
+                ).model_dump(mode="json"),
+                payload={
+                    "call_id": prepared.call_id,
+                    "step_id": prepared.step_id,
+                    "latency_ms": latency_ms,
+                    "retry_count": 0,
+                    "code": budget_error.code,
+                    "recovery_action": recovery_action,
+                    "contract": contract_summary(contract),
+                    "post_tool_call": post_tool_call,
+                },
+            )
+        )
+        if self.tool_history is not None:
+            self.tool_history.record_end(
+                state.run_id,
+                prepared.call_id,
+                prepared.tool_name,
+                "failed",
+                latency_ms,
+                error=_policy_safe_error(budget_error.message, prepared.policy_view),
+                user_id=state.user_id,
+                session_id=state.session_id,
+                output_summary=_policy_safe_output_summary(result, prepared.policy_view),
+                audit_payload=_policy_safe_audit_payload(result, prepared.policy_view),
+                raw_data_ref=result.raw_data_ref,
+            )
+        _append_tool_trace_event(
+            prepared.trace_store,
+            trace_id=prepared.trace_id,
+            state=state,
+            node_name=prepared.node_name,
+            event_type="tool_failed",
+            canonical_event="tool.failed",
+            status="failed",
+            capability=prepared.capability,
+            tool_name=prepared.tool_name,
+            call_id=prepared.call_id,
+            step_id=prepared.step_id,
+            span_id=prepared.tool_span_id,
+            latency_ms=latency_ms,
+            retry_count=0,
+            risk_gate=prepared.risk_decision.risk_summary(),
+            idempotency=prepared.risk_decision.idempotency_summary(),
+            input_summary=_input_summary(prepared.tool_input),
+            output_summary={"provider_budget": state.provider_budget.summary()},
+            error_code=budget_error.code,
+            error_message=budget_error.message,
+            recovery_action=recovery_action,
+        )
+        return result
+
+    def _commit_staged_cancellation(
+        self,
+        state: AgentState,
+        prepared: PreparedToolCall,
+        invocation: ToolInvocationResult,
+    ) -> ToolResult:
+        result = invocation.result
+        error_details = invocation.cancellation_metadata or {}
+        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
+        if prepared.budget_reservation is not None:
+            state.provider_budget.release_reservation(prepared.budget_reservation.reservation_id)
+        post_tool_call = build_post_tool_call_summary(
+            tool_name=prepared.tool_name,
+            result=result,
+            state=state,
+            step_id=prepared.step_id,
+            call_id=prepared.call_id,
+            latency_ms=latency_ms,
+            retry_count=0,
+            cancel_metadata=error_details,
+            risk_gate=prepared.risk_decision.risk_summary(),
+            idempotency=prepared.risk_decision.idempotency_summary(),
+            registry=self.registry,
+        )
+        state.fail_tool_call(
+            prepared.call_id,
+            DEFAULT_CANCELLATION_MESSAGE,
+            result,
+            error_details=error_details,
+            stop_run=True,
+        )
+        self._emit(
+            AgentEvent(
+                type="tool_failed",
+                session_id=state.session_id,
+                run_id=state.run_id,
+                tool_name=prepared.tool_name,
+                error=api_error(
+                    CANCELLATION_ERROR_CODE,
+                    DEFAULT_CANCELLATION_MESSAGE,
+                    detail={"step_id": prepared.step_id, "source": prepared.tool_name},
+                    recoverable=False,
+                ).model_dump(mode="json"),
+                payload={
+                    "call_id": prepared.call_id,
+                    "step_id": prepared.step_id,
+                    "latency_ms": latency_ms,
+                    "retry_count": 0,
+                    "code": CANCELLATION_ERROR_CODE,
+                    "post_tool_call": post_tool_call,
+                },
+            )
+        )
+        if self.tool_history is not None:
+            self.tool_history.record_end(
+                state.run_id,
+                prepared.call_id,
+                prepared.tool_name,
+                "failed",
+                latency_ms,
+                error=_policy_safe_error(DEFAULT_CANCELLATION_MESSAGE, prepared.policy_view),
+                user_id=state.user_id,
+                session_id=state.session_id,
+                output_summary=_policy_safe_output_summary(result, prepared.policy_view),
+                audit_payload=_policy_safe_audit_payload(result, prepared.policy_view),
+                raw_data_ref=result.raw_data_ref,
+            )
+        _append_tool_trace_event(
+            prepared.trace_store,
+            trace_id=prepared.trace_id,
+            state=state,
+            node_name=prepared.node_name,
+            event_type="tool_failed",
+            canonical_event="tool.failed",
+            status="failed",
+            capability=prepared.capability,
+            tool_name=prepared.tool_name,
+            call_id=prepared.call_id,
+            step_id=prepared.step_id,
+            span_id=prepared.tool_span_id,
+            latency_ms=latency_ms,
+            retry_count=0,
+            risk_gate=prepared.risk_decision.risk_summary(),
+            idempotency=prepared.risk_decision.idempotency_summary(),
+            input_summary=_input_summary(prepared.tool_input),
+            output_summary={"cancelled": True},
+            error_code=CANCELLATION_ERROR_CODE,
+            error_message=DEFAULT_CANCELLATION_MESSAGE,
+            recovery_action="cancelled",
+        )
+        exc = invocation.cancellation
+        raise AgentRunCancelled(
+            DEFAULT_CANCELLATION_MESSAGE,
+            phase=exc.phase if exc is not None and exc.phase else "tool",
+            node_name=(
+                exc.node_name
+                if exc is not None and exc.node_name
+                else prepared.node_name
+            ),
+            source=exc.source if exc is not None else "tool_executor",
+            details=error_details,
+            state=state,
+        ) from exc
 
     def _run_with_retry(
         self,
@@ -1070,29 +1128,6 @@ def _bind_durable_idempotency(
     if not idempotency_key:
         return tool_input
     return {**tool_input, "idempotency_key": idempotency_key}
-
-
-def _record_provider_budget_call(
-    budget: ProviderCallBudget,
-    *,
-    run_id: str,
-    capability: str,
-    tool_input: dict[str, Any],
-    result: ToolResult,
-    latency_ms: int,
-) -> None:
-    data = result.data or {}
-    budget.record_call(
-        run_id=run_id,
-        capability=capability,
-        provider=_provider_name(data) or _provider_name(tool_input),
-        model=_model_name(data),
-        estimated_cost=_estimated_cost(data),
-        cost_unit=_cost_unit(data),
-        input_size_bytes=_input_size_bytes(tool_input),
-        latency_ms=latency_ms,
-        status="succeeded" if result.success else "failed",
-    )
 
 
 def _provider_name(payload: dict[str, Any]) -> str | None:

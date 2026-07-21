@@ -7,16 +7,19 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.state import AgentState
+from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import (
     ApprovalPolicy,
     ToolPolicyMetadata,
+    ToolExecutionPolicy,
     ToolResult,
     ToolSpec,
     VisibilityPolicy,
 )
 from assistant_agent.schemas.tool_spec_adapters import tool_spec_to_openai_tool
+from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.tool_manifest import (
     PYTHON_INTERPRETER_TOOL_NAME,
     MEMORY_MEDIA_INGEST_TOOL_NAME,
@@ -62,6 +65,36 @@ class _ConflictingWeatherPolicyTool(_DeclaredValidationTool):
     )
 
 
+class _ExecutionBoundaryInput(BaseModel):
+    value: str
+
+
+class _ExecutionBoundaryTool(MockTool):
+    name = "execution_boundary_tool"
+    description = "Test-only tool for staged execution."
+    input_schema = _ExecutionBoundaryInput
+    output_schema = _ExecutionBoundaryInput
+    policy = ToolPolicyMetadata(
+        risk="pure",
+        approval=ApprovalPolicy(mode="never"),
+    )
+
+    def __init__(self) -> None:
+        self.run_count = 0
+
+    def _run(self, input: _ExecutionBoundaryInput, context: ToolContext) -> ToolResult:
+        self.run_count += 1
+        return ToolResult(tool_name=self.name, success=True, data=input.model_dump())
+
+
+class _ConfirmationBoundaryTool(_ExecutionBoundaryTool):
+    name = "confirmation_boundary_tool"
+    policy = ToolPolicyMetadata(
+        risk="external_write",
+        approval=ApprovalPolicy(mode="always"),
+    )
+
+
 def test_provider_description_uses_canonical_policy_view() -> None:
     spec = ToolSpec(
         name="canonical_policy_tool",
@@ -87,6 +120,103 @@ def test_registry_derives_side_effect_from_declarative_policy() -> None:
 
     assert spec.side_effect.level == "none"
     assert spec.side_effect.requires_confirmation is False
+
+
+def test_parallel_safe_defaults_to_false() -> None:
+    assert ToolExecutionPolicy().parallel_safe is False
+
+
+def test_tool_executor_stages_do_not_commit_during_invocation() -> None:
+    tool = _ExecutionBoundaryTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    events = ListEventSink()
+    executor = ToolExecutor(registry=registry, event_sink=events)
+    request = UserRequest(
+        user_id="user-1",
+        session_id="session-1",
+        text="execute",
+    )
+    state = AgentState.from_request(request)
+
+    prepared = executor.prepare_tool_call(
+        state,
+        "step-1",
+        tool.name,
+        {"value": "ok"},
+    )
+
+    assert tool.run_count == 0
+    assert len(state.tool_calls) == 1
+    assert state.tool_results == []
+    assert [event.type for event in events.events] == ["tool_started"]
+
+    invocation = executor.invoke_tool(prepared)
+
+    assert tool.run_count == 1
+    assert state.tool_results == []
+    assert [event.type for event in events.events] == ["tool_started"]
+
+    result = executor.commit_tool_result(state, prepared, invocation)
+
+    assert result.success is True
+    assert [item.data for item in state.tool_results] == [{"value": "ok"}]
+    assert [event.type for event in events.events] == ["tool_started", "tool_finished"]
+
+
+def test_prepare_reserves_budget_before_a_future_parallel_batch_invokes() -> None:
+    tool = _ExecutionBoundaryTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    executor = ToolExecutor(registry=registry)
+    request = UserRequest(
+        user_id="user-1",
+        session_id="session-1",
+        text="execute twice",
+    )
+    state = AgentState.from_request(request)
+    state.provider_budget.max_provider_calls_per_run = 1
+
+    first = executor.prepare_tool_call(state, "step-1", tool.name, {"value": "first"})
+    second = executor.prepare_tool_call(state, "step-2", tool.name, {"value": "second"})
+
+    assert first.budget_reservation is not None
+    assert first.budget_error is None
+    assert second.budget_reservation is None
+    assert second.budget_error is not None
+    assert second.budget_error.code == "provider_call_limit_exceeded"
+
+    first_result = executor.commit_tool_result(state, first, executor.invoke_tool(first))
+    second_result = executor.commit_tool_result(state, second, executor.invoke_tool(second))
+
+    assert first_result.success is True
+    assert second_result.success is False
+    assert tool.run_count == 1
+    assert state.provider_budget.provider_call_count == 1
+    assert state.provider_budget.pending_reservations == []
+
+
+def test_staged_executor_preserves_confirmation_without_invoking_tool() -> None:
+    tool = _ConfirmationBoundaryTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    events = ListEventSink()
+    executor = ToolExecutor(registry=registry, event_sink=events)
+    request = UserRequest(
+        user_id="user-1",
+        session_id="session-1",
+        text="write externally",
+    )
+    state = AgentState.from_request(request)
+
+    result = executor.run_tool(state, "step-1", tool.name, {"value": "write"})
+
+    assert result.success is True
+    assert result.data["status"] == "confirmation_required"
+    assert tool.run_count == 0
+    assert state.provider_budget.provider_call_count == 0
+    assert state.provider_budget.pending_reservations == []
+    assert [event.type for event in events.events] == ["tool_started", "tool_finished"]
 
 
 def test_registry_rejects_conflicting_side_effect_declarations() -> None:
