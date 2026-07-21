@@ -22,7 +22,6 @@ class WebSearchTool(ToolBase):
     output_schema = WebSearchResult
     category = "read"
     requires_confirmation = False
-    progress_message = "我联网查一下。"
 
     def __init__(self, adapter: WebSearchAdapter | None = None) -> None:
         self.adapter = adapter or create_web_search_adapter()

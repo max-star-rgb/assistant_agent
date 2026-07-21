@@ -60,11 +60,8 @@ class ToolSpec(BaseModel):
     category: ToolCategory = "dangerous"
     toolset: str | None = None
     requires_confirmation: bool = True
-    requires_env: list[str] = Field(default_factory=list)
     enabled_by_default: bool = True
-    skill_only: bool = False
     requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
-    progress_message: str | None = None
 
 
 class RunToolCatalog(BaseModel):

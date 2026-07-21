@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from pathlib import Path
 from typing import Any
 
@@ -147,15 +146,6 @@ def qualify_tool_specs(
             )
             or spec.name in active_skill_tools
         )
-        missing_env = [name for name in spec.requires_env if not os.environ.get(name)]
-        if missing_env:
-            excluded_reasons[spec.name] = [
-                f"missing_required_env:{name}" for name in missing_env
-            ]
-            continue
-        if spec.skill_only and spec.name not in active_skill_tools:
-            excluded_reasons[spec.name] = ["skill_activation_required"]
-            continue
         if not spec.enabled_by_default and not (
             configured_for_exposure or explicitly_enabled
         ):

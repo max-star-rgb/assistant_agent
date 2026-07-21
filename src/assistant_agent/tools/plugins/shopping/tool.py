@@ -34,7 +34,6 @@ class ShoppingSearchTool(ToolBase):
     output_schema = ShoppingSearchResult
     category = "read"
     requires_confirmation = False
-    progress_message = "我查一下并比一下价格。"
 
     def __init__(
         self,

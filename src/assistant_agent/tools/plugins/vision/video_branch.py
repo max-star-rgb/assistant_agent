@@ -54,7 +54,6 @@ class VideoUnderstandingBranch(ToolBase):
     category = "read"
     requires_confirmation = False
     requires_media = ["video"]
-    progress_message = "我分析一下。"
 
     def __init__(
         self,

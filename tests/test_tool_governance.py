@@ -222,6 +222,10 @@ def test_registry_exposes_one_simple_tool_contract() -> None:
     assert not hasattr(spec, "execution")
     assert not hasattr(spec, "when_to_use")
     assert not hasattr(spec, "runtime_constraints")
+    assert not hasattr(spec, "requires_env")
+    assert not hasattr(spec, "skill_only")
+    assert not hasattr(spec, "progress_message")
+    assert spec.enabled_by_default is True
 
 
 def test_validated_tool_input_is_reused_by_executor() -> None:
@@ -545,3 +549,17 @@ def test_python_safety_validation_is_owned_by_python_tool() -> None:
 
     assert result.accepted is False
     assert result.code == "unsafe_tool_input"
+
+
+def test_python_enablement_remains_owned_by_python_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MULTIMODAL_AGENT_PYTHON_INTERPRETER_ENABLED", raising=False)
+
+    result = create_default_registry().run(
+        PYTHON_INTERPRETER_TOOL_NAME,
+        {"code": "1 + 1"},
+    )
+
+    assert result.success is False
+    assert result.data["errors"][0]["code"] == "python_interpreter_disabled"

@@ -31,9 +31,7 @@ class PythonInterpreterTool(ToolBase):
     category = "dangerous"
     toolset = "analysis.local"
     requires_confirmation = False
-    requires_env = ["MULTIMODAL_AGENT_PYTHON_INTERPRETER_ENABLED"]
     enabled_by_default = False
-    progress_message = "我用本地 Python 算一下。"
 
     def __init__(
         self,

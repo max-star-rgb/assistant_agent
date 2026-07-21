@@ -46,7 +46,6 @@ class WeatherTool(ToolBase):
     category = "read"
     toolset = "personal.readonly"
     requires_confirmation = False
-    progress_message = "我查一下天气。"
 
     def __init__(self, adapter: WeatherAdapter | None = None) -> None:
         self.adapter = adapter or MockWeatherAdapter()
@@ -76,7 +75,6 @@ class CalendarSearchTool(ToolBase):
     category = "read"
     toolset = "personal.calendar"
     requires_confirmation = False
-    progress_message = "我查一下日历。"
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
         self.adapter = adapter or MockCalendarAdapter()
@@ -107,7 +105,6 @@ class CalendarCreateTool(ToolBase):
     category = "write"
     toolset = "personal.calendar"
     requires_confirmation = True
-    progress_message = "需要你确认后我再创建日程。"
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
         self.adapter = adapter or MockCalendarAdapter()
@@ -144,7 +141,6 @@ class ContactsSearchTool(ToolBase):
     category = "read"
     toolset = "personal.contacts"
     requires_confirmation = False
-    progress_message = "我查一下联系人。"
 
     def __init__(self, adapter: ContactsAdapter | None = None) -> None:
         self.adapter = adapter or MockContactsAdapter()

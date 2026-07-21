@@ -33,9 +33,8 @@ input_schema（完整、规范化的 JSON Schema）
 category: read | generate | write | dangerous
 toolset
 requires_confirmation
-requires_env / enabled_by_default / skill_only
+enabled_by_default
 requires_media
-progress_message
 ```
 
 工具类直接声明这些字段；Registry 不再维护按工具名索引的 `_TOOL_CONTRACTS` 或
@@ -148,8 +147,9 @@ ToolRegistry.list_specs()
 - `read` 默认可暴露；
 - `generate` 需要代码配置或显式启用，当前内置生成工具由代码配置启用；
 - `write` 需要代码配置或显式启用，当前 memory 写入工具由代码配置启用；
-- `dangerous` 必须结构化显式启用，并继续满足 env/profile 条件；
-- `requires_env`、`requires_media`、`skill_only` 可以排除工具；
+- `dangerous` 必须结构化显式启用，工具执行阶段仍负责自身环境和安全校验；
+- `requires_media` 可以基于入口携带的结构化媒体事实排除工具；
+- `enabled_by_default` 保留给 MCP 等需要区分“已注册”和“默认暴露”的能力；
 - `enabled_tools`、`enabled_toolsets`、`enabled_skills` 等 metadata 是显式结构化 opt-in。
 
 LLM 决定是否调用、调用哪个已暴露工具以及参数内容。category/toolset/profile 只定义候选空间，不替

@@ -44,7 +44,6 @@ class VisionUnderstandingTool(ToolBase):
     category = "read"
     requires_confirmation = False
     requires_media = ["image", "video"]
-    progress_message = "我看一下。"
 
     def __init__(
         self,

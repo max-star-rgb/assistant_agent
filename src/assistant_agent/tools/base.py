@@ -49,11 +49,8 @@ class Tool(Protocol):
     category: ToolCategory
     toolset: str | None
     requires_confirmation: bool
-    requires_env: list[str]
     enabled_by_default: bool
-    skill_only: bool
     requires_media: list[ToolMediaRequirement]
-    progress_message: str | None
 
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         """Execute the tool and return a structured result."""
@@ -67,11 +64,8 @@ class ToolBase:
     category: ToolCategory = "dangerous"
     toolset: str | None = None
     requires_confirmation = True
-    requires_env: list[str] = []
     enabled_by_default = True
-    skill_only = False
     requires_media: list[ToolMediaRequirement] = []
-    progress_message: str | None = None
 
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         try:
