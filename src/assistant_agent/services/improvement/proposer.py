@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from assistant_agent.runtime_profile import RuntimeProfile, get_runtime_profile
+from assistant_agent.provider_mode import ProviderMode, get_provider_mode
 from assistant_agent.schemas.improvement import (
     CandidateEvaluation,
     ImprovementCandidate,
@@ -83,7 +83,7 @@ def generate_proposal(
     repo_root: Path,
     mode: Literal["deterministic", "provider"] = "deterministic",
     adapter: ChatAdapter | None = None,
-    runtime_profile: RuntimeProfile | None = None,
+    provider_mode: ProviderMode | None = None,
 ) -> ProposalResult:
     """Generate one proposal without tools or repository mutation."""
 
@@ -102,15 +102,11 @@ def generate_proposal(
         payload = _deterministic_payload(opportunity)
         return _candidate_result(opportunity, payload, Path(repo_root))
 
-    profile = runtime_profile or get_runtime_profile()
-    if (
-        profile.name not in {"provider_smoke", "pilot"}
-        or not profile.allows_real_providers
-        or not profile.allows_network_provider_calls
-    ):
+    mode_value = provider_mode or get_provider_mode()
+    if mode_value != "real":
         return ProposalResult(
             error_code="proposal_provider_not_allowed",
-            error_summary="Provider proposal mode requires provider_smoke or pilot.",
+            error_summary="Provider proposal mode requires real provider mode.",
         )
     if adapter is None:
         return ProposalResult(

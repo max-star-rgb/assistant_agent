@@ -108,4 +108,6 @@ def create_image_generation_adapter(config: ProviderConfig | None = None) -> Ima
                 output_format=resolved.ark_image_output_format,
             )
         )
+    if resolved.provider_mode == "real":
+        raise ValueError("real provider mode requires a configured image generation provider")
     return MockImageGenerationAdapter()

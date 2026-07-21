@@ -29,7 +29,7 @@ run-scoped 可用集合，不再另建 executable allowlist。
 
 ```text
 name / description
-input_schema / required_inputs
+input_schema（完整、规范化的 JSON Schema）
 category: read | generate | write | dangerous
 toolset
 requires_confirmation
@@ -41,6 +41,10 @@ progress_message
 工具类直接声明这些字段；Registry 不再维护按工具名索引的 `_TOOL_CONTRACTS` 或
 `_ACTION_USAGE` 副本。`description` 同时承担 provider 可见的简短使用说明，避免再造一套
 `when_to_use/when_not_to_use/runtime_constraints` 元数据。
+
+`input_schema` 是工具输入描述的唯一事实源，必填字段只由标准 JSON Schema 的 `required` 表达。
+`ToolSpec` 不再维护独立的 `required_inputs` 或自定义 `fields` 视图；prompt 若需要压缩，只在渲染时
+临时移除 title、截短 description，不改变原始 schema。
 
 这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。读写行为明显不同的能力应
 拆成不同工具，例如 `memory_retrieval` 与 `memory_save`；它们可以共享 `toolset="memory"`，但保持
@@ -83,7 +87,29 @@ excluded_reasons
 adapter 使用运行时当天。`web_fetch.url` 的 URL 格式和访问安全分别由其 schema 与工具/adapter 的
 URL 安全边界负责。
 
+### 2.4 统一视觉工具
+
+LLM 只看到一个公共视觉工具 `vision_understanding`。图片理解和视频理解不是两个并列工具，而是
+该工具根据 `image_ids`、`video_ids` 或 `video_ref` 选择的内部执行分支：
+
+```text
+vision_understanding
+  -> image branch
+  -> video branch
+```
+
+`video_understanding` 只可作为内部 capability/result 标签用于兼容、trace 和结构化结果区分，不能
+注册为独立 ToolSpec、进入 `RunToolCatalog.available_tool_names` 或发送给主 LLM。实时视频后台观察、
+显式视频上传和图片理解都经过同一个 `ActionValidator -> ToolExecutor -> ToolRegistry ->
+vision_understanding` 公共边界；视频 Provider、滚动语义记忆与关键帧 fallback 均封装在内部视频分支。
+
 ## 3. 注册与暴露
+
+Provider 运行只有一个全局边界：`MULTIMODAL_AGENT_PROVIDER_MODE=mock|real`。mock 模式强制主
+LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在真实 key；real 模式要求主 LLM
+完整配置，并且只注册配置完整的真实 Provider 工具，禁止回退到 mock。memory、Python 等纯本地能力
+不属于 Provider，不受“真实调用”伪分类。weather、calendar、contacts 等 MCP 能力在 real 模式按实际
+MCP mapping 逐个注册，未映射的能力不进入 Registry。
 
 内置工具在 `tools/registry.py` 中注册。`ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个
 builder，因此 provider schema、validator 和 executor 读取的是同一份契约。
@@ -115,7 +141,8 @@ LLM 决定是否调用、调用哪个已暴露工具以及参数内容。categor
 
 ## 4. Provider schema 转换
 
-`schemas/tool_spec_adapters.py` 只把 provider-neutral `ToolSpec` 转换为协议格式：
+`schemas/tool_spec_adapters.py` 只给 provider-neutral `ToolSpec.input_schema` 包装协议外壳，不再转换或
+合并另一套字段描述：
 
 ```json
 {
@@ -200,7 +227,7 @@ durable task 协议中处理；通用 executor 不维护进程内重复调用 le
 
 工具不再各自声明 trace 脱敏策略。完整内容开关是本地运行级事实：默认关闭；开启后仍排除
 `raw_provider_payload`、`provider_raw_response` 和内联大块数据，并继续执行 secret、base64、绝对路径
-和长度清理。真实 Provider smoke/pilot 不应开启该变量。
+和长度清理。real 模式不应开启该变量。
 
 ## 6. 确认语义
 

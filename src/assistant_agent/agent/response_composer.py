@@ -13,7 +13,7 @@ from assistant_agent.services.tool_manifest import (
     IMAGE_GENERATION_TOOL_NAME,
     MEMORY_SAVE_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
-    VIDEO_UNDERSTANDING_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
 )
 
 
@@ -25,7 +25,7 @@ def save_demo_memory(request: UserRequest, state: AgentState, tool_executor: Too
     if not request.video_ids:
         return
     completed_tools = {result.tool_name for result in state.tool_results if result.success}
-    if not {VIDEO_UNDERSTANDING_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME}.issubset(completed_tools):
+    if not {IMAGE_UNDERSTANDING_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME}.issubset(completed_tools):
         return
     if any(result.tool_name == MEMORY_SAVE_TOOL_NAME for result in state.tool_results):
         return

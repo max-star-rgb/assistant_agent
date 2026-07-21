@@ -165,8 +165,6 @@ class ContactsSearchTool(ToolBase):
         )
 
 
-
-
 def _tool_result(
     *,
     tool_name: str,
@@ -266,8 +264,6 @@ def _contacts_observation(result: ContactsSearchResult) -> dict[str, Any]:
             "errors": result.errors,
         }
     )
-
-
 
 
 def _drop_empty(payload: dict[str, Any]) -> dict[str, Any]:

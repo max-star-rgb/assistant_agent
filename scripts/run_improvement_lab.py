@@ -60,7 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         config = ProviderConfig.from_env()
         adapter = None
-        if args.proposal_mode == "provider" and config.runtime_profile.allows_real_providers:
+        if args.proposal_mode == "provider" and config.provider_mode == "real":
             adapter = create_chat_adapter(config)
         report = run_improvement_lab(
             trace_store=JsonlTraceStore(args.trace_path),
@@ -75,7 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             persist=not args.dry_run,
             proposal_mode=args.proposal_mode,
             adapter=adapter,
-            runtime_profile=config.runtime_profile,
+            provider_mode=config.provider_mode,
             run_allowlisted_evals=args.run_allowlisted_evals,
         )
         args.output.mkdir(parents=True, exist_ok=True)

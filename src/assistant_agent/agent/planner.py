@@ -9,10 +9,8 @@ from assistant_agent.services.tool_manifest import (
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_TOOL_NAME,
-    RENDER_3D_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
-    VIDEO_UNDERSTANDING_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
     WEB_SEARCH_TOOL_NAME,
 )
@@ -65,11 +63,8 @@ class RuleBasedTaskPlanner:
     product_hint_keywords = ("耳机", "鞋", "包", "衣服", "手机", "电脑", "椅", "桌", "灯", "相似款", "同款", "商品", "产品", "电商", "价格")
     compare_keywords = ("比价", "价格", "便宜", "比较")
     image_keywords = ("生成", "海报", "风格图", "换背景", "出图")
-    render_keywords = ("渲染", "3d", "3D", "三维", "建模", "模型", "放到", "放进", "放入", "客厅", "展厅", "展示")
-    render_target_spaces = ("客厅", "展厅", "办公室", "卧室", "空间", "商品展示", "展示空间")
     image_understanding_keywords = ("图里", "图片里", "照片里", "看图", "图中", "图上")
     video_understanding_keywords = ("视频", "总结这个视频", "总结这段视频", "视频里")
-    vague_render_texts = {"渲染", "渲染一下", "看看效果", "做个展示", "展示一下", "3d", "3D"}
 
     def plan(self, request: UserRequest) -> TaskPlan:
         text = (request.text or "").strip()
@@ -93,7 +88,7 @@ class RuleBasedTaskPlanner:
             self._append_step(
                 steps,
                 action="understand_video" if is_video else "understand_image",
-                tool_name=VIDEO_UNDERSTANDING_TOOL_NAME if is_video else IMAGE_UNDERSTANDING_TOOL_NAME,
+                tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
                 required_inputs=["video"] if is_video else ["image"],
                 reason="用户提供了媒体输入，先理解媒体内容。",
             )
@@ -143,15 +138,6 @@ class RuleBasedTaskPlanner:
                 reason="用户要求生成图片或海报。",
             )
 
-        if self._has_render_intent(text):
-            self._append_step(
-                steps,
-                action=RENDER_3D_CAPABILITY,
-                tool_name=RENDER_3D_TOOL_NAME,
-                required_inputs=["scene_description"],
-                reason="用户要求 3D 展示或渲染场景。",
-            )
-
         if self._contains(text, self.memory_save_keywords):
             self._append_step(
                 steps,
@@ -177,13 +163,6 @@ class RuleBasedTaskPlanner:
                 steps=[],
                 requires_followup=True,
                 followup_question="请补充要理解的视频，或说明你想处理的具体对象。",
-            )
-        if self._has_render_intent(text) and text in self.vague_render_texts:
-            return TaskPlan(
-                goal="补充渲染场景",
-                steps=[],
-                requires_followup=True,
-                followup_question="请补充要渲染的场景，例如客厅、展厅、办公室或商品展示环境。",
             )
         return None
 
@@ -255,19 +234,3 @@ class RuleBasedTaskPlanner:
         return bool(self.url_re.search(text)) and self._contains(
             text, self.web_fetch_keywords
         )
-
-    def _has_render_intent(self, text: str) -> bool:
-        if not text:
-            return False
-        lowered = text.lower()
-        if any(keyword in text for keyword in ("3D", "三维", "渲染", "建模")) or "3d" in lowered:
-            return True
-        if "模型" in text and not any(phrase in text for phrase in ("模型识别", "模型判断", "语言模型")):
-            return True
-        if any(verb in text for verb in ("放到", "放进", "放入")) and any(
-            space in text for space in self.render_target_spaces + ("场景",)
-        ):
-            return True
-        if any(phrase in text for phrase in ("创建场景预览", "创建一个场景预览", "生成场景预览", "创建 3D 场景预览")):
-            return True
-        return False

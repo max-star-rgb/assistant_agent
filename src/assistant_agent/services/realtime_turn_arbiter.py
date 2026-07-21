@@ -121,7 +121,7 @@ def create_realtime_turn_arbiter(
 
     provider = str(getattr(chat_adapter, "provider", "") or "").strip().lower()
     if (
-        config.runtime_profile.name not in {"provider_smoke", "pilot"}
+        config.provider_mode != "real"
         or provider in {"", "mock"}
         or isinstance(chat_adapter, UnconfiguredChatAdapter)
     ):

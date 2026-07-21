@@ -87,11 +87,11 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
         max_provider_calls_per_run=args.max_provider_calls_per_run,
         max_estimated_cost_per_run=args.max_estimated_cost_per_run,
         max_input_bytes_per_run=args.max_input_bytes_per_run,
-        allow_real_provider=config.runtime_profile.allows_real_providers,
+        allow_real_provider=config.provider_mode == "real",
     )
     report = PilotReadinessChecker().evaluate(
         directory=_directory_from_remote_agents(args.remote_agent),
-        runtime_profile=config.runtime_profile,
+        provider_mode=config.provider_mode,
         allowlisted_hosts=_allowlisted_hosts(args.allowlisted_host),
         identity_policy=identity_policy,
         provider_readiness=build_provider_readiness_report(config),
@@ -103,8 +103,8 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
             "auth_mode": resolve_auth_mode(),
             "auth_bound_identity_required": production_required,
             "auth_bound_identity_supplied": identity.auth_bound,
-            "runtime_profile": config.runtime_profile.name,
-            "real_provider_allowed": config.runtime_profile.allows_real_providers,
+            "provider_mode": config.provider_mode,
+            "real_provider_allowed": config.provider_mode == "real",
             "remote_agent_count": len(args.remote_agent),
         }
     )

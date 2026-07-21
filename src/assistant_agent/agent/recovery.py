@@ -14,7 +14,6 @@ RecoveryAction = Literal[
     "ask_followup",
     "skip_step",
     "retry_step",
-    "fallback_to_mock",
     "fallback_to_text_response",
     "stop_with_error",
     "continue_with_partial_result",
@@ -37,7 +36,6 @@ class RecoveryPolicy(BaseModel):
     max_retries: int = 1
     allow_skip_optional_steps: bool = True
     allow_partial_response: bool = True
-    fallback_to_mock: bool = False
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     fallback_policy: FallbackPolicy = Field(default_factory=FallbackPolicy)
 

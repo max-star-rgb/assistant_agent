@@ -8,7 +8,7 @@ import hashlib
 from pathlib import Path
 from uuid import uuid4
 
-from assistant_agent.runtime_profile import RuntimeProfile
+from assistant_agent.provider_mode import ProviderMode
 from assistant_agent.schemas.improvement import (
     AllowlistedEvalResult,
     CandidateCheck,
@@ -48,7 +48,7 @@ def run_improvement_lab(
     persist: bool,
     proposal_mode: str,
     adapter: ChatAdapter | None = None,
-    runtime_profile: RuntimeProfile | None = None,
+    provider_mode: ProviderMode | None = None,
     run_allowlisted_evals: bool = False,
     eval_runner=None,
 ) -> ImprovementRunReport:
@@ -160,7 +160,7 @@ def run_improvement_lab(
             repo_root=Path(repo_root),
             mode=proposal_mode,
             adapter=adapter,
-            runtime_profile=runtime_profile,
+            provider_mode=provider_mode,
         )
         if proposal.candidate is None:
             issues.append(

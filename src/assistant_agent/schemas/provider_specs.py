@@ -421,7 +421,7 @@ def real_providers(specs: Mapping[str, ProviderSpec]) -> tuple[str, ...]:
 
 
 def select_provider(value: str | None, *, allow_real: bool, specs: Mapping[str, ProviderSpec]) -> str:
-    """Select a provider from env with runtime profile guardrails."""
+    """Select a provider from env with the global provider-mode guardrail."""
 
     if allow_real and value in specs:
         return value
@@ -453,7 +453,7 @@ def real_chat_providers() -> tuple[str, ...]:
 
 
 def select_chat_provider(value: str | None, *, allow_real: bool) -> str:
-    """Select a chat provider from env with runtime profile guardrails."""
+    """Select a chat provider from env with the global provider-mode guardrail."""
 
     return select_provider(value, allow_real=allow_real, specs=CHAT_PROVIDER_SPECS)
 
@@ -501,7 +501,7 @@ def real_vision_providers() -> tuple[str, ...]:
 
 
 def select_vision_provider(value: str | None, *, allow_real: bool) -> str:
-    """Select a Vision provider from env with runtime profile guardrails."""
+    """Select a Vision provider from env with the global provider-mode guardrail."""
 
     return select_provider(value, allow_real=allow_real, specs=VISION_PROVIDER_SPECS)
 
@@ -537,7 +537,7 @@ def real_image_generation_providers() -> tuple[str, ...]:
 
 
 def select_image_generation_provider(value: str | None, *, allow_real: bool) -> str:
-    """Select an image generation provider from env with runtime profile guardrails."""
+    """Select an image generation provider from env with the global provider-mode guardrail."""
 
     return select_provider(value, allow_real=allow_real, specs=IMAGE_GENERATION_PROVIDER_SPECS)
 

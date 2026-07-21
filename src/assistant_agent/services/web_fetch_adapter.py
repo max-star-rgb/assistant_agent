@@ -188,6 +188,8 @@ def create_web_fetch_adapter(config: ProviderConfig | None = None) -> WebFetchAd
             api_key=resolved.web_search_api_key,
             timeout_seconds=resolved.web_search_timeout_seconds,
         )
+    if resolved.provider_mode == "real":
+        raise ValueError("real provider mode requires a configured web fetch provider")
     return MockWebFetchAdapter()
 
 

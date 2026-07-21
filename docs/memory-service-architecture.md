@@ -286,7 +286,7 @@ Configured by `ProviderConfig`:
 - `memory_backend="memory"`: default process-local `InMemoryStore`.
 - `memory_backend="jsonl"`: local `JsonlMemoryStore`.
 - `memory_backend="sqlite"`: local `SQLiteMemoryStore`.
-- `memory_backend="dual_core"`: opt-in `HybridMemoryStore` with a configurable built-in local core plus external Memory Server query augmentation. This backend is selected from environment only when `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true` or a runtime profile that allows real/network providers is active.
+- `memory_backend="dual_core"`: opt-in `HybridMemoryStore` with a configurable built-in local core plus external Memory Server query augmentation. This backend is selected from environment only when `MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED=true` or provider mode is `real`.
 - `memory_backend="hybrid_remote"`: legacy alias for the same retrieval-augmentation shape as `dual_core`; kept for compatibility.
 - `memory_backend="remote_service"`: opt-in `RemoteServiceMemoryStore` with an external adapter as lifecycle owner. This mode is selected only when remote memory is explicitly enabled and never falls back to local lifecycle writes by default.
 - `memory_backend="framework"`: opt-in `FrameworkMemoryStore` with `memory_framework="mem0"` by default, or explicit `"hindsight"` when requested. Environment loading is selected by `MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED=true`; `MULTIMODAL_AGENT_MEMORY_BACKEND=framework` is accepted as a legacy explicit spelling but is no longer required. Credentials alone and normal offline profiles cannot enable it. A configured legacy local fallback is read-only and is consulted only after framework recall failure.
@@ -393,7 +393,7 @@ with `ToolExecutor`. The probe delegates lifecycle behavior to `MemoryManager`;
 lifecycle-owner store outbox. Direct calls are limited to sidecar health,
 adapter history, and Docker resource/lifecycle observations.
 
-The collector requires `pilot` or `provider_smoke`, one shell-only
+The collector requires `MULTIMODAL_AGENT_PROVIDER_MODE=real`, one shell-only
 `MEMORY_BAKEOFF_API_KEY`, and fixed Alibaba Cloud Model Studio configuration:
 `https://dashscope.aliyuncs.com/compatible-mode/v1`, `qwen-plus`, and
 `text-embedding-v4`. The CLI maps the same key to chat and embedding container

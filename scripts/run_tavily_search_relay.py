@@ -319,6 +319,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PATH,
         help="HTTP path that accepts web_search POST requests.",
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress the relay startup message.",
+    )
     return parser
 
 
@@ -338,10 +343,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"http://{args.host}:{args.port}"
         f"{_fetch_path_for_search_path(_normalize_path(args.path))}"
     )
-    print(
-        f"tavily relay listening on {relay_url} (fetch at {fetch_url})",
-        flush=True,
-    )
+    if not args.quiet:
+        print(
+            f"tavily relay listening on {relay_url} (fetch at {fetch_url})",
+            flush=True,
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

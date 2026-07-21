@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field, model_validator
 from assistant_agent.agent.action_validator import ActionValidator
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
+from assistant_agent.mcp.adapter import MCPToolAdapter, MCPToolDefinition
+from assistant_agent.mcp.config import MCPToolAdapterConfig
+from assistant_agent.mcp.server import OfflineMCPServer
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import (
@@ -16,13 +19,15 @@ from assistant_agent.schemas.tools import (
     ToolResult,
     ToolSpec,
 )
-from assistant_agent.schemas.tool_spec_adapters import tool_spec_to_openai_tool
+from assistant_agent.schemas.tool_spec_adapters import (
+    tool_spec_to_mcp_tool,
+    tool_spec_to_openai_tool,
+)
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.tool_manifest import (
     PYTHON_INTERPRETER_TOOL_NAME,
     MEMORY_MEDIA_INGEST_TOOL_NAME,
-    RENDER_3D_TOOL_NAME,
     WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
@@ -105,9 +110,56 @@ def test_provider_description_uses_simple_tool_spec() -> None:
     assert description == "Read canonical data."
 
 
+def test_mcp_tool_spec_preserves_canonical_json_schema() -> None:
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["open", "closed"],
+                "description": "Issue status.",
+            }
+        },
+        "required": ["status"],
+        "additionalProperties": False,
+    }
+    adapter = MCPToolAdapter(
+        MCPToolAdapterConfig(
+            server_name="issues",
+            allowed_tools=["search"],
+            read_only_tools=["search"],
+        )
+    )
+
+    spec = adapter.tool_spec_for_definition(
+        MCPToolDefinition(
+            name="search",
+            description="Search issues.",
+            input_schema=input_schema,
+        )
+    )
+
+    assert spec is not None
+    assert spec.input_schema == input_schema
+    assert tool_spec_to_mcp_tool(spec)["inputSchema"] == input_schema
+
+
+def test_offline_mcp_server_lists_standard_json_schemas() -> None:
+    definitions = OfflineMCPServer().list_tools()
+
+    assert definitions
+    assert all("input_schema" not in definition for definition in definitions)
+    assert all(definition["inputSchema"]["type"] == "object" for definition in definitions)
+    assert all("fields" not in definition["inputSchema"] for definition in definitions)
+    tool_run = next(definition for definition in definitions if definition["name"] == "tool_run")
+    assert tool_run["inputSchema"]["required"] == ["tool_name"]
+
+
 def test_weather_declares_location_and_normalized_target_date() -> None:
     registry = create_default_registry()
-    openai_tool = tool_spec_to_openai_tool(registry.get_spec(WEATHER_TOOL_NAME))
+    spec = registry.get_spec(WEATHER_TOOL_NAME)
+    openai_tool = tool_spec_to_openai_tool(spec)
+    mcp_tool = tool_spec_to_mcp_tool(spec)
     request = UserRequest(
         user_id="user-1",
         session_id="session-1",
@@ -126,6 +178,10 @@ def test_weather_declares_location_and_normalized_target_date() -> None:
     )
 
     parameters = openai_tool["function"]["parameters"]
+    assert "required_inputs" not in spec.model_dump(mode="json")
+    assert "fields" not in spec.input_schema
+    assert parameters == spec.input_schema
+    assert mcp_tool["inputSchema"] == spec.input_schema
     assert parameters["required"] == ["location"]
     assert {
         "format": "date",
@@ -407,7 +463,6 @@ def test_confirmation_is_bound_to_the_declared_tool_name() -> None:
 @pytest.mark.parametrize(
     ("tool_name", "tool_input"),
     [
-        (RENDER_3D_TOOL_NAME, {"scene_description": "客厅"}),
         (
             MEMORY_MEDIA_INGEST_TOOL_NAME,
             {

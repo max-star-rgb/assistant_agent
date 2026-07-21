@@ -22,7 +22,6 @@ IntentName = Literal[
     "fetch_web",
     "read_url",
     "generate_image",
-    "render_3d",
     "retrieve_memory",
     "save_memory",
     "multi_tool_task",

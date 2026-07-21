@@ -19,7 +19,7 @@ class ContextSourceRequest(BaseModel):
     user_id: str = Field(min_length=1)
     source_root: Path
     local_owner_user_id: str | None = None
-    runtime_profile: str = Field(min_length=1)
+    provider_mode: str = Field(min_length=1)
     editable_context_enabled: bool = False
     section_char_budgets: dict[str, int] = Field(default_factory=dict)
     enabled_source_ids: set[str] = Field(default_factory=set)

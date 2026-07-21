@@ -31,12 +31,17 @@ from assistant_agent.services.realtime_video_memory import (
     RealtimeVideoMemoryStore,
     RealtimeVideoSnapshot,
 )
-from assistant_agent.services.tool_manifest import VIDEO_UNDERSTANDING_CAPABILITY, VIDEO_UNDERSTANDING_TOOL_NAME
+from assistant_agent.services.tool_manifest import (
+    IMAGE_UNDERSTANDING_TOOL_NAME,
+    VIDEO_UNDERSTANDING_CAPABILITY,
+)
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 
-class VideoUnderstandingTool(ToolBase):
-    name = VIDEO_UNDERSTANDING_TOOL_NAME
+class VideoUnderstandingBranch(ToolBase):
+    """Internal video branch of the public vision_understanding tool."""
+
+    name = IMAGE_UNDERSTANDING_TOOL_NAME
     description = (
         "查询当前实时镜头或显式视频引用中的视觉事实。当前 turn 已有 active video 时，"
         "可只提供 user_query，由运行时绑定当前 turn 的视频引用；普通上传/API 场景使用 "

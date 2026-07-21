@@ -25,7 +25,6 @@ from assistant_agent.services.tool_manifest import (
     IMAGE_UNDERSTANDING_CAPABILITY,
     MEMORY_RETRIEVAL_CAPABILITY,
     MEMORY_SAVE_CAPABILITY,
-    RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
     WEB_FETCH_CAPABILITY,
@@ -94,8 +93,6 @@ def route_by_intent(graph_state: AgentGraphState) -> str:
         return "search_node"
     if capability == IMAGE_GENERATION_CAPABILITY:
         return "image_generation_node"
-    if capability == RENDER_3D_CAPABILITY:
-        return "render_node"
     if capability in {MEMORY_RETRIEVAL_CAPABILITY, MEMORY_SAVE_CAPABILITY}:
         return "memory_node"
     if capability == "multi_step_orchestration":

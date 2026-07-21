@@ -17,9 +17,7 @@ from assistant_agent.services.tool_manifest import (
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_TOOL_NAME,
-    RENDER_3D_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
-    VIDEO_UNDERSTANDING_TOOL_NAME,
 )
 
 
@@ -127,10 +125,8 @@ def default_agent_instance(
             "chat",
             "tool_calling",
             IMAGE_UNDERSTANDING_TOOL_NAME,
-            VIDEO_UNDERSTANDING_TOOL_NAME,
             SHOPPING_SEARCH_TOOL_NAME,
             IMAGE_GENERATION_TOOL_NAME,
-            RENDER_3D_TOOL_NAME,
             MEMORY_RETRIEVAL_TOOL_NAME,
             MEMORY_SAVE_TOOL_NAME,
         ],

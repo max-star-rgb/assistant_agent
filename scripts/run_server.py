@@ -29,7 +29,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.observability import GatewayLifecycleEvent
-from assistant_agent.services.assistant_run_service import load_env_file, runtime_info
+from assistant_agent.services.assistant_run_service import load_env_file
 from assistant_agent.services.operational_logging import (
     DEFAULT_GATEWAY_EVENT_PATH,
     GATEWAY_EVENT_PATH_ENV,
@@ -57,7 +57,6 @@ from assistant_agent.services.tool_workflow_skill_runtime_app import (
 from assistant_agent.services.trial_access import (
     TRIAL_USER_IDS_ENV,
     parse_trial_user_ids,
-    trial_access_gate_from_env,
 )
 
 
@@ -65,7 +64,7 @@ SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
 LOCAL_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"
 START_WEB_SEARCH_RELAY_ENV = "MULTIMODAL_AGENT_START_WEB_SEARCH_RELAY"
-RUNTIME_PROFILE_ENV = "MULTIMODAL_AGENT_RUNTIME_PROFILE"
+PROVIDER_MODE_ENV = "MULTIMODAL_AGENT_PROVIDER_MODE"
 SEARCH_PROVIDER_ENV = "MULTIMODAL_AGENT_SEARCH_PROVIDER"
 WEB_SEARCH_BASE_URL_ENV = "WEB_SEARCH_BASE_URL"
 WEB_SEARCH_API_KEY_ENV = "WEB_SEARCH_API_KEY"
@@ -249,8 +248,10 @@ def _prepare_web_search_relay_environment(args: argparse.Namespace) -> None:
     os.environ[WEB_SEARCH_RELAY_API_KEY_ENV] = relay_secret
     os.environ[WEB_SEARCH_API_KEY_ENV] = relay_secret
     os.environ[WEB_SEARCH_BASE_URL_ENV] = relay_url
-    if os.environ.get(RUNTIME_PROFILE_ENV) not in {"provider_smoke", "pilot"}:
-        os.environ[RUNTIME_PROFILE_ENV] = "provider_smoke"
+    if os.environ.get(PROVIDER_MODE_ENV, "mock") != "real":
+        raise RuntimeError(
+            "web_search relay requires MULTIMODAL_AGENT_PROVIDER_MODE=real"
+        )
     os.environ[SEARCH_PROVIDER_ENV] = "http"
 
 
@@ -270,7 +271,7 @@ def _normalize_relay_path(value: str) -> str:
 
 def _allow_real_provider_if_needed(provider: str) -> None:
     if provider != "mock":
-        os.environ.setdefault("MULTIMODAL_AGENT_RUNTIME_PROFILE", "provider_smoke")
+        os.environ[PROVIDER_MODE_ENV] = "real"
 
 
 def _configure_trial_user_allowlist(args: argparse.Namespace) -> None:
@@ -297,70 +298,100 @@ def _trial_user_ids_from_args(args: argparse.Namespace) -> list[str]:
     return sorted(item for item in ids if item)
 
 
-def _print_runtime_summary(config: ProviderConfig, *, loaded_env_keys: list[str]) -> None:
-    info = runtime_info(config)
-    providers = info["providers"]
-    trial_access = trial_access_gate_from_env(base_dir=REPO_ROOT)
-    print("Runtime configuration:")
-    print(f"  env_file_keys_loaded: {len(loaded_env_keys)}")
-    print(f"  runtime_profile: {info['runtime_profile']}")
-    print(f"  graph_mode: {info['graph_mode']}")
-    print(f"  chat_provider: {providers['chat']}")
-    print(f"  chat_model: {config.chat_model or '(unset)'}")
-    print(f"  vision_provider: {providers['vision']}")
-    print(f"  image_provider: {providers['image_generation']}")
-    shopping_config = providers["shopping_search"]
-    print(
-        "  shopping_search_provider: "
-        f"search={shopping_config['search']}, compare={shopping_config['compare']}"
-    )
-    print(f"  render_provider: {providers['render']}")
-    print(f"  web_search_provider: {config.search_provider}")
-    if config.web_search_base_url:
-        print(f"  web_search_base_url: {config.web_search_base_url}")
-    print(f"  memory_backend: {config.memory_backend}")
-    if config.memory_backend == "jsonl":
-        print(f"  memory_path: {config.memory_path}")
-    print(f"  conversation_history_backend: {config.conversation_history_backend}")
-    if config.conversation_history_backend == "jsonl":
-        print(f"  conversation_history_path: {config.conversation_history_path}")
-    print(f"  langgraph_checkpointer_backend: {config.langgraph_checkpointer_backend}")
-    print(
-        "  workflow_skills: "
-        + ("enabled" if os.environ.get(WORKFLOW_SKILLS_ENABLED_ENV) == "1" else "disabled")
-    )
-    print(
-        "  workflow_skill_manifest_dir: "
-        + os.environ.get(WORKFLOW_SKILL_MANIFEST_DIR_ENV, DEFAULT_WORKFLOW_SKILL_MANIFEST_DIR)
-    )
-    tool_modules = os.environ.get(WORKFLOW_SKILL_TOOL_MODULES_ENV, "")
-    print(
-        "  workflow_skill_tool_modules: "
-        + (str(len([item for item in tool_modules.split(",") if item.strip()])) if tool_modules else "0")
-    )
-    print(
-        "  workflow_skill_run_store: "
-        + os.environ.get(WORKFLOW_SKILL_RUN_STORE_ENV, DEFAULT_WORKFLOW_SKILL_RUN_STORE)
-    )
-    print(
-        "  local_trace_content: "
-        + ("enabled" if os.environ.get(LOCAL_TRACE_CONTENT_ENV) == "1" else "disabled")
-    )
-    print(f"  offline_default: {info['offline_default']}")
-    print(
-        "  trial_access: "
-        + (
-            f"restricted ({trial_access.allowed_user_count} allowed user ids)"
-            if trial_access.access_required
-            else "open"
-        )
-    )
-    missing = config.resolved_chat_provider().missing_required_env()
-    if missing:
-        print(f"  chat_provider_ready: no, missing {', '.join(missing)}")
+def _print_startup_summary(
+    args: argparse.Namespace,
+    config: ProviderConfig,
+    *,
+    web_search_relay_started: bool,
+) -> None:
+    ws_base = f"ws://{args.host}:{args.port}"
+    model = config.chat_model or "default"
+
+    print(f"Provider mode: {config.provider_mode}")
+    print(f"Main LLM: {config.chat_provider} / {model}")
+    print("Services:")
+    print(f"  media: {ws_base}/ws/realtime/media")
+    relay = _web_search_relay_url(args) if web_search_relay_started else "disabled"
+    print(f"  web_search_relay: {relay}")
+    print("Mock tools:")
+    mock_tools = _mock_tool_labels(config)
+    if mock_tools:
+        for label in mock_tools:
+            print(f"  {label}")
     else:
-        print("  chat_provider_ready: yes")
-    _print_ignored_provider_hint(config)
+        print("  none")
+    print("Tools:")
+    loaded_tools = _loaded_non_mock_tool_labels(config)
+    if loaded_tools:
+        for label in loaded_tools:
+            print(f"  {label}")
+    else:
+        print("  none")
+
+
+def _mock_tool_labels(config: ProviderConfig) -> list[str]:
+    if config.provider_mode != "mock":
+        return []
+    labels: list[str] = []
+    if config.vision_provider == "mock":
+        labels.append("vision_understanding")
+    if config.image_generation_provider == "mock":
+        labels.append("image_generation")
+    if config.search_provider == "mock":
+        labels.append("web_search, web_fetch")
+    if config.visual_image_search_provider == "mock":
+        labels.append("visual_image_search")
+    if (
+        config.shopping_search_provider == "mock"
+        and config.shopping_compare_provider == "mock"
+    ):
+        labels.append("shopping_search")
+    return labels
+
+
+def _loaded_non_mock_tool_labels(config: ProviderConfig) -> list[str]:
+    if config.provider_mode != "real":
+        return []
+    labels: list[str] = []
+    if (
+        config.vision_provider != "mock"
+        and not config.resolved_vision_provider().missing_required_env()
+    ):
+        labels.append("vision_understanding")
+    if (
+        config.image_generation_provider != "mock"
+        and not config.resolved_image_generation_provider().missing_required_env()
+    ):
+        labels.append("image_generation")
+    if (
+        config.search_provider == "http"
+        and config.web_search_base_url
+        and config.web_search_api_key
+    ):
+        labels.append("web_search, web_fetch")
+    if (
+        config.visual_image_search_provider == "qwen"
+        and config.qwen_image_search_api_key
+    ):
+        labels.append("visual_image_search")
+    if _shopping_provider_is_loaded(config):
+        labels.append("shopping_search")
+    return labels
+
+
+def _shopping_provider_is_loaded(config: ProviderConfig) -> bool:
+    search_provider = config.shopping_search_provider
+    compare_provider = config.shopping_compare_provider
+    if search_provider == "haodanku" and compare_provider == "haodanku":
+        return bool(config.haodanku_api_key)
+    if search_provider == "http" and compare_provider == "http":
+        return bool(
+            config.shopping_search_base_url
+            and config.shopping_search_api_key
+            and config.shopping_compare_base_url
+            and config.shopping_compare_api_key
+        )
+    return False
 
 
 @contextmanager
@@ -378,10 +409,10 @@ def _web_search_relay_process(args: argparse.Namespace) -> Iterator[subprocess.P
         str(args.web_search_relay_port),
         "--path",
         _normalize_relay_path(args.web_search_relay_path),
+        "--quiet",
     ]
     process = subprocess.Popen(command, cwd=REPO_ROOT, env=os.environ.copy(), text=True)
     try:
-        print(f"  web_search_relay: started at {_web_search_relay_url(args)}")
         yield process
     finally:
         if process.poll() is None:
@@ -391,20 +422,6 @@ def _web_search_relay_process(args: argparse.Namespace) -> Iterator[subprocess.P
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
-
-
-def _print_ignored_provider_hint(config: ProviderConfig) -> None:
-    selected = os.environ.get("MULTIMODAL_AGENT_CHAT_PROVIDER")
-    if (
-        selected
-        and selected != "mock"
-        and config.chat_provider == "mock"
-        and not config.runtime_profile.allows_real_providers
-    ):
-        print(
-            "  note: real chat provider selectors are ignored unless "
-            "MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke or --provider is used."
-        )
 
 
 def _log_gateway_server_starting(
@@ -429,7 +446,7 @@ def _log_gateway_server_starting(
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        loaded_env = _prepare_environment(args)
+        _prepare_environment(args)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -456,30 +473,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import uvicorn
 
-    base = f"http://{args.host}:{args.port}"
-    print(f"Starting Assistant backend server on {base}")
-    print(f"  Realtime media WS: {base}/ws/realtime/media")
-    print(f"  Gateway WS: {base}/ws/gateway")
-    print(
-        "  Realtime smoke: "
-        f"python scripts/realtime_media_client.py --server {base} --scenario basic"
-    )
-    print(f"  Gateway smoke: python scripts/run_gateway_client.py --server {base} \"你好\"")
-    print(f"  access_log: {'enabled' if args.access_log else 'disabled'}")
-    if args.log_level is not None:
-        print(f"  operational_log_level: {args.log_level} (legacy override)")
-    else:
-        print(f"  console_log: {args.console_level} / {args.console_mode}")
-        print(f"  gateway_file_log_level: {args.file_log_level}")
-    print(f"  operational_log_dir: {log_dir}")
-    print(f"  gateway_event_path: {gateway_event_path}")
-    _print_runtime_summary(config, loaded_env_keys=sorted(loaded_env))
-    if args.public_url:
-        print(f"Share this URL with trial users: {args.public_url}")
-    elif args.host in {"0.0.0.0", "::"}:
-        print(f"Share realtime WS base: http://<your-machine-ip>:{args.port}")
-    print("Press Ctrl+C to stop.")
-    with _web_search_relay_process(args):
+    with _web_search_relay_process(args) as relay_process:
+        _print_startup_summary(
+            args,
+            config,
+            web_search_relay_started=relay_process is not None,
+        )
         uvicorn.run(
             "assistant_agent.api.app:create_app",
             factory=True,

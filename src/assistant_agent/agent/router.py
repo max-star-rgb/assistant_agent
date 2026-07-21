@@ -7,9 +7,9 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSelection
 from assistant_agent.services.tool_manifest import (
     IMAGE_GENERATION_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
-    VIDEO_UNDERSTANDING_TOOL_NAME,
     canonical_action_for_capability,
     canonical_tool_for_capability,
 )
@@ -45,7 +45,7 @@ class ToolRouter:
                     TaskStep(
                         step_id="step_1",
                         action="understand_video",
-                        tool_name=VIDEO_UNDERSTANDING_TOOL_NAME,
+                        tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
                     ),
                     TaskStep(
                         step_id="step_2",

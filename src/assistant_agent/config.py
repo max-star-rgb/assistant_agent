@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from assistant_agent.runtime_profile import RuntimeProfile
+from assistant_agent.provider_mode import ProviderMode, get_provider_mode
 from assistant_agent.schemas.provider_specs import (
     ResolvedProviderSpec,
     resolve_chat_provider,
@@ -48,11 +48,9 @@ ChatProviderName = str
 ImageGenerationProviderName = str
 ShoppingSearchProviderName = Literal["mock", "local_json", "http", "haodanku"]
 ShoppingCompareProviderName = Literal["mock", "local", "http", "haodanku"]
-RenderProviderName = Literal["mock", "http"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
 SearchProviderName = Literal["mock", "http"]
 VisualImageSearchProviderName = Literal["mock", "qwen"]
-PersonalAssistantProviderName = Literal["mock", "mcp"]
 
 
 @dataclass(frozen=True)
@@ -63,7 +61,7 @@ class ProviderConfig:
     real credentials or initialize provider clients.
     """
 
-    runtime_profile: RuntimeProfile = RuntimeProfile.from_env({})
+    provider_mode: ProviderMode = "mock"
     openai_api_key: str | None = None
     qwen_api_key: str | None = None
     dashscope_api_key: str | None = None
@@ -75,7 +73,6 @@ class ProviderConfig:
     ark_image_api_key: str | None = None
     seed_api_key: str | None = None
     comfyui_base_url: str | None = None
-    blender_render_url: str | None = None
     search_api_base_url: str | None = None
     vision_provider: VisionProviderName = "mock"
     vision_api_key: str | None = None
@@ -175,7 +172,6 @@ class ProviderConfig:
     qwen_image_search_base_url: str = DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL
     qwen_image_search_model: str = DEFAULT_QWEN_IMAGE_SEARCH_MODEL
     qwen_image_search_timeout_seconds: float = 30.0
-    personal_assistant_provider: PersonalAssistantProviderName = "mock"
     shopping_search_provider: ShoppingSearchProviderName = "mock"
     shopping_search_local_path: str | None = None
     shopping_search_base_url: str | None = None
@@ -193,10 +189,6 @@ class ProviderConfig:
     haodanku_taobao_authorized_name: str | None = None
     haodanku_jd_sub_union_id: str | None = None
     haodanku_pdd_channel: str | None = None
-    render_provider: RenderProviderName = "mock"
-    render_base_url: str | None = None
-    render_api_key: str | None = None
-    render_timeout_seconds: float = 10.0
     video_understanding_timeout_seconds: float = 60.0
     max_video_bytes: int = 52_428_800
     max_video_seconds: float = 60.0
@@ -218,6 +210,7 @@ class ProviderConfig:
             object.__setattr__(self, "memory_framework_version", expected)
         elif self.memory_framework_version != expected:
             raise ValueError(f"unsupported {self.memory_framework} version: {self.memory_framework_version}")
+        self.validate_provider_mode()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
@@ -229,8 +222,8 @@ class ProviderConfig:
             source,
             workspace_id=qwen_chat_workspace_id,
         )
-        runtime_profile = RuntimeProfile.from_env(source)
-        allow_real_providers = runtime_profile.allows_real_providers
+        provider_mode = get_provider_mode(source)
+        allow_real_providers = provider_mode == "real"
         chat_provider = _chat_provider(
             source.get("MULTIMODAL_AGENT_CHAT_PROVIDER"),
             allow_real=allow_real_providers,
@@ -268,8 +261,8 @@ class ProviderConfig:
             memory_backend_env = "framework"
         memory_backend = _memory_backend(
             memory_backend_env,
-            allow_remote=allow_real_providers or memory_remote_enabled,
-            allow_framework=memory_framework_enabled,
+            allow_remote=allow_real_providers and memory_remote_enabled,
+            allow_framework=allow_real_providers and memory_framework_enabled,
             allow_plugin=memory_plugin_enabled,
         )
         memory_local_backend = _memory_local_backend(
@@ -287,8 +280,8 @@ class ProviderConfig:
         conversation_history_path = source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH") or (
             _default_conversation_history_path(memory_path)
         )
-        return cls(
-            runtime_profile=runtime_profile,
+        config = cls(
+            provider_mode=provider_mode,
             openai_api_key=source.get("OPENAI_API_KEY"),
             qwen_api_key=_qwen_provider_api_key(source),
             dashscope_api_key=source.get("DASHSCOPE_API_KEY"),
@@ -302,7 +295,6 @@ class ProviderConfig:
             seed_api_key=source.get("SEED_API_KEY"),
             deepseek_api_key=_deepseek_provider_api_key(source),
             comfyui_base_url=source.get("COMFYUI_BASE_URL"),
-            blender_render_url=source.get("BLENDER_RENDER_URL"),
             search_api_base_url=source.get("SEARCH_API_BASE_URL"),
             vision_provider=vision_provider,
             vision_api_key=vision_settings.api_key,
@@ -362,7 +354,7 @@ class ProviderConfig:
             memory_remote_service_adapter=_memory_remote_service_adapter(
                 source.get("MULTIMODAL_AGENT_MEMORY_REMOTE_SERVICE_ADAPTER")
                 or source.get("MEMORY_REMOTE_SERVICE_ADAPTER"),
-                allow_remote=allow_real_providers or memory_remote_enabled,
+                allow_remote=allow_real_providers and memory_remote_enabled,
             ),
             memory_framework=_memory_framework_name(
                 source.get("MULTIMODAL_AGENT_MEMORY_FRAMEWORK")
@@ -496,12 +488,8 @@ class ProviderConfig:
                 source.get("QWEN_IMAGE_SEARCH_TIMEOUT_SECONDS"),
                 30.0,
             ),
-            personal_assistant_provider=_personal_assistant_provider(
-                source.get("MULTIMODAL_AGENT_PERSONAL_ASSISTANT_PROVIDER"),
-                allow_real=allow_real_providers,
-            ),
             shopping_search_provider=_shopping_search_provider(
-                source.get("MULTIMODAL_AGENT_SHOPPING_SEARCH_PROVIDER"),
+                source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER"),
                 allow_real=allow_real_providers,
             ),
             shopping_search_local_path=source.get("SHOPPING_SEARCH_LOCAL_PATH"),
@@ -515,7 +503,7 @@ class ProviderConfig:
                 10.0,
             ),
             shopping_compare_provider=_shopping_compare_provider(
-                source.get("MULTIMODAL_AGENT_SHOPPING_COMPARE_PROVIDER"),
+                source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER"),
                 allow_real=allow_real_providers,
             ),
             shopping_compare_base_url=source.get("SHOPPING_COMPARE_BASE_URL"),
@@ -534,13 +522,6 @@ class ProviderConfig:
             haodanku_taobao_authorized_name=source.get("HAODANKU_TAOBAO_AUTHORIZED_NAME"),
             haodanku_jd_sub_union_id=source.get("HAODANKU_JD_SUB_UNION_ID"),
             haodanku_pdd_channel=source.get("HAODANKU_PDD_CHANNEL"),
-            render_provider=_render_provider(
-                source.get("MULTIMODAL_AGENT_RENDER_PROVIDER"),
-                allow_real=allow_real_providers,
-            ),
-            render_base_url=source.get("RENDER_BASE_URL") or source.get("BLENDER_RENDER_URL"),
-            render_api_key=source.get("RENDER_API_KEY"),
-            render_timeout_seconds=_float_env(source.get("RENDER_TIMEOUT_SECONDS"), 10.0),
             video_understanding_timeout_seconds=_float_env(
                 source.get("VIDEO_UNDERSTANDING_TIMEOUT_SECONDS"),
                 60.0,
@@ -557,6 +538,18 @@ class ProviderConfig:
             max_plan_steps=_int_env(source.get("MAX_PLAN_STEPS"), 8),
             max_plan_revisions=_int_env(source.get("MAX_PLAN_REVISIONS"), 2),
         )
+        return config
+
+    def validate_provider_mode(self) -> None:
+        """Reject a real run that would silently use a mock main LLM."""
+
+        missing = self.resolved_chat_provider().missing_required_env()
+        if self.provider_mode == "real" and (self.chat_provider == "mock" or missing):
+            detail = f" Missing: {', '.join(missing)}." if missing else ""
+            raise ValueError(
+                "MULTIMODAL_AGENT_PROVIDER_MODE=real requires a non-mock "
+                f"MULTIMODAL_AGENT_CHAT_PROVIDER with complete configuration.{detail}"
+            )
 
     def has_any_real_provider(self) -> bool:
         return any(
@@ -575,16 +568,13 @@ class ProviderConfig:
                 self.deepseek_api_key,
                 self.seed_api_key,
                 self.comfyui_base_url,
-                self.blender_render_url,
                 self.search_api_base_url,
                 self.web_search_base_url,
                 self.web_search_api_key,
                 self.qwen_image_search_api_key,
-                self.personal_assistant_provider == "mcp",
                 self.shopping_search_api_key,
                 self.shopping_compare_api_key,
                 self.haodanku_api_key,
-                self.render_api_key,
             )
         )
 
@@ -933,25 +923,15 @@ def _visual_image_search_provider(value: str | None, *, allow_real: bool = True)
     return "mock"
 
 
-def _personal_assistant_provider(value: str | None, *, allow_real: bool = True) -> PersonalAssistantProviderName:
-    if allow_real and value == "mcp":
-        return "mcp"
-    return "mock"
-
-
 def _shopping_search_provider(value: str | None, *, allow_real: bool = True) -> ShoppingSearchProviderName:
-    if value == "local_json":
-        return "local_json"
     if not allow_real:
         return "mock"
-    if value in {"local_json", "http", "haodanku"}:
+    if value in {"http", "haodanku"}:
         return value
     return "mock"
 
 
 def _shopping_compare_provider(value: str | None, *, allow_real: bool = True) -> ShoppingCompareProviderName:
-    if value == "local":
-        return "local"
     if not allow_real:
         return "mock"
     if value in {"http", "haodanku"}:
@@ -966,12 +946,6 @@ def _haodanku_enabled_platforms(value: str | None) -> tuple[str, ...]:
         if normalized in {"taobao", "jd", "pdd"} and normalized not in enabled:
             enabled.append(normalized)
     return tuple(enabled) or ("taobao",)
-
-
-def _render_provider(value: str | None, *, allow_real: bool = True) -> RenderProviderName:
-    if allow_real and value == "http":
-        return "http"
-    return "mock"
 
 
 def _clean_env_source(source: Mapping[str, str]) -> dict[str, str]:

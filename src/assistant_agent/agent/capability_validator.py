@@ -15,7 +15,6 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_RETRIEVAL_CAPABILITY,
     MEMORY_SAVE_CAPABILITY,
     MULTI_STEP_ORCHESTRATION_CAPABILITY,
-    RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
     WEB_FETCH_CAPABILITY,
@@ -27,7 +26,6 @@ class CapabilityValidator:
     """Apply capability input contracts to a router-produced IntentDecision."""
 
     url_re = re.compile(r"https?://\S+")
-    render_vague_texts = {"渲染", "渲染一下", "看看效果", "做个展示", "展示一下", "3d", "3D"}
 
     def validate(self, decision: IntentDecision, request: UserRequest) -> IntentDecision:
         """Return a validated decision or an ask_followup decision."""
@@ -82,8 +80,6 @@ class CapabilityValidator:
             return [] if self._has_url(request) else ["url"]
         if capability == SHOPPING_SEARCH_CAPABILITY:
             return [] if self._has_search_input(request) else ["search_query"]
-        if capability == RENDER_3D_CAPABILITY:
-            return [] if self._has_render_goal(request) else ["scene_description"]
         if capability == MEMORY_RETRIEVAL_CAPABILITY:
             missing = []
             if not getattr(request, "user_id", None):
@@ -139,13 +135,6 @@ class CapabilityValidator:
             or metadata.get("visual_summary")
             or metadata.get("video_summary")
         )
-
-    def _has_render_goal(self, request: UserRequest) -> bool:
-        metadata = request.metadata
-        if metadata.get("scene_description") or metadata.get("render_goal"):
-            return True
-        text = (request.text or "").strip()
-        return bool(text and text not in self.render_vague_texts)
 
     def _dedupe(self, values: list[str]) -> list[str]:
         deduped: list[str] = []

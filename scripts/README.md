@@ -39,7 +39,7 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
 - `scripts/run_real_provider_evals.py`: opt-in real chat provider eval harness;
-  requires `provider_smoke` or `pilot` and writes machine logs under
+  requires `MULTIMODAL_AGENT_PROVIDER_MODE=real` and writes machine logs under
   `.data/evals/real_provider/`.
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:

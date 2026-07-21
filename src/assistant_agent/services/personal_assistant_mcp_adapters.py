@@ -308,7 +308,7 @@ def create_personal_assistant_adapter_bundle(
 ) -> PersonalAssistantAdapterBundle:
     """Return adapters for the stable personal assistant tools."""
 
-    if getattr(config, "personal_assistant_provider", "mock") != "mcp":
+    if config is None or config.provider_mode == "mock":
         return PersonalAssistantAdapterBundle(
             weather=MockWeatherAdapter(),
             calendar=_mock_calendar_adapter(),
@@ -406,6 +406,14 @@ def _personal_bindings(
                 namespaced_tool_name=namespaced_mcp_tool_name(adapter_config, tool_name),
             )
     return bindings
+
+
+def configured_personal_assistant_tools(
+    server_configs: list[MCPServerConfig],
+) -> set[str]:
+    """Return stable personal tools backed by explicit real MCP mappings."""
+
+    return set(_personal_bindings(server_configs))
 
 
 def _run_mcp_tool(

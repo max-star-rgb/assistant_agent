@@ -69,7 +69,7 @@ from assistant_agent.services.memory_core_status import build_memory_core_status
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
 from assistant_agent.services.tool_history import ToolHistoryStore
-from assistant_agent.services.tool_manifest import VIDEO_UNDERSTANDING_TOOL_NAME
+from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.turn_summary import append_runtime_turn_summary
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
@@ -128,12 +128,12 @@ class AgentGraphRuntime:
         registry_get = getattr(self.registry, "get", None)
         if registry is not None and callable(registry_get):
             try:
-                video_tool = registry_get(VIDEO_UNDERSTANDING_TOOL_NAME)
+                vision_tool = registry_get(IMAGE_UNDERSTANDING_TOOL_NAME)
             except KeyError:
                 pass
             else:
-                if getattr(video_tool, "memory_store", None) is None:
-                    video_tool.memory_store = self.realtime_video_memory_store
+                if getattr(vision_tool, "memory_store", None) is None:
+                    vision_tool.memory_store = self.realtime_video_memory_store
         self.intent_detector = intent_detector or IntentDetector()
         self.router = router or ToolRouter()
         self.run_history = run_history
@@ -201,7 +201,7 @@ class AgentGraphRuntime:
                 user_id=state.user_id,
                 source_root=Path(self.config.editable_context_root),
                 local_owner_user_id=self.config.editable_context_user_id,
-                runtime_profile=self.config.runtime_profile.name,
+                provider_mode=self.config.provider_mode,
                 editable_context_enabled=self.config.editable_context_enabled,
                 section_char_budgets={"soul": SOUL_COMPILED_MAX_CHARS},
                 enabled_source_ids={SOUL_SOURCE_ID},

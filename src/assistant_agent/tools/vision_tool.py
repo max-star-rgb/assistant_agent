@@ -30,12 +30,15 @@ from assistant_agent.services.provider_errors import (
 )
 from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.video_tool import VideoUnderstandingTool
+from assistant_agent.tools.video_tool import VideoUnderstandingBranch
 
 
 class VisionUnderstandingTool(ToolBase):
     name = IMAGE_UNDERSTANDING_TOOL_NAME
-    description = "Image and video understanding through a vision adapter."
+    description = (
+        "Understand images or videos. Use image_ids for images and video_ids or "
+        "video_ref for videos; the tool selects the matching internal vision branch."
+    )
     input_schema = VisionUnderstandingRequest
     output_schema = VisionUnderstandingResult
     category = "read"
@@ -62,7 +65,7 @@ class VisionUnderstandingTool(ToolBase):
             image_adapter=self.adapter,
             video_adapter=video_adapter,
         )
-        self._video_tool = VideoUnderstandingTool(
+        self._video_branch = VideoUnderstandingBranch(
             client=self.client,
             adapter=video_adapter,
             context_store=context_store,
@@ -70,9 +73,21 @@ class VisionUnderstandingTool(ToolBase):
             context_window_size=context_window_size,
         )
 
+    @property
+    def video_adapter(self) -> VideoUnderstandingAdapter:
+        return self._video_branch.adapter
+
+    @property
+    def memory_store(self) -> RealtimeVideoMemoryStore | None:
+        return self._video_branch.memory_store
+
+    @memory_store.setter
+    def memory_store(self, value: RealtimeVideoMemoryStore | None) -> None:
+        self._video_branch.memory_store = value
+
     def _run(self, input: VisionUnderstandingRequest, context: ToolContext) -> ToolResult:
         if vision_request_has_video(input):
-            result = self._video_tool.run(
+            result = self._video_branch.run(
                 video_request_from_vision_request(input), context
             )
             return result.model_copy(update={"tool_name": self.name})

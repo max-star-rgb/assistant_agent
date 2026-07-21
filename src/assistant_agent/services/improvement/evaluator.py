@@ -261,7 +261,7 @@ def run_allowlisted_test_suites(
     }
     offline_environment.update(
         {
-            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "offline_eval",
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
             "PYTHONHASHSEED": "0",
         }
     )

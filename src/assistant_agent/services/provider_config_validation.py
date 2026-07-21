@@ -13,7 +13,6 @@ from assistant_agent.services.tool_manifest import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
-    RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
@@ -36,7 +35,7 @@ class ProviderConfigIssue(BaseModel):
 class ProviderConfigValidationResult(BaseModel):
     """Validation result for all selected provider configurations."""
 
-    runtime_profile: str = Field(min_length=1)
+    provider_mode: str = Field(min_length=1)
     valid: bool
     issues: list[ProviderConfigIssue] = Field(default_factory=list)
 
@@ -84,19 +83,13 @@ def validate_provider_config(config: ProviderConfig) -> ProviderConfigValidation
     )
     _add_issue_if_missing(
         issues,
-        capability=RENDER_3D_CAPABILITY,
-        provider=config.render_provider,
-        missing=_render_missing(config),
-    )
-    _add_issue_if_missing(
-        issues,
         capability=VIDEO_UNDERSTANDING_CAPABILITY,
         provider=config.vision_provider,
         missing=_vision_missing(config),
     )
 
     return ProviderConfigValidationResult(
-        runtime_profile=config.runtime_profile.name,
+        provider_mode=config.provider_mode,
         valid=not any(issue.severity == "error" for issue in issues),
         issues=issues,
     )
@@ -164,15 +157,6 @@ def _shopping_compare_missing(config: ProviderConfig) -> list[str]:
         return _missing(
             ("SHOPPING_COMPARE_BASE_URL", config.shopping_compare_base_url),
             ("SHOPPING_COMPARE_API_KEY", config.shopping_compare_api_key),
-        )
-    return []
-
-
-def _render_missing(config: ProviderConfig) -> list[str]:
-    if config.render_provider == "http":
-        return _missing(
-            ("RENDER_BASE_URL", config.render_base_url),
-            ("RENDER_API_KEY", config.render_api_key),
         )
     return []
 

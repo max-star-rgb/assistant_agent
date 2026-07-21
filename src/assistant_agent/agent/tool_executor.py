@@ -41,9 +41,7 @@ from assistant_agent.services.tool_manifest import (
     MEMORY_RETRIEVAL_TOOL_NAME,
     MEMORY_SAVE_CAPABILITY,
     MEMORY_SAVE_TOOL_NAME,
-    RENDER_3D_CAPABILITY,
-    RENDER_3D_TOOL_NAME,
-    VIDEO_UNDERSTANDING_TOOL_NAME,
+    IMAGE_UNDERSTANDING_TOOL_NAME,
     canonical_capability_for_action,
     canonical_capability_for_tool,
 )
@@ -992,7 +990,6 @@ def _capability_name(tool_name: str, step: TaskStep | None) -> str:
             return manifest_capability
     tool_map = {
         IMAGE_GENERATION_TOOL_NAME: IMAGE_GENERATION_CAPABILITY,
-        RENDER_3D_TOOL_NAME: RENDER_3D_CAPABILITY,
         MEMORY_RETRIEVAL_TOOL_NAME: MEMORY_RETRIEVAL_CAPABILITY,
         MEMORY_SAVE_TOOL_NAME: MEMORY_SAVE_CAPABILITY,
     }
@@ -1047,7 +1044,7 @@ def _bind_runtime_identity(tool_name: str, tool_input: dict[str, Any], state: Ag
 def _bind_runtime_media_inputs(tool_name: str, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
     """Bind request-scoped media refs for tools without exposing them as model-visible facts."""
 
-    if tool_name != VIDEO_UNDERSTANDING_TOOL_NAME:
+    if tool_name != IMAGE_UNDERSTANDING_TOOL_NAME:
         return tool_input
     if state.request.video_ids and is_trusted_agent_service_request(state.request):
         sanitized = dict(tool_input)

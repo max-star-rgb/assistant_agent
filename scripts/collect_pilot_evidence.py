@@ -31,15 +31,13 @@ AUTH_SESSION_ID_HEADER = "X-Multimodal-Agent-Session-Id"
 SENSITIVE_KEY_REPLACEMENT = "[redacted]"
 OFFLINE_ENV_DEFAULTS = {
     "MULTIMODAL_AGENT_SKIP_DOTENV": "1",
-    "MULTIMODAL_AGENT_RUNTIME_PROFILE": "local_demo",
+    "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
     "MULTIMODAL_AGENT_AUTH_MODE": "header_pilot",
     "MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY": "true",
     "MULTIMODAL_AGENT_CHAT_PROVIDER": "mock",
     "MULTIMODAL_AGENT_VISION_PROVIDER": "mock",
     "MULTIMODAL_AGENT_IMAGE_PROVIDER": "mock",
-    "MULTIMODAL_AGENT_SHOPPING_SEARCH_PROVIDER": "mock",
-    "MULTIMODAL_AGENT_SHOPPING_COMPARE_PROVIDER": "mock",
-    "MULTIMODAL_AGENT_RENDER_PROVIDER": "mock",
+    "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "mock",
 }
 SENSITIVE_KEY_PARTS = (
     "api_key",
@@ -64,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--use-current-env",
         action="store_true",
-        help="Use the current process environment instead of forcing local_demo/mock/header_pilot defaults.",
+        help="Use the current process environment instead of forcing mock/header_pilot defaults.",
     )
     parser.add_argument(
         "--output",
@@ -475,7 +473,7 @@ def _operator_context(*, user_id: str, session_id: str) -> dict[str, Any]:
             "session_id": session_id,
             "auth_mode": os.environ.get("MULTIMODAL_AGENT_AUTH_MODE"),
             "auth_bound_identity_required": os.environ.get("MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY"),
-            "runtime_profile": os.environ.get("MULTIMODAL_AGENT_RUNTIME_PROFILE"),
+            "provider_mode": os.environ.get("MULTIMODAL_AGENT_PROVIDER_MODE"),
             "chat_provider": os.environ.get("MULTIMODAL_AGENT_CHAT_PROVIDER"),
             "image_provider": os.environ.get("MULTIMODAL_AGENT_IMAGE_PROVIDER"),
             "remote_calls": "not_performed",

@@ -91,9 +91,12 @@ def create_vision_understanding_client(
 ) -> VisionUnderstandingClient:
     """Create the configured unified vision client."""
 
+    resolved = config or ProviderConfig.from_env()
+    if resolved.provider_mode == "real" and resolved.vision_provider == "mock":
+        raise ValueError("real provider mode requires a configured vision provider")
     return AdapterVisionUnderstandingClient(
-        image_adapter=create_vision_adapter(config),
-        video_adapter=create_video_understanding_adapter(config),
+        image_adapter=create_vision_adapter(resolved),
+        video_adapter=create_video_understanding_adapter(resolved),
     )
 
 
@@ -102,9 +105,12 @@ def create_realtime_vision_understanding_client(
 ) -> VisionUnderstandingClient:
     """Create the realtime-observer unified client."""
 
+    resolved = config or ProviderConfig.from_env()
+    if resolved.provider_mode == "real" and resolved.vision_provider == "mock":
+        raise ValueError("real provider mode requires a configured vision provider")
     return AdapterVisionUnderstandingClient(
-        image_adapter=MockVisionUnderstandingAdapter(),
-        video_adapter=create_realtime_video_understanding_adapter(config),
+        image_adapter=create_vision_adapter(resolved),
+        video_adapter=create_realtime_video_understanding_adapter(resolved),
     )
 
 

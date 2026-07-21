@@ -247,7 +247,7 @@ def _string_list(value: Any) -> list[str]:
 
 
 def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
-    """Return the compact legacy prompt-json payload for one ToolSpec."""
+    """Return a prompt-compact view without changing the canonical ToolSpec."""
 
     payload = spec.model_dump(
         mode="json",
@@ -255,7 +255,6 @@ def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
             "name",
             "description",
             "input_schema",
-            "required_inputs",
         },
     )
     input_schema = payload.get("input_schema")
@@ -265,23 +264,23 @@ def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
 
 
 def _compact_prompt_input_schema(input_schema: dict[str, Any]) -> dict[str, Any]:
-    fields = input_schema.get("fields")
-    if not isinstance(fields, dict):
-        return input_schema
-    compact_fields: dict[str, Any] = {}
-    for field_name, field_info in fields.items():
-        if not isinstance(field_name, str) or not isinstance(field_info, dict):
+    return _compact_schema_value(input_schema)
+
+
+def _compact_schema_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_compact_schema_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    compact: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "title":
             continue
-        compact_field = {
-            key: value
-            for key, value in field_info.items()
-            if key in {"type", "required"} and value is not None
-        }
-        description = field_info.get("description")
-        if isinstance(description, str) and description.strip():
-            compact_field["description"] = _clip_prompt_description(description)
-        compact_fields[field_name] = compact_field
-    return {**input_schema, "fields": compact_fields}
+        if key == "description" and isinstance(item, str):
+            compact[key] = _clip_prompt_description(item)
+            continue
+        compact[key] = _compact_schema_value(item)
+    return compact
 
 
 def _clip_prompt_description(description: str, *, max_chars: int = 80) -> str:

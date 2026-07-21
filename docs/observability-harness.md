@@ -187,7 +187,7 @@ fail-open，不影响 primary trace store、JSONL persistence 或 turn 响应。
 `--file-log-level` 只控制兼容 `gateway.log`。旧
 `--log-level` 仍作为同时覆盖 console/file level 的兼容 shorthand。共享 PyCharm 配置
 `.run/Assistant Server.run.xml` 使用 `hello_agent` 解释器并读取本机未跟踪 `.env` 中的
-runtime profile 和 Provider 配置启动：
+provider mode 和 Provider 配置启动：
 Run console 只保留 launcher 输出与 WARNING/ERROR。该配置显式设置 operational logging
 环境变量，确保 launcher 与 reload 后的 server 子进程写入同一 Gateway JSONL/text 文件，但不再
 声明 PyCharm `log_file` 页签。Gateway 开发观察统一运行 `.run/Gateway.run.xml`，
@@ -226,10 +226,10 @@ Conversation 层要求 server 已显式启用 `--allow-local-trace-content`；�
 ## Realtime Video Observation
 
 Realtime video observation remains visible through the governed background
-`video_understanding` execution and the redacted context projection consumed by
-the foreground model. These are distinct boundaries: Qwen still runs behind
+`vision_understanding` video branch and the redacted context projection consumed
+by the foreground model. These are distinct boundaries: Qwen still runs behind
 `ActionValidator` and `ToolExecutor`, while the Agent-Service DeepSeek tool
-catalog does not expose `video_understanding`. Structured diagnostics use these
+catalog exposes only the unified `vision_understanding` ToolSpec. Structured diagnostics use these
 prompt-safe sources:
 
 - `background_keyframe_observation`: a selected keyframe was analyzed by the
@@ -264,7 +264,7 @@ queue state, and Provider/model. The latency
 projection prefers `context.build.finished.realtime_video`; only non-realtime
 foreground tool calls fall back to tool-result projection. If
 `recent_frame_fallback` performs a query-time Provider call,
-that work is inside `tool_execute[video_understanding]` and can become the turn
+that work is inside `tool_execute[vision_understanding]` and can become the turn
 bottleneck.
 
 `context.build.finished` reports only presence, state, snapshot/target sequence,
@@ -866,7 +866,7 @@ turn delivery.
   permission and fixed test-suite gates.
 - Treat the evidence window as 30 days by default and report its UTC cutoff;
   normalize offset-free structured timestamps to UTC.
-- Force explicitly requested allowlisted suites into a sanitized `offline_eval`
+- Force explicitly requested allowlisted suites into a sanitized `mock` provider-mode
   environment. A failed suite blocks review readiness before persistence.
 - Keep stable proposal candidates separate from run-scoped immutable evaluation
   and validation records so later runs cannot hide a changed result.

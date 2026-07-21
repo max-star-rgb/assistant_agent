@@ -13,7 +13,6 @@ from assistant_agent.services.tool_manifest import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
     IMAGE_UNDERSTANDING_TOOL_NAME,
-    RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
@@ -56,7 +55,6 @@ class TimeoutPolicy(BaseModel):
     vision_timeout_seconds: float = Field(default=60.0, gt=0)
     video_timeout_seconds: float = Field(default=120.0, gt=0)
     search_timeout_seconds: float = Field(default=20.0, gt=0)
-    render_timeout_seconds: float = Field(default=120.0, gt=0)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "TimeoutPolicy":
@@ -71,7 +69,6 @@ class TimeoutPolicy(BaseModel):
             vision_timeout_seconds=_float_env(source.get("MULTIMODAL_AGENT_VISION_TIMEOUT_SECONDS"), 60.0),
             video_timeout_seconds=_float_env(source.get("MULTIMODAL_AGENT_VIDEO_TIMEOUT_SECONDS"), 120.0),
             search_timeout_seconds=_float_env(source.get("MULTIMODAL_AGENT_SEARCH_TIMEOUT_SECONDS"), 20.0),
-            render_timeout_seconds=_float_env(source.get("MULTIMODAL_AGENT_RENDER_TIMEOUT_SECONDS"), 120.0),
         )
 
     def for_capability(self, capability: str | None) -> float:
@@ -84,7 +81,6 @@ class TimeoutPolicy(BaseModel):
             IMAGE_UNDERSTANDING_TOOL_NAME: self.vision_timeout_seconds,
             VIDEO_UNDERSTANDING_CAPABILITY: self.video_timeout_seconds,
             SHOPPING_SEARCH_CAPABILITY: self.search_timeout_seconds,
-            RENDER_3D_CAPABILITY: self.render_timeout_seconds,
         }
         return mapping.get(capability or "", self.default_provider_timeout_seconds)
 
@@ -121,13 +117,8 @@ class RetryPolicy(BaseModel):
 
 
 class FallbackPolicy(BaseModel):
-    """Provider fallback policy.
+    """Provider partial-result policy; cross-mode fallback is forbidden."""
 
-    Mock fallback is default-off so real provider failures cannot be silently
-    converted into mock success.
-    """
-
-    allow_mock_fallback: bool = False
     allow_partial_result: bool = True
     fallback_providers: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -135,7 +126,6 @@ class FallbackPolicy(BaseModel):
     def from_env(cls, env: Mapping[str, str] | None = None) -> "FallbackPolicy":
         source = os.environ if env is None else env
         return cls(
-            allow_mock_fallback=_bool_env(source.get("MULTIMODAL_AGENT_ALLOW_MOCK_FALLBACK")),
             allow_partial_result=_bool_env(source.get("MULTIMODAL_AGENT_ALLOW_PARTIAL_RESULT"), default=True),
             fallback_providers={},
         )

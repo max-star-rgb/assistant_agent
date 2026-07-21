@@ -267,6 +267,8 @@ def create_shopping_search_adapter(config: ProviderConfig | None = None) -> Shop
             api_key=resolved.shopping_search_api_key,
             timeout_seconds=resolved.shopping_search_timeout_seconds,
         )
+    if resolved.provider_mode == "real":
+        raise ValueError("real provider mode requires a configured shopping search provider")
     return MockProductSearchAdapter()
 
 
@@ -300,6 +302,8 @@ def create_shopping_compare_adapter(config: ProviderConfig | None = None) -> Sho
             api_key=resolved.shopping_compare_api_key,
             timeout_seconds=resolved.shopping_compare_timeout_seconds,
         )
+    if resolved.provider_mode == "real":
+        raise ValueError("real provider mode requires a configured shopping compare provider")
     return MockPriceCompareAdapter()
 
 

@@ -467,22 +467,20 @@ def get_control_plane_readiness(auth_context: AuthContext = Depends(get_auth_con
     config = get_assistant_runtime_app().config
     report = PilotReadinessChecker().evaluate(
         directory=getattr(agent_router, "directory", None),
-        runtime_profile=config.runtime_profile,
+        provider_mode=config.provider_mode,
         auth_bound_identity=auth_context.authenticated,
         identity_policy=identity_policy,
         provider_readiness=build_provider_readiness_report(config),
-        provider_budget=ProviderCallBudget(allow_real_provider=config.runtime_profile.allows_real_providers),
+        provider_budget=ProviderCallBudget(allow_real_provider=config.provider_mode == "real"),
     )
     _record_control_plane_audit_event(
         audit_event(
             event_type="provider_opt_in_decision",
             component="provider_policy",
-            action="evaluate_runtime_profile",
-            outcome="allowed" if config.runtime_profile.allows_real_providers else "blocked_default",
+            action="evaluate_provider_mode",
+            outcome="allowed" if config.provider_mode == "real" else "blocked_default",
             detail={
-                "runtime_profile": config.runtime_profile.name,
-                "allows_real_providers": config.runtime_profile.allows_real_providers,
-                "requires_explicit_provider_config": config.runtime_profile.requires_explicit_provider_config,
+                "provider_mode": config.provider_mode,
             },
         )
     )

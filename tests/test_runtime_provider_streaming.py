@@ -42,7 +42,7 @@ class StreamingChatAdapter:
 def test_qwen_enables_native_provider_streaming_by_default() -> None:
     config = ProviderConfig.from_env(
         {
-            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "pilot",
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
             "QWEN_API_KEY": "test-key",
         }
@@ -62,7 +62,7 @@ def test_qwen_enables_native_provider_streaming_by_default() -> None:
 def test_qwen_native_async_consumption_can_be_explicitly_disabled(override: dict[str, str]) -> None:
     config = ProviderConfig.from_env(
         {
-            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "pilot",
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
             "QWEN_API_KEY": "test-key",
             **override,

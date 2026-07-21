@@ -16,9 +16,7 @@ from assistant_agent.services.provider_errors import (
 from assistant_agent.services.tool_manifest import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
-    RENDER_3D_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
-    VIDEO_UNDERSTANDING_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
     WEB_SEARCH_TOOL_NAME,
 )
@@ -226,7 +224,7 @@ def _next_step_hint(
                 "answer with partial results, or choose a different action instead of failing the run solely on this repeat."
             )
         return "Explain the failure, use a different action, or ask the user for clarification."
-    if tool_name in {IMAGE_UNDERSTANDING_TOOL_NAME, VIDEO_UNDERSTANDING_TOOL_NAME}:
+    if tool_name == IMAGE_UNDERSTANDING_TOOL_NAME:
         return (
             "If the user only asked for a description, final_answer is likely enough."
         )
@@ -238,8 +236,6 @@ def _next_step_hint(
         return "Use the fetched page content in the final answer; cite the source URL when it informs the answer."
     if tool_name == IMAGE_GENERATION_TOOL_NAME:
         return "Return the generated image reference to the user."
-    if tool_name == RENDER_3D_TOOL_NAME:
-        return "Return the 3D preview reference to the user."
     return "Use this observation to decide whether to answer or call another action."
 
 

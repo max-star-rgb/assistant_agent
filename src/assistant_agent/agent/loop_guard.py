@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from assistant_agent.services.tool_manifest import IMAGE_GENERATION_TOOL_NAME, RENDER_3D_TOOL_NAME
+from assistant_agent.services.tool_manifest import IMAGE_GENERATION_TOOL_NAME
 
 
 @dataclass(frozen=True)
@@ -28,7 +28,7 @@ class LoopGuard:
 
     # Tools that produce a terminal artifact on success and should not be
     # called again within the same run (the assistant should answer instead).
-    terminal_tools = frozenset({IMAGE_GENERATION_TOOL_NAME, RENDER_3D_TOOL_NAME})
+    terminal_tools = frozenset({IMAGE_GENERATION_TOOL_NAME})
 
     def __init__(self, metadata: dict[str, Any]) -> None:
         state = metadata.setdefault("assistant_loop_guard", {})

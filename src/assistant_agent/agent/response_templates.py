@@ -7,7 +7,6 @@ from assistant_agent.services.tool_manifest import (
     IMAGE_UNDERSTANDING_CAPABILITY,
     MEMORY_RETRIEVAL_CAPABILITY,
     MEMORY_SAVE_CAPABILITY,
-    RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
     WEB_SEARCH_CAPABILITY,
@@ -17,7 +16,7 @@ from assistant_agent.services.tool_manifest import (
 def compose_followup_message(question: str | None) -> str:
     """Return a clear follow-up question for ambiguous requests."""
 
-    return question or "请补充你想让我处理的对象或目标：解释内容、找相似商品、生成图片，还是进行 3D 展示？"
+    return question or "请补充你想让我处理的对象或目标：解释内容、找相似商品，还是生成图片？"
 
 
 def compose_contract_response(
@@ -61,9 +60,12 @@ def extract_response_fields(contracts: list[dict[str, Any]]) -> dict[str, Any]:
             best_price = best_offer.get("total_price") or best_offer.get("price") or best_price
         elif capability == IMAGE_GENERATION_CAPABILITY:
             image_url = data.get("image_url") or contract.get("output_ref") or image_url
-        elif capability == RENDER_3D_CAPABILITY:
-            render_ref = data.get("preview_url") or contract.get("output_ref") or render_ref
-    return {"product_title": product_title, "best_price": best_price, "image_url": image_url, "render_ref": render_ref}
+    return {
+        "product_title": product_title,
+        "best_price": best_price,
+        "image_url": image_url,
+        "render_ref": render_ref,
+    }
 
 
 def _summary_for_contract(contract: dict[str, Any]) -> str:
@@ -81,14 +83,6 @@ def _summary_for_contract(contract: dict[str, Any]) -> str:
         if image_url:
             return f"已根据你的需求生成图片，图片生成结果为 {image_url}。"
         return "已根据你的需求生成图片。"
-    if capability == RENDER_3D_CAPABILITY:
-        preview_url = data.get("preview_url") or output_ref
-        scene = data.get("scene_description")
-        if preview_url and scene:
-            return f"已基于“{scene}”创建 3D 场景预览，结果为 {preview_url}。"
-        if preview_url:
-            return f"已创建 3D 场景预览，结果为 {preview_url}。"
-        return "已创建 3D 场景预览。"
     if capability == MEMORY_RETRIEVAL_CAPABILITY:
         items = data.get("items") or []
         if items:

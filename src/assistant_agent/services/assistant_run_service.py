@@ -372,7 +372,7 @@ class AssistantRunArtifacts:
             "status": _cli_status(self.state.status),
             "provider": self.runtime.config.chat_provider,
             "model": self.runtime.config.chat_model,
-            "runtime_profile": self.runtime.config.runtime_profile.name,
+            "provider_mode": self.runtime.config.provider_mode,
             "graph_mode": self.runtime.config.agent_graph_mode,
             "execution_strategy": self.state.execution_strategy,
             "query": self.state.request.text or "",
@@ -788,7 +788,7 @@ def runtime_info(config: ProviderConfig) -> dict[str, Any]:
     """Return redacted runtime/provider information."""
 
     return {
-        "runtime_profile": config.runtime_profile.name,
+        "provider_mode": config.provider_mode,
         "graph_mode": config.agent_graph_mode,
         "providers": {
             "chat": config.chat_provider,
@@ -798,9 +798,8 @@ def runtime_info(config: ProviderConfig) -> dict[str, Any]:
                 "compare": config.shopping_compare_provider,
             },
             IMAGE_GENERATION_TOOL_NAME: config.image_generation_provider,
-            "render": config.render_provider,
         },
-        "offline_default": not config.runtime_profile.allows_real_providers,
+        "offline_default": config.provider_mode == "mock",
     }
 
 

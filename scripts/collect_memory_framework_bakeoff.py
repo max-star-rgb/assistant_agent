@@ -251,7 +251,7 @@ def main() -> int:
 def _validate_runtime(*, version: str, expected_version: str) -> None:
     if version != expected_version:
         raise BakeoffCliError("memory_bakeoff_version_not_pinned")
-    if os.environ.get("MULTIMODAL_AGENT_RUNTIME_PROFILE") not in {"pilot", "provider_smoke"}:
+    if os.environ.get("MULTIMODAL_AGENT_PROVIDER_MODE") != "real":
         raise BakeoffCliError("memory_bakeoff_profile_not_allowed")
     if not os.environ.get("MEMORY_BAKEOFF_API_KEY", "").strip():
         raise BakeoffCliError("memory_bakeoff_missing_api_key")

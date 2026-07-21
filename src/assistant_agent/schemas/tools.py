@@ -11,6 +11,15 @@ ToolCategory = Literal["read", "generate", "write", "dangerous"]
 ToolMediaRequirement = Literal["video", "image", "audio"]
 
 
+def _empty_tool_input_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    }
+
+
 class ToolSelection(BaseModel):
     """A tool chosen by the agent for a planned step."""
 
@@ -47,8 +56,7 @@ class ToolSpec(BaseModel):
 
     name: str = Field(min_length=1)
     description: str = Field(default="")
-    input_schema: dict[str, Any] = Field(default_factory=dict)
-    required_inputs: list[str] = Field(default_factory=list)
+    input_schema: dict[str, Any] = Field(default_factory=_empty_tool_input_schema)
     category: ToolCategory = "dangerous"
     toolset: str | None = None
     requires_confirmation: bool = True

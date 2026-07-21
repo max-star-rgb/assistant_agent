@@ -9,7 +9,6 @@ from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, memory_item_
 from assistant_agent.services.tool_manifest import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
-    RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
 )
 
@@ -38,13 +37,6 @@ CAPABILITY_TYPE_PRIORITY = {
         "preference": 0,
         "product": 1,
         "conversation": 2,
-    },
-    RENDER_3D_CAPABILITY: {
-        "preference": 0,
-        "product": 1,
-        "artifact": 2,
-        "render": 3,
-        "image": 4,
     },
     DIRECT_CHAT_CAPABILITY: {
         "conversation": 0,

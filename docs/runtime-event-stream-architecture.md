@@ -272,5 +272,5 @@ Run the minimal risk-driven safety net:
 
 It protects runtime completion, provider timeout termination, cancellation, and the core event-to-Gateway
 conversion contract. Broader realtime behavior is validated through the explicit offline simulators in
-`scripts/README.md`; real provider streaming requires a `provider_smoke` or `pilot` profile and local
+`scripts/README.md`; real provider streaming requires `MULTIMODAL_AGENT_PROVIDER_MODE=real` and local
 untracked credentials.

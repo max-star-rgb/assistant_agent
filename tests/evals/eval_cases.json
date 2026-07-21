@@ -8,7 +8,6 @@
     "must_not_call": [
       "shopping_search",
       "image_generation",
-      "render_3d",
       "vision_understanding"
     ],
     "suite": "routing"
@@ -22,7 +21,6 @@
     "must_not_call": [
       "shopping_search",
       "image_generation",
-      "render_3d",
       "vision_understanding"
     ],
     "suite": "routing"
@@ -49,22 +47,7 @@
       "memory_retrieval"
     ],
     "must_not_call": [
-      "image_generation",
-      "render_3d"
-    ],
-    "suite": "routing"
-  },
-  {
-    "id": "intent_render_001",
-    "category": "intent",
-    "text": "看看效果，放到客厅里",
-    "expected_intent": "render_3d",
-    "expected_tools": [
-      "render_3d"
-    ],
-    "must_not_call": [
-      "image_generation",
-      "shopping_search"
+      "image_generation"
     ],
     "suite": "routing"
   },
@@ -91,8 +74,7 @@
       "shopping_search"
     ],
     "must_not_call": [
-      "shopping_search",
-      "render_3d"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -119,21 +101,6 @@
       "image_generation"
     ],
     "must_not_call": [
-      "render_3d",
-      "shopping_search"
-    ],
-    "suite": "routing"
-  },
-  {
-    "id": "routing_render_001",
-    "category": "routing",
-    "text": "渲染一个3D模型",
-    "expected_intent": "render_3d",
-    "expected_tools": [
-      "render_3d"
-    ],
-    "must_not_call": [
-      "image_generation",
       "shopping_search"
     ],
     "suite": "routing"
@@ -147,13 +114,11 @@
     ],
     "expected_intent": "multi_tool_task",
     "expected_tools": [
-      "video_understanding",
+      "vision_understanding",
       "shopping_search",
       "image_generation"
     ],
-    "must_not_call": [
-      "render_3d"
-    ],
+    "must_not_call": [],
     "suite": "e2e",
     "scenario_id": "full_multistep_image_shopping_generate",
     "expected_response_contains": [
@@ -170,13 +135,11 @@
     ],
     "expected_intent": "multi_tool_task",
     "expected_tools": [
-      "video_understanding",
+      "vision_understanding",
       "shopping_search",
       "image_generation"
     ],
-    "must_not_call": [
-      "render_3d"
-    ],
+    "must_not_call": [],
     "suite": "e2e"
   },
   {
@@ -191,9 +154,7 @@
       "vision_understanding",
       "shopping_search"
     ],
-    "must_not_call": [
-      "render_3d"
-    ],
+    "must_not_call": [],
     "suite": "e2e"
   },
   {
@@ -209,9 +170,7 @@
       "shopping_search",
       "image_generation"
     ],
-    "must_not_call": [
-      "render_3d"
-    ],
+    "must_not_call": [],
     "suite": "e2e"
   },
   {
@@ -223,13 +182,11 @@
     ],
     "expected_intent": "multi_tool_task",
     "expected_tools": [
-      "video_understanding",
+      "vision_understanding",
       "shopping_search",
       "image_generation"
     ],
-    "must_not_call": [
-      "render_3d"
-    ],
+    "must_not_call": [],
     "suite": "e2e"
   },
   {
@@ -245,9 +202,7 @@
       "shopping_search",
       "image_generation"
     ],
-    "must_not_call": [
-      "render_3d"
-    ],
+    "must_not_call": [],
     "suite": "e2e"
   },
   {
@@ -259,13 +214,11 @@
     ],
     "expected_intent": "multi_tool_task",
     "expected_tools": [
-      "video_understanding",
+      "vision_understanding",
       "shopping_search",
       "image_generation"
     ],
-    "must_not_call": [
-      "render_3d"
-    ],
+    "must_not_call": [],
     "suite": "e2e"
   },
   {
@@ -281,9 +234,7 @@
       "shopping_search",
       "image_generation"
     ],
-    "must_not_call": [
-      "render_3d"
-    ],
+    "must_not_call": [],
     "suite": "e2e"
   },
   {
@@ -347,7 +298,6 @@
     "must_not_call": [
       "shopping_search",
       "image_generation",
-      "render_3d",
       "vision_understanding"
     ],
     "suite": "routing"
@@ -361,7 +311,6 @@
     "must_not_call": [
       "shopping_search",
       "image_generation",
-      "render_3d",
       "vision_understanding"
     ],
     "suite": "routing"
@@ -378,7 +327,6 @@
     "must_not_call": [
       "shopping_search",
       "image_generation",
-      "render_3d",
       "vision_understanding"
     ],
     "suite": "routing"
@@ -395,7 +343,6 @@
     "must_not_call": [
       "shopping_search",
       "image_generation",
-      "render_3d",
       "vision_understanding"
     ],
     "suite": "routing"
@@ -425,11 +372,10 @@
     ],
     "expected_intent": "understand_video",
     "expected_tools": [
-      "video_understanding"
+      "vision_understanding"
     ],
     "must_not_call": [
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "suite": "routing"
   },
@@ -445,8 +391,7 @@
       "vision_understanding"
     ],
     "must_not_call": [
-      "shopping_search",
-      "render_3d"
+      "shopping_search"
     ],
     "suite": "routing"
   },
@@ -459,7 +404,7 @@
     ],
     "expected_intent": "understand_video",
     "expected_tools": [
-      "video_understanding"
+      "vision_understanding"
     ],
     "must_not_call": [
       "shopping_search",
@@ -476,8 +421,7 @@
     "must_not_call": [
       "vision_understanding",
       "shopping_search",
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "suite": "e2e",
     "scenario_id": "text_chat",
@@ -509,8 +453,7 @@
     "must_not_call": [
       "vision_understanding",
       "shopping_search",
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "suite": "routing"
   },
@@ -523,8 +466,7 @@
     "must_not_call": [
       "vision_understanding",
       "shopping_search",
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "suite": "routing"
   },
@@ -677,20 +619,6 @@
     "suite": "routing"
   },
   {
-    "id": "text_render_001",
-    "category": "text_only_render",
-    "text": "把浅灰色沙发放到北欧风客厅看看",
-    "expected_intent": "render_3d",
-    "expected_tools": [
-      "render_3d"
-    ],
-    "must_not_call": [
-      "vision_understanding",
-      "image_generation"
-    ],
-    "suite": "routing"
-  },
-  {
     "id": "image_understanding_001",
     "category": "image_understanding",
     "text": "看看图里有什么",
@@ -736,7 +664,7 @@
     },
     "expected_intent": "video_understanding",
     "expected_tools": [
-      "video_understanding"
+      "vision_understanding"
     ],
     "must_not_call": [
       "shopping_search",
@@ -776,8 +704,7 @@
       "shopping_search"
     ],
     "must_not_call": [
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "suite": "e2e",
     "scenario_id": "image_to_shopping_search",
@@ -796,7 +723,7 @@
     },
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
-      "video_understanding",
+      "vision_understanding",
       "shopping_search"
     ],
     "must_not_call": [
@@ -875,8 +802,7 @@
     "must_not_call": [
       "vision_understanding",
       "shopping_search",
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "suite": "routing"
   },
@@ -893,98 +819,9 @@
     "must_not_call": [
       "vision_understanding",
       "shopping_search",
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "suite": "routing"
-  },
-  {
-    "id": "text_only_render",
-    "category": "render_3d",
-    "text": "把一把浅灰色沙发放到北欧风客厅里看看",
-    "expected_intent": "render_3d",
-    "expected_tools": [
-      "render_3d"
-    ],
-    "must_not_call": [
-      "shopping_search",
-      "image_generation",
-      "vision_understanding"
-    ],
-    "suite": "routing"
-  },
-  {
-    "id": "shopping_search_to_render",
-    "category": "render_3d",
-    "text": "帮我找一款黑色办公椅，然后放到现代办公室里看看",
-    "expected_intent": "multi_step_orchestration",
-    "expected_tools": [
-      "shopping_search",
-      "render_3d"
-    ],
-    "must_not_call": [
-      "shopping_search",
-      "image_generation"
-    ],
-    "suite": "e2e",
-    "scenario_id": "shopping_search_to_render",
-    "expected_response_contains": [
-      "3D"
-    ]
-  },
-  {
-    "id": "image_understanding_to_render",
-    "category": "render_3d",
-    "text": "把图里的这个商品放到卧室里渲染一下",
-    "inputs": {
-      "has_image": true,
-      "has_video": false
-    },
-    "expected_intent": "multi_step_orchestration",
-    "expected_tools": [
-      "vision_understanding",
-      "render_3d"
-    ],
-    "must_not_call": [
-      "shopping_search",
-      "image_generation"
-    ],
-    "suite": "e2e"
-  },
-  {
-    "id": "video_understanding_to_render",
-    "category": "render_3d",
-    "text": "把视频里的商品做一个展厅 3D 展示",
-    "inputs": {
-      "has_image": false,
-      "has_video": true
-    },
-    "expected_intent": "multi_step_orchestration",
-    "expected_tools": [
-      "video_understanding",
-      "render_3d"
-    ],
-    "must_not_call": [
-      "shopping_search",
-      "image_generation"
-    ],
-    "suite": "e2e"
-  },
-  {
-    "id": "memory_to_render",
-    "category": "render_3d",
-    "text": "把上次那个黑色包放到极简客厅里看看",
-    "expected_intent": "multi_step_orchestration",
-    "expected_tools": [
-      "memory_retrieval",
-      "render_3d"
-    ],
-    "must_not_call": [
-      "shopping_search",
-      "image_generation",
-      "vision_understanding"
-    ],
-    "suite": "e2e"
   },
   {
     "id": "router_ambiguous_sales_001",
@@ -1101,12 +938,11 @@
     },
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
-      "video_understanding",
+      "vision_understanding",
       "shopping_search"
     ],
     "must_not_call": [
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "expected_response_contains": [
       "视频",
@@ -1124,12 +960,11 @@
     },
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
-      "video_understanding",
+      "vision_understanding",
       "image_generation"
     ],
     "must_not_call": [
-      "shopping_search",
-      "render_3d"
+      "shopping_search"
     ],
     "expected_response_contains": [
       "视频",
@@ -1147,13 +982,12 @@
     },
     "expected_intent": "multi_step_orchestration",
     "expected_tools": [
-      "video_understanding",
+      "vision_understanding",
       "memory_save"
     ],
     "must_not_call": [
       "shopping_search",
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "expected_response_contains": [
       "视频",
@@ -1172,7 +1006,6 @@
     "expected_intent": "ask_followup",
     "expected_tools": [],
     "must_not_call": [
-      "video_understanding",
       "vision_understanding",
       "shopping_search",
       "image_generation"
@@ -1193,7 +1026,6 @@
     "expected_intent": "direct_chat",
     "expected_tools": [],
     "must_not_call": [
-      "video_understanding",
       "vision_understanding",
       "shopping_search",
       "image_generation"
@@ -1270,29 +1102,7 @@
     ],
     "must_not_call": [
       "vision_understanding",
-      "video_understanding",
       "shopping_search"
-    ]
-  },
-  {
-    "id": "memory_product_to_render_001",
-    "category": "memory",
-    "suite": "memory",
-    "scenario_id": "memory_product_to_render",
-    "text": "把上次那个包放到客厅里渲染",
-    "expected_intent": "multi_step_orchestration",
-    "expected_tools": [
-      "memory_retrieval",
-      "render_3d"
-    ],
-    "expected_response_contains": [
-      "渲染"
-    ],
-    "must_not_call": [
-      "vision_understanding",
-      "video_understanding",
-      "shopping_search",
-      "image_generation"
     ]
   },
   {
@@ -1310,10 +1120,8 @@
     ],
     "must_not_call": [
       "vision_understanding",
-      "video_understanding",
       "shopping_search",
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ]
   },
   {
@@ -1936,9 +1744,7 @@
     "expected_tools": [
       "vision_understanding"
     ],
-    "must_not_call": [
-      "render_3d"
-    ]
+    "must_not_call": []
   },
   {
     "id": "routing_scene_description_image_002",
@@ -1952,9 +1758,7 @@
     "expected_tools": [
       "vision_understanding"
     ],
-    "must_not_call": [
-      "render_3d"
-    ]
+    "must_not_call": []
   },
   {
     "id": "routing_scene_description_video_001",
@@ -1966,11 +1770,9 @@
     ],
     "expected_intent": "video_understanding",
     "expected_tools": [
-      "video_understanding"
+      "vision_understanding"
     ],
-    "must_not_call": [
-      "render_3d"
-    ]
+    "must_not_call": []
   },
   {
     "id": "routing_scene_description_image_003",
@@ -1984,9 +1786,7 @@
     "expected_tools": [
       "vision_understanding"
     ],
-    "must_not_call": [
-      "render_3d"
-    ]
+    "must_not_call": []
   },
   {
     "id": "routing_scene_description_image_004",
@@ -2000,63 +1800,7 @@
     "expected_tools": [
       "vision_understanding"
     ],
-    "must_not_call": [
-      "render_3d"
-    ]
-  },
-  {
-    "id": "routing_render_strong_image_001",
-    "category": "routing",
-    "suite": "routing",
-    "text": "根据这张图创建一个 3D 场景预览。",
-    "image_ids": [
-      "img1"
-    ],
-    "expected_intent": "multi_step_orchestration",
-    "expected_tools": [
-      "vision_understanding",
-      "render_3d"
-    ]
-  },
-  {
-    "id": "routing_render_strong_001",
-    "category": "routing",
-    "suite": "routing",
-    "text": "把这个商品放进一个客厅场景里渲染。",
-    "expected_intent": "render_3d",
-    "expected_tools": [
-      "render_3d"
-    ]
-  },
-  {
-    "id": "routing_render_strong_002",
-    "category": "routing",
-    "suite": "routing",
-    "text": "生成一个三维商品展示场景。",
-    "expected_intent": "render_3d",
-    "expected_tools": [
-      "render_3d"
-    ]
-  },
-  {
-    "id": "routing_render_strong_003",
-    "category": "routing",
-    "suite": "routing",
-    "text": "请用 3D 方式建模这个场景。",
-    "expected_intent": "render_3d",
-    "expected_tools": [
-      "render_3d"
-    ]
-  },
-  {
-    "id": "routing_render_strong_004",
-    "category": "routing",
-    "suite": "routing",
-    "text": "渲染一个包含这个商品的展示空间。",
-    "expected_intent": "render_3d",
-    "expected_tools": [
-      "render_3d"
-    ]
+    "must_not_call": []
   },
   {
     "id": "plan_mode_react_default_001",
@@ -2073,8 +1817,7 @@
     ],
     "must_not_call": [
       "shopping_search",
-      "image_generation",
-      "render_3d"
+      "image_generation"
     ],
     "expected_decision_types": [
       "final_answer"

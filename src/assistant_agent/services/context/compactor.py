@@ -207,7 +207,7 @@ def create_context_compactor(
     deterministic = fallback or DeterministicContextCompactor()
     if (
         config.context_compactor_mode == "llm"
-        and config.runtime_profile.name in {"provider_smoke", "pilot"}
+        and config.provider_mode == "real"
         and getattr(chat_adapter, "provider", "") != "mock"
     ):
         return LLMCompactor(chat_adapter, fallback=deterministic)

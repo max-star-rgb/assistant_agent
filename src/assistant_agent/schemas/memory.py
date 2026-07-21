@@ -11,7 +11,6 @@ from assistant_agent.services.tool_manifest import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
     MEMORY_SAVE_CAPABILITY,
-    RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
@@ -173,8 +172,6 @@ def _memory_type_from_capability(capability: str) -> MemoryType:
         return "video"
     if capability == SHOPPING_SEARCH_CAPABILITY:
         return "product"
-    if capability == RENDER_3D_CAPABILITY:
-        return "render"
     if capability == MEMORY_SAVE_CAPABILITY:
         return "task"
     return "artifact"

@@ -15,7 +15,6 @@ from assistant_agent.services.tool_manifest import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
-    RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
@@ -32,7 +31,6 @@ class ProviderSelectionSummary(BaseModel):
 class ProviderSafetyDefaultsSummary(BaseModel):
     """Provider safety defaults exposed for diagnostics."""
 
-    allow_mock_fallback: bool
     allow_partial_result: bool
     max_retries: int
     retry_on: list[str]
@@ -42,8 +40,7 @@ class ProviderSafetyDefaultsSummary(BaseModel):
 class ProviderDiagnosticsSummary(BaseModel):
     """Redacted diagnostics summary for support and readiness checks."""
 
-    runtime_profile: str = Field(min_length=1)
-    allows_real_providers: bool
+    provider_mode: str = Field(min_length=1)
     selected_providers: list[ProviderSelectionSummary] = Field(default_factory=list)
     validation_valid: bool
     validation_issue_count: int
@@ -64,8 +61,7 @@ def build_provider_diagnostics_summary(
     policy = execution_policy or ProviderExecutionPolicy()
 
     return ProviderDiagnosticsSummary(
-        runtime_profile=config.runtime_profile.name,
-        allows_real_providers=config.runtime_profile.allows_real_providers,
+        provider_mode=config.provider_mode,
         selected_providers=[
             ProviderSelectionSummary(
                 capability=check.capability,
@@ -77,7 +73,6 @@ def build_provider_diagnostics_summary(
         validation_valid=validation.valid,
         validation_issue_count=len(validation.issues),
         safety_defaults=ProviderSafetyDefaultsSummary(
-            allow_mock_fallback=policy.fallback.allow_mock_fallback,
             allow_partial_result=policy.fallback.allow_partial_result,
             max_retries=policy.retry.max_retries,
             retry_on=[sanitize_error_message(item) for item in policy.retry.retry_on],
@@ -89,7 +84,6 @@ def build_provider_diagnostics_summary(
                     IMAGE_UNDERSTANDING_CAPABILITY,
                     VIDEO_UNDERSTANDING_CAPABILITY,
                     SHOPPING_SEARCH_CAPABILITY,
-                    RENDER_3D_CAPABILITY,
                 )
             },
         ),

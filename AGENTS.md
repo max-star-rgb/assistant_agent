@@ -6,7 +6,7 @@
 
 项目名、发行名和 Python 包名均为 `assistant_agent`，源码在 `src/assistant_agent/`。默认 Python 使用本机 conda 环境 `hello_agent`，除非用户明确要求，不要重命名环境路径。
 
-本项目是本地优先的助理 Agent。默认运行、测试和 eval 只走 mock/local/offline；真实 Provider 必须通过 `provider_smoke` / `pilot` runtime profile 和本机未跟踪配置显式启用。
+本项目是本地优先的助理 Agent。默认运行、测试和 eval 使用 `MULTIMODAL_AGENT_PROVIDER_MODE=mock`；真实 Provider 必须通过 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和本机未跟踪配置显式启用。
 
 开始任务时，先按任务类型读取对应 `docs/*.md` 权威文档；如果文档与当前源码不一致，以源码和测试为准，并在本次变更中回补文档。项目 skill 只作为 workflow 检查清单或脚本入口，不作为事实权威。
 
@@ -32,7 +32,7 @@
 - 入口层只负责接入和归一化请求；主运行时仍是 `AgentGraphRuntime` / assistant loop。
 - Gateway 负责 session/run/cancel/interrupt/reconnect/stream frame 生命周期，不承担主大脑职责。
 - 所有工具调用和外部副作用必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
-- Provider 默认只能走 mock/local/offline；真实 Provider 必须由 `provider_smoke` / `pilot` profile 和显式配置启用，不能因为检测到 key 自动启用。
+- Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool catalog、tool exposure、工具预选和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；只能基于 `ToolSpec` policy/category、代码配置、结构化显式 opt-in、entry profile、media/env 等结构化事实定义候选工具空间。是否调用候选工具、调用哪个工具和如何构造参数由 LLM 判断；执行阶段仍必须做安全、授权、确认、幂等和 schema 校验。
 - Memory 读写必须经过 `MemoryManager`、read/write policy、store/audit 边界；memory tool 保持薄适配。
 - MCP、durable task、A2A、API、CLI、demo、eval 都是入口或调度形态，不能绕过 runtime、tool、provider、memory 治理链路。
@@ -44,7 +44,7 @@
 默认保持离线安全：
 
 - 测试、eval、无 key 环境只走 mock/local/offline。
-- 真实 Provider 只能在用户明确要求、`provider_smoke` / `pilot` profile、具体 provider 显式配置同时满足时调用；不能因为检测到 key 自动启用。
+- 真实 Provider 只能在用户明确要求、`MULTIMODAL_AGENT_PROVIDER_MODE=real`、具体 Provider 显式配置同时满足时调用；不能因为检测到 key 自动启用。
 - 不写入或提交 API key、token、真实 `.env`、真实用户数据、provider 原始响应、真实媒体、大文件、缓存或生成物。
 - 不主动安装新依赖、不联网拉取依赖，除非用户明确要求并允许；需要安装时先询问用户。
 - 如果本轮调用了真实 Provider，最终报告必须说明调用范围和验证结果。

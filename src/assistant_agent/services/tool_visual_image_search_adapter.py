@@ -223,6 +223,8 @@ def create_visual_image_search_adapter(
                 timeout_seconds=resolved.qwen_image_search_timeout_seconds,
             )
         )
+    if resolved.provider_mode == "real":
+        raise ValueError("real provider mode requires a configured visual image search provider")
     return MockVisualImageSearchAdapter()
 
 

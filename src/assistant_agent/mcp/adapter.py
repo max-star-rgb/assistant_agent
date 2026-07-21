@@ -95,12 +95,10 @@ class MCPToolAdapter:
     def tool_spec_for_definition(self, definition: MCPToolDefinition) -> ToolSpec | None:
         if not self.config.is_allowed(definition.name):
             return None
-        input_model = _input_model_for_definition(definition)
         return ToolSpec(
             name=_namespaced_tool_name(self.config, definition.name),
             description=definition.description,
-            input_schema=_schema_to_fields(input_model),
-            required_inputs=_required_inputs(definition.input_schema),
+            input_schema=_canonical_input_schema(definition.input_schema),
             category="read" if self.config.is_read_only(definition.name) else "write",
             requires_confirmation=not self.config.is_read_only(definition.name),
             toolset=f"mcp.{_safe_name(self.config.server_name)}",
@@ -173,16 +171,10 @@ def _required_inputs(input_schema: dict[str, Any]) -> list[str]:
     return [str(item) for item in required if isinstance(item, str)]
 
 
-def _schema_to_fields(model: type[BaseModel]) -> dict[str, Any]:
-    schema = model.model_json_schema()
-    required = set(schema.get("required", []))
-    fields = {}
-    for field_name, field_schema in schema.get("properties", {}).items():
-        if not isinstance(field_name, str) or not isinstance(field_schema, dict):
-            continue
-        fields[field_name] = {
-            "type": field_schema.get("type", "string"),
-            "description": field_schema.get("description", ""),
-            "required": field_name in required,
-        }
-    return {"fields": fields}
+def _canonical_input_schema(input_schema: dict[str, Any]) -> dict[str, Any]:
+    schema = dict(input_schema)
+    schema.setdefault("type", "object")
+    schema.setdefault("properties", {})
+    schema["required"] = _required_inputs(schema)
+    schema.setdefault("additionalProperties", False)
+    return schema

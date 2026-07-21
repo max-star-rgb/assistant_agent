@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.runtime_profile import RuntimeProfile, get_runtime_profile
+from assistant_agent.provider_mode import ProviderMode, get_provider_mode
 from assistant_agent.schemas.agent_communication import AgentArtifact, AgentTask, AgentTaskResult
 from assistant_agent.services.agent_directory import AgentDirectory
 from assistant_agent.services.api_identity import IdentityPolicy, IdentityPolicyDecision
@@ -71,16 +71,16 @@ class PilotReadinessChecker:
         self,
         *,
         directory: AgentDirectory | None = None,
-        runtime_profile: RuntimeProfile | None = None,
+        provider_mode: ProviderMode | None = None,
         allowlisted_hosts: list[str] | None = None,
         auth_bound_identity: bool = False,
         identity_policy: IdentityPolicyDecision | None = None,
         provider_readiness: ProviderReadinessReport | None = None,
         provider_budget: ProviderCallBudget | None = None,
     ) -> PilotReadinessReport:
-        profile = runtime_profile or get_runtime_profile()
+        mode = provider_mode or get_provider_mode()
         checks = [
-            self._runtime_profile_check(profile),
+            self._provider_mode_check(mode),
             self._remote_opt_in_check(directory=directory, allowlisted_hosts=allowlisted_hosts or []),
             self._identity_check(
                 identity_policy=identity_policy
@@ -91,7 +91,7 @@ class PilotReadinessChecker:
             ),
             self._provider_budget_check(
                 provider_budget
-                or ProviderCallBudget(allow_real_provider=profile.allows_real_providers)
+                or ProviderCallBudget(allow_real_provider=mode == "real")
             ),
             PilotReadinessCheck(
                 name="trace_redaction_default",
@@ -108,23 +108,23 @@ class PilotReadinessChecker:
             status = "ready_with_warnings"
         return PilotReadinessReport(status=status, checks=checks)
 
-    def _runtime_profile_check(self, profile: RuntimeProfile) -> PilotReadinessCheck:
-        if profile.name in {"local_demo", "offline_eval"} and not profile.allows_real_providers:
+    def _provider_mode_check(self, mode: ProviderMode) -> PilotReadinessCheck:
+        if mode == "mock":
             return PilotReadinessCheck(
-                name="default_profile_mock_local_offline",
+                name="mock_provider_mode",
                 status="passed",
-                detail={"profile": profile.name, "allows_real_providers": profile.allows_real_providers},
+                detail={"provider_mode": mode},
             )
-        if profile.name in {"provider_smoke", "pilot"} and profile.requires_explicit_provider_config:
+        if mode == "real":
             return PilotReadinessCheck(
-                name="real_provider_profile_explicit",
+                name="real_provider_mode",
                 status="warning",
-                detail={"profile": profile.name, "requires_explicit_provider_config": True},
+                detail={"provider_mode": mode},
             )
         return PilotReadinessCheck(
-            name="runtime_profile_not_pilot_ready",
+            name="provider_mode_invalid",
             status="failed",
-            detail={"profile": profile.name, "allows_real_providers": profile.allows_real_providers},
+            detail={"provider_mode": mode},
         )
 
     def _remote_opt_in_check(
@@ -193,7 +193,7 @@ class PilotReadinessChecker:
     def _provider_readiness_check(self, report: ProviderReadinessReport) -> PilotReadinessCheck:
         not_ready = [check for check in report.checks if check.status == "not_ready"]
         detail = {
-            "runtime_profile": report.runtime_profile,
+            "provider_mode": report.provider_mode,
             "ready": report.ready,
             "checks": [
                 {

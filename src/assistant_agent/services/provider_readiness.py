@@ -15,7 +15,6 @@ from assistant_agent.services.tool_manifest import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
-    RENDER_3D_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
@@ -38,7 +37,7 @@ class ProviderReadinessCheck(BaseModel):
 class ProviderReadinessReport(BaseModel):
     """Provider readiness report for the current runtime config."""
 
-    runtime_profile: str = Field(min_length=1)
+    provider_mode: str = Field(min_length=1)
     ready: bool
     checks: list[ProviderReadinessCheck] = Field(default_factory=list)
 
@@ -49,7 +48,7 @@ class ProviderSmokeContract(BaseModel):
     status: SmokeStatus
     provider: str = Field(min_length=1)
     capability: str = Field(min_length=1)
-    runtime_profile: str = Field(min_length=1)
+    provider_mode: str = Field(min_length=1)
     readiness: ReadinessStatus
     message: str = Field(min_length=1)
     errors: list[dict[str, object]] = Field(default_factory=list)
@@ -69,12 +68,11 @@ def build_provider_readiness_report(config: ProviderConfig) -> ProviderReadiness
         _check(IMAGE_GENERATION_CAPABILITY, config.image_generation_provider, config, issues_by_key),
         _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_search_provider, config, issues_by_key),
         _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_compare_provider, config, issues_by_key),
-        _check(RENDER_3D_CAPABILITY, config.render_provider, config, issues_by_key),
         _check(VIDEO_UNDERSTANDING_CAPABILITY, config.vision_provider, config, issues_by_key),
     ]
 
     return ProviderReadinessReport(
-        runtime_profile=config.runtime_profile.name,
+        provider_mode=config.provider_mode,
         ready=all(check.status != "not_ready" for check in checks),
         checks=checks,
     )
@@ -97,9 +95,9 @@ def build_smoke_contract(
             status="skipped",
             provider=provider,
             capability=capability,
-            runtime_profile=config.runtime_profile.name,
+            provider_mode=config.provider_mode,
             readiness=readiness.status,
-            message="Provider smoke is disabled for the current runtime profile.",
+            message="Provider smoke is disabled in mock mode.",
             errors=normalized_errors,
         )
     if normalized_errors:
@@ -107,7 +105,7 @@ def build_smoke_contract(
             status="failed",
             provider=provider,
             capability=capability,
-            runtime_profile=config.runtime_profile.name,
+            provider_mode=config.provider_mode,
             readiness=readiness.status,
             message="Provider smoke failed with structured errors.",
             errors=normalized_errors,
@@ -116,7 +114,7 @@ def build_smoke_contract(
         status="success" if success else "failed",
         provider=provider,
         capability=capability,
-        runtime_profile=config.runtime_profile.name,
+        provider_mode=config.provider_mode,
         readiness=readiness.status,
         message="Provider smoke completed." if success else "Provider smoke did not complete.",
         errors=[],
@@ -130,9 +128,11 @@ def _check(
     issues_by_key: dict[tuple[str, str], list[ProviderConfigIssue]],
 ) -> ProviderReadinessCheck:
     issues = issues_by_key.get((capability, provider), [])
-    if provider in _offline_providers(capability):
-        status: ReadinessStatus = "ready"
-    elif not config.runtime_profile.allows_real_providers:
+    if provider in _offline_providers(capability) and config.provider_mode == "real":
+        status: ReadinessStatus = "disabled"
+    elif provider in _offline_providers(capability):
+        status = "ready"
+    elif config.provider_mode != "real":
         status = "disabled"
     elif issues:
         status = "not_ready"
@@ -142,7 +142,7 @@ def _check(
         capability=capability,
         provider=provider,
         status=status,
-        real_provider_allowed=config.runtime_profile.allows_real_providers,
+        real_provider_allowed=config.provider_mode == "real",
         issues=issues,
     )
 
@@ -152,7 +152,7 @@ def _readiness_for(config: ProviderConfig, capability: str, provider: str) -> Pr
     for check in report.checks:
         if check.capability == capability and check.provider == provider:
             return check
-    if provider not in _offline_providers(capability) and not config.runtime_profile.allows_real_providers:
+    if provider not in _offline_providers(capability) and config.provider_mode != "real":
         status: ReadinessStatus = "disabled"
     else:
         status = "not_ready"
@@ -160,7 +160,7 @@ def _readiness_for(config: ProviderConfig, capability: str, provider: str) -> Pr
         capability=capability,
         provider=provider,
         status=status,
-        real_provider_allowed=config.runtime_profile.allows_real_providers,
+        real_provider_allowed=config.provider_mode == "real",
     )
 
 
@@ -169,8 +169,7 @@ def _offline_providers(capability: str) -> set[str]:
         IMAGE_UNDERSTANDING_CAPABILITY: {"mock"},
         DIRECT_CHAT_CAPABILITY: {"mock"},
         IMAGE_GENERATION_CAPABILITY: {"mock"},
-        SHOPPING_SEARCH_CAPABILITY: {"mock", "local_json", "local"},
-        RENDER_3D_CAPABILITY: {"mock"},
+        SHOPPING_SEARCH_CAPABILITY: {"mock"},
         VIDEO_UNDERSTANDING_CAPABILITY: {"mock"},
     }
     return local_by_capability.get(capability, {"mock"})

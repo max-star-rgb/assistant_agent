@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -20,9 +19,6 @@ from assistant_agent.services.trace_store import JsonlTraceStore, TraceEvent
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CASES_PATH = PROJECT_ROOT / "evals" / "real_provider" / "personal_assistant_briefing.json"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / ".data" / "evals" / "real_provider"
-REAL_PROVIDER_EVAL_PROFILES = {"provider_smoke", "pilot"}
-
-
 class EvalConfigurationError(RuntimeError):
     """Raised when a real-provider eval is not explicitly configured."""
 
@@ -152,12 +148,11 @@ def _merge_case_defaults(defaults: Any, case: Any) -> Any:
 
 
 def validate_real_provider_config(config: ProviderConfig) -> None:
-    """Fail unless the chat model is an explicit real provider under an opt-in profile."""
+    """Fail unless the global mode and chat model are both real."""
 
-    profile_name = config.runtime_profile.name
-    if profile_name not in REAL_PROVIDER_EVAL_PROFILES:
+    if config.provider_mode != "real":
         raise EvalConfigurationError(
-            "Real-provider eval requires MULTIMODAL_AGENT_RUNTIME_PROFILE=provider_smoke or pilot."
+            "Real-provider eval requires MULTIMODAL_AGENT_PROVIDER_MODE=real."
         )
     if config.chat_provider == "mock" or config.chat_adapter_kind == "mock":
         raise EvalConfigurationError(
@@ -171,42 +166,9 @@ def validate_real_provider_config(config: ProviderConfig) -> None:
 
 
 def controlled_tool_provider_config(config: ProviderConfig, *, allow_real_tools: bool = False) -> ProviderConfig:
-    """Return config that keeps chat real while defaulting non-chat tools to mock/local."""
+    """Keep the real-mode invariant; provider-backed tools may not be mocked."""
 
-    if allow_real_tools:
-        return config
-    return replace(
-        config,
-        vision_provider="mock",
-        vision_api_key=None,
-        vision_base_url=None,
-        vision_model=None,
-        vision_adapter_kind="mock",
-        visual_image_search_provider="mock",
-        qwen_image_search_api_key=None,
-        image_generation_provider="mock",
-        image_generation_api_key=None,
-        image_generation_base_url=None,
-        image_generation_model=None,
-        image_generation_adapter_kind="mock",
-        search_provider="mock",
-        web_search_base_url=None,
-        web_search_api_key=None,
-        shopping_search_provider="mock",
-        shopping_search_base_url=None,
-        shopping_search_api_key=None,
-        shopping_compare_provider="mock",
-        shopping_compare_base_url=None,
-        shopping_compare_api_key=None,
-        haodanku_api_key=None,
-        render_provider="mock",
-        render_base_url=None,
-        render_api_key=None,
-        memory_backend="memory",
-        memory_remote_service_adapter="unavailable",
-        memory_plugin_enabled=False,
-        conversation_history_backend="memory",
-    )
+    return config
 
 
 def user_request_from_eval_case(case: RealProviderEvalCase) -> UserRequest:

@@ -14,7 +14,6 @@ ASK_FOLLOWUP_CAPABILITY = "ask_followup"
 IMAGE_UNDERSTANDING_CAPABILITY = "image_understanding"
 IMAGE_UNDERSTANDING_TOOL_NAME = "vision_understanding"
 VIDEO_UNDERSTANDING_CAPABILITY = "video_understanding"
-VIDEO_UNDERSTANDING_TOOL_NAME = "video_understanding"
 IMAGE_GENERATION_CAPABILITY = "image_generation"
 IMAGE_GENERATION_TOOL_NAME = "image_generation"
 WEB_SEARCH_CAPABILITY = "web_search"
@@ -25,8 +24,6 @@ VISUAL_IMAGE_SEARCH_CAPABILITY = "visual_image_search"
 VISUAL_IMAGE_SEARCH_TOOL_NAME = "visual_image_search"
 SHOPPING_SEARCH_CAPABILITY = "shopping_search"
 SHOPPING_SEARCH_TOOL_NAME = "shopping_search"
-RENDER_3D_CAPABILITY = "render_3d"
-RENDER_3D_TOOL_NAME = "render_3d"
 MEMORY_RETRIEVAL_CAPABILITY = "memory_retrieval"
 MEMORY_RETRIEVAL_TOOL_NAME = "memory_retrieval"
 MEMORY_SAVE_CAPABILITY = "memory_save"
@@ -70,13 +67,6 @@ TOOL_MANIFESTS: tuple[ToolManifest, ...] = (
         legacy_intent_aliases=("understand_image",),
     ),
     ToolManifest(
-        public_name=VIDEO_UNDERSTANDING_TOOL_NAME,
-        capability=VIDEO_UNDERSTANDING_CAPABILITY,
-        exposure_class="read",
-        action="understand_video",
-        legacy_intent_aliases=("understand_video",),
-    ),
-    ToolManifest(
         public_name=IMAGE_GENERATION_TOOL_NAME,
         capability=IMAGE_GENERATION_CAPABILITY,
         exposure_class="generate",
@@ -111,13 +101,6 @@ TOOL_MANIFESTS: tuple[ToolManifest, ...] = (
         exposure_class="read",
         action=SHOPPING_SEARCH_CAPABILITY,
         provider_bindings=SHOPPING_SEARCH_PROVIDER_BINDINGS,
-    ),
-    ToolManifest(
-        public_name=RENDER_3D_TOOL_NAME,
-        capability=RENDER_3D_CAPABILITY,
-        exposure_class="generate",
-        action=RENDER_3D_CAPABILITY,
-        legacy_intent_aliases=(RENDER_3D_CAPABILITY,),
     ),
     ToolManifest(
         public_name=MEMORY_RETRIEVAL_TOOL_NAME,
@@ -194,6 +177,11 @@ _LEGACY_ACTION_ALIAS_TO_ACTION = {
     for manifest in TOOL_MANIFESTS
     for alias in manifest.legacy_action_aliases
 }
+
+_PUBLIC_NAME_BY_CAPABILITY[VIDEO_UNDERSTANDING_CAPABILITY] = IMAGE_UNDERSTANDING_TOOL_NAME
+_ACTION_BY_CAPABILITY[VIDEO_UNDERSTANDING_CAPABILITY] = "understand_video"
+_CAPABILITY_BY_ACTION["understand_video"] = VIDEO_UNDERSTANDING_CAPABILITY
+_LEGACY_INTENT_ALIAS_TO_CAPABILITY["understand_video"] = VIDEO_UNDERSTANDING_CAPABILITY
 
 
 def public_tool_names() -> tuple[str, ...]:

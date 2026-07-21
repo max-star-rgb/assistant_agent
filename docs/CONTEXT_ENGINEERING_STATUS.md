@@ -13,11 +13,11 @@ Last updated: 2026-07-17
 - 说明：已移除完成态阶段计划，当前以本文件作为上下文工程状态与交接入口。
 - 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md` source、Context Compiler v1 redacted report、session summary、token-aware recent transcript、增量滑动窗口摘要、session handoff v2、realtime task-state snapshot、独立 `realtime_video_context`、durable task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
 - 默认摘要方式：deterministic/local；只有显式设置
-  `MULTIMODAL_AGENT_CONTEXT_COMPACTOR=llm`，并同时处于 `provider_smoke` 或
-  `pilot` 且 chat adapter 非 mock 时，才启用 `LLMCompactor`。
+  `MULTIMODAL_AGENT_CONTEXT_COMPACTOR=llm`，并同时处于 real provider mode 且 chat adapter
+  非 mock 时，才启用 `LLMCompactor`。
 - 预算现状：全局压缩控制仍以字符预算为准；recent transcript 选择已使用本地 token 估算；Memory context 有单独 token-aware 注入边界；其余 token 字段仍主要用于报告。
 - memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；自动长期记忆注入由 `MemoryReadPolicy` gate，LLM 选择的 `memory_retrieval` 走通用工具治理与 `MemoryManager`，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
-- realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道在工具目录动态提供 `video_understanding` 时可以调用该工具，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
+- realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
 - 按需补读：解释机制时读本文件对应小节；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`。
@@ -51,7 +51,7 @@ Last updated: 2026-07-17
 - `CompactionPolicy` 统一判断压缩触发：usage 高水位、超预算、大 tool observation、provider context overflow metadata、显式 `/compact` 或 `compact_context=True`。
 - `ContextCompactor` 已抽象为可插拔边界；默认 deterministic/local，不调用真实 LLM。
   `LLMCompactor` 必须通过 `MULTIMODAL_AGENT_CONTEXT_COMPACTOR=llm` 显式启用，且只允许在
-  `provider_smoke` 或 `pilot` profile、chat adapter 非 mock 时运行；输出无效时回退 deterministic。
+  real provider mode、chat adapter 非 mock 时运行；输出无效时回退 deterministic。
 - 真实 provider 返回 context overflow 类错误时，assistant loop 会标准化为 `provider_context_overflow`，触发 hard compaction 后重试一次，仍失败则停止并返回可解释最终回答。
 - Context budget 会报告自动压缩阶段和原因，便于 trace/API 判断是否发生 conversation、observation 或 budget 级压缩。
 - `TokenBudgetReporter` 已作为可选报告层接入；recent transcript selector 复用本地 token 估算；默认全局压缩触发仍使用字符预算，metadata 启用估算或提供 provider usage 时才填充全局 token fields。
@@ -143,7 +143,7 @@ Last updated: 2026-07-17
 - Editable owner context 默认关闭，只接受进程配置 `MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED=true`、`MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT=<root>` 和显式 `MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID=<user_id>`；request metadata 不能启用能力、改变 root 或切换 owner。
 - 首版只读取固定 `<root>/SOUL.md`。支持的二级标题只有 `Persona`、`Expression Style`、`Relationship Boundaries` 和 `Avoid`，编译优先级固定为 `Relationship Boundaries -> Avoid -> Persona -> Expression Style`。
 - loader 使用 owner identity fail-closed、root containment、symlink/non-regular-file 拒绝、UTF-8、16,000 bytes、4,000 chars、2,000 compiled chars、每 subsection 800 chars和 secret/base64/raw-provider marker 检查。超限或 unsafe 新版本不会静默截断生效。
-- 合法内容生成单一 `authority=owner_persona`、`stability=semi_stable` 的 `ContextSection v1`。`PromptCompiler` 只消费已验证 section，并把它放在不可变 runtime policy 之后；persona 不能改变 ToolSpec、RunToolCatalog、tool choice、validator、确认、identity、memory policy 或 runtime profile。
+- 合法内容生成单一 `authority=owner_persona`、`stability=semi_stable` 的 `ContextSection v1`。`PromptCompiler` 只消费已验证 section，并把它放在不可变 runtime policy 之后；persona 不能改变 ToolSpec、RunToolCatalog、tool choice、validator、确认、identity、memory policy 或 provider mode。
 - 非法更新可回退到按 `(resolved root, owner user id)` 分区的 process-local last-known-good。该缓存不提供跨 worker 一致性，进程重启后的首次非法文件会被省略。
 - Owner-trusted persona 会影响模型表达；本地治理保证的是能力和安全边界不被它配置性地改写，不承诺任意恶意人格文字对生成内容零影响。
 
@@ -164,15 +164,15 @@ Last updated: 2026-07-17
 
 ### Realtime Video Context
 
-- Agent-Service 的后台 observer 继续通过工具治理链执行 Qwen；“后台受治理工具执行”和“AgentRuntime 可见工具目录”是两个边界。有 active video 的可信 AgentRuntime turn 可以通过动态工具目录暴露 `video_understanding`，但主 LLM 只看到工具 schema 和 prompt-safe 文本上下文，不见帧、内部媒体路径或 VLM 角色模板。
+- Agent-Service 的后台 observer 继续通过工具治理链执行 Qwen；“后台受治理工具执行”和“AgentRuntime 可见工具目录”是两个边界。有 active video 的可信 AgentRuntime turn 可以通过动态工具目录暴露 `vision_understanding`，但主 LLM 只看到唯一视觉工具 schema 和 prompt-safe 文本上下文，不见帧、内部媒体路径或 VLM 角色模板。
 - `AgentGraphRuntime` 在每次模型 context build 前按请求中最后一个 `video_id` 重新投影共享 `RealtimeVideoMemoryStore`，生成 `ready`、`refreshing`、`pending`、`stale`、`failed` 或 `unavailable` 状态。
 - 可信 Agent-Service 入口把 `video_ids` 渲染为“当前共享的实时画面”而不是上传式“附带视频 ID”；AgentRuntime system prompt 保持入口和通道无关，不注入电话、口播、挂断或传输层规则。普通上传/API 仍保留上传语义。
 - observer 首帧必选、明显变化立即候选、静态画面最长 2 秒产生一次候选；队列保持一个 Qwen in-flight 和一个 latest-wins pending。每轮 Provider 请求只含当前单帧和最多 2,000 字符的上一成功语义摘要，不重发多帧历史。
-- 明确指代当前画面的问题由 AgentRuntime 主 LLM 通过动态暴露的 `video_understanding` 表达；入口不放视觉分析提示词，也不基于文本自行完成 VLM 判断。问候/闲聊不应主动提及视觉。
+- 明确指代当前画面的问题由 AgentRuntime 主 LLM 通过动态暴露的 `vision_understanding` 表达；工具内部选择视频分支，入口不放视觉分析提示词，也不基于文本自行完成 VLM 判断。问候/闲聊不应主动提及视觉。
 - 每个 `video_id` 复用一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后轮换，断线按 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；关闭或切换 video id 会关闭 Provider session 并清理 pending、语义状态和帧文件。
 - 投影只包含裁剪后的 summary、objects、people、actions、events、scene、`snapshot_sequence`、`target_sequence`、`completed_sequence`、`sequence_gap`、观察耗时、provider/model、`transport`、`session_generation`、`connection_reused`、`reconnect_count` 和 pending/in-flight 状态，序列化上限约 2,000 字符；不含帧路径、媒体数据、Qwen 原文、raw event 或 provider 原始错误。
 - `snapshot_age_ms` 与 `frame_capture_age_ms` 以成功语义对应帧的采集时间为主，`snapshot_publish_age_ms` 独立表示结果发布时间年龄；缺失或未来采集时间返回空值，不伪造年龄。存在正 `sequence_gap` 时投影为 `stale`（仍有任务时为 `refreshing`），prompt 不得把旧观察断言成当前事实。
-- renderer 把它标注为被动外部观察数据，不作为工具调用策略；何时调用 `video_understanding` 只由本轮动态 ToolSpec 描述和模型工具选择表达。
+- renderer 把它标注为被动外部观察数据，不作为工具调用策略；何时调用 `vision_understanding` 只由本轮动态 ToolSpec 描述和模型工具选择表达。
 - `ContextBudgetReport`、token estimate、`ContextReport.sections.realtime_video_context` 和 `context.build.finished.realtime_video` 独立记账，不并入 conversation、memory、realtime task state 或普通 tool observation。
 
 ### Context Budget And Observability

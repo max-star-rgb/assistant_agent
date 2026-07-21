@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.services.tool_manifest import VIDEO_UNDERSTANDING_TOOL_NAME
+from assistant_agent.services.tool_manifest import IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, new_span_id
 
 
@@ -461,7 +461,7 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             waited_for_initial_snapshot=video.get("waited_for_initial_snapshot") is True,
         )
     for event in reversed(events):
-        if event.canonical_event not in _TOOL_TERMINAL_EVENTS or event.tool_name != VIDEO_UNDERSTANDING_TOOL_NAME:
+        if event.canonical_event not in _TOOL_TERMINAL_EVENTS or event.tool_name != IMAGE_UNDERSTANDING_TOOL_NAME:
             continue
         payload = event.output_summary
         return VideoLatencyContext(

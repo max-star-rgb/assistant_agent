@@ -123,7 +123,7 @@ class ToolSearchTool(ToolBase):
                             if spec.category == "read"
                             else "pending_confirmation"
                         ),
-                        required_inputs=list(spec.required_inputs),
+                        required_inputs=list(spec.input_schema.get("required", [])),
                         input_fields=_input_fields(definition.input_schema),
                         match_score=score,
                     )

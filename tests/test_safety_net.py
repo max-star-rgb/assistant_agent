@@ -5,6 +5,8 @@ import importlib
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
+
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.agent.system_prompt_policy import SystemPromptProfile, render_system_instruction
 from assistant_agent.config import ProviderConfig
@@ -85,6 +87,14 @@ def test_package_and_runtime_initialize_offline() -> None:
     assert package is not None
     assert "shopping_search" in runtime.registry.list()
     assert "reminder_create" not in runtime.registry.list()
+    assert "render_3d" not in runtime.registry.list()
+    assert "vision_understanding" in runtime.registry.list()
+    assert "video_understanding" not in runtime.registry.list()
+    assert {
+        "image_ids",
+        "video_ids",
+        "video_ref",
+    }.issubset(specs["vision_understanding"].input_schema["properties"])
     assert "memory" not in specs
     assert {
         specs[name].toolset
@@ -100,9 +110,12 @@ def test_package_and_runtime_initialize_offline() -> None:
     assert runtime.chat_adapter.provider == "mock"
 
 
-def test_legacy_shopping_config_does_not_fallback() -> None:
+def test_shopping_config_uses_unified_provider() -> None:
     config = ProviderConfig.from_env(
         {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "QWEN_API_KEY": "test-key",
             "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "haodanku",
             "MULTIMODAL_AGENT_PRODUCT_PROVIDER": "local_json",
             "PRODUCT_SEARCH_LOCAL_PATH": "/tmp/legacy-products.json",
@@ -110,12 +123,63 @@ def test_legacy_shopping_config_does_not_fallback() -> None:
         }
     )
 
-    assert config.shopping_search_provider == "mock"
+    assert config.shopping_search_provider == "haodanku"
     assert config.shopping_search_local_path is None
-    assert config.shopping_compare_provider == "mock"
+    assert config.shopping_compare_provider == "haodanku"
     assert not hasattr(config, "shopping_provider")
     assert not hasattr(config, "product_search_provider")
     assert not hasattr(config, "price_compare_provider")
+
+
+def test_provider_mode_is_the_single_mock_real_boundary() -> None:
+    mock_config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_VISION_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_IMAGE_PROVIDER": "qwen",
+            "MULTIMODAL_AGENT_SEARCH_PROVIDER": "http",
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER": "haodanku",
+            "QWEN_API_KEY": "must-not-be-used",
+            "HAODANKU_API_KEY": "must-not-be-used",
+        }
+    )
+
+    assert mock_config.provider_mode == "mock"
+    assert mock_config.chat_provider == "mock"
+    assert mock_config.vision_provider == "mock"
+    assert mock_config.image_generation_provider == "mock"
+    assert mock_config.search_provider == "mock"
+    assert mock_config.shopping_search_provider == "mock"
+    assert mock_config.shopping_compare_provider == "mock"
+
+    with pytest.raises(ValueError, match="requires a non-mock"):
+        ProviderConfig.from_env({"MULTIMODAL_AGENT_PROVIDER_MODE": "real"})
+
+
+def test_real_mode_registry_never_loads_mock_provider_tools() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "QWEN_API_KEY": "test-key",
+        }
+    )
+    runtime = AgentGraphRuntime(config=config)
+
+    assert config.chat_provider == "qwen"
+    assert {
+        "vision_understanding",
+        "shopping_search",
+        "weather",
+        "calendar_search",
+        "calendar_create",
+        "contacts_search",
+        "web_search",
+        "web_fetch",
+        "visual_image_search",
+        "image_generation",
+    }.isdisjoint(runtime.registry.list())
 
 
 def test_trace_observer_close_propagates_timeout_budget() -> None:
@@ -174,7 +238,7 @@ def test_native_w3c_trace_id_is_not_rehashed_for_langfuse() -> None:
 def test_interactive_provider_latency_controls_are_explicit() -> None:
     config = ProviderConfig.from_env(
         {
-            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "pilot",
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
             "QWEN_API_KEY": "test-key",
             "QWEN_CHAT_MODEL": "qwen3.6-flash",
