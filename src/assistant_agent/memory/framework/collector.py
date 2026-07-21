@@ -197,7 +197,6 @@ class _MemoryBakeoffProbeTool(ToolBase):
     output_schema = _ProbeOutput
     category = "write"
     requires_confirmation = False
-    redact_trace = True
 
     def __init__(self, manager: MemoryManager) -> None:
         self.manager = manager

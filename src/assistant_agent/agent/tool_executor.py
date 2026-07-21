@@ -48,6 +48,7 @@ from assistant_agent.services.tool_manifest import (
     canonical_capability_for_tool,
 )
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
+from assistant_agent.services.trace_content_policy import local_trace_content_enabled
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
@@ -210,7 +211,7 @@ class ToolExecutor:
             step_id=step_id,
             span_id=tool_span_id,
             tool_contract=execution_summary,
-            input_summary=_input_summary(bound_input),
+            input_summary=_policy_safe_input_summary(bound_input),
         )
         self._emit(
             AgentEvent(
@@ -230,7 +231,7 @@ class ToolExecutor:
                 state.run_id,
                 call.call_id,
                 tool_name,
-                _policy_safe_input_summary(bound_input, tool_spec),
+                _policy_safe_input_summary(bound_input),
                 user_id=state.user_id,
                 session_id=state.session_id,
             )
@@ -439,8 +440,8 @@ class ToolExecutor:
                 output_ref=result.output_ref,
                 user_id=state.user_id,
                 session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result, prepared.tool_spec),
-                audit_payload=_policy_safe_audit_payload(result, prepared.tool_spec),
+                output_summary=_policy_safe_output_summary(result),
+                audit_payload=_policy_safe_audit_payload(result),
                 raw_data_ref=result.raw_data_ref,
             )
         _append_tool_trace_event(
@@ -458,9 +459,9 @@ class ToolExecutor:
             latency_ms=latency_ms,
             retry_count=invocation.retry_count,
             tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            input_summary=_input_summary(prepared.tool_input),
+            input_summary=_policy_safe_input_summary(prepared.tool_input),
             output_summary={
-                **_policy_safe_output_summary(result, prepared.tool_spec),
+                **_policy_safe_output_summary(result),
             },
             provider=_provider_name(result.data or {}),
             model=_model_name(result.data or {}),
@@ -533,11 +534,11 @@ class ToolExecutor:
                 prepared.tool_name,
                 "failed",
                 latency_ms,
-                error=_policy_safe_error(decision.message, prepared.tool_spec),
+                error=_policy_safe_error(decision.message),
                 user_id=state.user_id,
                 session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result, prepared.tool_spec),
-                audit_payload=_policy_safe_audit_payload(result, prepared.tool_spec),
+                output_summary=_policy_safe_output_summary(result),
+                audit_payload=_policy_safe_audit_payload(result),
                 raw_data_ref=result.raw_data_ref,
             )
         _append_tool_trace_event(
@@ -556,14 +557,14 @@ class ToolExecutor:
             latency_ms=latency_ms,
             retry_count=invocation.retry_count,
             tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            input_summary=_input_summary(prepared.tool_input),
+            input_summary=_policy_safe_input_summary(prepared.tool_input),
             output_summary={
-                **_policy_safe_output_summary(result, prepared.tool_spec),
+                **_policy_safe_output_summary(result),
             },
             provider=_provider_name(result.data or {}),
             model=_model_name(result.data or {}),
             error_code=decision.error_code,
-            error_message=_policy_safe_error(decision.message, prepared.tool_spec),
+            error_message=_policy_safe_error(decision.message),
             recovery_action=decision.action,
         )
         return result
@@ -644,11 +645,11 @@ class ToolExecutor:
                 prepared.tool_name,
                 "failed",
                 latency_ms,
-                error=_policy_safe_error(budget_error.message, prepared.tool_spec),
+                error=_policy_safe_error(budget_error.message),
                 user_id=state.user_id,
                 session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result, prepared.tool_spec),
-                audit_payload=_policy_safe_audit_payload(result, prepared.tool_spec),
+                output_summary=_policy_safe_output_summary(result),
+                audit_payload=_policy_safe_audit_payload(result),
                 raw_data_ref=result.raw_data_ref,
             )
         _append_tool_trace_event(
@@ -667,7 +668,7 @@ class ToolExecutor:
             latency_ms=latency_ms,
             retry_count=0,
             tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            input_summary=_input_summary(prepared.tool_input),
+            input_summary=_policy_safe_input_summary(prepared.tool_input),
             output_summary={"provider_budget": state.provider_budget.summary()},
             error_code=budget_error.code,
             error_message=budget_error.message,
@@ -734,11 +735,11 @@ class ToolExecutor:
                 prepared.tool_name,
                 "failed",
                 latency_ms,
-                error=_policy_safe_error(DEFAULT_CANCELLATION_MESSAGE, prepared.tool_spec),
+                error=_policy_safe_error(DEFAULT_CANCELLATION_MESSAGE),
                 user_id=state.user_id,
                 session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result, prepared.tool_spec),
-                audit_payload=_policy_safe_audit_payload(result, prepared.tool_spec),
+                output_summary=_policy_safe_output_summary(result),
+                audit_payload=_policy_safe_audit_payload(result),
                 raw_data_ref=result.raw_data_ref,
             )
         _append_tool_trace_event(
@@ -757,7 +758,7 @@ class ToolExecutor:
             latency_ms=latency_ms,
             retry_count=0,
             tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            input_summary=_input_summary(prepared.tool_input),
+            input_summary=_policy_safe_input_summary(prepared.tool_input),
             output_summary={"cancelled": True},
             error_code=CANCELLATION_ERROR_CODE,
             error_message=DEFAULT_CANCELLATION_MESSAGE,
@@ -1145,23 +1146,39 @@ def _output_summary(result: ToolResult) -> dict[str, Any]:
 
 def _policy_safe_input_summary(
     payload: dict[str, Any],
-    tool_spec: ToolSpec,
 ) -> dict[str, Any]:
-    if not tool_spec.redact_trace:
-        return payload
+    if local_trace_content_enabled():
+        safe_payload = sanitize_error_detail(payload)
+        return safe_payload if isinstance(safe_payload, dict) else {}
     return {
         "redacted": True,
         "field_names": sorted(str(key) for key in payload),
-        "field_count": len(payload),
-        "input_size_bytes": _input_size_bytes(payload),
+        **_input_summary(payload),
     }
 
 
 def _policy_safe_output_summary(
     result: ToolResult,
-    tool_spec: ToolSpec,
 ) -> dict[str, Any]:
-    if not tool_spec.redact_trace:
+    if local_trace_content_enabled():
+        data = result.data if isinstance(result.data, dict) else {}
+        safe_data = {
+            key: value
+            for key, value in data.items()
+            if key not in {"raw_data_ref", "raw_provider_payload", "provider_raw_response"}
+        }
+        payload = sanitize_error_detail(
+            {
+                "success": result.success,
+                "output_ref": result.output_ref,
+                "error": result.error,
+                "data": safe_data,
+                "model_observation": result.model_observation,
+                "trace_summary": result.trace_summary,
+            }
+        )
+        if isinstance(payload, dict):
+            return {key: value for key, value in payload.items() if value is not None}
         return _output_summary(result)
     data = result.data if isinstance(result.data, dict) else {}
     trace = result.trace_summary if isinstance(result.trace_summary, dict) else {}
@@ -1184,11 +1201,13 @@ def _policy_safe_output_summary(
 
 def _policy_safe_audit_payload(
     result: ToolResult,
-    tool_spec: ToolSpec,
 ) -> dict[str, Any] | None:
     payload = result.audit_payload
-    if not tool_spec.redact_trace or not isinstance(payload, dict):
+    if not isinstance(payload, dict):
         return payload
+    if local_trace_content_enabled():
+        safe_payload = sanitize_error_detail(payload)
+        return safe_payload if isinstance(safe_payload, dict) else None
     if payload.get("redacted") is True:
         safe_payload = sanitize_error_detail(payload)
         if isinstance(safe_payload, dict):
@@ -1212,9 +1231,11 @@ def _policy_safe_audit_payload(
     }
 
 
-def _policy_safe_error(error: str | None, tool_spec: ToolSpec) -> str | None:
-    if error is None or not tool_spec.redact_trace:
+def _policy_safe_error(error: str | None) -> str | None:
+    if error is None:
         return error
+    if local_trace_content_enabled():
+        return sanitize_error_message(error)
     return classify_error(error)
 
 

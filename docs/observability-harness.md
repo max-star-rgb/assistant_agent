@@ -710,6 +710,10 @@ Trace and monitoring records must not include:
 `.data/graph_trace.jsonl`，也不允许导出 system prompt、完整 rendered context、memory
 原文、Provider 原始响应或隐藏推理。任一条件不满足时自动回退到结构化摘要。
 
+同一个 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 也允许本地 ToolHistory 和工具 trace 保存经过
+secret sanitizer 的工具输入输出，便于单机调试；默认关闭，且始终排除 Provider 原始 payload/response
+和内联二进制内容。该开关不得用于真实 Provider smoke/pilot 证据采集。
+
 Safe trace data includes:
 
 - IDs, statuses, event names, error codes, recoverability, and component names.

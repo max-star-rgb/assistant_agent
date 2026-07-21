@@ -18,6 +18,7 @@ from assistant_agent.schemas.tools import (
 )
 from assistant_agent.schemas.tool_spec_adapters import tool_spec_to_openai_tool
 from assistant_agent.services.event_sink import ListEventSink
+from assistant_agent.services.tool_history import ToolHistoryStore
 from assistant_agent.services.tool_manifest import (
     PYTHON_INTERPRETER_TOOL_NAME,
     MEMORY_MEDIA_INGEST_TOOL_NAME,
@@ -160,6 +161,7 @@ def test_registry_exposes_one_simple_tool_contract() -> None:
     assert spec.category == "read"
     assert spec.requires_confirmation is False
     assert spec.requires_media == ["image"]
+    assert not hasattr(spec, "redact_trace")
     assert not hasattr(spec, "policy")
     assert not hasattr(spec, "execution")
     assert not hasattr(spec, "when_to_use")
@@ -200,6 +202,44 @@ def test_validated_tool_input_is_reused_by_executor() -> None:
     assert validation.accepted is True
     assert result.success is True
     assert _SingleValidationInput.validation_count == 1
+
+
+def test_tool_history_content_requires_explicit_local_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(_ExecutionBoundaryTool())
+
+    monkeypatch.delenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", raising=False)
+    safe_history = ToolHistoryStore(tmp_path / "safe_tool_calls.jsonl")
+    ToolExecutor(registry=registry, tool_history=safe_history).run_tool(
+        AgentState.from_request(
+            UserRequest(user_id="user-1", session_id="session-1", text="execute")
+        ),
+        "safe-step",
+        _ExecutionBoundaryTool.name,
+        {"value": "private-value"},
+    )
+
+    safe_records = safe_history.read_all()
+    assert safe_records[0].input_summary["redacted"] is True
+    assert "private-value" not in str(safe_records)
+
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+    local_history = ToolHistoryStore(tmp_path / "local_tool_calls.jsonl")
+    ToolExecutor(registry=registry, tool_history=local_history).run_tool(
+        AgentState.from_request(
+            UserRequest(user_id="user-1", session_id="session-1", text="execute")
+        ),
+        "local-step",
+        _ExecutionBoundaryTool.name,
+        {"value": "visible-value"},
+    )
+
+    local_records = local_history.read_all()
+    assert local_records[0].input_summary == {"value": "visible-value"}
+    assert local_records[1].output_summary["data"] == {"value": "visible-value"}
 
 
 def test_available_catalog_is_the_execution_boundary() -> None:

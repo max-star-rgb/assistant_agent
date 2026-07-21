@@ -9,6 +9,7 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+from assistant_agent.services.trace_content_policy import local_trace_content_enabled
 from assistant_agent.services.tool_lifecycle import build_tool_lifecycle_summary
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -48,7 +49,7 @@ def build_pre_tool_call_summary(
                 "kind": side_effect.get("confirmation_kind"),
             },
             "tool_contract": tool_contract,
-            "input_summary": _input_summary(tool_input),
+            "input_summary": _policy_safe_input_summary(tool_input),
             "realtime_task_state": _realtime_task_state_summary(request),
             "cancel": _cancel_summary(cancel_token),
             "tool_registered": tool_name in registry.list(),
@@ -109,10 +110,7 @@ def build_post_tool_call_summary(
             "output_ref": result.output_ref,
             "latency_ms": result.latency_ms if result.latency_ms is not None else latency_ms,
             "retry_count": retry_count,
-            "observation_summary": _observation_summary(
-                result,
-                redact_in_trace=tool_spec.redact_trace,
-            ),
+            "observation_summary": _observation_summary(result),
             "cancel": _cancel_metadata_summary(cancel_metadata),
         }
     )
@@ -232,62 +230,54 @@ def _cancel_metadata_summary(cancel_metadata: dict[str, Any] | None) -> dict[str
 
 def _observation_summary(
     result: ToolResult,
-    *,
-    redact_in_trace: bool = False,
 ) -> dict[str, Any]:
-    if redact_in_trace:
-        data = result.data if isinstance(result.data, dict) else {}
-        trace = result.trace_summary if isinstance(result.trace_summary, dict) else {}
-        approved_summary = trace.get("summary")
-        return _drop_none(
+    data = result.data if isinstance(result.data, dict) else {}
+    trace = result.trace_summary if isinstance(result.trace_summary, dict) else {}
+    if local_trace_content_enabled():
+        safe_data = {
+            key: value
+            for key, value in data.items()
+            if key not in {"raw_data_ref", "raw_provider_payload", "provider_raw_response"}
+        }
+        payload = sanitize_error_detail(
             {
                 "success": result.success,
                 "output_ref": result.output_ref,
-                "redacted": True,
-                "summary": (
-                    _clip(sanitize_error_message(approved_summary))
-                    if isinstance(approved_summary, str) and approved_summary.strip()
-                    else None
-                ),
-                "data_field_names": sorted(str(key) for key in data),
-                "trace_field_names": sorted(str(key) for key in trace),
-                "error_code": _error_code(result.error),
+                "error": result.error,
+                "data": safe_data,
+                "model_observation": result.model_observation,
+                "trace_summary": trace,
             }
         )
-    if isinstance(result.trace_summary, dict):
-        return _trace_observation_summary(result)
-    data = result.data or {}
-    summary = _data_string(result, "summary")
+        if isinstance(payload, dict):
+            return _drop_none(payload)
+    approved_summary = trace.get("summary")
     return _drop_none(
         {
             "success": result.success,
-            "summary": _clip(summary) if summary else None,
             "output_ref": result.output_ref,
-            "item_count": len(data.get("items")) if isinstance(data.get("items"), list) else None,
+            "redacted": True,
+            "summary": (
+                _clip(sanitize_error_message(approved_summary))
+                if isinstance(approved_summary, str) and approved_summary.strip()
+                else None
+            ),
+            "data_field_names": sorted(str(key) for key in data),
+            "trace_field_names": sorted(str(key) for key in trace),
             "error_code": _error_code(result.error),
-            "error_message": _safe_error_message(result.error),
         }
     )
 
 
-def _trace_observation_summary(result: ToolResult) -> dict[str, Any]:
-    safe_trace = sanitize_error_detail(result.trace_summary or {})
-    payload: dict[str, Any] = {
-        "success": result.success,
-        "summary": None,
-        "output_ref": result.output_ref,
+def _policy_safe_input_summary(tool_input: dict[str, Any]) -> dict[str, Any]:
+    if local_trace_content_enabled():
+        payload = sanitize_error_detail(tool_input)
+        return payload if isinstance(payload, dict) else {}
+    return {
+        "redacted": True,
+        "field_names": sorted(str(key) for key in tool_input),
+        **_input_summary(tool_input),
     }
-    if isinstance(safe_trace, dict):
-        for key, value in safe_trace.items():
-            if key in {"raw_data_ref", "raw_provider_payload", "provider_raw_response"}:
-                continue
-            payload[key] = value
-    summary = payload.get("summary")
-    if isinstance(summary, str) and summary.strip():
-        payload["summary"] = _clip(summary)
-    elif result.error:
-        payload["summary"] = _safe_error_message(result.error)
-    return {key: value for key, value in payload.items() if key == "output_ref" or value is not None}
 
 
 def _data_string(result: ToolResult, key: str) -> str | None:

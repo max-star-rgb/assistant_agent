@@ -35,7 +35,7 @@ toolset
 requires_confirmation
 requires_env / enabled_by_default / skill_only
 requires_media
-progress_message / redact_trace
+progress_message
 ```
 
 工具类直接声明这些字段；Registry 不再维护按工具名索引的 `_TOOL_CONTRACTS` 或
@@ -128,7 +128,7 @@ LLM 决定是否调用、调用哪个已暴露工具以及参数内容。categor
 }
 ```
 
-category、确认、profile、env、trace 脱敏等系统字段不会发送给模型，也不需要靠“截断系统信息”从
+category、确认、profile、env 等系统字段不会发送给模型，也不需要靠“截断系统信息”从
 一份混合 JSON 中剥离。adapter 只挑选 provider 协议需要的 name、description 和 input schema。
 
 模型返回的 native `tool_calls` 会归一化为内部 `AssistantDecision`，然后进入统一执行链路。
@@ -184,7 +184,8 @@ step、工具名与 step 匹配，并且已确认输入的 digest 没有在确�
 - 预留和结算 provider 调用预算；
 - 传播 cancel，read 工具按全局 provider retry policy 重试，非 read 工具不自动重试；
 - 写入 tool call history、event 和 trace；
-- 按 `redact_trace` 对 history/trace 摘要脱敏；
+- 默认只向 history/trace 写入安全摘要；本地显式设置
+  `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 时，统一记录经过 secret sanitizer 的工具输入输出；
 - 将结构化 `ToolResult` 转成下一轮模型 observation。
 
 executor 仍采用 `prepare_tool_call -> invoke_tool -> commit_tool_result` 三段形式。该分段用于保证预算、
@@ -196,6 +197,10 @@ executor 仍采用 `prepare_tool_call -> invoke_tool -> commit_tool_result` 三�
 
 幂等语义不再由通用 ToolSpec 治理。具体 provider 若需要 idempotency key，应在领域 schema/adapter 或
 durable task 协议中处理；通用 executor 不维护进程内重复调用 ledger。
+
+工具不再各自声明 trace 脱敏策略。完整内容开关是本地运行级事实：默认关闭；开启后仍排除
+`raw_provider_payload`、`provider_raw_response` 和内联大块数据，并继续执行 secret、base64、绝对路径
+和长度清理。真实 Provider smoke/pilot 不应开启该变量。
 
 ## 6. 确认语义
 

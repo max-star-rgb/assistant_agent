@@ -34,7 +34,6 @@ class ToolSearchTool(ToolBase):
     toolset = "tool.discovery"
     requires_confirmation = False
     progress_message = "我看一下还有哪些可用工具。"
-    redact_trace = True
 
     def __init__(
         self,

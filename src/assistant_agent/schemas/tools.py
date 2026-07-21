@@ -57,7 +57,6 @@ class ToolSpec(BaseModel):
     skill_only: bool = False
     requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
     progress_message: str | None = None
-    redact_trace: bool = False
 
 
 class RunToolCatalog(BaseModel):

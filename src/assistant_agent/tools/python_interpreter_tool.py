@@ -34,7 +34,6 @@ class PythonInterpreterTool(ToolBase):
     requires_env = ["MULTIMODAL_AGENT_PYTHON_INTERPRETER_ENABLED"]
     enabled_by_default = False
     progress_message = "我用本地 Python 算一下。"
-    redact_trace = True
 
     def __init__(
         self,

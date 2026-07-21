@@ -230,7 +230,6 @@ def _declared_contract(tool: Tool) -> dict[str, Any]:
         "skill_only",
         "requires_media",
         "progress_message",
-        "redact_trace",
     )
     return {name: getattr(tool, name) for name in fields if hasattr(tool, name)}
 

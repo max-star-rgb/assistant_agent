@@ -54,7 +54,6 @@ class Tool(Protocol):
     skill_only: bool
     requires_media: list[ToolMediaRequirement]
     progress_message: str | None
-    redact_trace: bool
 
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         """Execute the tool and return a structured result."""
@@ -73,7 +72,6 @@ class ToolBase:
     skill_only = False
     requires_media: list[ToolMediaRequirement] = []
     progress_message: str | None = None
-    redact_trace = False
 
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         try:
