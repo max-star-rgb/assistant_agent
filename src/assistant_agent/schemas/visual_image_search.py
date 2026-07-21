@@ -1,6 +1,6 @@
 """Visual image search tool schemas."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class VisualImageSearchMatch(BaseModel):
@@ -65,6 +65,23 @@ class VisualImageSearchRequest(BaseModel):
         le=10,
         description="Maximum number of similar image results to return.",
     )
+
+    @model_validator(mode="after")
+    def require_public_image_reference(self) -> "VisualImageSearchRequest":
+        refs = [self.image_url, *self.image_ids]
+        normalized = [item.strip() for item in refs if isinstance(item, str) and item.strip()]
+        if not normalized:
+            raise ValueError("visual_image_search requires image_url or image_ids")
+        if not all(_is_http_url(item) for item in normalized):
+            raise ValueError(
+                "visual_image_search v1 only supports public http or https image URLs"
+            )
+        return self
+
+
+def _is_http_url(value: str) -> bool:
+    lowered = value.lower()
+    return lowered.startswith("http://") or lowered.startswith("https://")
 
 
 VisualImageSearchInput = VisualImageSearchRequest

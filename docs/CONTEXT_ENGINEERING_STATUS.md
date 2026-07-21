@@ -14,7 +14,7 @@ Last updated: 2026-07-17
 - 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md` source、Context Compiler v1 redacted report、session summary、token-aware recent transcript、增量滑动窗口摘要、session handoff v2、realtime task-state snapshot、独立 `realtime_video_context`、durable task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
 - 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
 - 预算现状：全局压缩控制仍以字符预算为准；recent transcript 选择已使用本地 token 估算；Memory context 有单独 token-aware 注入边界；其余 token 字段仍主要用于报告。
-- memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；长期读取由 `MemoryReadPolicy` gate，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
+- memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；自动长期记忆注入由 `MemoryReadPolicy` gate，LLM 选择的 `memory_retrieval` 走通用工具治理与 `MemoryManager`，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道在工具目录动态提供 `video_understanding` 时可以调用该工具，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。

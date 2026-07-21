@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 GenerationStatus = Literal["pending", "running", "succeeded", "failed"]
@@ -28,6 +28,15 @@ class ImageGenerationInput(BaseModel):
     memory_context: list[str] = Field(default_factory=list)
     user_id: str | None = None
     session_id: str | None = None
+
+    @model_validator(mode="after")
+    def require_generation_source(self) -> "ImageGenerationInput":
+        if any(
+            isinstance(value, str) and value.strip()
+            for value in (self.prompt, self.product_id, self.product_title)
+        ) or self.product_info:
+            return self
+        raise ValueError("image_generation requires prompt or product information")
 
 
 ImageGenerationRequest = ImageGenerationInput

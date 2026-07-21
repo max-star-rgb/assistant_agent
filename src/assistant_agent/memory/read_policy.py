@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from assistant_agent.schemas.memory import MemoryScope
 
 
-MemoryReadMode = Literal["auto_load", "tool_retrieval"]
+MemoryReadMode = Literal["auto_load"]
 
 _DEFAULT_ALLOWED_SCOPES: tuple[MemoryScope, ...] = (
     "session",
@@ -122,7 +122,7 @@ class MemoryReadDecision(BaseModel):
 
 
 class MemoryReadPolicy:
-    """Gate long-term memory reads before retrieval or prompt injection."""
+    """Gate automatic long-term memory loading before prompt injection."""
 
     def decide_auto_load(
         self,
@@ -139,37 +139,6 @@ class MemoryReadPolicy:
             mode="auto_load",
             request_text=request_text,
             query_text=request_text,
-            metadata=metadata,
-            top_k=top_k,
-            max_context_chars=max_context_chars,
-            max_context_tokens=max_context_tokens,
-        )
-
-    def decide_tool_retrieval(
-        self,
-        *,
-        request_text: str,
-        query_text: str,
-        metadata: dict[str, Any] | None = None,
-        top_k: int | None = None,
-        max_context_chars: int | None = None,
-        max_context_tokens: int | None = None,
-    ) -> MemoryReadDecision:
-        """Decide whether an explicit memory retrieval tool call is allowed."""
-
-        if not query_text.strip():
-            return _decision(
-                mode="tool_retrieval",
-                allowed=False,
-                reason="memory_retrieval_requires_query",
-                top_k=top_k,
-                max_context_chars=max_context_chars,
-                max_context_tokens=max_context_tokens,
-            )
-        return self._decide(
-            mode="tool_retrieval",
-            request_text=request_text,
-            query_text=query_text,
             metadata=metadata,
             top_k=top_k,
             max_context_chars=max_context_chars,

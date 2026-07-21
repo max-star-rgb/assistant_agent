@@ -180,6 +180,17 @@ def test_agent_runtime_system_prompt_is_channel_agnostic() -> None:
 
 
 def test_native_tool_call_loop_completes_with_observation() -> None:
+    memory_store = InMemoryStore()
+    memory_store.save(
+        MemoryItem(
+            memory_id="memory-1",
+            user_id="user-1",
+            memory_type="preference",
+            content={"item": "黑色通勤包"},
+            summary="用户喜欢黑色通勤包。",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
     tool_call = ChatResult(
         provider="scripted",
         model="scripted-model",
@@ -188,14 +199,14 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
         tool_calls=[
             NativeToolCall(
                 id="call-1",
-                name="shopping_search",
-                arguments={"query": "通勤耳机", "limit": 2},
+                name="memory_retrieval",
+                arguments={"query": "通勤包"},
                 raw={
                     "id": "call-1",
                     "type": "function",
                     "function": {
-                        "name": "shopping_search",
-                        "arguments": '{"query":"通勤耳机","limit":2}',
+                        "name": "memory_retrieval",
+                        "arguments": '{"query":"通勤包"}',
                     },
                 },
             )
@@ -206,23 +217,24 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
         model="scripted-model",
         finish_reason="stop",
         message_kind="final_answer",
-        response_text="已完成商品搜索。",
+        response_text="已结合记忆完成推荐。",
     )
     runtime = AgentGraphRuntime(
         config=_offline_config(),
         chat_adapter=ScriptedChatAdapter([tool_call, final_answer]),
-        memory_store=InMemoryStore(),
+        memory_store=memory_store,
         session_store=InMemorySessionStore(),
     )
 
     state = runtime.run_state(
-        UserRequest(user_id="user-1", session_id="session-1", text="帮我找通勤耳机")
+        UserRequest(user_id="user-1", session_id="session-1", text="推荐一个通勤包")
     )
 
     assert state.status == "completed"
-    assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
+    assert [call.tool_name for call in state.tool_calls] == ["memory_retrieval"]
+    assert "黑色通勤包" in str(runtime.chat_adapter.requests[1].messages)
     assert state.response is not None
-    assert state.response.message == "已完成商品搜索。"
+    assert state.response.message == "已结合记忆完成推荐。"
 
 
 def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -> None:

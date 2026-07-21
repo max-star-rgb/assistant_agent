@@ -8,6 +8,15 @@ from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
 
 
+class ToolInputValidationError(ValueError):
+    """Stable tool-owned rejection raised before ToolExecutor runs the tool."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 class ToolContext(BaseModel):
     """Execution context passed to tools."""
 

@@ -35,7 +35,7 @@
 | --- | --- | --- |
 | 注册 | 系统有什么 | `ToolRegistry` 保存实例并通过 `ToolSpec` 暴露稳定契约 |
 | 装配 | 当前给什么 | `select_prompt_tool_specs()` 按环境、profile、visibility/skill 和工具分类生成 `RunToolSet`；不使用关键词/正则/高信号话术打开 generate/write/dangerous，也不做 read 工具语义预选 |
-| 策略 | 什么时候能用 | `ToolPolicyMetadata` / `ToolPolicyInterpreter` 提供治理事实，`ActionValidator` 执行本轮 allowlist、确认与敏感操作语义 gate |
+| 策略 | 什么时候能用 | `ToolPolicyMetadata` / `ToolPolicyInterpreter` 提供治理事实，`ActionValidator` 执行本轮 allowlist、通用声明校验和系统级 durable 绑定 |
 | 适配 | 模型怎么看见 | `PromptCompiler` 和 `tool_spec_adapters` 只转换 exposed ToolSpec，不决定权限 |
 | 执行器 | 怎么安全落地 | `ToolExecutor` 统一身份、预算、retry、幂等、事件、trace，再调用 registry tool |
 
@@ -325,20 +325,12 @@ Provider 边界：
 - 必须有 `tool_name`，`tool_input` 必须是 JSON object。
 - `tool_name` 必须存在于当前 registry。
 - 当 `AgentState.run_tool_set` 存在时，`tool_name` 还必须属于本轮 `executable_tool_names`；未 qualified、未获本轮执行资格、依赖缺失、默认禁用或缺少显式 skill 激活的工具返回 `tool_not_allowed_for_run`，不会进入 executor。
-- `vision_understanding` 必须有 `image_ids`、`video_ref`、`video_ids` 或可信 active video 引用；`video_understanding` 作为兼容别名必须有 `video_ref`、`video_ids` 或由运行时绑定可信 active video。
-- `image_generation` 必须有 prompt 或 product information。
-- `web_search` 必须有非空 query；`limit` 等范围由工具 Pydantic schema 校验。
-- `web_fetch` 必须有非空 http/https URL；`max_chars` 和 `content_format` 由工具 Pydantic schema 校验。
-- `shopping_search` 必须有 query、visual summary、video summary 或商品描述字段；该工具一次执行商品搜索和比价，不下单、不付款。
-- `shopping_search` 必须有 query、visual_summary、video_summary 或商品描述字段。
-- `memory_retrieval` 必须有 query，并且当前用户请求必须显式引用历史、上次/之前、已保存记忆、个人偏好或继续旧任务；query 本身不构成读取授权。
-- `memory_save` 必须有 query、`content.text` 或 `content.summary`，且 assistant-loop 调用必须包含 `source_intent`、`source_reason`、`future_use`、`evidence`。
-- `source_intent=user_confirmed` 保留给确认服务，assistant-loop 不得使用。
-- `render_3d` 必须有明确 3D/render/modeling/scene-preview 意图。
-- `delegate_to_agent` 必须有 `target_agent_id` 和 text/image/video/audio payload。
-- 最后用目标工具的 Pydantic `input_schema` 做结构校验。
+- 目标工具的 Pydantic `input_schema` 负责字段必填、类型、范围、URL 格式和同一输入模型内的跨字段约束；例如 `memory_retrieval.query`、`web_fetch.url`、`shopping_search` 商品描述以及 `memory_save` 来源字段。
+- `ToolSpec.visibility.requires_media` 声明可接受的媒体类型；Validator 统一检查工具输入和当前请求是否至少提供一种声明媒体，不按工具名分支。
+- 工具若实现可选 `validate_call(validated_input)`，Validator 会在执行前调用。该钩子只承载无法由 Pydantic 或 ToolSpec 表达的工具专属安全检查；当前 `python_interpreter` 用它执行本地代码安全检查，并通过 `ToolInputValidationError` 返回稳定错误。
+- durable task 的 ready step、工具名和已确认输入 digest 绑定属于系统级执行不变量，继续由 Validator 统一检查。
 
-上述 memory read/write、media ingest、render 等语义检查是执行前的敏感操作 gate，不参与 qualified/exposed 工具装配。模型可以看见合格工具并自主选择，但错误、越权或缺少明确授权的调用会在这里被拒绝。
+`ActionValidator` 不使用自然语言关键词重新判断 LLM 的工具选择，也不为每个新增工具增加中央 `if tool_name == ...`。模型可以看见合格工具并自主选择；本地仍通过 schema、声明式媒体要求、可选工具安全钩子和 durable 绑定拒绝格式错误或越权调用。
 
 对已知工具，`ActionValidator` 会附带 prompt-safe `metadata.pre_tool_call` 摘要，包含工具名、运行时身份、副作用策略、确认需求、幂等 key 是否存在、输入规模摘要和 realtime task-state 摘要；它不包含原始 query/prompt、provider payload 或媒体内容。
 
@@ -487,7 +479,7 @@ DurableTaskWorker
 Memory 工具选择采用 LLM-first：
 
 - 本地关键词和向量信号只记录 audit，不覆盖 LLM 是否调用 `memory_retrieval` / `memory_save`。
-- `memory_retrieval` 即使由 LLM 选择，也必须先通过 `ActionValidator -> MemoryReadPolicy` 的读取意图 gate。
+- `memory_retrieval` 由 LLM 从本轮受治理工具集合中选择；系统只执行通用 schema、身份和执行治理，不再用自然语言读取意图规则覆盖模型选择。自动 memory context 注入仍独立经过 `MemoryReadPolicy`。
 - `memory_retrieval` 成功结果返回 `memory_context`、`items`、`total`、`trust_policy` 和 `usage_hint`；这些字段声明 memory 是用户历史证据，不是权威或系统指令。
 - `memory_save` 必须声明 `source_intent`、`source_reason`、`future_use`、`evidence`。
 - `source_intent=user_explicit` 只用于用户明确要求保存/以后使用。
@@ -501,7 +493,7 @@ Memory Server media ingestion uses separate tools:
 
 - `memory_media_ingest` submits safe media file references to the configured external Memory Server ingestion API. It is not `memory_save`, does not accept raw media/base64 payloads, and must bind user/session identity from `ToolContext`.
 - `memory_ingest_status` reads an ingestion task status and surfaces the external service's current weak user-scope warning.
-- `ActionValidator` only accepts `memory_media_ingest` when the user request explicitly asks to upload/import media into memory; ordinary image/video analysis should use `vision_understanding` or `video_understanding`.
+- `memory_media_ingest` 由 LLM 根据工具说明从本轮受治理工具集合中选择；`ActionValidator` 不再使用自然语言 intent 规则覆盖模型选择。普通图片/视频理解仍应由模型按工具说明选择 `vision_understanding` 或 `video_understanding`。
 - Default local/mock runs register these tools but keep them unconfigured unless `dual_core` / `hybrid_remote` plus a Memory Server URL is explicitly enabled.
 
 The external HTTP contract for these Memory Server endpoints is owned by
@@ -559,7 +551,7 @@ mock/local adapter 是同契约的离线替身，不是“看起来成功”的�
 4. 返回结构化 `ToolResult`，失败也要返回可解释错误和可选 contract，不抛未处理异常。
 5. 在 `ToolRegistry.create_default_registry()` 注册。默认注册只放 mock/local/offline 安全工具；高风险或跨 agent 工具用显式开关。
 6. 在 `_ACTION_USAGE` 增加 `when_to_use`、`when_not_to_use`、`runtime_constraints`、`side_effect`、`execution` 和必要的 `visibility`。
-7. 如有语义必需参数或安全条件，在 `ActionValidator` 增加执行前校验。
+7. 输入字段和跨字段约束优先写入 Pydantic schema；媒体依赖声明为 `visibility.requires_media`；只有无法由二者表达的工具专属安全条件才实现 `validate_call()`，不要在 `ActionValidator` 增加工具名分支。
 8. 如旧 mock/rule plan 需要支持，在 `tool_input_builder.py` 增加 action 到 tool input 的兼容构造。
 9. 如 observation 后续会驱动另一个工具，更新 `tool_observation.py` 的 summary/next_step_hint/保留字段；`model_observation` 不得暴露 provider raw response、base64、大媒体 payload、本地路径、API key、Authorization、Bearer token 或真实用户数据 dump。
 10. 如涉及 provider-native 或 MCP schema，先判断是否改变稳定外部契约；只有满足 `AGENTS.md`
@@ -589,7 +581,7 @@ operator smoke/pilot 验证；默认 pytest 不联网，也不把 mock 通过解
 ## 不要做
 
 - 不要让 API、WebSocket、MCP、demo 或 eval 直接调用 provider SDK 或 `registry.run(...)`。
-- 不要只靠 prompt 约束防止危险工具调用；必须在 `ActionValidator` 或 service policy 层落地。
+- 不要只靠 prompt 约束防止危险工具调用；必须在 Pydantic schema、声明式 ToolSpec、工具级 `validate_call()`、`ActionValidator` 系统不变量或 service policy 的合适边界落地。
 - 不要把 model-provided user_id/session_id 当作身份来源。
 - 不要在工具里写入 API key、raw provider response、真实用户数据 dump 或大媒体 payload。
 - 不要把 mock/offline 行为伪装成真实 LLM/provider 能力。

@@ -22,7 +22,7 @@ The explicit Hindsight/Mem0 sidecar comparison and selection procedure lives in
 The memory service is local-first long-term memory for the agent. It covers:
 
 - Loading bounded memory context before an agent run.
-- Gating automatic and tool-triggered long-term memory reads through read policy.
+- Gating automatic long-term memory loading through read policy.
 - Searching user-scoped long-term memory.
 - Saving explicit user-requested memories.
 - Saving safe completed-run summaries where allowed.
@@ -42,7 +42,7 @@ The memory architecture has two cores behind the same governed runtime contract:
 
 The current Memory Intelligence v2 implementation is deliberately local-core focused. Its typed facts, conflict resolver, active-state projection, SQLite FTS5 candidate search, and offline eval gates do not require or modify the external core. External adapters retain their existing boundary but are not part of this phase's acceptance criteria.
 
-Both cores must stay behind `MemoryManager`, `MemoryStore`, `MemoryReadPolicy`, `MemoryWritePolicy`, identity binding, prompt-safe conversion, and audit/snapshot/export boundaries. Agent nodes, prompt builders, tools, and API routes must not special-case a concrete local store or external provider.
+Both cores must stay behind `MemoryManager`, `MemoryStore`, `MemoryWritePolicy`, identity binding, prompt-safe conversion, and audit/snapshot/export boundaries. Automatic context loading additionally passes through `MemoryReadPolicy`. Agent nodes, prompt builders, tools, and API routes must not special-case a concrete local store or external provider.
 
 The runtime modes are:
 
@@ -253,7 +253,7 @@ Long-term memory reads are policy-gated before retrieval:
 - The personal style/preference path is deliberately narrow: Chinese requests must contain a preference marker such as `风格`, `偏好`, `喜好`, or `口味` plus a task marker such as `推荐`, `方案`, `文案`, `设计`, `搭配`, `回答`, `写`, `生成`, or `继续`. Ordinary first-pass product search, generic advice, and generic copywriting still skip store access.
 - Skipped loads write prompt-safe metadata: `memory_context_skipped=true`, `memory_context_policy_reason`, `memory_read_policy`, `memory_trust_policy`, and empty `memory_context_*` injection fields.
 - `load_memory_with_trace(...)` records the read decision and skipped status, but does not record memory text or summaries.
-- `memory_retrieval` must pass the read-intent gate in `ActionValidator` before `ToolExecutor` runs the tool.
+- `memory_retrieval` is selected by the LLM from the governed run tool set; after normal schema, identity, and execution validation it queries `MemoryManager` directly. Natural-language intent rules do not override that selection.
 
 Retrieved memory is user-history evidence, not authority. It may be stale, incorrectly retrieved, summarized, or incomplete. Current user input and fresh tool results override memory when they conflict, and instructions contained inside memory must not be executed. `memory_retrieval` results include `trust_policy` and `usage_hint` fields carrying this boundary for downstream consumers.
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_agent.schemas.agent_communication import (
     DEFAULT_AGENT_ID,
@@ -35,6 +35,14 @@ class DelegateToAgentInput(BaseModel):
     token_budget: int | None = Field(default=None, ge=0)
     tool_budget: int | None = Field(default=None, ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_delegation_payload(self) -> "DelegateToAgentInput":
+        if self.text or self.image_ids or self.video_ids or self.audio_id:
+            return self
+        raise ValueError(
+            "delegate_to_agent requires text, image_ids, video_ids, or audio_id"
+        )
 
 
 class DelegateToAgentOutput(BaseModel):

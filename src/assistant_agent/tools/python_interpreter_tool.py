@@ -23,9 +23,10 @@ from assistant_agent.schemas.tools import (
 from assistant_agent.services.tool_python_sandbox import (
     PythonSandbox,
     is_python_interpreter_enabled,
+    validate_python_code_safety,
 )
 from assistant_agent.services.tool_manifest import PYTHON_INTERPRETER_TOOL_NAME
-from assistant_agent.tools.base import MockTool, ToolContext
+from assistant_agent.tools.base import MockTool, ToolContext, ToolInputValidationError
 
 
 class PythonInterpreterTool(MockTool):
@@ -58,6 +59,13 @@ class PythonInterpreterTool(MockTool):
     ) -> None:
         self.sandbox = sandbox or PythonSandbox()
         self.require_enable_env = require_enable_env
+
+    def validate_call(self, input: PythonInterpreterInput) -> None:
+        """Reject unsafe code at the tool-owned pre-execution boundary."""
+
+        error = validate_python_code_safety(input.code)
+        if error is not None:
+            raise ToolInputValidationError(error.code, error.message)
 
     def _run(self, input: PythonInterpreterInput, context: ToolContext) -> ToolResult:
         if self.require_enable_env and not is_python_interpreter_enabled():

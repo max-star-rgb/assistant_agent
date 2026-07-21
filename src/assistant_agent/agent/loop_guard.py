@@ -63,7 +63,7 @@ class LoopGuard:
     def record_validation_rejection(self, code: str, tool_name: str | None) -> LoopGuardDecision:
         if code == "unknown_tool":
             return self._increment("unknown_tool_count", self.unknown_tool_limit, "unknown_tool_limit")
-        if code in {"invalid_tool_input", "missing_required_input", "render_intent_required"}:
+        if code in {"invalid_tool_input", "missing_required_input"}:
             return self._increment("invalid_tool_input_count", self.invalid_tool_input_limit, "invalid_tool_input_limit")
         return LoopGuardDecision(False, "ok", "Guard not triggered.")
 

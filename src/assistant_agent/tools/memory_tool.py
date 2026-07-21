@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_agent.memory.manager import (
     MemoryConfirmationRequired,
@@ -47,7 +47,7 @@ class MemoryRetrievalInput(BaseModel):
 
     user_id: str | None = None
     session_id: str | None = None
-    query: str | None = None
+    query: str = Field(min_length=1)
     content: dict = Field(default_factory=dict)
 
 
@@ -60,12 +60,18 @@ class MemorySaveInput(BaseModel):
     session_id: str | None = None
     query: str | None = None
     content: dict = Field(default_factory=dict)
-    source_intent: (
-        Literal["user_explicit", "assistant_candidate", "user_confirmed"] | None
-    ) = None
-    source_reason: str | None = None
-    future_use: str | None = None
-    evidence: str | None = None
+    source_intent: Literal["user_explicit", "assistant_candidate"]
+    source_reason: str = Field(min_length=1)
+    future_use: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def require_memory_content(self) -> "MemorySaveInput":
+        if isinstance(self.query, str) and self.query.strip():
+            return self
+        if self.content.get("text") or self.content.get("summary"):
+            return self
+        raise ValueError("memory_save requires query, content.text, or content.summary")
 
 
 class _MemoryOperationTool(MockTool):
@@ -252,41 +258,14 @@ def _retrieve_with_manager(
     identity = RequestIdentity.for_user(
         user_id=input.user_id, session_id=input.session_id
     )
-    request_text = str(
-        context.metadata.get("request_text") or input.content.get("request_text") or ""
-    ).strip()
-    metadata = context.metadata.get("request_metadata") or input.content.get(
-        "request_metadata"
-    )
-    metadata = metadata if isinstance(metadata, dict) else {}
-    if request_text:
-        decision = manager.read_policy.decide_tool_retrieval(
-            request_text=request_text,
-            query_text=input.query or "",
-            metadata=metadata,
-            top_k=_int_content(input.content, "top_k", default=5),
-            max_context_chars=_int_content(
-                input.content, "max_context_chars", default=500
-            ),
-        )
-    else:
-        decision = manager.read_policy.decide_tool_retrieval(
-            request_text=input.query or "",
-            query_text=input.query or "",
-            metadata={"memory_read_intent": True},
-            top_k=_int_content(input.content, "top_k", default=5),
-            max_context_chars=_int_content(
-                input.content, "max_context_chars", default=500
-            ),
-        )
-    if not decision.allowed:
-        return _memory_read_rejected_result(tool_name, decision.prompt_safe_metadata())
     query = MemoryQuery(
         user_id=input.user_id,
         query=input.query or "",
         capability=str(input.content.get("capability") or "") or None,
-        top_k=decision.top_k,
-        max_context_chars=decision.max_context_chars,
+        top_k=_int_content(input.content, "top_k", default=5),
+        max_context_chars=_int_content(
+            input.content, "max_context_chars", default=500
+        ),
     )
     result = manager.search_for_identity(identity, query)
     if not result.items:
@@ -312,7 +291,6 @@ def _retrieve_with_manager(
             "source": "memory_manager",
             "trust_policy": trust_policy,
             "usage_hint": usage_hint,
-            "read_policy": decision.prompt_safe_metadata(),
         },
     )
     return ToolResult(
@@ -321,48 +299,6 @@ def _retrieve_with_manager(
         data={**data, "contract": contract.model_dump(mode="json")},
         model_observation=_memory_retrieval_model_observation(data),
         output_ref=output_ref,
-        latency_ms=1,
-        contract=contract,
-    )
-
-
-def _memory_read_rejected_result(
-    tool_name: str, decision: dict[str, object]
-) -> ToolResult:
-    trust_policy = trust_policy_metadata()
-    usage_hint = memory_usage_hint()
-    data = {
-        "status": "rejected",
-        "items": [],
-        "memory_context": "",
-        "total": 0,
-        "trust_policy": trust_policy,
-        "usage_hint": usage_hint,
-        "read_policy": decision,
-    }
-    contract = build_capability_output_contract(
-        capability=MEMORY_RETRIEVAL_CAPABILITY,
-        status="failed",
-        data=data,
-        errors=[
-            {
-                "code": "memory_read_intent_required",
-                "message": "memory retrieval requires an explicit request for prior memory.",
-                "recoverable": True,
-            }
-        ],
-        metadata={
-            "provider": "local",
-            "source": "memory_manager",
-            "trust_policy": trust_policy,
-        },
-    )
-    return ToolResult(
-        tool_name=tool_name,
-        success=False,
-        data={**data, "contract": contract.model_dump(mode="json")},
-        model_observation=_memory_retrieval_model_observation(data),
-        error="memory retrieval requires an explicit request for prior memory.",
         latency_ms=1,
         contract=contract,
     )

@@ -318,6 +318,9 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "artifact_reuse": "reusable",
             "progress_message": "我看一下。",
         },
+        "visibility": {
+            "requires_media": ["image", "video"],
+        },
     },
     VIDEO_UNDERSTANDING_TOOL_NAME: {
         "when_to_use": [
@@ -374,7 +377,7 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
     RENDER_3D_TOOL_NAME: {
         "when_to_use": ["User explicitly asks for 3D, rendering, modeling, scene preview, or displaying an object in a space."],
         "when_not_to_use": ["User only asks to describe the scene in an image or video.", "Do not trigger from the word 场景 alone."],
-        "runtime_constraints": ["Requires explicit render intent."],
+        "runtime_constraints": ["Requires valid render inputs accepted by the tool schema."],
         "side_effect": {
             "level": "compensatable",
             "requires_confirmation": False,
@@ -542,6 +545,9 @@ _ACTION_USAGE: dict[str, dict[str, Any]] = {
             "realtime_safety": "safe",
             "artifact_reuse": "reusable",
             "progress_message": "我找一下相似图片。",
+        },
+        "visibility": {
+            "requires_media": ["image"],
         },
     },
     WEB_FETCH_TOOL_NAME: {

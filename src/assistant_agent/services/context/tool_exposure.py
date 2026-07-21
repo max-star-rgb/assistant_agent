@@ -14,21 +14,11 @@ from typing import Any, Literal
 
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
-from assistant_agent.services.tool_manifest import (
-    IMAGE_UNDERSTANDING_TOOL_NAME,
-    PYTHON_INTERPRETER_TOOL_NAME,
-    VIDEO_UNDERSTANDING_TOOL_NAME,
-    VISUAL_IMAGE_SEARCH_TOOL_NAME,
-)
+from assistant_agent.services.tool_manifest import PYTHON_INTERPRETER_TOOL_NAME
 from assistant_agent.services.tool_policy import ToolPolicyView
 
 ToolExposureCategory = Literal["read", "generate", "write", "dangerous"]
 _DANGEROUS_TOOL_NAMES = {PYTHON_INTERPRETER_TOOL_NAME}
-_MEDIA_BOUND_TOOL_TYPES = {
-    VIDEO_UNDERSTANDING_TOOL_NAME: {"video"},
-    IMAGE_UNDERSTANDING_TOOL_NAME: {"image", "video"},
-    VISUAL_IMAGE_SEARCH_TOOL_NAME: {"image"},
-}
 
 
 @dataclass(frozen=True)
@@ -199,10 +189,7 @@ def _exposure_source_reason(
 def _has_required_media(policy: ToolPolicyView, facts: ToolExposureFacts) -> bool:
     required = set(policy.requires_media)
     if required:
-        return required.issubset(facts.active_media_types)
-    implicit_any = _MEDIA_BOUND_TOOL_TYPES.get(policy.tool_name)
-    if implicit_any:
-        return bool(implicit_any.intersection(facts.active_media_types))
+        return bool(required.intersection(facts.active_media_types))
     return True
 
 
