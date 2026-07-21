@@ -24,7 +24,7 @@ from assistant_agent.memory.manager import MemoryConfirmationRequired, MemoryMan
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ApprovalPolicy, DataPolicy, ToolPolicyMetadata, ToolResult, ToolSpec
+from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.memory_audit import MemoryAuditService
 from assistant_agent.tools.base import MockTool, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
@@ -195,11 +195,9 @@ class _MemoryBakeoffProbeTool(MockTool):
     description = "Run one governed synthetic memory bake-off operation."
     input_schema = _ProbeInput
     output_schema = _ProbeOutput
-    policy = ToolPolicyMetadata(
-        risk="local_write",
-        approval=ApprovalPolicy(mode="never"),
-        data=DataPolicy(reads_private_data=True, writes_private_data=True, redact_in_trace=True),
-    )
+    category = "write"
+    requires_confirmation = False
+    redact_trace = True
 
     def __init__(self, manager: MemoryManager) -> None:
         self.manager = manager

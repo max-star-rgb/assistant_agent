@@ -8,14 +8,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field, create_model
 
 from assistant_agent.mcp.config import MCPToolAdapterConfig
-from assistant_agent.schemas.tools import (
-    ApprovalPolicy,
-    ToolExecutionPolicy,
-    ToolPolicyMetadata,
-    ToolResult,
-    ToolSpec,
-    VisibilityPolicy,
-)
+from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.tools.base import ToolContext
 
@@ -58,8 +51,10 @@ class MCPProxyTool:
         self.description = definition.description
         self.input_schema = _input_model_for_definition(definition)
         self.output_schema = self.input_schema
-        self.policy = _default_mcp_policy(config, definition.name)
-        self.execution = _default_mcp_execution(config, definition.name)
+        self.category = "read" if config.is_read_only(definition.name) else "write"
+        self.requires_confirmation = not config.is_read_only(definition.name)
+        self.toolset = f"mcp.{_safe_name(config.server_name)}"
+        self.enabled_by_default = config.is_enabled_by_default(definition.name)
 
     def run(
         self,
@@ -107,8 +102,10 @@ class MCPToolAdapter:
             input_schema=_schema_to_fields(input_model),
             required_inputs=_required_inputs(definition.input_schema),
             runtime_constraints=["MCP proxy tool; execute only through ToolExecutor."],
-            execution=_default_mcp_execution(self.config, definition.name),
-            policy=_default_mcp_policy(self.config, definition.name),
+            category="read" if self.config.is_read_only(definition.name) else "write",
+            requires_confirmation=not self.config.is_read_only(definition.name),
+            toolset=f"mcp.{_safe_name(self.config.server_name)}",
+            enabled_by_default=self.config.is_enabled_by_default(definition.name),
         )
 
     def proxy_tool_for_definition(self, definition: MCPToolDefinition) -> MCPProxyTool:
@@ -124,38 +121,6 @@ class MCPToolAdapter:
 
 def namespaced_mcp_tool_name(config: MCPToolAdapterConfig, tool_name: str) -> str:
     return _namespaced_tool_name(config, tool_name)
-
-
-def _default_mcp_policy(config: MCPToolAdapterConfig, tool_name: str) -> ToolPolicyMetadata:
-    if config.is_read_only(tool_name):
-        risk = "external_read"
-        approval = ApprovalPolicy(mode="never", confirmation_kind=None)
-    else:
-        risk = "external_write"
-        approval = ApprovalPolicy(mode="conditional", confirmation_kind="mcp_tool")
-    return ToolPolicyMetadata(
-        risk=risk,
-        approval=approval,
-        visibility=VisibilityPolicy(
-            toolset=f"mcp.{_safe_name(config.server_name)}",
-            enabled_by_default=config.is_enabled_by_default(tool_name),
-            tags=["mcp"],
-        ),
-    )
-
-
-def _default_mcp_execution(
-    config: MCPToolAdapterConfig,
-    tool_name: str,
-) -> ToolExecutionPolicy:
-    if not config.is_read_only(tool_name):
-        return ToolExecutionPolicy()
-    return ToolExecutionPolicy(
-        dependency_mode="independent",
-        resource_reads=[namespaced_mcp_tool_name(config, tool_name)],
-        realtime_safety="safe",
-        artifact_reuse="reusable",
-    )
 
 
 def _namespaced_tool_name(config: MCPToolAdapterConfig, tool_name: str) -> str:

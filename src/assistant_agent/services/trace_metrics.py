@@ -122,9 +122,9 @@ def _tool_metrics(events: list[TraceEvent]) -> dict[str, Any]:
         if event.latency_ms is not None:
             data["latencies"].append(event.latency_ms)
         data["retry_count"] += _event_int(event, "retry_count")
-        risk = _event_str(event, "risk") or _event_str(event, "risk_gate")
-        if risk:
-            data["risk_gate"][risk] += 1
+        category = _event_str(event, "tool_category")
+        if category:
+            data["categories"][category] += 1
         if _event_bool(event, "confirmation_required") or _event_str(event, "confirmation_state") == "required":
             data["confirmation_required_count"] += 1
 
@@ -137,7 +137,7 @@ def _tool_metrics(events: list[TraceEvent]) -> dict[str, Any]:
             "failure_rate": _rate(data["failure_count"], call_count),
             "retry_count": data["retry_count"],
             "confirmation_required_count": data["confirmation_required_count"],
-            "risk_gate": _counter_dict(data["risk_gate"]),
+            "categories": _counter_dict(data["categories"]),
             "latency_ms": _numeric_summary(data["latencies"]),
         }
     return {
@@ -187,7 +187,7 @@ def _empty_tool_data() -> dict[str, Any]:
         "failure_count": 0,
         "retry_count": 0,
         "confirmation_required_count": 0,
-        "risk_gate": Counter(),
+        "categories": Counter(),
         "latencies": [],
     }
 

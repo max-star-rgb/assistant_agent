@@ -74,7 +74,7 @@ def test_package_and_runtime_initialize_offline() -> None:
     assert "shopping_search" in runtime.registry.list()
     assert "memory" not in specs
     assert {
-        specs[name].visibility.toolset
+        specs[name].toolset
         for name in (
             "memory_retrieval",
             "memory_save",
@@ -82,8 +82,8 @@ def test_package_and_runtime_initialize_offline() -> None:
             "memory_ingest_status",
         )
     } == {"memory"}
-    assert specs["calendar_search"].policy.visibility.toolset == "personal.calendar"
-    assert specs["calendar_create"].policy.visibility.toolset == "personal.calendar"
+    assert specs["calendar_search"].toolset == "personal.calendar"
+    assert specs["calendar_create"].toolset == "personal.calendar"
     assert runtime.chat_adapter.provider == "mock"
 
 

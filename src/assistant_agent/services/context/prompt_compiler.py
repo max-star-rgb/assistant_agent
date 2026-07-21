@@ -102,7 +102,7 @@ def prompt_tool_specs_for_mode(
 ) -> tuple[ToolSpec, ...]:
     """Return the already-governed tool subset exposed for this mode."""
 
-    if pack.run_tool_set.registered_tool_names:
+    if pack.run_tool_catalog.available_tool_names:
         return tuple(pack.prompt_tool_specs)
     return tuple(pack.prompt_tool_specs or pack.tool_specs)
 

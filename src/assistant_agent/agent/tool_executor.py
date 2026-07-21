@@ -18,7 +18,7 @@ from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.durable_tasks import TrustedTaskBinding
 from assistant_agent.schemas.planning import TaskStep
 from assistant_agent.schemas.realtime_cancellation import build_realtime_turn_cancellation_metadata
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.provider_budget import ProviderCallReservation
 from assistant_agent.services.provider_errors import ProviderError
@@ -45,16 +45,6 @@ from assistant_agent.services.tool_manifest import (
     canonical_capability_for_action,
     canonical_capability_for_tool,
 )
-from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
-from assistant_agent.services.tool_risk_gate import (
-    ToolIdempotencyLedger,
-    confirmation_required_result,
-    duplicate_suppressed_result,
-    evaluate_tool_risk,
-    get_default_tool_idempotency_ledger,
-    record_successful_idempotent_result,
-    ToolRiskDecision,
-)
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
@@ -70,12 +60,11 @@ class PreparedToolCall:
     step: TaskStep | None
     call_id: str
     capability: str
-    policy_view: ToolPolicyView
-    risk_decision: ToolRiskDecision
+    tool_spec: ToolSpec
     started_at: float
     tool_span_id: str
     context: ToolContext | None
-    disposition: Literal["invoke", "duplicate", "confirmation", "budget_error"]
+    disposition: Literal["invoke", "confirmation", "budget_error"]
     prepared_result: ToolResult | None
     budget_reservation: ProviderCallReservation | None
     budget_error: ProviderError | None
@@ -106,7 +95,6 @@ class ToolExecutor:
         execution_policy: ProviderExecutionPolicy | None = None,
         context_metadata: dict[str, Any] | None = None,
         cancel_token: Any | None = None,
-        idempotency_ledger: ToolIdempotencyLedger | None = None,
     ) -> None:
         self.registry = registry or create_default_registry()
         self.tool_history = tool_history
@@ -115,7 +103,6 @@ class ToolExecutor:
         self.execution_policy = execution_policy or ProviderExecutionPolicy.from_env()
         self.context_metadata = dict(context_metadata or {})
         self.cancel_token = cancel_token
-        self.idempotency_ledger = idempotency_ledger or get_default_tool_idempotency_ledger()
 
     def run_tool(
         self,
@@ -172,15 +159,14 @@ class ToolExecutor:
             step_id=step_id,
             context_metadata=self.context_metadata,
         )
-        policy_view = ToolPolicyInterpreter().view_for_spec(self.registry.get_spec(tool_name))
-        risk_decision = evaluate_tool_risk(
-            tool_name=tool_name,
-            tool_input=bound_input,
-            request=state.request,
-            state=state,
-            step_id=step_id,
-            policy_view=policy_view,
-        )
+        tool_spec = self.registry.get_spec(tool_name)
+        confirmed = _tool_confirmation_granted(state.request.metadata, tool_name)
+        requires_confirmation = tool_spec.requires_confirmation and not confirmed
+        execution_summary = {
+            "category": tool_spec.category,
+            "requires_confirmation": requires_confirmation,
+            "confirmation_granted": confirmed,
+        }
         pre_tool_call = build_pre_tool_call_summary(
             tool_name=tool_name,
             tool_input=bound_input,
@@ -189,8 +175,7 @@ class ToolExecutor:
             state=state,
             step_id=step_id,
             cancel_token=self.cancel_token,
-            risk_gate=risk_decision.risk_summary(),
-            idempotency=risk_decision.idempotency_summary(),
+            tool_contract=execution_summary,
         )
         call = state.add_tool_call(tool_name, bound_input)
         capability = _capability_name(tool_name, step)
@@ -208,8 +193,7 @@ class ToolExecutor:
             call_id=call.call_id,
             step_id=step_id,
             span_id=tool_span_id,
-            risk_gate=risk_decision.risk_summary(),
-            idempotency=risk_decision.idempotency_summary(),
+            tool_contract=execution_summary,
             input_summary=_input_summary(bound_input),
         )
         self._emit(
@@ -230,37 +214,20 @@ class ToolExecutor:
                 state.run_id,
                 call.call_id,
                 tool_name,
-                _policy_safe_input_summary(bound_input, policy_view),
+                _policy_safe_input_summary(bound_input, tool_spec),
                 user_id=state.user_id,
                 session_id=state.session_id,
             )
 
-        disposition: Literal["invoke", "duplicate", "confirmation", "budget_error"] = "invoke"
+        disposition: Literal["invoke", "confirmation", "budget_error"] = "invoke"
         prepared_result = None
         reservation = None
         budget_error = None
         context = None
-        idempotency_record = None
-        if risk_decision.idempotency_required and risk_decision.idempotency_key is not None:
-            idempotency_record = self.idempotency_ledger.get(
-                user_id=state.user_id,
-                session_id=state.session_id,
-                tool_name=tool_name,
-                idempotency_key=risk_decision.idempotency_key,
-            )
-        if idempotency_record is not None:
-            disposition = "duplicate"
-            prepared_result = duplicate_suppressed_result(
-                tool_name=tool_name,
-                record=idempotency_record,
-                decision=risk_decision,
-                latency_ms=int((perf_counter() - started_at) * 1000),
-            )
-        elif not risk_decision.allow_execute:
+        if requires_confirmation:
             disposition = "confirmation"
-            prepared_result = confirmation_required_result(
+            prepared_result = _confirmation_required_result(
                 tool_name=tool_name,
-                decision=risk_decision,
                 latency_ms=int((perf_counter() - started_at) * 1000),
             )
         else:
@@ -292,13 +259,6 @@ class ToolExecutor:
                     "request_text": state.request.text or "",
                     "request_metadata": dict(state.request.metadata),
                 }
-                if risk_decision.idempotency_key is not None:
-                    context_metadata["idempotency_key"] = risk_decision.idempotency_key
-                if policy_view.timeout_s is not None:
-                    context_metadata["tool_execution"] = {
-                        "timeout_s": policy_view.timeout_s,
-                        "deadline_monotonic_s": monotonic() + policy_view.timeout_s,
-                    }
                 context = ToolContext(
                     run_id=state.run_id,
                     user_id=state.user_id,
@@ -317,8 +277,7 @@ class ToolExecutor:
             step=step,
             call_id=call.call_id,
             capability=capability,
-            policy_view=policy_view,
-            risk_decision=risk_decision,
+            tool_spec=tool_spec,
             started_at=started_at,
             tool_span_id=tool_span_id,
             context=context,
@@ -345,15 +304,13 @@ class ToolExecutor:
                 prepared.context,
                 step_id=prepared.step_id,
                 preserve_success_after_cancel=_preserve_success_after_cancel(
-                    prepared.risk_decision
+                    prepared.tool_spec
                 ),
                 max_retries=_effective_max_retries(
-                    policy_view=prepared.policy_view,
-                    risk_decision=prepared.risk_decision,
+                    tool_spec=prepared.tool_spec,
                     global_max_retries=self.execution_policy.retry.max_retries,
                 ),
             )
-            result = _mark_unknown_mutating_timeout(result, policy_view=prepared.policy_view)
             latency_ms = int((perf_counter() - prepared.started_at) * 1000)
             if result.latency_ms is None:
                 result.latency_ms = latency_ms
@@ -391,7 +348,7 @@ class ToolExecutor:
             return self._commit_staged_cancellation(state, prepared, invocation)
         if prepared.disposition == "budget_error":
             return self._commit_staged_budget_failure(state, prepared, invocation.result)
-        if prepared.disposition in {"duplicate", "confirmation"}:
+        if prepared.disposition == "confirmation":
             return self._commit_staged_success(state, prepared, invocation)
 
         result = invocation.result
@@ -421,24 +378,6 @@ class ToolExecutor:
     ) -> ToolResult:
         result = invocation.result
         latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
-        idempotency_record = None
-        if prepared.disposition == "invoke":
-            idempotency_record = record_successful_idempotent_result(
-                ledger=self.idempotency_ledger,
-                decision=prepared.risk_decision,
-                state=state,
-                result=result,
-            )
-        idempotency_summary = prepared.risk_decision.idempotency_summary(
-            duplicate_suppressed=prepared.disposition == "duplicate"
-        )
-        if prepared.disposition == "invoke":
-            idempotency_summary = {
-                **idempotency_summary,
-                "status": (
-                    idempotency_record.status if idempotency_record is not None else None
-                ),
-            }
         state.complete_tool_call(prepared.call_id, result)
         post_tool_call = build_post_tool_call_summary(
             tool_name=prepared.tool_name,
@@ -448,8 +387,7 @@ class ToolExecutor:
             call_id=prepared.call_id,
             latency_ms=latency_ms,
             retry_count=invocation.retry_count,
-            risk_gate=prepared.risk_decision.risk_summary(),
-            idempotency=idempotency_summary,
+            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             registry=self.registry,
         )
         event_payload = {
@@ -481,8 +419,8 @@ class ToolExecutor:
                 output_ref=result.output_ref,
                 user_id=state.user_id,
                 session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result, prepared.policy_view),
-                audit_payload=_policy_safe_audit_payload(result, prepared.policy_view),
+                output_summary=_policy_safe_output_summary(result, prepared.tool_spec),
+                audit_payload=_policy_safe_audit_payload(result, prepared.tool_spec),
                 raw_data_ref=result.raw_data_ref,
             )
         _append_tool_trace_event(
@@ -499,12 +437,10 @@ class ToolExecutor:
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
             retry_count=invocation.retry_count,
-            risk_gate=prepared.risk_decision.risk_summary(),
-            idempotency=idempotency_summary,
+            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             input_summary=_input_summary(prepared.tool_input),
             output_summary={
-                **_policy_safe_output_summary(result, prepared.policy_view),
-                **_deadline_trace_summary(policy_view=prepared.policy_view, result=result),
+                **_policy_safe_output_summary(result, prepared.tool_spec),
             },
             provider=_provider_name(result.data or {}),
             model=_model_name(result.data or {}),
@@ -529,8 +465,7 @@ class ToolExecutor:
             call_id=prepared.call_id,
             latency_ms=latency_ms,
             retry_count=invocation.retry_count,
-            risk_gate=prepared.risk_decision.risk_summary(),
-            idempotency=prepared.risk_decision.idempotency_summary(),
+            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             registry=self.registry,
         )
         state.fail_tool_call(
@@ -578,11 +513,11 @@ class ToolExecutor:
                 prepared.tool_name,
                 "failed",
                 latency_ms,
-                error=_policy_safe_error(decision.message, prepared.policy_view),
+                error=_policy_safe_error(decision.message, prepared.tool_spec),
                 user_id=state.user_id,
                 session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result, prepared.policy_view),
-                audit_payload=_policy_safe_audit_payload(result, prepared.policy_view),
+                output_summary=_policy_safe_output_summary(result, prepared.tool_spec),
+                audit_payload=_policy_safe_audit_payload(result, prepared.tool_spec),
                 raw_data_ref=result.raw_data_ref,
             )
         _append_tool_trace_event(
@@ -600,17 +535,15 @@ class ToolExecutor:
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
             retry_count=invocation.retry_count,
-            risk_gate=prepared.risk_decision.risk_summary(),
-            idempotency=prepared.risk_decision.idempotency_summary(),
+            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             input_summary=_input_summary(prepared.tool_input),
             output_summary={
-                **_policy_safe_output_summary(result, prepared.policy_view),
-                **_deadline_trace_summary(policy_view=prepared.policy_view, result=result),
+                **_policy_safe_output_summary(result, prepared.tool_spec),
             },
             provider=_provider_name(result.data or {}),
             model=_model_name(result.data or {}),
             error_code=decision.error_code,
-            error_message=_policy_safe_error(decision.message, prepared.policy_view),
+            error_message=_policy_safe_error(decision.message, prepared.tool_spec),
             recovery_action=decision.action,
         )
         return result
@@ -643,8 +576,7 @@ class ToolExecutor:
             call_id=prepared.call_id,
             latency_ms=latency_ms,
             retry_count=0,
-            risk_gate=prepared.risk_decision.risk_summary(),
-            idempotency=prepared.risk_decision.idempotency_summary(),
+            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             registry=self.registry,
         )
         state.fail_tool_call(
@@ -692,11 +624,11 @@ class ToolExecutor:
                 prepared.tool_name,
                 "failed",
                 latency_ms,
-                error=_policy_safe_error(budget_error.message, prepared.policy_view),
+                error=_policy_safe_error(budget_error.message, prepared.tool_spec),
                 user_id=state.user_id,
                 session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result, prepared.policy_view),
-                audit_payload=_policy_safe_audit_payload(result, prepared.policy_view),
+                output_summary=_policy_safe_output_summary(result, prepared.tool_spec),
+                audit_payload=_policy_safe_audit_payload(result, prepared.tool_spec),
                 raw_data_ref=result.raw_data_ref,
             )
         _append_tool_trace_event(
@@ -714,8 +646,7 @@ class ToolExecutor:
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
             retry_count=0,
-            risk_gate=prepared.risk_decision.risk_summary(),
-            idempotency=prepared.risk_decision.idempotency_summary(),
+            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             input_summary=_input_summary(prepared.tool_input),
             output_summary={"provider_budget": state.provider_budget.summary()},
             error_code=budget_error.code,
@@ -744,8 +675,7 @@ class ToolExecutor:
             latency_ms=latency_ms,
             retry_count=0,
             cancel_metadata=error_details,
-            risk_gate=prepared.risk_decision.risk_summary(),
-            idempotency=prepared.risk_decision.idempotency_summary(),
+            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             registry=self.registry,
         )
         state.fail_tool_call(
@@ -784,11 +714,11 @@ class ToolExecutor:
                 prepared.tool_name,
                 "failed",
                 latency_ms,
-                error=_policy_safe_error(DEFAULT_CANCELLATION_MESSAGE, prepared.policy_view),
+                error=_policy_safe_error(DEFAULT_CANCELLATION_MESSAGE, prepared.tool_spec),
                 user_id=state.user_id,
                 session_id=state.session_id,
-                output_summary=_policy_safe_output_summary(result, prepared.policy_view),
-                audit_payload=_policy_safe_audit_payload(result, prepared.policy_view),
+                output_summary=_policy_safe_output_summary(result, prepared.tool_spec),
+                audit_payload=_policy_safe_audit_payload(result, prepared.tool_spec),
                 raw_data_ref=result.raw_data_ref,
             )
         _append_tool_trace_event(
@@ -806,8 +736,7 @@ class ToolExecutor:
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
             retry_count=0,
-            risk_gate=prepared.risk_decision.risk_summary(),
-            idempotency=prepared.risk_decision.idempotency_summary(),
+            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             input_summary=_input_summary(prepared.tool_input),
             output_summary={"cancelled": True},
             error_code=CANCELLATION_ERROR_CODE,
@@ -934,8 +863,7 @@ def _append_tool_trace_event(
     event_type: str = "observability",
     latency_ms: int | None = None,
     retry_count: int | None = None,
-    risk_gate: dict[str, Any] | None = None,
-    idempotency: dict[str, Any] | None = None,
+    tool_contract: dict[str, Any] | None = None,
     input_summary: dict[str, Any] | None = None,
     output_summary: dict[str, Any] | None = None,
     provider: str | None = None,
@@ -976,8 +904,7 @@ def _append_tool_trace_event(
                 call_id=call_id,
                 step_id=step_id,
                 retry_count=retry_count,
-                risk_gate=risk_gate,
-                idempotency=idempotency,
+                tool_contract=tool_contract,
             ),
             error=error,
         )
@@ -989,8 +916,7 @@ def _tool_trace_attributes(
     call_id: str,
     step_id: str,
     retry_count: int | None,
-    risk_gate: dict[str, Any] | None,
-    idempotency: dict[str, Any] | None,
+    tool_contract: dict[str, Any] | None,
 ) -> dict[str, Any]:
     attributes: dict[str, Any] = {
         "tool_call_id": call_id,
@@ -998,15 +924,14 @@ def _tool_trace_attributes(
     }
     if retry_count is not None:
         attributes["retry_count"] = retry_count
-    if risk_gate:
-        attributes["risk_gate"] = risk_gate.get("level")
-        attributes["side_effect_level"] = risk_gate.get("side_effect_level")
-        attributes["requires_confirmation"] = risk_gate.get("requires_confirmation")
-    if idempotency:
-        attributes["idempotency_present"] = idempotency.get("present")
-        attributes["idempotency_required"] = idempotency.get("required")
-        attributes["idempotency_duplicate_suppressed"] = idempotency.get("duplicate_suppressed")
-        attributes["idempotency_status"] = idempotency.get("status")
+    if tool_contract:
+        attributes["tool_category"] = tool_contract.get("category")
+        attributes["requires_confirmation"] = tool_contract.get(
+            "requires_confirmation"
+        )
+        attributes["confirmation_pending"] = tool_contract.get(
+            "confirmation_pending"
+        )
     return {key: value for key, value in attributes.items() if value is not None}
 
 
@@ -1030,10 +955,8 @@ def _tool_trace_error(
     return {key: value for key, value in error.items() if value is not None}
 
 
-def _preserve_success_after_cancel(risk_decision: Any) -> bool:
-    if risk_decision.level == "soft_gate":
-        return True
-    return bool(risk_decision.level == "hard_gate" and risk_decision.enabled and risk_decision.allow_execute)
+def _preserve_success_after_cancel(tool_spec: ToolSpec) -> bool:
+    return tool_spec.category != "read"
 
 
 def _capability_name(tool_name: str, step: TaskStep | None) -> str:
@@ -1197,9 +1120,9 @@ def _output_summary(result: ToolResult) -> dict[str, Any]:
 
 def _policy_safe_input_summary(
     payload: dict[str, Any],
-    policy_view: ToolPolicyView,
+    tool_spec: ToolSpec,
 ) -> dict[str, Any]:
-    if not policy_view.redact_in_trace:
+    if not tool_spec.redact_trace:
         return payload
     return {
         "redacted": True,
@@ -1211,9 +1134,9 @@ def _policy_safe_input_summary(
 
 def _policy_safe_output_summary(
     result: ToolResult,
-    policy_view: ToolPolicyView,
+    tool_spec: ToolSpec,
 ) -> dict[str, Any]:
-    if not policy_view.redact_in_trace:
+    if not tool_spec.redact_trace:
         return _output_summary(result)
     data = result.data if isinstance(result.data, dict) else {}
     trace = result.trace_summary if isinstance(result.trace_summary, dict) else {}
@@ -1236,10 +1159,10 @@ def _policy_safe_output_summary(
 
 def _policy_safe_audit_payload(
     result: ToolResult,
-    policy_view: ToolPolicyView,
+    tool_spec: ToolSpec,
 ) -> dict[str, Any] | None:
     payload = result.audit_payload
-    if not policy_view.redact_in_trace or not isinstance(payload, dict):
+    if not tool_spec.redact_trace or not isinstance(payload, dict):
         return payload
     if payload.get("redacted") is True:
         safe_payload = sanitize_error_detail(payload)
@@ -1264,63 +1187,49 @@ def _policy_safe_audit_payload(
     }
 
 
-def _policy_safe_error(error: str | None, policy_view: ToolPolicyView) -> str | None:
-    if error is None or not policy_view.redact_in_trace:
+def _policy_safe_error(error: str | None, tool_spec: ToolSpec) -> str | None:
+    if error is None or not tool_spec.redact_trace:
         return error
     return classify_error(error)
 
 
-def _mark_unknown_mutating_timeout(
-    result: ToolResult,
+def _effective_max_retries(
     *,
-    policy_view: ToolPolicyView,
-) -> ToolResult:
-    if result.success or classify_error(result.error or "") != "provider_timeout":
-        return result
-    if policy_view.side_effect_level in {"none", "local_read", "external_read"}:
-        return result
-    return result.model_copy(
-        update={
-            "data": {
-                **(result.data or {}),
-                "status": "unknown_after_timeout",
-                "side_effect_state": "unknown",
-                "summary": "Tool timed out after a mutating request; commit status is unknown.",
-            }
+    tool_spec: ToolSpec,
+    global_max_retries: int,
+) -> int:
+    return global_max_retries if tool_spec.category == "read" else 0
+
+
+def _tool_confirmation_granted(metadata: dict[str, Any], tool_name: str) -> bool:
+    confirmation = metadata.get("tool_confirmation")
+    if not isinstance(confirmation, dict) or confirmation.get("confirmed") is not True:
+        return False
+    confirmed_tool = confirmation.get("tool_name")
+    return confirmed_tool == tool_name
+
+
+def _confirmation_required_result(*, tool_name: str, latency_ms: int) -> ToolResult:
+    return ToolResult(
+        tool_name=tool_name,
+        success=True,
+        data={
+            "status": "confirmation_required",
+            "summary": "Tool execution requires user confirmation before continuing.",
+            "requires_confirmation": True,
         },
-        deep=True,
+        output_ref=f"local://tool-confirmations/{tool_name}",
+        latency_ms=latency_ms,
     )
 
 
-def _effective_max_retries(
-    *,
-    policy_view: ToolPolicyView,
-    risk_decision: Any,
-    global_max_retries: int,
-) -> int:
-    """Return the retry ceiling after replay-safety and tool policy checks."""
-
-    replay_safe = policy_view.side_effect_level in {"none", "local_read", "external_read"}
-    if policy_view.idempotency_required and risk_decision.idempotency_key is not None:
-        replay_safe = True
-    if not replay_safe:
-        return 0
-    if policy_view.retry_count is None:
-        return global_max_retries
-    return min(policy_view.retry_count, global_max_retries)
-
-
-def _deadline_trace_summary(
-    *,
-    policy_view: ToolPolicyView,
-    result: ToolResult,
+def _execution_summary(
+    tool_spec: ToolSpec,
+    disposition: str,
 ) -> dict[str, Any]:
-    if policy_view.timeout_s is None:
-        return {}
-    trace_summary = result.trace_summary if isinstance(result.trace_summary, dict) else {}
-    adapter_enforced = trace_summary.get("deadline_enforced") is True
     return {
-        "timeout_s_declared": policy_view.timeout_s,
-        "deadline_propagated": True,
-        "deadline_enforcement": "adapter_reported" if adapter_enforced else "not_reported",
+        "category": tool_spec.category,
+        "requires_confirmation": disposition == "confirmation",
+        "confirmation_configured": tool_spec.requires_confirmation,
+        "confirmation_pending": disposition == "confirmation",
     }

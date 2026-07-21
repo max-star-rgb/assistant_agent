@@ -14,15 +14,30 @@ from assistant_agent.schemas.realtime_turn_arbitration import (
     RealtimeTurnArbitrationDecision,
     RealtimeTurnRevisionType,
 )
-from assistant_agent.schemas.tools import ToolResult, ToolSideEffectLevel, ToolSideEffectPolicy
+from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.context.compaction import compact_observation_for_context
 from assistant_agent.services.tool_manifest import SHOPPING_SEARCH_TOOL_NAME
-from assistant_agent.tools.registry import tool_execution_policy, tool_side_effect_policy
+from assistant_agent.tools.registry import tool_contract_fields
 
 
 REALTIME_TASK_STATE_SCHEMA_VERSION = "realtime_task_state_v1"
 REALTIME_TASK_STATE_METADATA_KEY = "realtime_task_state"
 REALTIME_TASK_STATE_TEXT_METADATA_KEY = "realtime_task_state_text"
+ToolSideEffectLevel = Literal[
+    "none",
+    "local_read",
+    "external_read",
+    "pending_confirmation",
+    "committed",
+    "compensatable",
+]
+
+
+class _SideEffectInfo(BaseModel):
+    level: ToolSideEffectLevel
+    requires_confirmation: bool = False
+    description: str = ""
+    compensation_hint: str | None = None
 
 RealtimeTaskStatus = Literal[
     "active",
@@ -898,12 +913,23 @@ def _side_effect_record_from_result(
     )
 
 
-def _side_effect_policy_from_result(result: ToolResult) -> ToolSideEffectPolicy:
+def _side_effect_policy_from_result(result: ToolResult) -> _SideEffectInfo:
     data = result.data if isinstance(result.data, dict) else {}
     side_effect_payload = data.get("side_effect")
     if isinstance(side_effect_payload, dict):
-        return ToolSideEffectPolicy.model_validate(side_effect_payload)
-    policy = tool_side_effect_policy(result.tool_name)
+        return _SideEffectInfo.model_validate(side_effect_payload)
+    contract = tool_contract_fields(result.tool_name)
+    category = contract["category"]
+    policy = _SideEffectInfo(
+        level=(
+            "none"
+            if category == "read"
+            else "compensatable"
+            if category == "generate"
+            else "pending_confirmation"
+        ),
+        requires_confirmation=bool(contract["requires_confirmation"]),
+    )
     explicit_level = _metadata_string(data.get("side_effect_level") or data.get("effect_level"))
     if explicit_level in {
         "none",
@@ -924,7 +950,7 @@ def _result_requires_confirmation(data: dict[str, Any]) -> bool:
 def _effect_level_for_result(
     result: ToolResult,
     *,
-    policy: ToolSideEffectPolicy,
+    policy: _SideEffectInfo,
     pending_confirmation: bool,
 ) -> ToolSideEffectLevel:
     if pending_confirmation:
@@ -937,7 +963,7 @@ def _effect_level_for_result(
 def _side_effect_summary(
     result: ToolResult,
     *,
-    policy: ToolSideEffectPolicy,
+    policy: _SideEffectInfo,
     observation_summary: str,
 ) -> str:
     data = result.data if isinstance(result.data, dict) else {}
@@ -1005,7 +1031,7 @@ def _merge_side_effects(
 
 
 def _reuse_policy_for_tool(tool_name: str) -> ArtifactReusePolicy:
-    return tool_execution_policy(tool_name).artifact_reuse
+    return "reusable" if tool_contract_fields(tool_name)["category"] == "read" else "requires_validation"
 
 
 def _select_continuation_strategy(state: RealtimeTaskState) -> ContinuationStrategy:
@@ -1108,21 +1134,17 @@ def _pending_tool_from_event(
         confirmation = pre_tool_call.get("confirmation")
         if isinstance(confirmation, dict) and isinstance(confirmation.get("required"), bool):
             result["requires_confirmation"] = confirmation["required"]
-        risk_gate = pre_tool_call.get("risk_gate")
-        if isinstance(risk_gate, dict):
-            result["risk_gate"] = {
+        tool_contract = pre_tool_call.get("tool_contract")
+        if isinstance(tool_contract, dict):
+            result["tool_contract"] = {
                 key: value
-                for key, value in risk_gate.items()
+                for key, value in tool_contract.items()
                 if key
                 in {
-                    "schema_version",
-                    "level",
-                    "side_effect_level",
-                    "enabled",
-                    "allow_execute",
+                    "category",
                     "requires_confirmation",
-                    "confirmation_kind",
-                    "reason",
+                    "confirmation_configured",
+                    "confirmation_pending",
                 }
             }
         idempotency = pre_tool_call.get("idempotency")

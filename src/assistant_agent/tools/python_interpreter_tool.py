@@ -6,20 +6,11 @@ from typing import Any
 
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.schemas.python_interpreter import (
-    PYTHON_INTERPRETER_ENABLED_ENV,
     PythonInterpreterError,
     PythonInterpreterInput,
     PythonInterpreterResult,
 )
-from assistant_agent.schemas.tools import (
-    ApprovalPolicy,
-    DataPolicy,
-    ExecutionPolicy,
-    RealtimeToolPolicy,
-    ToolPolicyMetadata,
-    ToolResult,
-    VisibilityPolicy,
-)
+from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.tool_python_sandbox import (
     PythonSandbox,
     is_python_interpreter_enabled,
@@ -37,19 +28,6 @@ class PythonInterpreterTool(MockTool):
     )
     input_schema = PythonInterpreterInput
     output_schema = PythonInterpreterResult
-    policy = ToolPolicyMetadata(
-        risk="local_read",
-        realtime=RealtimeToolPolicy(mode="blocking", interruptible=True),
-        approval=ApprovalPolicy(mode="never"),
-        execution=ExecutionPolicy(timeout_s=10, retry_count=0, max_result_chars=6000),
-        data=DataPolicy(redact_in_trace=True),
-        visibility=VisibilityPolicy(
-            toolset="analysis.local",
-            tags=["python", "analysis"],
-            requires_env=[PYTHON_INTERPRETER_ENABLED_ENV],
-            enabled_by_default=False,
-        ),
-    )
 
     def __init__(
         self,

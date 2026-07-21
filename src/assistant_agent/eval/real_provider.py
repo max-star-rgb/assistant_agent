@@ -395,11 +395,13 @@ def _exposure_from_state_or_trace(
     state: AgentState,
     trace_events: list[TraceEvent],
 ) -> tuple[list[str], dict[str, list[str]]]:
-    run_tool_set = _first_trace_run_tool_set(trace_events)
-    if not run_tool_set and state.run_tool_set is not None:
-        run_tool_set = state.run_tool_set.model_dump(mode="json")
-    exposed = _string_list(run_tool_set.get("exposed_tool_names") if run_tool_set else [])
-    raw_excluded = run_tool_set.get("excluded_reasons") if run_tool_set else {}
+    run_tool_catalog = _first_trace_run_tool_catalog(trace_events)
+    if not run_tool_catalog and state.run_tool_catalog is not None:
+        run_tool_catalog = state.run_tool_catalog.model_dump(mode="json")
+    exposed = _string_list(
+        run_tool_catalog.get("available_tool_names") if run_tool_catalog else []
+    )
+    raw_excluded = run_tool_catalog.get("excluded_reasons") if run_tool_catalog else {}
     excluded = {
         str(name): _string_list(reasons)
         for name, reasons in raw_excluded.items()
@@ -408,14 +410,14 @@ def _exposure_from_state_or_trace(
     return exposed, excluded
 
 
-def _first_trace_run_tool_set(trace_events: list[TraceEvent]) -> dict[str, Any]:
+def _first_trace_run_tool_catalog(trace_events: list[TraceEvent]) -> dict[str, Any]:
     for event in trace_events:
         context = event.output_summary.get("context")
         if not isinstance(context, dict):
             continue
-        run_tool_set = context.get("run_tool_set")
-        if isinstance(run_tool_set, dict) and run_tool_set.get("registered_tool_names"):
-            return run_tool_set
+        run_tool_catalog = context.get("run_tool_catalog")
+        if isinstance(run_tool_catalog, dict) and run_tool_catalog.get("available_tool_names"):
+            return run_tool_catalog
     return {}
 
 

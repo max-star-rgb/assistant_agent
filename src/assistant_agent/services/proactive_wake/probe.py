@@ -14,7 +14,6 @@ from assistant_agent.schemas.proactive_wake import WakeRule, WakeSignal
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tool_observation import observation_from_tool_result
 from assistant_agent.services.context.compaction import compact_observation_for_context
-from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 from assistant_agent.tools.registry import ToolRegistry
 
 
@@ -58,13 +57,7 @@ class ProactiveRuleValidator:
                 code="proactive_tool_unknown",
                 message="Probe tool is not registered.",
             )
-        view = ToolPolicyInterpreter().view_for_spec(spec)
-        if (
-            view.side_effect_level not in {"none", "local_read", "external_read"}
-            or view.requires_confirmation
-            or not view.auto_executable
-            or bool(view.resource_writes)
-        ):
+        if spec.category != "read" or spec.requires_confirmation:
             return ProactiveRuleValidation(
                 accepted=False,
                 code="proactive_tool_not_read_only",

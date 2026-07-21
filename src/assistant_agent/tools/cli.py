@@ -12,12 +12,10 @@ from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tool_observation import observation_from_tool_result
-from assistant_agent.services.tool_policy import max_result_chars_for_registered_tool
-from assistant_agent.schemas.tools import ToolPolicyMetadata
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.tools.loader import LocalToolLoadIssue, load_local_tools
 from assistant_agent.tools.loader import register_local_tools
-from assistant_agent.tools.registry import ToolRegistry, tool_policy_metadata
+from assistant_agent.tools.registry import ToolRegistry
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -127,7 +125,6 @@ def _run_simulate(args: argparse.Namespace) -> int:
     observation = observation_from_tool_result(
         result,
         request_text=request.text,
-        max_result_chars=max_result_chars_for_registered_tool(registry, result.tool_name),
     )
     finished = next(
         (event for event in sink.events if event.type in {"tool_finished", "tool_failed"}),
@@ -162,57 +159,17 @@ def _parse_input_json(value: str) -> tuple[dict[str, Any], LocalToolLoadIssue | 
 
 
 def _tool_validation_issues(tool: Any) -> list[LocalToolLoadIssue]:
-    tool_name = getattr(tool, "name", "")
-    issues: list[LocalToolLoadIssue] = []
     try:
-        policy = tool_policy_metadata(tool)
+        ToolRegistry._tool_spec(tool)
     except Exception as exc:
         return [
             LocalToolLoadIssue(
-                code="invalid_policy",
+                code="invalid_tool_spec",
                 message=str(exc),
-                tool_name=tool_name,
+                tool_name=getattr(tool, "name", ""),
             )
         ]
-    if policy is None:
-        return [
-            LocalToolLoadIssue(
-                code="missing_policy",
-                message="Local tools must declare ToolPolicyMetadata.",
-                tool_name=tool_name,
-            )
-        ]
-    issues.extend(_policy_validation_issues(tool_name=tool_name, policy=policy))
-    return issues
-
-
-def _policy_validation_issues(
-    *,
-    tool_name: str,
-    policy: ToolPolicyMetadata,
-) -> list[LocalToolLoadIssue]:
-    issues: list[LocalToolLoadIssue] = []
-    if policy.execution.timeout_s is None:
-        issues.append(
-            LocalToolLoadIssue(
-                code="missing_timeout",
-                message="Local tools must declare execution.timeout_s.",
-                tool_name=tool_name,
-            )
-        )
-    if (
-        policy.data.reads_private_data
-        or policy.data.writes_private_data
-        or policy.data.sends_data_external
-    ) and not policy.data.redact_in_trace:
-        issues.append(
-            LocalToolLoadIssue(
-                code="missing_trace_redaction",
-                message="Private or external-data tools must set data.redact_in_trace.",
-                tool_name=tool_name,
-            )
-        )
-    return issues
+    return []
 
 
 if __name__ == "__main__":  # pragma: no cover

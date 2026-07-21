@@ -339,7 +339,7 @@ def _selected_tool_specs(
         return list(selected_tool_specs)
     if pack.prompt_tool_specs:
         return list(pack.prompt_tool_specs)
-    if pack.run_tool_set.registered_tool_names:
+    if pack.run_tool_catalog.available_tool_names:
         return []
     return list(pack.tool_specs)
 
@@ -352,7 +352,7 @@ def _tool_schema_notes(
     fallback_used = pack.tool_catalog_summary.fallback_used
     if (
         explicit_selected_specs is None
-        and not pack.run_tool_set.registered_tool_names
+        and not pack.run_tool_catalog.available_tool_names
         and not pack.prompt_tool_specs
         and pack.tool_specs
         and selected_specs

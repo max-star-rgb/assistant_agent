@@ -9,7 +9,7 @@ from typing import Any
 
 from assistant_agent.schemas.context import ToolCatalogSummary
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import RunToolSet, ToolSpec
+from assistant_agent.schemas.tools import RunToolCatalog, ToolSpec
 from assistant_agent.services.context.skill_loader import (
     SkillCatalog,
     load_repo_skill_descriptors,
@@ -20,7 +20,6 @@ from assistant_agent.services.context.tool_exposure import (
     tool_exposure_category,
 )
 from assistant_agent.services.tool_manifest import MEMORY_MEDIA_INGEST_TOOL_NAME, MEMORY_SAVE_TOOL_NAME
-from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 
 
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -31,9 +30,8 @@ _CODE_CONFIGURED_WRITE_TOOL_NAMES = {MEMORY_SAVE_TOOL_NAME, MEMORY_MEDIA_INGEST_
 class ToolCatalogSelection:
     """Run-scoped tool assembly plus prompt-facing specs and trace summary."""
 
-    qualified_tool_specs: list[ToolSpec]
-    prompt_tool_specs: list[ToolSpec]
-    run_tool_set: RunToolSet
+    available_tool_specs: list[ToolSpec]
+    run_tool_catalog: RunToolCatalog
     summary: ToolCatalogSummary
     active_skill_ids: list[str]
 
@@ -76,34 +74,29 @@ def select_prompt_tool_specs(
         tool_specs,
         catalog=catalog,
     )
-    prompt_specs = recall_qualified_tool_specs(
+    available_specs = recall_qualified_tool_specs(
         request,
         qualification.qualified_tool_specs,
     )
     registered_names = [spec.name for spec in tool_specs]
-    qualified_names = [spec.name for spec in qualification.qualified_tool_specs]
-    prompt_names = [spec.name for spec in prompt_specs]
+    available_names = [spec.name for spec in available_specs]
     reasons = [
         *(f"explicit_skill_activated:{skill_id}" for skill_id in qualification.active_skill_ids),
         "recall_identity",
     ]
-    run_tool_set = RunToolSet(
-        registered_tool_names=registered_names,
-        qualified_tool_names=qualified_names,
-        exposed_tool_names=prompt_names,
-        executable_tool_names=prompt_names,
+    run_tool_catalog = RunToolCatalog(
+        available_tool_names=available_names,
         selection_reasons=reasons,
         excluded_reasons=qualification.excluded_reasons,
     )
     return ToolCatalogSelection(
-        qualified_tool_specs=qualification.qualified_tool_specs,
-        prompt_tool_specs=prompt_specs,
-        run_tool_set=run_tool_set,
+        available_tool_specs=available_specs,
+        run_tool_catalog=run_tool_catalog,
         summary=ToolCatalogSummary(
             total_tool_count=len(registered_names),
-            prompt_tool_count=len(prompt_specs),
-            filtered_tool_count=max(len(registered_names) - len(prompt_specs), 0),
-            selected_tool_names=prompt_names,
+            prompt_tool_count=len(available_specs),
+            filtered_tool_count=max(len(registered_names) - len(available_specs), 0),
+            selected_tool_names=available_names,
             selection_reasons=reasons,
             fallback_used=False,
         ),
@@ -130,10 +123,8 @@ def qualify_tool_specs(
     durable_ready_tool_names = set(_string_list(request.metadata.get("ready_tool_names"))) | {
         "task_plan_submit"
     }
-    interpreter = ToolPolicyInterpreter()
     for spec in tool_specs:
-        policy = interpreter.view_for_spec(spec)
-        category = tool_exposure_category(policy)
+        category = tool_exposure_category(spec)
         durable_ready = trusted_durable_execution and spec.name in durable_ready_tool_names
         durable_plan_submission = (
             request.task_execution_mode == "durable" and spec.name == "task_plan_submit"
@@ -144,35 +135,35 @@ def qualify_tool_specs(
             or durable_plan_submission
             or spec.name in visibility_overrides.configured_tools
             or bool(
-                policy.toolset
-                and policy.toolset in visibility_overrides.configured_toolsets
+                spec.toolset
+                and spec.toolset in visibility_overrides.configured_toolsets
             )
         )
         explicitly_enabled = (
             spec.name in visibility_overrides.explicit_tools
             or bool(
-                policy.toolset
-                and policy.toolset in visibility_overrides.explicit_toolsets
+                spec.toolset
+                and spec.toolset in visibility_overrides.explicit_toolsets
             )
             or spec.name in active_skill_tools
         )
-        missing_env = [name for name in policy.requires_env if not os.environ.get(name)]
+        missing_env = [name for name in spec.requires_env if not os.environ.get(name)]
         if missing_env:
             excluded_reasons[spec.name] = [
                 f"missing_required_env:{name}" for name in missing_env
             ]
             continue
-        if policy.skill_only and spec.name not in active_skill_tools:
+        if spec.skill_only and spec.name not in active_skill_tools:
             excluded_reasons[spec.name] = ["skill_activation_required"]
             continue
-        if not policy.enabled_by_default and not (
+        if not spec.enabled_by_default and not (
             configured_for_exposure or explicitly_enabled
         ):
             excluded_reasons[spec.name] = ["disabled_by_default"]
             continue
         exposure = entry_profile_tool_exposure(
             request,
-            policy,
+            spec,
             configured_for_exposure=configured_for_exposure,
             explicitly_enabled=explicitly_enabled,
         )
@@ -258,42 +249,22 @@ def _string_list(value: Any) -> list[str]:
 def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
     """Return the compact legacy prompt-json payload for one ToolSpec."""
 
-    payload = spec.model_dump(mode="json")
+    payload = spec.model_dump(
+        mode="json",
+        include={
+            "name",
+            "description",
+            "input_schema",
+            "required_inputs",
+            "when_to_use",
+            "when_not_to_use",
+            "runtime_constraints",
+        },
+    )
     input_schema = payload.get("input_schema")
     if isinstance(input_schema, dict):
         payload["input_schema"] = _compact_prompt_input_schema(input_schema)
-    policy = ToolPolicyInterpreter().view_for_spec(spec)
-    compact_execution = _compact_prompt_execution(policy)
-    if compact_execution:
-        payload["execution"] = compact_execution
-    else:
-        payload.pop("execution", None)
-    if (
-        policy.side_effect_level in {"none", "local_read", "external_read"}
-        and not policy.requires_confirmation
-    ):
-        payload.pop("side_effect", None)
-        return payload
-    compact_side_effect = {"level": policy.side_effect_level}
-    if policy.requires_confirmation:
-        compact_side_effect["requires_confirmation"] = True
-    if policy.confirmation_kind:
-        compact_side_effect["confirmation_kind"] = policy.confirmation_kind
-    payload["side_effect"] = compact_side_effect
     return payload
-
-
-def _compact_prompt_execution(policy: Any) -> dict[str, Any]:
-    compact: dict[str, Any] = {}
-    if policy.dependency_mode != "independent":
-        compact["dependency_mode"] = policy.dependency_mode
-    if policy.realtime_safety != "safe":
-        compact["realtime_safety"] = policy.realtime_safety
-    if policy.concurrency_group:
-        compact["concurrency_group"] = policy.concurrency_group
-    if policy.resource_writes:
-        compact["resource_writes"] = list(policy.resource_writes)
-    return compact
 
 
 def _compact_prompt_input_schema(input_schema: dict[str, Any]) -> dict[str, Any]:

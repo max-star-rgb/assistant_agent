@@ -18,7 +18,7 @@ from assistant_agent.services.tool_workflow_skill import (
     WorkflowSkillRunResult,
 )
 from assistant_agent.tools.loader import LocalToolLoadIssue, load_local_tools, register_local_tools
-from assistant_agent.tools.registry import ToolRegistry, tool_policy_metadata
+from assistant_agent.tools.registry import ToolRegistry
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -215,23 +215,14 @@ def _registry_from_modules(module_names: list[str]) -> tuple[ToolRegistry, list[
 
 
 def _local_tool_policy_issues(tool: Any) -> list[LocalToolLoadIssue]:
-    tool_name = getattr(tool, "name", "")
     try:
-        policy = tool_policy_metadata(tool)
+        ToolRegistry._tool_spec(tool)
     except Exception as exc:
         return [
             LocalToolLoadIssue(
-                code="invalid_policy",
+                code="invalid_tool_spec",
                 message=str(exc),
-                tool_name=tool_name,
-            )
-        ]
-    if policy is None:
-        return [
-            LocalToolLoadIssue(
-                code="missing_policy",
-                message="Workflow CLI local tools must declare ToolPolicyMetadata.",
-                tool_name=tool_name,
+                tool_name=getattr(tool, "name", ""),
             )
         ]
     return []

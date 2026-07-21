@@ -1432,9 +1432,9 @@ def _append_context_tool_exposure(details: list[str], output_summary: Any) -> No
         selected = tool_catalog.get("selected_tool_names")
         if isinstance(selected, list) and selected:
             details.append(f"selected_tools={_compact_value(selected)}")
-    run_tool_set = context.get("run_tool_set")
-    if isinstance(run_tool_set, dict):
-        excluded = run_tool_set.get("excluded_reasons")
+    run_tool_catalog = context.get("run_tool_catalog")
+    if isinstance(run_tool_catalog, dict):
+        excluded = run_tool_catalog.get("excluded_reasons")
         if isinstance(excluded, dict) and excluded:
             details.append(f"excluded_tools={_compact_value(excluded)}")
 

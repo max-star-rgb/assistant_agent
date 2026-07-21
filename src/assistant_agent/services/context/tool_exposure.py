@@ -14,11 +14,9 @@ from typing import Any, Literal
 
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
-from assistant_agent.services.tool_manifest import PYTHON_INTERPRETER_TOOL_NAME
-from assistant_agent.services.tool_policy import ToolPolicyView
+from assistant_agent.schemas.tools import ToolSpec
 
 ToolExposureCategory = Literal["read", "generate", "write", "dangerous"]
-_DANGEROUS_TOOL_NAMES = {PYTHON_INTERPRETER_TOOL_NAME}
 
 
 @dataclass(frozen=True)
@@ -71,7 +69,7 @@ def tool_exposure_facts(request: UserRequest) -> ToolExposureFacts:
 
 def entry_profile_tool_exposure(
     request: UserRequest,
-    policy: ToolPolicyView,
+    spec: ToolSpec,
     *,
     configured_for_exposure: bool = False,
     explicitly_enabled: bool = False,
@@ -81,21 +79,21 @@ def entry_profile_tool_exposure(
     facts = tool_exposure_facts(request)
     if (
         facts.trusted_agent_service
-        and policy.allowed_entry_profiles
-        and facts.entry_profile not in policy.allowed_entry_profiles
+        and spec.allowed_entry_profiles
+        and facts.entry_profile not in spec.allowed_entry_profiles
     ):
         return ToolExposureDecision(
             exposed=False,
             excluded_reasons=("entry_profile_not_exposed",),
             facts=facts,
         )
-    if not _has_required_media(policy, facts):
+    if not _has_required_media(spec, facts):
         return ToolExposureDecision(
             exposed=False,
             excluded_reasons=("entry_profile_not_exposed",),
             facts=facts,
         )
-    category = tool_exposure_category(policy)
+    category = tool_exposure_category(spec)
     if category == "read":
         return ToolExposureDecision(
             exposed=True,
@@ -151,27 +149,10 @@ def entry_profile_tool_exposure(
     )
 
 
-def tool_exposure_category(policy: ToolPolicyView) -> ToolExposureCategory:
-    """Classify one tool for default exposure governance."""
+def tool_exposure_category(spec: ToolSpec) -> ToolExposureCategory:
+    """Return the explicit category declared by the tool contract."""
 
-    if (
-        policy.tool_name in _DANGEROUS_TOOL_NAMES
-        or policy.realtime_safety == "unsafe"
-        or policy.toolset == "analysis.local"
-    ):
-        return "dangerous"
-    if (
-        policy.side_effect_level == "compensatable"
-        or policy.risk_gate_level == "soft_gate"
-    ):
-        return "generate"
-    if (
-        policy.requires_confirmation
-        or policy.side_effect_level in {"pending_confirmation", "committed"}
-        or policy.resource_writes
-    ):
-        return "write"
-    return "read"
+    return spec.category
 
 
 def _exposure_source_reason(
@@ -186,8 +167,8 @@ def _exposure_source_reason(
     return "default_tool_exposure"
 
 
-def _has_required_media(policy: ToolPolicyView, facts: ToolExposureFacts) -> bool:
-    required = set(policy.requires_media)
+def _has_required_media(spec: ToolSpec, facts: ToolExposureFacts) -> bool:
+    required = set(spec.requires_media)
     if required:
         return bool(required.intersection(facts.active_media_types))
     return True

@@ -17,16 +17,7 @@ from assistant_agent.schemas.personal_assistant import (
     WeatherRequest,
     WeatherResult,
 )
-from assistant_agent.schemas.tools import (
-    ApprovalPolicy,
-    DataPolicy,
-    ExecutionPolicy,
-    RealtimeToolPolicy,
-    ToolExecutionPolicy,
-    ToolPolicyMetadata,
-    ToolResult,
-    VisibilityPolicy,
-)
+from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.personal_assistant_adapters import (
     CalendarAdapter,
     ContactsAdapter,
@@ -54,25 +45,6 @@ class WeatherTool(MockTool):
     description = "Look up current or short-range weather for a location."
     input_schema = WeatherRequest
     output_schema = WeatherResult
-    execution = ToolExecutionPolicy(
-        dependency_mode="independent",
-        resource_reads=["weather.forecast"],
-        realtime_safety="safe",
-        artifact_reuse="reusable",
-        progress_message="我查一下天气。",
-    )
-    policy = ToolPolicyMetadata(
-        risk="external_read",
-        realtime=RealtimeToolPolicy(mode="inline"),
-        approval=ApprovalPolicy(mode="never"),
-        execution=ExecutionPolicy(timeout_s=3, retry_count=0, max_result_chars=1600),
-        data=DataPolicy(sends_data_external=True, redact_in_trace=True),
-        visibility=VisibilityPolicy(
-            toolset="personal.readonly",
-            tags=["weather", "天气"],
-            allowed_entry_profiles=["agent_service"],
-        ),
-    )
 
     def __init__(self, adapter: WeatherAdapter | None = None) -> None:
         self.adapter = adapter or MockWeatherAdapter()
@@ -99,29 +71,6 @@ class CalendarSearchTool(MockTool):
     description = "Search the user's calendar events."
     input_schema = CalendarSearchRequest
     output_schema = CalendarSearchResult
-    execution = ToolExecutionPolicy(
-        dependency_mode="independent",
-        resource_reads=["calendar.events"],
-        realtime_safety="safe",
-        artifact_reuse="reusable",
-        progress_message="我查一下日历。",
-    )
-    policy = ToolPolicyMetadata(
-        risk="external_read",
-        realtime=RealtimeToolPolicy(mode="blocking"),
-        approval=ApprovalPolicy(mode="never"),
-        execution=ExecutionPolicy(timeout_s=5, retry_count=0, max_result_chars=2400),
-        data=DataPolicy(
-            reads_private_data=True,
-            sends_data_external=True,
-            redact_in_trace=True,
-        ),
-        visibility=VisibilityPolicy(
-            toolset="personal.calendar",
-            tags=["calendar", "日历", "meeting", "会议"],
-            allowed_entry_profiles=["agent_service"],
-        ),
-    )
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
         self.adapter = adapter or MockCalendarAdapter()
@@ -149,34 +98,6 @@ class CalendarCreateTool(MockTool):
     description = "Create a calendar event after explicit user confirmation."
     input_schema = CalendarCreateRequest
     output_schema = CalendarCreateResult
-    execution = ToolExecutionPolicy(
-        dependency_mode="terminal",
-        resource_reads=["calendar.events"],
-        resource_writes=["calendar.events"],
-        realtime_safety="needs_confirmation",
-        artifact_reuse="do_not_reuse",
-        progress_message="需要你确认后我再创建日程。",
-    )
-    policy = ToolPolicyMetadata(
-        risk="external_write",
-        realtime=RealtimeToolPolicy(
-            mode="confirm_then_execute",
-            interruptible=False,
-            commit_boundary="external_commit",
-        ),
-        approval=ApprovalPolicy(mode="always", confirmation_kind="calendar_write"),
-        execution=ExecutionPolicy(timeout_s=8, retry_count=0, idempotency="required"),
-        data=DataPolicy(
-            reads_private_data=True,
-            writes_private_data=True,
-            sends_data_external=True,
-            redact_in_trace=True,
-        ),
-        visibility=VisibilityPolicy(
-            toolset="personal.calendar",
-            tags=["calendar", "日历", "meeting", "会议"],
-        ),
-    )
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
         self.adapter = adapter or MockCalendarAdapter()
@@ -210,29 +131,6 @@ class ContactsSearchTool(MockTool):
     description = "Search the user's contacts for candidate people or contact details."
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
-    execution = ToolExecutionPolicy(
-        dependency_mode="independent",
-        resource_reads=["contacts"],
-        realtime_safety="safe",
-        artifact_reuse="reusable",
-        progress_message="我查一下联系人。",
-    )
-    policy = ToolPolicyMetadata(
-        risk="external_read",
-        realtime=RealtimeToolPolicy(mode="blocking"),
-        approval=ApprovalPolicy(mode="never"),
-        execution=ExecutionPolicy(timeout_s=5, retry_count=0, max_result_chars=2200),
-        data=DataPolicy(
-            reads_private_data=True,
-            sends_data_external=True,
-            redact_in_trace=True,
-        ),
-        visibility=VisibilityPolicy(
-            toolset="personal.contacts",
-            tags=["contacts", "联系人"],
-            allowed_entry_profiles=["agent_service"],
-        ),
-    )
 
     def __init__(self, adapter: ContactsAdapter | None = None) -> None:
         self.adapter = adapter or MockContactsAdapter()
@@ -260,29 +158,6 @@ class ReminderCreateTool(MockTool):
     description = "Create a reminder or todo after explicit user confirmation."
     input_schema = ReminderCreateRequest
     output_schema = ReminderCreateResult
-    execution = ToolExecutionPolicy(
-        dependency_mode="terminal",
-        resource_writes=["reminders"],
-        realtime_safety="needs_confirmation",
-        artifact_reuse="do_not_reuse",
-        progress_message="需要你确认后我再创建提醒。",
-    )
-    policy = ToolPolicyMetadata(
-        risk="external_write",
-        realtime=RealtimeToolPolicy(
-            mode="confirm_then_execute",
-            interruptible=False,
-            commit_boundary="external_commit",
-        ),
-        approval=ApprovalPolicy(mode="always", confirmation_kind="reminder_write"),
-        execution=ExecutionPolicy(timeout_s=5, retry_count=0, idempotency="required"),
-        data=DataPolicy(
-            writes_private_data=True,
-            sends_data_external=True,
-            redact_in_trace=True,
-        ),
-        visibility=VisibilityPolicy(toolset="personal.reminders", tags=["todo", "reminder", "提醒"]),
-    )
 
     def __init__(self, adapter: ReminderAdapter | None = None) -> None:
         self.adapter = adapter or MockReminderAdapter()

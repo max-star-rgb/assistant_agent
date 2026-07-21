@@ -13,7 +13,6 @@ from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.tool_call_boundary import build_pre_tool_call_summary
 from assistant_agent.services.tool_manifest import TASK_PLAN_SUBMIT_TOOL_NAME
-from assistant_agent.services.tool_policy import ToolPolicyInterpreter
 from assistant_agent.tools.base import ToolInputValidationError
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -55,18 +54,18 @@ class ActionValidator:
         )
         if task_mode_error is not None:
             return task_mode_error
-        run_tool_set = state.run_tool_set
-        if run_tool_set is not None and not run_tool_set.allows_execution(tool_name):
+        run_tool_catalog = state.run_tool_catalog
+        if run_tool_catalog is not None and not run_tool_catalog.allows(tool_name):
             return _reject(
                 "tool_not_allowed_for_run",
                 f"Tool is not enabled for the current assistant turn: {tool_name}.",
                 metadata={
-                    "run_tool_set": {
-                        "schema_version": run_tool_set.schema_version,
+                    "run_tool_catalog": {
+                        "schema_version": run_tool_catalog.schema_version,
                         "requested_tool_name": tool_name,
-                        "executable_tool_names": list(run_tool_set.executable_tool_names),
+                        "available_tool_names": list(run_tool_catalog.available_tool_names),
                         "exclusion_reasons": list(
-                            run_tool_set.excluded_reasons.get(tool_name, [])
+                            run_tool_catalog.excluded_reasons.get(tool_name, [])
                         ),
                     }
                 },
@@ -174,11 +173,7 @@ def _validate_required_media(
     tool_input: dict[str, Any],
     request: UserRequest,
 ) -> ActionValidationResult | None:
-    required = set(
-        ToolPolicyInterpreter()
-        .view_for_spec(registry.get_spec(tool_name))
-        .requires_media
-    )
+    required = set(registry.get_spec(tool_name).requires_media)
     if not required:
         return None
     available = _available_media_types(tool_input, request)

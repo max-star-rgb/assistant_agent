@@ -11,12 +11,9 @@ from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import (
-    ApprovalPolicy,
-    ToolPolicyMetadata,
-    ToolExecutionPolicy,
+    RunToolCatalog,
     ToolResult,
     ToolSpec,
-    VisibilityPolicy,
 )
 from assistant_agent.schemas.tool_spec_adapters import tool_spec_to_openai_tool
 from assistant_agent.services.event_sink import ListEventSink
@@ -38,11 +35,9 @@ class _DeclaredValidationTool(MockTool):
     description = "Test-only tool with declarative media and tool-owned validation."
     input_schema = _DeclaredValidationInput
     output_schema = _DeclaredValidationInput
-    policy = ToolPolicyMetadata(
-        risk="pure",
-        approval=ApprovalPolicy(mode="never"),
-        visibility=VisibilityPolicy(requires_media=["image"]),
-    )
+    category = "read"
+    requires_confirmation = False
+    requires_media = ["image"]
 
     def validate_call(self, input: _DeclaredValidationInput) -> None:
         if input.value == "blocked":
@@ -57,14 +52,6 @@ class _DeclaredValidationTool(MockTool):
         return ToolResult(tool_name=self.name, success=True, data=input.model_dump())
 
 
-class _ConflictingWeatherPolicyTool(_DeclaredValidationTool):
-    name = "weather"
-    policy = ToolPolicyMetadata(
-        risk="external_write",
-        approval=ApprovalPolicy(mode="always"),
-    )
-
-
 class _ExecutionBoundaryInput(BaseModel):
     value: str
 
@@ -74,10 +61,8 @@ class _ExecutionBoundaryTool(MockTool):
     description = "Test-only tool for staged execution."
     input_schema = _ExecutionBoundaryInput
     output_schema = _ExecutionBoundaryInput
-    policy = ToolPolicyMetadata(
-        risk="pure",
-        approval=ApprovalPolicy(mode="never"),
-    )
+    category = "read"
+    requires_confirmation = False
 
     def __init__(self) -> None:
         self.run_count = 0
@@ -89,41 +74,77 @@ class _ExecutionBoundaryTool(MockTool):
 
 class _ConfirmationBoundaryTool(_ExecutionBoundaryTool):
     name = "confirmation_boundary_tool"
-    policy = ToolPolicyMetadata(
-        risk="external_write",
-        approval=ApprovalPolicy(mode="always"),
-    )
+    category = "write"
+    requires_confirmation = True
 
 
-def test_provider_description_uses_canonical_policy_view() -> None:
+def test_provider_description_uses_simple_tool_spec() -> None:
     spec = ToolSpec(
         name="canonical_policy_tool",
-        policy=ToolPolicyMetadata(
-            risk="pure",
-            approval=ApprovalPolicy(mode="never"),
-        ),
+        description="Read canonical data.",
+        category="read",
+        requires_confirmation=False,
     )
 
     payload = tool_spec_to_openai_tool(spec)
 
     description = payload["function"]["description"]
-    assert "level=none" in description
-    assert "requires_confirmation=false" in description
-    assert "level=pending_confirmation" not in description
+    assert description == "Read canonical data."
 
 
-def test_registry_derives_side_effect_from_declarative_policy() -> None:
+def test_registry_exposes_one_simple_tool_contract() -> None:
     registry = ToolRegistry()
     registry.register(_DeclaredValidationTool())
 
     spec = registry.get_spec(_DeclaredValidationTool.name)
 
-    assert spec.side_effect.level == "none"
-    assert spec.side_effect.requires_confirmation is False
+    assert spec.category == "read"
+    assert spec.requires_confirmation is False
+    assert spec.requires_media == ["image"]
+    assert not hasattr(spec, "policy")
+    assert not hasattr(spec, "execution")
 
 
-def test_parallel_safe_defaults_to_false() -> None:
-    assert ToolExecutionPolicy().parallel_safe is False
+def test_available_catalog_is_the_execution_boundary() -> None:
+    catalog = RunToolCatalog(available_tool_names=["weather"])
+
+    assert catalog.allows("weather") is True
+    assert catalog.allows("calendar_create") is False
+
+
+def test_action_validator_uses_available_catalog_as_its_only_run_allowlist() -> None:
+    registry = ToolRegistry()
+    registry.register(_ExecutionBoundaryTool())
+    request = UserRequest(user_id="user-1", session_id="session-1", text="execute")
+    state = AgentState.from_request(request)
+    state.run_tool_catalog = RunToolCatalog(available_tool_names=[])
+
+    rejected = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=_ExecutionBoundaryTool.name,
+            tool_input={"value": "ok"},
+        ),
+        registry=registry,
+        request=request,
+        state=state,
+    )
+    state.run_tool_catalog = RunToolCatalog(
+        available_tool_names=[_ExecutionBoundaryTool.name]
+    )
+    accepted = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=_ExecutionBoundaryTool.name,
+            tool_input={"value": "ok"},
+        ),
+        registry=registry,
+        request=request,
+        state=state,
+    )
+
+    assert rejected.code == "tool_not_allowed_for_run"
+    assert accepted.code == "accepted"
 
 
 def test_tool_executor_stages_do_not_commit_during_invocation() -> None:
@@ -219,11 +240,31 @@ def test_staged_executor_preserves_confirmation_without_invoking_tool() -> None:
     assert [event.type for event in events.events] == ["tool_started", "tool_finished"]
 
 
-def test_registry_rejects_conflicting_side_effect_declarations() -> None:
+def test_confirmation_is_bound_to_the_declared_tool_name() -> None:
+    tool = _ConfirmationBoundaryTool()
     registry = ToolRegistry()
+    registry.register(tool)
+    request = UserRequest(
+        user_id="user-1",
+        session_id="session-1",
+        text="write externally",
+        metadata={
+            "tool_confirmation": {
+                "confirmed": True,
+                "tool_name": tool.name,
+            }
+        },
+    )
 
-    with pytest.raises(ValueError, match="Conflicting side-effect declarations"):
-        registry.register(_ConflictingWeatherPolicyTool())
+    result = ToolExecutor(registry=registry).run_tool(
+        AgentState.from_request(request),
+        "step-1",
+        tool.name,
+        {"value": "write"},
+    )
+
+    assert result.success is True
+    assert tool.run_count == 1
 
 
 @pytest.mark.parametrize(

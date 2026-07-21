@@ -23,7 +23,7 @@ from assistant_agent.services.tool_workflow_skill import (
     WorkflowSkillValidationIssue,
 )
 from assistant_agent.tools.loader import LocalToolLoadIssue, load_local_tools, register_local_tools
-from assistant_agent.tools.registry import ToolRegistry, tool_policy_metadata
+from assistant_agent.tools.registry import ToolRegistry
 
 
 WORKFLOW_SKILLS_ENABLED_ENV = "MULTIMODAL_AGENT_WORKFLOW_SKILLS_ENABLED"
@@ -323,23 +323,14 @@ def _tool_load_issues(issues: list[LocalToolLoadIssue]) -> list[WorkflowSkillRun
 
 
 def _local_tool_policy_issues(tool: Any) -> list[WorkflowSkillRuntimeIssue]:
-    tool_name = getattr(tool, "name", "")
     try:
-        policy = tool_policy_metadata(tool)
+        ToolRegistry._tool_spec(tool)
     except Exception as exc:
         return [
             WorkflowSkillRuntimeIssue(
-                code="invalid_policy",
+                code="invalid_tool_spec",
                 message=str(exc),
-                tool_name=tool_name,
-            )
-        ]
-    if policy is None:
-        return [
-            WorkflowSkillRuntimeIssue(
-                code="missing_policy",
-                message="Workflow API local tools must declare ToolPolicyMetadata.",
-                tool_name=tool_name,
+                tool_name=getattr(tool, "name", ""),
             )
         ]
     return []

@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import RunToolSet, ToolSpec
+from assistant_agent.schemas.tools import RunToolCatalog, ToolSpec
 
 
 ContextAuthority = Literal[
@@ -338,7 +338,7 @@ class AssistantContextPack(BaseModel):
     observations: list[dict[str, Any]] = Field(default_factory=list)
     tool_specs: list[ToolSpec] = Field(default_factory=list)
     prompt_tool_specs: list[ToolSpec] = Field(default_factory=list)
-    run_tool_set: RunToolSet = Field(default_factory=RunToolSet)
+    run_tool_catalog: RunToolCatalog = Field(default_factory=RunToolCatalog)
     tool_catalog_summary: ToolCatalogSummary = Field(default_factory=ToolCatalogSummary)
     tool_capabilities: list[ToolCapabilityDescriptor] = Field(default_factory=list)
     skill_report: SkillExposureReport = Field(default_factory=SkillExposureReport)

@@ -80,11 +80,11 @@ def build_assistant_context_pack(
     context_observations = compact_observations_for_context(active_observations)
     active_tool_specs = tool_specs or []
     tool_catalog = select_prompt_tool_specs(active_request, active_tool_specs)
-    prompt_tool_specs = tool_catalog.prompt_tool_specs
-    state.run_tool_set = tool_catalog.run_tool_set
+    prompt_tool_specs = tool_catalog.available_tool_specs
+    state.run_tool_catalog = tool_catalog.run_tool_catalog
     tool_capability_catalog = select_tool_capability_descriptors(
         request=active_request,
-        qualified_tool_specs=tool_catalog.qualified_tool_specs,
+        qualified_tool_specs=tool_catalog.available_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
         tool_catalog_summary=tool_catalog.summary,
         active_skill_ids=set(tool_catalog.active_skill_ids),
@@ -250,7 +250,7 @@ def build_assistant_context_pack(
         observations=budgeted.observations,
         tool_specs=active_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
-        run_tool_set=tool_catalog.run_tool_set,
+        run_tool_catalog=tool_catalog.run_tool_catalog,
         tool_catalog_summary=tool_catalog.summary,
         tool_capabilities=tool_capabilities,
         skill_report=tool_capability_catalog.skill_report,

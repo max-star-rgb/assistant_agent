@@ -7,112 +7,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.schemas.capability_output import CapabilityOutputContract
 
-ToolSideEffectLevel = Literal[
-    "none",
-    "local_read",
-    "external_read",
-    "pending_confirmation",
-    "committed",
-    "compensatable",
-]
-ToolRisk = Literal[
-    "pure",
-    "local_read",
-    "external_read",
-    "local_write",
-    "external_write",
-    "transactional",
-    "destructive",
-]
-RealtimeToolMode = Literal["inline", "blocking", "deferred", "confirm_then_execute"]
-ApprovalMode = Literal["never", "conditional", "always"]
-ToolIdempotencyPolicy = Literal["none", "optional", "required"]
-ToolDependencyMode = Literal["independent", "requires_prior_observation", "terminal"]
-RealtimeToolSafety = Literal["safe", "needs_progress", "needs_confirmation", "unsafe"]
-ToolArtifactReusePolicy = Literal["reusable", "requires_validation", "do_not_reuse"]
+ToolCategory = Literal["read", "generate", "write", "dangerous"]
 ToolMediaRequirement = Literal["video", "image", "audio"]
-
-
-class ToolSideEffectPolicy(BaseModel):
-    """Static side-effect metadata for one tool contract."""
-
-    level: ToolSideEffectLevel = "pending_confirmation"
-    requires_confirmation: bool = True
-    description: str = (
-        "Unclassified tool; treat as requiring confirmation before irreversible work."
-    )
-    confirmation_kind: str | None = None
-    compensation_hint: str | None = None
-
-
-class ToolExecutionPolicy(BaseModel):
-    """Static scheduling and realtime execution metadata for one tool contract."""
-
-    parallel_safe: bool = False
-    dependency_mode: ToolDependencyMode = "requires_prior_observation"
-    concurrency_group: str | None = None
-    resource_reads: list[str] = Field(default_factory=list)
-    resource_writes: list[str] = Field(default_factory=list)
-    realtime_safety: RealtimeToolSafety = "needs_confirmation"
-    artifact_reuse: ToolArtifactReusePolicy = "requires_validation"
-    progress_message: str | None = None
-
-
-class RealtimeToolPolicy(BaseModel):
-    """Realtime behavior metadata for one tool contract."""
-
-    mode: RealtimeToolMode = "blocking"
-    interruptible: bool = True
-    commit_boundary: str | None = None
-
-
-class ApprovalPolicy(BaseModel):
-    """User approval metadata for one tool contract."""
-
-    mode: ApprovalMode = "conditional"
-    confirmation_kind: str | None = None
-
-
-class ExecutionPolicy(BaseModel):
-    """Runtime execution metadata for one tool contract."""
-
-    timeout_s: int | None = Field(default=None, gt=0)
-    retry_count: int = Field(default=0, ge=0)
-    idempotency: ToolIdempotencyPolicy = "none"
-    concurrency: str | None = None
-    max_result_chars: int | None = Field(default=None, gt=0)
-
-
-class DataPolicy(BaseModel):
-    """Data handling metadata for one tool contract."""
-
-    reads_private_data: bool = False
-    writes_private_data: bool = False
-    sends_data_external: bool = False
-    redact_in_trace: bool = False
-
-
-class VisibilityPolicy(BaseModel):
-    """Tool catalog visibility metadata for one tool contract."""
-
-    toolset: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    requires_env: list[str] = Field(default_factory=list)
-    enabled_by_default: bool = True
-    skill_only: bool = False
-    allowed_entry_profiles: list[str] = Field(default_factory=list)
-    requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
-
-
-class ToolPolicyMetadata(BaseModel):
-    """Declarative governance metadata for one tool contract."""
-
-    risk: ToolRisk = "external_write"
-    realtime: RealtimeToolPolicy = Field(default_factory=RealtimeToolPolicy)
-    approval: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
-    execution: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
-    data: DataPolicy = Field(default_factory=DataPolicy)
-    visibility: VisibilityPolicy = Field(default_factory=VisibilityPolicy)
 
 
 class ToolSelection(BaseModel):
@@ -147,7 +43,7 @@ class ToolResult(BaseModel):
 
 
 class ToolSpec(BaseModel):
-    """Provider-neutral tool description for prompts, native tool calls, and MCP views."""
+    """Single provider-neutral contract for exposure, validation, and execution."""
 
     name: str = Field(min_length=1)
     description: str = Field(default="")
@@ -156,45 +52,34 @@ class ToolSpec(BaseModel):
     when_to_use: list[str] = Field(default_factory=list)
     when_not_to_use: list[str] = Field(default_factory=list)
     runtime_constraints: list[str] = Field(default_factory=list)
-    side_effect: ToolSideEffectPolicy = Field(default_factory=ToolSideEffectPolicy)
-    execution: ToolExecutionPolicy = Field(default_factory=ToolExecutionPolicy)
-    visibility: VisibilityPolicy = Field(default_factory=VisibilityPolicy, exclude=True)
-    policy: ToolPolicyMetadata | None = None
+    category: ToolCategory = "dangerous"
+    toolset: str | None = None
+    requires_confirmation: bool = True
+    requires_env: list[str] = Field(default_factory=list)
+    enabled_by_default: bool = True
+    skill_only: bool = False
+    allowed_entry_profiles: list[str] = Field(default_factory=list)
+    requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
+    progress_message: str | None = None
+    redact_trace: bool = False
 
 
-class RunToolSet(BaseModel):
-    """Prompt-safe tool inventory and execution allowlist for one assistant turn."""
+class RunToolCatalog(BaseModel):
+    """The tools exposed to—and therefore callable by—the model for one turn."""
 
-    schema_version: Literal["run_tool_set_v1"] = "run_tool_set_v1"
-    registered_tool_names: list[str] = Field(default_factory=list)
-    qualified_tool_names: list[str] = Field(default_factory=list)
-    exposed_tool_names: list[str] = Field(default_factory=list)
-    executable_tool_names: list[str] = Field(default_factory=list)
+    schema_version: Literal["run_tool_catalog_v1"] = "run_tool_catalog_v1"
+    available_tool_names: list[str] = Field(default_factory=list)
     selection_reasons: list[str] = Field(default_factory=list)
     excluded_reasons: dict[str, list[str]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_tool_sets(self) -> "RunToolSet":
-        """Keep qualification, exposure, and execution within their parent sets."""
-
-        registered = set(self.registered_tool_names)
-        qualified = set(self.qualified_tool_names)
-        for field_name, names, allowed in (
-            ("qualified_tool_names", qualified, registered),
-            ("exposed_tool_names", set(self.exposed_tool_names), qualified),
-            ("executable_tool_names", set(self.executable_tool_names), qualified),
-        ):
-            unknown = sorted(names - allowed)
-            if unknown:
-                raise ValueError(
-                    f"{field_name} contains tools outside its allowed set: {unknown}"
-                )
+    def validate_available_tools(self) -> "RunToolCatalog":
+        if len(self.available_tool_names) != len(set(self.available_tool_names)):
+            raise ValueError("available_tool_names must not contain duplicates")
         return self
 
-    def allows_execution(self, tool_name: str) -> bool:
-        """Return whether the current assistant turn may execute ``tool_name``."""
-
-        return tool_name in self.executable_tool_names
+    def allows(self, tool_name: str) -> bool:
+        return tool_name in self.available_tool_names
 
 
 class ToolCallRecord(BaseModel):

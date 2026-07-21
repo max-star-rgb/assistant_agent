@@ -117,7 +117,7 @@ def context_trace_summary(pack: AssistantContextPack) -> dict[str, Any]:
         "source_counts": pack.source_counts,
         "compaction": _context_compaction_summary(pack.observations),
         "tool_catalog": pack.tool_catalog_summary.model_dump(mode="json"),
-        "run_tool_set": pack.run_tool_set.model_dump(mode="json"),
+        "run_tool_catalog": pack.run_tool_catalog.model_dump(mode="json"),
         "skill_report_v1": pack.skill_report.model_dump(mode="json"),
         "context_sources": pack.context_source_report.model_dump(mode="json"),
         "compactor_type": pack.compactor_type,

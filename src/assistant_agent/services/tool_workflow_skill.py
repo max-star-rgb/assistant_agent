@@ -15,9 +15,8 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.agent_control_plane import AgentAuditEvent
 from assistant_agent.schemas.assistant_decision import AssistantDecision
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.provider_errors import sanitize_error_message
-from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
 from assistant_agent.tools.registry import ToolRegistry
 
 
@@ -37,7 +36,6 @@ WorkflowSkillAttemptStatus = Literal[
     "waiting_confirmation",
 ]
 
-_READ_ONLY_LEVELS = {"none", "local_read", "external_read"}
 _UNSUPPORTED_STEP_KEYS = {"command", "exec", "shell", "http", "browser"}
 _WAITING_STATUSES = {
     "confirmation_required",
@@ -508,7 +506,7 @@ class WorkflowSkillRunner:
         attempts: list[WorkflowSkillAttemptRecord],
         step_results: dict[str, ToolResult],
     ) -> WorkflowSkillRunResult | None:
-        policy_view = ToolPolicyInterpreter().view_for_spec(self.registry.get_spec(step.tool))
+        tool_spec = self.registry.get_spec(step.tool)
         for attempt_number in range(1, step.retry.max_retries + 2):
             tool_input = _resolve_step_input(
                 step.input,
@@ -589,7 +587,7 @@ class WorkflowSkillRunner:
                 )
             if attempt_number > step.retry.max_retries or not _step_retry_allowed(
                 result,
-                policy_view=policy_view,
+                tool_spec=tool_spec,
             ):
                 step_results[step.id] = result
                 return WorkflowSkillRunResult(
@@ -777,7 +775,6 @@ def _policy_validation_issues(
                     message="Workflow skill permissions must use tool:<name> vocabulary.",
                 )
             )
-    interpreter = ToolPolicyInterpreter()
     for step in manifest.steps:
         if step.tool not in registry.list():
             issues.append(
@@ -798,10 +795,10 @@ def _policy_validation_issues(
                     tool_name=step.tool,
                 )
             )
-        policy_view = interpreter.view_for_spec(registry.get_spec(step.tool))
+        tool_spec = registry.get_spec(step.tool)
         if (
             step.retry.max_retries > 0
-            and not _policy_replay_safe(policy_view, step=step)
+            and not _tool_replay_safe(tool_spec, step=step)
         ):
             issues.append(
                 WorkflowSkillValidationIssue(
@@ -814,8 +811,8 @@ def _policy_validation_issues(
     return issues
 
 
-def _policy_replay_safe(policy_view: ToolPolicyView, *, step: WorkflowSkillStep) -> bool:
-    if policy_view.side_effect_level in _READ_ONLY_LEVELS:
+def _tool_replay_safe(tool_spec: ToolSpec, *, step: WorkflowSkillStep) -> bool:
+    if tool_spec.category == "read":
         return True
     return step.idempotency == "required"
 
@@ -1108,10 +1105,10 @@ def _result_error_summary(result: ToolResult | None) -> str | None:
     return sanitize_error_message(result.error)
 
 
-def _step_retry_allowed(result: ToolResult, *, policy_view: ToolPolicyView) -> bool:
+def _step_retry_allowed(result: ToolResult, *, tool_spec: ToolSpec) -> bool:
     if result.success:
         return False
-    if policy_view.side_effect_level not in _READ_ONLY_LEVELS and result.data and result.data.get("status") == "unknown_after_timeout":
+    if tool_spec.category != "read" and result.data and result.data.get("status") == "unknown_after_timeout":
         return False
     return True
 

@@ -13,16 +13,7 @@ from assistant_agent.schemas.tool_search import (
     ToolSearchInputField,
     ToolSearchResult,
 )
-from assistant_agent.schemas.tools import (
-    ApprovalPolicy,
-    DataPolicy,
-    ExecutionPolicy,
-    RealtimeToolPolicy,
-    ToolExecutionPolicy,
-    ToolPolicyMetadata,
-    ToolResult,
-    VisibilityPolicy,
-)
+from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.tool_manifest import TOOL_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import MockTool, ToolContext
@@ -39,24 +30,6 @@ class ToolSearchTool(MockTool):
     )
     input_schema = ToolSearchInput
     output_schema = ToolSearchResult
-    execution = ToolExecutionPolicy(
-        dependency_mode="requires_prior_observation",
-        resource_reads=["mcp.tool_catalog"],
-        realtime_safety="safe",
-        artifact_reuse="reusable",
-        progress_message="我看一下还有哪些可用工具。",
-    )
-    policy = ToolPolicyMetadata(
-        risk="local_read",
-        realtime=RealtimeToolPolicy(mode="inline"),
-        approval=ApprovalPolicy(mode="never"),
-        execution=ExecutionPolicy(timeout_s=5, retry_count=0, max_result_chars=4000),
-        data=DataPolicy(redact_in_trace=True),
-        visibility=VisibilityPolicy(
-            toolset="tool.discovery",
-            tags=["tool_search", "mcp"],
-        ),
-    )
 
     def __init__(
         self,
@@ -127,9 +100,6 @@ class ToolSearchTool(MockTool):
                 )
                 if input.query.strip() and score <= 0:
                     continue
-                from assistant_agent.services.tool_policy import ToolPolicyInterpreter
-
-                policy = ToolPolicyInterpreter().view_for_spec(spec)
                 candidates.append(
                     ToolSearchCandidate(
                         tool_name=spec.name,
@@ -144,7 +114,11 @@ class ToolSearchTool(MockTool):
                             else None
                         ),
                         read_only=server.adapter_config().is_read_only(definition.name),
-                        side_effect_level=policy.side_effect_level,
+                        side_effect_level=(
+                            "external_read"
+                            if spec.category == "read"
+                            else "pending_confirmation"
+                        ),
                         required_inputs=list(spec.required_inputs),
                         input_fields=_input_fields(definition.input_schema),
                         match_score=score,

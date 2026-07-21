@@ -7,9 +7,8 @@ from typing import Any
 from assistant_agent.agent.cancellation import cancellation_metadata
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
-from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
 from assistant_agent.services.tool_lifecycle import build_tool_lifecycle_summary
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -27,8 +26,7 @@ def build_pre_tool_call_summary(
     state: AgentState,
     step_id: str | None = None,
     cancel_token: Any | None = None,
-    risk_gate: dict[str, Any] | None = None,
-    idempotency: dict[str, Any] | None = None,
+    tool_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build prompt-safe metadata before a tool is executed."""
 
@@ -49,8 +47,7 @@ def build_pre_tool_call_summary(
                 "required": bool(side_effect.get("requires_confirmation")),
                 "kind": side_effect.get("confirmation_kind"),
             },
-            "risk_gate": risk_gate,
-            "idempotency": _merged_idempotency_summary(tool_input, idempotency),
+            "tool_contract": tool_contract,
             "input_summary": _input_summary(tool_input),
             "realtime_task_state": _realtime_task_state_summary(request),
             "cancel": _cancel_summary(cancel_token),
@@ -69,19 +66,18 @@ def build_post_tool_call_summary(
     latency_ms: int | None = None,
     retry_count: int | None = None,
     cancel_metadata: dict[str, Any] | None = None,
-    risk_gate: dict[str, Any] | None = None,
-    idempotency: dict[str, Any] | None = None,
+    tool_contract: dict[str, Any] | None = None,
     registry: ToolRegistry | None = None,
 ) -> dict[str, Any]:
     """Build prompt-safe metadata after a tool succeeds, fails, or is cancelled."""
 
     status = _post_status(result, cancel_metadata=cancel_metadata)
-    policy_view = _policy_view_for_tool(tool_name, registry=registry)
+    tool_spec = _tool_spec_for(tool_name, registry=registry)
     side_effect = _side_effect_summary(
         tool_name,
         result=result,
         registry=registry,
-        policy_view=policy_view,
+        tool_spec=tool_spec,
     )
     lifecycle = build_tool_lifecycle_summary(
         result=result,
@@ -104,19 +100,18 @@ def build_post_tool_call_summary(
                 "run_id": state.run_id,
             },
             "side_effect": side_effect,
-            "risk_gate": risk_gate,
+            "tool_contract": tool_contract,
             "confirmation": {
                 "required": bool(side_effect.get("requires_confirmation")),
                 "id": _data_string(result, "confirmation_id"),
                 "kind": side_effect.get("confirmation_kind"),
             },
-            "idempotency": _post_idempotency_summary(result, idempotency),
             "output_ref": result.output_ref,
             "latency_ms": result.latency_ms if result.latency_ms is not None else latency_ms,
             "retry_count": retry_count,
             "observation_summary": _observation_summary(
                 result,
-                redact_in_trace=policy_view.redact_in_trace,
+                redact_in_trace=tool_spec.redact_trace,
             ),
             "cancel": _cancel_metadata_summary(cancel_metadata),
         }
@@ -144,11 +139,13 @@ def _side_effect_summary(
     *,
     result: ToolResult | None = None,
     registry: ToolRegistry | None = None,
-    policy_view: ToolPolicyView | None = None,
+    tool_spec: ToolSpec | None = None,
 ) -> dict[str, Any]:
-    payload = _side_effect_summary_from_policy_view(
-        policy_view or _policy_view_for_tool(tool_name, registry=registry)
-    )
+    spec = tool_spec or _tool_spec_for(tool_name, registry=registry)
+    payload = {
+        "category": spec.category,
+        "requires_confirmation": spec.requires_confirmation,
+    }
     if result is not None:
         data = result.data or {}
         override = data.get("side_effect")
@@ -162,62 +159,15 @@ def _side_effect_summary(
             payload["requires_confirmation"] = data["requires_confirmation"]
         if isinstance(data.get("compensation_hint"), str):
             payload["compensation_hint"] = _clip(data["compensation_hint"])
-        if result.success and payload.get("level") == "pending_confirmation" and not _result_requires_confirmation(data):
-            payload["level"] = "committed"
+        if result.success and not _result_requires_confirmation(data):
             payload["requires_confirmation"] = False
     return payload
 
 
-def _policy_view_for_tool(tool_name: str, *, registry: ToolRegistry | None) -> ToolPolicyView:
-    interpreter = ToolPolicyInterpreter()
+def _tool_spec_for(tool_name: str, *, registry: ToolRegistry | None) -> ToolSpec:
     if registry is not None:
-        return interpreter.view_for_spec(registry.get_spec(tool_name))
-    return interpreter.view_for_tool_name(tool_name)
-
-
-def _side_effect_summary_from_policy_view(view: ToolPolicyView) -> dict[str, Any]:
-    return _drop_none(
-        {
-            "level": view.side_effect_level,
-            "requires_confirmation": view.requires_confirmation,
-            "description": view.description,
-            "confirmation_kind": view.confirmation_kind,
-            "compensation_hint": view.compensation_hint,
-        }
-    )
-
-
-def _idempotency_summary(tool_input: dict[str, Any]) -> dict[str, Any]:
-    key = _metadata_string(tool_input.get("idempotency_key"))
-    return {"key": key, "present": key is not None}
-
-
-def _merged_idempotency_summary(
-    tool_input: dict[str, Any],
-    override: dict[str, Any] | None,
-) -> dict[str, Any]:
-    summary = _idempotency_summary(tool_input)
-    if override:
-        summary.update(override)
-        summary["present"] = summary.get("key") is not None
-    return summary
-
-
-def _post_idempotency_summary(result: ToolResult, override: dict[str, Any] | None) -> dict[str, Any] | None:
-    summary: dict[str, Any] = {}
-    if override:
-        summary.update(override)
-    data = result.data if isinstance(result.data, dict) else {}
-    payload = data.get("idempotency")
-    if isinstance(payload, dict):
-        for key in ("key", "present", "required", "generated", "duplicate_suppressed", "status"):
-            if key in payload:
-                summary[key] = payload[key]
-    if not summary:
-        return None
-    if "present" not in summary:
-        summary["present"] = summary.get("key") is not None
-    return summary
+        return registry.get_spec(tool_name)
+    return ToolSpec(name=tool_name)
 
 
 def _input_summary(tool_input: dict[str, Any]) -> dict[str, Any]:
