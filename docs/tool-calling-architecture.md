@@ -111,8 +111,14 @@ LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在�
 不属于 Provider，不受“真实调用”伪分类。weather、calendar、contacts 等 MCP 能力在 real 模式按实际
 MCP mapping 逐个注册，未映射的能力不进入 Registry。
 
-内置工具在 `tools/registry.py` 中注册。`ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个
-builder，因此 provider schema、validator 和 executor 读取的是同一份契约。
+内置工具按能力域由 `tools/builtin_plugins.py` 中的受信任进程内 `ToolPlugin` 构造，再统一注册到
+`ToolRegistry`。插件只负责基于结构化配置和已注入依赖创建 Tool 实例；不能直接暴露或执行工具，也
+不能绕过 `ActionValidator -> ToolExecutor -> ToolRegistry` 治理链路。默认插件集合是显式、固定顺序的
+代码列表，不扫描目录或自动导入第三方模块。MCP 和显式本地 module loader 仍是独立扩展入口。
+
+`ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 builder，因此 provider schema、validator 和
+executor 读取的是同一份契约。新增或移除一个内置能力包时，修改对应 `ToolPlugin` 及默认插件列表，
+不再向 `create_default_registry()` 添加领域工具的实例化和 Provider readiness 分支。
 
 本轮目录由以下链路生成：
 
