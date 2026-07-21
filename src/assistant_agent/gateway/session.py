@@ -380,21 +380,21 @@ class GatewaySessionService:
             active = self._active_by_session.get(session_id)
             self._turns_by_run_id[run_id] = turn
             if current is not None:
-                turn.runtime_interrupt = bool(
+                turn.interrupts_active_run = bool(
                     interrupt_requested or self._queue_policy.mode == "interrupt"
                 )
                 if (
-                    not turn.runtime_interrupt
+                    not turn.interrupts_active_run
                     and active is not None
                     and self._semantic_interrupt_enabled(payload)
                 ):
-                    turn.arbitration_pending = True
-                    turn.arbitration_decision_id = new_prefixed_uuid7("arbitration")
-                    turn.arbitration_expected_run_id = active.run_id
+                    turn.arbitration.pending = True
+                    turn.arbitration.decision_id = new_prefixed_uuid7("arbitration")
+                    turn.arbitration.expected_run_id = active.run_id
                 turn.state = "session_queued"
                 turn.queue_reason = "session_busy"
                 pending = self._pending_by_session.setdefault(session_id, deque())
-                if turn.runtime_interrupt:
+                if turn.interrupts_active_run:
                     pending.appendleft(turn)
                 else:
                     pending.append(turn)
@@ -413,7 +413,7 @@ class GatewaySessionService:
 
         if queued:
             await self._send_queued(turn)
-            if turn.runtime_interrupt and current is not None:
+            if turn.interrupts_active_run and current is not None:
                 cancelled_before_run = await self._cancel_queued_turn(
                     current,
                     source="gateway_interrupt",
@@ -424,7 +424,7 @@ class GatewaySessionService:
                         session_id=session_id,
                         expected_run_id=current.run_id,
                     )
-            elif turn.arbitration_pending:
+            elif turn.arbitration.pending:
                 self._schedule_arbitration(turn)
             return
         self._schedule_dispatch(turn)
@@ -454,13 +454,13 @@ class GatewaySessionService:
             self._arbitrate_turn(turn),
             name=f"gateway-turn-arbitration-{turn.run_id}",
         )
-        turn.arbitration_task = task
+        turn.arbitration.task = task
         _consume_background_task(task)
 
     async def _arbitrate_turn(self, turn: QueuedTurn) -> None:
         controller = self._turn_arbitration
-        decision_id = turn.arbitration_decision_id
-        expected_run_id = turn.arbitration_expected_run_id
+        decision_id = turn.arbitration.decision_id
+        expected_run_id = turn.arbitration.expected_run_id
         if controller is None or decision_id is None or expected_run_id is None:
             return
         request = self._build_arbitration_request(
@@ -533,16 +533,16 @@ class GatewaySessionService:
         async with self._lock:
             if (
                 turn.state == "terminal"
-                or not turn.arbitration_pending
-                or turn.arbitration_decision_id != decision.decision_id
+                or not turn.arbitration.pending
+                or turn.arbitration.decision_id != decision.decision_id
             ):
                 return
             active = self._active_by_session.get(turn.session_id)
             expected_run_matched = bool(
                 active is not None and active.run_id == decision.expected_run_id
             )
-            turn.arbitration_pending = False
-            turn.arbitration_task = None
+            turn.arbitration.pending = False
+            turn.arbitration.task = None
 
             if (
                 decision.disposition
@@ -565,7 +565,7 @@ class GatewaySessionService:
             elif normalized_disposition == "ACK_NOOP":
                 complete_control_turn = True
             elif normalized_disposition in {"REVISE_ACTIVE", "REPLACE_ACTIVE"}:
-                turn.runtime_interrupt = True
+                turn.interrupts_active_run = True
                 _attach_arbitration_metadata(turn, decision)
                 pending = self._pending_by_session.get(turn.session_id)
                 if pending is not None:
@@ -751,9 +751,9 @@ class GatewaySessionService:
             ticket = turn.admission_ticket
             reservation = turn.reservation
             dispatch_task = turn.dispatch_task
-            arbitration_task = turn.arbitration_task
-            turn.arbitration_task = None
-            turn.arbitration_pending = False
+            arbitration_task = turn.arbitration.task
+            turn.arbitration.task = None
+            turn.arbitration.pending = False
 
         self._cancel_queue_timeout(turn)
         if (
@@ -870,8 +870,8 @@ class GatewaySessionService:
             ticket = turn.admission_ticket
             reservation = turn.reservation
             dispatch_task = turn.dispatch_task
-            turn.arbitration_pending = False
-            turn.arbitration_task = None
+            turn.arbitration.pending = False
+            turn.arbitration.task = None
 
         self._cancel_queue_timeout(turn)
         if ticket is not None and not ticket.granted:
@@ -928,7 +928,7 @@ class GatewaySessionService:
         self._current_by_session[session_id] = next_turn
         if not pending:
             self._pending_by_session.pop(session_id, None)
-        if next_turn.arbitration_pending:
+        if next_turn.arbitration.pending:
             return None
         return next_turn
 
@@ -1012,7 +1012,7 @@ class GatewaySessionService:
             user_text=turn.user_text,
             history=history_snapshot,
             payload=turn.payload,
-            runtime_interrupt=turn.runtime_interrupt,
+            interrupts_active_run=turn.interrupts_active_run,
             cancel=cancel,
         )
 
@@ -1027,7 +1027,7 @@ class GatewaySessionService:
         user_text: str,
         history: list[str],
         payload: dict[str, Any],
-        runtime_interrupt: bool,
+        interrupts_active_run: bool,
         cancel: CancelToken,
     ) -> None:
         expects_reply = True
@@ -1053,7 +1053,7 @@ class GatewaySessionService:
                 user_text=user_text,
                 history=history,
                 payload=payload,
-                runtime_interrupt=runtime_interrupt,
+                interrupts_active_run=interrupts_active_run,
             )
             result = await self._run_backend(request, ep=ep, turn_id=turn_id, cancel=cancel)
             expects_reply = bool(result.expects_reply)
@@ -1472,10 +1472,10 @@ class GatewaySessionService:
         user_text: str,
         history: list[str],
         payload: dict[str, Any],
-        runtime_interrupt: bool = False,
+        interrupts_active_run: bool = False,
     ) -> RealtimeAgentRequest:
         metadata = _user_message_metadata(payload)
-        if runtime_interrupt:
+        if interrupts_active_run:
             metadata.setdefault("control", "interrupt")
         gateway_metadata = metadata.get("gateway")
         gateway_payload = dict(gateway_metadata) if isinstance(gateway_metadata, dict) else {}

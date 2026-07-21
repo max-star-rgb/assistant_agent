@@ -40,11 +40,23 @@ def _should_send_session_frame_to_client(f: dict[str, Any]) -> bool:
 
 @dataclass
 class ClientConn:
+    endpoint: Endpoint
     session_id: Optional[str] = None
     user_id: Optional[str] = None
     active_run_id: Optional[str] = None
     _cancel_event: Optional[asyncio.Event] = None
     generation: int = 0
+
+
+@dataclass
+class _SessionRelay:
+    """Single reader for one managed session's outbound frame stream."""
+
+    user_id: str
+    endpoint: Endpoint
+    task: asyncio.Task[None]
+    session_id: Optional[str] = None
+    active_run_id: Optional[str] = None
 
 
 class GatewayBridge:
@@ -58,6 +70,7 @@ class GatewayBridge:
     def __init__(self, *, session_manager: GatewaySessionManager | None = None) -> None:
         self._clients: dict[str, ClientConn] = {}
         self._owner_by_user: dict[str, str] = {}
+        self._relays_by_user: dict[str, _SessionRelay] = {}
         self._next_generation = 0
         self._lock = asyncio.Lock()
         self._session_manager = session_manager
@@ -72,14 +85,12 @@ class GatewayBridge:
         session_id: Optional[str] = None,
     ) -> None:
         cancel_event = asyncio.Event()
-        runtime_ready = asyncio.Event()
         runtime_ep_ref: dict[str, Endpoint | None] = {"endpoint": runtime_ep}
-        if runtime_ep is not None:
-            runtime_ready.set()
 
         async with self._lock:
             self._next_generation += 1
             self._clients[client_id] = ClientConn(
+                endpoint=client_ep,
                 user_id=user_id,
                 session_id=session_id,
                 _cancel_event=cancel_event,
@@ -88,33 +99,34 @@ class GatewayBridge:
             if user_id:
                 self._claim_user_locked(client_id=client_id, user_id=user_id)
 
+        if user_id and runtime_ep is not None:
+            await self._ensure_session_relay(user_id=user_id, runtime_ep=runtime_ep)
+
         async def ensure_runtime_endpoint(
             uid: str | None,
             config: dict[str, Any] | None = None,
         ) -> Endpoint | None:
-            if runtime_ep_ref["endpoint"] is not None:
-                return runtime_ep_ref["endpoint"]
+            existing_endpoint = runtime_ep_ref["endpoint"]
+            target_uid = uid or user_id or "default"
+            if existing_endpoint is not None:
+                if not await self._claim_user(client_id=client_id, user_id=target_uid):
+                    return None
+                await self._ensure_session_relay(
+                    user_id=target_uid,
+                    runtime_ep=existing_endpoint,
+                )
+                return existing_endpoint
             if self._session_manager is None:
                 return None
-            target_uid = uid or user_id or "default"
             if not await self._claim_user(client_id=client_id, user_id=target_uid):
                 return None
             handle = await self._session_manager.acquire(user_id=target_uid, config=config)
             runtime_ep_ref["endpoint"] = handle.endpoint
-            await self._replace_stale_user_bridge(
-                client_id=client_id,
+            await self._ensure_session_relay(
                 user_id=target_uid,
                 runtime_ep=handle.endpoint,
             )
-            runtime_ready.set()
             return handle.endpoint
-
-        if user_id and runtime_ep is not None:
-            await self._replace_stale_user_bridge(
-                client_id=client_id,
-                user_id=user_id,
-                runtime_ep=runtime_ep,
-            )
 
         def current_runtime_endpoint() -> Endpoint | None:
             return runtime_ep_ref["endpoint"]
@@ -135,30 +147,12 @@ class GatewayBridge:
                     return
                 if endpoint is not None:
                     runtime_ep_ref["endpoint"] = endpoint
-                    runtime_ready.set()
-
-        async def _session_to_client() -> None:
-            await runtime_ready.wait()
-            endpoint = runtime_ep_ref["endpoint"]
-            if endpoint is None:
-                return
-            async for outbound in endpoint:
-                if cancel_event.is_set():
-                    _best_effort_reinject(endpoint, outbound)
-                    return
-                await self._handle_session_frame(
-                    client_id=client_id,
-                    client_ep=client_ep,
-                    outbound=outbound,
-                    user_id=user_id,
-                )
 
         t1 = asyncio.create_task(_client_to_session())
-        t2 = asyncio.create_task(_session_to_client())
         t3 = asyncio.create_task(cancel_event.wait())
 
         try:
-            _, pending = await asyncio.wait({t1, t2, t3}, return_when=asyncio.FIRST_COMPLETED)
+            _, pending = await asyncio.wait({t1, t3}, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
 
@@ -186,18 +180,92 @@ class GatewayBridge:
                 )
         finally:
             t1.cancel()
-            t2.cancel()
             t3.cancel()
 
-    async def _replace_stale_user_bridge(
+    async def _ensure_session_relay(
         self,
         *,
-        client_id: str,
         user_id: str,
         runtime_ep: Endpoint,
     ) -> None:
-        _ = runtime_ep
-        await self._claim_user(client_id=client_id, user_id=user_id)
+        async with self._lock:
+            current = self._relays_by_user.get(user_id)
+            if (
+                current is not None
+                and current.endpoint is runtime_ep
+                and not current.task.done()
+            ):
+                return
+            if current is not None and not current.task.done():
+                current.task.cancel()
+            task = asyncio.create_task(
+                self._relay_session_frames(user_id=user_id, runtime_ep=runtime_ep),
+                name=f"gateway-session-relay-{user_id}",
+            )
+            self._relays_by_user[user_id] = _SessionRelay(
+                user_id=user_id,
+                endpoint=runtime_ep,
+                task=task,
+            )
+
+    async def _relay_session_frames(
+        self,
+        *,
+        user_id: str,
+        runtime_ep: Endpoint,
+    ) -> None:
+        try:
+            async for outbound in runtime_ep:
+                await self._deliver_session_frame(user_id=user_id, outbound=outbound)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+        finally:
+            current_task = asyncio.current_task()
+            async with self._lock:
+                relay = self._relays_by_user.get(user_id)
+                if relay is not None and relay.task is current_task:
+                    self._relays_by_user.pop(user_id, None)
+
+    async def _deliver_session_frame(
+        self,
+        *,
+        user_id: str,
+        outbound: Frame,
+    ) -> None:
+        async with self._lock:
+            relay = self._relays_by_user.get(user_id)
+            if relay is not None:
+                if outbound.get("type") == "run.started":
+                    relay.active_run_id = outbound.get("run_id")
+                    relay.session_id = outbound.get("session_id") or relay.session_id
+                elif (
+                    outbound.get("type") == "run.end"
+                    and relay.active_run_id == outbound.get("run_id")
+                ):
+                    relay.active_run_id = None
+
+            owner_id = self._owner_by_user.get(user_id)
+            conn = self._clients.get(owner_id) if owner_id else None
+            if conn is None or conn._cancel_event is None or conn._cancel_event.is_set():
+                return
+            conn.active_run_id = relay.active_run_id if relay is not None else None
+            if relay is not None and relay.session_id:
+                conn.session_id = relay.session_id
+            client_ep = conn.endpoint
+
+        try:
+            await self._handle_session_frame(
+                client_id=owner_id,
+                client_ep=client_ep,
+                outbound=outbound,
+                user_id=user_id,
+            )
+        except Exception:
+            # A failed connection sink must not terminate the session-owned
+            # relay; the connection receive loop still owns disconnect cleanup.
+            return
 
     async def _claim_user(self, *, client_id: str, user_id: str) -> bool:
         async with self._lock:
@@ -215,6 +283,13 @@ class GatewayBridge:
         if conn._cancel_event.is_set():
             return False
 
+        previous_user_id = conn.user_id
+        if (
+            previous_user_id
+            and previous_user_id != user_id
+            and self._owner_by_user.get(previous_user_id) == client_id
+        ):
+            self._owner_by_user.pop(previous_user_id, None)
         conn.user_id = user_id
         owner_id = self._owner_by_user.get(user_id)
         owner = self._clients.get(owner_id) if owner_id else None
@@ -225,6 +300,10 @@ class GatewayBridge:
             return False
 
         self._owner_by_user[user_id] = client_id
+        relay = self._relays_by_user.get(user_id)
+        if relay is not None:
+            conn.active_run_id = relay.active_run_id
+            conn.session_id = relay.session_id or conn.session_id
         for cid, other in list(self._clients.items()):
             if cid != client_id and other.user_id == user_id and other._cancel_event:
                 other._cancel_event.set()
@@ -428,13 +507,6 @@ def _optional_string(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
-
-
-def _best_effort_reinject(endpoint: Endpoint, outbound: Frame) -> None:
-    try:
-        endpoint._inject(outbound)  # type: ignore[attr-defined]
-    except Exception:
-        pass
 
 
 def _config_from_payload(payload: dict[str, Any]) -> dict[str, Any]:

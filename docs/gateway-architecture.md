@@ -249,7 +249,7 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Cancel active runs immediately on `call.hangup` / media `session.end`, then return `call.hangup_ack`.
 - Treat cancel/interrupt as a first-class realtime turn outcome. After cancel, old run output is not speakable or user-visible; late backend/tool results may be retained only as trace or stale artifacts.
 - Manage per-user session reuse, reconnect, hangup grace, idle eviction, and live session config.
-- Resolve same-user multi-connection competition at the bridge layer: the newest bridge owns outbound delivery for that user, stale bridges stop consuming runtime frames, and only a true remaining-owner disconnect sends `gateway_disconnect` cancellation.
+- Resolve same-user multi-connection competition at the bridge layer: one session-owned relay is the sole consumer of runtime frames, the newest connection lease owns outbound delivery for that user, and only a true current-owner disconnect sends `gateway_disconnect` cancellation.
 - Treat user-message `metadata` as untrusted for system-prompt/profile selection. `system_prompt_profile`, profile-driving `channel`, and profile-driving `source` are stripped from message payload metadata; realtime phone profile selection must come from trusted Gateway/session config, not ordinary user text or arbitrary payload metadata.
 - Keep external connection lifecycle separate from the assistant runtime internals.
 
@@ -262,6 +262,56 @@ constraints, deciding whether intermediate artifacts are reusable, or resolving
 committed side effects. The optional `RealtimeTurnArbiter` is a separate semantic
 classifier; Gateway validates and applies its structured disposition but does
 not move business planning or tool decisions into the entry layer.
+
+### Lifecycle terminology
+
+The following terms name different state transitions and must not be used as
+interchangeable forms of "interrupt":
+
+- **turn arbitration** decides whether a newly accepted utterance is a followup,
+  no-op, cancel-only control, revision, or replacement of the active turn;
+- **cancel request** targets one queued or active Gateway `run_id` and immediately
+  closes the old run's user-visible output gate;
+- **cancel checkpoint** is an AgentRuntime implementation boundary where
+  cooperative cancellation actually stops execution, commonly before or after a
+  provider/tool operation; "在下一个 tool 后插话" describes this checkpoint, not
+  a separate Gateway interrupt mode;
+- **connection supersede** transfers the per-user delivery lease to a newer
+  connection without cancelling the active run;
+- **transport disconnect** means the current delivery owner is gone and applies
+  the configured `gateway_disconnect` run policy;
+- **session resume** reuses process-local session state; it never revives a
+  cancelled run or makes stale output speakable.
+
+Gateway owns arbitration application, run cancellation intent, stale-output
+gating, and connection ownership. AgentRuntime owns the safe checkpoint at which
+the cancellation request takes effect. A tool/provider may therefore finish
+after cancellation was requested, but its late result is trace-only unless the
+runtime contract explicitly marks a reusable artifact; it cannot reopen the old
+run's display or speech stream.
+
+### Connection ownership and outbound relay
+
+`GatewayBridge` maintains one process-local connection lease per `user_id` and
+one session-owned outbound relay per managed runtime endpoint:
+
+```text
+GatewaySession endpoint -> single SessionRelay -> current ConnectionLease sink
+                                               -> no owner: discard late frames
+```
+
+The relay, rather than individual WebSocket bridges, is the sole reader of the
+session endpoint. Replacing a connection only swaps the current sink and carries
+forward the relay's active `session_id` / `run_id` correlation. The old bridge is
+stopped as `superseded` and must not emit disconnect cancellation. This avoids
+multiple connections racing to consume one endpoint and removes the former need
+to re-inject a frame already consumed by a stale bridge.
+
+The current owner's actual transport close is different: the bridge sends
+`run.cancel(source=gateway_disconnect, reason=client_disconnected)` for the
+correlated active run/session. Runtime frames arriving with no owner are not
+buffered for a future reconnect; reconnect can reuse a still-managed session but
+does not replay stale output.
 
 ## Queue and Admission Contract
 
@@ -599,10 +649,10 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/gateway/protocol.py` | Gateway wire frame helpers, call/config constants, and supported modalities. |
 | `src/assistant_agent/gateway/capabilities.py` | Prompt-safe entry adapter capability declarations used in Gateway metadata. |
 | `src/assistant_agent/gateway/observability.py` | Controlled fail-open Gateway lifecycle event model and sink helper. |
-| `src/assistant_agent/gateway/queueing.py` | Bounded queue policy, process-local fair run admission, stable queued-turn records, and TTL/LRU retry identity index. |
+| `src/assistant_agent/gateway/queueing.py` | Bounded queue policy, process-local fair run admission, stable queued-turn records with nested semantic-arbitration state, and TTL/LRU retry identity index. |
 | `src/assistant_agent/gateway/transport.py` | Transport-agnostic endpoint primitives for in-process tests and embedding. |
 | `src/assistant_agent/gateway/ws.py` | JSON text WebSocket adapter that presents a WebSocket as a Gateway endpoint. |
-| `src/assistant_agent/gateway/bridge.py` | External-client-to-session bridge: call lifecycle, frame forwarding, stale bridge eviction, disconnect cancellation, and modality gate. |
+| `src/assistant_agent/gateway/bridge.py` | External-client-to-session bridge: call lifecycle, one session-owned outbound relay, per-user connection leases, disconnect cancellation, and modality gate. |
 | `src/assistant_agent/gateway/session.py` | Gateway-managed session service: `message.user`, `run.cancel`, session history, active runs, interrupt, deadline, event mapping, and session manager. |
 | `src/assistant_agent/gateway/event_mapping.py` | Realtime backend event to Gateway frame mapping. |
 | `src/assistant_agent/gateway/ws_server.py` | Optional standalone Gateway session WebSocket server entrypoint, not the main FastAPI app route. |
@@ -638,9 +688,9 @@ Phase 0 treats these entry classifications as architecture contracts:
 | MCP `tool_run` | `ActionValidator -> ToolExecutor -> ToolRegistry` | Tool adapter path, not assistant entry. |
 | Removed legacy Web Chat | `/demo/console`, `/static/index.html`, and `/ws/agent/{session_id}` are not registered or shipped | Ordinary browser chat is out of scope until the realtime assistant runtime is stable. |
 
-The default pytest safety net protects cancellation termination and the core realtime-event to Gateway-frame
-conversion contract. Stable Media-Agent interrupt behavior has a focused WebSocket regression test; add more
-pytest only for a concrete regression or changed stable protocol contract.
+The default pytest safety net protects cancellation termination, the core realtime-event to Gateway-frame
+conversion contract, Media-Agent explicit interrupt behavior, and same-user connection takeover without false
+disconnect cancellation. Add more pytest only for a concrete regression or changed stable protocol contract.
 
 ## OpenClaw Reference Boundary
 

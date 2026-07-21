@@ -9,7 +9,7 @@ import math
 import time
 from collections import OrderedDict, deque
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from assistant_agent.gateway.transport import Endpoint
@@ -92,6 +92,16 @@ class AdmissionSnapshot:
 
 
 @dataclass
+class TurnArbitrationState:
+    """Semantic decision state kept separate from queue/run lifecycle state."""
+
+    pending: bool = False
+    decision_id: str | None = None
+    expected_run_id: str | None = None
+    task: asyncio.Task[None] | None = None
+
+
+@dataclass
 class QueuedTurn:
     user_id: str
     session_id: str
@@ -105,17 +115,14 @@ class QueuedTurn:
     queue_deadline_monotonic: float
     client_message_id: str | None
     payload_fingerprint: str
-    runtime_interrupt: bool = False
+    interrupts_active_run: bool = False
     state: str = "received"
     queue_reason: QueueReason | None = None
     reservation: QueueReservation | None = None
     admission_ticket: AdmissionTicket | None = None
     timeout_task: asyncio.Task[None] | None = None
     dispatch_task: asyncio.Task[None] | None = None
-    arbitration_pending: bool = False
-    arbitration_decision_id: str | None = None
-    arbitration_expected_run_id: str | None = None
-    arbitration_task: asyncio.Task[None] | None = None
+    arbitration: TurnArbitrationState = field(default_factory=TurnArbitrationState)
 
 
 class QueueOverflowError(RuntimeError):

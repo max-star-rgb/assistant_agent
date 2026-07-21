@@ -435,6 +435,9 @@ ffprobe -show_streams -select_streams v sample.h264
 
 `interrupt` 会先取消本连接当前活动和排队中的 `chat` turn，再返回成功 ACK。活动 turn 的取消经
 `GatewayTurnFacade` 投递为 Gateway `run.cancel`，尚未进入 Gateway 的排队 turn 在入口层取消；
+这里的“先取消”指 Gateway 已记录取消请求并立即关闭旧 turn 的可见输出门；AgentRuntime 在
+provider/tool 前后的 cooperative cancellation checkpoint 实际停止执行。因此正在执行的 tool
+可能完成，但晚到结果只能进入 trace 或显式允许复用的 artifact，不能恢复旧 turn 的播放。
 已经被中断的旧 turn 不再发送后续
 `chatResponse` delta 或终包。没有活动 turn 时该操作保持幂等成功，连接不会关闭，媒体可以继续
 发送下一轮 `chat`。
