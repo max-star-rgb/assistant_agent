@@ -12,7 +12,9 @@ Last updated: 2026-07-17
 - 当前权威入口：本文件。
 - 说明：已移除完成态阶段计划，当前以本文件作为上下文工程状态与交接入口。
 - 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md` source、Context Compiler v1 redacted report、session summary、token-aware recent transcript、增量滑动窗口摘要、session handoff v2、realtime task-state snapshot、独立 `realtime_video_context`、durable task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
-- 默认摘要方式：deterministic/local；`LLMCompactor` 只在 `provider_smoke` 或 `pilot` 且非 mock chat adapter 下启用。
+- 默认摘要方式：deterministic/local；只有显式设置
+  `MULTIMODAL_AGENT_CONTEXT_COMPACTOR=llm`，并同时处于 `provider_smoke` 或
+  `pilot` 且 chat adapter 非 mock 时，才启用 `LLMCompactor`。
 - 预算现状：全局压缩控制仍以字符预算为准；recent transcript 选择已使用本地 token 估算；Memory context 有单独 token-aware 注入边界；其余 token 字段仍主要用于报告。
 - memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；自动长期记忆注入由 `MemoryReadPolicy` gate，LLM 选择的 `memory_retrieval` 走通用工具治理与 `MemoryManager`，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道在工具目录动态提供 `video_understanding` 时可以调用该工具，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
@@ -47,7 +49,9 @@ Last updated: 2026-07-17
 - Assistant context 已有字符预算兜底；owner persona 超限时先按完整段落收缩 persona，再沿用 memory/conversation 优先压缩、工具 observation 最后压缩的顺序。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，`keep_recent_turns=2` 是 recent transcript 的最小原文保留 guard。
 - `CompactionPolicy` 统一判断压缩触发：usage 高水位、超预算、大 tool observation、provider context overflow metadata、显式 `/compact` 或 `compact_context=True`。
-- `ContextCompactor` 已抽象为可插拔边界；默认 deterministic/local，不调用真实 LLM。`LLMCompactor` 仅在 `provider_smoke` 或 `pilot` profile 且 chat adapter 非 mock 时启用，输出无效时回退 deterministic。
+- `ContextCompactor` 已抽象为可插拔边界；默认 deterministic/local，不调用真实 LLM。
+  `LLMCompactor` 必须通过 `MULTIMODAL_AGENT_CONTEXT_COMPACTOR=llm` 显式启用，且只允许在
+  `provider_smoke` 或 `pilot` profile、chat adapter 非 mock 时运行；输出无效时回退 deterministic。
 - 真实 provider 返回 context overflow 类错误时，assistant loop 会标准化为 `provider_context_overflow`，触发 hard compaction 后重试一次，仍失败则停止并返回可解释最终回答。
 - Context budget 会报告自动压缩阶段和原因，便于 trace/API 判断是否发生 conversation、observation 或 budget 级压缩。
 - `TokenBudgetReporter` 已作为可选报告层接入；recent transcript selector 复用本地 token 估算；默认全局压缩触发仍使用字符预算，metadata 启用估算或提供 provider usage 时才填充全局 token fields。

@@ -191,6 +191,9 @@ async def _send_chat_and_print_responses(
             return False
         if message != "chatResponse":
             continue
+        if chat_response_error(body) is not None:
+            _print_protocol_error(body)
+            return False
         response_chat_index = _chat_index_from_chat_response_body(body)
         if response_chat_index is not None and response_chat_index != chat_index:
             continue
@@ -361,6 +364,13 @@ def chat_response_description(body: JsonObject) -> str | None:
     if isinstance(content, str):
         return content
     return None
+
+
+def chat_response_error(body: JsonObject) -> str | None:
+    if body.get("code") not in {"FAIL", -1}:
+        return None
+    message = body.get("message") or body.get("error") or "chat request failed"
+    return str(message)
 
 
 def print_json(value: JsonObject) -> None:

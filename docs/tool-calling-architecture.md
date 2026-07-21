@@ -133,6 +133,12 @@ category、确认、profile、env、trace 脱敏等系统字段不会发送给�
 
 模型返回的 native `tool_calls` 会归一化为内部 `AssistantDecision`，然后进入统一执行链路。
 
+OpenAI-compatible Chat adapter 从 `ProviderConfig` 读取主调用超时；默认
+`MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS=75`，应小于入口 turn 总预算。Qwen 混合思考模型默认由
+runtime 显式发送 `extra_body.enable_thinking=false`，避免简单工具轮次把大部分延迟消耗在隐藏思考；
+只有明确设置 `QWEN_CHAT_ENABLE_THINKING=true` 才启用。该参数只发送给 Qwen，不改变其他 Provider
+payload。
+
 ## 5. 校验与执行
 
 固定主链路：

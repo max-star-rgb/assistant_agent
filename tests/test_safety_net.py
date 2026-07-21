@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import importlib
+from types import SimpleNamespace
 from uuid import UUID
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
@@ -15,7 +16,15 @@ from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator, LLMToolCallDelta
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatProviderError, ChatRequest, ChatResult, MockChatAdapter
+from assistant_agent.services.chat_adapter import (
+    ChatProviderError,
+    ChatRequest,
+    ChatResult,
+    MockChatAdapter,
+    OpenAICompatibleChatAdapter,
+    create_chat_adapter,
+)
+from assistant_agent.services.context.compactor import DeterministicContextCompactor, create_context_compactor
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.hooks import HookManager, HookTraceStore
 from assistant_agent.services.identifiers import IdFactory, new_run_id, new_session_id, new_span_id, new_trace_id
@@ -26,6 +35,7 @@ from assistant_agent.services.otel_mapping import build_text_otel_span_specs, la
 from assistant_agent.services.session_store import InMemorySessionStore
 from assistant_agent.services.trace_conversation import TraceConversationText, TraceConversationView
 from assistant_agent.services.trace_store import TraceEvent
+from scripts.run_client import chat_response_error
 
 
 def _offline_config() -> ProviderConfig:
@@ -158,6 +168,63 @@ def test_native_w3c_trace_id_is_not_rehashed_for_langfuse() -> None:
     trace_id = "d7dd01a3493379032b4d5e926fe6e2af"
 
     assert langfuse_trace_id(trace_id) == trace_id
+
+
+def test_interactive_provider_latency_controls_are_explicit() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_RUNTIME_PROFILE": "pilot",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "QWEN_API_KEY": "test-key",
+            "QWEN_CHAT_MODEL": "qwen3.6-flash",
+        }
+    )
+
+    adapter = create_chat_adapter(config)
+    compactor = create_context_compactor(config, adapter)
+
+    assert config.agent_service_text_turn_timeout_seconds == 90.0
+    assert config.chat_timeout_seconds == 75.0
+    assert config.context_compactor_mode == "deterministic"
+    assert config.qwen_chat_enable_thinking is False
+    assert isinstance(adapter, OpenAICompatibleChatAdapter)
+    assert adapter.timeout_seconds == 75.0
+    assert adapter.enable_thinking is False
+    assert isinstance(compactor, DeterministicContextCompactor)
+
+
+def test_qwen_chat_adapter_disables_thinking_in_provider_payload() -> None:
+    captured: dict[str, object] = {}
+
+    class Completions:
+        def create(self, **payload: object) -> dict[str, object]:
+            captured.update(payload)
+            return {
+                "model": "qwen3.6-flash",
+                "choices": [{"message": {"content": "完成"}, "finish_reason": "stop"}],
+                "usage": {},
+            }
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+    adapter = OpenAICompatibleChatAdapter(
+        provider="qwen",
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="qwen3.6-flash",
+        enable_thinking=False,
+        client=client,
+    )
+
+    result = adapter.chat(ChatRequest(user_id="user", session_id="session", user_query="测试"))
+
+    assert result.response_text == "完成"
+    assert captured["extra_body"] == {"enable_thinking": False}
+
+
+def test_media_client_surfaces_top_level_chat_failure() -> None:
+    assert chat_response_error({"code": "FAIL", "message": "Gateway turn timed out"}) == (
+        "Gateway turn timed out"
+    )
 
 
 def test_otel_content_export_requires_explicit_local_loopback_configuration() -> None:

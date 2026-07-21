@@ -205,6 +205,7 @@ class OpenAICompatibleChatAdapter:
         model: str,
         timeout_seconds: float = 30.0,
         stream: bool = False,
+        enable_thinking: bool | None = None,
         client: Any | None = None,
         async_client: Any | None = None,
     ) -> None:
@@ -214,6 +215,7 @@ class OpenAICompatibleChatAdapter:
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.stream = stream
+        self.enable_thinking = enable_thinking
         self.capabilities = chat_capabilities_for_provider(provider)
         self._client = client
         if self._client is None and async_client is None:
@@ -228,6 +230,7 @@ class OpenAICompatibleChatAdapter:
             self.model,
             self.capabilities,
             stream=self.stream,
+            extra_body=self._extra_body(),
         )
         try:
             if self.stream:
@@ -290,6 +293,7 @@ class OpenAICompatibleChatAdapter:
             self.model,
             self.capabilities,
             stream=True,
+            extra_body=self._extra_body(),
         )
         stream: Any | None = None
         try:
@@ -320,6 +324,11 @@ class OpenAICompatibleChatAdapter:
             if stream is not None:
                 await _close_provider_stream(stream)
 
+    def _extra_body(self) -> dict[str, Any] | None:
+        if self.provider != "qwen" or self.enable_thinking is None:
+            return None
+        return {"enable_thinking": self.enable_thinking}
+
 
 def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
     """Create the default chat adapter without initializing real provider clients."""
@@ -335,7 +344,11 @@ def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
             api_key=settings.api_key or "",
             base_url=settings.base_url or "",
             model=settings.model or "",
+            timeout_seconds=resolved.chat_timeout_seconds,
             stream=resolved.chat_stream,
+            enable_thinking=(
+                resolved.qwen_chat_enable_thinking if settings.provider == "qwen" else None
+            ),
         )
     return MockChatAdapter()
 
@@ -346,6 +359,7 @@ def _build_chat_completions_payload(
     capabilities: ProviderChatCapabilities,
     *,
     stream: bool = False,
+    extra_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if request.messages:
         messages = request.messages
@@ -369,6 +383,8 @@ def _build_chat_completions_payload(
             payload["tool_choice"] = request.tool_choice or "auto"
     if request.response_format and capabilities.supports_response_format:
         payload["response_format"] = request.response_format
+    if extra_body:
+        payload["extra_body"] = dict(extra_body)
     if stream:
         payload["stream"] = True
         if capabilities.include_stream_usage:

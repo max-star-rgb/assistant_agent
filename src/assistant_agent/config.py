@@ -20,6 +20,7 @@ from assistant_agent.schemas.provider_specs import (
 
 
 AgentGraphMode = Literal["conditional", "assistant_loop"]
+ContextCompactorMode = Literal["deterministic", "llm"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
 LocalMemoryBackend = Literal["memory", "jsonl", "sqlite"]
@@ -133,6 +134,10 @@ class ProviderConfig:
     chat_adapter_kind: str = "mock"
     chat_stream: bool = False
     native_provider_streaming: bool = False
+    chat_timeout_seconds: float = 75.0
+    agent_service_text_turn_timeout_seconds: float = 90.0
+    context_compactor_mode: ContextCompactorMode = "deterministic"
+    qwen_chat_enable_thinking: bool = False
     openai_chat_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
     qwen_chat_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -403,6 +408,21 @@ class ProviderConfig:
             native_provider_streaming=_bool_env(
                 source.get("MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING"),
                 chat_provider == "qwen" and _chat_stream(source, chat_provider),
+            ),
+            chat_timeout_seconds=_float_env(
+                source.get("MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS"),
+                75.0,
+            ),
+            agent_service_text_turn_timeout_seconds=_float_env(
+                source.get("ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS"),
+                90.0,
+            ),
+            context_compactor_mode=_context_compactor_mode(
+                source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTOR")
+            ),
+            qwen_chat_enable_thinking=_bool_env(
+                source.get("QWEN_CHAT_ENABLE_THINKING"),
+                False,
             ),
             durable_tasks_enabled=_bool_env(
                 source.get("MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED"),
@@ -977,6 +997,12 @@ def _agent_graph_mode(value: str | None) -> AgentGraphMode:
     if value == "conditional":
         return "conditional"
     return "assistant_loop"  # 默认改为 assistant_loop
+
+
+def _context_compactor_mode(value: str | None) -> ContextCompactorMode:
+    if value == "llm":
+        return "llm"
+    return "deterministic"
 
 
 def _chat_stream(source: Mapping[str, str], chat_provider: ChatProviderName) -> bool:

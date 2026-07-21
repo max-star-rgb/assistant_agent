@@ -80,6 +80,7 @@ class AgentServiceConnectionState:
     clock_ns: Callable[[], int] = perf_counter_ns
     client_capabilities: dict[str, bool] = field(default_factory=dict)
     client_info: dict[str, str] = field(default_factory=lambda: {"client_type": "media_agent"})
+    text_turn_timeout_seconds: float = 90.0
     received_message_count: int = 0
     sent_message_count: int = 0
     video_packet_count: int = 0
@@ -459,6 +460,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         runtime_session_id=new_prefixed_uuid7("agent-service", separator="-"),
         delivery_registry=_create_delivery_registry(),
         trace_store=_get_agent_service_trace_store(),
+        text_turn_timeout_seconds=_agent_service_text_turn_timeout_seconds(),
     )
     logger.info(
         "agent-service websocket connected version=%s session_digest=%s query_keys=%s",
@@ -1300,7 +1302,11 @@ async def _run_agent_service_chat_turn(
             session_id=session_id,
             text=latest_speech,
             video_ids=active_video_ids,
-            timeout_s=VIDEO_TURN_TIMEOUT_SECONDS if active_video_ids else 30.0,
+            timeout_s=(
+                VIDEO_TURN_TIMEOUT_SECONDS
+                if active_video_ids
+                else state.text_turn_timeout_seconds
+            ),
             metadata=_agent_service_gateway_metadata(
                 state=state,
                 user_number=user_number,
@@ -1324,6 +1330,12 @@ async def _run_agent_service_chat_turn(
         )
     except (GatewayTurnTimeout, GatewayTurnError) as exc:
         raise AgentServiceProtocolError(str(exc)) from exc
+
+
+def _agent_service_text_turn_timeout_seconds() -> float:
+    from assistant_agent.api import routes_agent
+
+    return routes_agent.get_assistant_runtime_app().runtime.config.agent_service_text_turn_timeout_seconds
 
 
 def _active_chat_video_ids(

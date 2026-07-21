@@ -306,7 +306,9 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 每个 `video_id` 只维护一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后主动轮换，断线使用 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；切换 video id、连接关闭或 observer close 会关闭 Provider session 并清理 pending、快照、retained/raw JPEG 和临时文件。
 - 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；采集时间缺失或在未来时不伪造采集年龄。
 - 普通上传/API（非 Agent-Service）应优先显式调用主工具 `vision_understanding`；兼容入口 `video_understanding` 仍可用：最新观察成功时读取滚动语义记忆，记忆未就绪或最新观察失败时使用最近 3 帧走 Provider 回退。
-- Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖 Gateway、AgentRuntime 主 LLM 执行、动态视觉工具调用以及可能较慢的上下文刷新；普通 chat 使用 30 秒。
+- Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖 Gateway、AgentRuntime 主 LLM 执行、动态视觉工具调用以及可能较慢的上下文刷新。普通文本 chat 默认同样使用 90 秒，
+  可通过 `ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS` 调整；主 Chat Provider 默认 75 秒，
+  可通过 `MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS` 调整，并应小于 facade 总预算。
 - 连接关闭时先停止观察器、丢弃待处理帧并拒绝晚到结果，再移除滚动语义记忆、关键帧、原始帧上下文和 JPEG 运行时文件。
 
 成功响应中的 `video received` 表示该帧已经通过校验、成功解码、注册到视频上下文并完成本地选帧调度，不再只是传输层收到；它不表示后台视觉 MLLM 已完成。Hex、codec、NAL 起始码、大小或解码失败时返回 `videoResponse` 且 `body.code="FAIL"`；连接保持可用，失败帧不会附加到后续 chat。
@@ -445,7 +447,7 @@ ffprobe -show_streams -select_streams v sample.h264
 | 缺少必填字段 | 返回当前消息对应响应类型，`body.code=\"FAIL\"` |
 | `videoContent` 非法、超过大小限制或无法解码 | 返回 `videoResponse`，`body.code=\"FAIL\"`；连接保持可用 |
 | 未知 `message` 类型 | 返回 `error` |
-| Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"` |
+| Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"`；本地 `run_client.py` 会在 stderr 显示失败原因并以非零状态结束 |
 | WebSocket 异常断开 | 记录 ERROR 级安全日志；取消当前 session 的活动 Gateway run |
 
 通用 `error` 示例：

@@ -205,7 +205,11 @@ def create_context_compactor(
     """Create a compactor that honors runtime provider safety boundaries."""
 
     deterministic = fallback or DeterministicContextCompactor()
-    if config.runtime_profile.name in {"provider_smoke", "pilot"} and getattr(chat_adapter, "provider", "") != "mock":
+    if (
+        config.context_compactor_mode == "llm"
+        and config.runtime_profile.name in {"provider_smoke", "pilot"}
+        and getattr(chat_adapter, "provider", "") != "mock"
+    ):
         return LLMCompactor(chat_adapter, fallback=deterministic)
     return deterministic
 
