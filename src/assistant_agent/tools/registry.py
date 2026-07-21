@@ -29,7 +29,6 @@ from assistant_agent.tools.vision_tool import VisionUnderstandingTool
 if TYPE_CHECKING:
     from assistant_agent.mcp.config import MCPServerConfig
     from assistant_agent.mcp.registration import MCPToolDiscoveryRunner
-    from assistant_agent.services.agent_communication import AgentCommunicationService
     from assistant_agent.services.durable_tasks.service import DurableTaskService
 
 
@@ -199,8 +198,6 @@ def create_default_registry(
     *,
     video_context_store: VideoContextStore | None = None,
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
-    enable_agent_delegation: bool = False,
-    agent_communication_service: AgentCommunicationService | None = None,
     durable_task_service: DurableTaskService | None = None,
     enable_mcp_tools: bool = False,
     mcp_server_configs: list[MCPServerConfig] | None = None,
@@ -223,8 +220,6 @@ def create_default_registry(
         mcp_runner=mcp_runner,
         video_context_store=video_context_store,
         realtime_video_memory_store=realtime_video_memory_store,
-        enable_agent_delegation=enable_agent_delegation,
-        agent_communication_service=agent_communication_service,
         durable_task_service=durable_task_service,
     )
     for tool in build_default_tools(plugin_context):

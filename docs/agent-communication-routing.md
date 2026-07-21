@@ -182,8 +182,8 @@ Rules:
 - `collaboration_mode="single"` directly runs the resolved target agent. If no target or capability is provided, the target is `agent.default`.
 - `collaboration_mode="controller_delegate"` enters the controller path when no explicit target is supplied. The controller runtime uses the `agent.default` identity with `delegate_to_agent` registered. The normal single-mode `agent.default` runtime and worker runtimes do not register that tool by default.
 - If `target_agent_id` is supplied, it remains the explicit initial route even when `collaboration_mode` is set.
-- `delegate_to_agent` is not registered by `create_default_registry()` by default.
-- Register `delegate_to_agent` only by passing `enable_agent_delegation=True` and an `AgentCommunicationService` to `create_default_registry(...)`.
+- `create_default_registry()` 不装配 `delegate_to_agent`；显式 multi-agent 入口在自己的 Registry 上注册
+  `AgentDelegationTool` 并注入 `AgentCommunicationService`。
 - Use `create_local_agent_communication_service({...})` to build a same-process multi-runtime service for tests or explicit local experiments.
 - Local multi-runtime factory marks `agent.default` as a controller that can delegate only to non-default local workers; workers default to `can_delegate=False`.
 - The current opt-in is code/registry-level or the explicit `/agents/run` router. There is no default runtime environment variable that exposes delegation in normal `/agent/run` API/CLI runs.
@@ -234,6 +234,7 @@ The supported local shape is explicit and same-process:
 ```python
 from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
 from assistant_agent.services.agent_communication import create_local_agent_communication_service
+from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
 from assistant_agent.tools.registry import create_default_registry
 
 service = create_local_agent_communication_service(
@@ -242,10 +243,8 @@ service = create_local_agent_communication_service(
         "agent.worker": worker_runtime,
     }
 )
-registry = create_default_registry(
-    enable_agent_delegation=True,
-    agent_communication_service=service,
-)
+registry = create_default_registry()
+registry.register(AgentDelegationTool(service))
 ```
 
 This makes `delegate_to_agent` visible only in that explicit registry. It does not change the default API/CLI/Web demo registry, does not create an `AgentRouter`, and does not use A2A or network transport.

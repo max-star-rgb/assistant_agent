@@ -120,6 +120,10 @@ MCP mapping 逐个注册，未映射的能力不进入 Registry。
 executor 读取的是同一份契约。新增或移除一个内置能力包时，修改对应 `ToolPlugin` 及默认插件列表，
 不再向 `create_default_registry()` 添加领域工具的实例化和 Provider readiness 分支。
 
+`visual_image_search` 与 `vision_understanding` 同属 `VisionToolPlugin`，但在 real 模式下仍分别检查各自
+Provider 配置。`delegate_to_agent` 不属于默认工具插件；显式 multi-agent 入口需要时在自己的 Registry
+上直接注册该工具。
+
 本轮目录由以下链路生成：
 
 ```text

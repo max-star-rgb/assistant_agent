@@ -39,6 +39,7 @@ from assistant_agent.services.agent_routing_policy import AgentRoutingPolicy
 from assistant_agent.services.assistant_run_service import resolve_runtime_config, run_assistant_request
 from assistant_agent.services.trace_store import new_trace_id
 from assistant_agent.services.video_context import InMemoryVideoContextStore
+from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
 from assistant_agent.tools.registry import create_default_registry
 
 
@@ -199,9 +200,9 @@ def create_default_agent_router(
     controller_registry = create_default_registry(
         resolved_config,
         video_context_store=controller_video_context,
-        enable_agent_delegation=True,
-        agent_communication_service=communication_service,
     )
+    if resolved_config.provider_mode != "mock":
+        controller_registry.register(AgentDelegationTool(communication_service))
     controller_runtime = AgentGraphRuntime(
         config=resolved_config,
         registry=controller_registry,

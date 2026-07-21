@@ -28,7 +28,6 @@ from assistant_agent.services.tool_visual_image_search_adapter import (
 from assistant_agent.services.vision_client import create_vision_understanding_client
 from assistant_agent.services.web_fetch_adapter import create_web_fetch_adapter
 from assistant_agent.services.web_search_adapter import create_web_search_adapter
-from assistant_agent.tools.agent_delegation_tool import AgentDelegationTool
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.image_generation_tool import ImageGenerationTool
 from assistant_agent.tools.memory_media_tool import MemoryIngestStatusTool, MemoryMediaIngestTool
@@ -51,7 +50,6 @@ from assistant_agent.tools.web_search_tool import WebSearchTool
 if TYPE_CHECKING:
     from assistant_agent.mcp.config import MCPServerConfig
     from assistant_agent.mcp.registration import MCPToolDiscoveryRunner
-    from assistant_agent.services.agent_communication import AgentCommunicationService
     from assistant_agent.services.durable_tasks.service import DurableTaskService
     from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
     from assistant_agent.services.video_context import VideoContextStore
@@ -66,8 +64,6 @@ class ToolPluginContext:
     mcp_runner: MCPToolDiscoveryRunner | None = None
     video_context_store: VideoContextStore | None = None
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None
-    enable_agent_delegation: bool = False
-    agent_communication_service: AgentCommunicationService | None = None
     durable_task_service: DurableTaskService | None = None
 
     @property
@@ -114,15 +110,22 @@ class VisionToolPlugin:
     plugin_id = "vision"
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
-        if not context.mock_mode and not real_provider_ready(context.config, "vision"):
-            return []
-        return [
-            VisionUnderstandingTool(
-                client=create_vision_understanding_client(context.config),
-                context_store=context.video_context_store,
-                memory_store=context.realtime_video_memory_store,
+        tools: list[Tool] = []
+        if context.mock_mode or real_provider_ready(context.config, "vision"):
+            tools.append(
+                VisionUnderstandingTool(
+                    client=create_vision_understanding_client(context.config),
+                    context_store=context.video_context_store,
+                    memory_store=context.realtime_video_memory_store,
+                )
             )
-        ]
+        if context.mock_mode or real_provider_ready(context.config, "visual_search"):
+            tools.append(
+                VisualImageSearchTool(
+                    adapter=create_visual_image_search_adapter(context.config)
+                )
+            )
+        return tools
 
 
 class ShoppingToolPlugin:
@@ -175,17 +178,6 @@ class WebToolPlugin:
         ]
 
 
-class VisualSearchToolPlugin:
-    plugin_id = "visual_search"
-
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
-        if not context.mock_mode and not real_provider_ready(context.config, "visual_search"):
-            return []
-        return [
-            VisualImageSearchTool(adapter=create_visual_image_search_adapter(context.config))
-        ]
-
-
 class ImageGenerationToolPlugin:
     plugin_id = "image_generation"
 
@@ -193,19 +185,6 @@ class ImageGenerationToolPlugin:
         if not context.mock_mode and not real_provider_ready(context.config, "image_generation"):
             return []
         return [ImageGenerationTool(adapter=create_image_generation_adapter(context.config))]
-
-
-class AgentDelegationToolPlugin:
-    plugin_id = "agent_delegation"
-
-    def build_tools(self, context: ToolPluginContext) -> list[Tool]:
-        if not context.enable_agent_delegation or context.mock_mode:
-            return []
-        if context.agent_communication_service is None:
-            raise ValueError(
-                "agent_communication_service is required when agent delegation is enabled"
-            )
-        return [AgentDelegationTool(context.agent_communication_service)]
 
 
 class DurableTaskToolPlugin:
@@ -227,9 +206,7 @@ def default_tool_plugins() -> tuple[ToolPlugin, ...]:
         ShoppingToolPlugin(),
         PersonalAssistantToolPlugin(),
         WebToolPlugin(),
-        VisualSearchToolPlugin(),
         ImageGenerationToolPlugin(),
-        AgentDelegationToolPlugin(),
         DurableTaskToolPlugin(),
     )
 
