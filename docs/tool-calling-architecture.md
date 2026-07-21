@@ -133,7 +133,9 @@ execution
 
 ToolSpec 由 `ToolRegistry.list_specs()` 从工具类的 Pydantic `input_schema` 生成，并补充 `_ACTION_USAGE` 中的使用条件和运行约束。默认约束包含 `Use only through ToolExecutor.`。
 
-`ToolPolicyView` 是唯一运行时解释结果。`ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 spec builder，scheduler、risk gate、boundary summary 和 executor 不再各自降级或重新猜测 rich policy。它统一包含：
+工具类声明 rich `ToolPolicyMetadata` 时，它是 risk、approval、runtime execution 和 data policy 的治理权威；Registry 会据此派生规范 `side_effect`。如果 `_ACTION_USAGE.side_effect` 同时存在，它只作为兼容的 prompt 描述来源，其 `level`、`requires_confirmation` 和 `confirmation_kind` 必须与 rich policy 一致，否则工具在注册时失败。没有 rich policy 的工具继续由 `_ACTION_USAGE.side_effect` 或保守默认提供副作用策略。
+
+`ToolPolicyView` 是唯一规范解释结果。`ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 spec builder，provider/MCP schema adapter、scheduler、risk gate、boundary summary 和 executor 都消费该解释结果，不再各自降级或重新猜测 rich policy。它统一包含：
 
 - risk、side-effect、approval、confirmation owner 和 idempotency requirement；
 - dependency、resource、realtime safety、artifact reuse 和 progress message；
@@ -170,7 +172,7 @@ excluded_reasons
 
 - memory dedicated tools 会隐藏 `user_id`、`session_id` 这类运行时身份字段；模型不应决定记忆归属。
 - `tool_spec_to_json_schema()` 会输出 object schema，并设置 `additionalProperties=False`。
-- provider-native tools 发送完整 ToolSpec，并把 `terminal` / `requires_prior_observation` 等执行约束追加成简短 prompt-safe 描述；旧 prompt-facing ToolSpec 子集只服务历史 renderer 测试和离线兼容材料，不是生产决策路径。
+- provider-native tools 从规范 `ToolPolicyView` 生成副作用和 `terminal` / `requires_prior_observation` 等简短 prompt-safe 描述；旧 prompt-facing ToolSpec 子集只服务历史 renderer 测试和离线兼容材料，不是生产决策路径。
 - `side_effect` 包含 `level`、`requires_confirmation`、`description`、可选 `confirmation_kind` 和 `compensation_hint`；provider-native/MCP 描述也会包含该信息。
 - `execution` 包含 `dependency_mode`、可选 `concurrency_group`、`resource_reads`、`resource_writes`、`realtime_safety`、`artifact_reuse` 和可选 `progress_message`。它只表达调度/依赖/资源事实、realtime artifact 复用提示和等待提示，不表达“允许并发”命令。
 - `visibility` 是工具目录装配元数据，包含 `requires_env`、`enabled_by_default`、`skill_only`、`allowed_entry_profiles` 和 `requires_media`。可信 Agent-Service 入口仍受 `allowed_entry_profiles` 和 `requires_media` 限制；没有 profile 限制的 read 工具可默认暴露；当前 generate 和记忆写入由代码配置暴露，其他 write 仍需代码配置或结构化显式指定，dangerous 仍需结构化显式启用。
@@ -550,7 +552,7 @@ mock/local adapter 是同契约的离线替身，不是“看起来成功”的�
 3. 真实能力先建 service/provider adapter interface 和 mock/local implementation；工具只调用 adapter/service。
 4. 返回结构化 `ToolResult`，失败也要返回可解释错误和可选 contract，不抛未处理异常。
 5. 在 `ToolRegistry.create_default_registry()` 注册。默认注册只放 mock/local/offline 安全工具；高风险或跨 agent 工具用显式开关。
-6. 在 `_ACTION_USAGE` 增加 `when_to_use`、`when_not_to_use`、`runtime_constraints`、`side_effect`、`execution` 和必要的 `visibility`。
+6. 在 `_ACTION_USAGE` 增加 `when_to_use`、`when_not_to_use`、`runtime_constraints` 和必要的调度 `execution` / `visibility`。工具类已有 rich `policy` 时由它声明治理事实；如仍保留 `_ACTION_USAGE.side_effect` 作为兼容描述，其核心字段必须与 rich policy 一致。没有 rich policy 时才由 `_ACTION_USAGE.side_effect` 声明副作用策略。
 7. 输入字段和跨字段约束优先写入 Pydantic schema；媒体依赖声明为 `visibility.requires_media`；只有无法由二者表达的工具专属安全条件才实现 `validate_call()`，不要在 `ActionValidator` 增加工具名分支。
 8. 如旧 mock/rule plan 需要支持，在 `tool_input_builder.py` 增加 action 到 tool input 的兼容构造。
 9. 如 observation 后续会驱动另一个工具，更新 `tool_observation.py` 的 summary/next_step_hint/保留字段；`model_observation` 不得暴露 provider raw response、base64、大媒体 payload、本地路径、API key、Authorization、Bearer token 或真实用户数据 dump。

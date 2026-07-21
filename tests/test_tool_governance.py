@@ -13,8 +13,10 @@ from assistant_agent.schemas.tools import (
     ApprovalPolicy,
     ToolPolicyMetadata,
     ToolResult,
+    ToolSpec,
     VisibilityPolicy,
 )
+from assistant_agent.schemas.tool_spec_adapters import tool_spec_to_openai_tool
 from assistant_agent.services.tool_manifest import (
     PYTHON_INTERPRETER_TOOL_NAME,
     MEMORY_MEDIA_INGEST_TOOL_NAME,
@@ -50,6 +52,48 @@ class _DeclaredValidationTool(MockTool):
         self, input: _DeclaredValidationInput, context: ToolContext
     ) -> ToolResult:
         return ToolResult(tool_name=self.name, success=True, data=input.model_dump())
+
+
+class _ConflictingWeatherPolicyTool(_DeclaredValidationTool):
+    name = "weather"
+    policy = ToolPolicyMetadata(
+        risk="external_write",
+        approval=ApprovalPolicy(mode="always"),
+    )
+
+
+def test_provider_description_uses_canonical_policy_view() -> None:
+    spec = ToolSpec(
+        name="canonical_policy_tool",
+        policy=ToolPolicyMetadata(
+            risk="pure",
+            approval=ApprovalPolicy(mode="never"),
+        ),
+    )
+
+    payload = tool_spec_to_openai_tool(spec)
+
+    description = payload["function"]["description"]
+    assert "level=none" in description
+    assert "requires_confirmation=false" in description
+    assert "level=pending_confirmation" not in description
+
+
+def test_registry_derives_side_effect_from_declarative_policy() -> None:
+    registry = ToolRegistry()
+    registry.register(_DeclaredValidationTool())
+
+    spec = registry.get_spec(_DeclaredValidationTool.name)
+
+    assert spec.side_effect.level == "none"
+    assert spec.side_effect.requires_confirmation is False
+
+
+def test_registry_rejects_conflicting_side_effect_declarations() -> None:
+    registry = ToolRegistry()
+
+    with pytest.raises(ValueError, match="Conflicting side-effect declarations"):
+        registry.register(_ConflictingWeatherPolicyTool())
 
 
 @pytest.mark.parametrize(

@@ -19,7 +19,6 @@ from assistant_agent.schemas.tools import (
     VisibilityPolicy,
 )
 from assistant_agent.services.tool_manifest import MEMORY_SAVE_TOOL_NAME
-from assistant_agent.tools.registry import tool_execution_policy, tool_side_effect_policy
 
 
 TOOL_POLICY_VIEW_SCHEMA_VERSION = "tool_policy_view_v1"
@@ -85,6 +84,13 @@ class ToolPolicyInterpreter:
                 metadata=spec.policy,
                 execution=spec.execution,
             )
+            if _side_effect_core_matches(view, spec.side_effect):
+                view = view.model_copy(
+                    update={
+                        "description": spec.side_effect.description,
+                        "compensation_hint": spec.side_effect.compensation_hint,
+                    }
+                )
             if _has_visibility_declarations(spec.visibility):
                 return _with_visibility(view, spec.visibility)
             return view
@@ -159,6 +165,11 @@ class ToolPolicyInterpreter:
 
     def view_for_tool_name(self, tool_name: str) -> ToolPolicyView:
         """Return the current policy view for a tool name using registry defaults."""
+
+        from assistant_agent.tools.registry import (
+            tool_execution_policy,
+            tool_side_effect_policy,
+        )
 
         return self.view_for_policy(
             tool_name=tool_name,
@@ -277,6 +288,17 @@ def _requires_confirmation(metadata: ToolPolicyMetadata) -> bool:
 def _has_visibility_declarations(visibility: VisibilityPolicy) -> bool:
     default = VisibilityPolicy()
     return visibility != default
+
+
+def _side_effect_core_matches(
+    view: ToolPolicyView,
+    policy: ToolSideEffectPolicy,
+) -> bool:
+    return (
+        policy.level == view.side_effect_level
+        and policy.requires_confirmation == view.requires_confirmation
+        and policy.confirmation_kind == view.confirmation_kind
+    )
 
 
 def _with_visibility(

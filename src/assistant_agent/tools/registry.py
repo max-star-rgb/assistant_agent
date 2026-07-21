@@ -87,6 +87,7 @@ class ToolRegistry:
     def register(self, tool: BaseTool) -> None:
         if tool.name in self._tools:
             raise ValueError(f"Tool already registered: {tool.name}")
+        self._tool_spec(tool)
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> BaseTool:
@@ -119,6 +120,8 @@ class ToolRegistry:
     @staticmethod
     def _tool_spec(tool: BaseTool) -> ToolSpec:
         usage = _ACTION_USAGE.get(tool.name, {})
+        policy = tool_policy_metadata(tool)
+        execution = tool_execution_metadata(tool) or tool_execution_policy(tool.name)
         return ToolSpec(
             name=tool.name,
             description=tool.description,
@@ -127,10 +130,15 @@ class ToolRegistry:
             when_to_use=usage.get("when_to_use", []),
             when_not_to_use=usage.get("when_not_to_use", []),
             runtime_constraints=usage.get("runtime_constraints", ["Use only through ToolExecutor."]),
-            side_effect=tool_side_effect_policy(tool.name),
-            execution=tool_execution_metadata(tool) or tool_execution_policy(tool.name),
+            side_effect=_resolved_tool_side_effect_policy(
+                tool_name=tool.name,
+                usage=usage,
+                policy=policy,
+                execution=execution,
+            ),
+            execution=execution,
             visibility=tool_visibility_policy(tool.name),
-            policy=tool_policy_metadata(tool),
+            policy=policy,
         )
 
     def describe_tools(self) -> List[Dict[str, Any]]:
@@ -231,11 +239,61 @@ def tool_side_effect_policy(tool_name: str) -> ToolSideEffectPolicy:
     """
 
     payload = _ACTION_USAGE.get(tool_name, {}).get("side_effect")
+    return _side_effect_policy_from_payload(payload)
+
+
+def _side_effect_policy_from_payload(payload: Any) -> ToolSideEffectPolicy:
     if isinstance(payload, ToolSideEffectPolicy):
         return payload
     if isinstance(payload, dict):
         return ToolSideEffectPolicy.model_validate(payload)
     return ToolSideEffectPolicy()
+
+
+def _resolved_tool_side_effect_policy(
+    *,
+    tool_name: str,
+    usage: dict[str, Any],
+    policy: ToolPolicyMetadata | None,
+    execution: ToolExecutionPolicy,
+) -> ToolSideEffectPolicy:
+    declared_payload = usage.get("side_effect")
+    declared = _side_effect_policy_from_payload(declared_payload)
+    if policy is None:
+        return declared
+
+    from assistant_agent.services.tool_policy import ToolPolicyInterpreter
+
+    canonical_view = ToolPolicyInterpreter().view_for_metadata(
+        tool_name=tool_name,
+        metadata=policy,
+        execution=execution,
+    )
+    canonical = ToolSideEffectPolicy(
+        level=canonical_view.side_effect_level,
+        requires_confirmation=canonical_view.requires_confirmation,
+        description=canonical_view.description,
+        confirmation_kind=canonical_view.confirmation_kind,
+        compensation_hint=canonical_view.compensation_hint,
+    )
+    if declared_payload is None:
+        return canonical
+    declared_core = (
+        declared.level,
+        declared.requires_confirmation,
+        declared.confirmation_kind,
+    )
+    canonical_core = (
+        canonical.level,
+        canonical.requires_confirmation,
+        canonical.confirmation_kind,
+    )
+    if declared_core != canonical_core:
+        raise ValueError(
+            "Conflicting side-effect declarations for "
+            f"{tool_name}: usage={declared_core!r}, policy={canonical_core!r}"
+        )
+    return declared
 
 
 def tool_execution_policy(tool_name: str) -> ToolExecutionPolicy:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.services.tool_policy import ToolPolicyInterpreter, ToolPolicyView
 
 
 def tool_spec_to_json_schema(spec: ToolSpec) -> dict[str, Any]:
@@ -91,6 +92,7 @@ def _field_to_json_schema(field_info: dict[str, Any]) -> dict[str, Any]:
 
 
 def _native_description(spec: ToolSpec) -> str:
+    policy = ToolPolicyInterpreter().view_for_spec(spec)
     parts = [spec.description.strip()] if spec.description.strip() else []
     if spec.when_to_use:
         parts.append("Use when: " + "; ".join(spec.when_to_use))
@@ -98,33 +100,32 @@ def _native_description(spec: ToolSpec) -> str:
         parts.append("Do not use when: " + "; ".join(spec.when_not_to_use))
     if spec.runtime_constraints:
         parts.append("Runtime constraints: " + "; ".join(spec.runtime_constraints))
-    if spec.side_effect:
-        side_effect_parts = [
-            f"level={spec.side_effect.level}",
-            f"requires_confirmation={str(spec.side_effect.requires_confirmation).lower()}",
-        ]
-        if spec.side_effect.description:
-            side_effect_parts.append(spec.side_effect.description)
-        if spec.side_effect.compensation_hint:
-            side_effect_parts.append("compensation: " + spec.side_effect.compensation_hint)
-        parts.append("Side effects: " + "; ".join(side_effect_parts))
-    execution_constraints = _prompt_safe_execution_constraints(spec)
+    side_effect_parts = [
+        f"level={policy.side_effect_level}",
+        f"requires_confirmation={str(policy.requires_confirmation).lower()}",
+    ]
+    if policy.description:
+        side_effect_parts.append(policy.description)
+    if policy.compensation_hint:
+        side_effect_parts.append("compensation: " + policy.compensation_hint)
+    parts.append("Side effects: " + "; ".join(side_effect_parts))
+    execution_constraints = _prompt_safe_execution_constraints(policy)
     if execution_constraints:
         parts.append("Execution constraints: " + "; ".join(execution_constraints))
     return "\n".join(parts)
 
 
-def _prompt_safe_execution_constraints(spec: ToolSpec) -> list[str]:
+def _prompt_safe_execution_constraints(policy: ToolPolicyView) -> list[str]:
     constraints: list[str] = []
-    if spec.execution.dependency_mode == "requires_prior_observation":
+    if policy.dependency_mode == "requires_prior_observation":
         constraints.append("requires prior observation before dependent multi-tool use")
-    elif spec.execution.dependency_mode == "terminal":
+    elif policy.dependency_mode == "terminal":
         constraints.append("terminal tool; expect the next assistant message to answer from its result")
 
-    if spec.execution.realtime_safety == "needs_progress":
+    if policy.realtime_safety == "needs_progress":
         constraints.append("surface progress while running")
-    elif spec.execution.realtime_safety == "needs_confirmation":
+    elif policy.realtime_safety == "needs_confirmation":
         constraints.append("needs confirmation-sensitive handling")
-    elif spec.execution.realtime_safety == "unsafe":
+    elif policy.realtime_safety == "unsafe":
         constraints.append("unsafe for realtime auto-execution")
     return constraints
