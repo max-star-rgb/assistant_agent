@@ -1,12 +1,9 @@
-# Scripts Entry Map
+# Scripts 入口索引
 
-This directory has many operator, smoke, eval, and provider probe scripts. The
-current product direction is the Personal Realtime Assistant Runtime, so only a
-small subset should be treated as primary entry scripts.
+这里只保留当前 runtime、观测、评测和专项验收仍在使用的入口。一次性排障或已由 pytest、
+eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 
-## Primary realtime runtime entries
-
-Use these when validating the realtime assistant loop:
+## Realtime runtime
 
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
   memory, trace, and tool-governed runtime routes. For local Tavily web search/fetch
@@ -20,8 +17,6 @@ Use these when validating the realtime assistant loop:
   raw vendor envelope. The handshake marks `clientInfo.clientType=run_client`
   so trace and Gateway metadata can distinguish local protocol tests from
   ordinary media-agent calls.
-- `scripts/run_gateway_client.py`: server-backed normalized Gateway frame smoke
-  client for `/ws/gateway`.
 - `scripts/run_realtime_call_simulator.py`: in-process text-only realtime gate
   for `basic`, `interrupt`, `hangup`, `cancel`, and `tool_interrupt` lifecycle
   scenarios.
@@ -29,28 +24,32 @@ Use these when validating the realtime assistant loop:
 For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 `scripts/run_server.py` under `supervisord` and restart it after crashes.
 
-## Not primary product entries
+## Observability and local operations
 
-These are useful, but they are not the main product path:
-
-- `scripts/run_assistant_cli.py`: local in-process offline developer smoke.
-- `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
-- `scripts/run_evals.py`: eval harness for lower-layer behavior checks.
-- `scripts/run_real_provider_evals.py`: opt-in real chat provider eval harness
-  for end-to-end Agent behavior; requires `provider_smoke` or `pilot` runtime
-  profile and writes machine logs under `.data/evals/real_provider/`.
 - `scripts/check_env.py`: environment sanity check.
-- `scripts/run_tavily_search_relay.py`: opt-in local HTTP relay that adapts the
-  generic `web_search` and `web_fetch` HTTP protocols to Tavily Search/Extract APIs.
-- `scripts/smoke_text_observability_trace.py`: offline text trace smoke that
-  runs one mock turn through the OpenTelemetry and Langfuse-score observer chain
-  without sending data to an external endpoint.
+- `scripts/gateway_view.py`: Gateway lifecycle JSONL viewer.
+- `scripts/agentruntime_view.py`: canonical runtime trace viewer.
+- `scripts/trace_metrics.py`: redacted trace metric summary.
+
+## Eval and evidence
+
+- `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
+- `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
+- `scripts/run_real_provider_evals.py`: opt-in real chat provider eval harness;
+  requires `provider_smoke` or `pilot` and writes machine logs under
+  `.data/evals/real_provider/`.
+- `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.
-- `scripts/memory_audit.py`, `scripts/agentruntime_view.py`, and
-  `scripts/trace_metrics.py`: operator inspection utilities.
-- `scripts/smoke_*.py`, `scripts/measure_deepseek_latency.py`, and
-  `scripts/haodanku_order_query.mjs`: opt-in provider or domain smoke probes.
 
-Do not add a new general chat entry unless it is explicitly scoped behind the
-same Gateway/runtime boundary and the realtime assistant loop is already stable.
+## Specialized integrations
+
+- `scripts/run_tavily_search_relay.py`: opt-in local HTTP relay that adapts the
+  generic `web_search` and `web_fetch` HTTP protocols to Tavily Search/Extract APIs.
+- `scripts/collect_memory_framework_bakeoff.py` and
+  `scripts/run_memory_framework_bakeoff.py`: collect and score explicit
+  Hindsight/Mem0 bakeoff evidence.
+- `scripts/smoke_memory_dual_core.py`: offline-first dual-core memory acceptance.
+
+新增脚本必须对应当前权威文档中的稳定入口或无法由现有 pytest/eval 表达的 operator 流程；
+临时诊断优先使用不提交的一次性命令。
