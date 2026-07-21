@@ -64,6 +64,8 @@ class ActiveRun:
     task: "asyncio.Task[None]"
     permit: RunPermit
     deadline_task: "asyncio.Task[None] | None" = None
+    assistant_run_id: str | None = None
+    trace_id: str | None = None
 
 
 class CancelToken:
@@ -616,6 +618,7 @@ class GatewaySessionService:
                     "source": "gateway_interrupt",
                     "reason": cancel_reason,
                     "decision_id": decision.decision_id,
+                    **_active_run_correlation_payload(cancel_run),
                 },
             )
         if complete_control_turn:
@@ -1030,6 +1033,8 @@ class GatewaySessionService:
         expects_reply = True
         end_reason = "error"
         result: RealtimeAgentResult | None = None
+        active_assistant_run_id: str | None = None
+        active_trace_id: str | None = None
         try:
             self._emit_lifecycle(
                 "gateway.run.started",
@@ -1143,6 +1148,8 @@ class GatewaySessionService:
                 if cur and cur.run_id == run_id:
                     deadline_task = cur.deadline_task
                     permit = cur.permit
+                    active_assistant_run_id = cur.assistant_run_id
+                    active_trace_id = cur.trace_id
                     self._active_by_session.pop(session_id, None)
                 current = self._current_by_session.get(session_id)
                 if current is not None and current.run_id == run_id:
@@ -1161,6 +1168,10 @@ class GatewaySessionService:
             }
             if result is not None and result.trace_id:
                 terminal_payload["trace_id"] = result.trace_id
+            elif active_trace_id:
+                terminal_payload["trace_id"] = active_trace_id
+            if active_assistant_run_id:
+                terminal_payload["assistant_run_id"] = active_assistant_run_id
             self._emit_lifecycle(
                 _terminal_lifecycle_event_type(end_reason),
                 session_id=session_id,
@@ -1182,6 +1193,7 @@ class GatewaySessionService:
         queue: asyncio.Queue[Frame] = asyncio.Queue()
 
         async def event_sink(event: RealtimeAgentEvent) -> None:
+            await self._observe_active_run_correlation(request, event)
             if cancel.is_cancelled():
                 return
             mapped = realtime_event_to_frame(
@@ -1256,6 +1268,24 @@ class GatewaySessionService:
                 pending.append(queue_wait)
             await asyncio.gather(*pending, return_exceptions=True)
 
+    async def _observe_active_run_correlation(
+        self,
+        request: RealtimeAgentRequest,
+        event: RealtimeAgentEvent,
+    ) -> None:
+        if event.type != "run.progress" or event.payload.get("agent_event_type") != "task_started":
+            return
+        assistant_run_id = _optional_string(event.payload.get("assistant_run_id"))
+        trace_id = _optional_string(event.payload.get("trace_id"))
+        if not assistant_run_id and not trace_id:
+            return
+        async with self._lock:
+            active = self._active_by_session.get(request.session_id)
+            if active is None or active.run_id != request.run_id:
+                return
+            active.assistant_run_id = assistant_run_id or active.assistant_run_id
+            active.trace_id = trace_id or active.trace_id
+
     async def _interrupt_if_needed(
         self,
         *,
@@ -1278,7 +1308,10 @@ class GatewaySessionService:
             session_id=session_id,
             run_id=interrupted.run_id,
             turn_id=interrupted.turn_id,
-            payload={"source": "gateway_interrupt"},
+            payload={
+                "source": "gateway_interrupt",
+                **_active_run_correlation_payload(interrupted),
+            },
         )
 
     async def _handle_cancel(self, ep: Endpoint, f: Frame) -> None:
@@ -1291,6 +1324,8 @@ class GatewaySessionService:
         cancelled_session_id: str | None = None
         cancelled_run_id: str | None = None
         cancelled_turn_id: str | None = None
+        cancelled_assistant_run_id: str | None = None
+        cancelled_trace_id: str | None = None
 
         queued_targets: list[QueuedTurn] = []
         async with self._lock:
@@ -1336,6 +1371,8 @@ class GatewaySessionService:
                     cancelled_session_id = str(session_id)
                     cancelled_run_id = cur.run_id
                     cancelled_turn_id = cur.turn_id
+                    cancelled_assistant_run_id = cur.assistant_run_id
+                    cancelled_trace_id = cur.trace_id
             elif run_id:
                 for active_session_id, cur in self._active_by_session.items():
                     if cur.run_id == run_id:
@@ -1344,12 +1381,18 @@ class GatewaySessionService:
                         cancelled_session_id = active_session_id
                         cancelled_run_id = cur.run_id
                         cancelled_turn_id = cur.turn_id
+                        cancelled_assistant_run_id = cur.assistant_run_id
+                        cancelled_trace_id = cur.trace_id
                         break
 
         if did_cancel:
             cancel_payload: dict[str, Any] = {"source": cancel_source}
             if cancel_reason:
                 cancel_payload["reason"] = cancel_reason
+            if cancelled_assistant_run_id:
+                cancel_payload["assistant_run_id"] = cancelled_assistant_run_id
+            if cancelled_trace_id:
+                cancel_payload["trace_id"] = cancelled_trace_id
             self._emit_lifecycle(
                 "gateway.run.cancel_requested",
                 session_id=cancelled_session_id,
@@ -1413,6 +1456,7 @@ class GatewaySessionService:
                     "source": "deadline",
                     "reason": "run_deadline_expired",
                     "deadline_ms": deadline_ms,
+                    **_active_run_correlation_payload(cancelled_run),
                 },
             )
 
@@ -2092,6 +2136,15 @@ def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _active_run_correlation_payload(active: ActiveRun) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    if active.assistant_run_id:
+        payload["assistant_run_id"] = active.assistant_run_id
+    if active.trace_id:
+        payload["trace_id"] = active.trace_id
+    return payload
 
 
 def _result_error(result: RealtimeAgentResult) -> dict[str, Any]:

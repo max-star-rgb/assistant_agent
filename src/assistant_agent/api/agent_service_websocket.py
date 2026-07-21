@@ -35,6 +35,8 @@ from assistant_agent.services.trace_store import TraceStore, append_observabilit
 from assistant_agent.services.turn_summary import append_agent_service_turn_summary
 from assistant_agent.services.gateway_turn_facade import (
     GatewayStreamChunkConsumer,
+    GatewayTurnCorrelation,
+    GatewayTurnCorrelationObserver,
     GatewayTurnError,
     GatewayTurnFacade,
     GatewayTurnRequest,
@@ -107,6 +109,19 @@ class PreparedChat:
 
 class AgentServiceProtocolError(ValueError):
     """Recoverable media protocol validation error."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str = "agent_service_protocol_error",
+        correlation: GatewayTurnCorrelation | None = None,
+        recoverable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.correlation = correlation
+        self.recoverable = recoverable
 
 
 class BaseHandler:
@@ -858,6 +873,17 @@ async def _run_chat_delivery(
     timing = state.turn_timings.get(delivery.delivery_id)
     if timing is not None:
         timing.stream_requested = prepared_stream_requested
+
+    def bind_correlation(correlation: GatewayTurnCorrelation) -> None:
+        if timing is None:
+            return
+        timing.bind_turn(
+            turn_id=correlation.turn_id,
+            gateway_run_id=correlation.gateway_run_id,
+            assistant_run_id=correlation.assistant_run_id,
+            trace_id=correlation.trace_id,
+        )
+
     if state.client_capabilities.get("chatProgress", False):
         progress_task = asyncio.create_task(
             _emit_periodic_chat_progress(websocket, state=state, prepared=prepared, delivery=delivery)
@@ -877,6 +903,7 @@ async def _run_chat_delivery(
                 video_ids=prepared.video_ids,
                 stream_requested=prepared_stream_requested,
                 on_stream_chunk=send_delta if prepared_stream_requested else None,
+                on_correlation=bind_correlation,
             )
             if timing is not None:
                 timing.mark("gateway_finished", at_ns=state.clock_ns())
@@ -886,6 +913,11 @@ async def _run_chat_delivery(
                     assistant_run_id=_assistant_run_id(state.trace_store, turn.trace_id),
                     trace_id=turn.trace_id,
                 )
+                timing.runtime_status = {
+                    "completed": "completed",
+                    "cancelled": "cancelled",
+                    "error": "failed",
+                }.get(turn.status, "unknown")
         response = _prepared_chat_response(
             prepared,
             state=state,
@@ -904,6 +936,11 @@ async def _run_chat_delivery(
             state.delivery_registry.mark_failed(
                 delivery.delivery_id,
                 error_code="gateway_run_failed",
+                gateway_run_id=turn.run_id,
+                assistant_run_id=timing.assistant_run_id if timing is not None else None,
+                trace_id=turn.trace_id,
+                runtime_status=timing.runtime_status if timing is not None else None,
+                failure_source="gateway_runtime",
             )
         else:
             state.delivery_registry.mark_sent(
@@ -920,8 +957,35 @@ async def _run_chat_delivery(
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - delivery boundary.
+        failure_code = getattr(exc, "error_code", "chat_turn_failed")
+        failure_source = "gateway_turn_facade" if isinstance(exc, AgentServiceProtocolError) else "agent_service"
+        runtime_status = (
+            "pending_cancel"
+            if failure_code == "gateway_turn_timeout"
+            else "unknown"
+        )
         if timing is not None:
+            correlation = getattr(exc, "correlation", None)
+            if isinstance(correlation, GatewayTurnCorrelation):
+                bind_correlation(correlation)
             timing.mark("failed", at_ns=state.clock_ns())
+            timing.mark_failure(
+                code=failure_code,
+                source=failure_source,
+                runtime_status=runtime_status,
+                deadline_ms=(
+                    int(
+                        (
+                            VIDEO_TURN_TIMEOUT_SECONDS
+                            if prepared.video_ids
+                            else state.text_turn_timeout_seconds
+                        )
+                        * 1000
+                    )
+                    if failure_code == "gateway_turn_timeout"
+                    else None
+                ),
+            )
         if not state.closed:
             response = _failure_chat_response(
                 prepared,
@@ -937,7 +1001,12 @@ async def _run_chat_delivery(
                     timing.mark("send_finished", at_ns=state.clock_ns())
                 state.delivery_registry.mark_failed(
                     delivery.delivery_id,
-                    error_code="chat_turn_failed",
+                    error_code=failure_code,
+                    gateway_run_id=timing.gateway_run_id if timing is not None else None,
+                    assistant_run_id=timing.assistant_run_id if timing is not None else None,
+                    trace_id=timing.trace_id if timing is not None else None,
+                    runtime_status=runtime_status,
+                    failure_source=failure_source,
                 )
                 if timing is not None:
                     _observe_turn_terminal(state, timing, status="failed")
@@ -1292,6 +1361,7 @@ async def _run_agent_service_chat_turn(
     video_ids: list[str] | None = None,
     stream_requested: bool = False,
     on_stream_chunk: GatewayStreamChunkConsumer | None = None,
+    on_correlation: GatewayTurnCorrelationObserver | None = None,
 ):
     if state.gateway_facade is None:
         raise RuntimeError("agent-service Gateway facade is not initialized")
@@ -1322,14 +1392,23 @@ async def _run_agent_service_chat_turn(
             cancel_source="gateway_disconnect",
             cancel_reason="client_disconnected",
         )
-        if on_stream_chunk is None:
-            return await state.gateway_facade.run_turn(request)
         return await state.gateway_facade.run_turn(
             request,
             on_stream_chunk=on_stream_chunk,
+            on_correlation=on_correlation,
         )
-    except (GatewayTurnTimeout, GatewayTurnError) as exc:
-        raise AgentServiceProtocolError(str(exc)) from exc
+    except GatewayTurnTimeout as exc:
+        raise AgentServiceProtocolError(
+            str(exc),
+            error_code="gateway_turn_timeout",
+            correlation=exc.correlation,
+        ) from exc
+    except GatewayTurnError as exc:
+        raise AgentServiceProtocolError(
+            str(exc),
+            error_code="gateway_turn_failed",
+            correlation=exc.correlation,
+        ) from exc
 
 
 def _agent_service_text_turn_timeout_seconds() -> float:

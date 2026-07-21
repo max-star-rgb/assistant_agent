@@ -12,10 +12,30 @@ from assistant_agent.gateway.session import GatewaySessionManager
 from assistant_agent.services.identifiers import new_prefixed_uuid7, new_turn_id
 
 GatewayStreamChunkConsumer = Callable[[str, Frame], Awaitable[None]]
+GatewayTurnCorrelationObserver = Callable[["GatewayTurnCorrelation"], None]
+
+
+@dataclass(frozen=True)
+class GatewayTurnCorrelation:
+    """Prompt-safe identifiers known while a Gateway turn is still running."""
+
+    turn_id: str
+    gateway_run_id: str
+    assistant_run_id: str | None = None
+    trace_id: str | None = None
 
 
 class GatewayTurnError(RuntimeError):
     """Raised when a Gateway turn cannot reach a terminal frame."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        correlation: GatewayTurnCorrelation | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.correlation = correlation
 
 
 class GatewayTurnTimeout(GatewayTurnError):
@@ -135,6 +155,7 @@ class GatewayTurnFacade:
         request: GatewayTurnRequest,
         *,
         on_stream_chunk: GatewayStreamChunkConsumer | None = None,
+        on_correlation: GatewayTurnCorrelationObserver | None = None,
     ) -> GatewayTurnResult:
         if not request.user_id:
             raise ValueError("GatewayTurnRequest.user_id is required")
@@ -151,6 +172,8 @@ class GatewayTurnFacade:
         run_id = new_prefixed_uuid7("gateway_run")
         dispatcher = await self._dispatcher_for(request.user_id, handle.endpoint)
         inbox = await dispatcher.register(run_id)
+        correlation = GatewayTurnCorrelation(turn_id=turn_id, gateway_run_id=run_id)
+        _notify_correlation(on_correlation, correlation)
         try:
             await handle.endpoint.send(
                 frame(
@@ -170,6 +193,8 @@ class GatewayTurnFacade:
                 cancel_source=request.cancel_source,
                 cancel_reason=request.cancel_reason,
                 on_stream_chunk=on_stream_chunk,
+                on_correlation=on_correlation,
+                initial_correlation=correlation,
             )
         finally:
             await dispatcher.unregister(run_id)
@@ -186,21 +211,33 @@ class GatewayTurnFacade:
         cancel_source: str,
         cancel_reason: str,
         on_stream_chunk: GatewayStreamChunkConsumer | None,
+        on_correlation: GatewayTurnCorrelationObserver | None,
+        initial_correlation: GatewayTurnCorrelation,
     ) -> GatewayTurnResult:
         frames: list[Frame] = []
         chunks: list[str] = []
+        correlation = initial_correlation
 
         async def _read_until_terminal() -> GatewayTurnResult:
+            nonlocal correlation
             while True:
                 received = await inbox.get()
                 if received is None:
-                    raise GatewayTurnError("Gateway endpoint closed before run.end")
+                    raise GatewayTurnError(
+                        "Gateway endpoint closed before run.end",
+                        correlation=correlation,
+                    )
                 frames.append(received)
+                updated = _correlation_from_frame(received, current=correlation)
+                if updated != correlation:
+                    correlation = updated
+                    _notify_correlation(on_correlation, correlation)
                 if received.get("type") == "error":
                     error = received.get("error")
                     code = error.get("code") if isinstance(error, Mapping) else None
                     raise GatewayTurnError(
-                        f"Gateway turn rejected: {code or 'unknown_error'}"
+                        f"Gateway turn rejected: {code or 'unknown_error'}",
+                        correlation=correlation,
                     )
                 if received.get("type") == "stream.chunk":
                     chunk = _chunk_text(received)
@@ -234,7 +271,8 @@ class GatewayTurnFacade:
                 reason="facade_timeout",
             )
             raise GatewayTurnTimeout(
-                f"Gateway turn timed out after {timeout_s:.3g}s before run.end"
+                f"Gateway turn timed out after {timeout_s:.3g}s before run.end",
+                correlation=correlation,
             ) from exc
         except asyncio.CancelledError:
             await _best_effort_cancel(
@@ -246,6 +284,42 @@ class GatewayTurnFacade:
                 reason=cancel_reason,
             )
             raise
+
+
+def _correlation_from_frame(
+    received: Frame,
+    *,
+    current: GatewayTurnCorrelation,
+) -> GatewayTurnCorrelation:
+    if received.get("type") != "event.progress":
+        return current
+    payload = received.get("payload")
+    if not isinstance(payload, Mapping) or payload.get("agent_event_type") != "task_started":
+        return current
+    assistant_run_id = _optional_string(payload.get("assistant_run_id")) or _optional_string(
+        payload.get("run_id")
+    )
+    trace_id = _optional_string(payload.get("trace_id"))
+    if not assistant_run_id and not trace_id:
+        return current
+    return GatewayTurnCorrelation(
+        turn_id=current.turn_id,
+        gateway_run_id=current.gateway_run_id,
+        assistant_run_id=assistant_run_id or current.assistant_run_id,
+        trace_id=trace_id or current.trace_id,
+    )
+
+
+def _notify_correlation(
+    observer: GatewayTurnCorrelationObserver | None,
+    correlation: GatewayTurnCorrelation,
+) -> None:
+    if observer is None:
+        return
+    try:
+        observer(correlation)
+    except Exception:
+        return
 
 
 async def _best_effort_cancel(

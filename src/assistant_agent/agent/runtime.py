@@ -213,7 +213,11 @@ class AgentGraphRuntime:
                 type="task_started",
                 session_id=state.session_id,
                 run_id=state.run_id,
-                payload={"user_id": state.user_id},
+                payload={
+                    "user_id": state.user_id,
+                    "assistant_run_id": state.run_id,
+                    "trace_id": state.trace_id,
+                },
             ),
             run_event_sink,
         )

@@ -63,6 +63,10 @@ class AgentServiceTurnTiming:
     session_id: str | None = None
     client_type: str = "media_agent"
     client_name: str | None = None
+    runtime_status: str = "unknown"
+    failure_code: str | None = None
+    failure_source: str | None = None
+    deadline_ms: int | None = None
 
     def mark(self, name: CheckpointName, *, at_ns: int | None = None) -> None:
         self.checkpoints[name] = perf_counter_ns() if at_ns is None else at_ns
@@ -93,6 +97,19 @@ class AgentServiceTurnTiming:
         self.gateway_run_id = gateway_run_id
         self.assistant_run_id = assistant_run_id
         self.trace_id = trace_id
+
+    def mark_failure(
+        self,
+        *,
+        code: str,
+        source: str,
+        runtime_status: str,
+        deadline_ms: int | None = None,
+    ) -> None:
+        self.failure_code = code
+        self.failure_source = source
+        self.runtime_status = runtime_status
+        self.deadline_ms = deadline_ms
 
 
 class TurnLatencyStage(BaseModel):
@@ -144,6 +161,12 @@ class TurnLatencySummary(BaseModel):
     gateway_run_id: str | None = None
     assistant_run_id: str | None = None
     trace_id: str | None = None
+    runtime_status: str = "unknown"
+    failure_code: str | None = None
+    failure_source: str | None = None
+    deadline_ms: int | None = Field(default=None, ge=0)
+    active_stage: str | None = None
+    open_span_count: int = Field(default=0, ge=0)
     total_ms: int | None = Field(default=None, ge=0)
     stages: list[TurnLatencyStage] = Field(default_factory=list)
     bottleneck: str | None = None
@@ -210,6 +233,10 @@ def analyze_agent_service_turn(
         default=None,
     )
     ack_status, ack_latency_ms = _ack_timing(timing)
+    active_stage, open_span_count = _active_trace_stage(events)
+    runtime_status = timing.runtime_status
+    if runtime_status == "unknown" and status in {"sent", "acked"}:
+        runtime_status = "completed"
     return TurnLatencySummary(
         status=status,
         delivery_id=timing.delivery_id,
@@ -221,6 +248,12 @@ def analyze_agent_service_turn(
         gateway_run_id=timing.gateway_run_id,
         assistant_run_id=timing.assistant_run_id,
         trace_id=timing.trace_id,
+        runtime_status=runtime_status,
+        failure_code=timing.failure_code,
+        failure_source=timing.failure_source,
+        deadline_ms=timing.deadline_ms,
+        active_stage=active_stage,
+        open_span_count=open_span_count,
         total_ms=total_ms,
         stages=stages,
         bottleneck=bottleneck.name if bottleneck is not None else None,
@@ -259,6 +292,7 @@ def append_turn_latency_trace(
         "turn_id": timing.turn_id,
         "gateway_run_id": timing.gateway_run_id,
         "client_type": timing.client_type or "media_agent",
+        "runtime_status": summary.runtime_status,
     }
     if timing.client_name:
         attributes["client_name"] = timing.client_name
@@ -276,6 +310,14 @@ def append_turn_latency_trace(
                 status=summary.status,
                 latency_ms=summary.total_ms,
                 attributes=attributes,
+                error=(
+                    {
+                        "code": summary.failure_code,
+                        "source": summary.failure_source,
+                    }
+                    if summary.failure_code
+                    else None
+                ),
                 output_summary={"turn_latency": summary.model_dump(mode="json")},
             )
         )
@@ -348,6 +390,29 @@ def _trace_stages(events: list[TraceEvent]) -> list[TurnLatencyStage]:
             )
         )
     return stages
+
+
+def _active_trace_stage(events: list[TraceEvent]) -> tuple[str | None, int]:
+    finished_spans = {
+        event.span_id
+        for event in events
+        if event.span_id and (event.canonical_event or "").endswith(".finished")
+    }
+    open_events = [
+        event
+        for event in events
+        if event.span_id
+        and (event.canonical_event or "").endswith(".started")
+        and event.span_id not in finished_spans
+    ]
+    if not open_events:
+        return None, 0
+    active = open_events[-1]
+    name = (active.canonical_event or "active").removesuffix(".started").replace(".", "_")
+    iteration = _safe_int(active.attributes.get("iteration"))
+    if iteration is not None:
+        name = f"{name}[{iteration}]"
+    return name, len(open_events)
 
 
 def _event_duration(event: TraceEvent) -> int | None:

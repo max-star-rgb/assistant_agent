@@ -108,6 +108,14 @@ sync-turn bridge: it sends a normalized `message.user` frame through
 structured turn result. Endpoint-specific response schemas remain entry-adapter
 concerns on top of that Gateway result.
 
+Runtime-owned `assistant_run_id` and `trace_id` are announced in the initial
+`task_started` progress event. The facade exposes this prompt-safe correlation
+before `run.end` and preserves it on timeout/error exceptions. A caller timeout
+therefore means the entry failed while the runtime is `pending_cancel`; it does
+not synthesize a runtime failure. Gateway cancel and terminal lifecycle records
+include the early correlation when known. If runtime creation was never reached,
+entries report trace status as `not_available` rather than inventing an id.
+
 HTTP `/agent/run` uses this bridge plus an in-process response capture id. The
 Gateway runtime callback captures the full `AgentRunResponse` after
 `AssistantRuntimeApp.run_request()` returns, and the HTTP route pops that

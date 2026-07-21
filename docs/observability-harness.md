@@ -52,6 +52,15 @@ The correlation identifiers are deliberately distinct:
   contains LLM/tool stages;
 - `trace_id` is the common lookup key used by trace queries and `agentruntime_view.py`.
 
+The runtime publishes `assistant_run_id` and `trace_id` with its first
+`task_started` progress fact, so an entry deadline does not lose an already-created
+partial trace. Timeout summaries deliberately separate `entry_status=failed`,
+`runtime_status=pending_cancel`, and `terminal_status=unknown`. The later raw
+`run.cancelled` or `run.failed` event remains the runtime terminal truth; observers
+must not fabricate matching `*.finished` spans for work that was still exiting.
+`agent_service_turn_latency_v1` records the safe failure code/source, deadline,
+and latest unmatched started span as `active_stage`.
+
 The latency summary is a non-overlapping critical-path view where possible:
 
 | level | stages | interpretation |
@@ -512,6 +521,11 @@ payload/JSON 中，不在 human view 里单独输出。需要立即打印当前 
 `--follow-include-existing`；需要逐事件观察中间态时，显式加 `--follow-live-updates`。
 `--follow-all-sessions` 和 `--show-session-banner` 保留为兼容参数；现在默认已经是
 跨 session follow，并且默认打印 session banner。
+
+Agent-Service 入口失败会立即追加 `agent_service.turn.finished`，因此默认 follow
+可以展示 partial trace。Turn Overview 会把入口超时显示为
+`execution=pending_cancel delivery=failed task_outcome=unknown ux_outcome=failed`，
+并在 Turn latency 中列出 `gateway_turn_timeout` 与未闭合的 `active_stage`。
 
 server 参数和 AgentRuntime viewer 参数分开理解：`scripts/run_server.py` 的参数负责启动
 runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关；

@@ -109,8 +109,29 @@ class AgentServiceDeliveryRegistry:
             trace_id=trace_id,
         )
 
-    def mark_failed(self, delivery_id: str, *, error_code: str) -> AgentServiceDelivery:
-        return self._transition(delivery_id, "failed", error_code=error_code)
+    def mark_failed(
+        self,
+        delivery_id: str,
+        *,
+        error_code: str,
+        run_id: str | None = None,
+        gateway_run_id: str | None = None,
+        assistant_run_id: str | None = None,
+        trace_id: str | None = None,
+        runtime_status: str | None = None,
+        failure_source: str | None = None,
+    ) -> AgentServiceDelivery:
+        return self._transition(
+            delivery_id,
+            "failed",
+            error_code=error_code,
+            run_id=run_id,
+            gateway_run_id=gateway_run_id,
+            assistant_run_id=assistant_run_id,
+            trace_id=trace_id,
+            runtime_status=runtime_status,
+            failure_source=failure_source,
+        )
 
     def ack(self, delivery_id: str, *, chat_index: object) -> AgentServiceDelivery:
         with self._lock:

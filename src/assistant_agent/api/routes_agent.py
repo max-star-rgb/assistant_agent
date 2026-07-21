@@ -185,6 +185,7 @@ async def _run_agent_through_gateway(request: UserRequest) -> AgentRunResponse:
                 "code": "GATEWAY_TURN_TIMEOUT",
                 "message": str(exc),
                 "recoverable": True,
+                **_gateway_error_correlation(exc),
             },
         ) from exc
     except GatewayTurnError as exc:
@@ -195,6 +196,7 @@ async def _run_agent_through_gateway(request: UserRequest) -> AgentRunResponse:
                 "code": "GATEWAY_TURN_FAILED",
                 "message": str(exc),
                 "recoverable": False,
+                **_gateway_error_correlation(exc),
             },
         ) from exc
 
@@ -202,6 +204,21 @@ async def _run_agent_through_gateway(request: UserRequest) -> AgentRunResponse:
     if response is not None:
         return response
     raise _missing_gateway_http_response(turn)
+
+
+def _gateway_error_correlation(exc: GatewayTurnError) -> dict[str, str]:
+    correlation = exc.correlation
+    if correlation is None:
+        return {"trace_status": "not_available"}
+    values = {
+        "turn_id": correlation.turn_id,
+        "gateway_run_id": correlation.gateway_run_id,
+        "assistant_run_id": correlation.assistant_run_id,
+        "trace_id": correlation.trace_id,
+    }
+    payload = {key: value for key, value in values.items() if value}
+    payload["trace_status"] = "available" if correlation.trace_id else "not_available"
+    return payload
 
 
 def _gateway_http_metadata(request: UserRequest, capture_id: str) -> dict[str, Any]:

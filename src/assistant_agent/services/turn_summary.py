@@ -48,6 +48,15 @@ class AssistantTurnSummary(BaseModel):
         "unknown",
     ] = "unknown"
     terminal_status: Literal["completed", "failed", "cancelled", "unknown"] = "unknown"
+    entry_status: Literal["completed", "failed", "cancelled", "unknown"] = "unknown"
+    runtime_status: Literal[
+        "running",
+        "pending_cancel",
+        "completed",
+        "failed",
+        "cancelled",
+        "unknown",
+    ] = "unknown"
     response_present: bool = False
     tool_count: int = Field(default=0, ge=0)
     error_count: int = Field(default=0, ge=0)
@@ -107,6 +116,8 @@ def build_turn_summary_from_state(
         session_turn=resolved_session_turn,
         client_type=normalize_client_type(client_type or infer_client_type(metadata)),
         terminal_status=_terminal_status(state.status),
+        entry_status=_terminal_status(state.status),
+        runtime_status=_terminal_status(state.status),
         response_present=state.response is not None,
         tool_count=len(state.tool_calls),
         error_count=len(state.errors),
@@ -132,7 +143,11 @@ def append_agent_service_turn_summary(
     latency_status = _optional_string(getattr(latency_summary, "status", None))
     terminal_status = facts.get("terminal_status")
     if terminal_status is None:
-        terminal_status = "completed" if latency_status == "sent" else "failed"
+        terminal_status = "completed" if latency_status == "sent" else "unknown"
+    entry_status = "completed" if latency_status == "sent" else "failed"
+    runtime_status = _optional_string(getattr(latency_summary, "runtime_status", None)) or str(
+        terminal_status
+    )
     error_count = _safe_non_negative_int(facts.get("error_count"))
     if error_count is None:
         error_count = 0 if terminal_status == "completed" else 1
@@ -150,6 +165,8 @@ def append_agent_service_turn_summary(
             default="media_agent",
         ),
         terminal_status=_terminal_status(str(terminal_status)),
+        entry_status=_entry_status(entry_status),
+        runtime_status=_runtime_status(runtime_status),
         response_present=(
             bool(response_present)
             if isinstance(response_present, bool)
@@ -157,9 +174,12 @@ def append_agent_service_turn_summary(
         ),
         tool_count=_safe_non_negative_int(facts.get("tool_count")) or 0,
         error_count=error_count,
-        failure_summary=facts.get("failure_summary")
-        if isinstance(facts.get("failure_summary"), dict)
-        else _fallback_failure_summary(terminal_status),
+        failure_summary=(
+            facts.get("failure_summary")
+            if isinstance(facts.get("failure_summary"), dict)
+            else _latency_failure_summary(latency_summary)
+            or _fallback_failure_summary(terminal_status)
+        ),
         latency_summary_ref=_latency_ref(latency_summary),
     )
     return append_assistant_turn_summary_trace(
@@ -186,6 +206,8 @@ def append_assistant_turn_summary_trace(
         "session_turn": summary.session_turn,
         "client_type": summary.client_type,
         "terminal_status": summary.terminal_status,
+        "entry_status": summary.entry_status,
+        "runtime_status": summary.runtime_status,
         "response_present": summary.response_present,
         "tool_count": summary.tool_count,
         "error_count": summary.error_count,
@@ -278,6 +300,19 @@ def _terminal_status(status: str) -> Any:
     if status == "completed":
         return "completed"
     return "unknown"
+
+
+def _entry_status(status: str) -> Any:
+    return status if status in {"completed", "failed", "cancelled"} else "unknown"
+
+
+def _runtime_status(status: str) -> Any:
+    return (
+        status
+        if status
+        in {"running", "pending_cancel", "completed", "failed", "cancelled", "unknown"}
+        else "unknown"
+    )
 
 
 def _metadata_realtime_string(metadata: dict[str, Any], key: str) -> str | None:
@@ -376,6 +411,17 @@ def _fallback_failure_summary(terminal_status: Any) -> dict[str, Any] | None:
         return None
     code = "agent_run_cancelled" if terminal_status == "cancelled" else "agent_run_failed"
     return {"code": code}
+
+
+def _latency_failure_summary(latency_summary: Any) -> dict[str, Any] | None:
+    code = _optional_string(getattr(latency_summary, "failure_code", None))
+    if not code:
+        return None
+    summary = {"code": code}
+    source = _optional_string(getattr(latency_summary, "failure_source", None))
+    if source:
+        summary["source"] = source
+    return summary
 
 
 def _latency_ref(latency_summary: Any) -> dict[str, Any] | None:

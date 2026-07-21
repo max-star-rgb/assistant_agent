@@ -629,6 +629,10 @@ def _server_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(turn_summary, dict):
         summary["turn_summary"] = turn_summary
         _apply_turn_summary_payload(summary, turn_summary)
+    if not isinstance(summary.get("turn_latency"), dict):
+        turn_latency = _latest_turn_latency_summary(events)
+        if turn_latency is not None:
+            summary["turn_latency"] = turn_latency
     error_count = summary.get("error_count")
     if not isinstance(error_count, int):
         error_count = len(_error_events(events))
@@ -651,6 +655,9 @@ def _summary_payload(events: list[TraceEvent]) -> dict[str, Any]:
     if isinstance(turn_summary, dict):
         summary["turn_summary"] = turn_summary
         _apply_turn_summary_payload(summary, turn_summary)
+    turn_latency = _latest_turn_latency_summary(summary["events"])
+    if turn_latency is not None:
+        summary["turn_latency"] = turn_latency
     if not isinstance(summary.get("status"), str):
         summary["status"] = _infer_status(summary["events"], summary["error_count"])
     summary["event_count"] = len(events)
@@ -670,6 +677,20 @@ def _latest_turn_summary(events: list[dict[str, Any]]) -> dict[str, Any] | None:
             continue
         value = output_summary.get(ASSISTANT_TURN_SUMMARY_KEY)
         if _is_turn_summary(value):
+            return dict(value)
+    return None
+
+
+def _latest_turn_latency_summary(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        output_summary = event.get("output_summary")
+        if not isinstance(output_summary, dict):
+            continue
+        value = output_summary.get("turn_latency")
+        if (
+            isinstance(value, dict)
+            and value.get("schema_version") == "agent_service_turn_latency_v1"
+        ):
             return dict(value)
     return None
 
@@ -694,6 +715,10 @@ def _apply_turn_summary_payload(payload: dict[str, Any], turn_summary: dict[str,
     terminal_status = turn_summary.get("terminal_status")
     if isinstance(terminal_status, str) and terminal_status:
         payload["status"] = terminal_status
+    for key in ("entry_status", "runtime_status"):
+        value = turn_summary.get(key)
+        if isinstance(value, str) and value:
+            payload[key] = value
     error_count = turn_summary.get("error_count")
     if isinstance(error_count, int) and not isinstance(error_count, bool):
         payload["error_count"] = error_count
@@ -1187,12 +1212,25 @@ def _format_turn_latency(summary: dict[str, Any], *, show_stages: bool = False) 
     total = _milliseconds(summary.get("total_ms"))
     lines = [
         "Turn latency",
-        f"  status={status} delivery={delivery} session_turn={session_turn} total={total}",
+        f"  status={status} runtime={_plain_value(summary.get('runtime_status'))} "
+        f"delivery={delivery} session_turn={session_turn} total={total}",
         "  "
         f"trace={_plain_value(summary.get('trace_id'))} "
         f"gateway_run={_plain_value(summary.get('gateway_run_id'))} "
         f"assistant_run={_plain_value(summary.get('assistant_run_id'))}",
     ]
+    failure_code = summary.get("failure_code")
+    if failure_code:
+        lines.append(
+            f"  failure={_plain_value(failure_code)} "
+            f"source={_plain_value(summary.get('failure_source'))}"
+        )
+    active_stage = summary.get("active_stage")
+    if active_stage:
+        lines.append(
+            f"  active_stage={_plain_value(active_stage)} "
+            f"open_spans={_plain_value(summary.get('open_span_count'))}"
+        )
     bottleneck = summary.get("bottleneck")
     if bottleneck:
         share = summary.get("bottleneck_share_pct")

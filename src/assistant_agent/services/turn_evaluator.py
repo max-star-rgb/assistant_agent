@@ -16,9 +16,9 @@ from assistant_agent.services.turn_summary import (
 
 TURN_DIAGNOSTIC_SCHEMA_VERSION = "assistant_agent_turn_diagnostic_v1"
 TaskOutcome = Literal["success", "degraded", "failed", "unknown"]
-ExecutionStatus = Literal["success", "failed", "cancelled", "unknown"]
+ExecutionStatus = Literal["success", "pending_cancel", "failed", "cancelled", "unknown"]
 DeliveryStatus = Literal["success", "failed", "response_ready", "unknown"]
-UxStatus = Literal["measured", "unknown"]
+UxStatus = Literal["measured", "failed", "unknown"]
 
 _TASK_OUTCOMES = {"success", "degraded", "failed", "unknown"}
 _DELIVERY_SUCCESS_STATUSES = {"sent", "acked", "success", "completed"}
@@ -127,7 +127,11 @@ def build_turn_diagnostic(
         execution_status=_execution_status(payload_mapping, turn_summary),
         delivery_status=_delivery_status(turn_latency, turn_summary),
         task_outcome=task_outcome,
-        text_ux_status="measured" if first_text_latency_ms is not None else "unknown",
+        text_ux_status=_text_ux_status(
+            first_text_latency_ms=first_text_latency_ms,
+            turn_summary=turn_summary,
+            turn_latency=turn_latency,
+        ),
         prerequisites=tuple(evaluation["prerequisites"]),
         unresolved_prerequisites=tuple(evaluation["unresolved_prerequisites"]),
         location_source=evaluation["location_source"],
@@ -176,7 +180,12 @@ def _latest_turn_latency(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if _event_name(event) == "agent_service.turn.finished":
             attributes = _mapping_or_empty(event.get("attributes"))
             output_summary = _mapping_or_empty(event.get("output_summary"))
-            return {**output_summary, **attributes, "status": event.get("status") or output_summary.get("status")}
+            nested = _mapping_or_empty(output_summary.get("turn_latency"))
+            return {
+                **nested,
+                **attributes,
+                "status": event.get("status") or nested.get("status"),
+            }
     return {}
 
 
@@ -229,6 +238,9 @@ def _task_outcome(evaluation: Mapping[str, Any]) -> TaskOutcome:
 
 
 def _execution_status(payload: Mapping[str, Any], turn_summary: Mapping[str, Any]) -> ExecutionStatus:
+    runtime_status = str(turn_summary.get("runtime_status") or "")
+    if runtime_status == "pending_cancel":
+        return "pending_cancel"
     status = str(turn_summary.get("terminal_status") or payload.get("status") or "unknown")
     error_count = turn_summary.get("error_count")
     if not isinstance(error_count, int):
@@ -238,6 +250,19 @@ def _execution_status(payload: Mapping[str, Any], turn_summary: Mapping[str, Any
     if status in {"failed", "cancelled"}:
         return status
     if isinstance(error_count, int) and error_count > 0:
+        return "failed"
+    return "unknown"
+
+
+def _text_ux_status(
+    *,
+    first_text_latency_ms: int | None,
+    turn_summary: Mapping[str, Any],
+    turn_latency: Mapping[str, Any],
+) -> UxStatus:
+    if first_text_latency_ms is not None:
+        return "measured"
+    if turn_summary.get("entry_status") == "failed" or turn_latency.get("status") == "failed":
         return "failed"
     return "unknown"
 
@@ -355,6 +380,11 @@ def _diagnostic_flags(
     unnecessary_tool_calls: int,
 ) -> list[str]:
     flags: list[str] = []
+    failure_code = _safe_string(turn_latency.get("failure_code"))
+    if failure_code:
+        active_stage = _safe_string(turn_latency.get("active_stage"))
+        suffix = f" while {active_stage} remained active" if active_stage else ""
+        flags.append(f"P0 {failure_code}{suffix}")
     if unresolved_prerequisites:
         flags.append(f"P0 unresolved prerequisites: {', '.join(unresolved_prerequisites)}")
     if clarification_too_late:
@@ -382,6 +412,8 @@ def _diagnostic_flags(
 
 def _suggested_actions(flags: Sequence[str]) -> list[str]:
     suggestions: list[str] = []
+    if any("gateway_turn_timeout" in flag for flag in flags):
+        suggestions.append("Inspect the active partial-trace stage before changing the entry deadline.")
     if any("unresolved prerequisites" in flag for flag in flags):
         suggestions.append("Resolve required task prerequisites before tools or answer with an explicit limitation.")
     if any("clarification happened" in flag for flag in flags):
