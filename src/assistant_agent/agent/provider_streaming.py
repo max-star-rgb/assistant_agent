@@ -98,6 +98,7 @@ class ProviderStreamingTurnRunner:
         return ChatResult(
             response_text=response_text,
             tool_calls=tool_calls,
+            reasoning_content=accumulator.reasoning_content or None,
             finish_reason=accumulator.finish_reason,
             refusal=refusal,
             message_kind=message_kind,

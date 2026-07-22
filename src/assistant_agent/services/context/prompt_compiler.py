@@ -84,6 +84,7 @@ class PromptCompiler:
             messages=messages,
             tools=tool_specs_to_openai_tools(selected_tool_specs),
             tool_choice="auto" if selected_tool_specs else None,
+            response_format={"type": "json_object"},
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             stream_callback=request.stream_callback,

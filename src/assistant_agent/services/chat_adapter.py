@@ -544,6 +544,12 @@ def _openai_chat_chunk_events(
         reasoning_content = delta.get("reasoning_content")
         if isinstance(reasoning_content, str):
             state.reasoning_content_parts.append(reasoning_content)
+            yield LLMEvent(
+                event_type="reasoning_delta",
+                provider=provider,
+                model=state.response_model,
+                text=reasoning_content,
+            )
         yield from _openai_tool_call_delta_events(
             delta.get("tool_calls"),
             provider=provider,

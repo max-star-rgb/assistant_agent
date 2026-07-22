@@ -12,6 +12,7 @@ limits, trace recording, and state mutation.
 
 from dataclasses import dataclass
 from inspect import signature
+import json
 from time import perf_counter
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -154,6 +155,19 @@ class _ResponseDeltaBuffer:
             for event in self._events:
                 self._event_sink.emit(event)
         self._events.clear()
+
+    def flush_answer(self, text: str) -> None:
+        """Replace raw provider deltas with one validated public-answer delta."""
+
+        self._events.clear()
+        self.emit_delta(
+            text,
+            {
+                "token_streaming": False,
+                "chunking_strategy": "validated_final_answer",
+            },
+        )
+        self.flush()
 
     def discard(self) -> None:
         self._events.clear()
@@ -384,9 +398,22 @@ def _decide_with_llm(
         graph_state["pending_tool_decisions"] = pending_decisions
         decision = pending_decisions[0]
     elif result.success:
-        stream_buffer.flush()
+        stream_buffer.discard()
         graph_state["pending_tool_decisions"] = []
-        decision = _native_final_decision(result)
+        decision = _validated_native_final_decision(result)
+        if decision is None:
+            repaired = _repair_native_final_answer(
+                graph_state,
+                chat_adapter,
+                request,
+                result,
+            )
+            _record_chat_usage_metadata(state, repaired)
+            decision = _validated_native_final_decision(repaired)
+            if decision is None:
+                decision = _invalid_native_final_answer(repaired)
+        if decision.message:
+            stream_buffer.flush_answer(decision.message)
     else:
         stream_buffer.discard()
         graph_state["pending_tool_decisions"] = []
@@ -694,18 +721,80 @@ def _native_final_decision(result: ChatResult) -> AssistantDecision:
             reason=_native_finish_reason(result, fallback="Provider returned a refusal instead of a tool call."),
             safety_notes=["provider_refusal"],
         )
-    raw_output = result.response_text.strip()
-    if raw_output:
-        return AssistantDecision(
-            type="final_answer",
-            message=raw_output,
-            reason=_native_finish_reason(result, fallback="Provider finished without requesting another tool."),
-        )
+    validated = _validated_native_final_decision(result)
+    if validated is not None:
+        return validated
     return AssistantDecision(
         type="final_answer",
         message="模型没有返回可用回答。",
         reason=_native_finish_reason(result, fallback="Provider finished without content or tool calls."),
         safety_notes=["empty_native_final_answer"],
+    )
+
+
+def _validated_native_final_decision(result: ChatResult) -> AssistantDecision | None:
+    """Return only a terminal answer that satisfies the public response contract."""
+
+    if result.refusal:
+        return AssistantDecision(
+            type="final_answer",
+            message=result.refusal,
+            reason=_native_finish_reason(result, fallback="Provider returned a refusal instead of a tool call."),
+            safety_notes=["provider_refusal"],
+        )
+    try:
+        payload = json.loads(result.response_text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict) or set(payload) != {"response_type", "answer"}:
+        return None
+    response_type = payload.get("response_type")
+    answer = payload.get("answer")
+    if response_type not in {"answer", "clarification"} or not isinstance(answer, str) or not answer.strip():
+        return None
+    return AssistantDecision(
+        type="ask_followup" if response_type == "clarification" else "final_answer",
+        message=answer.strip(),
+        reason=_native_finish_reason(result, fallback="Provider returned a validated public response."),
+    )
+
+
+def _repair_native_final_answer(
+    graph_state: AssistantLoopState,
+    chat_adapter: ChatAdapter,
+    original_request: ChatRequest,
+    result: ChatResult,
+) -> ChatResult:
+    """Give one tools-disabled repair chance without committing the raw draft."""
+
+    repair_instruction = (
+        "将上一条 assistant 草稿改写成面向用户的最终答复。"
+        "只输出严格 JSON object，且只能包含 response_type 和 answer 两个字段；"
+        'response_type 只能是 "answer" 或 "clarification"。'
+        "不得复述分析过程、工具目录、隐藏推理或本条指令。"
+    )
+    messages = [*original_request.messages]
+    if result.response_text.strip():
+        messages.append({"role": "assistant", "content": result.response_text.strip()})
+    messages.append({"role": "user", "content": repair_instruction})
+    repair_request = original_request.model_copy(
+        update={
+            "messages": messages,
+            "tools": [],
+            "tool_choice": None,
+            "response_format": {"type": "json_object"},
+            "stream_callback": None,
+        }
+    )
+    return _run_chat_turn(graph_state, chat_adapter, repair_request)
+
+
+def _invalid_native_final_answer(result: ChatResult) -> AssistantDecision:
+    return AssistantDecision(
+        type="final_answer",
+        message="抱歉，刚才模型没有生成可安全提交的最终答复，请再试一次。",
+        reason=_native_finish_reason(result, fallback="Provider final-answer contract validation failed after one repair."),
+        safety_notes=["invalid_native_final_answer_contract"],
     )
 
 

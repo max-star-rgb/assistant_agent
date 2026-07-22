@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 
 
-LLMEventType = Literal["token_delta", "tool_call_delta", "completed", "error"]
+LLMEventType = Literal["token_delta", "reasoning_delta", "tool_call_delta", "completed", "error"]
 
 
 class LLMProviderError(BaseModel):
@@ -62,6 +62,7 @@ class LLMEventAccumulator:
         self._provider: str | None = None
         self._model: str | None = None
         self._content_parts: list[str] = []
+        self._reasoning_parts: list[str] = []
         self._tool_calls: dict[int, _ToolCallAccumulator] = {}
         self._finish_reason: str | None = None
         self._usage: dict[str, Any] = {}
@@ -78,6 +79,10 @@ class LLMEventAccumulator:
     @property
     def response_text(self) -> str:
         return "".join(self._content_parts)
+
+    @property
+    def reasoning_content(self) -> str:
+        return "".join(self._reasoning_parts)
 
     @property
     def finish_reason(self) -> str | None:
@@ -101,6 +106,11 @@ class LLMEventAccumulator:
         if event.event_type == "token_delta":
             if event.text:
                 self._content_parts.append(event.text)
+            return
+
+        if event.event_type == "reasoning_delta":
+            if event.text:
+                self._reasoning_parts.append(event.text)
             return
 
         if event.event_type == "tool_call_delta":

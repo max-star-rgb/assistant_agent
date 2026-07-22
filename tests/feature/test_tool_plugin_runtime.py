@@ -74,7 +74,7 @@ def test_agent_runtime_executes_tool_built_by_plugin_in_mock_mode() -> None:
                 model="scripted-plugin-runtime",
                 finish_reason="stop",
                 message_kind="final_answer",
-                response_text="已通过插件工具读取记忆。",
+                response_text='{"response_type":"answer","answer":"已通过插件工具读取记忆。"}',
             ),
         ]
     )
@@ -158,7 +158,7 @@ def test_configured_plugin_tool_runs_through_default_runtime_governance(
                 model="scripted-plugin-runtime",
                 finish_reason="stop",
                 message_kind="final_answer",
-                response_text="configured tool completed",
+                response_text='{"response_type":"answer","answer":"configured tool completed"}',
             ),
         ]
     )

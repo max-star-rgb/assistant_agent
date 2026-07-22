@@ -1,6 +1,6 @@
 # Runtime Event Stream Architecture
 
-Last updated: 2026-07-14
+Last updated: 2026-07-22
 
 This document is the current authority for provider and assistant runtime
 streaming in `assistant_agent`. It defines the event contracts, stream/result
@@ -40,11 +40,12 @@ Implementations normalize vendor chunks into these `LLMEvent` variants:
 | event | purpose | terminal |
 | --- | --- | --- |
 | `token_delta` | prompt-safe response text progress | no |
+| `reasoning_delta` | hidden reasoning progress; accumulated for provider continuity only | no |
 | `tool_call_delta` | accumulated native tool-call name and arguments | no |
 | `completed` | finish reason, usage, and stream completion | yes |
 | `error` | prompt-safe provider failure | yes |
 
-`LLMEventAccumulator` reconstructs response text, tool calls, finish reason,
+`LLMEventAccumulator` reconstructs response text, reasoning content, tool calls, finish reason,
 usage, provider, and model into the existing terminal `ChatResult` contract.
 Tool-call argument deltas are not exposed as user-visible response events.
 Provider errors become structured `ChatResult.errors`; cancellation exceptions
@@ -52,6 +53,14 @@ remain cancellation signals rather than provider errors.
 If a provider stream ends with `completed` but no text, tool calls, or refusal,
 the runner normalizes it to `provider_empty_response` so sync and streaming chat
 paths share the same empty-output contract.
+
+`reasoning_delta` never maps to `AgentEvent(type="response_delta")` and never
+enters the public answer or conversation history. A non-tool terminal response
+must satisfy the runtime final-answer JSON contract (`response_type` plus
+`answer`) before crossing the commit barrier. Invalid raw content is discarded
+and gets one tools-disabled repair attempt; a second contract failure produces
+a fixed safe retry response instead of committing the draft. Validated answers
+are emitted as public response deltas only after validation.
 
 For the main foreground chat LLM only, `provider_timeout` and
 `provider_empty_response` with no usable text/tool/refusal are treated as a

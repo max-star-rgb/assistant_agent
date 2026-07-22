@@ -22,13 +22,13 @@ class StreamingChatAdapter:
             event_type="token_delta",
             provider=self.provider,
             model=self.model,
-            text="你好，",
+            text='{"response_type":"answer","answer":"你好，',
         )
         yield LLMEvent(
             event_type="token_delta",
             provider=self.provider,
             model=self.model,
-            text="我是你的助理。",
+            text='我是你的助理。"}',
         )
         yield LLMEvent(
             event_type="completed",
@@ -100,5 +100,41 @@ def test_native_streaming_chat_emits_llm_span_and_final_answer() -> None:
     assert llm_events[1].attributes["wall_latency_ms"] >= 0
     assert llm_events[1].attributes["provider_latency_ms"] >= 0
     deltas = [event for event in event_sink.events if event.type == "response_delta"]
-    assert [event.text for event in deltas] == ["你好，", "我是你的助理。"]
-    assert all(event.payload["token_streaming"] is True for event in deltas)
+    assert [event.text for event in deltas] == ["你好，我是你的助理。"]
+    assert deltas[0].payload["chunking_strategy"] == "validated_final_answer"
+
+
+class ReasoningStreamingChatAdapter:
+    provider = "qwen"
+    model = "qwen3.7-max"
+
+    async def stream_chat(self, _request: ChatRequest) -> AsyncIterator[LLMEvent]:
+        yield LLMEvent(
+            event_type="reasoning_delta",
+            provider=self.provider,
+            model=self.model,
+            text="这是不能发给用户的内部分析。",
+        )
+        yield LLMEvent(
+            event_type="token_delta",
+            provider=self.provider,
+            model=self.model,
+            text='{"response_type":"answer","answer":"这是公开答复。"}',
+        )
+        yield LLMEvent(event_type="completed", provider=self.provider, model=self.model, finish_reason="stop")
+
+
+def test_native_streaming_never_commits_reasoning_delta() -> None:
+    sink = ListEventSink()
+    state = AgentGraphRuntime(
+        config=ProviderConfig(native_provider_streaming=True),
+        chat_adapter=ReasoningStreamingChatAdapter(),
+        memory_store=InMemoryStore(),
+        session_store=InMemorySessionStore(),
+    ).run_state(
+        UserRequest(user_id="user-1", session_id="session-1", text="回答问题"),
+        event_sink=sink,
+    )
+
+    assert state.response is not None and state.response.message == "这是公开答复。"
+    assert "内部分析" not in "".join(event.text or "" for event in sink.events)

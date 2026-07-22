@@ -575,7 +575,7 @@ def test_agent_runtime_system_prompt_is_channel_agnostic() -> None:
                 model="scripted-model",
                 finish_reason="stop",
                 message_kind="final_answer",
-                response_text="你好。",
+                response_text='{"response_type":"answer","answer":"你好。"}',
             )
         ]
     )
@@ -600,6 +600,44 @@ def test_agent_runtime_system_prompt_is_channel_agnostic() -> None:
     assert {profile.value for profile in SystemPromptProfile} == {"text_default"}
     for channel_term in ("电话", "通话", "口语", "口播", "挂断", "TTS", "WebSocket"):
         assert channel_term not in prompt
+
+
+def test_unstructured_provider_draft_is_repaired_before_commit() -> None:
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                message_kind="final_answer",
+                response_text="先分析工具目录，再决定怎么回复用户。",
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                message_kind="final_answer",
+                response_text='{"response_type":"clarification","answer":"你是想买牛奶吗？"}',
+            ),
+        ]
+    )
+    sink = ListEventSink()
+    state = AgentGraphRuntime(
+        config=_offline_config(),
+        chat_adapter=adapter,
+        memory_store=InMemoryStore(),
+        session_store=InMemorySessionStore(),
+    ).run_state(
+        UserRequest(user_id="user-1", session_id="session-1", text="我想麦牛奶"),
+        event_sink=sink,
+    )
+
+    assert len(adapter.requests) == 2
+    assert adapter.requests[1].tools == []
+    assert state.response is not None and state.response.message == "你是想买牛奶吗？"
+    public_text = "".join(event.text or "" for event in sink.events)
+    assert "先分析工具目录" not in public_text
+    assert "你是想买牛奶吗" in public_text
 
 
 def test_native_tool_call_loop_completes_with_observation() -> None:
@@ -640,7 +678,7 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
         model="scripted-model",
         finish_reason="stop",
         message_kind="final_answer",
-        response_text="已结合记忆完成推荐。",
+        response_text='{"response_type":"answer","answer":"已结合记忆完成推荐。"}',
     )
     runtime = AgentGraphRuntime(
         config=_offline_config(),
@@ -669,7 +707,7 @@ def test_local_trace_content_captures_compiled_provider_request(monkeypatch) -> 
                 model="scripted-model",
                 finish_reason="stop",
                 message_kind="final_answer",
-                response_text="完成。",
+                response_text='{"response_type":"answer","answer":"完成。"}',
             )
         ]
     )
@@ -752,7 +790,7 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
         model="scripted-model",
         finish_reason="stop",
         message_kind="final_answer",
-        response_text="预算内搜索完成。",
+        response_text='{"response_type":"answer","answer":"预算内搜索完成。"}',
     )
     adapter = ScriptedChatAdapter([tool_call, final_answer])
     sink = ListEventSink()

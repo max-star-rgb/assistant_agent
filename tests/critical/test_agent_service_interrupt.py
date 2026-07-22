@@ -30,7 +30,7 @@ class _InterruptibleBackend:
             return RealtimeAgentResult(
                 status="cancelled",
                 run_id=request.run_id,
-                response_text="不应发送的旧回复",
+                response_text='{"response_type":"answer","answer":"不应发送的旧回复"}',
             )
 
         assert event_sink is not None
@@ -38,7 +38,7 @@ class _InterruptibleBackend:
         return RealtimeAgentResult(
             status="completed",
             run_id=request.run_id,
-            response_text="新回复",
+            response_text='{"response_type":"answer","answer":"新回复"}',
         )
 
 
