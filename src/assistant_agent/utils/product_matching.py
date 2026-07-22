@@ -80,7 +80,9 @@ def filter_products(items: list[ProductResult], request: ProductSearchRequest) -
         if len(matched) >= 2 or len(filtered) == 1:
             filtered = matched
 
-    return filtered[: request.top_k]
+    indexed = list(enumerate(filtered))
+    indexed.sort(key=lambda pair: (-_product_relevance(pair[1], request), pair[0]))
+    return [item for _, item in indexed[: request.top_k]]
 
 
 def query_text(request: ProductSearchRequest) -> str:
@@ -161,10 +163,27 @@ def compare_products(
             recoverable=True,
         )
 
-    offers = _apply_platform_quotas(sort_offers(offers, request.sort_by), top_k=request.top_k)
-    best_offer = offers[0]
+    offers = _apply_platform_quotas(offers, top_k=request.top_k)
     items_by_id = {item.product_id: item for item in items}
     sorted_items = [items_by_id[offer.product_id] for offer in offers if offer.product_id in items_by_id]
+    comparable = _largest_comparable_group(offers)
+    if not comparable:
+        return PriceCompareResult(
+            query=request.query,
+            items=sorted_items,
+            summary=(
+                f"已找到 {len(offers)} 个相关商品候选，但缺少可验证的同商品身份，"
+                "不能仅按价格选出最优商品。"
+            ),
+            offers=offers,
+            comparison_status="candidates_only",
+            provider=provider,
+            latency_ms=latency_ms,
+            output_ref=output_ref,
+        )
+
+    comparable = sort_offers(comparable, request.sort_by)
+    best_offer = comparable[0]
     reason = ranking_reason(best_offer, request.sort_by)
     return PriceCompareResult(
         query=request.query,
@@ -174,6 +193,7 @@ def compare_products(
         offers=offers,
         best_offer=best_offer,
         ranking_reason=reason,
+        comparison_status="comparable",
         provider=provider,
         latency_ms=latency_ms,
         output_ref=output_ref,
@@ -210,6 +230,11 @@ def offer_from_product(product: ProductResult, *, query: str = "") -> PriceOffer
         rating=product.rating,
         sales=product.sales,
         similarity_score=product.similarity_score if product.similarity_score is not None else product.similarity,
+        text_match_score=(
+            product.text_match_score
+            if product.text_match_score is not None
+            else _query_title_relevance(query, product.title)
+        ),
         comparison_group=comparison_group,
         same_product_confidence=_same_product_confidence(product, query),
         data_completeness=_data_completeness(product),
@@ -264,10 +289,15 @@ def sort_offers(offers: list[PriceOffer], sort_by: str) -> list[PriceOffer]:
     )
 
 
-def _comparison_group(product: ProductResult) -> str:
-    parts = [product.brand or "", product.model or ""]
-    parts.extend(f"{key}={value}" for key, value in sorted(product.specifications.items()))
-    return "|".join(part.strip().lower() for part in parts if part.strip()) or product.title.strip().lower()
+def _comparison_group(product: ProductResult) -> str | None:
+    if product.model or product.specifications:
+        parts = [product.brand or "", product.model or ""]
+        parts.extend(f"{key}={value}" for key, value in sorted(product.specifications.items()))
+        identity = "|".join(part.strip().lower() for part in parts if part.strip())
+        if identity:
+            return f"identity:{identity}"
+    title = _normalized_identity_text(product.title)
+    return f"title:{title}" if title else None
 
 
 def _link_rank(offer: PriceOffer) -> int:
@@ -296,8 +326,8 @@ def _same_product_confidence(product: ProductResult, query: str) -> float:
     identity = [product.brand, product.model, *product.specifications.values()]
     present = [value for value in identity if value and value.strip()]
     if not present:
-        # Visual similarity is useful metadata but cannot prove an identical SKU.
-        return 0.5
+        # Search relevance and visual similarity cannot prove an identical SKU.
+        return 0.0
     matched = sum(str(value).lower() in query_lower for value in present)
     return matched / len(present)
 
@@ -314,6 +344,54 @@ def _apply_platform_quotas(offers: list[PriceOffer], *, top_k: int) -> list[Pric
         if len(selected) >= min(top_k, 9):
             break
     return selected
+
+
+def _largest_comparable_group(offers: list[PriceOffer]) -> list[PriceOffer]:
+    groups: dict[str, list[PriceOffer]] = {}
+    for offer in offers:
+        if not offer.comparison_group:
+            continue
+        groups.setdefault(offer.comparison_group, []).append(offer)
+    candidates = [group for group in groups.values() if len(group) >= 2]
+    if not candidates:
+        return []
+    return max(
+        candidates,
+        key=lambda group: (
+            sum(item.text_match_score or 0.0 for item in group) / len(group),
+            len(group),
+            max(item.same_product_confidence or 0.0 for item in group),
+        ),
+    )
+
+
+def _product_relevance(product: ProductResult, request: ProductSearchRequest) -> float:
+    if product.text_match_score is not None:
+        return product.text_match_score
+    query = _normalized_identity_text(query_text(request))
+    haystack = _normalized_identity_text(" ".join((product.title, product.reason or "")))
+    if not query or not haystack:
+        return 0.0
+    if query in haystack:
+        return 1.0
+    tokens = query_tokens(request)
+    if not tokens:
+        return 0.0
+    return sum(_normalized_identity_text(token) in haystack for token in tokens) / len(tokens)
+
+
+def _normalized_identity_text(value: str) -> str:
+    return "".join(character.lower() for character in value if character.isalnum())
+
+
+def _query_title_relevance(query: str, title: str) -> float:
+    normalized_query = _normalized_identity_text(query)
+    normalized_title = _normalized_identity_text(title)
+    if not normalized_query or not normalized_title:
+        return 0.0
+    if normalized_query in normalized_title:
+        return 1.0
+    return 0.0
 
 
 def ranking_reason(best_offer: PriceOffer, sort_by: str) -> RankingReason:

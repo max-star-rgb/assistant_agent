@@ -318,6 +318,7 @@ def _shopping_item_model_observation(item: dict[str, Any]) -> dict[str, Any]:
         "similarity",
         "similarity_score",
         "text_match_score",
+        "text_match_score",
         "rating",
         "sales",
         "material",

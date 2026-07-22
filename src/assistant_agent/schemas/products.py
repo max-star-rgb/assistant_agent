@@ -158,6 +158,7 @@ class PriceOffer(BaseModel):
     rating: float | None = Field(default=None, ge=0.0, le=5.0)
     sales: int | None = Field(default=None, ge=0)
     similarity_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    text_match_score: float | None = Field(default=None, ge=0.0, le=1.0)
     comparison_group: str | None = None
     same_product_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     data_completeness: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -175,6 +176,7 @@ class PriceCompareResult(BaseModel):
     offers: list[PriceOffer] = Field(default_factory=list)
     best_offer: PriceOffer | None = None
     ranking_reason: RankingReason | None = None
+    comparison_status: Literal["comparable", "candidates_only"] = "candidates_only"
     provider: str = "mock"
     errors: list[ProductProviderError] = Field(default_factory=list)
     latency_ms: int | None = Field(default=None, ge=0)
