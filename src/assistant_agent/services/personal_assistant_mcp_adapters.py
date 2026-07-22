@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import re
 import time
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from assistant_agent.config import ProviderConfig
@@ -49,6 +53,8 @@ class MCPPersonalAssistantToolBinding:
     server_name: str
     tool_name: str
     namespaced_tool_name: str
+    profile: str = "passthrough"
+    calendar_user_email: str | None = None
 
     @property
     def provider(self) -> str:
@@ -140,7 +146,7 @@ class MCPPersonalAssistantWeatherAdapter:
         result = _run_mcp_tool(
             runner=self.runner,
             binding=self.binding,
-            tool_input=request.model_dump(mode="json", exclude_none=True),
+            tool_input=_weather_tool_input(request, self.binding),
         )
         latency_ms = _latency_ms(started)
         if not result.success:
@@ -155,8 +161,22 @@ class MCPPersonalAssistantWeatherAdapter:
                 output_ref=result.output_ref or self.binding.output_ref,
                 errors=_errors_from_tool_result(result),
             )
-        payload = _safe_payload(result)
+        payload = _weather_payload(result, self.binding)
         forecast = _weather_forecast_from_payload(payload)[: request.days]
+        if self.binding.profile == "mcp_weather_server_v1" and not forecast:
+            message = _text(payload, "summary") or "MCP weather response did not contain forecast data."
+            error_code = _weather_response_error_code(message)
+            return WeatherResult(
+                success=False,
+                location=request.location,
+                query_used=request.location,
+                forecast=[],
+                summary=message,
+                provider=self.binding.provider,
+                latency_ms=latency_ms,
+                output_ref=result.output_ref or self.binding.output_ref,
+                errors=[_error(error_code, message, recoverable=True)],
+            )
         return WeatherResult(
             success=True,
             location=_text(payload, "location") or request.location,
@@ -193,7 +213,7 @@ class MCPPersonalAssistantCalendarAdapter:
         result = _run_mcp_tool(
             runner=self.runner,
             binding=self.search_binding,
-            tool_input=request.model_dump(mode="json", exclude_none=True),
+            tool_input=_calendar_search_tool_input(request, self.search_binding),
         )
         latency_ms = _latency_ms(started)
         if not result.success:
@@ -208,7 +228,7 @@ class MCPPersonalAssistantCalendarAdapter:
                 raw_data_ref=result.output_ref,
                 errors=_errors_from_tool_result(result),
             )
-        payload = _safe_payload(result)
+        payload = _calendar_search_payload(result, self.search_binding)
         events = _calendar_events_from_payload(payload)[: request.limit]
         return CalendarSearchResult(
             success=True,
@@ -231,7 +251,7 @@ class MCPPersonalAssistantCalendarAdapter:
         result = _run_mcp_tool(
             runner=self.runner,
             binding=self.create_binding,
-            tool_input=request.model_dump(mode="json", exclude_none=True),
+            tool_input=_calendar_create_tool_input(request, self.create_binding),
         )
         latency_ms = _latency_ms(started)
         if not result.success:
@@ -243,7 +263,7 @@ class MCPPersonalAssistantCalendarAdapter:
                 output_ref=result.output_ref or self.create_binding.output_ref,
                 errors=_errors_from_tool_result(result),
             )
-        payload = _safe_payload(result)
+        payload = _calendar_create_payload(result, self.create_binding)
         return CalendarCreateResult(
             success=True,
             event_id=_text(payload, "event_id", "id", "uid"),
@@ -404,6 +424,14 @@ def _personal_bindings(
                 server_name=server.server_name,
                 tool_name=tool_name,
                 namespaced_tool_name=namespaced_mcp_tool_name(adapter_config, tool_name),
+                profile=(
+                    mapping.weather_profile
+                    if capability == WEATHER_TOOL_NAME
+                    else mapping.calendar_profile
+                    if capability in {CALENDAR_SEARCH_TOOL_NAME, CALENDAR_CREATE_TOOL_NAME}
+                    else "passthrough"
+                ),
+                calendar_user_email=mapping.calendar_user_email,
             )
     return bindings
 
@@ -446,6 +474,188 @@ def _safe_payload(result: ToolResult) -> dict[str, Any]:
         payload = structured if isinstance(structured, dict) else result.data
     sanitized = sanitize_error_detail(payload or {})
     return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _weather_tool_input(
+    request: WeatherRequest,
+    binding: MCPPersonalAssistantToolBinding,
+) -> dict[str, Any]:
+    if binding.profile != "mcp_weather_server_v1":
+        return request.model_dump(mode="json", exclude_none=True)
+    start_date = request.target_date or date.today()
+    end_date = start_date + timedelta(days=request.days - 1)
+    return {
+        "city": request.location,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+    }
+
+
+def _calendar_search_tool_input(
+    request: CalendarSearchRequest,
+    binding: MCPPersonalAssistantToolBinding,
+) -> dict[str, Any]:
+    if binding.profile != "workspace_mcp_v1":
+        return request.model_dump(mode="json", exclude_none=True)
+    return {
+        "user_google_email": binding.calendar_user_email,
+        "query": request.query,
+        "time_min": request.start_time,
+        "time_max": request.end_time,
+        "max_results": request.limit,
+    }
+
+
+def _calendar_create_tool_input(
+    request: CalendarCreateRequest,
+    binding: MCPPersonalAssistantToolBinding,
+) -> dict[str, Any]:
+    if binding.profile != "workspace_mcp_v1":
+        return request.model_dump(mode="json", exclude_none=True)
+    end_time = request.end_time or _default_calendar_end(request.start_time)
+    return {
+        "user_google_email": binding.calendar_user_email,
+        "action": "create",
+        "summary": request.title,
+        "start_time": request.start_time,
+        "end_time": end_time,
+        "timezone": request.timezone,
+        "location": request.location,
+        "attendees": request.attendees or None,
+        "description": request.notes,
+    }
+
+
+def _weather_payload(
+    result: ToolResult,
+    binding: MCPPersonalAssistantToolBinding,
+) -> dict[str, Any]:
+    if binding.profile != "mcp_weather_server_v1":
+        return _safe_payload(result)
+    text = _mcp_text_content(result)
+    marker = "=== WEATHER DATA ==="
+    if marker not in text:
+        return _safe_payload(result)
+    candidate = text.split(marker, 1)[1].split("=== ANALYSIS INSTRUCTIONS ===", 1)[0].strip()
+    try:
+        raw = json.loads(candidate)
+    except json.JSONDecodeError:
+        return _safe_payload(result)
+    if not isinstance(raw, dict):
+        return _safe_payload(result)
+    forecast = _aggregate_hourly_weather(raw.get("weather_data"))
+    return {
+        "location": raw.get("city"),
+        "query_used": f"{raw.get('city')} from {raw.get('start_date')} to {raw.get('end_date')}",
+        "forecast": forecast,
+        "summary": f"Weather lookup returned {len(forecast)} daily forecast item(s).",
+    }
+
+
+def _aggregate_hourly_weather(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        timestamp = item.get("time")
+        if isinstance(timestamp, str) and len(timestamp) >= 10:
+            by_date[timestamp[:10]].append(item)
+    daily: list[dict[str, Any]] = []
+    for day, items in sorted(by_date.items()):
+        temperatures = [_float_value(item.get("temperature_c")) for item in items]
+        temperatures = [item for item in temperatures if item is not None]
+        conditions = [
+            str(item.get("weather_description"))
+            for item in items
+            if item.get("weather_description")
+        ]
+        precipitation = [_float_value(item.get("precipitation_probability_percent")) for item in items]
+        precipitation = [item for item in precipitation if item is not None]
+        if not temperatures:
+            continue
+        daily.append(
+            {
+                "date": day,
+                "condition": Counter(conditions).most_common(1)[0][0] if conditions else "unknown",
+                "temperature_c": round(sum(temperatures) / len(temperatures)),
+                "high_c": round(max(temperatures)),
+                "low_c": round(min(temperatures)),
+                "precipitation_chance": min(1.0, max(precipitation, default=0.0) / 100.0),
+            }
+        )
+    return daily
+
+
+_WORKSPACE_EVENT_RE = re.compile(
+    r'^- "(?P<title>.*?)" \(Starts: (?P<start>.*?), Ends: (?P<end>.*?)\).*?'
+    r'ID: (?P<event_id>[^|\n]+)',
+    re.MULTILINE,
+)
+
+
+def _calendar_search_payload(
+    result: ToolResult,
+    binding: MCPPersonalAssistantToolBinding,
+) -> dict[str, Any]:
+    if binding.profile != "workspace_mcp_v1":
+        return _safe_payload(result)
+    text = _mcp_text_content(result)
+    events = [
+        {
+            "event_id": match.group("event_id").strip(),
+            "title": match.group("title").strip(),
+            "start_time": match.group("start").strip(),
+            "end_time": match.group("end").strip(),
+        }
+        for match in _WORKSPACE_EVENT_RE.finditer(text)
+    ]
+    return {"events": events, "summary": sanitize_error_message(text)}
+
+
+def _calendar_create_payload(
+    result: ToolResult,
+    binding: MCPPersonalAssistantToolBinding,
+) -> dict[str, Any]:
+    if binding.profile != "workspace_mcp_v1":
+        return _safe_payload(result)
+    return {"summary": sanitize_error_message(_mcp_text_content(result))}
+
+
+def _mcp_text_content(result: ToolResult) -> str:
+    if not isinstance(result.data, dict):
+        return ""
+    content = result.data.get("content")
+    if not isinstance(content, list):
+        return ""
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text":
+            text = item.get("text")
+            if isinstance(text, str):
+                return text
+    return ""
+
+
+def _default_calendar_end(start_time: str) -> str:
+    try:
+        if len(start_time) == 10:
+            return (date.fromisoformat(start_time) + timedelta(days=1)).isoformat()
+        normalized = start_time.replace("Z", "+00:00")
+        end = datetime.fromisoformat(normalized) + timedelta(hours=1)
+        rendered = end.isoformat()
+        return rendered.replace("+00:00", "Z") if start_time.endswith("Z") else rendered
+    except ValueError:
+        return start_time
+
+
+def _weather_response_error_code(message: str) -> str:
+    normalized = message.lower()
+    if any(status in normalized for status in ("status 429", "status 503", "status 502")):
+        return "provider_unavailable" if "status 429" not in normalized else "provider_rate_limited"
+    if "network error" in normalized or "timed out" in normalized:
+        return "provider_network_error"
+    return "provider_bad_response"
 
 
 def _calendar_events_from_payload(payload: dict[str, Any]) -> list[CalendarEvent]:

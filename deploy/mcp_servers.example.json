@@ -1,0 +1,46 @@
+{
+  "servers": [
+    {
+      "server_name": "weather",
+      "transport": "stdio",
+      "command": [
+        "/home/lenovo1/miniconda3/envs/hello_agent/bin/uvx",
+        "--from",
+        "mcp_weather_server==0.6.1",
+        "mcp_weather_server",
+        "--mode",
+        "stdio"
+      ],
+      "allowed_tools": ["get_weather_byDateTimeRange"],
+      "read_only_tools": ["get_weather_byDateTimeRange"],
+      "enabled_tools": ["get_weather_byDateTimeRange"],
+      "personal_assistant_tools": {
+        "weather_lookup": "get_weather_byDateTimeRange",
+        "weather_profile": "mcp_weather_server_v1"
+      },
+      "timeout_seconds": 30
+    },
+    {
+      "server_name": "google_workspace",
+      "transport": "stdio",
+      "command": [
+        "/home/lenovo1/miniconda3/envs/hello_agent/bin/uvx",
+        "--from",
+        "workspace-mcp==1.22.0",
+        "workspace-mcp",
+        "--tools",
+        "calendar"
+      ],
+      "allowed_tools": ["get_events", "manage_event"],
+      "read_only_tools": ["get_events"],
+      "enabled_tools": ["get_events"],
+      "personal_assistant_tools": {
+        "calendar_search": "get_events",
+        "calendar_create": "manage_event",
+        "calendar_profile": "workspace_mcp_v1",
+        "calendar_user_email": "<your-google-account@example.com>"
+      },
+      "timeout_seconds": 60
+    }
+  ]
+}

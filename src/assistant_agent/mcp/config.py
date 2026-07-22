@@ -22,6 +22,11 @@ MCP_CONFIG_PATH_ENV = "MULTIMODAL_AGENT_MCP_CONFIG_PATH"
 DEFAULT_MCP_CONFIG_PATH = ".local/mcp_servers.json"
 MCPTransport = Literal["stdio"]
 MCPServerPreset = Literal["google_workspace", "todoist", "notion", "slack"]
+MCPPersonalAssistantAdapterProfile = Literal[
+    "passthrough",
+    "mcp_weather_server_v1",
+    "workspace_mcp_v1",
+]
 
 
 class MCPPersonalAssistantToolMapping(BaseModel):
@@ -31,6 +36,26 @@ class MCPPersonalAssistantToolMapping(BaseModel):
     calendar_search: str | None = None
     calendar_create: str | None = None
     contacts_search: str | None = None
+    weather_profile: MCPPersonalAssistantAdapterProfile = "passthrough"
+    calendar_profile: MCPPersonalAssistantAdapterProfile = "passthrough"
+    calendar_user_email: str | None = None
+
+    @model_validator(mode="after")
+    def validate_adapter_profiles(self) -> "MCPPersonalAssistantToolMapping":
+        if self.weather_profile == "mcp_weather_server_v1" and self.weather_lookup != "get_weather_byDateTimeRange":
+            raise ValueError(
+                "mcp_weather_server_v1 requires weather_lookup=get_weather_byDateTimeRange"
+            )
+        if self.calendar_profile == "workspace_mcp_v1":
+            if self.calendar_search and self.calendar_search != "get_events":
+                raise ValueError("workspace_mcp_v1 requires calendar_search=get_events")
+            if self.calendar_create and self.calendar_create != "manage_event":
+                raise ValueError("workspace_mcp_v1 requires calendar_create=manage_event")
+            if (self.calendar_search or self.calendar_create) and not (
+                self.calendar_user_email and self.calendar_user_email.strip()
+            ):
+                raise ValueError("workspace_mcp_v1 requires calendar_user_email")
+        return self
 
     def mapped_tool_names(self) -> list[str]:
         """Return all remote MCP tool names referenced by this mapping."""

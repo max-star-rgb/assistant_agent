@@ -293,6 +293,46 @@ MCP 定义先经过 server allowlist，再转换成 namespace tool name 和简�
 `category=read`；其他 MCP 工具是 `category=write` 且需要确认。注册后的 MCP proxy 走相同
 `ActionValidator -> ToolExecutor -> ToolRegistry` 链路。
 
+### 7.1 weather / calendar 真实 MCP 配置
+
+仓库提供 `deploy/mcp_servers.example.json` 作为无凭据模板。部署时复制到默认忽略的
+`.local/mcp_servers.json`，并只在本地配置实际 MCP Server 命令、参数和认证环境：
+
+```bash
+cp deploy/mcp_servers.example.json .local/mcp_servers.json
+export MULTIMODAL_AGENT_PROVIDER_MODE=real
+export MULTIMODAL_AGENT_MCP_ENABLED=1
+export MULTIMODAL_AGENT_MCP_CONFIG_PATH=.local/mcp_servers.json
+```
+
+当前模板固定使用 `mcp_weather_server==0.6.1` 和 `workspace-mcp==1.22.0`，通过
+`hello_agent` 环境中的 `uvx` 隔离运行，不把它们加入项目运行依赖。首次启动仍会由 `uvx` 下载对应
+环境；本机必须先显式安装 `uv`。模板中的 `calendar_user_email` 必须替换为完成 Google OAuth 的账号，
+`GOOGLE_OAUTH_CLIENT_ID` 和 `GOOGLE_OAUTH_CLIENT_SECRET` 只从本地 shell 或未跟踪 `.env` 注入，不能写入
+MCP 配置模板或提交。当前 stdio 单机配置使用 `http://localhost:8000/oauth2callback`，因此本地 OAuth
+需要 `OAUTHLIB_INSECURE_TRANSPORT=1`；该开关不得用于公开或非 loopback 部署，公开部署必须改用 HTTPS
+并在 Google Cloud 中登记完全一致的 redirect URI。真实模式还要求主 Chat Provider 完整配置；MCP
+配置不会绕过这个全局边界。
+weather、calendar 和 contacts 只有存在
+对应 `personal_assistant_tools` mapping 时才注册，映射的远端工具还必须同时位于 `allowed_tools`；
+weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
+
+两个已支持 profile 都是显式配置，不根据工具名猜测 Provider：
+
+- `mcp_weather_server_v1` 把稳定 `weather` 输入转换为 `get_weather_byDateTimeRange`，再把小时数据聚合为
+  每日 forecast；该上游目前要求英文城市名。
+- `workspace_mcp_v1` 把稳定 `calendar_search` / `calendar_create` 分别转换为 `get_events` /
+  `manage_event`，并注入本地 `calendar_user_email`；创建动作固定为 `action=create`。
+
+`calendar_create` 不应放入 `enabled_tools`；它作为写工具仍需 runtime 的同名结构化确认。配置装配可用
+以下命令做只读检查，不会执行外部工具：
+
+```bash
+ASSISTANT_AGENT_RUN_REAL_TOOL_PLUGIN_TESTS=1 \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tools_plugin/test_personal_assistant_plugin.py
+```
+
 本地 `@tool` decorator 直接声明 `category`、`requires_confirmation`、`toolset` 和
 `requires_media`，不再要求 rich policy 或 per-tool timeout/retry metadata。CLI validate 检查能否生成
 合法 ToolSpec；simulate 仍通过 validator/executor 执行。

@@ -19,9 +19,17 @@ from assistant_agent.mcp.adapter import (
 )
 from assistant_agent.mcp.config import MCPServerConfig, MCPToolAdapterConfig
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+from assistant_agent.services.provider_errors import (
+    ProviderSafetyPolicy,
+    sanitize_error_detail,
+    sanitize_error_message,
+)
 
 _T = TypeVar("_T")
+# Stable adapters may need to normalize hourly MCP payloads before projecting a
+# compact model observation. This content remains runtime-only and sanitized;
+# default traces still receive the tool-owned summary rather than this payload.
+_MCP_CONTENT_POLICY = ProviderSafetyPolicy(max_message_chars=256_000, max_detail_chars=256_000)
 
 
 class SdkMCPClientRunner(MCPToolRunner):
@@ -237,18 +245,22 @@ def _observation_from_sdk_payload(*, summary: str, structured: Any) -> dict[str,
 
 
 def _sanitize_sdk_content(content: Any) -> Any:
-    sanitized = sanitize_error_detail(content)
-    if not isinstance(sanitized, list):
-        return sanitized
+    if not isinstance(content, list):
+        return sanitize_error_detail(content, _MCP_CONTENT_POLICY)
     normalized: list[Any] = []
-    for item in sanitized:
+    for item in content:
         if not isinstance(item, dict):
-            normalized.append(item)
+            normalized.append(sanitize_error_detail(item, _MCP_CONTENT_POLICY))
             continue
-        copied = dict(item)
-        text = copied.get("text")
-        if copied.get("type") == "text" and isinstance(text, str):
-            copied["text"] = _sanitize_text_content(text)
+        copied = sanitize_error_detail(
+            {key: value for key, value in item.items() if key != "text"},
+            _MCP_CONTENT_POLICY,
+        )
+        if not isinstance(copied, dict):
+            continue
+        raw_text = item.get("text")
+        if item.get("type") == "text" and isinstance(raw_text, str):
+            copied["text"] = _sanitize_text_content(raw_text)
         normalized.append(copied)
     return normalized
 
@@ -257,8 +269,12 @@ def _sanitize_text_content(text: str) -> str:
     try:
         decoded = json.loads(text)
     except json.JSONDecodeError:
-        return sanitize_error_message(text)
-    return json.dumps(sanitize_error_detail(decoded), ensure_ascii=False, sort_keys=True)
+        return sanitize_error_message(text, _MCP_CONTENT_POLICY)
+    return json.dumps(
+        sanitize_error_detail(decoded, _MCP_CONTENT_POLICY),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
 def _dump_sdk_value(value: Any) -> Any:
