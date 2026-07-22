@@ -10,6 +10,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.otel_mapping import build_text_otel_span_specs
 from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.services.agent_service_entry import agent_service_tool_visibility
 from assistant_agent.services.trace_content_policy import LOCAL_TRACE_CONTENT_ENV
 from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
 from assistant_agent.tools.plugins.shopping.tool import (
@@ -52,6 +53,48 @@ class _ShoppingToolCallAdapter:
         return next(self.results)
 
 
+class _ShoppingPresentationAdapter:
+    provider = "scripted"
+    model = "scripted-model"
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+        self.results = iter(
+            (
+                ChatResult(
+                    provider=self.provider,
+                    model=self.model,
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="call-shopping-search",
+                            name="shopping_search",
+                            arguments={"query": "白色低帮运动鞋"},
+                        )
+                    ],
+                ),
+                ChatResult(
+                    provider=self.provider,
+                    model=self.model,
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="call-shopping-present",
+                            name="shopping_detail_present",
+                            arguments={
+                                "output_ref": "mock://compare/white-low-top-sneaker"
+                            },
+                        )
+                    ],
+                ),
+            )
+        )
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        return next(self.results)
+
+
 def test_shopping_tool_description_is_concise_and_explicit() -> None:
     description = ShoppingSearchTool.description
 
@@ -62,6 +105,34 @@ def test_shopping_tool_description_is_concise_and_explicit() -> None:
     assert len(description) < 220
     assert "结果无关或不足以回答时不要调用" in ShoppingDetailPresentTool.description
     assert len(ShoppingDetailPresentTool.description) < 120
+
+
+def test_explicit_shopping_presentation_finishes_without_third_llm_call() -> None:
+    adapter = _ShoppingPresentationAdapter()
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(langgraph_checkpointer_backend="none"),
+        chat_adapter=adapter,
+        memory_store=InMemoryStore(),
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="shopping-present-user",
+            session_id="shopping-present-session",
+            text="帮我找白色低帮运动鞋购买链接",
+            metadata={"tool_visibility": agent_service_tool_visibility()},
+        )
+    )
+
+    assert state.status == "completed"
+    assert [call.tool_name for call in state.tool_calls] == [
+        "shopping_search",
+        "shopping_detail_present",
+    ]
+    assert len(adapter.requests) == 2
+    assert state.response is not None
+    assert state.response.data["final_answer_source"] == "shopping_presentation_contract"
 
 
 def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:

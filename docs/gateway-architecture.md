@@ -152,7 +152,8 @@ business-tool name rules. `weather` 只有在当前运行模式已经正确注�
 真实模式缺少 MCP mapping 或配置时仍然 fail closed。`shopping_search` performs product
 search plus price comparison；只有模型在看到结果后确认它确实回答用户购物请求，并调用
 `shopping_detail_present(output_ref=...)`，Realtime 才启用 deterministic App presenter。
-单独一次成功搜索不再授权覆盖模型最终正文。Tool qualification is derived from trusted session
+匹配成功的展示决策直接结束 assistant loop，不再产生第三次 LLM 调用；单独一次成功搜索不再授权
+覆盖模型最终正文。Tool qualification is derived from trusted session
 config and structured request media, never user text. `assistantControl`
 validates and records media control state,
 and the legacy `assistantControlStart` handshake remains accepted for older

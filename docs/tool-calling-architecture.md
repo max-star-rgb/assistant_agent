@@ -47,6 +47,8 @@ requires_media
 Agent-Service 的 App 购物详情使用独立只读决策工具 `shopping_detail_present(output_ref)`：模型只能在
 看到同一轮 `shopping_search` 结果并判断其确实回答用户购物请求后调用。Realtime presenter 必须同时
 找到成功的展示决策和同 `output_ref` 的搜索结果才可覆盖交付文本；搜索成功本身不是展示授权。
+匹配成功的 `shopping_detail_present` 是终态响应契约，assistant loop 直接进入 response composition，
+不再为这项纯展示确认追加第三次 LLM 调用；引用不存在、失败或不匹配的搜索结果时则继续普通循环。
 
 系统不维护中心 Tool manifest。`schemas/tool_ids.py` 只保存已经成为跨层协议的稳定字符串，不枚举
 Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入。旧 planner/intent 所需的 action、alias
