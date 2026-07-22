@@ -25,6 +25,7 @@ class _StartupVisibleTool(ToolBase):
     input_schema = _EmptyInput
     output_schema = ToolResult
     category = "read"
+    toolset = "tests.startup"
     requires_confirmation = False
 
     def _run(self, input: BaseModel, context: ToolContext) -> ToolResult:
@@ -48,10 +49,13 @@ def test_startup_summary_lists_tools_from_plugin_registry(monkeypatch) -> None:
         plugin_modules=[module_name],
     )
 
-    output = "\n".join(format_tool_registry_summary(registry))
-    assert f"Registered tools ({len(registry.list())}):" in output
-    assert "startup_visible_tool (plugin=tests.startup@2.1, source=configured_module)" in output
-    assert "Tool registry: sealed=True, generation=sha256:" in output
+    lines = format_tool_registry_summary(registry)
+    output = "\n".join(lines)
+    assert lines[0] == "[normal（通用）]"
+    assert "[tests.startup]\n  startup_visible_tool" in output
+    assert "plugin=" not in output
+    assert "source=" not in output
+    assert "generation=" not in output
 
 
 def test_server_lifespan_prints_the_runtime_registry(monkeypatch, capsys) -> None:
@@ -64,5 +68,16 @@ def test_server_lifespan_prints_the_runtime_registry(monkeypatch, capsys) -> Non
 
     assert worker is None
     output = capsys.readouterr().out
-    assert f"Registered tools ({len(registry.list())}):" in output
-    assert "web_search (plugin=web@1, source=builtin)" in output
+    assert "[normal（通用）]\n" in output
+    assert "  web_search\n" in output
+    assert (
+        "[personal]\n"
+        "  calendar_create\n"
+        "  calendar_search\n"
+        "  contacts_search\n"
+        "  weather\n"
+    ) in output
+    assert "[personal.calendar]" not in output
+    assert "[personal.contacts]" not in output
+    assert "[personal.readonly]" not in output
+    assert "[tool.discovery]\n  tool_search\n" in output
