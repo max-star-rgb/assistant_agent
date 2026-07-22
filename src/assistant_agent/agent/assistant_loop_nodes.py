@@ -362,7 +362,7 @@ def _decide_with_llm(
         graph_state,
         source="assistant_langgraph_answer",
     )
-    result = _run_chat_turn(graph_state, chat_adapter, request)
+    result = _run_chat_turn(graph_state, chat_adapter, request, attempt_kind="primary")
     _record_chat_usage_metadata(state, result)
     if _is_provider_context_overflow_result(result) and _can_retry_provider_context_overflow(state):
         stream_buffer.discard()
@@ -373,7 +373,12 @@ def _decide_with_llm(
             graph_state,
             source="assistant_langgraph_answer",
         )
-        result = _run_chat_turn(graph_state, chat_adapter, retry_request)
+        result = _run_chat_turn(
+            graph_state,
+            chat_adapter,
+            retry_request,
+            attempt_kind="context_overflow_retry",
+        )
         _record_chat_usage_metadata(state, result)
         context = retry_context
         if _is_provider_context_overflow_result(result):
@@ -424,6 +429,8 @@ def _run_chat_turn(
     graph_state: AssistantLoopState,
     chat_adapter: ChatAdapter,
     request: ChatRequest,
+    *,
+    attempt_kind: str,
 ) -> ChatResult:
     state = graph_state["state"]
     iteration = int(graph_state.get("assistant_iterations", 0)) + 1
@@ -438,6 +445,8 @@ def _run_chat_turn(
         provider=provider,
         model=model,
         request=request,
+        span_id=span_id,
+        attempt_kind=attempt_kind,
     )
     append_observability_event(
         graph_state.get("trace_store"),
@@ -455,6 +464,7 @@ def _run_chat_turn(
             "iteration": iteration,
             "max_iterations": int(graph_state.get("max_tool_iterations", _get_max_tool_iterations())),
             "tool_spec_count": len(request.tools),
+            "attempt_kind": attempt_kind,
         },
     )
     runner = graph_state.get("chat_turn")
@@ -494,6 +504,14 @@ def _run_chat_turn(
             error={"code": "provider_call_failed", "message": sanitize_trace_value(str(exc))},
         )
         raise
+    _record_local_llm_output(
+        state,
+        trace_id=graph_state.get("trace_id") or state.trace_id,
+        iteration=iteration,
+        span_id=span_id,
+        attempt_kind=attempt_kind,
+        result=result,
+    )
     wall_latency_ms = _elapsed_ms(started_at)
     provider_latency_ms = result.latency_ms
     append_observability_event(
@@ -517,6 +535,7 @@ def _run_chat_turn(
             "provider_latency_ms": provider_latency_ms,
             "wall_latency_ms": wall_latency_ms,
             "usage": normalize_provider_token_usage(result.usage),
+            "attempt_kind": attempt_kind,
         },
         output_summary=_llm_chat_output_summary(request, result),
         error=_chat_result_trace_error(result),
@@ -602,6 +621,8 @@ def _record_local_llm_input(
     provider: str | None,
     model: str | None,
     request: ChatRequest,
+    span_id: str,
+    attempt_kind: str,
 ) -> None:
     """Capture the compiled provider request only for explicit local debugging."""
 
@@ -623,9 +644,46 @@ def _record_local_llm_input(
         trace_id=trace_id,
         llm_input=TraceLlmInput(
             iteration=iteration,
+            span_id=span_id,
+            attempt_kind=attempt_kind,
             provider=provider,
             model=model,
             request=safe_payload,
+        ),
+    )
+
+
+def _record_local_llm_output(
+    state: AgentState,
+    *,
+    trace_id: str,
+    iteration: int,
+    span_id: str,
+    attempt_kind: str,
+    result: ChatResult,
+) -> None:
+    """Capture the normalized Provider result before final-answer validation."""
+
+    from assistant_agent.services.trace_content_policy import local_trace_content_enabled
+
+    if not local_trace_content_enabled():
+        return
+    from assistant_agent.services.trace_conversation import (
+        TraceLlmOutput,
+        get_default_trace_conversation_store,
+    )
+
+    get_default_trace_conversation_store().append_llm_output(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=trace_id,
+        llm_output=TraceLlmOutput(
+            iteration=iteration,
+            span_id=span_id,
+            attempt_kind=attempt_kind,
+            provider=result.provider,
+            model=result.model,
+            result=result.model_dump(mode="json", exclude={"reasoning_content"}),
         ),
     )
 
@@ -907,7 +965,12 @@ def _repair_native_final_answer(
             "stream_callback": None,
         }
     )
-    return _run_chat_turn(graph_state, chat_adapter, repair_request)
+    return _run_chat_turn(
+        graph_state,
+        chat_adapter,
+        repair_request,
+        attempt_kind="contract_repair",
+    )
 
 
 def _invalid_native_final_answer(result: ChatResult) -> AssistantDecision:

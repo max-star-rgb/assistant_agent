@@ -19,7 +19,11 @@ from assistant_agent.services.turn_summary import (
 )
 
 if TYPE_CHECKING:
-    from assistant_agent.services.trace_conversation import TraceConversationView, TraceLlmInput
+    from assistant_agent.services.trace_conversation import (
+        TraceConversationView,
+        TraceLlmInput,
+        TraceLlmOutput,
+    )
 
 
 OTEL_SPAN_SPEC_SCHEMA_VERSION = "assistant_agent_text_otel_span_spec_v1"
@@ -64,6 +68,7 @@ _VOICE_ATTRIBUTE_TOKENS = frozenset(
 )
 _ALLOWED_ATTRIBUTE_KEYS = frozenset(
     {
+        "attempt_kind",
         "assistant_run_id",
         "budget_ratio",
         "client_type",
@@ -501,8 +506,9 @@ def _event_io_attributes(
             ),
         }
     elif name == "llm.chat.finished":
-        llm_input = _llm_input_for_iteration(
+        llm_input = _llm_input_for_event(
             conversation,
+            span_id=event.span_id,
             iteration=_mapping_int(event.attributes, "iteration"),
         )
         input_payload = (
@@ -514,6 +520,10 @@ def _event_io_attributes(
         input_payload.setdefault("provider", event.provider)
         input_payload.setdefault("model", event.model)
         output_payload = _safe_llm_chat_output(event)
+        llm_output = _llm_output_for_event(conversation, span_id=event.span_id)
+        if llm_output is not None:
+            output_payload["provider_response_before_validation"] = dict(llm_output.result)
+            output_payload["attempt_kind"] = llm_output.attempt_kind
         output_payload.update({"status": event.status, "provider": event.provider, "model": event.model})
     elif name == "response.final" and conversation is not None:
         output_payload = {
@@ -546,15 +556,38 @@ def _selected_payload(source: Mapping[str, Any], keys: tuple[str, ...]) -> dict[
     }
 
 
-def _llm_input_for_iteration(
+def _llm_input_for_event(
     conversation: "TraceConversationView | None",
     *,
+    span_id: str | None,
     iteration: int | None,
 ) -> "TraceLlmInput | None":
-    if conversation is None or iteration is None:
+    if conversation is None:
+        return None
+    if span_id is not None:
+        matched = next(
+            (item for item in conversation.llm_inputs if item.span_id == span_id),
+            None,
+        )
+        if matched is not None:
+            return matched
+    if iteration is None:
         return None
     return next(
         (item for item in conversation.llm_inputs if item.iteration == iteration),
+        None,
+    )
+
+
+def _llm_output_for_event(
+    conversation: "TraceConversationView | None",
+    *,
+    span_id: str | None,
+) -> "TraceLlmOutput | None":
+    if conversation is None or span_id is None:
+        return None
+    return next(
+        (item for item in conversation.llm_outputs if item.span_id == span_id),
         None,
     )
 

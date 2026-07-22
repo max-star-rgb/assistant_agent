@@ -24,9 +24,22 @@ class TraceLlmInput(BaseModel):
     """One local-only provider request captured before an LLM call."""
 
     iteration: int = Field(ge=1)
+    span_id: str | None = None
+    attempt_kind: str = "primary"
     provider: str | None = None
     model: str | None = None
     request: dict[str, Any]
+
+
+class TraceLlmOutput(BaseModel):
+    """One local-only normalized Provider result captured before validation."""
+
+    iteration: int = Field(ge=1)
+    span_id: str
+    attempt_kind: str = "primary"
+    provider: str | None = None
+    model: str | None = None
+    result: dict[str, Any]
 
 
 class TraceConversationView(BaseModel):
@@ -37,6 +50,7 @@ class TraceConversationView(BaseModel):
     user: TraceConversationText
     assistant: TraceConversationText
     llm_inputs: list[TraceLlmInput] = Field(default_factory=list)
+    llm_outputs: list[TraceLlmOutput] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -49,6 +63,7 @@ class TraceConversationRecord:
     user_text: str
     assistant_text: str
     llm_inputs: tuple[TraceLlmInput, ...] = ()
+    llm_outputs: tuple[TraceLlmOutput, ...] = ()
 
 
 class InMemoryTraceConversationStore:
@@ -87,6 +102,7 @@ class InMemoryTraceConversationStore:
                 user_text=user_text,
                 assistant_text=assistant_text,
                 llm_inputs=existing.llm_inputs if existing is not None else (),
+                llm_outputs=existing.llm_outputs if existing is not None else (),
             )
             self._replace_record(record)
 
@@ -114,6 +130,35 @@ class InMemoryTraceConversationStore:
                 user_text=existing.user_text if existing is not None else "",
                 assistant_text=existing.assistant_text if existing is not None else "",
                 llm_inputs=inputs[-16:],
+                llm_outputs=existing.llm_outputs if existing is not None else (),
+            )
+            self._replace_record(record)
+
+    def append_llm_output(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        llm_output: TraceLlmOutput,
+    ) -> None:
+        """Append the exact normalized Provider result before runtime validation."""
+
+        with self._lock:
+            existing = self._matching_record(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
+            outputs = (*existing.llm_outputs, llm_output) if existing is not None else (llm_output,)
+            record = TraceConversationRecord(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                user_text=existing.user_text if existing is not None else "",
+                assistant_text=existing.assistant_text if existing is not None else "",
+                llm_inputs=existing.llm_inputs if existing is not None else (),
+                llm_outputs=outputs[-16:],
             )
             self._replace_record(record)
 
@@ -125,6 +170,7 @@ class InMemoryTraceConversationStore:
         trace_id: str,
         limit: int = DEFAULT_TRACE_CONVERSATION_CHAR_LIMIT,
         include_llm_inputs: bool = False,
+        include_llm_outputs: bool = False,
     ) -> TraceConversationView | None:
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -140,6 +186,7 @@ class InMemoryTraceConversationStore:
                     user=_bounded_text(record.user_text, limit=limit),
                     assistant=_bounded_text(record.assistant_text, limit=limit),
                     llm_inputs=list(record.llm_inputs) if include_llm_inputs else [],
+                    llm_outputs=list(record.llm_outputs) if include_llm_outputs else [],
                 )
         return None
 
