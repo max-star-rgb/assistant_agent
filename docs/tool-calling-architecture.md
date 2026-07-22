@@ -306,13 +306,16 @@ export MULTIMODAL_AGENT_MCP_CONFIG_PATH=.local/mcp_servers.json
 ```
 
 当前模板固定使用 `mcp_weather_server==0.6.1` 和 `workspace-mcp==1.22.0`，通过
-`hello_agent` 环境中的 `uvx` 隔离运行，不把它们加入项目运行依赖。首次启动仍会由 `uvx` 下载对应
-环境；本机必须先显式安装 `uv`。模板中的 `calendar_user_email` 必须替换为完成 Google OAuth 的账号，
+`hello_agent` 环境中的 `uvx` 隔离运行，不把它们加入项目运行依赖。Calendar 命令显式附加
+`PySocks`，使上游 `httplib2` 能在代理网络中访问 Google API。首次启动仍会由 `uvx` 下载对应环境；
+本机必须先显式安装 `uv`。模板中的 `calendar_user_email` 必须替换为完成 Google OAuth 的账号，
 `GOOGLE_OAUTH_CLIENT_ID` 和 `GOOGLE_OAUTH_CLIENT_SECRET` 只从本地 shell 或未跟踪 `.env` 注入，不能写入
 MCP 配置模板或提交。当前 stdio 单机配置使用 `http://localhost:8000/oauth2callback`，因此本地 OAuth
 需要 `OAUTHLIB_INSECURE_TRANSPORT=1`；该开关不得用于公开或非 loopback 部署，公开部署必须改用 HTTPS
-并在 Google Cloud 中登记完全一致的 redirect URI。真实模式还要求主 Chat Provider 完整配置；MCP
-配置不会绕过这个全局边界。
+并在 Google Cloud 中登记完全一致的 redirect URI。stdio MCP 子进程继承宿主的标准
+`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`（含小写形式），同名 server `env` 显式配置
+优先；其他环境变量仍由 MCP SDK 的安全白名单或 server `env` 控制。真实模式还要求主 Chat Provider
+完整配置；MCP 配置不会绕过这个全局边界。
 weather、calendar 和 contacts 只有存在
 对应 `personal_assistant_tools` mapping 时才注册，映射的远端工具还必须同时位于 `allowed_tools`；
 weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。

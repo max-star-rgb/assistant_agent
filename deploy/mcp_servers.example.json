@@ -25,6 +25,8 @@
       "transport": "stdio",
       "command": [
         "/home/lenovo1/miniconda3/envs/hello_agent/bin/uvx",
+        "--with",
+        "PySocks",
         "--from",
         "workspace-mcp==1.22.0",
         "workspace-mcp",

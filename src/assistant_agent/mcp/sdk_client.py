@@ -26,6 +26,16 @@ from assistant_agent.services.provider_errors import (
 )
 
 _T = TypeVar("_T")
+_PROXY_ENVIRONMENT_VARIABLES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
 # Stable adapters may need to normalize hourly MCP payloads before projecting a
 # compact model observation. This content remains runtime-only and sanitized;
 # default traces still receive the tool-owned summary rather than this payload.
@@ -167,7 +177,7 @@ def _sdk_session(server: MCPServerConfig):
         server_params = StdioServerParameters(
             command=command,
             args=args,
-            env=dict(server.env) or None,
+            env=_mcp_subprocess_environment(server.env),
             cwd=server.cwd,
         )
         with anyio.fail_after(server.timeout_seconds):
@@ -178,6 +188,17 @@ def _sdk_session(server: MCPServerConfig):
                         yield session
 
     return _session()
+
+
+def _mcp_subprocess_environment(server_env: dict[str, str]) -> dict[str, str] | None:
+    """Pass operator proxy settings through the MCP SDK's restricted environment."""
+    environment = {
+        key: value
+        for key in _PROXY_ENVIRONMENT_VARIABLES
+        if (value := os.environ.get(key)) is not None
+    }
+    environment.update(server_env)
+    return environment or None
 
 
 def _tool_result_from_sdk_response(
