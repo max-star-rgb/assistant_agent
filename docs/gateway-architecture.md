@@ -11,12 +11,13 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - Gateway owns normalized message, session, run, cancel, interrupt, reconnect, hangup, and stream-frame semantics between entry layers and the assistant realtime backend.
 - Every accepted `message.user` receives stable Gateway-owned `turn_id` and `run_id` values at ingress. A queued turn is a cancellable lifecycle object, not an anonymous pending payload.
 - Ordinary same-session turns use bounded FIFO followup queues. Session heads compete through one process-local admission controller, which bounds total queued turns and active backend runs without allowing same-session backend overlap.
-- For normalized Gateway WebSocket and realtime-media WebSocket entries, one live bridge owner is allowed per `user_id` in a process. A newer connection supersedes older same-user bridges, including idle bridges that have not opened a runtime endpoint yet. Superseding a bridge is not treated as client disconnect for run lifecycle: the active Gateway run is not cancelled, and later runtime frames are delivered to the newest owner.
-- A true transport disconnect cancels the active Gateway run. Reconnect reuses the user session when it is still managed in process and may start a new run from a later `message.user`; it does not resume the cancelled run or treat stale output as speakable.
+- For normalized Gateway WebSocket, one live bridge owner is allowed per `user_id` in a process. A newer connection supersedes older same-user bridges, including idle bridges that have not opened a runtime endpoint yet. Superseding a bridge is not treated as client disconnect for run lifecycle: the active Gateway run is not cancelled, and later runtime frames are delivered to the newest owner.
+- A true normalized-Gateway transport disconnect moves delivery to `DETACHED` for a bounded reconnect grace period instead of immediately cancelling the active run. The session relay keeps a bounded cursor-addressable outbox; `session.resume(payload.cursor)` replays retained frames and returns `session.attached`. If no owner returns before grace expiry, Gateway cancels the then-active run with `reason=reconnect_grace_expired`.
 - Realtime media may opt into a separate bounded semantic-interrupt control plane. Explicit media control still interrupts immediately; implicit utterances are classified in parallel while the active backend continues, and only a matching `expected_run_id` decision may change Gateway lifecycle.
 - `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default adapter is `GatewayAgentAdapter`, a semantic alias of the compatibility class name `AgentGraphRealtimeBackend`.
 - The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
+- Product-level "Agent instance" means the connection/user-owned logical `GatewaySessionService`, not a dedicated `AgentGraphRuntime` object. A logical AgentSession owns history, queued/active turns, cancellation and media/session correlation. Runtime execution remains application-owned and pooled across sessions.
 - Durable structured tasks are a separate post-acceptance lifecycle owned by `DurableTaskService` and its worker. Gateway owns only the ingress turn that accepts and returns the task handle; it does not keep the durable task as an active Gateway run.
 - Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and local CLI `--scenario` through demo flows enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
 - The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/agent-service/v1` as the Media Service WebSocket. The vendor route preserves the `message` / optional `sessionId` / stringified `body` protocol, accepts `assistantControl`, `chat`, `audio`, `video`, and `interrupt`, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, treats raw `audio` as entry-layer ACK traffic, and maps `interrupt` to cancellation of the active Gateway turn plus locally queued connection-owned turns before acknowledging it. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer pre-warms rolling semantics, while AgentRuntime may dynamically expose the unified `vision_understanding` tool for active-video turns. The main LLM knows only this single visual tool; it never receives VLM role instructions, frames, JPEG paths, base64 media, or provider raw responses. The exact Media-Agent wire contract is `docs/media-agent-service-websocket.md`.
@@ -249,10 +250,10 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Convert realtime backend events into Gateway wire frames.
 - Convert backend failures into protocol-level `run.end` or `error` frames.
 - Queue ordinary same-session user messages behind the active run; apply per-session and process-wide limits; cancel either queued or active runs on explicit `run.cancel`, disconnect, deadline expiry, explicit same-session interrupt, or queue-wait expiry.
-- Cancel active runs immediately on `call.hangup` / media `session.end`, then return `call.hangup_ack`.
+- On `call.hangup`, cancel queued/active work, stop outbound relay, return `call.hangup_ack(payload.session_closed=true)`, and immediately destroy the logical AgentSession. The same transport may later send a new `call.incoming` and receive a fresh session endpoint.
 - Treat cancel/interrupt as a first-class realtime turn outcome. After cancel, old run output is not speakable or user-visible; late backend/tool results may be retained only as trace or stale artifacts.
-- Manage per-user session reuse, reconnect, hangup grace, idle eviction, and live session config.
-- Resolve same-user multi-connection competition at the bridge layer: one session-owned relay is the sole consumer of runtime frames, the newest connection lease owns outbound delivery for that user, and only a true current-owner disconnect sends `gateway_disconnect` cancellation.
+- Manage per-user logical AgentSession creation/destruction, transport reconnect, idle eviction, and live session config.
+- Resolve same-user multi-connection competition at the bridge layer: one session-owned relay is the sole consumer of runtime frames, the newest connection lease owns outbound delivery for that user, and a true current-owner disconnect starts the detached grace timer rather than cancelling immediately.
 - Treat user-message `metadata` as untrusted for system-prompt/profile selection. `system_prompt_profile`, profile-driving `channel`, and profile-driving `source` are stripped from message payload metadata; realtime phone profile selection must come from trusted Gateway/session config, not ordinary user text or arbitrary payload metadata.
 - Keep external connection lifecycle separate from the assistant runtime internals.
 
@@ -281,10 +282,11 @@ interchangeable forms of "interrupt":
   a separate Gateway interrupt mode;
 - **connection supersede** transfers the per-user delivery lease to a newer
   connection without cancelling the active run;
-- **transport disconnect** means the current delivery owner is gone and applies
-  the configured `gateway_disconnect` run policy;
-- **session resume** reuses process-local session state; it never revives a
-  cancelled run or makes stale output speakable.
+- **transport disconnect** means the current delivery owner is gone; normalized
+  Gateway delivery enters `DETACHED` until reconnect grace expires;
+- **session resume** reuses process-local session state and replays retained
+  outbox frames after the caller's delivery cursor; it never revives a run that
+  already reached `CANCELLED`.
 
 Gateway owns arbitration application, run cancellation intent, stale-output
 gating, and connection ownership. AgentRuntime owns the safe checkpoint at which
@@ -300,7 +302,7 @@ one session-owned outbound relay per managed runtime endpoint:
 
 ```text
 GatewaySession endpoint -> single SessionRelay -> current ConnectionLease sink
-                                               -> no owner: discard late frames
+                                               -> no owner: bounded outbox
 ```
 
 The relay, rather than individual WebSocket bridges, is the sole reader of the
@@ -310,11 +312,31 @@ stopped as `superseded` and must not emit disconnect cancellation. This avoids
 multiple connections racing to consume one endpoint and removes the former need
 to re-inject a frame already consumed by a stale bridge.
 
-The current owner's actual transport close is different: the bridge sends
-`run.cancel(source=gateway_disconnect, reason=client_disconnected)` for the
-correlated active run/session. Runtime frames arriving with no owner are not
-buffered for a future reconnect; reconnect can reuse a still-managed session but
-does not replay stale output.
+The current owner's actual transport close is different from supersede: it starts
+the configured detach grace period (default 15 seconds). Every externally
+forwardable runtime frame receives a monotonically increasing top-level
+`delivery_cursor` and is retained in a bounded process-local outbox (default 256
+frames). `session.resume` accepts `payload.cursor`; retained frames after that
+cursor are replayed before `session.attached`. Its payload reports the latest and
+earliest available cursors plus `replay_truncated`, so clients can detect a cursor
+older than the retained window. This is bounded reconnect continuity, not durable
+cross-process delivery.
+
+If no new owner attaches before grace expiry and a run is still active, the bridge
+sends `run.cancel(source=gateway_disconnect, reason=reconnect_grace_expired)`.
+A run that completed during detachment is not cancelled merely because its
+session id remains known. `call.hangup` remains an explicit immediate end signal
+and does not use reconnect grace: it removes the manager entry and closes the
+session service/endpoints before a later frame can acquire a fresh AgentSession.
+Destroying that logical session does not close the application-owned
+`GatewayRuntimePool` or its reusable `AgentGraphRuntime` objects.
+
+These normalized-Gateway semantics do not yet apply across vendor
+`/agent-service/v1` WebSocket connections. That adapter still allocates a fresh
+internal Gateway session per connection and cancels its connection-owned chat on
+disconnect. Cross-connection Media-Agent resume requires a stable authenticated
+resume identity and cursor field in the vendor protocol before it can safely use
+the shared relay.
 
 ## Queue and Admission Contract
 
@@ -325,6 +347,13 @@ message.user -> per-session FIFO -> process-wide admission -> backend run
                  one head only       bounded/fair FIFO        active permit
 ```
 
+- `message.user.payload.mode` explicitly accepts `followup|replace`. `followup`
+  is the default and queues behind the active turn; `replace` cancels the active
+  turn, moves the replacement to the session head, and starts it only after the
+  cancelled backend exits. The legacy `interrupt`, `control=interrupt|barge_in|
+  cancel_previous`, and queue `mode=interrupt` forms remain compatibility inputs
+  only when explicit turn mode is absent. An explicit `followup` is authoritative
+  and does not enter semantic arbitration.
 - Default mode is `followup`. Explicit interrupt remains a control operation,
   but the replacement turn does not start its backend until the cancelled
   backend has actually exited and released its permit.
@@ -339,7 +368,9 @@ message.user -> per-session FIFO -> process-wide admission -> backend run
   pool. `max_active_runs` remains the admission limit; `max_runtime_instances`
   bounds how many `AgentGraphRuntime` instances the default backend may create.
   The default runtime limit follows `max_active_runs`, and a smaller value is
-  rejected at startup.
+  rejected at startup. Each admitted turn checks out a runtime and returns it
+  after completion/cancellation; connection hangup destroys only its logical
+  AgentSession and never closes this process-owned pool.
 - `run.cancel` can target a queued `run_id`. Queue timeout and pre-run cancel
   end with `run.end(reason=cancelled)` plus prompt-safe cancellation metadata
   with `phase=before_llm`; neither path calls the backend.
@@ -366,6 +397,8 @@ The policy is configured at process startup with strict positive values:
 | `MULTIMODAL_AGENT_GATEWAY_QUEUE_WAIT_TIMEOUT_MS` | `120000` |
 | `MULTIMODAL_AGENT_GATEWAY_DEDUPE_TTL_S` | `300` |
 | `MULTIMODAL_AGENT_GATEWAY_DEDUPE_MAX_ENTRIES_PER_USER` | `1024` |
+| `MULTIMODAL_AGENT_GATEWAY_DETACH_GRACE_S` | `15` |
+| `MULTIMODAL_AGENT_GATEWAY_OUTBOX_MAX_FRAMES` | `256` |
 
 All Gateway queue, dedupe, admission, and default runtime-pool state is process-local
 and in memory. Custom backend factories own their own runtime concurrency and are not
@@ -424,7 +457,8 @@ Semantic arbitration is eligible only when all of the following hold:
 4. the new turn is not already an explicit interrupt;
 5. the trusted session config has not set `semantic_interrupt_enabled=false`.
 
-No current built-in entry declares `supports_semantic_interrupt=true`.
+No current built-in entry declares `supports_semantic_interrupt=true`, and an
+explicit `message.user.payload.mode` always bypasses semantic arbitration.
 `/agent-service/v1` uses the vendor's explicit `interrupt` message and never waits
 for semantic arbitration. The generic machinery remains capability-gated for a
 future trusted entry and is not a second media protocol.
@@ -655,7 +689,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/gateway/queueing.py` | Bounded queue policy, process-local fair run admission, stable queued-turn records with nested semantic-arbitration state, and TTL/LRU retry identity index. |
 | `src/assistant_agent/gateway/transport.py` | Transport-agnostic endpoint primitives for in-process tests and embedding. |
 | `src/assistant_agent/gateway/ws.py` | JSON text WebSocket adapter that presents a WebSocket as a Gateway endpoint. |
-| `src/assistant_agent/gateway/bridge.py` | External-client-to-session bridge: call lifecycle, one session-owned outbound relay, per-user connection leases, disconnect cancellation, and modality gate. |
+| `src/assistant_agent/gateway/bridge.py` | External-client-to-session bridge: call lifecycle, one session-owned bounded/cursor outbox relay, per-user connection leases, detached grace, replay, disconnect-expiry cancellation, and modality gate. |
 | `src/assistant_agent/gateway/session.py` | Gateway-managed session service: `message.user`, `run.cancel`, session history, active runs, interrupt, deadline, event mapping, and session manager. |
 | `src/assistant_agent/gateway/event_mapping.py` | Realtime backend event to Gateway frame mapping. |
 | `src/assistant_agent/gateway/ws_server.py` | Optional standalone Gateway session WebSocket server entrypoint, not the main FastAPI app route. |
@@ -692,15 +726,16 @@ Phase 0 treats these entry classifications as architecture contracts:
 | Removed legacy Web Chat | `/demo/console`, `/static/index.html`, and `/ws/agent/{session_id}` are not registered or shipped | Ordinary browser chat is out of scope until the realtime assistant runtime is stable. |
 
 The default pytest safety net protects cancellation termination, the core realtime-event to Gateway-frame
-conversion contract, Media-Agent explicit interrupt behavior, and same-user connection takeover without false
-disconnect cancellation. Add more pytest only for a concrete regression or changed stable protocol contract.
+conversion contract, Media-Agent explicit interrupt behavior, explicit followup/replace behavior, same-user
+connection takeover without false disconnect cancellation, and cursor replay within detached grace. Add more
+pytest only for a concrete regression or changed stable protocol contract.
 
 ## OpenClaw Reference Boundary
 
 Use `/home/lenovo1/pycharm_project/runTime` only as a reference for compatibility behavior:
 
 - Frame names and payload semantics: `message.user`, `run.started`, `stream.chunk`, `run.end`, `run.cancel`, `ping`/`pong`, call frames, and config frames.
-- Session lifecycle: active run registration, per-session history, generated IDs, reconnect, hangup grace, idle eviction, and terminal `expects_reply`.
+- Session lifecycle: active run registration, per-session history, generated IDs, reconnect, immediate logical-session destruction on hangup, idle eviction, and terminal `expects_reply`.
 - Cancellation and interrupt behavior.
 - Transport adapter behavior and Gateway WebSocket bridging.
 

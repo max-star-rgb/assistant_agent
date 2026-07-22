@@ -23,6 +23,7 @@ class Frame(TypedDict, total=False):
     turn_id: str
     run_id: str
     user_id: str
+    delivery_cursor: int
     payload: Any
     reason: str
     error: Any

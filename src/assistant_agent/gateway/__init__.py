@@ -1,6 +1,6 @@
 """Gateway protocol, bridge, and session services for assistant_agent."""
 
-from assistant_agent.gateway.bridge import GatewayBridge
+from assistant_agent.gateway.bridge import GatewayBridge, GatewayConnectionPolicy
 from assistant_agent.gateway.capabilities import (
     AGENT_SERVICE_ENTRY_CAPABILITIES,
     GATEWAY_WEBSOCKET_CAPABILITIES,
@@ -65,6 +65,7 @@ __all__ = [
     "Frame",
     "GATEWAY_WEBSOCKET_CAPABILITIES",
     "GatewayBridge",
+    "GatewayConnectionPolicy",
     "GatewayConfigUpdateResult",
     "GatewayLifecycleEvent",
     "GatewayLifecycleSink",

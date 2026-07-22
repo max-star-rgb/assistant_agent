@@ -16,6 +16,7 @@ from assistant_agent.gateway.transport import Endpoint
 from assistant_agent.services.identifiers import new_prefixed_uuid7
 
 QueueMode = Literal["followup", "interrupt"]
+TurnMode = Literal["followup", "replace"]
 QueueReason = Literal["session_busy", "global_capacity"]
 
 
@@ -115,6 +116,8 @@ class QueuedTurn:
     queue_deadline_monotonic: float
     client_message_id: str | None
     payload_fingerprint: str
+    turn_mode: TurnMode = "followup"
+    turn_mode_explicit: bool = False
     interrupts_active_run: bool = False
     state: str = "received"
     queue_reason: QueueReason | None = None

@@ -152,6 +152,9 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
 - Agent 使用最新一条非空 `speechContent` 作为本轮 Gateway 输入文本。
 - 只包含 `imageContent` 的内容项可以随请求传入，但当前不单独触发图像理解。
 - `chat` 会进入 `GatewayTurnFacade -> GatewaySessionManager -> GatewayAgentAdapter -> AssistantRuntimeApp -> AgentGraphRuntime`。
+- 每个媒体 WebSocket 拥有一个连接级逻辑 AgentSession（本地
+  `GatewaySessionManager/GatewaySessionService`）；连接清理会取消 turn 并销毁该
+  AgentSession，但不会关闭进程共享的 `AssistantRuntimeApp/AgentGraphRuntime` 执行引擎。
 - Langfuse 的 `langfuse.session.id` 使用这个内部 `agent-service-*` AgentSession id，
   并标记 `session_scope=agent_service_connection`；`langfuse.user.id` 使用
   `userNumber`。外层 vendor `sessionId`、`chatIndex`、Gateway `turn_id/run_id` 和
@@ -161,6 +164,10 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
   并对本轮 Gateway run 发送 `run.cancel`（`source=gateway_disconnect`、
   `reason=client_disconnected`）；日志只包含脱敏 session 摘要、close code、
   reason 是否存在和计数，不记录原始 reason 或用户文本。
+- 上述行为是当前 vendor `/agent-service/v1` 的连接级契约。规范化
+  `/ws/gateway` 已支持 `DETACHED` grace、`delivery_cursor` 和
+  `session.resume` 有界重放，但 vendor 协议尚未提供安全的跨连接 resume identity/cursor，
+  因而不能把旧媒体连接的内部 session 或 chat 输出自动转移到新连接。
 - `stream=true` 的中间包只携带本包新增文本，`status=PROCESSING`、`sequence>=1`、`final=false`；终包只携带尚未发送过的剩余文本，`status=SUCCESS`、最后一个 `sequence`、`final=true`。
 - 若本轮正文已经全部通过中间包发送，成功终包的 `description` 为空字符串。媒体/App 可以继续按增量追加处理，不会重复追加完整答案。
 - 若本轮已经发送过中间包，成功终包仍会同时携带 `display_only=true` 和 camelCase 兼容字段 `displayOnly=true`，供支持该标记的客户端识别终包。

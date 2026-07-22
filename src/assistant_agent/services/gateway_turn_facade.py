@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from assistant_agent.gateway.protocol import Frame, frame
 from assistant_agent.gateway.session import GatewaySessionManager
@@ -96,6 +96,7 @@ class GatewayTurnRequest:
     user_id: str
     session_id: str
     text: str
+    mode: Literal["followup", "replace"] = "followup"
     image_ids: list[str] = field(default_factory=list)
     video_ids: list[str] = field(default_factory=list)
     audio_id: str | None = None
@@ -163,6 +164,8 @@ class GatewayTurnFacade:
             raise ValueError("GatewayTurnRequest.session_id is required")
         if request.timeout_s <= 0:
             raise ValueError("GatewayTurnRequest.timeout_s must be positive")
+        if request.mode not in {"followup", "replace"}:
+            raise ValueError("GatewayTurnRequest.mode must be followup or replace")
 
         handle = await self._manager.acquire(
             user_id=request.user_id,
@@ -355,6 +358,7 @@ def _message_payload(
         "text": request.text,
         "turn_id": turn_id,
         "run_id": run_id,
+        "mode": request.mode,
     }
     if request.image_ids:
         payload["image_ids"] = list(request.image_ids)

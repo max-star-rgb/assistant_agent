@@ -281,6 +281,21 @@ class GatewaySessionService:
         user_text = str(payload.get("text", ""))
         user_id = str(f.get("user_id") or self._user_id)
 
+        try:
+            turn_mode, turn_mode_explicit = _message_turn_mode(payload)
+        except ValueError as exc:
+            await ep.send(
+                frame(
+                    type="error",
+                    session_id=_optional_string(raw_session_id),
+                    error={
+                        "code": "invalid_turn_mode",
+                        "message": str(exc),
+                    },
+                )
+            )
+            return
+
         if not raw_session_id:
             await ep.send(frame(type="error", error={"code": "missing_session_id"}))
             return
@@ -303,6 +318,8 @@ class GatewaySessionService:
             ),
             client_message_id=_optional_string(payload.get("client_message_id")),
             payload_fingerprint=gateway_payload_fingerprint(payload),
+            turn_mode=turn_mode,
+            turn_mode_explicit=turn_mode_explicit,
         )
 
         try:
@@ -373,7 +390,7 @@ class GatewaySessionService:
         )
         _consume_background_task(turn.timeout_task)
 
-        interrupt_requested = _message_requests_interrupt(payload, self._config)
+        legacy_interrupt_requested = _message_requests_interrupt(payload, self._config)
         queued = False
         async with self._lock:
             current = self._current_by_session.get(session_id)
@@ -381,10 +398,18 @@ class GatewaySessionService:
             self._turns_by_run_id[run_id] = turn
             if current is not None:
                 turn.interrupts_active_run = bool(
-                    interrupt_requested or self._queue_policy.mode == "interrupt"
+                    turn.turn_mode == "replace"
+                    or (
+                        not turn.turn_mode_explicit
+                        and (
+                            legacy_interrupt_requested
+                            or self._queue_policy.mode == "interrupt"
+                        )
+                    )
                 )
                 if (
                     not turn.interrupts_active_run
+                    and not turn.turn_mode_explicit
                     and active is not None
                     and self._semantic_interrupt_enabled(payload)
                 ):
@@ -1475,6 +1500,7 @@ class GatewaySessionService:
         interrupts_active_run: bool = False,
     ) -> RealtimeAgentRequest:
         metadata = _user_message_metadata(payload)
+        metadata["turn_mode"] = "replace" if interrupts_active_run else "followup"
         if interrupts_active_run:
             metadata.setdefault("control", "interrupt")
         gateway_metadata = metadata.get("gateway")
@@ -1666,7 +1692,6 @@ class _GatewaySessionEntry:
         self.gateway_ep = _TouchableEndpoint(gateway_ep, self.touch)
         self.session_ep = session_ep
         self.last_active = time.monotonic()
-        self.hung_up_at: float | None = None
         self.task: asyncio.Task[None] | None = None
 
     def touch(self) -> None:
@@ -1674,11 +1699,6 @@ class _GatewaySessionEntry:
 
     def idle_seconds(self) -> float:
         return time.monotonic() - self.last_active
-
-    def hangup_seconds(self) -> float | None:
-        if self.hung_up_at is None:
-            return None
-        return time.monotonic() - self.hung_up_at
 
     def start(self) -> None:
         self.task = asyncio.create_task(
@@ -1694,9 +1714,10 @@ class _GatewaySessionEntry:
 class GatewaySessionManager:
     """Manage per-user GatewaySessionService instances.
 
-    The manager keeps one in-process session service per user, reuses it across
-    reconnects, marks hangups for a grace period, updates live session config,
-    and evicts idle sessions.
+    The manager keeps one in-process logical AgentSession per user, reuses it
+    across transport reconnects, updates live config, and evicts idle sessions.
+    Explicit hangup destroys the session through ``destroy``; execution runtimes
+    remain owned by the separate application runtime pool.
     """
 
     def __init__(
@@ -1704,7 +1725,6 @@ class GatewaySessionManager:
         *,
         max_sessions: int = 20,
         idle_timeout_s: float = 300.0,
-        hangup_grace_s: float | None = None,
         reaper_interval_s: float = 30.0,
         backend_factory: Callable[[], RealtimeAgentBackend] | None = None,
         service_factory: Callable[[str, Mapping[str, Any]], GatewaySessionService] | None = None,
@@ -1716,7 +1736,6 @@ class GatewaySessionManager:
     ) -> None:
         self.max_sessions = max_sessions
         self.idle_timeout_s = idle_timeout_s
-        self.hangup_grace_s = idle_timeout_s if hangup_grace_s is None else hangup_grace_s
         self.reaper_interval_s = reaper_interval_s
         self.backend_factory = backend_factory
         self.service_factory = service_factory
@@ -1755,16 +1774,13 @@ class GatewaySessionManager:
                 entry = self._entries[user_id]
                 if config:
                     entry.service.update_config(config)
-                resumed = entry.hung_up_at is not None
-                if resumed:
-                    entry.hung_up_at = None
                 entry.touch()
                 self._emit_lifecycle(
                     "gateway.session.acquired",
                     user_id=user_id,
                     payload={
                         "created": False,
-                        "resumed": resumed,
+                        "resumed": True,
                         "active_count": len(self._entries),
                     },
                 )
@@ -1772,7 +1788,7 @@ class GatewaySessionManager:
                     user_id=user_id,
                     endpoint=entry.gateway_ep,  # type: ignore[arg-type]
                     created=False,
-                    resumed=resumed,
+                    resumed=True,
                     active_count=len(self._entries),
                     config=entry.service.config,
                 )
@@ -1806,22 +1822,6 @@ class GatewaySessionManager:
                 active_count=len(self._entries),
                 config=entry.service.config,
             )
-
-    async def mark_hangup(self, user_id: str) -> bool:
-        marked = False
-        async with self._lock:
-            entry = self._entries.get(user_id)
-            if entry is None:
-                return False
-            if entry.hung_up_at is None:
-                entry.hung_up_at = time.monotonic()
-                marked = True
-        self._emit_lifecycle(
-            "gateway.session.hangup_marked",
-            user_id=user_id,
-            payload={"newly_marked": marked},
-        )
-        return True
 
     async def update_config(
         self,
@@ -1868,11 +1868,7 @@ class GatewaySessionManager:
         evict: list[str] = []
         async with self._lock:
             for user_id, entry in self._entries.items():
-                hung_s = entry.hangup_seconds()
-                if hung_s is not None:
-                    if hung_s >= self.hangup_grace_s and entry.idle_seconds() >= self.hangup_grace_s:
-                        evict.append(user_id)
-                elif entry.idle_seconds() >= self.idle_timeout_s:
+                if entry.idle_seconds() >= self.idle_timeout_s:
                     evict.append(user_id)
         for user_id in evict:
             await self.destroy(user_id)
@@ -2055,6 +2051,18 @@ def _message_requests_interrupt(payload: Mapping[str, Any], session_config: Mapp
         return True
     policy = _optional_string(session_config.get("interrupt_policy"))
     return policy in {"interrupt", "barge_in", "cancel_previous"}
+
+
+def _message_turn_mode(payload: Mapping[str, Any]) -> tuple[str, bool]:
+    raw = payload.get("mode")
+    if raw is None:
+        raw = payload.get("turn_mode")
+    if raw is None:
+        return "followup", False
+    mode = _optional_string(raw)
+    if mode not in {"followup", "replace"}:
+        raise ValueError("message.user mode must be followup or replace")
+    return mode, True
 
 
 def _metadata_control(payload: Mapping[str, Any]) -> str | None:

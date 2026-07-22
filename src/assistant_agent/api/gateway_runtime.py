@@ -12,6 +12,7 @@ from typing import Any
 
 from assistant_agent.gateway import (
     GatewayBridge,
+    GatewayConnectionPolicy,
     GatewayQueuePolicy,
     GatewayRuntimePool,
     GatewaySessionManager,
@@ -39,9 +40,10 @@ _GATEWAY_HTTP_RESPONSES_LOCK = RLock()
 
 GATEWAY_MAX_SESSIONS_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_SESSIONS"
 GATEWAY_IDLE_TIMEOUT_S_ENV = "MULTIMODAL_AGENT_GATEWAY_IDLE_TIMEOUT_S"
-GATEWAY_HANGUP_GRACE_S_ENV = "MULTIMODAL_AGENT_GATEWAY_HANGUP_GRACE_S"
 GATEWAY_REAPER_INTERVAL_S_ENV = "MULTIMODAL_AGENT_GATEWAY_REAPER_INTERVAL_S"
 GATEWAY_START_REAPER_ENV = "MULTIMODAL_AGENT_GATEWAY_START_REAPER"
+GATEWAY_DETACH_GRACE_S_ENV = "MULTIMODAL_AGENT_GATEWAY_DETACH_GRACE_S"
+GATEWAY_OUTBOX_MAX_FRAMES_ENV = "MULTIMODAL_AGENT_GATEWAY_OUTBOX_MAX_FRAMES"
 GATEWAY_MAX_ACTIVE_RUNS_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_ACTIVE_RUNS"
 GATEWAY_MAX_RUNTIME_INSTANCES_ENV = (
     "MULTIMODAL_AGENT_GATEWAY_MAX_RUNTIME_INSTANCES"
@@ -89,7 +91,10 @@ def get_gateway_bridge() -> GatewayBridge:
     global _GATEWAY_BRIDGE
     manager = get_gateway_session_manager()
     if _GATEWAY_BRIDGE is None:
-        _GATEWAY_BRIDGE = GatewayBridge(session_manager=manager)
+        _GATEWAY_BRIDGE = GatewayBridge(
+            session_manager=manager,
+            connection_policy=_gateway_connection_policy(os.environ),
+        )
     return _GATEWAY_BRIDGE
 
 
@@ -214,7 +219,6 @@ def create_gateway_session_manager(
     return GatewaySessionManager(
         max_sessions=_int_env(source, GATEWAY_MAX_SESSIONS_ENV, default=20),
         idle_timeout_s=_float_env(source, GATEWAY_IDLE_TIMEOUT_S_ENV, default=300.0),
-        hangup_grace_s=_optional_float_env(source, GATEWAY_HANGUP_GRACE_S_ENV),
         reaper_interval_s=_float_env(source, GATEWAY_REAPER_INTERVAL_S_ENV, default=30.0),
         backend_factory=resolved_backend_factory,
         queue_policy=queue_policy,
@@ -223,6 +227,22 @@ def create_gateway_session_manager(
         start_reaper=_bool_env(source, GATEWAY_START_REAPER_ENV, default=True)
         if start_reaper is None
         else start_reaper,
+    )
+
+
+def _gateway_connection_policy(source: Mapping[str, str]) -> GatewayConnectionPolicy:
+    defaults = GatewayConnectionPolicy()
+    return GatewayConnectionPolicy(
+        detach_grace_s=_non_negative_float_env(
+            source,
+            GATEWAY_DETACH_GRACE_S_ENV,
+            default=defaults.detach_grace_s,
+        ),
+        outbox_max_frames=_positive_int_env(
+            source,
+            GATEWAY_OUTBOX_MAX_FRAMES_ENV,
+            default=defaults.outbox_max_frames,
+        ),
     )
 
 
@@ -425,6 +445,24 @@ def _positive_float_env(env: Mapping[str, str], name: str, *, default: float) ->
     return value
 
 
+def _non_negative_float_env(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    default: float,
+) -> float:
+    raw = str(env.get(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be finite and non-negative") from exc
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be finite and non-negative")
+    return value
+
+
 def _unit_interval_env(env: Mapping[str, str], name: str, *, default: float) -> float:
     raw = str(env.get(name, "")).strip()
     if not raw:
@@ -447,17 +485,6 @@ def _float_env(env: Mapping[str, str], name: str, *, default: float) -> float:
     except ValueError:
         return default
     return parsed if parsed >= 0 else default
-
-
-def _optional_float_env(env: Mapping[str, str], name: str) -> float | None:
-    raw = str(env.get(name, "")).strip()
-    if not raw:
-        return None
-    try:
-        parsed = float(raw)
-    except ValueError:
-        return None
-    return parsed if parsed >= 0 else None
 
 
 def _bool_env(env: Mapping[str, str], name: str, *, default: bool) -> bool:
