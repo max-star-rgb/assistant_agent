@@ -529,7 +529,10 @@ def _sanitize_local_llm_value(value: Any, *, key: str | None = None) -> Any:
     if isinstance(value, list):
         return [_sanitize_local_llm_value(item) for item in value]
     if isinstance(value, str):
-        return "\n".join(sanitize_trace_value(line) for line in value.split("\n"))
+        return "\n".join(
+            line if not line.strip() else sanitize_trace_value(line)
+            for line in value.split("\n")
+        )
     return value
 
 

@@ -491,6 +491,15 @@ def _event_io_attributes(
                 ("summary", "output_ref", "next_step_hint"),
             ),
         }
+    elif name == "context.build.finished":
+        output_payload = {
+            "status": event.status or _event_status(event),
+            "latency_ms": event.latency_ms,
+            "iteration": event.attributes.get("iteration"),
+            "context_report_v1": _safe_payload_value(
+                event.output_summary.get("context_report_v1")
+            ),
+        }
     elif name == "llm.chat.finished":
         llm_input = _llm_input_for_iteration(
             conversation,

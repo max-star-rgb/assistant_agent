@@ -424,6 +424,21 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
             status="succeeded",
             latency_ms=5,
             attributes={"iteration": 1},
+            output_summary={
+                "context_report_v1": {
+                    "schema_version": "context_report_v1",
+                    "sections": {
+                        "request": {
+                            "chars": 4,
+                            "included": True,
+                            "source": "UserRequest.text",
+                        }
+                    },
+                    "total_chars": 4,
+                    "selected_tool_names": ["image_generation"],
+                    "compression_stage": "none",
+                }
+            },
             created_at=created_at + timedelta(milliseconds=10),
         ),
         TraceEvent(
@@ -526,6 +541,10 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     assert not any(span.name == "agent_service.turn" for span in spans)
     assert '"content":"compiled context"' in generation.attributes["langfuse.observation.input"]
     assert '"name":"image_generation"' in generation.attributes["langfuse.observation.input"]
+    assert '"context_report_v1"' in context.attributes["langfuse.observation.output"]
+    assert '"selected_tool_names":["image_generation"]' in context.attributes[
+        "langfuse.observation.output"
+    ]
     assert runtime.attributes["assistant_agent.session_scope"] == "agent_service_connection"
     assert runtime.attributes["assistant_agent.turn_id"] == "turn-1"
 
@@ -662,7 +681,11 @@ def test_local_trace_content_captures_compiled_provider_request(monkeypatch) -> 
     )
 
     state = runtime.run_state(
-        UserRequest(user_id="local-user", session_id="local-session", text="生成一张图片")
+        UserRequest(
+            user_id="local-user",
+            session_id="local-session",
+            text="生成一张图片\n\n使用柔和光线",
+        )
     )
     content = get_default_trace_conversation_store().get(
         user_id=state.user_id,
@@ -677,6 +700,16 @@ def test_local_trace_content_captures_compiled_provider_request(monkeypatch) -> 
     request = content.llm_inputs[0].request
     assert request["messages"] == adapter.requests[0].model_dump(mode="json")["messages"]
     assert request["tools"] == adapter.requests[0].model_dump(mode="json")["tools"]
+    assert "provider error" not in str(request["messages"])
+
+    context_event = next(
+        event
+        for event in runtime.trace_store.list_by_run(state.run_id)
+        if event.canonical_event == "context.build.finished"
+    )
+    report = context_event.output_summary["context_report_v1"]
+    assert report["schema_version"] == "context_report_v1"
+    assert report["sections"]["request"]["chars"] == len(state.request.text)
 
 
 def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -> None:

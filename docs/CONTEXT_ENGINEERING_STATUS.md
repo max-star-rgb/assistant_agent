@@ -190,7 +190,9 @@ Last updated: 2026-07-17
 - `react.decision` trace 的 `context.report` 事件写入 `context_report_v1`，用于检查真实发送给 provider 的 system prompt 大小、selected native tool schema、memory 注入 ID、realtime task-state 大小和压缩/裁剪状态。
 - Context pack construction emits standalone `context.build.started` /
   `context.build.finished` canonical trace events. The finished event carries the
-  same redacted context summary shape used by trace/API context debugging.
+  same redacted context summary shape used by trace/API context debugging，并额外携带
+  prompt-safe `context_report_v1` section accounting，供 Langfuse `context.build` output
+  直接展示；最终 compiled `ChatRequest` 仍归属对应 `llm.chat` generation input。
 - Trace sanitization 会过滤 `raw_provider_payload`、`raw_provider_response`、base64/media/file payload key 和 secret key，作为 public API 前的额外防线。
 - `/runs/{run_id}` 与 `/traces/{trace_id}` 可查询 context 相关摘要。
 

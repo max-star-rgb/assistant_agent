@@ -11,6 +11,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.context.builder import build_assistant_context_pack
 from assistant_agent.services.context.compactor import ContextCompactor
+from assistant_agent.services.context.report import build_context_report
 from assistant_agent.services.trace_store import TraceStore, append_observability_event, new_span_id, sanitize_trace_value
 
 
@@ -96,7 +97,13 @@ def build_traced_assistant_context_pack(
         status="succeeded",
         latency_ms=_elapsed_ms(started_at),
         span_id=span_id,
-        output_summary={"context": context_trace_summary(pack)},
+        output_summary={
+            "context": context_trace_summary(pack),
+            "context_report_v1": build_context_report(
+                pack,
+                selected_tool_specs=pack.prompt_tool_specs,
+            ).model_dump(mode="json"),
+        },
         attributes={
             "iteration": iteration + 1,
             "max_iterations": max_iterations,

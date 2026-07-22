@@ -814,6 +814,12 @@ Regression tests should enforce these invariants:
   root 同时写入 `langfuse.trace.input/output`。工具字段仅使用 prompt-safe 参数摘要、
   decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
   请求体或 Provider payload。
+- `context.build` 的 output 导出 prompt-safe `context_report_v1`：逐 section 展示
+  chars/tokens、item count、included/compacted/trimmed、source，以及总预算、已选工具、
+  context source、skill exposure 和 compression 状态；完整 compiled `ChatRequest` 仍只放在
+  对应 `llm.chat` generation input，避免重复且保持 Provider 调用边界明确。
+- 本地 compiled request 的逐行安全处理必须原样保留空行；空字符串不能经过 provider-error
+  fallback 后变成字面量 `provider error`。hidden reasoning 和 secret marker 仍按原边界过滤。
 - Langfuse Trace 名称固定为 `assistant.turn`，observation hierarchy 固定为
   `assistant.runtime -> react.iteration[n] -> context/llm/decision/tool`，避免把
   Trace 名称再次导出成同名根 observation。memory、final response 和
