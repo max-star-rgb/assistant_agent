@@ -8,7 +8,6 @@ AGENT_SERVICE_PROFILE_TOOL_NAMES = (
     "web_search",
     "weather",
     "shopping_search",
-    "shopping_detail_present",
     "memory_retrieval",
     "memory_save",
     "vision_understanding",

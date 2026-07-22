@@ -10,13 +10,9 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.otel_mapping import build_text_otel_span_specs
 from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.services.agent_service_entry import agent_service_tool_visibility
 from assistant_agent.services.trace_content_policy import LOCAL_TRACE_CONTENT_ENV
 from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
-from assistant_agent.tools.plugins.shopping.tool import (
-    ShoppingDetailPresentTool,
-    ShoppingSearchTool,
-)
+from assistant_agent.tools.plugins.shopping.tool import ShoppingSearchTool
 
 
 class _ShoppingToolCallAdapter:
@@ -43,49 +39,11 @@ class _ShoppingToolCallAdapter:
                     provider=self.provider,
                     model=self.model,
                     finish_reason="stop",
-                    response_text="已找到牛奶购买链接。",
-                ),
-            )
-        )
-
-    def chat(self, request: ChatRequest) -> ChatResult:
-        self.requests.append(request)
-        return next(self.results)
-
-
-class _ShoppingPresentationAdapter:
-    provider = "scripted"
-    model = "scripted-model"
-
-    def __init__(self) -> None:
-        self.requests: list[ChatRequest] = []
-        self.results = iter(
-            (
-                ChatResult(
-                    provider=self.provider,
-                    model=self.model,
-                    finish_reason="tool_calls",
-                    tool_calls=[
-                        NativeToolCall(
-                            id="call-shopping-search",
-                            name="shopping_search",
-                            arguments={"query": "白色低帮运动鞋"},
-                        )
-                    ],
-                ),
-                ChatResult(
-                    provider=self.provider,
-                    model=self.model,
-                    finish_reason="tool_calls",
-                    tool_calls=[
-                        NativeToolCall(
-                            id="call-shopping-present",
-                            name="shopping_detail_present",
-                            arguments={
-                                "output_ref": "mock://compare/white-low-top-sneaker"
-                            },
-                        )
-                    ],
+                    response_text=(
+                        "已找到牛奶购买链接。\n<detail>\n"
+                        "1. 淘宝 - 牛奶 12元 <link>https://example.com/milk</link> "
+                        "<pic>https://example.com/milk.png</pic>\n</detail>"
+                    ),
                 ),
             )
         )
@@ -103,36 +61,6 @@ def test_shopping_tool_description_is_concise_and_explicit() -> None:
     assert "不要立即搜索" in description
     assert "不能下单、结算" in description
     assert len(description) < 220
-    assert "结果无关或不足以回答时不要调用" in ShoppingDetailPresentTool.description
-    assert len(ShoppingDetailPresentTool.description) < 120
-
-
-def test_explicit_shopping_presentation_finishes_without_third_llm_call() -> None:
-    adapter = _ShoppingPresentationAdapter()
-    runtime = AgentGraphRuntime(
-        config=ProviderConfig(langgraph_checkpointer_backend="none"),
-        chat_adapter=adapter,
-        memory_store=InMemoryStore(),
-        session_store=InMemorySessionStore(),
-    )
-
-    state = runtime.run_state(
-        UserRequest(
-            user_id="shopping-present-user",
-            session_id="shopping-present-session",
-            text="帮我找白色低帮运动鞋购买链接",
-            metadata={"tool_visibility": agent_service_tool_visibility()},
-        )
-    )
-
-    assert state.status == "completed"
-    assert [call.tool_name for call in state.tool_calls] == [
-        "shopping_search",
-        "shopping_detail_present",
-    ]
-    assert len(adapter.requests) == 2
-    assert state.response is not None
-    assert state.response.data["final_answer_source"] == "shopping_presentation_contract"
 
 
 def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
@@ -168,11 +96,17 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     state = runtime.run_state(request)
 
     assert state.status == "completed"
-    assert state.response is not None and state.response.message == "已找到牛奶购买链接。"
+    assert state.response is not None and state.response.message.startswith(
+        "已找到牛奶购买链接。\n<detail>"
+    )
     assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert len(adapter.requests) == 2
     assert adapter.requests[0].response_format is None
     assert adapter.requests[1].response_format is None
+    second_request = json.dumps(adapter.requests[1].messages, ensure_ascii=False)
+    assert '"role": "tool"' in second_request
+    assert "structured_output" in second_request
+    assert "<detail>" in second_request
     shopping_definition = next(
         item["function"]
         for item in adapter.requests[0].tools

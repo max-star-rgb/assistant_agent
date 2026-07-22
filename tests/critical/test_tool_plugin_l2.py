@@ -110,7 +110,6 @@ def test_agent_service_entry_profile_limits_the_runtime_tool_catalog() -> None:
     assert selection.run_tool_catalog.available_tool_names == [
         "memory_retrieval",
         "memory_save",
-        "shopping_detail_present",
         "shopping_search",
         "weather",
         "web_search",
@@ -132,7 +131,6 @@ def test_agent_service_entry_profile_limits_the_runtime_tool_catalog() -> None:
     assert video_selection.run_tool_catalog.available_tool_names == [
         "memory_retrieval",
         "memory_save",
-        "shopping_detail_present",
         "shopping_search",
         "vision_understanding",
         "weather",

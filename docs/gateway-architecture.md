@@ -145,15 +145,13 @@ id as `agent_session_id` / `langfuse.session.id` and explicitly labels its scope
 as `agent_service_connection`; it must not present the vendor correlation id as
 a durable conversation id. Its Gateway session uses the trusted Agent-Service
 entry profile and a trusted AgentRuntime tool set: `web_search`, `weather`, `shopping_search`,
-`shopping_detail_present`, `memory_retrieval`, `memory_save`, plus dynamically exposed `vision_understanding`
+`memory_retrieval`, `memory_save`, plus dynamically exposed `vision_understanding`
 when active-video state makes it valid. These tools enter the Agent-Service
 catalog through their own visibility metadata, not through catalog-side
 business-tool name rules. `weather` 只有在当前运行模式已经正确注册对应 adapter 时才进入目录；
 真实模式缺少 MCP mapping 或配置时仍然 fail closed。`shopping_search` performs product
-search plus price comparison；只有模型在看到结果后确认它确实回答用户购物请求，并调用
-`shopping_detail_present(output_ref=...)`，Realtime 才启用 deterministic App presenter。
-匹配成功的展示决策直接结束 assistant loop，不再产生第三次 LLM 调用；单独一次成功搜索不再授权
-覆盖模型最终正文。Tool qualification is derived from trusted session
+search plus price comparison；其结构化结果作为 tool observation 回到下一轮 LLM，由 LLM 生成最终
+购物文本。Realtime/Gateway 不执行购物展示决策，也不覆盖模型最终正文。Tool qualification is derived from trusted session
 config and structured request media, never user text. `assistantControl`
 validates and records media control state,
 and the legacy `assistantControlStart` handshake remains accepted for older
@@ -600,7 +598,10 @@ Gateway entry adapters must bind identity before a user turn reaches the assista
 
 Entry adapters may attach prompt-safe `entry_capabilities` metadata so downstream code can distinguish text streaming, interrupt support, TTS state support, realtime task-state support, media reference support, raw media support, TTS edge event support, and App shopping-detail presentation without inferring behavior from transport names. These capability declarations are informational; they do not authorize tool calls, provider selection, memory access, or new modalities.
 
-`supports_shopping_detail_v1=true` is injected by trusted entries whose clients can render the App shopping card protocol: authenticated ordinary Gateway WebSocket and vendor Agent-Service. HTTP and CLI entries leave it false unless they explicitly add an equivalent display contract. For these entries the realtime backend buffers model response deltas until the terminal result is known. After a successful governed `shopping_search`, it discards those deltas, selects the first successful `ToolResult` that can produce eligible cards, and emits exactly one deterministic `stream.chunk` containing the natural-language summary plus the single `<detail>` protocol block; later model results cannot overwrite that original presentable result. If shopping presentation is not activated, buffered deltas are forwarded normally before the final event. Conversation history and `AgentResponse.message` retain only the natural-language summary; protocol tags are entry presentation and never become assistant context. The presenter omits offers without a valid price, HTTP(S) product link, or HTTP(S) image and renders at most three eligible offers; an empty eligible set produces only natural language and no empty `<detail>`.
+`supports_shopping_detail_v1=true` 只表示客户端能够渲染 App shopping card protocol，不授权入口层
+重写回答。`shopping_search` 的结构化 observation 携带展示模板，下一轮 LLM 可在最终文本中生成唯一
+`<detail>...</detail>` 块。Realtime 将 Provider/Runtime 最终文本按普通 response delta/final 语义原样
+交付；conversation history、`AgentResponse.message`、Gateway result 与客户端看到的正文保持一致。
 
 Realtime task-state is opt-in at the request/capability level. Ordinary Gateway metadata, `source=gateway_*`, or a `realtime.run_id`/`turn_id` pair does not by itself enable phone/realtime task semantics. `/agent-service/v1` declares `supports_realtime_task_state=true`; ordinary request/response chat facades should leave that capability false unless they explicitly want realtime interruption, pending-tool, TTS/display, and artifact-reuse behavior.
 

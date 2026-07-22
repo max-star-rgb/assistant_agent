@@ -229,7 +229,13 @@ def _next_step_hint(
             "If the user only asked for a description, final_answer is likely enough."
         )
     if tool_name == SHOPPING_SEARCH_TOOL_NAME:
-        return "已完成商品搜索和比价；请基于 structured_output.best_offer、offers 和 URL 状态给出最终购物建议，不要声称已经下单。"
+        return (
+            "消费 structured_output 中的商品、报价和 URL，生成最终回复；不要调用其他工具格式化结果，"
+            "也不要声称已经下单。存在可展示商品时使用模板：{summary}\n<detail>\n"
+            "1. {platform} - {title} {total_price}元 <link>{product_url}</link> "
+            "<pic>{image_url}</pic>\n</detail>。最多列 3 项，只能使用 observation 中的真实字段；"
+            "没有具备有效链接和图片的相关商品时，只用自然语言说明，不输出 <detail>。"
+        )
     if tool_name == WEB_SEARCH_TOOL_NAME:
         return "Use the web search results in the final answer; include source URLs and published dates when present."
     if tool_name == WEB_FETCH_TOOL_NAME:

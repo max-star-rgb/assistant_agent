@@ -35,10 +35,6 @@ from assistant_agent.schemas.context import AssistantContextPack
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
-from assistant_agent.schemas.tool_ids import (
-    SHOPPING_DETAIL_PRESENT_TOOL_NAME,
-    SHOPPING_SEARCH_TOOL_NAME,
-)
 from assistant_agent.schemas.tool_observation import (
     ToolObservation,
     observation_from_tool_result,
@@ -1626,23 +1622,6 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
         }
         if step is not None:
             _advance_plan_after_tool_result(state, outputs_by_step, result)
-        if _shopping_presentation_is_terminal(state, tool_name, result):
-            shopping_refs = [
-                item.output_ref
-                for item in state.tool_results
-                if item.tool_name == SHOPPING_SEARCH_TOOL_NAME and item.output_ref
-            ]
-            state.set_response(
-                AgentResponse(
-                    message="已选择商品搜索结果作为本轮最终购物展示。",
-                    data={
-                        "final_answer_source": "shopping_presentation_contract",
-                        "assistant_decision": "tool_call",
-                        "tool_count": len(state.tool_calls),
-                    },
-                    output_refs=shopping_refs,
-                )
-            )
         return {
             **graph_state,
             "tool_observations": _record_react_observation(graph_state, tool_observations, observation),
@@ -1666,23 +1645,6 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             **graph_state,
             "tool_observations": _record_react_observation(graph_state, tool_observations, observation),
         }
-
-
-def _shopping_presentation_is_terminal(
-    state: AgentState,
-    tool_name: str | None,
-    result: ToolResult,
-) -> bool:
-    if tool_name != SHOPPING_DETAIL_PRESENT_TOOL_NAME or not result.success:
-        return False
-    data = result.data if isinstance(result.data, dict) else {}
-    selected_ref = data.get("output_ref")
-    return isinstance(selected_ref, str) and any(
-        item.tool_name == SHOPPING_SEARCH_TOOL_NAME
-        and item.success
-        and item.output_ref == selected_ref
-        for item in state.tool_results
-    )
 
 
 def _current_plan_step(
@@ -1918,12 +1880,6 @@ def route_after_assistant(graph_state: AssistantLoopState) -> str:
         return "execute_tool"
 
     return "finish"
-
-
-def route_after_tool_execution(graph_state: AssistantLoopState) -> str:
-    """Stop after a tool establishes an explicit terminal response contract."""
-
-    return "finish" if graph_state["state"].status == "completed" else "continue"
 
 
 def _get_tool_context(state: AgentState) -> Any:

@@ -425,7 +425,7 @@ public names, but they should map to this vocabulary.
 | `loop_guard.triggered` | ReAct guard stopped or redirected the loop. |
 | `response.delta` | User-visible response text chunk was emitted. |
 | `response.final` | Final response was set. |
-| `response.delivered` | Realtime/entry presentation selected the text actually delivered to the client. |
+| `response.delivered` | Realtime/entry recorded the final text actually delivered to the client. |
 | `memory.save.started` / `memory.save.finished` | Post-run memory save or promotion lifecycle. |
 | `run.completed` | Run ended successfully. |
 | `run.failed` | Run ended with an error. |
@@ -449,10 +449,10 @@ memory summaries, rendered memory context, candidate content, or raw user text.
 Final response tracing emits `response.final` with only prompt-safe response
 shape data such as message presence, character count, output-ref count, response
 data keys, status, and error count. It must not include the response text.
-Realtime delivery additionally emits `response.delivered` after any deterministic
-entry presentation. The redacted event stores only source、presence 和字符数；
-`RealtimeAgentResult.response_text` 与该交付文本保持一致。Langfuse root output 使用交付文本，
-而 `response.final` 仍保留 Runtime/模型最终正文，避免把两个阶段混为同一事实。
+Realtime delivery additionally emits `response.delivered`。The redacted event stores only
+source、presence 和字符数；`RealtimeAgentResult.response_text` 与 Runtime 最终文本保持一致，入口层
+不得根据工具结果替换正文。Langfuse root output 使用实际交付文本，`response.final` 保留同一份
+Runtime/模型最终正文；两个事件用于区分生命周期，不表示存在第二套回答生成逻辑。
 
 ## Span Model
 

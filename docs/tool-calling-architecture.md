@@ -44,11 +44,10 @@ requires_media
 `shopping_search` 的 description 明确区分三种边界：只表达想吃、想喝、想要或想用某物时先询问
 是否需要购物帮助；明确要求推荐、查价、比价或购买链接且商品可从当前对话确定时直接调用；该工具
 只返回候选、优惠、比价依据和链接，不能下单、结算或声称购买完成。
-Agent-Service 的 App 购物详情使用独立只读决策工具 `shopping_detail_present(output_ref)`：模型只能在
-看到同一轮 `shopping_search` 结果并判断其确实回答用户购物请求后调用。Realtime presenter 必须同时
-找到成功的展示决策和同 `output_ref` 的搜索结果才可覆盖交付文本；搜索成功本身不是展示授权。
-匹配成功的 `shopping_detail_present` 是终态响应契约，assistant loop 直接进入 response composition，
-不再为这项纯展示确认追加第三次 LLM 调用；引用不存在、失败或不匹配的搜索结果时则继续普通循环。
+购物结果遵循标准 ReAct 闭环：`shopping_search` 返回结构化 `ToolResult`，runtime 将其转换为
+tool observation，下一轮 LLM 消费商品、报价、链接和展示模板后生成最终文本。系统不注册额外的展示
+工具，也不在 Realtime/Gateway 用 presenter 覆盖模型回复；是否输出 `<detail>` 以及选择哪些合格商品
+由 LLM 根据 observation 决定，代码只负责工具治理、上下文传递和原样交付最终回答。
 
 系统不维护中心 Tool manifest。`schemas/tool_ids.py` 只保存已经成为跨层协议的稳定字符串，不枚举
 Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入。旧 planner/intent 所需的 action、alias

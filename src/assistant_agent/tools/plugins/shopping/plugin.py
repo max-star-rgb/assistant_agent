@@ -7,10 +7,7 @@ from assistant_agent.services.product_adapter import (
 )
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
-from assistant_agent.tools.plugins.shopping.tool import (
-    ShoppingDetailPresentTool,
-    ShoppingSearchTool,
-)
+from assistant_agent.tools.plugins.shopping.tool import ShoppingSearchTool
 
 
 class ShoppingToolPlugin:
@@ -23,8 +20,7 @@ class ShoppingToolPlugin:
             ShoppingSearchTool(
                 search_adapter=create_shopping_search_adapter(context.config),
                 compare_adapter=create_shopping_compare_adapter(context.config),
-            ),
-            ShoppingDetailPresentTool(),
+            )
         ]
 
 

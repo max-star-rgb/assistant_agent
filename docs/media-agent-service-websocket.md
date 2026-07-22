@@ -172,7 +172,7 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
 - 若本轮正文已经全部通过中间包发送，成功终包的 `description` 为空字符串。媒体/App 可以继续按增量追加处理，不会重复追加完整答案。
 - 若本轮已经发送过中间包，成功终包仍会同时携带 `display_only=true` 和 camelCase 兼容字段 `displayOnly=true`，供支持该标记的客户端识别终包。
 - 只有真实 Provider token delta 产生中间包；Provider 不支持或未产生 token delta 时，即使 `stream=true` 也只发送一个完整终包，不伪造流式能力。
-- 购物推荐/比价成功后，只有 LLM 进一步调用 `shopping_detail_present`，并引用同一轮 `shopping_search` 的 `output_ref`，Agent 侧才由 deterministic presenter 生成 App 购物协议；单独的成功搜索不授权覆盖最终回复。成功终包的 `description` 可以包含自然语言摘要和唯一 `<detail>...</detail>` 块，媒体侧按文本透传，App 侧按协议渲染。LLM 不应手写 `<detail>` 字段。Realtime result 的 `response_text` 必须等于 presenter 实际交付文本，不能继续保留被覆盖的模型正文；trace 以 `response.final` 保存 Runtime 结论，以 `response.delivered` 保存交付来源和形状，本地原文模式下后者展示客户端实际收到的完整文本。
+- 购物推荐/比价遵循 ReAct：`shopping_search` 返回结构化结果，下一轮 LLM 消费 observation 中的商品、报价、链接和模板，生成自然语言摘要及可选的唯一 `<detail>...</detail>` 块。Realtime 和媒体侧只透传 LLM 最终文本，不使用代码 presenter 覆盖。`AgentResponse.message`、Realtime result、`response.final` 和客户端正文保持一致；`response.delivered` 记录实际交付来源与形状，本地原文模式下可展示完整交付文本。
 - `deliveryId` 和 `chatResponseAck` 只属于成功终包；中间包和失败终包都不进入应用层 ACK 状态。
 - Provider 的工具调用前导文本受 runtime commit barrier 保护；会被工具调用取代的 provisional 文本不会发送给 Media/App。
 

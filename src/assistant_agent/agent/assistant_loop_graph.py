@@ -10,7 +10,6 @@ from assistant_agent.agent.assistant_loop_nodes import (
     assistant_node,
     execute_requested_tool_node,
     route_after_assistant,
-    route_after_tool_execution,
 )
 from assistant_agent.agent.graph_nodes import compose_response_node, load_memory_node, save_memory_node
 from assistant_agent.agent.graph_runtime import GraphRuntimeContext, bind_runtime_node
@@ -51,11 +50,7 @@ def build_assistant_loop_graph(
         },
     )
 
-    graph.add_conditional_edges(
-        "execute_tool",
-        route_after_tool_execution,
-        {"continue": "assistant", "finish": "compose_response"},
-    )
+    graph.add_edge("execute_tool", "assistant")
     graph.add_edge("apply_plan_mode_transition", "assistant")
     graph.add_edge("compose_response", "save_memory")
     graph.add_edge("save_memory", END)

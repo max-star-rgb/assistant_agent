@@ -133,19 +133,6 @@ class ProductSearchRequest(BaseModel):
 ProductSearchInput = ProductSearchRequest
 
 
-class ShoppingDetailPresentInput(BaseModel):
-    """Explicitly select one prior shopping result for App presentation."""
-
-    output_ref: str = Field(min_length=1)
-
-
-class ShoppingDetailPresentResult(BaseModel):
-    """Structured acknowledgement of the selected shopping result."""
-
-    output_ref: str = Field(min_length=1)
-    summary: str = "已选择商品结果作为本轮最终购物展示。"
-
-
 class PriceOffer(BaseModel):
     """A normalized offer used by price comparison."""
 
