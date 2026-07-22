@@ -27,8 +27,10 @@ class ShoppingSearchTool(ToolBase):
 
     name = SHOPPING_SEARCH_TOOL_NAME
     description = (
-        "Search for current shopping candidates and compare prices/offers in one call. "
-        "Use this for product recommendations, purchase advice, price checks, and value comparisons."
+        "搜索可购买商品，返回候选、价格优惠、比价依据和购买链接。"
+        "用户明确要求商品推荐、查价、比价或购买链接，且可从当前请求或对话确定商品时，直接调用，无需再次确认。"
+        "用户只表达想吃、想喝、想要或想用某物但未请求购物帮助时，先简短询问是否需要找商品或链接，不要立即搜索。"
+        "本工具不能下单、结算，也不能声称购买已完成。"
     )
     input_schema = ProductSearchInput
     output_schema = ShoppingSearchResult

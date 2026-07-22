@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -633,6 +634,44 @@ def snapshot_from_task_state(state: RealtimeTaskState) -> RealtimeTaskStateSnaps
         barge_in_source=state.barge_in_source,
         last_realtime_event_ids=list(state.last_realtime_event_ids),
     )
+
+
+def realtime_task_state_prompt_projection(snapshot: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Project runtime task state to the semantic fields needed by the main LLM."""
+
+    if not snapshot:
+        return None
+    projection: dict[str, Any] = {
+        "status": snapshot.get("status"),
+        "objective": snapshot.get("objective"),
+    }
+    constraints = snapshot.get("constraints")
+    if isinstance(constraints, list) and constraints:
+        projection["constraints"] = constraints[:12]
+    continuation_strategy = snapshot.get("continuation_strategy")
+    if continuation_strategy:
+        projection["continuation_strategy"] = continuation_strategy
+    latest_revision = snapshot.get("latest_revision")
+    if isinstance(latest_revision, Mapping):
+        revision = {
+            key: latest_revision.get(key)
+            for key in ("user_text", "revision_type", "strategy")
+            if latest_revision.get(key) not in (None, "")
+        }
+        if revision:
+            projection["latest_revision"] = revision
+    for key in ("reusable_artifacts", "side_effects"):
+        items = snapshot.get(key)
+        if isinstance(items, list) and items:
+            projection[key] = items[:6]
+    pending_tool = snapshot.get("pending_tool")
+    if isinstance(pending_tool, Mapping) and pending_tool:
+        projection["pending_tool"] = dict(pending_tool)
+    return {
+        key: value
+        for key, value in projection.items()
+        if value not in (None, "", [])
+    }
 
 
 def format_realtime_task_state_snapshot(snapshot: RealtimeTaskStateSnapshot) -> str:

@@ -41,6 +41,10 @@ requires_media
 `_ACTION_USAGE` 副本。`description` 同时承担 provider 可见的简短使用说明，避免再造一套
 `when_to_use/when_not_to_use/runtime_constraints` 元数据。
 
+`shopping_search` 的 description 明确区分三种边界：只表达想吃、想喝、想要或想用某物时先询问
+是否需要购物帮助；明确要求推荐、查价、比价或购买链接且商品可从当前对话确定时直接调用；该工具
+只返回候选、优惠、比价依据和链接，不能下单、结算或声称购买完成。
+
 系统不维护中心 Tool manifest。`schemas/tool_ids.py` 只保存已经成为跨层协议的稳定字符串，不枚举
 Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入。旧 planner/intent 所需的 action、alias
 与 capability 映射隔离在 `agent/legacy_tool_mapping.py`，不能作为新增 Tool 的登记入口。

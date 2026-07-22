@@ -19,7 +19,11 @@ from assistant_agent.services.turn_summary import (
 )
 
 if TYPE_CHECKING:
-    from assistant_agent.services.trace_conversation import TraceConversationView, TraceLlmInput
+    from assistant_agent.services.trace_conversation import (
+        TraceConversationView,
+        TraceLlmInput,
+        TraceLlmOutput,
+    )
 
 
 OTEL_SPAN_SPEC_SCHEMA_VERSION = "assistant_agent_text_otel_span_spec_v1"
@@ -30,6 +34,7 @@ _SPAN_EVENTS = frozenset(
         "memory.load.finished",
         "context.build.finished",
         "llm.chat.finished",
+        "response.contract.validation",
         "react.decision",
         "action.validation.finished",
         "tool.finished",
@@ -44,6 +49,7 @@ _ITERATION_CHILD_EVENTS = frozenset(
     {
         "context.build.finished",
         "llm.chat.finished",
+        "response.contract.validation",
         "react.decision",
         "action.validation.finished",
         "tool.finished",
@@ -71,10 +77,12 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "context_usage_ratio",
         "decision_type",
         "error_count",
+        "failure_code",
         "first_text_latency_ms",
         "gateway_run_id",
         "input_tokens",
         "iteration",
+        "next_action",
         "output_tokens",
         "provider_latency_ms",
         "response_present",
@@ -85,6 +93,7 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "tool_call_id",
         "tool_count",
         "tool_reported_latency_ms",
+        "validation_status",
         "wall_latency_ms",
     }
 )
@@ -445,6 +454,7 @@ def _event_io_attributes(
     output_payload: dict[str, Any] = {
         "status": event.status or _event_status(event),
     }
+    include_output = name != "llm.chat.finished"
     if event.latency_ms is not None:
         output_payload["latency_ms"] = event.latency_ms
 
@@ -515,6 +525,19 @@ def _event_io_attributes(
         input_payload.setdefault("iteration", event.attributes.get("iteration"))
         input_payload.setdefault("provider", event.provider)
         input_payload.setdefault("model", event.model)
+        llm_output = _llm_output_for_event(conversation, span_id=event.span_id)
+        if llm_output is not None:
+            output_payload = {
+                "attempt_kind": llm_output.attempt_kind,
+                "provider_response_before_validation": dict(llm_output.result),
+            }
+            include_output = True
+    elif name == "response.contract.validation":
+        input_payload = {
+            "attempt_kind": event.attributes.get("attempt_kind"),
+            "source_llm_span_id": event.parent_span_id,
+        }
+        output_payload = _safe_payload_value(event.output_summary)
     elif name == "response.final" and conversation is not None:
         output_payload = {
             "role": "assistant",
@@ -524,7 +547,7 @@ def _event_io_attributes(
         }
 
     attributes = {"langfuse.observation.input": _json_value(_drop_none(input_payload))}
-    if name != "llm.chat.finished":
+    if include_output:
         attributes["langfuse.observation.output"] = _json_value(_drop_none(output_payload))
     return attributes
 
@@ -556,6 +579,19 @@ def _llm_input_for_event(
         return None
     return next(
         (item for item in conversation.llm_inputs if item.iteration == iteration),
+        None,
+    )
+
+
+def _llm_output_for_event(
+    conversation: "TraceConversationView | None",
+    *,
+    span_id: str | None,
+) -> "TraceLlmOutput | None":
+    if conversation is None or span_id is None:
+        return None
+    return next(
+        (item for item in conversation.llm_outputs if item.span_id == span_id),
         None,
     )
 
@@ -682,7 +718,12 @@ def _span_name(event: TraceEvent) -> str:
 def _observation_type(event: TraceEvent) -> str:
     if _event_name(event) == "llm.chat.finished" or event.model:
         return "generation"
-    if _event_name(event) in {"react.decision", "tool.observation", "loop_guard.triggered"}:
+    if _event_name(event) in {
+        "react.decision",
+        "response.contract.validation",
+        "tool.observation",
+        "loop_guard.triggered",
+    }:
         return "event"
     return "span"
 

@@ -45,7 +45,10 @@ from assistant_agent.services.context.capability_catalog import (
 from assistant_agent.services.context.report import build_context_source_report
 from assistant_agent.services.context.token_budget import token_budget_reporter_from_request
 from assistant_agent.services.context.tool_catalog import select_prompt_tool_specs
-from assistant_agent.services.realtime_task_state import REALTIME_TASK_STATE_METADATA_KEY
+from assistant_agent.services.realtime_task_state import (
+    REALTIME_TASK_STATE_METADATA_KEY,
+    realtime_task_state_prompt_projection,
+)
 
 
 def build_assistant_context_pack(
@@ -76,7 +79,9 @@ def build_assistant_context_pack(
         else _metadata_text(active_request, "memory_context_text") or "\n".join(summary for summary in summaries if summary)
     )
     memory_blocks = _metadata_dict_list(active_request, "memory_context_blocks")
-    realtime_task_state = _metadata_dict(active_request, REALTIME_TASK_STATE_METADATA_KEY)
+    realtime_task_state = realtime_task_state_prompt_projection(
+        _metadata_dict(active_request, REALTIME_TASK_STATE_METADATA_KEY)
+    )
     realtime_video_context = _realtime_video_context(active_request)
     durable_task_state, durable_task_state_trimmed = _durable_task_context(active_request)
     active_observations = observations or []

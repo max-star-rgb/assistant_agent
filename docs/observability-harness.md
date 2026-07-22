@@ -85,14 +85,15 @@ Tool stages follow the same rule: `tool.finished` / `tool.failed` 的顶层
 The foreground assistant loop must emit one paired `llm.chat.started` /
 `llm.chat.finished` span for every Provider attempt. The finished event supplies
 `wall_latency_ms` and `provider_latency_ms`, allowing the turn summary to name
-`llm_chat[n]` instead of folding model time into `unattributed`. `llm.chat`
-generations do not set `langfuse.observation.output`; Provider/model, finish
-metadata, usage and latency remain dedicated generation attributes. This avoids
-Langfuse wrapping a custom payload as an Assistant Message filled with undefined
-standard fields.
+`llm_chat[n]` instead of folding model time into `unattributed`. 默认安全模式下
+`llm.chat` generation 不设置 `langfuse.observation.output`；Provider/model、finish
+metadata、usage 和 latency 使用独立 generation attributes。
 每个 attempt 另外记录 `attempt_kind`（当前包括 `primary`、
-`contract_repair` 和 `context_overflow_retry`），避免同一 ReAct iteration 内的重试被误读成
+`decision_retry`、`contract_repair` 和 `context_overflow_retry`），避免同一 ReAct iteration 内的重试被误读成
 两次独立决策。
+每次非 tool-call 响应随后产生 `response.contract.validation` observation，展示
+`validation_status`、prompt-safe `failure_code`、顶层字段名和 `next_action`，并以 parent span 指向
+对应 `llm.chat`，用于还原 parse → retry/repair/commit 路径。
 归一化后的 `attributes.usage.prompt_tokens/completion_tokens/total_tokens` 会映射为
 Langfuse generation 的 `usage_details.input/output/total`，并同步写入 OTel
 `gen_ai.usage.input_tokens/output_tokens`；usage 嵌套结构不能被当作普通标量属性而丢弃。
@@ -721,9 +722,9 @@ Trace and monitoring records must not include:
 `localhost`、`127.0.0.1` 或 `::1` 时，Langfuse root observation 和
 `response.final` 可以接收当前轮用户/助手原文；每个 `llm.chat` generation 还可以接收
 实际编译后交给 Chat adapter 的 `ChatRequest`，包括 messages、完整 tool schemas、
-tool choice 和生成参数。Chat adapter 返回、但尚未经过 runtime 最终答案校验的归一化
-`ChatResult` 仍可保留在本机 `TraceConversationStore` 供显式本地查询，但不写入 Langfuse
-generation output。它不包含 vendor SDK envelope、stream chunk body 或 `reasoning_content`，并按
+tool choice 和生成参数；还可以在 generation output 的
+`provider_response_before_validation` 中接收 Chat adapter 返回、但尚未经过 runtime 最终答案校验的
+归一化 `ChatResult`。它不包含 vendor SDK envelope、stream chunk body 或 `reasoning_content`，并按
 对应 `llm.chat` 的 `span_id` 配对，不能只按 iteration 取第一条。内容来自独立的进程内
 `TraceConversationStore`，用户/助手单侧
 最多导出 4000 字符；compiled request 保留消息换行和工具 schema，并继续执行 secret
@@ -826,9 +827,10 @@ Regression tests should enforce these invariants:
   root 同时写入 `langfuse.trace.input/output`。工具字段仅使用 prompt-safe 参数摘要、
   decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
   请求体或 Provider payload。
-- `llm.chat` generation 不设置 `langfuse.observation.output`；Provider/model、finish metadata、
-  usage、latency 和 attempt kind 使用独立 observation attributes。归一化 Provider result 只保留
-  在显式本地 `TraceConversationStore` 查询面，不投影到 Langfuse Assistant Message。
+- `llm.chat` generation 默认不设置 `langfuse.observation.output`；Provider/model、finish metadata、
+  usage、latency 和 attempt kind 使用独立 observation attributes。只有满足上述 localhost 三重 opt-in
+  时，才从进程内 `TraceConversationStore` 按 span id 投影完整 compiled request 与归一化
+  `provider_response_before_validation`。`response.contract.validation` 始终只包含 prompt-safe 解析结果。
 - `context.build` 的 output 导出 prompt-safe `context_report_v1`：逐 section 展示
   chars/tokens、item count、included/compacted/trimmed、source，以及总预算、已选工具、
   context source、skill exposure 和 compression 状态；完整 compiled `ChatRequest` 仍只放在

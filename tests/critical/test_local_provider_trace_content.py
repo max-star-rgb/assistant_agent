@@ -80,6 +80,20 @@ def test_local_trace_pairs_primary_and_repair_provider_results_by_span(monkeypat
         if span.name == "llm.chat"
     ]
     assert len(generations) == 2
-    assert all("langfuse.observation.output" not in span.attributes for span in generations)
+    outputs = [
+        json.loads(span.attributes["langfuse.observation.output"])
+        for span in generations
+    ]
+    assert [output["attempt_kind"] for output in outputs] == [
+        "primary",
+        "contract_repair",
+    ]
+    assert [
+        output["provider_response_before_validation"]["response_text"]
+        for output in outputs
+    ] == [
+        '{"response_type":"unsupported","answer":"provider draft"}',
+        '{"response_type":"answer","answer":"repaired answer"}',
+    ]
     assert json.loads(generations[0].attributes["langfuse.observation.input"])["tools"]
     assert json.loads(generations[1].attributes["langfuse.observation.input"])["tools"] == []

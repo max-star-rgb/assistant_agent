@@ -47,7 +47,7 @@ Last updated: 2026-07-22
 - durable snapshot 是当前执行状态，不是 session summary 或长期 memory。worker 可按普通 read policy 读取长期记忆，但量子完成不会触发 completed-run 自动长期写入。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - Realtime task-state snapshot 只在进入 runtime 前显式启用：`interaction_mode=realtime`、`enable_realtime_task_state=true` 或 entry capability `supports_realtime_task_state=true`。普通 `/agent/run` 即使经由 Gateway 生命周期，也不会因为存在 `gateway` metadata 或 `realtime.run_id`/`turn_id` 自动启用。
-- 启用 task state 的普通多轮 follow-up 不再只靠 interrupt 路径修订目标。主模型的已验证终态 JSON 可携带结构化 `task_update(action/objective/constraints)`；runtime 在回答提交后归并到 session task store，并在规范目标变化时追加 `IntentRevision`。入口与 catalog 不读取用户关键词推断目标变化。
+- 启用 task state 的普通多轮 follow-up 不再只靠 interrupt 路径修订目标。主模型的已验证终态 JSON 可在 `response_type` / `answer` 旁携带结构化 `task_update(action/objective/constraints)`，禁止把 task update 作为裸顶层响应；runtime 在回答提交后归并到 session task store，并在规范目标变化时追加 `IntentRevision`。入口与 catalog 不读取用户关键词推断目标变化。
 - `MemoryManager` 负责按 read policy 加载或跳过分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
 - Assistant context 已有字符预算兜底；owner persona 超限时先按完整段落收缩 persona，再沿用 memory/conversation 优先压缩、工具 observation 最后压缩的顺序。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，`keep_recent_turns=2` 是 recent transcript 的最小原文保留 guard。
@@ -153,6 +153,7 @@ Last updated: 2026-07-22
 ### Realtime Task State Context
 
 - `prepare_realtime_task_state_request` 只在显式 realtime mode/capability 的请求进入 `AgentGraphRuntime.run_state(...)` 前生成 prompt-safe task-state snapshot。
+- 完整 snapshot 保留在 request metadata 供 Gateway、interrupt、artifact 和 side-effect 治理使用；主模型 prompt 只接收语义 projection：status、objective、非空 constraints，以及存在时的 continuation strategy、latest revision、reusable artifacts、side effects 和 pending tool。turn/run/task/event ID、TTS/display 状态和重复的 current user text 不进入该 projection。
 - Task-state 记录 session 内当前 objective、active constraints、source turn/run ids、interrupt 产生的 `IntentRevision`，以及 completed run 后的 prompt-safe `TaskArtifact`、lightweight checkpoint artifact 和 `SideEffectRecord`。
 - Task-state 现在也记录 prompt-safe realtime call state：`pending_tool`、`tts_state`、`last_spoken_progress`、`speech_turn_id`、`barge_in_source` 和 bounded `last_realtime_event_ids`，用于表达工具等待、展示/TTS 状态和打断来源；工具完成/失败、取消和挂断会清理 pending tool，TTS/display started/finished/superseded 会更新展示状态；不保存 raw audio、raw transcript stream 或 provider payload。
 - `pending_tool` 会消费 `tool_started` 事件中的 prompt-safe `pre_tool_call` 摘要，保留工具副作用等级、risk gate、idempotency key 摘要和是否需要确认，便于 interrupt 后选择重规划、等待确认、去重或补偿路径。
