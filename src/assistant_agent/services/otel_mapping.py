@@ -139,14 +139,7 @@ def build_text_otel_span_specs(
     root_span = _root_span(safe_events, conversation=conversation)
     trace_attributes = _trace_attributes(safe_events)
     spans = [root_span]
-    runtime_span = _runtime_span(
-        safe_events,
-        root_span_id=root_span.span_id,
-        trace_attributes=trace_attributes,
-    )
-    runtime_parent_id = runtime_span.span_id if runtime_span is not None else root_span.span_id
-    if runtime_span is not None:
-        spans.append(runtime_span)
+    runtime_parent_id = root_span.span_id
     event_iterations = _event_iterations(safe_events)
     iteration_spans = _iteration_spans(
         safe_events,
@@ -189,59 +182,20 @@ def _root_span(
     return OtelSpanSpec(
         trace_id=events[0].trace_id,
         span_id=_root_span_id(events),
-        name="assistant.turn",
+        name="assistant.runtime",
         start_time=started_at,
         end_time=finished_at,
         status=_root_status(events),
         attributes={
             **trace_attributes,
             "langfuse.observation.type": "span",
+            "assistant_agent.canonical_event": "run",
+            "assistant_agent.node_name": "runtime",
             **_turn_summary_attributes(events),
             **_text_latency_attributes(events),
             **_agent_service_latency_attributes(events),
             **build_turn_diagnostic(events).langfuse_trace_metadata(),
             **_root_io_attributes(events, conversation=conversation),
-        },
-    )
-
-
-def _runtime_span(
-    events: list[TraceEvent],
-    *,
-    root_span_id: str,
-    trace_attributes: dict[str, Any],
-) -> OtelSpanSpec | None:
-    started = next((event for event in events if _event_name(event) == "run.started"), None)
-    if started is None:
-        return None
-    terminal = next(
-        (
-            event
-            for event in reversed(events)
-            if _event_name(event) in {"run.completed", "run.failed", "run.cancelled"}
-        ),
-        None,
-    )
-    end_time = terminal.created_at if terminal is not None else max(event.created_at for event in events)
-    output_payload = {
-        "status": terminal.status if terminal is not None else "unknown",
-        "latency_ms": terminal.latency_ms if terminal is not None else None,
-    }
-    return OtelSpanSpec(
-        trace_id=started.trace_id,
-        span_id=started.span_id or _stable_span_id(started.trace_id, "assistant.runtime"),
-        parent_span_id=root_span_id,
-        name="assistant.runtime",
-        start_time=started.created_at,
-        end_time=end_time,
-        status=_event_status(terminal) if terminal is not None else "unset",
-        attributes={
-            **trace_attributes,
-            "langfuse.observation.type": "span",
-            "assistant_agent.canonical_event": "run",
-            "assistant_agent.node_name": "runtime",
-            "langfuse.observation.input": _json_value({"operation": "assistant.runtime"}),
-            "langfuse.observation.output": _json_value(_drop_none(output_payload)),
         },
     )
 
@@ -654,7 +608,7 @@ def _latest_turn_summary(events: list[TraceEvent]) -> dict[str, Any]:
 
 
 def _root_span_id(events: list[TraceEvent]) -> str:
-    return _stable_span_id(events[0].trace_id, "assistant.turn")
+    return _stable_span_id(events[0].trace_id, "assistant.runtime")
 
 
 def _stable_span_id(trace_id: str, name: str) -> str:

@@ -381,8 +381,8 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
     spans = build_text_otel_span_specs(events, conversation=conversation)
     by_name = {span.name: span for span in spans}
 
-    assert "北京今天天气怎么样？" in by_name["assistant.turn"].attributes["langfuse.trace.input"]
-    assert "北京今天晴。" in by_name["assistant.turn"].attributes["langfuse.trace.output"]
+    assert "北京今天天气怎么样？" in by_name["assistant.runtime"].attributes["langfuse.trace.input"]
+    assert "北京今天晴。" in by_name["assistant.runtime"].attributes["langfuse.trace.output"]
     assert '"decision_type":"tool_call"' in by_name["react.decision"].attributes[
         "langfuse.observation.output"
     ]
@@ -513,21 +513,21 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     )
 
     spans = build_text_otel_span_specs(events, conversation=conversation)
-    root = next(span for span in spans if span.name == "assistant.turn")
     runtime = next(span for span in spans if span.name == "assistant.runtime")
     iteration = next(span for span in spans if span.name == "react.iteration")
     context = next(span for span in spans if span.name == "context.build")
     generation = next(span for span in spans if span.name == "llm.chat")
 
-    assert runtime.parent_span_id == root.span_id
+    assert runtime.parent_span_id is None
+    assert not any(span.name == "assistant.turn" for span in spans)
     assert iteration.parent_span_id == runtime.span_id
     assert context.parent_span_id == iteration.span_id
     assert generation.parent_span_id == iteration.span_id
     assert not any(span.name == "agent_service.turn" for span in spans)
     assert '"content":"compiled context"' in generation.attributes["langfuse.observation.input"]
     assert '"name":"image_generation"' in generation.attributes["langfuse.observation.input"]
-    assert root.attributes["assistant_agent.session_scope"] == "agent_service_connection"
-    assert root.attributes["assistant_agent.turn_id"] == "turn-1"
+    assert runtime.attributes["assistant_agent.session_scope"] == "agent_service_connection"
+    assert runtime.attributes["assistant_agent.turn_id"] == "turn-1"
 
 
 def test_plain_text_run_completes() -> None:

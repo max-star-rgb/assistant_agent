@@ -814,8 +814,9 @@ Regression tests should enforce these invariants:
   root 同时写入 `langfuse.trace.input/output`。工具字段仅使用 prompt-safe 参数摘要、
   decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
   请求体或 Provider payload。
-- Langfuse span hierarchy 固定为 `assistant.turn -> assistant.runtime ->
-  react.iteration[n] -> context/llm/decision/tool`。memory、final response 和
+- Langfuse Trace 名称固定为 `assistant.turn`，observation hierarchy 固定为
+  `assistant.runtime -> react.iteration[n] -> context/llm/decision/tool`，避免把
+  Trace 名称再次导出成同名根 observation。memory、final response 和
   runtime postprocess 直接归属 `assistant.runtime`。`agent_service.turn.finished`
   是入口延迟汇总事实，不再映射成一个与 root 几乎完全重叠的长 Span；其关联 ID、
   terminal 状态和诊断元数据合并到 root/turn summary。
