@@ -44,6 +44,9 @@ requires_media
 `shopping_search` 的 description 明确区分三种边界：只表达想吃、想喝、想要或想用某物时先询问
 是否需要购物帮助；明确要求推荐、查价、比价或购买链接且商品可从当前对话确定时直接调用；该工具
 只返回候选、优惠、比价依据和链接，不能下单、结算或声称购买完成。
+Agent-Service 的 App 购物详情使用独立只读决策工具 `shopping_detail_present(output_ref)`：模型只能在
+看到同一轮 `shopping_search` 结果并判断其确实回答用户购物请求后调用。Realtime presenter 必须同时
+找到成功的展示决策和同 `output_ref` 的搜索结果才可覆盖交付文本；搜索成功本身不是展示授权。
 
 系统不维护中心 Tool manifest。`schemas/tool_ids.py` 只保存已经成为跨层协议的稳定字符串，不枚举
 Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入。旧 planner/intent 所需的 action、alias

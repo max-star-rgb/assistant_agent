@@ -10,6 +10,8 @@ from assistant_agent.schemas.products import (
     ProductSearchInput,
     ProductSearchResult,
     ShoppingSearchResult,
+    ShoppingDetailPresentInput,
+    ShoppingDetailPresentResult,
 )
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.product_adapter import (
@@ -18,7 +20,11 @@ from assistant_agent.services.product_adapter import (
     create_shopping_compare_adapter,
     create_shopping_search_adapter,
 )
-from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import (
+    SHOPPING_DETAIL_PRESENT_TOOL_NAME,
+    SHOPPING_SEARCH_CAPABILITY,
+    SHOPPING_SEARCH_TOOL_NAME,
+)
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 
@@ -110,6 +116,35 @@ class ShoppingSearchTool(ToolBase):
             output_ref=result.output_ref,
             latency_ms=result.latency_ms,
             contract=contract,
+        )
+
+
+class ShoppingDetailPresentTool(ToolBase):
+    """Explicit final-presentation decision for an existing shopping result."""
+
+    name = SHOPPING_DETAIL_PRESENT_TOOL_NAME
+    description = (
+        "将本轮已完成的商品搜索结果作为最终购物详情展示。"
+        "仅当结果确实回答了用户的购物请求时调用，并传入 shopping_search 返回的 output_ref；"
+        "结果无关或不足以回答时不要调用。"
+    )
+    input_schema = ShoppingDetailPresentInput
+    output_schema = ShoppingDetailPresentResult
+    category = "read"
+    requires_confirmation = False
+    enabled_by_default = False
+
+    def _run(
+        self,
+        input: ShoppingDetailPresentInput,
+        context: ToolContext,
+    ) -> ToolResult:
+        result = ShoppingDetailPresentResult(output_ref=input.output_ref)
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data=result.model_dump(mode="json"),
+            model_observation=result.model_dump(mode="json"),
         )
 
 
@@ -282,6 +317,11 @@ def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
         ),
         "best_value_product_id": data.get("best_value_product_id"),
         "ranking_reason": data.get("ranking_reason"),
+        "output_ref": data.get("output_ref"),
+        "next_step_hint": (
+            "如果这些结果确实回答了用户的购物请求，调用 shopping_detail_present 并传入 output_ref；"
+            "结果无关或不足时不要调用。"
+        ),
     }
     errors = data.get("errors")
     if errors:

@@ -12,7 +12,10 @@ from assistant_agent.services.otel_mapping import build_text_otel_span_specs
 from assistant_agent.services.session_store import InMemorySessionStore
 from assistant_agent.services.trace_content_policy import LOCAL_TRACE_CONTENT_ENV
 from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
-from assistant_agent.tools.plugins.shopping.tool import ShoppingSearchTool
+from assistant_agent.tools.plugins.shopping.tool import (
+    ShoppingDetailPresentTool,
+    ShoppingSearchTool,
+)
 
 
 class _ShoppingToolCallAdapter:
@@ -57,6 +60,8 @@ def test_shopping_tool_description_is_concise_and_explicit() -> None:
     assert "不要立即搜索" in description
     assert "不能下单、结算" in description
     assert len(description) < 220
+    assert "结果无关或不足以回答时不要调用" in ShoppingDetailPresentTool.description
+    assert len(ShoppingDetailPresentTool.description) < 120
 
 
 def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
