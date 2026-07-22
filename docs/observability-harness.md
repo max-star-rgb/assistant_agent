@@ -425,6 +425,7 @@ public names, but they should map to this vocabulary.
 | `loop_guard.triggered` | ReAct guard stopped or redirected the loop. |
 | `response.delta` | User-visible response text chunk was emitted. |
 | `response.final` | Final response was set. |
+| `response.delivered` | Realtime/entry presentation selected the text actually delivered to the client. |
 | `memory.save.started` / `memory.save.finished` | Post-run memory save or promotion lifecycle. |
 | `run.completed` | Run ended successfully. |
 | `run.failed` | Run ended with an error. |
@@ -448,6 +449,10 @@ memory summaries, rendered memory context, candidate content, or raw user text.
 Final response tracing emits `response.final` with only prompt-safe response
 shape data such as message presence, character count, output-ref count, response
 data keys, status, and error count. It must not include the response text.
+Realtime delivery additionally emits `response.delivered` after any deterministic
+entry presentation. The redacted event stores only source、presence 和字符数；
+`RealtimeAgentResult.response_text` 与该交付文本保持一致。Langfuse root output 使用交付文本，
+而 `response.final` 仍保留 Runtime/模型最终正文，避免把两个阶段混为同一事实。
 
 ## Span Model
 
@@ -726,7 +731,8 @@ Trace and monitoring records must not include:
 `ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT=true`、
 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 且 OTLP endpoint host 是
 `localhost`、`127.0.0.1` 或 `::1` 时，Langfuse root observation 和
-`response.final` 可以接收当前轮用户/助手原文；每个 `llm.chat` generation 还可以接收
+`response.final` 可以接收当前轮 Runtime 助手原文，`response.delivered` 和 Langfuse root output
+可以接收最终交付原文；每个 `llm.chat` generation 还可以接收
 实际编译后的 Provider 语义输入，包括 model、messages、完整 tool schemas、tool choice、
 response format 和生成参数。preview 保持原始字段与 message role，不把 tools 或生成参数改写为
 虚构的 system/tool message；`user_id`、`session_id`、重复的 `user_query`、iteration 等运行时字段

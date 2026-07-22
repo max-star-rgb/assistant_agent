@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from time import perf_counter
 from typing import Any
@@ -31,12 +32,14 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.products import PriceCompareResult, ShoppingSearchResult
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.assistant_run_service import (
-    run_assistant_request,
     run_assistant_request_stream,
 )
 from assistant_agent.services.realtime_task_state import realtime_metadata_requests_interrupt
 from assistant_agent.services.shopping_detail_presenter import ShoppingDetailPresenter
-from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.schemas.tool_ids import (
+    SHOPPING_DETAIL_PRESENT_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
+)
 from assistant_agent.services.trace_store import append_observability_event
 
 
@@ -87,19 +90,32 @@ ShoppingDetailResult = PriceCompareResult | ShoppingSearchResult
 
 
 def _successful_shopping_detail_event(event: AgentEvent) -> bool:
-    if event.type not in {"tool_finished", "tool_completed"} or event.tool_name != SHOPPING_SEARCH_TOOL_NAME:
+    if (
+        event.type not in {"tool_finished", "tool_completed"}
+        or event.tool_name != SHOPPING_DETAIL_PRESENT_TOOL_NAME
+    ):
         return False
     post_tool_call = event.payload.get("post_tool_call")
     return isinstance(post_tool_call, dict) and post_tool_call.get("status") == "succeeded"
 
 
 def _successful_shopping_detail_result(state: Any) -> ShoppingDetailResult | None:
-    first_successful: ShoppingDetailResult | None = None
+    selected_refs = {
+        selected_ref
+        for result in getattr(state, "tool_results", [])
+        if result.tool_name == SHOPPING_DETAIL_PRESENT_TOOL_NAME
+        and result.success
+        and (selected_ref := _shopping_detail_selected_ref(result)) is not None
+    }
+    if not selected_refs:
+        return None
     presenter = ShoppingDetailPresenter()
     for result in getattr(state, "tool_results", []):
         if result.tool_name != SHOPPING_SEARCH_TOOL_NAME:
             continue
         if not result.success or not isinstance(result.data, dict):
+            continue
+        if result.output_ref not in selected_refs:
             continue
         try:
             candidate = _parse_shopping_detail_result(result.tool_name, result.data)
@@ -107,11 +123,15 @@ def _successful_shopping_detail_result(state: Any) -> ShoppingDetailResult | Non
             continue
         if candidate is None:
             continue
-        if first_successful is None:
-            first_successful = candidate
         if "<detail>" in presenter.present(candidate):
             return candidate
-    return first_successful
+    return None
+
+
+def _shopping_detail_selected_ref(result: Any) -> str | None:
+    data = result.data if isinstance(result.data, dict) else {}
+    value = data.get("output_ref") or result.output_ref
+    return value if isinstance(value, str) and value else None
 
 
 def _parse_shopping_detail_result(tool_name: str, data: dict[str, Any]) -> ShoppingDetailResult | None:
@@ -258,11 +278,15 @@ class AgentGraphRealtimeBackend:
 
             response = state.response
             response_text = response.message if response is not None else ""
+            delivered_text = response_text
+            delivery_source = "assistant_response"
             status = "error" if state.status == "failed" else "completed"
 
             if status == "completed" and event_sink is not None:
                 shopping_result = _successful_shopping_detail_result(state) if forwarder.shopping_detail_active else None
                 if shopping_result is not None:
+                    delivered_text = ShoppingDetailPresenter().present(shopping_result)
+                    delivery_source = "shopping_detail_v1"
                     forwarder.discard_buffered_response_deltas()
                     await _emit_shopping_detail_events(
                         forwarder,
@@ -280,10 +304,18 @@ class AgentGraphRealtimeBackend:
                         emit_chunks=not forwarder.response_delta_seen,
                     )
 
+            if status == "completed":
+                _append_response_delivered_event(
+                    artifacts=artifacts,
+                    state=state,
+                    delivered_text=delivered_text,
+                    source=delivery_source,
+                )
             result_metadata["realtime_progress"] = forwarder.progress_summary()
+            result_metadata["response_delivery_source"] = delivery_source
             return RealtimeAgentResult(
                 status=status,
-                response_text=response_text,
+                response_text=delivered_text,
                 expects_reply=bool(response.followup_question) if response is not None else False,
                 run_id=result_run_id,
                 trace_id=state.trace_id,
@@ -365,6 +397,51 @@ def _append_realtime_backend_finished_event(
             "user_visible_event_count": progress_summary.get("user_visible_event_count"),
             "sla_fallback_emitted": progress_summary.get("sla_fallback_emitted"),
         },
+    )
+
+
+def _append_response_delivered_event(
+    *,
+    artifacts: Any,
+    state: Any,
+    delivered_text: str,
+    source: str,
+) -> None:
+    """Record the entry-layer response contract without persisting raw content."""
+
+    runtime = getattr(artifacts, "runtime", None)
+    trace_store = getattr(runtime, "trace_store", None)
+    append_observability_event(
+        trace_store,
+        trace_id=state.trace_id,
+        run_id=state.run_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+        canonical_event="response.delivered",
+        node_name="realtime_backend",
+        status="succeeded",
+        attributes={
+            "source": source,
+            "message_present": bool(delivered_text),
+            "message_chars": len(delivered_text),
+        },
+        output_summary={
+            "response": {
+                "message_present": bool(delivered_text),
+                "message_chars": len(delivered_text),
+                "source": source,
+            }
+        },
+    )
+    if os.environ.get("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT") != "1":
+        return
+    from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
+
+    get_default_trace_conversation_store().append_delivered(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=state.trace_id,
+        delivered_text=delivered_text,
     )
 
 

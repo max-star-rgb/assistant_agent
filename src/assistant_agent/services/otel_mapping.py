@@ -41,6 +41,7 @@ _SPAN_EVENTS = frozenset(
         "tool.observation",
         "loop_guard.triggered",
         "response.final",
+        "response.delivered",
         "memory.save.finished",
     }
 )
@@ -420,11 +421,12 @@ def _root_io_attributes(
             "chars": conversation.user.chars,
             "truncated": conversation.user.truncated,
         }
+        delivered = conversation.delivered or conversation.assistant
         output_payload: dict[str, Any] = {
             "role": "assistant",
-            "content": sanitize_trace_value(conversation.assistant.text),
-            "chars": conversation.assistant.chars,
-            "truncated": conversation.assistant.truncated,
+            "content": sanitize_trace_value(delivered.text),
+            "chars": delivered.chars,
+            "truncated": delivered.truncated,
             "terminal_status": summary.get("terminal_status", "unknown"),
         }
     else:
@@ -535,6 +537,15 @@ def _event_io_attributes(
             "content": sanitize_trace_value(conversation.assistant.text),
             "chars": conversation.assistant.chars,
             "truncated": conversation.assistant.truncated,
+        }
+    elif name == "response.delivered" and conversation is not None:
+        delivered = conversation.delivered or conversation.assistant
+        output_payload = {
+            "role": "assistant",
+            "content": sanitize_trace_value(delivered.text),
+            "chars": delivered.chars,
+            "truncated": delivered.truncated,
+            "source": event.attributes.get("source"),
         }
 
     attributes = {"langfuse.observation.input": _json_value(_drop_none_if_mapping(input_payload))}
@@ -833,6 +844,8 @@ def _span_name(event: TraceEvent) -> str:
         return canonical_event.removesuffix(".failed")
     if canonical_event == "response.final":
         return "response.final"
+    if canonical_event == "response.delivered":
+        return "response.delivered"
     return canonical_event
 
 

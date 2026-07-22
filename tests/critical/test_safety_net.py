@@ -397,6 +397,52 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
     assert "北京晴" in by_name["tool.observation"].attributes["langfuse.observation.output"]
 
 
+def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final() -> None:
+    common = {
+        "trace_id": "1234567890abcdef1234567890abcdef",
+        "run_id": "run-delivered",
+        "user_id": "user-delivered",
+        "session_id": "session-delivered",
+    }
+    events = [
+        TraceEvent(
+            **common,
+            node_name="compose_response",
+            event_type="observability",
+            canonical_event="response.final",
+            status="succeeded",
+        ),
+        TraceEvent(
+            **common,
+            node_name="realtime_backend",
+            event_type="observability",
+            canonical_event="response.delivered",
+            status="succeeded",
+            attributes={"source": "shopping_detail_v1"},
+        ),
+    ]
+    conversation = TraceConversationView(
+        trace_id=common["trace_id"],
+        user=TraceConversationText(text="上海", chars=2),
+        assistant=TraceConversationText(text="模型最终回复", chars=6),
+        delivered=TraceConversationText(text="购物详情", chars=4),
+    )
+
+    spans = build_text_otel_span_specs(events, conversation=conversation)
+    by_name = {span.name: span for span in spans}
+
+    assert "购物详情" in by_name["assistant.runtime"].attributes["langfuse.trace.output"]
+    assert "模型最终回复" in by_name["response.final"].attributes[
+        "langfuse.observation.output"
+    ]
+    assert "购物详情" in by_name["response.delivered"].attributes[
+        "langfuse.observation.output"
+    ]
+    assert "shopping_detail_v1" in by_name["response.delivered"].attributes[
+        "langfuse.observation.output"
+    ]
+
+
 def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm_input() -> None:
     created_at = datetime(2026, 7, 22, tzinfo=timezone.utc)
     common = {

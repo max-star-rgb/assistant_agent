@@ -50,6 +50,7 @@ class TraceConversationView(BaseModel):
     trace_id: str
     user: TraceConversationText
     assistant: TraceConversationText
+    delivered: TraceConversationText | None = None
     llm_inputs: list[TraceLlmInput] = Field(default_factory=list)
     llm_outputs: list[TraceLlmOutput] = Field(default_factory=list)
 
@@ -63,6 +64,7 @@ class TraceConversationRecord:
     trace_id: str
     user_text: str
     assistant_text: str
+    delivered_text: str | None = None
     llm_inputs: tuple[TraceLlmInput, ...] = ()
     llm_outputs: tuple[TraceLlmOutput, ...] = ()
 
@@ -102,6 +104,7 @@ class InMemoryTraceConversationStore:
                 trace_id=trace_id,
                 user_text=user_text,
                 assistant_text=assistant_text,
+                delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=existing.llm_inputs if existing is not None else (),
                 llm_outputs=existing.llm_outputs if existing is not None else (),
             )
@@ -130,6 +133,7 @@ class InMemoryTraceConversationStore:
                 trace_id=trace_id,
                 user_text=existing.user_text if existing is not None else "",
                 assistant_text=existing.assistant_text if existing is not None else "",
+                delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=inputs[-16:],
                 llm_outputs=existing.llm_outputs if existing is not None else (),
             )
@@ -158,10 +162,42 @@ class InMemoryTraceConversationStore:
                 trace_id=trace_id,
                 user_text=existing.user_text if existing is not None else "",
                 assistant_text=existing.assistant_text if existing is not None else "",
+                delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=existing.llm_inputs if existing is not None else (),
                 llm_outputs=outputs[-16:],
             )
             self._replace_record(record)
+
+    def append_delivered(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        delivered_text: str,
+    ) -> None:
+        """Attach the exact entry-layer text delivered for one trace."""
+
+        with self._lock:
+            existing = self._matching_record(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
+            if existing is None:
+                return
+            self._replace_record(
+                TraceConversationRecord(
+                    user_id=existing.user_id,
+                    session_id=existing.session_id,
+                    trace_id=existing.trace_id,
+                    user_text=existing.user_text,
+                    assistant_text=existing.assistant_text,
+                    delivered_text=delivered_text,
+                    llm_inputs=existing.llm_inputs,
+                    llm_outputs=existing.llm_outputs,
+                )
+            )
 
     def get(
         self,
@@ -186,6 +222,11 @@ class InMemoryTraceConversationStore:
                     trace_id=trace_id,
                     user=_bounded_text(record.user_text, limit=limit),
                     assistant=_bounded_text(record.assistant_text, limit=limit),
+                    delivered=(
+                        _bounded_text(record.delivered_text, limit=limit)
+                        if record.delivered_text is not None
+                        else None
+                    ),
                     llm_inputs=list(record.llm_inputs) if include_llm_inputs else [],
                     llm_outputs=list(record.llm_outputs) if include_llm_outputs else [],
                 )
