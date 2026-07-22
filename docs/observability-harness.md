@@ -1,6 +1,6 @@
 # Observability Harness
 
-Last updated: 2026-07-20
+Last updated: 2026-07-22
 
 This document is the current entry for assistant run status, logs, monitoring,
 trace, and ReAct checkpoint observability. It defines the developer-facing
@@ -91,6 +91,9 @@ kind, content presence/character count, bounded tool-call names/IDs and argument
 key summaries, refusal shape, finish reason, output reference, structured-output
 validation status, and bounded error codes. It must not contain response text,
 tool argument values, hidden reasoning, or raw Provider payloads.
+归一化后的 `attributes.usage.prompt_tokens/completion_tokens/total_tokens` 会映射为
+Langfuse generation 的 `usage_details.input/output/total`，并同步写入 OTel
+`gen_ai.usage.input_tokens/output_tokens`；usage 嵌套结构不能被当作普通标量属性而丢弃。
 
 The versioned `agent_service_turn_latency_v1` summary also exposes only bounded
 stream facts: `stream_requested`, `provider_token_stream_seen`,

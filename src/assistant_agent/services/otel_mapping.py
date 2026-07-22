@@ -599,14 +599,29 @@ def _safe_attributes(
 
 
 def _usage_details(source: Mapping[str, Any]) -> dict[str, int]:
+    nested = source.get("usage")
+    usage_source = nested if isinstance(nested, Mapping) else source
     usage: dict[str, int] = {}
-    input_tokens = _mapping_int(source, "input_tokens")
-    output_tokens = _mapping_int(source, "output_tokens")
+    input_tokens = _first_mapping_int(usage_source, ("input_tokens", "prompt_tokens"))
+    output_tokens = _first_mapping_int(usage_source, ("output_tokens", "completion_tokens"))
+    total_tokens = _first_mapping_int(usage_source, ("total_tokens", "token_count"))
     if input_tokens is not None:
         usage["input"] = input_tokens
     if output_tokens is not None:
         usage["output"] = output_tokens
+    if total_tokens is None and (input_tokens is not None or output_tokens is not None):
+        total_tokens = (input_tokens or 0) + (output_tokens or 0)
+    if total_tokens is not None:
+        usage["total"] = total_tokens
     return usage
+
+
+def _first_mapping_int(source: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = _mapping_int(source, key)
+        if value is not None:
+            return value
+    return None
 
 
 def _latest_turn_summary(events: list[TraceEvent]) -> dict[str, Any]:
