@@ -10,6 +10,7 @@ from assistant_agent.schemas.context import AssistantContextPack, RenderedAssist
 from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.chat_adapter import ChatRequest, ChatStreamCallback
+from assistant_agent.services.context.conversation import native_conversation_messages
 from assistant_agent.services.context.renderer import render_native_tool_context
 
 _ASSISTANT_REASONING_CONTENT_KEY = "assistant_reasoning_content"
@@ -59,6 +60,7 @@ class PromptCompiler:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_instruction},
         ]
+        messages.extend(native_conversation_messages(request.context_pack.request.metadata))
         messages.append({"role": "user", "content": user_content})
         messages.extend(_native_tool_messages(request))
 

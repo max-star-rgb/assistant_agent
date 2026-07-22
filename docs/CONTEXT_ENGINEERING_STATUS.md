@@ -131,7 +131,7 @@ Last updated: 2026-07-22
 - `render_prompt_json_context` 是历史 prompt-json renderer，保留给 context renderer 测试和离线兼容材料；生产真实 LLM runtime 不再使用它做决策控制面。
 - `PromptCompiler` 是生产 provider 请求的唯一提示词编译入口；它只组合已解析 system profile、已构建 `AssistantContextPack`、已有 native calls/observations 和已选 ToolSpec，不读取 memory/store、不访问 ToolRegistry、不调用 Provider，也不写 trace。
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
-- native 与 legacy renderer 均先渲染 session summary、历史和其他上下文，再渲染当前用户请求；Provider-native user-context message 以当前请求作为最后一个区段。
+- Provider-native 编译将 token-aware selector 保留的近期原始轮次还原为独立 `user` / `assistant` messages，再以无重复角色标签的原始请求文本追加当前 `user` message；较早内容继续通过 session summary 注入，不与近期原文重复。legacy renderer 仍保留文本格式以用于离线兼容。
 - native/legacy context 可渲染 prompt-safe capability catalog；实际执行契约仍是 `ToolSpec`，工具调用仍必须通过 `ToolExecutor`。
 - Provider-native `ChatRequest.tools` 使用 `AssistantContextPack.prompt_tool_specs` 中已治理的 schema。context builder 同时生成 prompt-safe `RunToolCatalog`；其中 `available_tool_names` 既是模型可见目录，也是 `ActionValidator` 的 run-scoped 执行边界，不再维护重复的 exposed/executable 集合。目录装配只消费 category、toolset、媒体要求、默认启用以及显式 tool/toolset/skill 等结构化事实，不读取 `request.text` 做意图路由；当前 recall 为 identity，并记录 `recall_identity`。治理后明确为空的集合不会回退完整 registry；未来语义召回必须另行设计高召回率与漏召回恢复机制。
 - 系统提示词只承载通用 runtime、数据边界和工具治理规则，不写入某个具体工具的选择策略。具体工具的适用场景、禁用场景、输入要求和副作用说明由 `ToolSpec.when_to_use`、`when_not_to_use`、`runtime_constraints` 和 side-effect metadata 随 provider-native tool schema 提供给模型。

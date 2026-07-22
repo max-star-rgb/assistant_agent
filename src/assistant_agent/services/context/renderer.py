@@ -12,6 +12,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.context.compactor import format_context_summary
+from assistant_agent.services.context.conversation import native_conversation_messages
 from assistant_agent.services.context.tool_catalog import prompt_tool_spec_payload
 
 
@@ -48,13 +49,17 @@ def render_native_tool_context(pack: AssistantContextPack) -> RenderedAssistantC
 
     sections = [
         render_session_summary_context(pack),
-        render_conversation_context(pack),
+        (
+            ""
+            if native_conversation_messages(pack.request.metadata)
+            else render_conversation_context(pack)
+        ),
         render_realtime_video_context(pack),
         render_durable_task_state_context(pack),
         render_memory_context(pack.memory_summaries, pack.memory_text),
         render_plan_mode_context(pack),
         render_tool_capabilities(pack.tool_capabilities),
-        render_request_context(pack.request),
+        render_native_request_context(pack.request),
     ]
     active_sections = [section for section in sections if section]
     return RenderedAssistantContext(native_user_message="\n\n".join(active_sections), sections=active_sections)
@@ -68,6 +73,17 @@ def render_native_user_message(pack: AssistantContextPack) -> str:
 
 def render_request_context(request: UserRequest) -> str:
     lines = [f"用户请求：{request.text or ''}"]
+    return _render_request_context_lines(request, lines)
+
+
+def render_native_request_context(request: UserRequest) -> str:
+    """Render the current request without a redundant role label."""
+
+    lines = [request.text or ""]
+    return _render_request_context_lines(request, lines)
+
+
+def _render_request_context_lines(request: UserRequest, lines: list[str]) -> str:
     if request.image_ids:
         lines.append(f"附带图片 ID：{request.image_ids}")
     if request.video_ids:

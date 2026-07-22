@@ -103,6 +103,40 @@ def conversation_context_metadata(
     }
 
 
+def native_conversation_messages(metadata: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Return token-selected recent turns as provider-native role messages."""
+
+    history = metadata.get("conversation_history")
+    recent_turn_count = metadata.get("conversation_context_recent_turns")
+    if (
+        not isinstance(history, list)
+        or not isinstance(recent_turn_count, int)
+        or recent_turn_count <= 0
+    ):
+        return []
+    recent_turns = history[-min(recent_turn_count, len(history)) :]
+    messages: list[dict[str, str]] = []
+    for turn in recent_turns:
+        if not isinstance(turn, Mapping):
+            continue
+        user_text = turn.get("user_text")
+        assistant_text = turn.get("assistant_text")
+        if (
+            not isinstance(user_text, str)
+            or not user_text.strip()
+            or not isinstance(assistant_text, str)
+            or not assistant_text.strip()
+        ):
+            continue
+        messages.extend(
+            [
+                {"role": "user", "content": user_text.strip()},
+                {"role": "assistant", "content": assistant_text.strip()},
+            ]
+        )
+    return messages
+
+
 def select_conversation_window(
     history: list[ConversationTurnView],
     *,
