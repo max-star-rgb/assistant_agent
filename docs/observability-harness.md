@@ -736,7 +736,8 @@ Trace and monitoring records must not include:
 实际编译后的 Provider 语义输入，包括 model、messages、完整 tool schemas、tool choice、
 response format 和生成参数。preview 保持原始字段与 message role，不把 tools 或生成参数改写为
 虚构的 system/tool message；`user_id`、`session_id`、重复的 `user_query`、iteration 等运行时字段
-不进入 input preview。generation output 以正文、工具调用、拒绝/错误和 Provider 终态分段展示。
+不进入 input preview。generation output 仅展示 Provider 的原始语义回复（正文、工具调用、拒绝/错误）；
+finish reason 保留在 trace/协议快照，usage 保留在独立 observation attributes 中，不拼接到 output 文本。
 若同时显式设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`，`provider_protocol_response` 还保存
 原始 content、原始工具参数字符串、refusal、finish reason、usage、可用时的 Provider request id
@@ -846,12 +847,12 @@ Regression tests should enforce these invariants:
   root 同时写入 `langfuse.trace.input/output`。工具字段仅使用 prompt-safe 参数摘要、
   decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
   请求体或 Provider payload。
-- `llm.chat` generation 默认不设置 `langfuse.observation.output`；Provider/model、finish metadata、
-  usage、latency 和 attempt kind 使用独立 observation attributes。只有满足上述 localhost 三重 opt-in
+- `llm.chat` generation 默认不设置 `langfuse.observation.output`；Provider/model、usage、latency 和
+  attempt kind 使用独立 observation attributes，finish reason 保留在 trace/协议快照。只有满足上述 localhost 三重 opt-in
   时，才从进程内 `TraceConversationStore` 按 span id 投影完整 Provider 语义输入和回复。两者
   input 保留原始 `model/messages/tools/tool_choice/response_format/temperature/max_tokens` 结构，
-  message role 不做展示性重写。output 使用分段文本展示回复正文、工具调用和 Provider 终态，
-  不再展示整块 JSON wrapper。协议语义快照还需要独立设置
+  message role 不做展示性重写。output 使用分段文本展示 Provider 的原始语义回复，不附加
+  finish reason 或 usage，也不展示整块 JSON wrapper。协议语义快照还需要独立设置
   `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`。JSONL 只保留 route、transport、terminal
   和 delta count 等安全摘要；这些对象都不是 vendor SDK 原始 envelope。
 - `context.build` 的 output 导出 prompt-safe `context_report_v1`：逐 section 展示

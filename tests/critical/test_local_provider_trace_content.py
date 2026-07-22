@@ -36,6 +36,7 @@ class _NativeTextChatAdapter:
             model=self.model,
             finish_reason="stop",
             response_text=next(self.responses),
+            usage={"prompt_tokens": 12, "completion_tokens": 3},
             protocol_response=ProviderProtocolResponse(
                 transport_mode="sync",
                 content="provider native answer",
@@ -148,8 +149,11 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
     rendered_input = json.dumps(input_preview, ensure_ascii=False)
     assert "raw-user" not in rendered_input
     assert "raw-session" not in rendered_input
-    assert "provider native answer" in output_preview
-    assert "【Provider 终态】" in output_preview
-    assert '"finish_reason": "stop"' in output_preview
+    assert output_preview == "provider native answer"
+    assert json.loads(generations[0].attributes["langfuse.observation.usage_details"]) == {
+        "input": 12,
+        "output": 3,
+        "total": 15,
+    }
     assert generations[0].attributes["assistant_agent.route_branch"] == "provider_content"
     assert generations[0].attributes["assistant_agent.transport_mode"] == "sync"

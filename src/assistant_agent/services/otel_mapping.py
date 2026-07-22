@@ -597,8 +597,6 @@ def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
             content=str(protocol.get("content") or ""),
             tool_calls=tool_calls,
             refusal=protocol.get("refusal"),
-            finish_reason=protocol.get("finish_reason"),
-            usage=protocol.get("usage", {}),
         )
 
     normalized = llm_output.normalized_result
@@ -628,8 +626,6 @@ def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
         content=str(normalized.get("response_text") or ""),
         tool_calls=tool_calls,
         refusal=normalized.get("refusal"),
-        finish_reason=normalized.get("finish_reason"),
-        usage=normalized.get("usage", {}),
         errors=normalized.get("errors", []),
     )
 
@@ -639,8 +635,6 @@ def _format_provider_reply(
     content: str,
     tool_calls: list[dict[str, Any]],
     refusal: Any,
-    finish_reason: Any,
-    usage: Any,
     errors: Any = None,
 ) -> str:
     sections: list[str] = []
@@ -665,14 +659,6 @@ def _format_provider_reply(
         sections.append(f"【拒绝】\n{refusal}")
     if errors:
         sections.append(f"【错误】\n{_pretty_json_text(errors)}")
-    terminal = _drop_none(
-        {
-            "finish_reason": finish_reason,
-            "usage": usage if usage else None,
-        }
-    )
-    if terminal:
-        sections.append(f"【Provider 终态】\n{_pretty_json_text(terminal)}")
     return "\n\n".join(sections) if sections else "（Provider 返回空内容）"
 
 
