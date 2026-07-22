@@ -6,12 +6,18 @@ from time import perf_counter
 from typing import Any
 
 from assistant_agent.agent.state import AgentState
+from assistant_agent.agent.system_prompt_policy import SystemPromptOptions, SystemPromptProfile
 from assistant_agent.schemas.context import AssistantContextPack
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.services.context.builder import build_assistant_context_pack
 from assistant_agent.services.context.compactor import ContextCompactor
 from assistant_agent.services.context.report import build_context_report
+from assistant_agent.services.context.prompt_compiler import (
+    PromptCompileMode,
+    PromptCompileRequest,
+    PromptCompiler,
+)
 from assistant_agent.services.trace_store import TraceStore, append_observability_event, new_span_id, sanitize_trace_value
 
 
@@ -31,6 +37,7 @@ def build_traced_assistant_context_pack(
     context_compactor: ContextCompactor | None = None,
     registry_generation: str | None = None,
     host_configured_tool_names: set[str] | None = None,
+    native_calls: list[dict[str, Any]] | None = None,
 ) -> AssistantContextPack:
     """Build an assistant context pack and emit redacted canonical trace events."""
 
@@ -69,6 +76,20 @@ def build_traced_assistant_context_pack(
             registry_generation=registry_generation,
             host_configured_tool_names=host_configured_tool_names,
         )
+        compilation = PromptCompiler().compile(
+            PromptCompileRequest(
+                user_id=state.user_id,
+                session_id=state.session_id,
+                mode=PromptCompileMode.NATIVE_TOOL,
+                user_query_fallback="native_tools assistant turn",
+                profile=SystemPromptProfile.TEXT_DEFAULT,
+                options=SystemPromptOptions(product_mode=True),
+                context_pack=pack,
+                observations=tuple(pack.observations),
+                native_calls=tuple(native_calls or ()),
+                tool_call_id_prefix="call_",
+            )
+        )
     except Exception as exc:
         append_observability_event(
             trace_store,
@@ -85,7 +106,6 @@ def build_traced_assistant_context_pack(
             error={"code": "context_build_failed", "message": sanitize_trace_value(str(exc))},
         )
         raise
-
     append_observability_event(
         trace_store,
         trace_id=trace_id or state.trace_id,
@@ -102,6 +122,7 @@ def build_traced_assistant_context_pack(
             "context_report_v1": build_context_report(
                 pack,
                 selected_tool_specs=pack.prompt_tool_specs,
+                compiled_request=compilation.chat_request,
             ).model_dump(mode="json"),
         },
         attributes={

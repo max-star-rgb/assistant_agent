@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-17
+Last updated: 2026-07-22
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -33,6 +33,8 @@ Last updated: 2026-07-17
 - 生产 provider-native `ChatRequest` 统一通过无副作用 `PromptCompiler` 编译；真实与 mock provider 共用 LangGraph assistant loop。工具预算耗尽后的 finishing turn 仍使用同一通用 system prompt 和 native context，只把工具集合置空。legacy prompt-json renderer 仍只用于离线兼容与测试。
 - `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，并可基于当前请求文本做确定性 descriptor 召回，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
 - Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_task_state`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，并以非累加的 `context_source_report_v1` 报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数；不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。
+- `ContextBudgetReport` 明确是压缩前后的 `precompile_estimate`；`ContextReport.accounting_basis=compiled_chat_request` 则直接核算同一 `PromptCompiler` 产出的 messages、tools 和 response_format。二者不再冒充同一口径，report 同时保留 `budget_estimated_chars` 便于解释差值。
+- 上一轮 Provider usage 只保留在 `provider_*_tokens` 诊断字段，标记为 `previous_provider_usage`，不再写入当前待发送 context 的 `total_tokens`。
 
 ### Durable Task Context
 

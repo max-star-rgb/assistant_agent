@@ -15,6 +15,7 @@ from assistant_agent.schemas.context import (
 )
 from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
+from assistant_agent.services.chat_adapter import ChatRequest
 
 
 CONTEXT_REPORT_VERSION = "context_report_v1"
@@ -39,17 +40,19 @@ def build_context_report(
     *,
     system_prompt: str | None = None,
     selected_tool_specs: Iterable[ToolSpec] | None = None,
+    compiled_request: ChatRequest | None = None,
 ) -> ContextReport:
     """Build a redacted context report for the material sent to a provider."""
 
     selected_specs = _selected_tool_specs(pack, selected_tool_specs)
     sections = _empty_sections()
+    compiled_system_prompt = _compiled_system_prompt(compiled_request) or system_prompt or ""
     sections["system_prompt"] = ContextReportSection(
-        chars=len(system_prompt or ""),
+        chars=len(compiled_system_prompt),
         tokens=None,
-        item_count=1 if system_prompt else 0,
-        included=bool(system_prompt),
-        source="system_prompt_policy" if system_prompt else "not_available",
+        item_count=1 if compiled_system_prompt else 0,
+        included=bool(compiled_system_prompt),
+        source="ChatRequest.messages[0]" if compiled_request is not None else ("system_prompt_policy" if system_prompt else "not_available"),
     )
     sections["request"] = ContextReportSection(
         chars=len(pack.request.text or ""),
@@ -126,8 +129,9 @@ def build_context_report(
         trimmed="observations" in pack.budget.trimmed_sections,
         source="ToolObservation.prompt_copy",
     )
+    compiled_tools = compiled_request.tools if compiled_request is not None else tool_specs_to_openai_tools(selected_specs)
     sections["tool_schema"] = ContextReportSection(
-        chars=_json_chars(tool_specs_to_openai_tools(selected_specs)),
+        chars=_json_chars(compiled_tools),
         tokens=_positive_or_none(pack.budget.tool_spec_tokens),
         item_count=len(selected_specs),
         included=bool(selected_specs),
@@ -141,9 +145,21 @@ def build_context_report(
         included=bool(pack.tool_capabilities),
         source="ToolCapabilityCatalog",
     )
+    compiled_message_chars = _json_chars(compiled_request.messages) if compiled_request is not None else 0
+    compiled_tool_schema_chars = _json_chars(compiled_tools) if compiled_request is not None else 0
+    compiled_response_format_chars = (
+        _json_chars(compiled_request.response_format)
+        if compiled_request is not None and compiled_request.response_format is not None
+        else 0
+    )
+    section_total = sum(section.chars for section in sections.values())
     return ContextReport(
         sections=sections,
-        total_chars=sum(section.chars for section in sections.values()),
+        total_chars=(
+            compiled_message_chars + compiled_tool_schema_chars + compiled_response_format_chars
+            if compiled_request is not None
+            else section_total
+        ),
         max_chars=pack.budget.max_chars,
         total_tokens=pack.budget.total_tokens,
         max_tokens=pack.budget.max_tokens,
@@ -154,7 +170,21 @@ def build_context_report(
         compression_stage=pack.budget.compression_stage,
         compression_reasons=list(pack.budget.compression_reasons),
         was_compacted=pack.budget.compaction_triggered or pack.budget.compression_stage != "none",
+        accounting_basis="compiled_chat_request" if compiled_request is not None else "section_estimate",
+        budget_estimated_chars=pack.budget.total_chars,
+        compiled_message_chars=compiled_message_chars,
+        compiled_tool_schema_chars=compiled_tool_schema_chars,
+        compiled_response_format_chars=compiled_response_format_chars,
     )
+
+
+def _compiled_system_prompt(request: ChatRequest | None) -> str:
+    if request is None:
+        return ""
+    for message in request.messages:
+        if message.get("role") == "system" and isinstance(message.get("content"), str):
+            return message["content"]
+    return ""
 
 
 def build_context_source_report(

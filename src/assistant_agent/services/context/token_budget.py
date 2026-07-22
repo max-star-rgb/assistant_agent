@@ -96,12 +96,11 @@ class TokenBudgetReporter:
         prompt_tokens = normalized.get("prompt_tokens", 0)
         completion_tokens = normalized.get("completion_tokens", 0)
         total_usage_tokens = normalized.get("total_tokens", 0)
-        total_context_tokens = prompt_tokens or total_usage_tokens
         return TokenBudgetEstimate(
-            total_tokens=total_context_tokens,
+            total_tokens=0,
             max_tokens=max_tokens,
-            token_usage_ratio=total_context_tokens / max_tokens if max_tokens > 0 else 0.0,
-            token_budget_source="provider_usage",
+            token_usage_ratio=0.0,
+            token_budget_source="previous_provider_usage",
             provider_prompt_tokens=prompt_tokens,
             provider_completion_tokens=completion_tokens,
             provider_total_tokens=total_usage_tokens,

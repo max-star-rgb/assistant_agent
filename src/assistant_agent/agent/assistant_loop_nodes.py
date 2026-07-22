@@ -32,7 +32,6 @@ from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.agent.system_prompt_policy import (
     SystemPromptOptions,
     SystemPromptProfile,
-    render_system_instruction,
 )
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.assistant_decision import AssistantDecision, native_tool_call_to_assistant_decision
@@ -54,7 +53,6 @@ from assistant_agent.services.context.prompt_compiler import (
     PromptCompileRequest,
     PromptCompileResult,
     PromptCompiler,
-    owner_persona_for_pack,
     prompt_tool_specs_for_mode,
 )
 from assistant_agent.services.context.report import build_context_report

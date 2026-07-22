@@ -18,6 +18,7 @@ from assistant_agent.schemas.context import (
 from assistant_agent.schemas.durable_tasks import DurableTaskSnapshot
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
+from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.services.context.compactor import (
     ContextCompactor,
     DeterministicContextCompactor,
@@ -43,7 +44,7 @@ from assistant_agent.services.context.capability_catalog import (
 )
 from assistant_agent.services.context.report import build_context_source_report
 from assistant_agent.services.context.token_budget import token_budget_reporter_from_request
-from assistant_agent.services.context.tool_catalog import prompt_tool_spec_payload, select_prompt_tool_specs
+from assistant_agent.services.context.tool_catalog import select_prompt_tool_specs
 from assistant_agent.services.realtime_task_state import REALTIME_TASK_STATE_METADATA_KEY
 
 
@@ -472,7 +473,7 @@ def _budget_report(
     durable_task_state_chars = _json_chars(durable_task_state) if durable_task_state else 0
     plan_chars = _json_chars(plan_state.model_dump(mode="json")) if _has_plan_context(plan_state) else 0
     observations_chars = _json_chars(observations)
-    tool_spec_chars = _json_chars([prompt_tool_spec_payload(spec) for spec in tool_specs])
+    tool_spec_chars = _json_chars(tool_specs_to_openai_tools(tool_specs))
     tool_capability_chars = _json_chars(
         [descriptor.model_dump(mode="json") for descriptor in tool_capabilities or []]
     )
@@ -594,9 +595,7 @@ def _effective_context_budget_limit(
 
     if CONTEXT_BUDGET_METADATA_KEY in request.metadata:
         return base_max_chars
-    tool_schema_chars = _json_chars(
-        [prompt_tool_spec_payload(spec) for spec in tool_specs]
-    )
+    tool_schema_chars = _json_chars(tool_specs_to_openai_tools(tool_specs))
     capability_schema_chars = _json_chars(
         [descriptor.model_dump(mode="json") for descriptor in tool_capabilities]
     )

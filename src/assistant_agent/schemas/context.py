@@ -192,6 +192,7 @@ class ContextBudgetReport(BaseModel):
     provider_prompt_tokens: int = Field(default=0, ge=0)
     provider_completion_tokens: int = Field(default=0, ge=0)
     provider_total_tokens: int = Field(default=0, ge=0)
+    accounting_basis: str = "precompile_estimate"
 
 
 class ContextReportSection(BaseModel):
@@ -249,6 +250,11 @@ class ContextReport(BaseModel):
     compression_stage: str = "none"
     compression_reasons: list[str] = Field(default_factory=list)
     was_compacted: bool = False
+    accounting_basis: str = "section_estimate"
+    budget_estimated_chars: int = Field(default=0, ge=0)
+    compiled_message_chars: int = Field(default=0, ge=0)
+    compiled_tool_schema_chars: int = Field(default=0, ge=0)
+    compiled_response_format_chars: int = Field(default=0, ge=0)
 
 
 class ContextPolicy(BaseModel):
