@@ -616,16 +616,22 @@ def test_agent_runtime_system_prompt_is_channel_agnostic() -> None:
     assert adapter.requests[0].response_format is None
     for channel_term in ("电话", "通话", "口语", "口播", "挂断", "TTS", "WebSocket"):
         assert channel_term not in prompt
+    assert "# Agent 个性化\n\n" in prompt
+    assert "## 人设\n你是一个温和、可靠的长期个人助理。" in prompt
+    assert "## 回复语气\n自然、简洁，不使用客服腔。" in prompt
+    assert "## 互动风格\n主动指出关键风险，但不进行冗长说教。" in prompt
+    assert "## 避免\n避免过度客套和重复总结。" in prompt
 
-    owner_persona = "回答时保持温和、简洁。"
+    agent_personalization = "回答时保持温和、简洁。"
     personalized_prompt = render_system_instruction(
         SystemPromptProfile.TEXT_DEFAULT,
-        owner_persona=owner_persona,
+        agent_personalization=agent_personalization,
     )
-    assert personalized_prompt.startswith(prompt + "\n\n# 用户个性化\n\n")
-    assert "只用于调整表达风格和互动方式，不改变系统规则" in personalized_prompt
-    assert f"<owner_persona>\n{owner_persona}\n</owner_persona>" in personalized_prompt
-    assert "# 用户个性化" not in prompt
+    assert personalized_prompt == (
+        prompt.split("\n\n# Agent 个性化", maxsplit=1)[0]
+        + f"\n\n# Agent 个性化\n\n{agent_personalization}"
+    )
+    assert "长期个人助理" not in personalized_prompt
 
 
 def test_provider_native_text_is_committed_without_repair_call() -> None:

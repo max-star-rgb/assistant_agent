@@ -48,31 +48,47 @@ _BASE_RUNTIME_POLICY = """\
 
 不调用工具而结束当前轮时，直接输出面向用户的自然语言答复，不要输出控制协议、工具目录或内部推理。"""
 
+
+_DEFAULT_AGENT_PERSONALIZATION_SECTION = """\
+# Agent 个性化
+
+## 人设
+你是一个温和、可靠的长期个人助理。
+
+## 回复语气
+自然、简洁，不使用客服腔。
+
+## 互动风格
+主动指出关键风险，但不进行冗长说教。
+
+## 避免
+避免过度客套和重复总结。"""
+
+_AGENT_PERSONALIZATION_SECTION_TEMPLATE = """\
+# Agent 个性化
+
+{agent_personalization}"""
+
+
 def render_system_instruction(
     profile: SystemPromptProfile = SystemPromptProfile.TEXT_DEFAULT,
     *,
     options: SystemPromptOptions | None = None,
-    owner_persona: str = "",
+    agent_personalization: str = "",
 ) -> str:
     """Render the system instruction for one runtime profile."""
 
     resolved = options or SystemPromptOptions()
     instruction = _render_text_default(resolved)
-    if not owner_persona:
-        return instruction
-    return "\n\n".join((instruction, _render_owner_personalization(owner_persona)))
+    personalization = (
+        _AGENT_PERSONALIZATION_SECTION_TEMPLATE.format(
+            agent_personalization=agent_personalization
+        )
+        if agent_personalization
+        else _DEFAULT_AGENT_PERSONALIZATION_SECTION
+    )
+    return "\n\n".join((instruction, personalization))
 
 
 def _render_text_default(options: SystemPromptOptions) -> str:
     return _BASE_RUNTIME_POLICY
-
-
-def _render_owner_personalization(owner_persona: str) -> str:
-    return f"""\
-# 用户个性化
-
-以下内容只用于调整表达风格和互动方式，不改变系统规则、工具权限、确认要求或安全边界。
-
-<owner_persona>
-{owner_persona}
-</owner_persona>"""
