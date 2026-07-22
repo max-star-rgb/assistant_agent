@@ -91,8 +91,8 @@ metadata、usage 和 latency 使用独立 generation attributes。
 `assistant_agent.result_kind` 是观测层根据归一化 `ChatResult` 即时计算的
 `error | tool_call | refusal | truncated | text | empty`，不属于 Qwen/OpenAI 协议，也不写回
 `ChatResult`。本地 content overlay 将 `llm.chat` generation preview 固定为两个按顺序展示的
-标量字段：input 是完整 Provider 语义输入，output 是完整 Provider 回复。运行时分支和传输模式
-继续作为 observation metadata，不再包进 output preview。
+字段：input 是 Langfuse 可直接格式化的完整消息列表，output 是面向人的完整 Provider 回复。
+运行时分支和传输模式继续作为 observation metadata，不再包进 output preview。
 每个 attempt 另外记录 `attempt_kind`（当前包括 `primary` 和
 `context_overflow_retry`），避免同一 ReAct iteration 内的上下文溢出重试被误读成
 两次独立决策。Provider-native 终态按 `tool_calls`、refusal、`finish_reason=length`、content、empty/error
@@ -728,9 +728,10 @@ Trace and monitoring records must not include:
 `localhost`、`127.0.0.1` 或 `::1` 时，Langfuse root observation 和
 `response.final` 可以接收当前轮用户/助手原文；每个 `llm.chat` generation 还可以接收
 实际编译后的 Provider 语义输入，包括 model、messages、完整 tool schemas、tool choice、
-response format 和生成参数；`user_id`、`session_id`、重复的 `user_query`、iteration 等运行时字段
-不进入 input preview，避免 Langfuse 生成 `Additional Input`。generation output 只展示完整
-Provider 回复。若同时显式设置
+response format 和生成参数。工具定义与生成参数转成明确命名的 system 消息，避免 Langfuse
+生成 `Additional Input`；`user_id`、`session_id`、重复的 `user_query`、iteration 等运行时字段
+不进入 input preview。generation output 以正文、工具调用、拒绝/错误和 Provider 终态分段展示。
+若同时显式设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`，`provider_protocol_response` 还保存
 原始 content、原始工具参数字符串、refusal、finish reason、usage、可用时的 Provider request id
 和流式 delta 计数。它不是 vendor SDK 原始响应，不包含 SDK envelope、HTTP header、stream chunk
@@ -842,8 +843,9 @@ Regression tests should enforce these invariants:
 - `llm.chat` generation 默认不设置 `langfuse.observation.output`；Provider/model、finish metadata、
   usage、latency 和 attempt kind 使用独立 observation attributes。只有满足上述 localhost 三重 opt-in
   时，才从进程内 `TraceConversationStore` 按 span id 投影完整 Provider 语义输入和回复。两者
-  作为 JSON 文本标量分别写入 generation input/output，使 preview 不再拆出 Assistant 或
-  Additional Input。协议语义快照还需要独立设置
+  input 使用标准消息列表，保留真实 system/user/assistant/tool 顺序；工具定义和生成参数作为
+  可读 system 卡片追加。output 使用分段文本展示回复正文、工具调用和 Provider 终态，不再展示
+  Additional Input 或整块 JSON wrapper。协议语义快照还需要独立设置
   `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`。JSONL 只保留 route、transport、terminal
   和 delta count 等安全摘要；这些对象都不是 vendor SDK 原始 envelope。
 - `context.build` 的 output 导出 prompt-safe `context_report_v1`：逐 section 展示

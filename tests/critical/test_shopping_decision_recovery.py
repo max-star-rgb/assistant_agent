@@ -130,12 +130,12 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     generations = [span for span in spans if span.name == "llm.chat"]
     assert len(generations) == 2
     generation_outputs = [
-        json.loads(json.loads(span.attributes["langfuse.observation.output"]))
+        json.loads(span.attributes["langfuse.observation.output"])
         for span in generations
     ]
-    assert generation_outputs[0]["content"] == ""
-    assert generation_outputs[0]["tool_calls"][0]["function"]["name"] == "shopping_search"
-    assert generation_outputs[1]["content"] == "已找到牛奶购买链接。"
+    assert "【工具调用 1：shopping_search】" in generation_outputs[0]
+    assert '"query":"牛奶"' in generation_outputs[0]
+    assert "已找到牛奶购买链接。" in generation_outputs[1]
     assert [
         span.attributes["assistant_agent.route_branch"]
         for span in generations

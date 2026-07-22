@@ -545,19 +545,55 @@ def _event_io_attributes(
     return attributes
 
 
-def _llm_provider_input_preview(request: Mapping[str, Any], *, model: str | None) -> str:
-    """Render only the semantic payload passed to the chat Provider."""
+def _llm_provider_input_preview(
+    request: Mapping[str, Any],
+    *,
+    model: str | None,
+) -> list[dict[str, Any]]:
+    """Render complete Provider input as Langfuse-friendly chat messages."""
 
-    payload = {
-        "model": model or request.get("model"),
-        "messages": request.get("messages", []),
-        "tools": request.get("tools", []),
-        "tool_choice": request.get("tool_choice"),
-        "response_format": request.get("response_format"),
-        "temperature": request.get("temperature"),
-        "max_tokens": request.get("max_tokens"),
-    }
-    return _pretty_json_text(_drop_none(payload))
+    messages = [
+        dict(item)
+        for item in request.get("messages", [])
+        if isinstance(item, Mapping)
+    ]
+    for tool in request.get("tools", []):
+        if not isinstance(tool, Mapping):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, Mapping):
+            function = tool
+        name = str(function.get("name") or "未命名工具")
+        description = str(function.get("description") or "（无说明）")
+        parameters = function.get("parameters", {})
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    f"【工具定义：{name}】\n"
+                    f"{description}\n\n"
+                    "参数 Schema：\n"
+                    f"{_pretty_json_text(parameters)}"
+                ),
+            }
+        )
+    settings = _drop_none(
+        {
+            "model": model or request.get("model"),
+            "tool_choice": request.get("tool_choice"),
+            "response_format": request.get("response_format"),
+            "temperature": request.get("temperature"),
+            "max_tokens": request.get("max_tokens"),
+        }
+    )
+    if settings:
+        messages.append(
+            {
+                "role": "system",
+                "content": f"【生成参数】\n{_pretty_json_text(settings)}",
+            }
+        )
+    return messages
 
 
 def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
@@ -577,14 +613,13 @@ def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
             for item in protocol.get("tool_calls", [])
             if isinstance(item, Mapping)
         ]
-        payload = {
-            "content": protocol.get("content", ""),
-            "tool_calls": tool_calls,
-            "refusal": protocol.get("refusal"),
-            "finish_reason": protocol.get("finish_reason"),
-            "usage": protocol.get("usage", {}),
-        }
-        return _pretty_json_text(_drop_none(payload))
+        return _format_provider_reply(
+            content=str(protocol.get("content") or ""),
+            tool_calls=tool_calls,
+            refusal=protocol.get("refusal"),
+            finish_reason=protocol.get("finish_reason"),
+            usage=protocol.get("usage", {}),
+        )
 
     normalized = llm_output.normalized_result
     tool_calls = []
@@ -609,15 +644,56 @@ def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
                 },
             }
         )
-    payload = {
-        "content": normalized.get("response_text", ""),
-        "tool_calls": tool_calls,
-        "refusal": normalized.get("refusal"),
-        "finish_reason": normalized.get("finish_reason"),
-        "usage": normalized.get("usage", {}),
-        "errors": normalized.get("errors", []),
-    }
-    return _pretty_json_text(_drop_none(payload))
+    return _format_provider_reply(
+        content=str(normalized.get("response_text") or ""),
+        tool_calls=tool_calls,
+        refusal=normalized.get("refusal"),
+        finish_reason=normalized.get("finish_reason"),
+        usage=normalized.get("usage", {}),
+        errors=normalized.get("errors", []),
+    )
+
+
+def _format_provider_reply(
+    *,
+    content: str,
+    tool_calls: list[dict[str, Any]],
+    refusal: Any,
+    finish_reason: Any,
+    usage: Any,
+    errors: Any = None,
+) -> str:
+    sections: list[str] = []
+    if content:
+        sections.append(content)
+    for index, call in enumerate(tool_calls, start=1):
+        function = call.get("function")
+        if not isinstance(function, Mapping):
+            function = {}
+        arguments = function.get("arguments", "")
+        sections.append(
+            "\n".join(
+                (
+                    f"【工具调用 {index}：{function.get('name') or '未命名工具'}】",
+                    f"调用 ID：{call.get('id') or '无'}",
+                    "参数：",
+                    str(arguments),
+                )
+            )
+        )
+    if refusal:
+        sections.append(f"【拒绝】\n{refusal}")
+    if errors:
+        sections.append(f"【错误】\n{_pretty_json_text(errors)}")
+    terminal = _drop_none(
+        {
+            "finish_reason": finish_reason,
+            "usage": usage if usage else None,
+        }
+    )
+    if terminal:
+        sections.append(f"【Provider 终态】\n{_pretty_json_text(terminal)}")
+    return "\n\n".join(sections) if sections else "（Provider 返回空内容）"
 
 
 def _pretty_json_text(value: Any) -> str:

@@ -539,12 +539,11 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     assert context.parent_span_id == iteration.span_id
     assert generation.parent_span_id == iteration.span_id
     assert not any(span.name == "agent_service.turn" for span in spans)
-    generation_input_text = json.loads(generation.attributes["langfuse.observation.input"])
-    assert isinstance(generation_input_text, str)
-    generation_input = json.loads(generation_input_text)
-    assert generation_input["messages"][1]["content"] == "compiled context"
-    assert generation_input["tools"][0]["function"]["name"] == "image_generation"
-    assert "user_id" not in generation_input
+    generation_input = json.loads(generation.attributes["langfuse.observation.input"])
+    assert isinstance(generation_input, list)
+    assert generation_input[1]["content"] == "compiled context"
+    assert any("【工具定义：image_generation】" in item["content"] for item in generation_input)
+    assert "user_id" not in json.dumps(generation_input, ensure_ascii=False)
     assert "langfuse.observation.output" not in generation.attributes
     assert '"context_report_v1"' in context.attributes["langfuse.observation.output"]
     assert '"selected_tool_names":["image_generation"]' in context.attributes[
