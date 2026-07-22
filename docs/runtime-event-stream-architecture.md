@@ -99,7 +99,8 @@ diagnostic.
 `llm.chat` span id 下保存归一化 `ChatResult`；额外设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1` 后，还保存原始 content、原始工具参数字符串、
 finish reason、usage 与流式事件计数组成的协议语义快照。Langfuse generation output 同时展示
-`provider_protocol_response`、`normalized_result`、`runtime_route` 和 `transport`。默认 trace event
+完整 Provider 回复，generation input 展示完整 Provider 语义输入；两者都使用 JSON 文本标量，
+避免 preview 自动拆成 Assistant 与 Additional Input。route 与 transport 保留为 metadata。默认 trace event
 和 `.data/graph_trace.jsonl` 仍只保存安全摘要，vendor SDK response envelope、HTTP header、stream
 chunk body 与 hidden reasoning 不进入 debug store。
 普通前台调用不设置 `response_format`，系统提示词也不要求终态 JSON；因此一次非工具终态只对应

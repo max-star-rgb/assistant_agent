@@ -139,18 +139,22 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
         if span.name == "llm.chat"
     ]
     assert len(generations) == 1
-    outputs = [
-        json.loads(span.attributes["langfuse.observation.output"])
-        for span in generations
-    ]
-    assert [output["attempt_kind"] for output in outputs] == ["primary"]
-    assert outputs[0]["runtime_route"]["result_kind"] == "text"
-    assert outputs[0]["runtime_route"]["selected_branch"] == "provider_content"
-    assert "message_kind" not in outputs[0]["normalized_result"]
-    assert [
-        output["normalized_result"]["response_text"]
-        for output in outputs
-    ] == ["provider native answer"]
-    assert outputs[0]["provider_protocol_response"]["content"] == "provider native answer"
-    assert outputs[0]["transport"]["mode"] == "sync"
-    assert json.loads(generations[0].attributes["langfuse.observation.input"])["tools"]
+    input_preview = json.loads(generations[0].attributes["langfuse.observation.input"])
+    output_preview = json.loads(generations[0].attributes["langfuse.observation.output"])
+    assert isinstance(input_preview, str)
+    assert isinstance(output_preview, str)
+    provider_input = json.loads(input_preview)
+    provider_output = json.loads(output_preview)
+    assert provider_input["messages"]
+    assert provider_input["tools"]
+    assert "user_id" not in provider_input
+    assert "session_id" not in provider_input
+    assert "user_query" not in provider_input
+    assert provider_output == {
+        "content": "provider native answer",
+        "tool_calls": [],
+        "finish_reason": "stop",
+        "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+    }
+    assert generations[0].attributes["assistant_agent.route_branch"] == "provider_content"
+    assert generations[0].attributes["assistant_agent.transport_mode"] == "sync"

@@ -451,8 +451,8 @@ def _event_io_attributes(
     conversation: "TraceConversationView | None",
 ) -> dict[str, str]:
     name = _event_name(event)
-    input_payload: dict[str, Any] = {"operation": _span_name(event)}
-    output_payload: dict[str, Any] = {
+    input_payload: Any = {"operation": _span_name(event)}
+    output_payload: Any = {
         "status": event.status or _event_status(event),
     }
     include_output = name != "llm.chat.finished"
@@ -519,29 +519,15 @@ def _event_io_attributes(
             iteration=_mapping_int(event.attributes, "iteration"),
         )
         input_payload = (
-            dict(llm_input.request)
+            _llm_provider_input_preview(llm_input.request, model=event.model)
             if llm_input is not None
-            else _selected_payload(event.attributes, ("iteration", "input_tokens"))
+            else _pretty_json_text(
+                _selected_payload(event.attributes, ("iteration", "input_tokens"))
+            )
         )
-        input_payload.setdefault("iteration", event.attributes.get("iteration"))
-        input_payload.setdefault("provider", event.provider)
-        input_payload.setdefault("model", event.model)
         llm_output = _llm_output_for_event(conversation, span_id=event.span_id)
         if llm_output is not None:
-            output_payload = {
-                "schema_version": "llm_call_evidence_v1",
-                "attempt_kind": llm_output.attempt_kind,
-                "transport": {
-                    "mode": event.attributes.get("transport_mode"),
-                    "token_delta_count": event.attributes.get("token_delta_count"),
-                    "tool_call_delta_count": event.attributes.get("tool_call_delta_count"),
-                    "reasoning_delta_count": event.attributes.get("reasoning_delta_count"),
-                    "terminal_seen": event.attributes.get("terminal_seen"),
-                },
-                "provider_protocol_response": llm_output.provider_protocol_response,
-                "normalized_result": dict(llm_output.normalized_result),
-                "runtime_route": event.attributes.get("runtime_route"),
-            }
+            output_payload = _llm_provider_output_preview(llm_output)
             include_output = True
     elif name == "response.final" and conversation is not None:
         output_payload = {
@@ -551,10 +537,95 @@ def _event_io_attributes(
             "truncated": conversation.assistant.truncated,
         }
 
-    attributes = {"langfuse.observation.input": _json_value(_drop_none(input_payload))}
+    attributes = {"langfuse.observation.input": _json_value(_drop_none_if_mapping(input_payload))}
     if include_output:
-        attributes["langfuse.observation.output"] = _json_value(_drop_none(output_payload))
+        attributes["langfuse.observation.output"] = _json_value(
+            _drop_none_if_mapping(output_payload)
+        )
     return attributes
+
+
+def _llm_provider_input_preview(request: Mapping[str, Any], *, model: str | None) -> str:
+    """Render only the semantic payload passed to the chat Provider."""
+
+    payload = {
+        "model": model or request.get("model"),
+        "messages": request.get("messages", []),
+        "tools": request.get("tools", []),
+        "tool_choice": request.get("tool_choice"),
+        "response_format": request.get("response_format"),
+        "temperature": request.get("temperature"),
+        "max_tokens": request.get("max_tokens"),
+    }
+    return _pretty_json_text(_drop_none(payload))
+
+
+def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
+    """Render one complete Provider reply without runtime diagnostic wrappers."""
+
+    protocol = llm_output.provider_protocol_response
+    if isinstance(protocol, Mapping):
+        tool_calls = [
+            {
+                "id": item.get("id"),
+                "type": item.get("type") or "function",
+                "function": {
+                    "name": item.get("name"),
+                    "arguments": item.get("arguments_raw", ""),
+                },
+            }
+            for item in protocol.get("tool_calls", [])
+            if isinstance(item, Mapping)
+        ]
+        payload = {
+            "content": protocol.get("content", ""),
+            "tool_calls": tool_calls,
+            "refusal": protocol.get("refusal"),
+            "finish_reason": protocol.get("finish_reason"),
+            "usage": protocol.get("usage", {}),
+        }
+        return _pretty_json_text(_drop_none(payload))
+
+    normalized = llm_output.normalized_result
+    tool_calls = []
+    for item in normalized.get("tool_calls", []):
+        if not isinstance(item, Mapping):
+            continue
+        raw = item.get("raw")
+        if isinstance(raw, Mapping) and raw:
+            tool_calls.append(dict(raw))
+            continue
+        tool_calls.append(
+            {
+                "id": item.get("id"),
+                "type": "function",
+                "function": {
+                    "name": item.get("name"),
+                    "arguments": json.dumps(
+                        item.get("arguments", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            }
+        )
+    payload = {
+        "content": normalized.get("response_text", ""),
+        "tool_calls": tool_calls,
+        "refusal": normalized.get("refusal"),
+        "finish_reason": normalized.get("finish_reason"),
+        "usage": normalized.get("usage", {}),
+        "errors": normalized.get("errors", []),
+    }
+    return _pretty_json_text(_drop_none(payload))
+
+
+def _pretty_json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+def _drop_none_if_mapping(value: Any) -> Any:
+    return _drop_none(value) if isinstance(value, Mapping) else value
 
 
 def _selected_payload(source: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -620,7 +691,7 @@ def _drop_none(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
-def _json_value(payload: Mapping[str, Any]) -> str:
+def _json_value(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
