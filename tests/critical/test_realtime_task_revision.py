@@ -86,5 +86,7 @@ def test_ordinary_followup_commits_structured_objective_revision() -> None:
     }
     assert all("实时任务状态" not in str(request.messages) for request in adapter.requests)
     assert all('"status": "active"' not in str(request.messages) for request in adapter.requests)
+    followup_context = str(adapter.requests[1].messages[1]["content"])
+    assert followup_context.index("多轮对话历史") < followup_context.index("用户请求：我想买牛奶")
     assert "我想麦牛奶" in str(adapter.requests[1].messages)
     assert "我想买牛奶" in str(adapter.requests[1].messages)

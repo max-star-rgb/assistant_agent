@@ -21,7 +21,6 @@ def render_prompt_json_context(pack: AssistantContextPack) -> RenderedAssistantC
     sections = [
         "你是一个多模态智能助手，帮助用户处理各种任务。",
         f"当前迭代：{pack.iteration + 1} / {pack.max_iterations}",
-        render_request_context(pack.request),
         render_session_summary_context(pack),
         render_conversation_context(pack),
         render_realtime_video_context(pack),
@@ -31,6 +30,7 @@ def render_prompt_json_context(pack: AssistantContextPack) -> RenderedAssistantC
         render_observations(pack.observations),
         render_tool_capabilities(pack.tool_capabilities),
         render_tool_specs(_prompt_tool_specs(pack)),
+        render_request_context(pack.request),
         render_decision_contract(),
     ]
     active_sections = [section for section in sections if section]
@@ -47,7 +47,6 @@ def render_native_tool_context(pack: AssistantContextPack) -> RenderedAssistantC
     """Render user-message sections for provider-native tool calling."""
 
     sections = [
-        render_request_context(pack.request),
         render_session_summary_context(pack),
         render_conversation_context(pack),
         render_realtime_video_context(pack),
@@ -55,6 +54,7 @@ def render_native_tool_context(pack: AssistantContextPack) -> RenderedAssistantC
         render_memory_context(pack.memory_summaries, pack.memory_text),
         render_plan_mode_context(pack),
         render_tool_capabilities(pack.tool_capabilities),
+        render_request_context(pack.request),
     ]
     active_sections = [section for section in sections if section]
     return RenderedAssistantContext(native_user_message="\n\n".join(active_sections), sections=active_sections)
