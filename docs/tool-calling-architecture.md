@@ -142,6 +142,8 @@ Tool 仍默认不暴露，必须由宿主配置或每轮结构化显式 opt-in�
 
 可用 `python -m assistant_agent.tools.cli plugins` 只读查看启动装配结果、ownership、issue、seal 状态和
 generation；该命令不会执行 Tool。`--module` 可重复传入并覆盖环境 module 列表用于部署前验证。
+`scripts/run_server.py` 则在服务 lifespan 初始化真实 runtime 后，输出该 runtime 最终 Registry 的工具名、
+插件 ownership、seal 状态和 generation；不会为了展示而重复装配插件。
 
 `ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 builder，因此 provider schema、validator 和
 executor 读取的是同一份契约。新增或移除一个内置能力包时，只增删对应插件目录及 `defaults.py`

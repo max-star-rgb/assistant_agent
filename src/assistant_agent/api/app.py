@@ -24,6 +24,7 @@ from assistant_agent.schemas.api import PROTOCOL_VERSION, api_error
 from assistant_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
 from assistant_agent.services.durable_tasks.worker import DurableTaskWorker
 from assistant_agent.services.operational_logging import configure_operational_logging_from_env
+from assistant_agent.services.server_startup_summary import print_tool_registry_summary
 from assistant_agent.services.tool_workflow_skill_runtime_app import (
     create_workflow_skill_runtime_app_from_env,
 )
@@ -89,6 +90,7 @@ async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
     """Bind the app to the shared runtime service and optionally start one worker."""
 
     runtime = routes_agent.get_agent_runtime()
+    print_tool_registry_summary(runtime.registry)
     service = getattr(runtime, "durable_task_service", None)
     config = getattr(runtime, "config", None)
     app.state.agent_runtime = runtime
