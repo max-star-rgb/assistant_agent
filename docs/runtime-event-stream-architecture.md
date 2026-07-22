@@ -92,9 +92,9 @@ response content. Agent-Service latency summaries use wall latency as the
 critical-path `llm_chat[n]` duration and keep Provider latency as a nested
 diagnostic.
 当 localhost OTLP 与 local trace content 三重 opt-in 同时开启时，进程内 debug overlay 会在
-最终答案校验前按 `llm.chat` span id 保存归一化 `ChatResult`，并导出到对应 Langfuse
-generation；默认 trace event 和 `.data/graph_trace.jsonl` 仍只保存上述安全摘要，vendor SDK
-response envelope 与 hidden reasoning 不进入 debug store。
+最终答案校验前按 `llm.chat` span id 保存归一化 `ChatResult`，仅供显式本地查询，不投影到
+Langfuse generation output；默认 trace event 和 `.data/graph_trace.jsonl` 仍只保存上述安全摘要，
+vendor SDK response envelope 与 hidden reasoning 不进入 debug store。
 
 The compatibility contracts remain supported:
 

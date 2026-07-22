@@ -19,11 +19,7 @@ from assistant_agent.services.turn_summary import (
 )
 
 if TYPE_CHECKING:
-    from assistant_agent.services.trace_conversation import (
-        TraceConversationView,
-        TraceLlmInput,
-        TraceLlmOutput,
-    )
+    from assistant_agent.services.trace_conversation import TraceConversationView, TraceLlmInput
 
 
 OTEL_SPAN_SPEC_SCHEMA_VERSION = "assistant_agent_text_otel_span_spec_v1"
@@ -519,12 +515,6 @@ def _event_io_attributes(
         input_payload.setdefault("iteration", event.attributes.get("iteration"))
         input_payload.setdefault("provider", event.provider)
         input_payload.setdefault("model", event.model)
-        output_payload = _safe_llm_chat_output(event)
-        llm_output = _llm_output_for_event(conversation, span_id=event.span_id)
-        if llm_output is not None:
-            output_payload["provider_response_before_validation"] = dict(llm_output.result)
-            output_payload["attempt_kind"] = llm_output.attempt_kind
-        output_payload.update({"status": event.status, "provider": event.provider, "model": event.model})
     elif name == "response.final" and conversation is not None:
         output_payload = {
             "role": "assistant",
@@ -533,19 +523,10 @@ def _event_io_attributes(
             "truncated": conversation.assistant.truncated,
         }
 
-    return {
-        "langfuse.observation.input": _json_value(_drop_none(input_payload)),
-        "langfuse.observation.output": _json_value(_drop_none(output_payload)),
-    }
-
-
-def _safe_llm_chat_output(event: TraceEvent) -> dict[str, Any]:
-    if event.output_summary.get("schema_version") == "llm_chat_output_v1":
-        return _safe_payload_value(event.output_summary)
-    return _selected_payload(
-        event.attributes,
-        ("finish_reason", "output_tokens", "provider_latency_ms", "wall_latency_ms"),
-    )
+    attributes = {"langfuse.observation.input": _json_value(_drop_none(input_payload))}
+    if name != "llm.chat.finished":
+        attributes["langfuse.observation.output"] = _json_value(_drop_none(output_payload))
+    return attributes
 
 
 def _selected_payload(source: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -575,19 +556,6 @@ def _llm_input_for_event(
         return None
     return next(
         (item for item in conversation.llm_inputs if item.iteration == iteration),
-        None,
-    )
-
-
-def _llm_output_for_event(
-    conversation: "TraceConversationView | None",
-    *,
-    span_id: str | None,
-) -> "TraceLlmOutput | None":
-    if conversation is None or span_id is None:
-        return None
-    return next(
-        (item for item in conversation.llm_outputs if item.span_id == span_id),
         None,
     )
 
