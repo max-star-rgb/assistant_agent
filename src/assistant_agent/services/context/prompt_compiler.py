@@ -18,6 +18,9 @@ from assistant_agent.services.context.renderer import render_native_tool_context
 
 _ASSISTANT_REASONING_CONTENT_KEY = "assistant_reasoning_content"
 _ASSISTANT_TURN_ID_KEY = "assistant_turn_id"
+_TASK_UPDATE_SYSTEM_INSTRUCTION = """终态 JSON 可增加 task_update：
+{"action":"continue|revise|replace|complete","objective":"当前任务的规范目标","constraints":["有效约束"]}。
+语义判断当前输入与任务状态的关系：纠正/取代旧目标用 replace，增加约束用 revise，目标不变用 continue，完成规范目标用 complete。"""
 
 
 class PromptCompileMode(StrEnum):
@@ -68,6 +71,7 @@ class PromptCompiler:
         user_content = _rendered_user_content(rendered_context, request.mode)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_instruction},
+            {"role": "system", "content": _TASK_UPDATE_SYSTEM_INSTRUCTION},
             {"role": "user", "content": user_content},
         ]
         messages.extend(_native_tool_messages(request))

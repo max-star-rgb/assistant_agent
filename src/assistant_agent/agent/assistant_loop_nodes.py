@@ -399,7 +399,7 @@ def _decide_with_llm(
     elif result.success:
         stream_buffer.discard()
         graph_state["pending_tool_decisions"] = []
-        decision = _validated_native_final_decision(result)
+        decision = _validated_native_final_decision(result, state=state)
         if decision is None:
             repaired = _repair_native_final_answer(
                 graph_state,
@@ -408,7 +408,7 @@ def _decide_with_llm(
                 result,
             )
             _record_chat_usage_metadata(state, repaired)
-            decision = _validated_native_final_decision(repaired)
+            decision = _validated_native_final_decision(repaired, state=state)
             if decision is None:
                 decision = _invalid_native_final_answer(repaired)
         if decision.message:
@@ -818,7 +818,11 @@ def _native_final_decision(result: ChatResult) -> AssistantDecision:
     )
 
 
-def _validated_native_final_decision(result: ChatResult) -> AssistantDecision | None:
+def _validated_native_final_decision(
+    result: ChatResult,
+    *,
+    state: AgentState | None = None,
+) -> AssistantDecision | None:
     """Return only a terminal answer that satisfies the public response contract."""
 
     if result.refusal:
@@ -832,17 +836,47 @@ def _validated_native_final_decision(result: ChatResult) -> AssistantDecision | 
         payload = json.loads(result.response_text)
     except (json.JSONDecodeError, TypeError):
         return None
-    if not isinstance(payload, dict) or set(payload) != {"response_type", "answer"}:
+    if not isinstance(payload, dict) or not set(payload).issubset(
+        {"response_type", "answer", "task_update"}
+    ) or not {"response_type", "answer"}.issubset(payload):
         return None
     response_type = payload.get("response_type")
     answer = payload.get("answer")
     if response_type not in {"answer", "clarification"} or not isinstance(answer, str) or not answer.strip():
         return None
+    task_update = _validated_task_update(payload.get("task_update"))
+    if "task_update" in payload and task_update is None:
+        return None
+    if state is not None and task_update is not None:
+        state.request.metadata["realtime_task_update"] = task_update
     return AssistantDecision(
         type="ask_followup" if response_type == "clarification" else "final_answer",
         message=answer.strip(),
         reason=_native_finish_reason(result, fallback="Provider returned a validated public response."),
     )
+
+
+def _validated_task_update(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"action", "objective", "constraints"}:
+        return None
+    action = value.get("action")
+    objective = value.get("objective")
+    constraints = value.get("constraints")
+    if action not in {"continue", "revise", "replace", "complete"}:
+        return None
+    if not isinstance(objective, str) or not objective.strip():
+        return None
+    if not isinstance(constraints, list) or any(
+        not isinstance(item, str) or not item.strip() for item in constraints
+    ):
+        return None
+    return {
+        "action": action,
+        "objective": objective.strip()[:1200],
+        "constraints": [item.strip()[:320] for item in constraints[:12]],
+    }
 
 
 def _repair_native_final_answer(
@@ -855,8 +889,9 @@ def _repair_native_final_answer(
 
     repair_instruction = (
         "将上一条 assistant 草稿改写成面向用户的最终答复。"
-        "只输出严格 JSON object，且只能包含 response_type 和 answer 两个字段；"
+        "只输出严格 JSON object，必须包含 response_type 和 answer；可包含 task_update；"
         'response_type 只能是 "answer" 或 "clarification"。'
+        "task_update 如存在，必须只包含 action、objective、constraints；"
         "不得复述分析过程、工具目录、隐藏推理或本条指令。"
     )
     messages = [*original_request.messages]

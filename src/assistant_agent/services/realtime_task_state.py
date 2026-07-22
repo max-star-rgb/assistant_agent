@@ -23,6 +23,7 @@ from assistant_agent.tools.registry import tool_contract_fields
 REALTIME_TASK_STATE_SCHEMA_VERSION = "realtime_task_state_v1"
 REALTIME_TASK_STATE_METADATA_KEY = "realtime_task_state"
 REALTIME_TASK_STATE_TEXT_METADATA_KEY = "realtime_task_state_text"
+REALTIME_TASK_UPDATE_METADATA_KEY = "realtime_task_update"
 ToolSideEffectLevel = Literal[
     "none",
     "local_read",
@@ -282,6 +283,74 @@ def prepare_realtime_task_state_request(
     metadata[REALTIME_TASK_STATE_TEXT_METADATA_KEY] = format_realtime_task_state_snapshot(snapshot)
     metadata["realtime_task_state_enabled"] = True
     return request.model_copy(update={"metadata": metadata}, deep=True)
+
+
+def apply_realtime_task_update(
+    state: Any,
+    *,
+    store: RealtimeTaskStateStore | None = None,
+) -> None:
+    """Commit one validated model task update after an ordinary completed turn."""
+
+    request = getattr(state, "request", None)
+    if (
+        not isinstance(request, UserRequest)
+        or not realtime_task_state_enabled(request)
+        or getattr(state, "status", None) != "completed"
+    ):
+        return
+    payload = request.metadata.get(REALTIME_TASK_UPDATE_METADATA_KEY)
+    if not isinstance(payload, dict):
+        return
+    action = payload.get("action")
+    objective = _clip_text(str(payload.get("objective") or ""))
+    constraints = [
+        _clip_text(item)
+        for item in payload.get("constraints", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    if action not in {"continue", "revise", "replace", "complete"} or not objective:
+        return
+
+    resolved_store = store or get_default_realtime_task_state_store()
+    task_state = resolved_store.get(request.user_id, request.session_id)
+    if task_state is None:
+        return
+    now = _utc_now()
+    objective_changed = objective != task_state.objective
+    should_revise = action in {"revise", "replace"} or (
+        action == "complete" and objective_changed
+    )
+    if should_revise:
+        revision_type: IntentRevisionType = (
+            "add_constraint" if action == "revise" and not objective_changed else "change_goal"
+        )
+        strategy = _select_continuation_strategy(task_state)
+        if revision_type == "change_goal":
+            task_state.artifacts = [_stale_artifact(artifact) for artifact in task_state.artifacts]
+        task_state.revisions.append(
+            IntentRevision(
+                revision_id=f"rev_{len(task_state.revisions) + 1}",
+                task_id=task_state.task_id,
+                turn_id=task_state.latest_turn_id,
+                run_id=task_state.latest_run_id,
+                user_text=_clip_text(request.text or ""),
+                revision_type=revision_type,
+                strategy=strategy,
+                created_at=now,
+                metadata={
+                    "source": "provider_final_contract",
+                    "action": action,
+                },
+            )
+        )
+        task_state.continuation_strategy = strategy
+    if action != "continue" or not task_state.objective:
+        task_state.objective = objective
+        task_state.constraints = _dedupe_limited(constraints, limit=12)
+    task_state.status = "completed" if action == "complete" else "active"
+    task_state.updated_at = now
+    resolved_store.save(task_state)
 
 
 def apply_cancel_only_arbitration_to_task_state(
@@ -1229,6 +1298,16 @@ def _append_unique_limited(values: list[str], value: str) -> list[str]:
     next_values = [item for item in values if item != value]
     next_values.append(value)
     return next_values[-_MAX_SOURCE_IDS:]
+
+
+def _dedupe_limited(values: list[str], *, limit: int) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+        if len(result) >= limit:
+            break
+    return result
 
 
 def _task_id(user_id: str, session_id: str) -> str:

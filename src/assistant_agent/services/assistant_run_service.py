@@ -33,6 +33,7 @@ from assistant_agent.services.context.policy import context_policy_from_request
 from assistant_agent.services.event_sink import EventSink, ListEventSink
 from assistant_agent.services.durable_tasks.service import DurableTaskService
 from assistant_agent.services.realtime_task_state import (
+    apply_realtime_task_update,
     RealtimeTaskStateStore,
     get_default_realtime_task_state_store,
     prepare_realtime_task_state_request,
@@ -511,6 +512,7 @@ def run_assistant_request(
         runtime_sink,
         cancel_token=cancel_token,
     )
+    apply_realtime_task_update(state, store=resolved_task_store)
     record_realtime_task_state_run_artifacts(state, store=resolved_task_store)
     _record_conversation_turn(
         state,

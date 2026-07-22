@@ -47,6 +47,7 @@ Last updated: 2026-07-22
 - durable snapshot 是当前执行状态，不是 session summary 或长期 memory。worker 可按普通 read policy 读取长期记忆，但量子完成不会触发 completed-run 自动长期写入。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - Realtime task-state snapshot 只在进入 runtime 前显式启用：`interaction_mode=realtime`、`enable_realtime_task_state=true` 或 entry capability `supports_realtime_task_state=true`。普通 `/agent/run` 即使经由 Gateway 生命周期，也不会因为存在 `gateway` metadata 或 `realtime.run_id`/`turn_id` 自动启用。
+- 启用 task state 的普通多轮 follow-up 不再只靠 interrupt 路径修订目标。主模型的已验证终态 JSON 可携带结构化 `task_update(action/objective/constraints)`；runtime 在回答提交后归并到 session task store，并在规范目标变化时追加 `IntentRevision`。入口与 catalog 不读取用户关键词推断目标变化。
 - `MemoryManager` 负责按 read policy 加载或跳过分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
 - Assistant context 已有字符预算兜底；owner persona 超限时先按完整段落收缩 persona，再沿用 memory/conversation 优先压缩、工具 observation 最后压缩的顺序。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，`keep_recent_turns=2` 是 recent transcript 的最小原文保留 guard。
