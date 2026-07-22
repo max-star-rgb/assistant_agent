@@ -24,7 +24,6 @@ class _CapturedChatAdapter:
             provider=self.provider,
             model=self.model,
             finish_reason="stop",
-            message_kind="final_answer",
             response_text="完成。",
         )
 

@@ -27,7 +27,6 @@ class _ShoppingToolCallAdapter:
                     provider=self.provider,
                     model=self.model,
                     finish_reason="tool_calls",
-                    message_kind="tool_call",
                     tool_calls=[
                         NativeToolCall(
                             id="call-shopping-1",
@@ -40,7 +39,6 @@ class _ShoppingToolCallAdapter:
                     provider=self.provider,
                     model=self.model,
                     finish_reason="stop",
-                    message_kind="final_answer",
                     response_text="已找到牛奶购买链接。",
                 ),
             )
@@ -128,11 +126,17 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     spans = build_text_otel_span_specs(events, conversation=conversation)
     generations = [span for span in spans if span.name == "llm.chat"]
     assert len(generations) == 2
-    provider_outputs = [
-        json.loads(span.attributes["langfuse.observation.output"])[
-            "provider_response"
-        ]["response_text"]
+    generation_outputs = [
+        json.loads(span.attributes["langfuse.observation.output"])
         for span in generations
+    ]
+    assert [output["result_kind"] for output in generation_outputs] == [
+        "tool_call",
+        "text",
+    ]
+    provider_outputs = [
+        output["provider_response"]["response_text"]
+        for output in generation_outputs
     ]
     assert provider_outputs[0] == ""
     assert provider_outputs[1] == "已找到牛奶购买链接。"

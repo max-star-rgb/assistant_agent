@@ -88,6 +88,9 @@ The foreground assistant loop must emit one paired `llm.chat.started` /
 `llm_chat[n]` instead of folding model time into `unattributed`. 默认安全模式下
 `llm.chat` generation 不设置 `langfuse.observation.output`；Provider/model、finish
 metadata、usage 和 latency 使用独立 generation attributes。
+`assistant_agent.result_kind` 是观测层根据归一化 `ChatResult` 即时计算的
+`error | tool_call | refusal | truncated | text | empty`，不属于 Qwen/OpenAI 协议，也不写回
+`ChatResult`；本地 content overlay 在 generation output 中将它作为 `provider_response` 的同级字段导出。
 每个 attempt 另外记录 `attempt_kind`（当前包括 `primary` 和
 `context_overflow_retry`），避免同一 ReAct iteration 内的上下文溢出重试被误读成
 两次独立决策。Provider-native 终态按 `tool_calls`、refusal、`finish_reason=length`、content、empty/error

@@ -27,7 +27,6 @@ class _NativeTextChatAdapter:
             provider=self.provider,
             model=self.model,
             finish_reason="stop",
-            message_kind="final_answer",
             response_text=next(self.responses),
         )
 
@@ -76,6 +75,8 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
         for span in generations
     ]
     assert [output["attempt_kind"] for output in outputs] == ["primary"]
+    assert [output["result_kind"] for output in outputs] == ["text"]
+    assert "message_kind" not in outputs[0]["provider_response"]
     assert [
         output["provider_response"]["response_text"]
         for output in outputs

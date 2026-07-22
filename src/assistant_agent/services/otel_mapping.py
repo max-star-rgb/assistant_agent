@@ -527,6 +527,7 @@ def _event_io_attributes(
         if llm_output is not None:
             output_payload = {
                 "attempt_kind": llm_output.attempt_kind,
+                "result_kind": event.attributes.get("result_kind"),
                 "provider_response": dict(llm_output.result),
             }
             include_output = True

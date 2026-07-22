@@ -575,7 +575,6 @@ def test_agent_runtime_system_prompt_is_channel_agnostic() -> None:
                 provider="scripted",
                 model="scripted-model",
                 finish_reason="stop",
-                message_kind="final_answer",
                 response_text="你好。",
             )
         ]
@@ -641,7 +640,6 @@ def test_provider_native_text_is_committed_without_repair_call() -> None:
                 provider="scripted",
                 model="scripted-model",
                 finish_reason="stop",
-                message_kind="final_answer",
                 response_text="先分析工具目录，再决定怎么回复用户。",
             ),
         ]
@@ -672,7 +670,6 @@ def test_truncated_provider_text_is_not_committed_as_complete_answer() -> None:
                 provider="scripted",
                 model="scripted-model",
                 finish_reason="length",
-                message_kind="final_answer",
                 response_text="这是一段未完成的回答",
             )
         ]
@@ -706,7 +703,6 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
         provider="scripted",
         model="scripted-model",
         finish_reason="tool_calls",
-        message_kind="tool_call",
         response_text="我先查询一下。",
         tool_calls=[
             NativeToolCall(
@@ -728,7 +724,6 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
         provider="scripted",
         model="scripted-model",
         finish_reason="stop",
-        message_kind="final_answer",
         response_text="已结合记忆完成推荐。",
     )
     runtime = AgentGraphRuntime(
@@ -758,7 +753,6 @@ def test_local_trace_content_captures_compiled_provider_request(monkeypatch) -> 
                 provider="scripted",
                 model="scripted-model",
                 finish_reason="stop",
-                message_kind="final_answer",
                 response_text="完成。",
             )
         ]
@@ -807,7 +801,6 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
         provider="scripted",
         model="scripted-model",
         finish_reason="tool_calls",
-        message_kind="tool_call",
         tool_calls=[
             NativeToolCall(
                 id="call-budget-1",
@@ -841,7 +834,6 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
         provider="scripted",
         model="scripted-model",
         finish_reason="stop",
-        message_kind="final_answer",
         response_text="预算内搜索完成。",
     )
     adapter = ScriptedChatAdapter([tool_call, final_answer])

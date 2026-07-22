@@ -60,7 +60,6 @@ def test_agent_runtime_executes_tool_built_by_plugin_in_mock_mode() -> None:
                 provider="scripted",
                 model="scripted-plugin-runtime",
                 finish_reason="tool_calls",
-                message_kind="tool_call",
                 tool_calls=[
                     NativeToolCall(
                         id="plugin-call-1",
@@ -73,7 +72,6 @@ def test_agent_runtime_executes_tool_built_by_plugin_in_mock_mode() -> None:
                 provider="scripted",
                 model="scripted-plugin-runtime",
                 finish_reason="stop",
-                message_kind="final_answer",
                 response_text="已通过插件工具读取记忆。",
             ),
         ]
@@ -144,7 +142,6 @@ def test_configured_plugin_tool_runs_through_default_runtime_governance(
                 provider="scripted",
                 model="scripted-plugin-runtime",
                 finish_reason="tool_calls",
-                message_kind="tool_call",
                 tool_calls=[
                     NativeToolCall(
                         id="configured-call-1",
@@ -157,7 +154,6 @@ def test_configured_plugin_tool_runs_through_default_runtime_governance(
                 provider="scripted",
                 model="scripted-plugin-runtime",
                 finish_reason="stop",
-                message_kind="final_answer",
                 response_text="configured tool completed",
             ),
         ]

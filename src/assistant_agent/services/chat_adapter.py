@@ -75,7 +75,6 @@ class ChatResult(BaseModel):
     reasoning_content: str | None = Field(default=None, exclude=True)
     finish_reason: str | None = None
     refusal: str | None = None
-    message_kind: str | None = None
     provider: str = Field(min_length=1)
     model: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
@@ -86,6 +85,25 @@ class ChatResult(BaseModel):
     @property
     def success(self) -> bool:
         return not self.errors
+
+
+ChatResultKind = Literal["error", "tool_call", "refusal", "truncated", "text", "empty"]
+
+
+def chat_result_kind(result: ChatResult) -> ChatResultKind:
+    """Derive a read-only diagnostic kind from the normalized Provider result."""
+
+    if result.errors:
+        return "error"
+    if result.tool_calls:
+        return "tool_call"
+    if result.refusal:
+        return "refusal"
+    if result.finish_reason == "length":
+        return "truncated"
+    if result.response_text.strip():
+        return "text"
+    return "empty"
 
 
 class ChatAdapter(Protocol):
@@ -427,7 +445,6 @@ def _parse_openai_chat_response(
         reasoning_content=reasoning_content if isinstance(reasoning_content, str) and reasoning_content else None,
         finish_reason=str(finish_reason) if finish_reason is not None else None,
         refusal=refusal,
-        message_kind=_chat_message_kind(tool_calls=tool_calls, refusal=refusal, content=content),
         provider=provider,
         model=str(data.get("model") or model),
         usage=usage if isinstance(usage, dict) else {},
@@ -476,7 +493,6 @@ def _parse_openai_chat_stream(
         reasoning_content=reasoning_content or None,
         finish_reason=accumulator.finish_reason,
         refusal=refusal or None,
-        message_kind=_chat_message_kind(tool_calls=tool_calls, refusal=refusal or None, content=content),
         provider=provider,
         model=accumulator.model or model,
         usage=accumulator.usage,
@@ -617,16 +633,6 @@ def _emit_stream_delta(
     if finish_reason is not None:
         payload["finish_reason"] = finish_reason
     stream_callback(text, payload)
-
-
-def _chat_message_kind(*, tool_calls: list[NativeToolCall], refusal: str | None, content: Any) -> str:
-    if tool_calls:
-        return "tool_call"
-    if refusal:
-        return "refusal"
-    if isinstance(content, str) and content.strip():
-        return "final_answer"
-    return "empty"
 
 
 def _parse_openai_tool_calls(value: Any) -> list[NativeToolCall]:

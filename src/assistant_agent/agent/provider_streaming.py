@@ -8,7 +8,11 @@ from time import perf_counter
 from typing import Any
 
 from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator
-from assistant_agent.services.chat_adapter import ChatProviderError, ChatRequest, ChatResult
+from assistant_agent.services.chat_adapter import (
+    ChatProviderError,
+    ChatRequest,
+    ChatResult,
+)
 
 
 def supports_async_streaming_chat(adapter: object) -> bool:
@@ -75,38 +79,35 @@ class ProviderStreamingTurnRunner:
         response_text = accumulator.response_text
         tool_calls = accumulator.finalize_tool_calls(provider_format="openai_compatible")
         result_provider = accumulator.provider or provider
-        message_kind = _message_kind(tool_calls=tool_calls, refusal=refusal, content=response_text)
-        if message_kind == "empty":
-            return ChatResult(
-                response_text="",
-                tool_calls=[],
-                finish_reason=accumulator.finish_reason,
-                message_kind="empty",
-                provider=result_provider,
-                model=accumulator.model or model,
-                usage=accumulator.usage,
-                latency_ms=_elapsed_ms(started_at),
-                errors=[
-                    ChatProviderError(
-                        code="provider_empty_response",
-                        message="chat provider returned empty content",
-                        recoverable=True,
-                    )
-                ],
-                output_ref=f"provider://chat/{result_provider}",
-            )
-        return ChatResult(
+        result = ChatResult(
             response_text=response_text,
             tool_calls=tool_calls,
             reasoning_content=accumulator.reasoning_content or None,
             finish_reason=accumulator.finish_reason,
             refusal=refusal,
-            message_kind=message_kind,
             provider=result_provider,
             model=accumulator.model or model,
             usage=accumulator.usage,
             latency_ms=_elapsed_ms(started_at),
             output_ref=f"provider://chat/{result_provider}",
+        )
+        if (
+            result.tool_calls
+            or result.refusal
+            or result.response_text.strip()
+            or result.finish_reason == "length"
+        ):
+            return result
+        return result.model_copy(
+            update={
+                "errors": [
+                    ChatProviderError(
+                        code="provider_empty_response",
+                        message="chat provider returned empty content",
+                        recoverable=True,
+                    )
+                ]
+            }
         )
 
 
@@ -143,16 +144,6 @@ def _chat_result_from_error_event(
             )
         ],
     )
-
-
-def _message_kind(*, tool_calls: list[Any], refusal: str | None, content: str) -> str:
-    if tool_calls:
-        return "tool_call"
-    if refusal:
-        return "refusal"
-    if content.strip():
-        return "final_answer"
-    return "empty"
 
 
 def _elapsed_ms(started_at: float) -> int:

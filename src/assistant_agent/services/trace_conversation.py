@@ -32,7 +32,7 @@ class TraceLlmInput(BaseModel):
 
 
 class TraceLlmOutput(BaseModel):
-    """One local-only normalized Provider result captured before validation."""
+    """One local-only normalized Provider result captured for debugging."""
 
     iteration: int = Field(ge=1)
     span_id: str

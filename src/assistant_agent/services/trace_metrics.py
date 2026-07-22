@@ -218,10 +218,13 @@ def _llm_metrics(events: list[TraceEvent]) -> dict[str, Any]:
     direct_answer_count = 0
     native_tool_call_count = 0
     for event in llm_events:
-        message_kind = _event_str(event, "message_kind") or _event_str(event, "response_kind")
-        if message_kind in {"content", "direct_answer", "final_answer"}:
+        result_kind = _event_str(event, "result_kind") or _event_str(event, "response_kind")
+        if result_kind in {"text", "content", "direct_answer", "final_answer"}:
             direct_answer_count += 1
-        if message_kind in {"tool_calls", "native_tool_calls"} or _event_int(event, "native_tool_call_count"):
+        if result_kind in {"tool_call", "tool_calls", "native_tool_calls"} or _event_int(
+            event,
+            "native_tool_call_count",
+        ):
             native_tool_call_count += 1
     return {
         "call_count": len(llm_events),

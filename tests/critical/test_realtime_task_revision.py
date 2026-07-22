@@ -32,7 +32,6 @@ class _TaskRevisionChatAdapter:
             provider=self.provider,
             model=self.model,
             finish_reason="stop",
-            message_kind="final_answer",
             response_text=next(self._responses),
         )
 

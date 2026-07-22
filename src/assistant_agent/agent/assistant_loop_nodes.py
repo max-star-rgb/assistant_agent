@@ -45,7 +45,12 @@ from assistant_agent.schemas.tool_observation import (
     rejected_observation,
 )
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
-from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult
+from assistant_agent.services.chat_adapter import (
+    ChatAdapter,
+    ChatRequest,
+    ChatResult,
+    chat_result_kind,
+)
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
 from assistant_agent.services.context.prompt_compiler import (
     PromptCompileMode,
@@ -505,7 +510,7 @@ def _run_chat_turn(
         span_id=span_id,
         attributes={
             "iteration": iteration,
-            "message_kind": result.message_kind,
+            "result_kind": chat_result_kind(result),
             "finish_reason": result.finish_reason,
             "tool_call_count": len(result.tool_calls),
             "provider_latency_ms": provider_latency_ms,
@@ -804,8 +809,6 @@ def _native_final_decision(result: ChatResult) -> AssistantDecision:
 def _native_finish_reason(result: ChatResult, *, fallback: str) -> str:
     if result.finish_reason:
         return f"{fallback} finish_reason={result.finish_reason}."
-    if result.message_kind:
-        return f"{fallback} message_kind={result.message_kind}."
     return fallback
 
 
