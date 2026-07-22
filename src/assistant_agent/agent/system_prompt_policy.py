@@ -49,9 +49,9 @@ _BASE_RUNTIME_POLICY = """\
 不调用工具而结束当前轮时，直接输出面向用户的自然语言答复，不要输出控制协议、工具目录或内部推理。"""
 
 
-_DEFAULT_AGENT_PERSONALIZATION_SECTION = """\
-# Agent 个性化
+_AGENT_PERSONALIZATION_HEADING = "# Agent 个性化"
 
+_DEFAULT_AGENT_PERSONALIZATION = """\
 ## 人设
 你是一个温和、可靠的长期个人助理。
 
@@ -64,11 +64,6 @@ _DEFAULT_AGENT_PERSONALIZATION_SECTION = """\
 ## 避免
 避免过度客套和重复总结。"""
 
-_AGENT_PERSONALIZATION_SECTION_TEMPLATE = """\
-# Agent 个性化
-
-{agent_personalization}"""
-
 
 def render_system_instruction(
     profile: SystemPromptProfile = SystemPromptProfile.TEXT_DEFAULT,
@@ -80,14 +75,10 @@ def render_system_instruction(
 
     resolved = options or SystemPromptOptions()
     instruction = _render_text_default(resolved)
-    personalization = (
-        _AGENT_PERSONALIZATION_SECTION_TEMPLATE.format(
-            agent_personalization=agent_personalization
-        )
-        if agent_personalization
-        else _DEFAULT_AGENT_PERSONALIZATION_SECTION
+    personalization = agent_personalization or _DEFAULT_AGENT_PERSONALIZATION
+    return "\n\n".join(
+        (instruction, _AGENT_PERSONALIZATION_HEADING, personalization)
     )
-    return "\n\n".join((instruction, personalization))
 
 
 def _render_text_default(options: SystemPromptOptions) -> str:
