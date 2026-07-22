@@ -55,12 +55,13 @@ the runner normalizes it to `provider_empty_response` so sync and streaming chat
 paths share the same empty-output contract.
 
 `reasoning_delta` never maps to `AgentEvent(type="response_delta")` and never
-enters the public answer or conversation history. A non-tool terminal response
-must satisfy the runtime final-answer JSON contract (`response_type` plus
-`answer`) before crossing the commit barrier. Invalid raw content is discarded
-and gets one tools-disabled repair attempt; a second contract failure produces
-a fixed safe retry response instead of committing the draft. Validated answers
-are emitted as public response deltas only after validation.
+enters the public answer or conversation history. Runtime routing uses the
+normalized Provider result directly: non-empty `tool_calls` enter tool
+governance; otherwise refusal is returned as refusal text, `finish_reason=length`
+is treated as an incomplete response, and non-empty `response_text` is committed
+as the final answer. If both content and tool calls are present, tool calls win
+and the content is not committed. Buffered text is emitted only after the
+terminal result is known, so a later tool-call delta cannot leak a draft answer.
 
 For the main foreground chat LLM only, `provider_timeout` and
 `provider_empty_response` with no usable text/tool/refusal are treated as a
@@ -92,14 +93,13 @@ response content. Agent-Service latency summaries use wall latency as the
 critical-path `llm_chat[n]` duration and keep Provider latency as a nested
 diagnostic.
 当 localhost OTLP 与 local trace content 三重 opt-in 同时开启时，进程内 debug overlay 会在
-最终答案校验前按 `llm.chat` span id 保存归一化 `ChatResult`，并投影到对应 Langfuse generation
+按 `llm.chat` span id 保存归一化 `ChatResult`，并投影到对应 Langfuse generation
 output；默认 trace event 和 `.data/graph_trace.jsonl` 仍只保存上述安全摘要，
 vendor SDK response envelope 与 hidden reasoning 不进入 debug store。
-终态响应另外经过结构化契约解析并写入 `response.contract.validation`：记录 attempt kind、
-validation status、prompt-safe failure code、顶层字段名和 next action。普通格式错误进入一次
-tools-disabled `contract_repair`；裸 `task_update` 在仍有受治理工具时进入保留工具目录的
-`decision_retry`，让模型重新选择 tool call 或完整终态 JSON。该分流只读取 Provider 输出形状，
-不根据用户关键词推断意图。
+普通前台调用不设置 `response_format`，系统提示词也不要求终态 JSON；因此一次非工具终态只对应
+一次 `llm.chat`。`answer` 与自然语言追问都作为本轮 `final_answer` 提交；只有 validator、planner
+等运行时组件显式构造 `ask_followup` 时才进入 `waiting_for_user`。session task-state 更新由
+`UserRequest.runtime_task_update` 的 Pydantic 契约承担，不从 Provider 文本推断。
 
 The compatibility contracts remain supported:
 

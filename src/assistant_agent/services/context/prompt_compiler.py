@@ -18,11 +18,6 @@ from assistant_agent.services.context.renderer import render_native_tool_context
 
 _ASSISTANT_REASONING_CONTENT_KEY = "assistant_reasoning_content"
 _ASSISTANT_TURN_ID_KEY = "assistant_turn_id"
-_TASK_UPDATE_SYSTEM_INSTRUCTION = """仅在不调用工具而结束当前轮时，终态 JSON 可包含 task_update：
-{"response_type":"answer|clarification","answer":"给用户的最终文本","task_update":{"action":"continue|revise|replace|complete","objective":"当前任务的规范目标","constraints":["有效约束"]}}。
-task_update 只能作为上述终态对象的可选字段，禁止单独输出。需要工具时先返回 provider-native tool_calls，不要先输出 task_update。纠正或取代旧目标用 replace，增加约束用 revise，目标不变用 continue，目标完成用 complete。"""
-
-
 class PromptCompileMode(StrEnum):
     """Supported production provider-request compilation modes."""
 
@@ -72,8 +67,6 @@ class PromptCompiler:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_instruction},
         ]
-        if request.context_pack.realtime_task_state is not None:
-            messages.append({"role": "system", "content": _TASK_UPDATE_SYSTEM_INSTRUCTION})
         messages.append({"role": "user", "content": user_content})
         messages.extend(_native_tool_messages(request))
 
@@ -89,7 +82,6 @@ class PromptCompiler:
             messages=messages,
             tools=tool_specs_to_openai_tools(selected_tool_specs),
             tool_choice="auto" if selected_tool_specs else None,
-            response_format={"type": "json_object"},
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             stream_callback=request.stream_callback,

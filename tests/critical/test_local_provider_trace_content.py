@@ -13,18 +13,13 @@ from assistant_agent.services.trace_content_policy import LOCAL_TRACE_CONTENT_EN
 from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
 
 
-class _RepairingChatAdapter:
+class _NativeTextChatAdapter:
     provider = "scripted"
     model = "scripted-model"
 
     def __init__(self) -> None:
         self.requests: list[ChatRequest] = []
-        self.responses = iter(
-            (
-                '{"response_type":"unsupported","answer":"provider draft"}',
-                '{"response_type":"answer","answer":"repaired answer"}',
-            )
-        )
+        self.responses = iter(("provider native answer",))
 
     def chat(self, request: ChatRequest) -> ChatResult:
         self.requests.append(request)
@@ -37,9 +32,9 @@ class _RepairingChatAdapter:
         )
 
 
-def test_local_trace_pairs_primary_and_repair_provider_results_by_span(monkeypatch) -> None:
+def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
     monkeypatch.setenv(LOCAL_TRACE_CONTENT_ENV, "1")
-    adapter = _RepairingChatAdapter()
+    adapter = _NativeTextChatAdapter()
     runtime = AgentGraphRuntime(
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         chat_adapter=adapter,
@@ -60,18 +55,14 @@ def test_local_trace_pairs_primary_and_repair_provider_results_by_span(monkeypat
     )
 
     assert conversation is not None
-    assert [item.attempt_kind for item in conversation.llm_outputs] == [
-        "primary",
-        "contract_repair",
-    ]
+    assert [item.attempt_kind for item in conversation.llm_outputs] == ["primary"]
     assert [item.result["response_text"] for item in conversation.llm_outputs] == [
-        '{"response_type":"unsupported","answer":"provider draft"}',
-        '{"response_type":"answer","answer":"repaired answer"}',
+        "provider native answer"
     ]
     assert [item.span_id for item in conversation.llm_inputs] == [
         item.span_id for item in conversation.llm_outputs
     ]
-    assert len(set(item.span_id for item in conversation.llm_outputs)) == 2
+    assert len(set(item.span_id for item in conversation.llm_outputs)) == 1
 
     events = runtime.trace_store.list_by_run(state.run_id)
     generations = [
@@ -79,21 +70,14 @@ def test_local_trace_pairs_primary_and_repair_provider_results_by_span(monkeypat
         for span in build_text_otel_span_specs(events, conversation=conversation)
         if span.name == "llm.chat"
     ]
-    assert len(generations) == 2
+    assert len(generations) == 1
     outputs = [
         json.loads(span.attributes["langfuse.observation.output"])
         for span in generations
     ]
-    assert [output["attempt_kind"] for output in outputs] == [
-        "primary",
-        "contract_repair",
-    ]
+    assert [output["attempt_kind"] for output in outputs] == ["primary"]
     assert [
-        output["provider_response_before_validation"]["response_text"]
+        output["provider_response"]["response_text"]
         for output in outputs
-    ] == [
-        '{"response_type":"unsupported","answer":"provider draft"}',
-        '{"response_type":"answer","answer":"repaired answer"}',
-    ]
+    ] == ["provider native answer"]
     assert json.loads(generations[0].attributes["langfuse.observation.input"])["tools"]
-    assert json.loads(generations[1].attributes["langfuse.observation.input"])["tools"] == []

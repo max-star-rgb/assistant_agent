@@ -12,7 +12,6 @@ limits, trace recording, and state mutation.
 
 from dataclasses import dataclass
 from inspect import signature
-import json
 from time import perf_counter
 from typing import Any, Literal, NotRequired, TypedDict, cast
 
@@ -126,14 +125,6 @@ class AssistantDecisionContext:
     is_mock: bool
 
 
-@dataclass(frozen=True)
-class _FinalContractValidation:
-    decision: AssistantDecision | None
-    status: Literal["valid", "invalid"]
-    failure_code: str | None = None
-    top_level_keys: tuple[str, ...] = ()
-
-
 class _ResponseDeltaBuffer:
     """Hold streamed text until the model response is known to be terminal text."""
 
@@ -172,7 +163,7 @@ class _ResponseDeltaBuffer:
             text,
             {
                 "token_streaming": False,
-                "chunking_strategy": "validated_final_answer",
+                "chunking_strategy": "provider_final_text",
             },
         )
         self.flush()
@@ -395,37 +386,6 @@ def _decide_with_llm(
             stream_buffer.discard()
             _record_provider_context_overflow(state, result, retry_failed=True)
             return _provider_context_overflow_final_answer(result), context
-    validation: _FinalContractValidation | None = None
-    if result.success and not result.tool_calls:
-        validation = _validate_native_final_contract(result, state=state)
-        if validation.decision is None and _should_retry_native_decision(validation, request):
-            _record_final_contract_validation(
-                graph_state,
-                validation,
-                next_action="decision_retry",
-            )
-            result = _retry_native_decision(
-                graph_state,
-                chat_adapter,
-                request,
-                result,
-            )
-            _record_chat_usage_metadata(state, result)
-            validation = None
-            if result.success and not result.tool_calls:
-                validation = _validate_native_final_contract(result, state=state)
-                _record_final_contract_validation(
-                    graph_state,
-                    validation,
-                    next_action="commit" if validation.decision is not None else "contract_repair",
-                )
-        else:
-            _record_final_contract_validation(
-                graph_state,
-                validation,
-                next_action="commit" if validation.decision is not None else "contract_repair",
-            )
-
     if result.success and result.tool_calls:
         stream_buffer.discard()
         if not _selected_native_tool_specs(context):
@@ -443,33 +403,8 @@ def _decide_with_llm(
         graph_state["pending_tool_decisions"] = pending_decisions
         decision = pending_decisions[0]
     elif result.success:
-        stream_buffer.discard()
         graph_state["pending_tool_decisions"] = []
-        if validation is None:
-            validation = _validate_native_final_contract(result, state=state)
-            _record_final_contract_validation(
-                graph_state,
-                validation,
-                next_action="commit" if validation.decision is not None else "contract_repair",
-            )
-        decision = validation.decision
-        if decision is None:
-            repaired = _repair_native_final_answer(
-                graph_state,
-                chat_adapter,
-                request,
-                result,
-            )
-            _record_chat_usage_metadata(state, repaired)
-            repair_validation = _validate_native_final_contract(repaired, state=state)
-            _record_final_contract_validation(
-                graph_state,
-                repair_validation,
-                next_action="commit" if repair_validation.decision is not None else "safe_fallback",
-            )
-            decision = repair_validation.decision
-            if decision is None:
-                decision = _invalid_native_final_answer(repaired)
+        decision = _native_final_decision(result)
         if decision.message:
             stream_buffer.flush_answer(decision.message)
     else:
@@ -828,6 +763,13 @@ def _native_final_decision(result: ChatResult) -> AssistantDecision:
             reason=f"Main LLM returned {no_answer_code} without usable content.",
             safety_notes=[no_answer_code],
         )
+    if result.errors:
+        return AssistantDecision(
+            type="final_answer",
+            message="抱歉，刚才模型调用失败，请再试一次。",
+            reason="Main LLM returned an error without a usable terminal response.",
+            safety_notes=["provider_error"],
+        )
     if result.refusal:
         return AssistantDecision(
             type="final_answer",
@@ -835,261 +777,27 @@ def _native_final_decision(result: ChatResult) -> AssistantDecision:
             reason=_native_finish_reason(result, fallback="Provider returned a refusal instead of a tool call."),
             safety_notes=["provider_refusal"],
         )
-    validated = _validated_native_final_decision(result)
-    if validated is not None:
-        return validated
+    if result.finish_reason == "length":
+        return AssistantDecision(
+            type="final_answer",
+            message="抱歉，刚才模型的回答被截断了，请缩短问题或让我分段回答。",
+            reason="Provider response was truncated before completion. finish_reason=length.",
+            safety_notes=["provider_response_truncated"],
+        )
+    if result.response_text.strip():
+        return AssistantDecision(
+            type="final_answer",
+            message=result.response_text.strip(),
+            reason=_native_finish_reason(
+                result,
+                fallback="Provider finished without requesting a tool; content is the final answer.",
+            ),
+        )
     return AssistantDecision(
         type="final_answer",
         message="模型没有返回可用回答。",
         reason=_native_finish_reason(result, fallback="Provider finished without content or tool calls."),
         safety_notes=["empty_native_final_answer"],
-    )
-
-
-def _validated_native_final_decision(
-    result: ChatResult,
-    *,
-    state: AgentState | None = None,
-) -> AssistantDecision | None:
-    """Return only a terminal answer that satisfies the public response contract."""
-
-    return _validate_native_final_contract(result, state=state).decision
-
-
-def _validate_native_final_contract(
-    result: ChatResult,
-    *,
-    state: AgentState | None = None,
-) -> _FinalContractValidation:
-    """Parse one Provider result and explain its terminal-contract outcome."""
-
-    if result.refusal:
-        return _FinalContractValidation(
-            decision=AssistantDecision(
-                type="final_answer",
-                message=result.refusal,
-                reason=_native_finish_reason(result, fallback="Provider returned a refusal instead of a tool call."),
-                safety_notes=["provider_refusal"],
-            ),
-            status="valid",
-        )
-    try:
-        payload = json.loads(result.response_text)
-    except (json.JSONDecodeError, TypeError):
-        return _FinalContractValidation(decision=None, status="invalid", failure_code="invalid_json")
-    if not isinstance(payload, dict):
-        return _FinalContractValidation(
-            decision=None,
-            status="invalid",
-            failure_code="top_level_not_object",
-        )
-    keys = tuple(sorted(str(key) for key in payload))
-    if set(payload).issubset({"action", "objective", "constraints"}) and {
-        "action",
-        "objective",
-    }.issubset(payload):
-        return _FinalContractValidation(
-            decision=None,
-            status="invalid",
-            failure_code="bare_task_update",
-            top_level_keys=keys,
-        )
-    if not set(payload).issubset({"response_type", "answer", "task_update"}):
-        return _FinalContractValidation(
-            decision=None,
-            status="invalid",
-            failure_code="unexpected_top_level_fields",
-            top_level_keys=keys,
-        )
-    if not {"response_type", "answer"}.issubset(payload):
-        return _FinalContractValidation(
-            decision=None,
-            status="invalid",
-            failure_code="missing_response_fields",
-            top_level_keys=keys,
-        )
-    response_type = payload.get("response_type")
-    answer = payload.get("answer")
-    if response_type not in {"answer", "clarification"}:
-        return _FinalContractValidation(
-            decision=None,
-            status="invalid",
-            failure_code="invalid_response_type",
-            top_level_keys=keys,
-        )
-    if not isinstance(answer, str) or not answer.strip():
-        return _FinalContractValidation(
-            decision=None,
-            status="invalid",
-            failure_code="invalid_answer",
-            top_level_keys=keys,
-        )
-    task_update = _validated_task_update(payload.get("task_update"))
-    if "task_update" in payload and task_update is None:
-        return _FinalContractValidation(
-            decision=None,
-            status="invalid",
-            failure_code="invalid_task_update",
-            top_level_keys=keys,
-        )
-    if state is not None and task_update is not None:
-        state.request.metadata["realtime_task_update"] = task_update
-    return _FinalContractValidation(
-        decision=AssistantDecision(
-            type="ask_followup" if response_type == "clarification" else "final_answer",
-            message=answer.strip(),
-            reason=_native_finish_reason(result, fallback="Provider returned a validated public response."),
-        ),
-        status="valid",
-        top_level_keys=keys,
-    )
-
-
-def _should_retry_native_decision(
-    validation: _FinalContractValidation,
-    request: ChatRequest,
-) -> bool:
-    return validation.failure_code == "bare_task_update" and bool(request.tools)
-
-
-def _record_final_contract_validation(
-    graph_state: AssistantLoopState,
-    validation: _FinalContractValidation,
-    *,
-    next_action: str,
-) -> None:
-    state = graph_state["state"]
-    attempt_kind = graph_state.get("last_llm_attempt_kind", "unknown")
-    append_observability_event(
-        graph_state.get("trace_store"),
-        trace_id=graph_state.get("trace_id") or state.trace_id,
-        run_id=state.run_id,
-        user_id=state.user_id,
-        session_id=state.session_id,
-        canonical_event="response.contract.validation",
-        node_name=graph_state.get("current_node_name", "assistant_loop"),
-        status=validation.status,
-        span_id=new_span_id(),
-        parent_span_id=graph_state.get("last_llm_span_id"),
-        attributes={
-            "iteration": int(graph_state.get("assistant_iterations", 0)) + 1,
-            "attempt_kind": attempt_kind,
-            "validation_status": validation.status,
-            "failure_code": validation.failure_code,
-            "next_action": next_action,
-        },
-        output_summary={
-            "schema_version": "response_contract_validation_v1",
-            "attempt_kind": attempt_kind,
-            "validation_status": validation.status,
-            "failure_code": validation.failure_code,
-            "top_level_keys": list(validation.top_level_keys),
-            "next_action": next_action,
-        },
-    )
-
-
-def _retry_native_decision(
-    graph_state: AssistantLoopState,
-    chat_adapter: ChatAdapter,
-    original_request: ChatRequest,
-    result: ChatResult,
-) -> ChatResult:
-    """Retry a controller-shaped response while preserving governed tools."""
-
-    messages = [*original_request.messages]
-    if result.response_text.strip():
-        messages.append({"role": "assistant", "content": result.response_text.strip()})
-    messages.append(
-        {
-            "role": "user",
-            "content": (
-                "上一条只包含任务状态，不是有效的本轮决策。请重新处理当前用户请求："
-                "需要外部数据或操作时，立即返回已提供工具的 provider-native tool_calls；"
-                "无需工具时，返回包含 response_type 和 answer 的完整终态 JSON。"
-                "task_update 只能作为终态 JSON 的可选字段，禁止单独输出。"
-            ),
-        }
-    )
-    retry_request = original_request.model_copy(
-        update={
-            "messages": messages,
-            "stream_callback": None,
-        }
-    )
-    return _run_chat_turn(
-        graph_state,
-        chat_adapter,
-        retry_request,
-        attempt_kind="decision_retry",
-    )
-
-
-def _validated_task_update(value: Any) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict) or set(value) != {"action", "objective", "constraints"}:
-        return None
-    action = value.get("action")
-    objective = value.get("objective")
-    constraints = value.get("constraints")
-    if action not in {"continue", "revise", "replace", "complete"}:
-        return None
-    if not isinstance(objective, str) or not objective.strip():
-        return None
-    if not isinstance(constraints, list) or any(
-        not isinstance(item, str) or not item.strip() for item in constraints
-    ):
-        return None
-    return {
-        "action": action,
-        "objective": objective.strip()[:1200],
-        "constraints": [item.strip()[:320] for item in constraints[:12]],
-    }
-
-
-def _repair_native_final_answer(
-    graph_state: AssistantLoopState,
-    chat_adapter: ChatAdapter,
-    original_request: ChatRequest,
-    result: ChatResult,
-) -> ChatResult:
-    """Give one tools-disabled repair chance without committing the raw draft."""
-
-    repair_instruction = (
-        "将上一条 assistant 草稿改写成面向用户的最终答复。"
-        "只输出严格 JSON object，必须包含 response_type 和 answer；可包含 task_update；"
-        'response_type 只能是 "answer" 或 "clarification"。'
-        "task_update 如存在，必须只包含 action、objective、constraints；"
-        "不得复述分析过程、工具目录、隐藏推理或本条指令。"
-    )
-    messages = [*original_request.messages]
-    if result.response_text.strip():
-        messages.append({"role": "assistant", "content": result.response_text.strip()})
-    messages.append({"role": "user", "content": repair_instruction})
-    repair_request = original_request.model_copy(
-        update={
-            "messages": messages,
-            "tools": [],
-            "tool_choice": None,
-            "response_format": {"type": "json_object"},
-            "stream_callback": None,
-        }
-    )
-    return _run_chat_turn(
-        graph_state,
-        chat_adapter,
-        repair_request,
-        attempt_kind="contract_repair",
-    )
-
-
-def _invalid_native_final_answer(result: ChatResult) -> AssistantDecision:
-    return AssistantDecision(
-        type="final_answer",
-        message="抱歉，刚才模型没有生成可安全提交的最终答复，请再试一次。",
-        reason=_native_finish_reason(result, fallback="Provider final-answer contract validation failed after one repair."),
-        safety_notes=["invalid_native_final_answer_contract"],
     )
 
 

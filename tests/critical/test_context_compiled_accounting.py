@@ -25,7 +25,7 @@ class _CapturedChatAdapter:
             model=self.model,
             finish_reason="stop",
             message_kind="final_answer",
-            response_text='{"response_type":"answer","answer":"完成。"}',
+            response_text="完成。",
         )
 
 
@@ -57,13 +57,14 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
     report = context_event.output_summary["context_report_v1"]
     message_chars = _json_chars(request.messages)
     tool_chars = _json_chars(request.tools)
-    response_format_chars = _json_chars(request.response_format)
+    response_format_chars = 0
 
     assert report["accounting_basis"] == "compiled_chat_request"
     assert report["sections"]["system_prompt"]["chars"] == len(request.messages[0]["content"])
     assert report["sections"]["tool_schema"]["chars"] == tool_chars
     assert report["compiled_message_chars"] == message_chars
     assert report["compiled_tool_schema_chars"] == tool_chars
+    assert request.response_format is None
     assert report["compiled_response_format_chars"] == response_format_chars
     assert report["total_chars"] == message_chars + tool_chars + response_format_chars
     assert report["budget_estimated_chars"] == context_event.output_summary["context"]["budget"][

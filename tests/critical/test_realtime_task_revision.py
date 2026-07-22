@@ -3,7 +3,7 @@
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
-from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.requests import RuntimeTaskUpdate, UserRequest
 from assistant_agent.services.assistant_run_service import (
     InMemoryConversationStore,
     run_assistant_request,
@@ -21,10 +21,8 @@ class _TaskRevisionChatAdapter:
         self.requests: list[ChatRequest] = []
         self._responses = iter(
             [
-                '{"response_type":"clarification","answer":"你是想买牛奶吗？",'
-                '"task_update":{"action":"continue","objective":"我想麦牛奶","constraints":[]}}',
-                '{"response_type":"answer","answer":"好的，已按购买牛奶处理。",'
-                '"task_update":{"action":"complete","objective":"我想买牛奶","constraints":[]}}',
+                "你是想买牛奶吗？",
+                "好的，已按购买牛奶处理。",
             ]
         )
 
@@ -50,14 +48,28 @@ def test_ordinary_followup_commits_structured_objective_revision() -> None:
     task_store = InMemoryRealtimeTaskStateStore()
     conversation_store = InMemoryConversationStore()
 
-    for text in ("我想麦牛奶", "我想买牛奶"):
-        run_assistant_request(
-            UserRequest(
-                user_id="task-user",
-                session_id="task-session",
-                text=text,
-                metadata={"enable_realtime_task_state": True},
+    requests = (
+        UserRequest(
+            user_id="task-user",
+            session_id="task-session",
+            text="我想麦牛奶",
+            metadata={"enable_realtime_task_state": True},
+        ),
+        UserRequest(
+            user_id="task-user",
+            session_id="task-session",
+            text="我想买牛奶",
+            runtime_task_update=RuntimeTaskUpdate(
+                action="complete",
+                objective="我想买牛奶",
+                constraints=[],
             ),
+            metadata={"enable_realtime_task_state": True},
+        ),
+    )
+    for request in requests:
+        run_assistant_request(
+            request,
             runtime=runtime,
             conversation_store=conversation_store,
             realtime_task_state_store=task_store,
@@ -70,7 +82,7 @@ def test_ordinary_followup_commits_structured_objective_revision() -> None:
     assert len(task_state.revisions) == 1
     assert task_state.revisions[0].revision_type == "change_goal"
     assert task_state.revisions[0].metadata == {
-        "source": "provider_final_contract",
+        "source": "runtime_task_update",
         "action": "complete",
     }
     assert "我想麦牛奶" in str(adapter.requests[1].messages)

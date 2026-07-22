@@ -1,4 +1,4 @@
-"""Regression for shopping ToolSpec, task prompt projection, and decision retry."""
+"""Regression for shopping ToolSpec, task prompt projection, and native tool calls."""
 
 import json
 
@@ -15,7 +15,7 @@ from assistant_agent.services.trace_conversation import get_default_trace_conver
 from assistant_agent.tools.plugins.shopping.tool import ShoppingSearchTool
 
 
-class _BareTaskUpdateThenShoppingAdapter:
+class _ShoppingToolCallAdapter:
     provider = "scripted"
     model = "scripted-model"
 
@@ -23,16 +23,6 @@ class _BareTaskUpdateThenShoppingAdapter:
         self.requests: list[ChatRequest] = []
         self.results = iter(
             (
-                ChatResult(
-                    provider=self.provider,
-                    model=self.model,
-                    finish_reason="stop",
-                    message_kind="final_answer",
-                    response_text=(
-                        '{"action":"revise","objective":"购买牛奶",'
-                        '"constraints":["需要购买链接"]}'
-                    ),
-                ),
                 ChatResult(
                     provider=self.provider,
                     model=self.model,
@@ -51,11 +41,7 @@ class _BareTaskUpdateThenShoppingAdapter:
                     model=self.model,
                     finish_reason="stop",
                     message_kind="final_answer",
-                    response_text=(
-                        '{"response_type":"answer","answer":"已找到牛奶购买链接。",'
-                        '"task_update":{"action":"complete","objective":"购买牛奶",'
-                        '"constraints":["需要购买链接"]}}'
-                    ),
+                    response_text="已找到牛奶购买链接。",
                 ),
             )
         )
@@ -75,9 +61,9 @@ def test_shopping_tool_description_is_concise_and_explicit() -> None:
     assert len(description) < 220
 
 
-def test_bare_task_update_retries_decision_with_tools_and_exports_parse_path(monkeypatch) -> None:
+def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     monkeypatch.setenv(LOCAL_TRACE_CONTENT_ENV, "1")
-    adapter = _BareTaskUpdateThenShoppingAdapter()
+    adapter = _ShoppingToolCallAdapter()
     runtime = AgentGraphRuntime(
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         chat_adapter=adapter,
@@ -110,13 +96,10 @@ def test_bare_task_update_retries_decision_with_tools_and_exports_parse_path(mon
     assert state.status == "completed"
     assert state.response is not None and state.response.message == "已找到牛奶购买链接。"
     assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
-    assert len(adapter.requests) == 3
-    assert adapter.requests[1].tools == adapter.requests[0].tools
-    assert adapter.requests[1].tool_choice == "auto"
-    task_instruction = str(adapter.requests[0].messages[1]["content"])
-    assert '"task_update":{"action"' in task_instruction
-    assert "禁止单独输出" in task_instruction
-    rendered_user_context = str(adapter.requests[0].messages[2]["content"])
+    assert len(adapter.requests) == 2
+    assert adapter.requests[0].response_format is None
+    assert adapter.requests[1].response_format is None
+    rendered_user_context = str(adapter.requests[0].messages[1]["content"])
     assert '"objective": "购买牛奶"' in rendered_user_context
     for operational_field in (
         "task-internal-id",
@@ -128,19 +111,6 @@ def test_bare_task_update_retries_decision_with_tools_and_exports_parse_path(mon
         assert operational_field not in rendered_user_context
 
     events = runtime.trace_store.list_by_run(state.run_id)
-    validations = [
-        event
-        for event in events
-        if event.canonical_event == "response.contract.validation"
-    ]
-    assert [event.output_summary["failure_code"] for event in validations] == [
-        "bare_task_update",
-        None,
-    ]
-    assert [event.output_summary["next_action"] for event in validations] == [
-        "decision_retry",
-        "commit",
-    ]
 
     conversation = get_default_trace_conversation_store().get(
         user_id=state.user_id,
@@ -153,21 +123,16 @@ def test_bare_task_update_retries_decision_with_tools_and_exports_parse_path(mon
     assert conversation is not None
     assert [item.attempt_kind for item in conversation.llm_outputs] == [
         "primary",
-        "decision_retry",
         "primary",
     ]
     spans = build_text_otel_span_specs(events, conversation=conversation)
     generations = [span for span in spans if span.name == "llm.chat"]
-    assert len(generations) == 3
+    assert len(generations) == 2
     provider_outputs = [
         json.loads(span.attributes["langfuse.observation.output"])[
-            "provider_response_before_validation"
+            "provider_response"
         ]["response_text"]
         for span in generations
     ]
-    assert provider_outputs[0].startswith('{"action":"revise"')
-    validation_spans = [span for span in spans if span.name == "response.contract.validation"]
-    assert [
-        json.loads(span.attributes["langfuse.observation.output"])["next_action"]
-        for span in validation_spans
-    ] == ["decision_retry", "commit"]
+    assert provider_outputs[0] == ""
+    assert provider_outputs[1] == "已找到牛奶购买链接。"

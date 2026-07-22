@@ -34,7 +34,6 @@ _SPAN_EVENTS = frozenset(
         "memory.load.finished",
         "context.build.finished",
         "llm.chat.finished",
-        "response.contract.validation",
         "react.decision",
         "action.validation.finished",
         "tool.finished",
@@ -49,7 +48,6 @@ _ITERATION_CHILD_EVENTS = frozenset(
     {
         "context.build.finished",
         "llm.chat.finished",
-        "response.contract.validation",
         "react.decision",
         "action.validation.finished",
         "tool.finished",
@@ -529,15 +527,9 @@ def _event_io_attributes(
         if llm_output is not None:
             output_payload = {
                 "attempt_kind": llm_output.attempt_kind,
-                "provider_response_before_validation": dict(llm_output.result),
+                "provider_response": dict(llm_output.result),
             }
             include_output = True
-    elif name == "response.contract.validation":
-        input_payload = {
-            "attempt_kind": event.attributes.get("attempt_kind"),
-            "source_llm_span_id": event.parent_span_id,
-        }
-        output_payload = _safe_payload_value(event.output_summary)
     elif name == "response.final" and conversation is not None:
         output_payload = {
             "role": "assistant",
@@ -720,7 +712,6 @@ def _observation_type(event: TraceEvent) -> str:
         return "generation"
     if _event_name(event) in {
         "react.decision",
-        "response.contract.validation",
         "tool.observation",
         "loop_guard.triggered",
     }:

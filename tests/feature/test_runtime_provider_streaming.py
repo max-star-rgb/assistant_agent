@@ -22,13 +22,13 @@ class StreamingChatAdapter:
             event_type="token_delta",
             provider=self.provider,
             model=self.model,
-            text='{"response_type":"answer","answer":"你好，',
+            text="你好，",
         )
         yield LLMEvent(
             event_type="token_delta",
             provider=self.provider,
             model=self.model,
-            text='我是你的助理。"}',
+            text="我是你的助理。",
         )
         yield LLMEvent(
             event_type="completed",
@@ -101,7 +101,7 @@ def test_native_streaming_chat_emits_llm_span_and_final_answer() -> None:
     assert llm_events[1].attributes["provider_latency_ms"] >= 0
     deltas = [event for event in event_sink.events if event.type == "response_delta"]
     assert [event.text for event in deltas] == ["你好，我是你的助理。"]
-    assert deltas[0].payload["chunking_strategy"] == "validated_final_answer"
+    assert deltas[0].payload["chunking_strategy"] == "provider_final_text"
 
 
 class ReasoningStreamingChatAdapter:
@@ -119,7 +119,7 @@ class ReasoningStreamingChatAdapter:
             event_type="token_delta",
             provider=self.provider,
             model=self.model,
-            text='{"response_type":"answer","answer":"这是公开答复。"}',
+            text="这是公开答复。",
         )
         yield LLMEvent(event_type="completed", provider=self.provider, model=self.model, finish_reason="stop")
 

@@ -24,7 +24,6 @@ from assistant_agent.tools.registry import tool_contract_fields
 REALTIME_TASK_STATE_SCHEMA_VERSION = "realtime_task_state_v1"
 REALTIME_TASK_STATE_METADATA_KEY = "realtime_task_state"
 REALTIME_TASK_STATE_TEXT_METADATA_KEY = "realtime_task_state_text"
-REALTIME_TASK_UPDATE_METADATA_KEY = "realtime_task_update"
 ToolSideEffectLevel = Literal[
     "none",
     "local_read",
@@ -291,7 +290,7 @@ def apply_realtime_task_update(
     *,
     store: RealtimeTaskStateStore | None = None,
 ) -> None:
-    """Commit one validated model task update after an ordinary completed turn."""
+    """Commit an explicit API/runtime task update after a completed turn."""
 
     request = getattr(state, "request", None)
     if (
@@ -300,17 +299,17 @@ def apply_realtime_task_update(
         or getattr(state, "status", None) != "completed"
     ):
         return
-    payload = request.metadata.get(REALTIME_TASK_UPDATE_METADATA_KEY)
-    if not isinstance(payload, dict):
+    update = request.runtime_task_update
+    if update is None:
         return
-    action = payload.get("action")
-    objective = _clip_text(str(payload.get("objective") or ""))
+    action = update.action
+    objective = _clip_text(update.objective)
     constraints = [
         _clip_text(item)
-        for item in payload.get("constraints", [])
+        for item in update.constraints
         if isinstance(item, str) and item.strip()
     ]
-    if action not in {"continue", "revise", "replace", "complete"} or not objective:
+    if not objective:
         return
 
     resolved_store = store or get_default_realtime_task_state_store()
@@ -340,7 +339,7 @@ def apply_realtime_task_update(
                 strategy=strategy,
                 created_at=now,
                 metadata={
-                    "source": "provider_final_contract",
+                    "source": "runtime_task_update",
                     "action": action,
                 },
             )

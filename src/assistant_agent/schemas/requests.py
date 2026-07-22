@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field
 TaskExecutionMode = Literal["auto", "durable", "foreground"]
 
 
+class RuntimeTaskUpdate(BaseModel):
+    """Explicit API/runtime contract for updating session task state."""
+
+    action: Literal["continue", "revise", "replace", "complete"]
+    objective: str = Field(min_length=1, max_length=1200)
+    constraints: list[str] = Field(default_factory=list, max_length=12)
+
+
 class UserRequest(BaseModel):
     """Normalized user input for one agent run."""
 
@@ -19,6 +27,7 @@ class UserRequest(BaseModel):
     audio_id: str | None = None
     execution_strategy: Literal["react", "plan_and_solve"] = "react"
     task_execution_mode: TaskExecutionMode = "auto"
+    runtime_task_update: RuntimeTaskUpdate | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
