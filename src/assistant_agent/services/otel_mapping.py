@@ -513,10 +513,7 @@ def _event_io_attributes(
         input_payload.setdefault("iteration", event.attributes.get("iteration"))
         input_payload.setdefault("provider", event.provider)
         input_payload.setdefault("model", event.model)
-        output_payload = _selected_payload(
-            event.attributes,
-            ("finish_reason", "output_tokens", "provider_latency_ms", "wall_latency_ms"),
-        )
+        output_payload = _safe_llm_chat_output(event)
         output_payload.update({"status": event.status, "provider": event.provider, "model": event.model})
     elif name == "response.final" and conversation is not None:
         output_payload = {
@@ -530,6 +527,15 @@ def _event_io_attributes(
         "langfuse.observation.input": _json_value(_drop_none(input_payload)),
         "langfuse.observation.output": _json_value(_drop_none(output_payload)),
     }
+
+
+def _safe_llm_chat_output(event: TraceEvent) -> dict[str, Any]:
+    if event.output_summary.get("schema_version") == "llm_chat_output_v1":
+        return _safe_payload_value(event.output_summary)
+    return _selected_payload(
+        event.attributes,
+        ("finish_reason", "output_tokens", "provider_latency_ms", "wall_latency_ms"),
+    )
 
 
 def _selected_payload(source: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:

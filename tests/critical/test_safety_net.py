@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 import importlib
+import json
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -452,6 +453,22 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
             provider="qwen",
             model="qwen-test",
             attributes={"iteration": 1, "finish_reason": "stop", "wall_latency_ms": 20},
+            output_summary={
+                "schema_version": "llm_chat_output_v1",
+                "response_kind": "assistant_text",
+                "content_present": True,
+                "content_chars": 42,
+                "tool_calls": [],
+                "refusal_present": False,
+                "refusal_chars": 0,
+                "finish_reason": "stop",
+                "structured_output": {
+                    "schema": "json_object",
+                    "validation_status": "valid",
+                },
+                "error_count": 0,
+                "error_codes": [],
+            },
             created_at=created_at + timedelta(milliseconds=31),
         ),
         TraceEvent(
@@ -541,6 +558,12 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     assert not any(span.name == "agent_service.turn" for span in spans)
     assert '"content":"compiled context"' in generation.attributes["langfuse.observation.input"]
     assert '"name":"image_generation"' in generation.attributes["langfuse.observation.input"]
+    generation_output = json.loads(generation.attributes["langfuse.observation.output"])
+    assert generation_output["schema_version"] == "llm_chat_output_v1"
+    assert generation_output["response_kind"] == "assistant_text"
+    assert generation_output["content_present"] is True
+    assert generation_output["structured_output"]["validation_status"] == "valid"
+    assert "content" not in generation_output
     assert '"context_report_v1"' in context.attributes["langfuse.observation.output"]
     assert '"selected_tool_names":["image_generation"]' in context.attributes[
         "langfuse.observation.output"
@@ -696,6 +719,31 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
     assert "黑色通勤包" in str(runtime.chat_adapter.requests[1].messages)
     assert state.response is not None
     assert state.response.message == "已结合记忆完成推荐。"
+    llm_events = [
+        event
+        for event in runtime.trace_store.list_by_run(state.run_id)
+        if event.canonical_event == "llm.chat.finished"
+    ]
+    tool_output = llm_events[0].output_summary
+    assert tool_output["schema_version"] == "llm_chat_output_v1"
+    assert tool_output["response_kind"] == "tool_calls"
+    assert tool_output["tool_calls"] == [
+        {
+            "id": "call-1",
+            "name": "memory_retrieval",
+            "arguments_summary": {
+                "keys": ["query"],
+                "field_count": 1,
+                "redacted": True,
+            },
+        }
+    ]
+    assert "通勤包" not in json.dumps(tool_output, ensure_ascii=False)
+    final_output = llm_events[1].output_summary
+    assert final_output["response_kind"] == "assistant_text"
+    assert final_output["content_present"] is True
+    assert final_output["content_chars"] == len(final_answer.response_text)
+    assert "已结合记忆完成推荐" not in json.dumps(final_output, ensure_ascii=False)
 
 
 def test_local_trace_content_captures_compiled_provider_request(monkeypatch) -> None:

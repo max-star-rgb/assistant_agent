@@ -85,9 +85,12 @@ Tool stages follow the same rule: `tool.finished` / `tool.failed` 的顶层
 The foreground assistant loop must emit one paired `llm.chat.started` /
 `llm.chat.finished` span for every Provider attempt. The finished event supplies
 `wall_latency_ms` and `provider_latency_ms`, allowing the turn summary to name
-`llm_chat[n]` instead of folding model time into `unattributed`. These events
-contain only bounded labels, counts, finish metadata and normalized usage; they
-must not contain prompts, response text or raw Provider payloads.
+`llm_chat[n]` instead of folding model time into `unattributed`. The Langfuse
+generation output uses the versioned `llm_chat_output_v1` projection: response
+kind, content presence/character count, bounded tool-call names/IDs and argument
+key summaries, refusal shape, finish reason, output reference, structured-output
+validation status, and bounded error codes. It must not contain response text,
+tool argument values, hidden reasoning, or raw Provider payloads.
 
 The versioned `agent_service_turn_latency_v1` summary also exposes only bounded
 stream facts: `stream_requested`, `provider_token_stream_seen`,
@@ -814,6 +817,10 @@ Regression tests should enforce these invariants:
   root 同时写入 `langfuse.trace.input/output`。工具字段仅使用 prompt-safe 参数摘要、
   decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
   请求体或 Provider payload。
+- `llm.chat` generation output 固定使用 `llm_chat_output_v1` 安全投影，不依赖本地原文
+  开关；它展示 response kind、正文存在性/字符数、脱敏后的 tool-call 参数键摘要、refusal
+  shape、finish reason、structured-output 校验状态和错误码，但不展示正文、工具参数值、
+  hidden reasoning 或 Provider 原始响应。
 - `context.build` 的 output 导出 prompt-safe `context_report_v1`：逐 section 展示
   chars/tokens、item count、included/compacted/trimmed、source，以及总预算、已选工具、
   context source、skill exposure 和 compression 状态；完整 compiled `ChatRequest` 仍只放在

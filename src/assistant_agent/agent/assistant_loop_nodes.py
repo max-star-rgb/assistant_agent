@@ -277,6 +277,7 @@ def _build_decision_context(
         host_configured_tool_names=_host_configured_tool_names(
             graph_state["tool_executor"].registry
         ),
+        native_calls=_native_tool_calls_from_metadata(graph_state["state"]),
     )
     return AssistantDecisionContext(
         context_pack=context_pack,
@@ -477,6 +478,21 @@ def _run_chat_turn(
             latency_ms=wall_latency_ms,
             span_id=span_id,
             attributes={"iteration": iteration, "wall_latency_ms": wall_latency_ms},
+            output_summary={
+                "schema_version": "llm_chat_output_v1",
+                "response_kind": "error",
+                "content_present": False,
+                "content_chars": 0,
+                "tool_calls": [],
+                "refusal_present": False,
+                "refusal_chars": 0,
+                "structured_output": {
+                    "schema": _structured_output_schema(request.response_format),
+                    "validation_status": "not_produced",
+                },
+                "error_count": 1,
+                "error_codes": ["provider_call_failed"],
+            },
             error={"code": "provider_call_failed", "message": sanitize_trace_value(str(exc))},
         )
         raise
@@ -504,9 +520,80 @@ def _run_chat_turn(
             "wall_latency_ms": wall_latency_ms,
             "usage": normalize_provider_token_usage(result.usage),
         },
+        output_summary=_llm_chat_output_summary(request, result),
         error=_chat_result_trace_error(result),
     )
     return result
+
+
+def _llm_chat_output_summary(request: ChatRequest, result: ChatResult) -> dict[str, Any]:
+    """Return a bounded provider-neutral response projection for trace viewers."""
+
+    content_present = bool(result.response_text.strip())
+    refusal_present = bool(result.refusal and result.refusal.strip())
+    if result.errors:
+        response_kind = "error"
+    elif result.tool_calls:
+        response_kind = "tool_calls"
+    elif refusal_present:
+        response_kind = "refusal"
+    elif content_present:
+        response_kind = "assistant_text"
+    else:
+        response_kind = "empty"
+
+    return {
+        "schema_version": "llm_chat_output_v1",
+        "response_kind": response_kind,
+        "content_present": content_present,
+        "content_chars": len(result.response_text),
+        "tool_calls": [
+            {
+                "id": call.id,
+                "name": call.name,
+                "arguments_summary": {
+                    "keys": sorted(str(key) for key in call.arguments)[:20],
+                    "field_count": len(call.arguments),
+                    "redacted": True,
+                },
+            }
+            for call in result.tool_calls[:8]
+        ],
+        "refusal_present": refusal_present,
+        "refusal_chars": len(result.refusal or ""),
+        "finish_reason": result.finish_reason,
+        "output_ref": result.output_ref,
+        "structured_output": {
+            "schema": _structured_output_schema(request.response_format),
+            "validation_status": _structured_output_validation_status(request, result),
+        },
+        "error_count": len(result.errors),
+        "error_codes": [error.code for error in result.errors[:8]],
+    }
+
+
+def _structured_output_schema(response_format: dict[str, Any] | None) -> str | None:
+    if not response_format:
+        return None
+    json_schema = response_format.get("json_schema")
+    if isinstance(json_schema, dict):
+        name = json_schema.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()[:128]
+    format_type = response_format.get("type")
+    return format_type[:128] if isinstance(format_type, str) and format_type else None
+
+
+def _structured_output_validation_status(request: ChatRequest, result: ChatResult) -> str:
+    if request.response_format is None or result.tool_calls or result.refusal:
+        return "not_applicable"
+    if not result.response_text.strip():
+        return "not_produced"
+    try:
+        json.loads(result.response_text)
+    except (json.JSONDecodeError, TypeError):
+        return "invalid"
+    return "valid"
 
 
 def _record_local_llm_input(
@@ -652,6 +739,7 @@ def _rebuild_context_after_provider_overflow(
         max_iterations=context.max_iterations,
         memory_text=context.memory_text,
         context_compactor=graph_state.get("context_compactor"),
+        native_calls=_native_tool_calls_from_metadata(graph_state["state"]),
     )
     return AssistantDecisionContext(
         context_pack=pack,
@@ -1870,7 +1958,7 @@ def _record_react_decision(
     }
     if context_summary:
         output_summary["context"] = context_summary
-        output_summary["context_report_v1"] = _context_report_summary(context)
+        output_summary["context_report_v1"] = _context_report_summary(context, state)
     if memory_selection:
         output_summary["memory_tool_selection"] = memory_selection
     _append_trace(
@@ -1910,16 +1998,15 @@ def _context_trace_summary(context: AssistantDecisionContext | None) -> dict[str
     }
 
 
-def _context_report_summary(context: AssistantDecisionContext) -> dict[str, Any]:
-    system_prompt = render_system_instruction(
-        SystemPromptProfile.TEXT_DEFAULT,
-        options=SystemPromptOptions(product_mode=True),
-        owner_persona=owner_persona_for_pack(context.context_pack),
-    )
+def _context_report_summary(
+    context: AssistantDecisionContext,
+    state: AgentState,
+) -> dict[str, Any]:
+    compilation = _compile_native_tool_chat_request(context, state)
     return build_context_report(
         context.context_pack,
-        system_prompt=system_prompt,
         selected_tool_specs=_selected_native_tool_specs(context),
+        compiled_request=compilation.chat_request,
     ).model_dump(mode="json")
 
 
