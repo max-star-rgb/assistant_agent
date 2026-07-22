@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.memory.manager import (
     MemoryConfirmationRequired,
@@ -48,7 +48,6 @@ class MemoryRetrievalInput(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
     query: str = Field(min_length=1)
-    content: dict = Field(default_factory=dict)
 
 
 class MemorySaveInput(BaseModel):
@@ -58,20 +57,12 @@ class MemorySaveInput(BaseModel):
 
     user_id: str | None = None
     session_id: str | None = None
-    query: str | None = None
+    text: str = Field(min_length=1)
     content: dict = Field(default_factory=dict)
     source_intent: Literal["user_explicit", "assistant_candidate"]
     source_reason: str = Field(min_length=1)
     future_use: str = Field(min_length=1)
     evidence: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def require_memory_content(self) -> "MemorySaveInput":
-        if isinstance(self.query, str) and self.query.strip():
-            return self
-        if self.content.get("text") or self.content.get("summary"):
-            return self
-        raise ValueError("memory_save requires query, content.text, or content.summary")
 
 
 class _MemoryOperationTool(ToolBase):
@@ -204,7 +195,7 @@ class MemorySaveTool(_MemoryOperationTool):
     category = "write"
     toolset = "memory"
     requires_confirmation = False
-    model_hidden_input_fields = ("user_id", "session_id")
+    model_hidden_input_fields = ("user_id", "session_id", "content")
     runtime_identity_fields = ("user_id", "session_id")
     host_configured_exposure = True
 
@@ -237,12 +228,18 @@ def _dedicated_memory_input(
             ),
             error="缺少用户身份，无法访问记忆",
         )
+    if isinstance(input, MemorySaveInput):
+        query = input.text
+        content = input.content
+    else:
+        query = input.query
+        content = {}
     return _MemoryOperationInput(
         action=action,
         user_id=user_id,
         session_id=context.session_id or input.session_id,
-        query=input.query,
-        content=input.content,
+        query=query,
+        content=content,
         source_intent=getattr(input, "source_intent", None),
         source_reason=getattr(input, "source_reason", None),
         future_use=getattr(input, "future_use", None),

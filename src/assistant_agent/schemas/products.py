@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 ProductUrlStatus = Literal["unverified", "missing", "invalid_id", "verified", "unreachable"]
@@ -91,7 +91,7 @@ class ProductSearchResult(BaseModel):
 class ProductSearchRequest(BaseModel):
     """Input for product search providers."""
 
-    query: str | None = None
+    query: str = Field(min_length=1)
     visual_summary: str | None = None
     video_summary: str | None = None
     objects: list[str] = Field(default_factory=list)
@@ -107,28 +107,6 @@ class ProductSearchRequest(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
     memory_context: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def require_product_description(self) -> "ProductSearchRequest":
-        text_values = (
-            self.query,
-            self.visual_summary,
-            self.video_summary,
-            self.brand,
-            self.category,
-        )
-        if any(isinstance(value, str) and value.strip() for value in text_values):
-            return self
-        if any(
-            isinstance(item, str) and item.strip()
-            for values in (self.objects, self.colors, self.materials)
-            for item in values
-        ):
-            return self
-        raise ValueError(
-            "shopping_search requires query, visual_summary, video_summary, or product descriptors"
-        )
-
 
 ProductSearchInput = ProductSearchRequest
 

@@ -191,9 +191,11 @@ LLM 决定是否调用、调用哪个已暴露工具以及参数内容。categor
 
 ## 4. Provider schema 转换
 
-`schemas/tool_spec_adapters.py` 只给 provider-neutral `ToolSpec.input_schema` 包装协议外壳；发送给
-OpenAI-compatible Provider 时递归移除 Pydantic 自动生成的 `title` 展示标签，但保留 properties、
-required、description、default 和类型/范围约束，不合并另一套字段描述：
+`schemas/tool_spec_adapters.py` 只给 provider-neutral `ToolSpec.input_schema` 包装协议外壳。当前以
+Qwen/OpenAI-compatible Function Calling 为主：发送前递归移除 Pydantic 自动生成的
+`title`、根 schema `description`、空 `required`和 `default: null`，并把“可省略字段的
+`anyOf(T, null)`”收敛为 `T`。字段是否可省略仍由 `required` 表达；字段描述、非空默认值、
+类型/范围约束和 `additionalProperties=false` 继续保留，不合并另一套字段描述：
 
 ```json
 {
@@ -208,6 +210,11 @@ required、description、default 和类型/范围约束，不合并另一套字�
 
 category、确认、profile、env 等系统字段不会发送给模型，也不需要靠“截断系统信息”从
 一份混合 JSON 中剥离。adapter 只挑选 provider 协议需要的 name、description 和 input schema。
+
+当前三个常见工具的模型可见输入保持窄契约：`memory_retrieval` 只接收必填 `query`；
+`memory_save` 接收必填 `text`、`source_intent`、`source_reason`、`future_use` 和
+`evidence`，结构化媒体补充数据仅作为 runtime-only 隐藏字段；`shopping_search` 只向模型暴露
+`query`、`budget_min`、`budget_max`、`platforms` 和 `top_k`，视觉结构化字段仅供内部编排兼容路径使用。
 
 模型返回的 native `tool_calls` 会归一化为内部 `AssistantDecision`，然后进入统一执行链路。
 

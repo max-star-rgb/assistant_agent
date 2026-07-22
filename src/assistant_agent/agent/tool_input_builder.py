@@ -67,7 +67,7 @@ def build_tool_input(
         return {
             "user_id": request.user_id,
             "session_id": request.session_id,
-            "query": request.text,
+            "text": request.text,
             "content": build_memory_save_content(request, outputs_by_step),
             "source_intent": "user_explicit",
             "source_reason": "兼容 rule plan 命中显式保存记忆动作。",

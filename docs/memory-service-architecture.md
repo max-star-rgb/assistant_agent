@@ -272,6 +272,9 @@ Assistant-loop memory tool selection follows an LLM-first strategy:
 
 - In the assistant loop, the LLM is the decision maker for calling `memory_save` or `memory_retrieval` (also called memory search in higher-level discussions).
 - `memory_save` calls must declare `source_intent`, `source_reason`, `future_use`, and `evidence`.
+- `memory_retrieval` 的模型可见输入只有必填 `query`。`memory_save` 使用必填 `text` 承载待保存内容，
+  不再向模型暴露互斥的 `query` / 空 `content` object 双轨契约；视频等兼容流程生成的
+  结构化 `content` 作为 runtime-only 隐藏输入传入 tool adapter。
 - `source_intent=user_explicit` means the LLM selected the explicit user-memory path because the user asked to remember or save the content. If `MemoryWritePolicy` allows it, this path may write a durable `MemoryItem`.
 - `source_intent=assistant_candidate` means the LLM inferred a potentially useful future memory. If `MemoryWritePolicy` allows it, this path records candidate/audit output by default and does not write a durable `MemoryItem`.
 - `source_intent=user_confirmed` is reserved for confirmation service internals. LLM/tool calls using it are rejected before durable write.

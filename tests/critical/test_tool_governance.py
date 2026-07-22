@@ -151,6 +151,78 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
             ensure_ascii=False,
         )
 
+    retrieval = tool_spec_to_openai_tool(registry.get_spec("memory_retrieval"))["function"]
+    assert retrieval["parameters"] == {
+        "type": "object",
+        "properties": {"query": {"type": "string", "minLength": 1}},
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+
+    memory_save = tool_spec_to_openai_tool(registry.get_spec("memory_save"))["function"]
+    assert set(memory_save["parameters"]["properties"]) == {
+        "text",
+        "source_intent",
+        "source_reason",
+        "future_use",
+        "evidence",
+    }
+    assert memory_save["parameters"]["required"] == [
+        "text",
+        "source_intent",
+        "source_reason",
+        "future_use",
+        "evidence",
+    ]
+
+    shopping = tool_spec_to_openai_tool(registry.get_spec(SHOPPING_SEARCH_TOOL_NAME))["function"]
+    assert set(shopping["parameters"]["properties"]) == {
+        "query",
+        "budget_min",
+        "budget_max",
+        "platforms",
+        "top_k",
+    }
+    assert shopping["parameters"]["required"] == ["query"]
+    assert "description" not in shopping["parameters"]
+    assert "anyOf" not in json.dumps(shopping["parameters"], ensure_ascii=False)
+
+
+def test_simplified_memory_save_contract_executes_through_governance() -> None:
+    registry = create_default_registry()
+    request = UserRequest(user_id="user-1", session_id="session-1", text="请记住我喜欢黑咖啡")
+    state = AgentState.from_request(request)
+    state.run_tool_catalog = RunToolCatalog(available_tool_names=["memory_save"])
+    tool_input = {
+        "text": "用户喜欢黑咖啡。",
+        "source_intent": "user_explicit",
+        "source_reason": "用户明确要求记住偏好。",
+        "future_use": "后续饮品推荐使用该偏好。",
+        "evidence": "用户说请记住我喜欢黑咖啡。",
+    }
+    validation = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name="memory_save",
+            tool_input=tool_input,
+        ),
+        registry=registry,
+        request=request,
+        state=state,
+    )
+
+    result = ToolExecutor(registry=registry).run_tool(
+        state,
+        "step-memory-save",
+        "memory_save",
+        tool_input,
+        validated_input=validation.validated_input,
+    )
+
+    assert validation.accepted is True
+    assert result.success is True
+    assert result.data is not None and result.data["status"] == "saved"
+
 
 def test_mcp_tool_spec_preserves_canonical_json_schema() -> None:
     input_schema = {
@@ -225,10 +297,9 @@ def test_weather_declares_location_and_normalized_target_date() -> None:
     assert '"title"' not in json.dumps(parameters, ensure_ascii=False)
     assert mcp_tool["inputSchema"] == spec.input_schema
     assert parameters["required"] == ["location"]
-    assert {
-        "format": "date",
-        "type": "string",
-    } in parameters["properties"]["target_date"]["anyOf"]
+    assert parameters["properties"]["target_date"]["format"] == "date"
+    assert parameters["properties"]["target_date"]["type"] == "string"
+    assert "anyOf" not in parameters["properties"]["target_date"]
     assert result.accepted is False
     assert result.code == "invalid_tool_input"
 
