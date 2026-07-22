@@ -97,6 +97,16 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     assert len(adapter.requests) == 2
     assert adapter.requests[0].response_format is None
     assert adapter.requests[1].response_format is None
+    shopping_definition = next(
+        item["function"]
+        for item in adapter.requests[0].tools
+        if item["function"]["name"] == "shopping_search"
+    )
+    parameter_properties = shopping_definition["parameters"]["properties"]
+    assert "user_id" not in parameter_properties
+    assert "session_id" not in parameter_properties
+    assert "memory_context" not in parameter_properties
+    assert '"title"' not in json.dumps(shopping_definition, ensure_ascii=False)
     rendered_user_contexts = [str(item.messages[1]["content"]) for item in adapter.requests]
     assert all("实时任务状态" not in item for item in rendered_user_contexts)
     assert all('"objective": "购买牛奶"' not in item for item in rendered_user_contexts)

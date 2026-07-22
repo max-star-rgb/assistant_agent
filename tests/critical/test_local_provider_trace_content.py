@@ -141,11 +141,10 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
     assert len(generations) == 1
     input_preview = json.loads(generations[0].attributes["langfuse.observation.input"])
     output_preview = json.loads(generations[0].attributes["langfuse.observation.output"])
-    assert isinstance(input_preview, list)
+    assert isinstance(input_preview, dict)
     assert isinstance(output_preview, str)
-    assert input_preview[0]["role"] == "system"
-    assert any("【工具定义：" in item["content"] for item in input_preview)
-    assert input_preview[-1]["content"].startswith("【生成参数】")
+    assert input_preview["messages"][0]["role"] == "system"
+    assert input_preview["tools"]
     rendered_input = json.dumps(input_preview, ensure_ascii=False)
     assert "raw-user" not in rendered_input
     assert "raw-session" not in rendered_input

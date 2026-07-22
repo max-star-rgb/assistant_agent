@@ -1,6 +1,7 @@
 """Focused offline checks for stable tool-governance behavior."""
 
 from datetime import datetime, timezone
+import json
 from typing import ClassVar
 
 import pytest
@@ -26,10 +27,12 @@ from assistant_agent.schemas.tools import (
     ToolSpec,
 )
 from assistant_agent.schemas.tool_ids import (
+    IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_CAPABILITY,
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_MEDIA_INGEST_TOOL_NAME,
     PYTHON_INTERPRETER_TOOL_NAME,
+    SHOPPING_SEARCH_TOOL_NAME,
     VIDEO_UNDERSTANDING_CAPABILITY,
     WEATHER_TOOL_NAME,
     WEB_FETCH_CAPABILITY,
@@ -133,6 +136,22 @@ def test_provider_description_uses_simple_tool_spec() -> None:
     assert description == "Read canonical data."
 
 
+def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
+    registry = create_default_registry()
+
+    for tool_name in (IMAGE_GENERATION_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME):
+        spec = registry.get_spec(tool_name)
+        properties = spec.input_schema["properties"]
+        assert "user_id" not in properties
+        assert "session_id" not in properties
+        assert "memory_context" not in properties
+        provider_tool = tool_spec_to_openai_tool(spec)
+        assert '"title"' not in json.dumps(
+            provider_tool["function"]["parameters"],
+            ensure_ascii=False,
+        )
+
+
 def test_mcp_tool_spec_preserves_canonical_json_schema() -> None:
     input_schema = {
         "type": "object",
@@ -203,7 +222,7 @@ def test_weather_declares_location_and_normalized_target_date() -> None:
     parameters = openai_tool["function"]["parameters"]
     assert "required_inputs" not in spec.model_dump(mode="json")
     assert "fields" not in spec.input_schema
-    assert parameters == spec.input_schema
+    assert '"title"' not in json.dumps(parameters, ensure_ascii=False)
     assert mcp_tool["inputSchema"] == spec.input_schema
     assert parameters["required"] == ["location"]
     assert {

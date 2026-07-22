@@ -15,7 +15,7 @@ def tool_spec_to_openai_tool(spec: ToolSpec) -> dict[str, Any]:
         "function": {
             "name": spec.name,
             "description": _native_description(spec),
-            "parameters": spec.input_schema,
+            "parameters": _provider_schema(spec.input_schema),
         },
     }
 
@@ -44,3 +44,17 @@ def tool_specs_to_mcp_tools(specs: Iterable[ToolSpec]) -> list[dict[str, Any]]:
 
 def _native_description(spec: ToolSpec) -> str:
     return spec.description.strip()
+
+
+def _provider_schema(value: Any) -> Any:
+    """Remove Pydantic presentation labels from the Provider-visible schema."""
+
+    if isinstance(value, list):
+        return [_provider_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _provider_schema(item)
+        for key, item in value.items()
+        if key != "title"
+    }

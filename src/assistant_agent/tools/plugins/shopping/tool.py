@@ -36,6 +36,8 @@ class ShoppingSearchTool(ToolBase):
     output_schema = ShoppingSearchResult
     category = "read"
     requires_confirmation = False
+    model_hidden_input_fields = ("user_id", "session_id", "memory_context")
+    runtime_identity_fields = ("user_id", "session_id")
 
     def __init__(
         self,

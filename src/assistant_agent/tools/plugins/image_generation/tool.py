@@ -28,6 +28,7 @@ class ImageGenerationTool(ToolBase):
     output_schema = ImageGenerationResult
     category = "generate"
     requires_confirmation = False
+    model_hidden_input_fields = ("user_id", "session_id", "memory_context")
 
     def __init__(self, adapter: ImageGenerationAdapter | None = None) -> None:
         self.adapter = adapter or MockImageGenerationAdapter()

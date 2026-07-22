@@ -51,7 +51,9 @@ Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入�
 
 `input_schema` 是工具输入描述的唯一事实源，必填字段只由标准 JSON Schema 的 `required` 表达。
 `ToolSpec` 不再维护独立的 `required_inputs` 或自定义 `fields` 视图；prompt 若需要压缩，只在渲染时
-临时移除 title、截短 description，不改变原始 schema。
+临时移除 title、截短 description，不改变原始 schema。工具可通过
+`model_hidden_input_fields` 声明由 runtime 注入或仅供执行期使用的字段；这些字段不进入
+`ToolSpec.input_schema`，因此也不会发送给模型。
 
 这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。读写行为明显不同的能力应
 拆成不同工具，例如 `memory_retrieval` 与 `memory_save`；它们可以共享 `toolset="memory"`，但保持
@@ -185,8 +187,9 @@ LLM 决定是否调用、调用哪个已暴露工具以及参数内容。categor
 
 ## 4. Provider schema 转换
 
-`schemas/tool_spec_adapters.py` 只给 provider-neutral `ToolSpec.input_schema` 包装协议外壳，不再转换或
-合并另一套字段描述：
+`schemas/tool_spec_adapters.py` 只给 provider-neutral `ToolSpec.input_schema` 包装协议外壳；发送给
+OpenAI-compatible Provider 时递归移除 Pydantic 自动生成的 `title` 展示标签，但保留 properties、
+required、description、default 和类型/范围约束，不合并另一套字段描述：
 
 ```json
 {

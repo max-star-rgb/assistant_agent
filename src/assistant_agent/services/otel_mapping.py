@@ -549,51 +549,20 @@ def _llm_provider_input_preview(
     request: Mapping[str, Any],
     *,
     model: str | None,
-) -> list[dict[str, Any]]:
-    """Render complete Provider input as Langfuse-friendly chat messages."""
+) -> dict[str, Any]:
+    """Return the original semantic Provider input without presentation rewrites."""
 
-    messages = [
-        dict(item)
-        for item in request.get("messages", [])
-        if isinstance(item, Mapping)
-    ]
-    for tool in request.get("tools", []):
-        if not isinstance(tool, Mapping):
-            continue
-        function = tool.get("function")
-        if not isinstance(function, Mapping):
-            function = tool
-        name = str(function.get("name") or "未命名工具")
-        description = str(function.get("description") or "（无说明）")
-        parameters = function.get("parameters", {})
-        messages.append(
-            {
-                "role": "system",
-                "content": (
-                    f"【工具定义：{name}】\n"
-                    f"{description}\n\n"
-                    "参数 Schema：\n"
-                    f"{_pretty_json_text(parameters)}"
-                ),
-            }
-        )
-    settings = _drop_none(
+    return _drop_none(
         {
             "model": model or request.get("model"),
+            "messages": request.get("messages", []),
+            "tools": request.get("tools", []),
             "tool_choice": request.get("tool_choice"),
             "response_format": request.get("response_format"),
             "temperature": request.get("temperature"),
             "max_tokens": request.get("max_tokens"),
         }
     )
-    if settings:
-        messages.append(
-            {
-                "role": "system",
-                "content": f"【生成参数】\n{_pretty_json_text(settings)}",
-            }
-        )
-    return messages
 
 
 def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
