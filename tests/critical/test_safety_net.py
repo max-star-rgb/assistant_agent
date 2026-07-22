@@ -104,8 +104,8 @@ def test_package_and_runtime_initialize_offline() -> None:
     assert {
         specs[name].toolset
         for name in (
-            "memory_retrieval",
-            "memory_save",
+            "memory_search",
+            "memory_get",
             "memory_media_ingest",
             "memory_ingest_status",
         )
@@ -691,6 +691,7 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
             memory_type="preference",
             content={"item": "黑色通勤包"},
             summary="用户喜欢黑色通勤包。",
+            tags=["daily"],
             created_at=datetime.now(timezone.utc),
         )
     )
@@ -702,13 +703,13 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
         tool_calls=[
             NativeToolCall(
                 id="call-1",
-                name="memory_retrieval",
+                name="memory_search",
                 arguments={"query": "通勤包"},
                 raw={
                     "id": "call-1",
                     "type": "function",
                     "function": {
-                        "name": "memory_retrieval",
+                        "name": "memory_search",
                         "arguments": '{"query":"通勤包"}',
                     },
                 },
@@ -733,7 +734,7 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
     )
 
     assert state.status == "completed"
-    assert [call.tool_name for call in state.tool_calls] == ["memory_retrieval"]
+    assert [call.tool_name for call in state.tool_calls] == ["memory_search"]
     assert "黑色通勤包" in str(runtime.chat_adapter.requests[1].messages)
     assert state.response is not None
     assert state.response.message == "已结合记忆完成推荐。"

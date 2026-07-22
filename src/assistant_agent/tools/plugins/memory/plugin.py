@@ -7,7 +7,7 @@ from assistant_agent.tools.plugins.memory.media_tools import (
     MemoryIngestStatusTool,
     MemoryMediaIngestTool,
 )
-from assistant_agent.tools.plugins.memory.tools import MemoryRetrievalTool, MemorySaveTool
+from assistant_agent.tools.plugins.memory.tools import MemoryGetTool, MemorySearchTool
 
 
 class MemoryToolPlugin:
@@ -16,8 +16,8 @@ class MemoryToolPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
         media_service = create_memory_media_ingestion_service(context.config)
         return [
-            MemoryRetrievalTool(),
-            MemorySaveTool(),
+            MemorySearchTool(),
+            MemoryGetTool(),
             MemoryMediaIngestTool(media_service),
             MemoryIngestStatusTool(media_service),
         ]

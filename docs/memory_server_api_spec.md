@@ -1,12 +1,14 @@
 # External Memory Service Interface (v1)
 
-Last updated: 2026-07-16
+Last updated: 2026-07-22
 
 Base URL: `http://<host>:<port>`
 
 本文档是 assistant_agent 对外部 Memory Service / Memory Server 的当前 HTTP interface 权威。所有请求和响应均为 JSON；时间戳使用 ISO 8601 字符串。assistant_agent 本地记忆服务、治理边界和 adapter 接入规则见 `docs/memory-service-architecture.md`。
 
 本文只定义 assistant_agent 需要依赖的外部接口 contract：endpoint、字段语义、兼容限制、错误形状和调用方约束。外部服务内部数据库、模型、Docker、GPU、embedding、抽取和 answer backend 实现不属于 assistant_agent 权威文档。
+
+该 v1 Memory Server contract 与 framework/Mem0 sidecar 是两条不同集成路径。Mem0 使用其 OSS 原生无 `/v1` 接口：`POST /memories`、`POST /search`、`GET /memories/{id}` 等；assistant_agent 的请求映射、opaque identity、daily/core record 语义和 capture 生命周期以 `docs/memory-service-architecture.md` 为准，不在本文复制一套 Mem0 API。
 
 ## 0. Boundary
 

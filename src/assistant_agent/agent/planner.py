@@ -8,7 +8,6 @@ from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
     MEMORY_RETRIEVAL_TOOL_NAME,
-    MEMORY_SAVE_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
@@ -136,15 +135,6 @@ class RuleBasedTaskPlanner:
                 tool_name=IMAGE_GENERATION_TOOL_NAME,
                 required_inputs=["prompt"],
                 reason="用户要求生成图片或海报。",
-            )
-
-        if self._contains(text, self.memory_save_keywords):
-            self._append_step(
-                steps,
-                action="save_memory",
-                tool_name=MEMORY_SAVE_TOOL_NAME,
-                required_inputs=["content", "user_id"],
-                reason="用户要求保存视频或偏好信息。",
             )
 
         return TaskPlan(goal=text or "执行多步任务", steps=steps)

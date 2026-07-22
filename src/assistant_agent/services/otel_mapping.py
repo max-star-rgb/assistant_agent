@@ -43,6 +43,7 @@ _SPAN_EVENTS = frozenset(
         "response.final",
         "response.delivered",
         "memory.save.finished",
+        "memory.capture.finished",
     }
 )
 _ITERATION_CHILD_EVENTS = frozenset(

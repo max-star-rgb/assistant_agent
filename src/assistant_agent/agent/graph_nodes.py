@@ -9,7 +9,7 @@ from assistant_agent.agent.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentState
-from assistant_agent.agent.response_composer import compose_response, save_demo_memory
+from assistant_agent.agent.response_composer import compose_response
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.agent.tool_input_builder import build_tool_input
 from assistant_agent.memory.manager import MemoryManager
@@ -18,7 +18,7 @@ from assistant_agent.schemas.planning import TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatAdapter
-from assistant_agent.services.memory_observability import load_memory_with_trace, save_memory_with_trace
+from assistant_agent.services.memory_observability import capture_memory_with_trace, load_memory_with_trace
 from assistant_agent.services.response_observability import append_response_final_event
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
@@ -213,8 +213,6 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
 
 def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
     state = graph_state["state"]
-    if state.status != "failed":
-        save_demo_memory(graph_state["request"], state, graph_state["tool_executor"])
     response_started_at = perf_counter()
     response = compose_response(state)
     if state.status == "failed":
@@ -232,27 +230,12 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
     return graph_state
 
 
-def save_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
-    if _is_assistant_loop_state(graph_state) and not _uses_mock_chat_adapter(graph_state):
-        skip_reason = "assistant_loop_memory_writes_are_llm_tool_calls"
-        graph_state["state"].request.metadata["auto_task_summary_memory"] = {
-            "skipped": True,
-            "reason": skip_reason,
-        }
-        save_memory_with_trace(
-            manager=_memory_manager(graph_state),
-            trace_store=graph_state.get("trace_store"),
-            trace_id=graph_state.get("trace_id"),
-            node_name=graph_state.get("current_node_name", "save_memory"),
-            state=graph_state["state"],
-            skipped_reason=skip_reason,
-        )
-        return graph_state
-    save_memory_with_trace(
+def capture_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
+    capture_memory_with_trace(
         manager=_memory_manager(graph_state),
         trace_store=graph_state.get("trace_store"),
         trace_id=graph_state.get("trace_id"),
-        node_name=graph_state.get("current_node_name", "save_memory"),
+        node_name=graph_state.get("current_node_name", "capture_memory"),
         state=graph_state["state"],
     )
     return graph_state

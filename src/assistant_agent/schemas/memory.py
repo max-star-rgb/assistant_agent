@@ -30,6 +30,7 @@ MemoryType = Literal[
 
 MemoryScope = Literal["session", "task", "project", "user_profile", "video", "product"]
 MemorySensitivity = Literal["normal", "private", "sensitive"]
+MemoryRecordKind = Literal["core", "daily", "legacy"]
 
 _SENSITIVE_KEYS = {
     "api_key",
@@ -108,6 +109,7 @@ class MemoryQuery(BaseModel):
     memory_types: list[MemoryType] = Field(default_factory=list)
     allowed_scopes: list[MemoryScope] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    record_kinds: list[MemoryRecordKind] = Field(default_factory=list)
     top_k: int = Field(default=5, ge=1, le=50)
     max_context_chars: int = Field(default=500, ge=50, le=4000)
     since: datetime | None = None
@@ -204,6 +206,10 @@ def memory_scope_for_type(memory_type: MemoryType) -> MemoryScope:
 def memory_item_matches_query_scope(item: MemoryItem, query: MemoryQuery) -> bool:
     """Return whether an item is visible under query governance fields."""
 
+    if query.record_kinds:
+        record_kind = item.content.get("record_kind")
+        if record_kind not in query.record_kinds and not any(kind in item.tags for kind in query.record_kinds):
+            return False
     effective_scope = memory_scope_for_item(item)
     if query.allowed_scopes and effective_scope not in query.allowed_scopes:
         return False
@@ -211,7 +217,7 @@ def memory_item_matches_query_scope(item: MemoryItem, query: MemoryQuery) -> boo
         return False
     if item.project_id is not None and item.project_id != query.project_id:
         return False
-    if effective_scope == "project" and (not query.project_id or item.project_id != query.project_id):
+    if effective_scope == "project" and item.project_id != query.project_id:
         return False
     return True
 

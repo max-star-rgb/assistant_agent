@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
@@ -54,7 +55,11 @@ from assistant_agent.schemas.memory_audit import (
 )
 from assistant_agent.schemas.memory_intelligence import MemoryConflictDecision
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
+from assistant_agent.services.provider_errors import (
+    ProviderSafetyPolicy,
+    sanitize_error_detail,
+    sanitize_error_message,
+)
 from assistant_agent.schemas.tool_ids import MEMORY_SAVE_TOOL_NAME
 
 
@@ -70,6 +75,11 @@ _VALID_MEMORY_TYPES = {
     "generation",
     "render",
 }
+_CAPTURE_TEXT_POLICY = ProviderSafetyPolicy(
+    max_message_chars=4000,
+    max_detail_chars=4000,
+    redact_absolute_paths=False,
+)
 _SAFE_EXPLICIT_CONTENT_KEYS = {
     "summary",
     "preference_key",
@@ -205,13 +215,28 @@ class MemoryManager:
         """Load bounded, layered memory context for a user request."""
 
         token_budget = max_context_tokens or _memory_context_token_budget_from_metadata(request.metadata)
-        decision = self.read_policy.decide_auto_load(
-            request_text=request.text or "",
-            metadata=request.metadata,
-            top_k=top_k or self.default_top_k,
-            max_context_chars=max_context_chars or self.default_max_context_chars,
-            max_context_tokens=token_budget,
-        )
+        if bool(getattr(self.store, "always_load_core_memory", False)):
+            decision = MemoryReadDecision(
+                mode="auto_load",
+                allowed=True,
+                reason="framework_core_memory_auto_load",
+                trigger="framework:core",
+                top_k=top_k or self.default_top_k,
+                max_context_chars=max_context_chars or self.default_max_context_chars,
+                max_context_tokens=token_budget,
+                allowed_scopes=["project"],
+                injection_strategy="inject_as_evidence",
+                trust_policy=trust_policy_metadata(),
+                usage_hint=memory_usage_hint(),
+            )
+        else:
+            decision = self.read_policy.decide_auto_load(
+                request_text=request.text or "",
+                metadata=request.metadata,
+                top_k=top_k or self.default_top_k,
+                max_context_chars=max_context_chars or self.default_max_context_chars,
+                max_context_tokens=token_budget,
+            )
         if not decision.allowed:
             context = _skipped_memory_context(decision)
             identity = RequestIdentity.from_user_request(request)
@@ -262,9 +287,16 @@ class MemoryManager:
             project_id=identity.project_id,
             query=query_text,
             capability=capability,
-            allowed_scopes=_allowed_memory_scopes(identity),
+            allowed_scopes=(
+                ["project"]
+                if bool(getattr(self.store, "always_load_core_memory", False))
+                else _allowed_memory_scopes(identity)
+            ),
             top_k=top_k or self.default_top_k,
             max_context_chars=max_context_chars or self.default_max_context_chars,
+            record_kinds=(
+                ["core"] if bool(getattr(self.store, "always_load_core_memory", False)) else []
+            ),
         )
         result = self.search_for_identity(identity, query)
         context = self.build_context(
@@ -272,14 +304,15 @@ class MemoryManager:
             max_chars=query.max_context_chars,
             max_tokens=max_context_tokens or self.default_max_context_tokens,
         )
+        framework_owned = bool(getattr(self.store, "framework_managed_algorithms", False))
         recall_report = _memory_recall_report(
             identity=identity,
             query_text=query_text,
             result=result,
             context=context,
             read_decision=read_decision,
-            profile_item=self.get_for_identity(identity, USER_PROFILE_MEMORY_ID),
-            visible_items=self.list_for_identity(identity),
+            profile_item=(None if framework_owned else self.get_for_identity(identity, USER_PROFILE_MEMORY_ID)),
+            visible_items=([] if framework_owned else self.list_for_identity(identity)),
         )
         if read_decision is not None:
             context = context.model_copy(
@@ -323,6 +356,41 @@ class MemoryManager:
             },
         )
         return context
+
+    def capture_completed_turn(self, state: Any) -> Any | None:
+        """Submit a completed turn to a framework-owned memory lifecycle."""
+
+        capture_turn = getattr(self.store, "capture_turn", None)
+        if not callable(capture_turn) or not bool(getattr(self.store, "supports_turn_capture", False)):
+            return None
+        response = getattr(state, "response", None)
+        if getattr(state, "status", None) != "completed" or response is None:
+            return None
+        request = getattr(state, "request", None)
+        user_text = sanitize_error_message(getattr(request, "text", ""), policy=_CAPTURE_TEXT_POLICY)
+        assistant_text = sanitize_error_message(getattr(response, "message", ""), policy=_CAPTURE_TEXT_POLICY)
+        if not user_text or not assistant_text:
+            return None
+        identity = RequestIdentity.from_user_request(request)
+        run_id = str(getattr(state, "run_id", "") or "run")
+        turn_index = str(request.metadata.get("conversation_turn_index") or "1")
+        source_turn = hashlib.sha256(f"{run_id}:{turn_index}".encode("utf-8")).hexdigest()[:24]
+        occurred_at = datetime.now(timezone.utc)
+        local_time = occurred_at.astimezone(ZoneInfo("Asia/Shanghai"))
+        daily_text = (
+            f"时间：{local_time.isoformat(timespec='seconds')}\n"
+            f"用户：{user_text}\n"
+            f"助手结果：{assistant_text}"
+        )
+        return capture_turn(
+            identity=identity,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            daily_text=daily_text,
+            daily_memory_id=f"daily:{local_time.date().isoformat()}:{source_turn}",
+            occurred_at=occurred_at,
+            source_turn=source_turn,
+        )
 
     def load_into_state(
         self,

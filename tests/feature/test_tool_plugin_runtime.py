@@ -51,6 +51,7 @@ def test_agent_runtime_executes_tool_built_by_plugin_in_mock_mode() -> None:
             memory_type="preference",
             content={"item": "黑色通勤包"},
             summary="用户喜欢黑色通勤包。",
+            tags=["daily"],
             created_at=datetime.now(timezone.utc),
         )
     )
@@ -63,7 +64,7 @@ def test_agent_runtime_executes_tool_built_by_plugin_in_mock_mode() -> None:
                 tool_calls=[
                     NativeToolCall(
                         id="plugin-call-1",
-                        name="memory_retrieval",
+                        name="memory_search",
                         arguments={"query": "通勤包"},
                     )
                 ],
@@ -89,7 +90,7 @@ def test_agent_runtime_executes_tool_built_by_plugin_in_mock_mode() -> None:
     )
 
     assert state.status == "completed"
-    assert [call.tool_name for call in state.tool_calls] == ["memory_retrieval"]
+    assert [call.tool_name for call in state.tool_calls] == ["memory_search"]
     assert state.tool_results[0].success is True
     assert "黑色通勤包" in str(adapter.requests[1].messages)
     assert state.response is not None

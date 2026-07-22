@@ -151,29 +151,22 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
             ensure_ascii=False,
         )
 
-    retrieval = tool_spec_to_openai_tool(registry.get_spec("memory_retrieval"))["function"]
-    assert retrieval["parameters"] == {
+    search = tool_spec_to_openai_tool(registry.get_spec("memory_search"))["function"]
+    assert search["parameters"] == {
         "type": "object",
         "properties": {"query": {"type": "string", "minLength": 1}},
         "required": ["query"],
         "additionalProperties": False,
     }
 
-    memory_save = tool_spec_to_openai_tool(registry.get_spec("memory_save"))["function"]
-    assert set(memory_save["parameters"]["properties"]) == {
-        "text",
-        "source_intent",
-        "source_reason",
-        "future_use",
-        "evidence",
+    get = tool_spec_to_openai_tool(registry.get_spec("memory_get"))["function"]
+    assert get["parameters"] == {
+        "type": "object",
+        "properties": {"memory_id": {"type": "string", "minLength": 1}},
+        "required": ["memory_id"],
+        "additionalProperties": False,
     }
-    assert memory_save["parameters"]["required"] == [
-        "text",
-        "source_intent",
-        "source_reason",
-        "future_use",
-        "evidence",
-    ]
+    assert "memory_save" not in registry.list()
 
     shopping = tool_spec_to_openai_tool(registry.get_spec(SHOPPING_SEARCH_TOOL_NAME))["function"]
     assert set(shopping["parameters"]["properties"]) == {
@@ -188,22 +181,16 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     assert "anyOf" not in json.dumps(shopping["parameters"], ensure_ascii=False)
 
 
-def test_simplified_memory_save_contract_executes_through_governance() -> None:
+def test_memory_tools_expose_read_only_contracts() -> None:
     registry = create_default_registry()
-    request = UserRequest(user_id="user-1", session_id="session-1", text="请记住我喜欢黑咖啡")
+    request = UserRequest(user_id="user-1", session_id="session-1", text="查一下昨天的记录")
     state = AgentState.from_request(request)
-    state.run_tool_catalog = RunToolCatalog(available_tool_names=["memory_save"])
-    tool_input = {
-        "text": "用户喜欢黑咖啡。",
-        "source_intent": "user_explicit",
-        "source_reason": "用户明确要求记住偏好。",
-        "future_use": "后续饮品推荐使用该偏好。",
-        "evidence": "用户说请记住我喜欢黑咖啡。",
-    }
+    state.run_tool_catalog = RunToolCatalog(available_tool_names=["memory_search"])
+    tool_input = {"query": "昨天喝了什么"}
     validation = ActionValidator().validate(
         decision=AssistantDecision(
             type="tool_call",
-            tool_name="memory_save",
+            tool_name="memory_search",
             tool_input=tool_input,
         ),
         registry=registry,
@@ -211,17 +198,10 @@ def test_simplified_memory_save_contract_executes_through_governance() -> None:
         state=state,
     )
 
-    result = ToolExecutor(registry=registry).run_tool(
-        state,
-        "step-memory-save",
-        "memory_save",
-        tool_input,
-        validated_input=validation.validated_input,
-    )
-
     assert validation.accepted is True
-    assert result.success is True
-    assert result.data is not None and result.data["status"] == "saved"
+    assert registry.get_spec("memory_search").category == "read"
+    assert registry.get_spec("memory_get").category == "read"
+    assert "memory_save" not in registry.list()
 
 
 def test_mcp_tool_spec_preserves_canonical_json_schema() -> None:

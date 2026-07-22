@@ -171,6 +171,89 @@ def save_memory_with_trace(
     return saved
 
 
+def capture_memory_with_trace(
+    *,
+    manager: MemoryManager,
+    trace_store: TraceStore | None,
+    trace_id: str | None,
+    node_name: str,
+    state: AgentState,
+) -> Any | None:
+    """Capture a completed turn without making memory failure fail the user run."""
+
+    span_id = new_span_id()
+    started_at = perf_counter()
+    append_observability_event(
+        trace_store,
+        trace_id=trace_id or state.trace_id,
+        run_id=state.run_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+        canonical_event="memory.capture.started",
+        node_name=node_name,
+        status="started",
+        span_id=span_id,
+        attributes={"state_status": state.status, "response_present": state.response is not None},
+    )
+    try:
+        result = manager.capture_completed_turn(state)
+    except Exception as exc:
+        append_observability_event(
+            trace_store,
+            trace_id=trace_id or state.trace_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            canonical_event="memory.capture.finished",
+            node_name=node_name,
+            status="failed",
+            latency_ms=_elapsed_ms(started_at),
+            span_id=span_id,
+            error={"code": "memory_capture_failed", "message": sanitize_trace_value(str(exc))},
+        )
+        state.request.metadata["memory_capture"] = {
+            "status": "failed",
+            "error_code": "memory_capture_failed",
+        }
+        return None
+    daily_ids = list(getattr(result, "daily_engine_ids", []) or []) if result is not None else []
+    core_ids = list(getattr(result, "core_engine_ids", []) or []) if result is not None else []
+    errors = list(getattr(result, "errors", []) or []) if result is not None else []
+    accepted = bool(getattr(result, "accepted", False)) if result is not None else False
+    if result is None:
+        status = "skipped"
+    elif errors and accepted:
+        status = "partial"
+    elif not accepted:
+        status = "failed"
+    else:
+        status = "succeeded"
+    state.request.metadata["memory_capture"] = {
+        "status": status,
+        "daily_count": len(daily_ids),
+        "core_count": len(core_ids),
+        "error_count": len(errors),
+    }
+    append_observability_event(
+        trace_store,
+        trace_id=trace_id or state.trace_id,
+        run_id=state.run_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+        canonical_event="memory.capture.finished",
+        node_name=node_name,
+        status=status,
+        latency_ms=_elapsed_ms(started_at),
+        span_id=span_id,
+        attributes={
+            "daily_count": len(daily_ids),
+            "core_count": len(core_ids),
+            "error_count": len(errors),
+        },
+    )
+    return result
+
+
 def memory_load_trace_summary(context: MemoryContext) -> dict[str, Any]:
     """Return a memory-load trace summary without memory text or summaries."""
 

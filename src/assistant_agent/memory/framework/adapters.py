@@ -18,6 +18,8 @@ from assistant_agent.schemas.memory_framework import (
     FrameworkRecallResult,
     FrameworkRetainRequest,
     FrameworkRetainResult,
+    FrameworkTurnCaptureRequest,
+    FrameworkTurnCaptureResult,
     MemoryEngineIdentity,
 )
 
@@ -78,6 +80,7 @@ class UnavailableMemoryEngineAdapter:
         return FrameworkHealthResult(status="unavailable")
 
     def retain(self, request): return self._raise("retain")
+    def capture_turn(self, request): return self._raise("capture_turn")
     def recall(self, request): return self._raise("recall")
     def reflect(self, request): return self._raise("reflect")
     def get(self, **kwargs): return self._raise("get")
@@ -232,13 +235,66 @@ class Mem0MemoryEngineAdapter(_HttpEngineAdapter):
             engine_ids=[str(item["id"]) for item in results if item.get("id")],
         )
 
+    def capture_turn(self, request: FrameworkTurnCaptureRequest) -> FrameworkTurnCaptureResult:
+        """Persist one searchable daily record and let Mem0 infer core memories."""
+
+        identity = request.identity.mem0_filters_for_scope("project")
+        errors: list[dict[str, Any]] = []
+        daily_payload: Mapping[str, Any] = {}
+        core_payload: Mapping[str, Any] = {}
+        daily_accepted = False
+        core_accepted = False
+        try:
+            daily_payload = self._request(
+                "POST",
+                "/memories",
+                body={
+                    "messages": [{"role": "user", "content": request.daily_text}],
+                    **identity,
+                    "metadata": _capture_metadata(request, record_kind="daily"),
+                    "infer": False,
+                },
+                headers=self._headers,
+            )
+            daily_accepted = True
+        except Exception:
+            errors.append({"phase": "daily", "code": "memory_framework_request_failed"})
+        try:
+            core_payload = self._request(
+                "POST",
+                "/memories",
+                body={
+                    "messages": [message.model_dump(mode="json") for message in request.messages],
+                    **identity,
+                    "metadata": _capture_metadata(request, record_kind="core"),
+                    "infer": True,
+                },
+                headers=self._headers,
+            )
+            core_accepted = True
+        except Exception:
+            errors.append({"phase": "core", "code": "memory_framework_request_failed"})
+        daily_results = _mapping_list(daily_payload.get("results"))
+        core_results = _mapping_list(core_payload.get("results"))
+        return FrameworkTurnCaptureResult(
+            accepted=daily_accepted or core_accepted,
+            daily_engine_ids=[str(item["id"]) for item in daily_results if item.get("id")],
+            core_engine_ids=[str(item["id"]) for item in core_results if item.get("id")],
+            errors=errors,
+        )
+
     def recall(self, request: FrameworkRecallRequest) -> FrameworkRecallResult:
+        filters: dict[str, Any] = dict(request.identity.mem0_filters_for_scope(request.scope))
+        if len(request.record_kinds) == 1:
+            filters["record_kind"] = request.record_kinds[0]
+        elif request.record_kinds:
+            filters["record_kind"] = {"in": request.record_kinds}
         payload = self._request(
             "POST",
             "/search",
             body={
                 "query": request.query,
-                "filters": request.identity.mem0_filters_for_scope(request.scope),
+                "filters": filters,
                 "top_k": request.top_k,
             },
             headers=self._headers,
@@ -287,6 +343,23 @@ def _safe_metadata(metadata: Mapping[str, Any], request: FrameworkRetainRequest)
     }
 
 
+def _capture_metadata(
+    request: FrameworkTurnCaptureRequest,
+    *,
+    record_kind: str,
+) -> dict[str, Any]:
+    reserved = {"user_id", "agent_id", "run_id", "tenant_id", "project_id", "session_id"}
+    return {
+        **{str(key): value for key, value in request.metadata.items() if str(key).lower() not in reserved},
+        "record_kind": record_kind,
+        "source": "runtime_turn_capture",
+        "source_session": request.identity.session_tag,
+        "daily_memory_id": request.daily_memory_id,
+        "idempotency_key": request.idempotency_key,
+        "occurred_at": request.occurred_at.isoformat(),
+    }
+
+
 def _hindsight_metadata(
     metadata: Mapping[str, Any], request: FrameworkRetainRequest
 ) -> dict[str, str]:
@@ -321,7 +394,26 @@ def _mem0_record(value: Mapping[str, Any]) -> FrameworkMemoryRecord:
         source=str(metadata.get("source") or "mem0"),
         created_at=_datetime(value.get("created_at") or value.get("updated_at")),
         relevance=_score(value.get("score")),
-        metadata={key: metadata[key] for key in ("project_memory_id", "memory_type", "scope", "source") if key in metadata},
+        metadata={
+            key: metadata[key]
+            for key in (
+                "project_memory_id",
+                "daily_memory_id",
+                "memory_type",
+                "scope",
+                "source",
+                "record_kind",
+                "source_session",
+                "source_turn",
+                "occurred_at",
+            )
+            if key in metadata
+        },
+        record_kind=(
+            metadata.get("record_kind")
+            if metadata.get("record_kind") in {"core", "daily", "legacy"}
+            else "legacy"
+        ),
     )
 
 

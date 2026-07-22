@@ -22,6 +22,7 @@ from assistant_agent.schemas.api import api_error
 from assistant_agent.schemas.capability_output import contract_summary
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.durable_tasks import TrustedTaskBinding
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.planning import TaskStep
 from assistant_agent.schemas.realtime_cancellation import build_realtime_turn_cancellation_metadata
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
@@ -238,6 +239,9 @@ class ToolExecutor:
                 },
                 "request_text": state.request.text or "",
                 "request_metadata": dict(state.request.metadata),
+                "request_identity": RequestIdentity.from_user_request(
+                    state.request
+                ).model_dump(mode="json"),
             }
             context = ToolContext(
                 run_id=state.run_id,

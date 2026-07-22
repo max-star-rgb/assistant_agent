@@ -59,9 +59,9 @@ Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入�
 `model_hidden_input_fields` 声明由 runtime 注入或仅供执行期使用的字段；这些字段不进入
 `ToolSpec.input_schema`，因此也不会发送给模型。
 
-这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。读写行为明显不同的能力应
-拆成不同工具，例如 `memory_retrieval` 与 `memory_save`；它们可以共享 `toolset="memory"`，但保持
-不同的 `category`、schema 和确认要求。
+这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。当前主模型只看到只读
+`memory_search` 与 `memory_get`，二者共享 `toolset="memory"`；记忆 capture 是 runtime 生命周期，
+不是隐藏在某个动态 `action` 后面的模型工具。
 
 未知或未声明分类的本地工具使用保守默认值：`category="dangerous"` 且
 `requires_confirmation=true`。
@@ -211,9 +211,9 @@ Qwen/OpenAI-compatible Function Calling 为主：发送前递归移除 Pydantic 
 category、确认、profile、env 等系统字段不会发送给模型，也不需要靠“截断系统信息”从
 一份混合 JSON 中剥离。adapter 只挑选 provider 协议需要的 name、description 和 input schema。
 
-当前三个常见工具的模型可见输入保持窄契约：`memory_retrieval` 只接收必填 `query`；
-`memory_save` 接收必填 `text`、`source_intent`、`source_reason`、`future_use` 和
-`evidence`，结构化媒体补充数据仅作为 runtime-only 隐藏字段；`shopping_search` 只向模型暴露
+当前常见工具的模型可见输入保持窄契约：`memory_search` 只接收必填 `query`；
+`memory_get` 只接收必填 `memory_id`；`memory_save` 不注册，也不会进入 Provider payload；
+`shopping_search` 只向模型暴露
 `query`、`budget_min`、`budget_max`、`platforms` 和 `top_k`，视觉结构化字段仅供内部编排兼容路径使用。
 
 模型返回的 native `tool_calls` 会归一化为内部 `AssistantDecision`，然后进入统一执行链路。
@@ -293,9 +293,8 @@ durable task 协议中处理；通用 executor 不维护进程内重复调用 le
 
 - `calendar_search`: `category=read`, `requires_confirmation=false`；
 - `calendar_create`: `category=write`, `requires_confirmation=true`；
-- `memory_retrieval`: `category=read`, `requires_confirmation=false`；
-- `memory_save`: `category=write`, `requires_confirmation=false`，细粒度敏感记忆确认由
-  `MemoryManager`/memory write policy 自己负责；
+- `memory_search`: `category=read`, `requires_confirmation=false`；
+- `memory_get`: `category=read`, `requires_confirmation=false`；
 - `memory_media_ingest`: `category=write`, `requires_confirmation=true`。
 
 未确认的通用写工具不会调用 `tool.run()`，而是返回：

@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from assistant_agent.schemas.memory import MemoryScope, MemoryType
+from assistant_agent.schemas.memory import MemoryRecordKind, MemoryScope, MemoryType
 
 
 MemoryFrameworkName = Literal["hindsight", "mem0"]
@@ -106,6 +106,7 @@ class FrameworkRecallRequest(BaseModel):
     memory_types: list[MemoryType] = Field(default_factory=list)
     since: datetime | None = None
     max_tokens: int = Field(default=1000, ge=64, le=8192)
+    record_kinds: list[MemoryRecordKind] = Field(default_factory=list)
 
 
 class FrameworkMemoryRecord(BaseModel):
@@ -117,6 +118,7 @@ class FrameworkMemoryRecord(BaseModel):
     created_at: datetime | None = None
     relevance: float | None = Field(default=None, ge=0.0, le=1.0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    record_kind: MemoryRecordKind = "legacy"
 
     @model_validator(mode="after")
     def _reject_unsafe(self) -> "FrameworkMemoryRecord":
@@ -129,6 +131,40 @@ class FrameworkRetainResult(BaseModel):
     accepted: bool
     engine_ids: list[str] = Field(default_factory=list)
     operation_id: str | None = None
+
+
+class FrameworkConversationMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=20_000)
+
+
+class FrameworkTurnCaptureRequest(BaseModel):
+    """One completed turn submitted to a framework-owned memory lifecycle."""
+
+    identity: MemoryEngineIdentity
+    messages: list[FrameworkConversationMessage] = Field(min_length=2, max_length=2)
+    daily_text: str = Field(min_length=1, max_length=20_000)
+    daily_memory_id: str = Field(min_length=1, max_length=256)
+    occurred_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def _reject_unsafe(self) -> "FrameworkTurnCaptureRequest":
+        if [message.role for message in self.messages] != ["user", "assistant"]:
+            raise ValueError("turn capture messages must be one user message followed by one assistant message")
+        _reject_unsafe_payload(self.metadata)
+        _reject_unsafe_payload(self.daily_text)
+        for message in self.messages:
+            _reject_unsafe_payload(message.content)
+        return self
+
+
+class FrameworkTurnCaptureResult(BaseModel):
+    accepted: bool
+    daily_engine_ids: list[str] = Field(default_factory=list)
+    core_engine_ids: list[str] = Field(default_factory=list)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class FrameworkRecallResult(BaseModel):

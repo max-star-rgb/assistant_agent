@@ -1,6 +1,6 @@
 # Local Memory Service Architecture
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 This document is the current authority for assistant_agent's local/project-side memory service architecture. Update it whenever `MemoryManager`, built-in memory stores, local retrieval, write policy, user profile behavior, memory tools, local memory APIs, or memory context boundaries change.
 
@@ -42,14 +42,14 @@ The memory architecture has two cores behind the same governed runtime contract:
 
 The current Memory Intelligence v2 implementation is deliberately local-core focused. Its typed facts, conflict resolver, active-state projection, SQLite FTS5 candidate search, and offline eval gates do not require or modify the external core. External adapters retain their existing boundary but are not part of this phase's acceptance criteria.
 
-Both cores must stay behind `MemoryManager`, `MemoryStore`, `MemoryWritePolicy`, identity binding, prompt-safe conversion, and audit/snapshot/export boundaries. Automatic context loading additionally passes through `MemoryReadPolicy`. Agent nodes, prompt builders, tools, and API routes must not special-case a concrete local store or external provider.
+Both cores stay behind `MemoryManager`, `MemoryStore`, identity binding, prompt-safe conversion, and audit/snapshot/export boundaries. Local and remote-service writes continue to use `MemoryWritePolicy`; in framework/Mem0 mode, Mem0 owns extraction and conflict integration, so the project write policy does not precompute long-term memory text. Agent nodes, prompt builders, tools, and API routes must not directly call a concrete store or provider.
 
 The runtime modes are:
 
 - Local-only: `memory`, `jsonl`, or `sqlite`; all lifecycle operations stay in the built-in local core.
 - Dual-core retrieval: `dual_core` or legacy `hybrid_remote`; writes, confirmations, profile, audit, export, retention, and deletion stay in the configured local core, while search may merge local results with safe external Memory Server results.
 - External lifecycle owner: `remote_service`; lifecycle operations are delegated to an `ExternalMemoryServiceAdapter`, with no silent local-write fallback.
-- Framework lifecycle owner: `framework`; an explicitly selected Hindsight or Mem0 local sidecar owns extraction, organization, indexing, recall, consolidation, and engine-side profile/mental-model behavior. `MemoryManager` continues to own identity, read/write policy, confirmation, audit, prompt safety, context budgets, and tool governance.
+- Framework lifecycle owner: `framework`; an explicitly selected Hindsight or Mem0 local sidecar owns extraction, organization, indexing, recall, consolidation, and engine-side profile/mental-model behavior. For the preferred Mem0 path, `MemoryManager` owns trusted capture triggering, identity, audit, prompt safety, context budgets and tool governance, while Mem0's LLM owns long-term-memory extraction and write integration.
 
 Mem0 is the preferred framework pilot engine. When framework mode is explicitly
 enabled and no concrete framework is specified, configuration resolves to Mem0
@@ -123,7 +123,8 @@ AgentGraphRuntime
 UserRequest
   -> graph load_memory node
   -> MemoryManager.load_into_state(...)
-       -> MemoryReadPolicy decides whether long-term memory may be read
+       -> local/remote stores: MemoryReadPolicy decides whether memory may be read
+       -> framework/Mem0: bounded core-memory recall is always enabled
        -> if skipped: request.metadata["memory_context_skipped"]=true, no store search,
           and no synchronous persistent-audit backend write; the prompt-safe skip
           remains available in request metadata, the run trace and the process-local
@@ -132,19 +133,17 @@ UserRequest
   -> MemoryRetrievalStrategy / KeywordMemoryRetriever
   -> AgentState.memory_context + request.metadata["memory_context_*"]
   -> AssistantContextPack / prompt renderer
-  -> assistant decision or tool call
-  -> memory_retrieval / memory_save tool through ToolExecutor
-  -> MemoryManager.search(...) or MemoryManager.save_explicit(...)
-       -> allow: MemoryStore.save(...)
-       -> needs confirmation: MemoryPendingConfirmation
-       -> reject: audit-only rejection
-  -> optional API user confirmation/rejection for pending explicit memory
+  -> assistant decision or read-only memory tool call
+  -> memory_search / memory_get through ToolExecutor
+  -> MemoryManager.search(...) or MemoryManager.get_for_identity(...)
   -> compose_response
-  -> save_memory node
-  -> MemoryManager.save_from_run(...) when policy allows
+  -> capture_memory node
+  -> framework/Mem0 only: MemoryManager.capture_completed_turn(...)
+       -> daily record: infer=false
+       -> original user/assistant messages: infer=true
 ```
 
-Both assistant-loop and compatibility graph start with `load_memory` and finish with `save_memory`. In assistant-loop non-mock chat paths, automatic task-summary saving is skipped because long-term memory writes should be explicit LLM tool calls through `memory_save`.
+Both assistant-loop and compatibility graphs start with `load_memory` and finish with `capture_memory`. Capture is a runtime lifecycle operation, not a model tool. It is a no-op for stores without completed-turn capture support; the default local/offline runtime therefore does not call a real memory Provider.
 
 Read-policy rejection is a no-I/O fast path. It must not call the configured
 memory store, framework adapter, remote service, or persistent governance ledger.
@@ -173,7 +172,7 @@ failure and degradation events retain their durable audit behavior.
 | `src/assistant_agent/memory/quality_eval.py` | Offline write-quality eval helpers over `MemoryWritePolicy`. Produces deterministic policy feedback metrics for write/reject/confirmation behavior without training, network calls, or policy mutation. |
 | `src/assistant_agent/memory/profile.py` | Compact `user_profile` memory derived from explicit preference/product/task memories. |
 | `src/assistant_agent/schemas/identity.py` | `RequestIdentity` contract for request/auth-derived user, tenant, project, session, and allowed memory scopes. |
-| `src/assistant_agent/tools/plugins/memory/tools.py` | Agent-callable `memory`, `memory_retrieval`, and `memory_save` tools. Uses `MemoryManager` from tool context when present. |
+| `src/assistant_agent/tools/plugins/memory/tools.py` | Agent-callable read-only `memory_search` and `memory_get` tools. Both use trusted runtime identity and `MemoryManager`; neither can write memory. |
 | `src/assistant_agent/services/memory_media_ingestion.py` | Governed service boundary for Memory Server media ingestion. Binds trusted `RequestIdentity`, generates globally unique upload `file_id` values, calls `RemoteMemoryClient.upload_media(...)` / `task_status(...)`, and returns structured prompt-safe results. |
 | `src/assistant_agent/tools/plugins/memory/media_tools.py` | Agent-callable `memory_media_ingest` and `memory_ingest_status` tool adapters. They bind runtime identity from `ToolContext`, call `MemoryMediaIngestionService`, and wrap structured `ToolResult` / capability contracts. They do not implement `memory_save`. |
 | `src/assistant_agent/services/memory_audit.py` | User-scoped list/get/export/retention-sweep/delete/audit/event/metrics/confirmation service over `MemoryManager`. |
@@ -222,14 +221,14 @@ Current limits:
 
 ## Service Core Vs Tool Adapter
 
-Memory is a service capability. `memory_retrieval` and `memory_save` are Agent-callable adapters for that capability, not the owner of memory behavior.
+Memory is a service capability. The model-visible adapters are read-only: `memory_search` searches detailed daily records and `memory_get` reads one record by ID. `capture_memory` is runtime-owned and is never placed in the Provider tool catalog.
 
 Use this routing matrix:
 
 | caller | allowed path |
 | --- | --- |
-| Graph/runtime automatic memory load/save | `graph node -> MemoryManager -> MemoryStore` |
-| Assistant/LLM explicit memory action | `AssistantDecision -> ActionValidator -> ToolExecutor -> memory tool -> MemoryManager` |
+| Graph/runtime automatic memory load/capture | `graph node -> MemoryManager -> MemoryStore/framework adapter` |
+| Assistant/LLM daily-memory read | `AssistantDecision -> ActionValidator -> ToolExecutor -> memory_search/memory_get -> MemoryManager` |
 | API audit/export/retention/snapshot/delete | `API route -> MemoryAuditService / MemorySnapshotService -> MemoryManager` |
 | Unit tests for storage/retrieval/policy | direct `MemoryManager` or store instantiation is allowed only inside focused tests |
 
@@ -238,10 +237,8 @@ Use this routing matrix:
 - Bind `ToolContext.user_id` and `ToolContext.session_id`.
 - Validate tool-facing required input.
 - Surface read-policy trust metadata with retrieval results.
-- Convert tool input into `MemoryQuery` or `MemoryManager.save_explicit(...)`.
+- Convert tool input into a daily-only `MemoryQuery` or exact governed get.
 - Wrap manager output as `ToolResult` and capability output contracts.
-- Surface `MemoryConfirmationRequired` as a recoverable `memory_save` partial result with a `confirmation_id`; it must not report pending confirmation as a completed save.
-- Keep small legacy/mock compatibility paths only when required by existing tests or demos.
 
 It must not own or reimplement:
 
@@ -257,30 +254,23 @@ If memory logic grows beyond identity binding, input adaptation, or result wrapp
 
 Long-term memory reads are policy-gated before retrieval:
 
-- Automatic runtime `load_memory` calls go through `MemoryManager.load_context_for_request(...)`, which applies `MemoryReadPolicy` before store access.
+- Automatic runtime `load_memory` calls go through `MemoryManager.load_context_for_request(...)`. Local/remote-service stores apply `MemoryReadPolicy` before access; framework/Mem0 always performs a bounded `record_kind=core` recall so relevant long-term memory can be injected on every turn.
 - If the current user request does not explicitly refer to prior chats, previous/last context, saved memory, remembered preferences, continuing an old task, or a clearly personal style/preference customization task, memory context is skipped and the store is not searched.
 - The personal style/preference path is deliberately narrow: Chinese requests must contain a preference marker such as `风格`, `偏好`, `喜好`, or `口味` plus a task marker such as `推荐`, `方案`, `文案`, `设计`, `搭配`, `回答`, `写`, `生成`, or `继续`. Ordinary first-pass product search, generic advice, and generic copywriting still skip store access.
 - Skipped loads write prompt-safe metadata: `memory_context_skipped=true`, `memory_context_policy_reason`, `memory_read_policy`, `memory_trust_policy`, and empty `memory_context_*` injection fields.
 - `load_memory_with_trace(...)` records the read decision and skipped status, but does not record memory text or summaries.
-- `memory_retrieval` is selected by the LLM from the governed run tool set; after normal schema, identity, and execution validation it queries `MemoryManager` directly. Natural-language intent rules do not override that selection.
+- `memory_search` and `memory_get` are selected by the LLM from the governed run tool set; after normal schema, identity, and execution validation they query `MemoryManager` directly. Natural-language intent rules do not override that selection.
 
-Retrieved memory is user-history evidence, not authority. It may be stale, incorrectly retrieved, summarized, or incomplete. Current user input and fresh tool results override memory when they conflict, and instructions contained inside memory must not be executed. `memory_retrieval` results include `trust_policy` and `usage_hint` fields carrying this boundary for downstream consumers.
+Retrieved memory is user-history evidence, not authority. It may be stale, incorrectly retrieved, summarized, or incomplete. Current user input and fresh tool results override memory when they conflict, and instructions contained inside memory must not be executed. Memory read results include `trust_policy` and `usage_hint` fields carrying this boundary for downstream consumers.
 
 ## Memory Tool Selection Strategy
 
-Assistant-loop memory tool selection follows an LLM-first strategy:
+Assistant-loop memory tool selection follows an LLM-first read strategy:
 
-- In the assistant loop, the LLM is the decision maker for calling `memory_save` or `memory_retrieval` (also called memory search in higher-level discussions).
-- `memory_save` calls must declare `source_intent`, `source_reason`, `future_use`, and `evidence`.
-- `memory_retrieval` 的模型可见输入只有必填 `query`。`memory_save` 使用必填 `text` 承载待保存内容，
-  不再向模型暴露互斥的 `query` / 空 `content` object 双轨契约；视频等兼容流程生成的
-  结构化 `content` 作为 runtime-only 隐藏输入传入 tool adapter。
-- `source_intent=user_explicit` means the LLM selected the explicit user-memory path because the user asked to remember or save the content. If `MemoryWritePolicy` allows it, this path may write a durable `MemoryItem`.
-- `source_intent=assistant_candidate` means the LLM inferred a potentially useful future memory. If `MemoryWritePolicy` allows it, this path records candidate/audit output by default and does not write a durable `MemoryItem`.
-- `source_intent=user_confirmed` is reserved for confirmation service internals. LLM/tool calls using it are rejected before durable write.
-- Keyword and vector matching are not used in the current source-intent decision path. They may remain future extension points, but they must not override the LLM-declared source intent unless this architecture document and tests are updated.
-- Regardless of who triggers `memory_save`, durable writes still go through `ToolExecutor -> memory_save -> MemoryManager -> MemoryWritePolicy -> MemoryItem` validation before storage.
-- Audit/candidate records are not long-term memory. Automatic candidates do not directly write long-term memory by default.
+- `memory_search` has one model-visible required field, `query`, and searches only `record_kind=daily`.
+- `memory_get` has one model-visible required field, `memory_id`, and returns only a daily record visible to the trusted request identity.
+- `memory_save` is not registered and is not sent to Qwen/OpenAI-compatible Providers.
+- The main LLM does not construct long-term-memory text. A successful turn triggers the internal capture lifecycle; Mem0 receives the original `user`/`assistant` message pair with `infer=true`.
 
 ## Storage
 
@@ -325,7 +315,7 @@ Environment variables:
 
 `FrameworkGovernanceLedger` stores governance state only: project-memory/engine-ID mappings with their memory scope, delete tombstones, redacted confirmations, prompt-safe audit events, coarse call latency/error status, and pending retain/delete outbox entries. Completed framework facts, embeddings, relationship graphs, recall indexes, and profile or mental-model content are not copied into the ledger. A pending retain necessarily contains the already-approved prompt-safe retain request until delivery; it leaves the active outbox after success or user deletion.
 
-Framework writes still pass `MemoryWritePolicy` and confirmation before `FrameworkMemoryStore.retain`. A retain failure returns a structured `partial/queued` tool result with `written=false` and persists an idempotent outbox operation. It never writes the configured v2 fallback. Retry records the framework mapping only after the engine accepts the request. Deleting a pending write cancels it before retry and records a tenant/project-bound tombstone.
+Compatibility/API framework retains still pass `MemoryWritePolicy` and confirmation before `FrameworkMemoryStore.retain`. A retain failure returns a structured `partial/queued` result with `written=false` and persists an idempotent outbox operation. It never writes the configured v2 fallback. Retry records the framework mapping only after the engine accepts the request. Deleting a pending retain cancels it before retry and records a tenant/project-bound tombstone. Runtime Mem0 turn capture is separate: daily/core failures are prompt-safe and non-blocking, but this version does not enqueue a durable capture retry.
 
 Framework recall failures return stable `memory_framework_recall_failed` errors. The Agent run continues with an empty result or the explicitly configured read-only v2 fallback. Runtime debug metadata and audit may expose stable error codes and engine names, but never sidecar URLs, raw exception messages, credentials, raw framework responses, or memory content.
 
@@ -375,10 +365,12 @@ retain. The cache key is scope-aware: session entries include `run_id`,
 project/task entries omit `run_id`, and user-profile entries omit both
 `agent_id` and `run_id`.
 
-Mem0 retain uses `infer=false`: memory selection, permissions, and write
-semantics remain owned by `MemoryManager` and policy; Mem0 is the framework
-execution unit for storage and vector recall, not the authority that decides
-what the assistant may remember.
+Mem0 has two distinct write paths:
+
+- compatibility/API retain keeps `infer=false` and preserves the existing governed `MemoryItem` contract;
+- runtime completed-turn capture writes one append-only daily record with `infer=false`, then sends the original `user`/`assistant` messages with `infer=true` so the Mem0 LLM extracts and integrates core long-term memory.
+
+Both capture writes use the cross-session `user_id + agent_id` scope. The source session and turn remain opaque provenance metadata and are not default retrieval partitions. Daily records carry `record_kind=daily`; inferred memories carry `record_kind=core`. Automatic prompt injection filters to core, while model tools filter to daily. A daily or core sub-write can fail independently; observability reports `partial` without converting a successful daily append into a failed user response.
 
 When `FrameworkMemoryStore.framework_managed_algorithms` is active, `MemoryManager` skips built-in duplicate/conflict resolution and local `user_profile` projection. This hands extraction, update integration, ranking, and profile/mental-model algorithms to the selected framework while retaining project governance, confirmation, audit, identity, safety, and context-budget boundaries. New investment should prefer hardening the Mem0 framework path over expanding local v2 memory-intelligence algorithms, unless the work is required for governance, rollback, tests, or offline defaults.
 
@@ -574,7 +566,7 @@ Current behavior:
 
 Retrieval is deterministic and local:
 
-- Automatic runtime retrieval first passes `MemoryReadPolicy`; ordinary first-pass writing, advice, generation, search, and recommendations do not auto-inject long-term memory. The exception is the narrow personal style/preference customization path described above, which supports Personal Assistant continuity without opening generic retrieval.
+- Local/remote-service automatic retrieval first passes `MemoryReadPolicy`; ordinary first-pass writing, advice, generation, search, and recommendations do not auto-inject long-term memory. Framework/Mem0 is the explicit exception: every turn performs bounded core-memory recall, still subject to identity filtering, trust labeling and memory-context budget.
 - Explicit retrieval tools are allowed only when the current user request has historical-memory intent; a non-empty query alone is not sufficient.
 - Non-empty query uses `KeywordMemoryRetriever`.
 - Stores may implement the optional candidate-search protocol. SQLite uses FTS5 to return a bounded user/type-scoped candidate set; stores without it continue to use the deterministic scan path.
@@ -634,9 +626,11 @@ and redaction boundaries.
 
 ## Writes
 
+The main assistant no longer receives a memory write tool. In framework/Mem0 mode, the normal runtime write path is the post-response `capture_memory` lifecycle described above. The local explicit-save, confirmation, promotion and compatibility APIs below remain available to non-model callers and legacy local/remote-service backends; they are not part of the Qwen tool catalog.
+
 Explicit saves:
 
-- Flow through `memory_save` or `MemoryManager.save_explicit(...)`.
+- Flow through API/service callers into `MemoryManager.save_explicit(...)`.
 - Are evaluated by `MemoryWritePolicy.evaluate_explicit_save(...)` before any item is built.
 - Return a `MemoryWriteDecision` with `allowed`, `destination`, `reason`, `require_user_confirmation`, `sensitivity`, `ttl_days`, and `redacted_payload`.
 - If `allowed=True`, the durable `MemoryItem` is built through `build_explicit_memory_item(...)` and still passes `MemoryItem` payload validation before storage.
@@ -663,7 +657,7 @@ Run-summary saves:
 - Evaluate the candidate through `MemoryWritePolicy.evaluate_promotion_candidate(...)` before any durable write.
 - Default policy records candidate audit metadata and rejects the automatic write because `allow_auto_write=False`.
 - Write a durable task memory only when policy explicitly allows automatic writes.
-- Are skipped in assistant-loop non-mock chat paths so the model can choose `memory_save` explicitly.
+- Are retained only as a compatibility service method; runtime graphs no longer call it.
 
 Promotion candidates:
 
@@ -671,7 +665,7 @@ Promotion candidates:
 - `MemoryWritePolicy.evaluate_promotion_candidate(...)` returns the same `MemoryWriteDecision` shape used for explicit saves.
 - Defaults are conservative: `allow_auto_write=False`, `allow_long_term_promotion=False`, `require_user_intent_for_profile_memory=True`.
 - Candidate audit metadata is stored on request metadata and trace summaries as counts plus decision fields and redacted candidate summaries; candidate `content` is not exposed in trace/API summaries.
-- User-explicit "remember this" intent remains allowed through `memory_save` / `MemoryManager.save_explicit(...)`.
+- User-explicit API/service writes remain allowed through `MemoryManager.save_explicit(...)`; the main LLM does not invoke this method.
 - Temporary debug notes, one-off searches, failed attempts, speculation, raw outputs, provider payloads, base64/media bodies, API keys, tokens, and other secret-like content are rejected or left as non-written candidates.
 - Session `context_summary` is handled by `ConversationStore.save_summary(...)`; it must not be promoted to long-term memory by automatic candidate generation.
 
@@ -714,7 +708,7 @@ Explicit preference memories may carry a deterministic `content["preference_key"
 
 ## Framework Reuse Boundary
 
-No third-party memory framework is a runtime dependency of the built-in local core. The implemented `framework` mode is a separate, explicit lifecycle-owner path: Hindsight or Mem0 runs in an isolated pinned sidecar and is reached only through `MemoryManager -> FrameworkMemoryStore -> MemoryEngineAdapter`. Project identity, read/write policy, confirmation, prompt safety, governance ledger/outbox, audit, context budget, tool governance, and rollback remain owned by `assistant_agent`; the framework must not become Agent runtime authority or silently replace SQLite/JSONL.
+No third-party memory framework is a runtime dependency of the built-in local core. The implemented `framework` mode is a separate, explicit lifecycle-owner path: Hindsight or Mem0 runs in an isolated pinned sidecar and is reached only through `MemoryManager -> FrameworkMemoryStore -> MemoryEngineAdapter`. Project identity, capture triggering, prompt safety, governance ledger, audit, context budget, tool governance, and rollback remain owned by `assistant_agent`; Mem0 owns extraction and long-term-memory integration but must not become Agent runtime authority or silently replace SQLite/JSONL.
 
 Selection is evidence-gated rather than implied by adapter availability. Run the fixed offline/provider-smoke comparison in `docs/development/memory-framework-bakeoff-runbook.md`; until a measured report passes every hard gate and names a winner, built-in Memory Intelligence v2 remains the recommendation and framework mode remains opt-in. Other frameworks still require a separate adapter proposal, dependency approval, the same governed eval cases, and a rollback path. The local v2 typed-fact/conflict/FTS implementation itself adds no framework package and performs no network call.
 

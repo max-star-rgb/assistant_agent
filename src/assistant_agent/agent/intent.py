@@ -140,13 +140,6 @@ class IntentDetector:
                 rationale="用户指令包含多个工具目标，需要规划多步骤任务。",
             )
 
-        if self._contains(text, self.save_memory_keywords):
-            return IntentResult(
-                intent=MEMORY_SAVE_CAPABILITY,
-                confidence=0.85,
-                rationale="用户明确要求保存偏好或信息。",
-            )
-
         if self._contains(text, self.memory_keywords):
             return IntentResult(
                 intent=MEMORY_RETRIEVAL_CAPABILITY,
@@ -262,10 +255,6 @@ class IntentDetector:
                 )
             ]
 
-        if self._contains(text, self.save_memory_keywords):
-            matches.append(
-                RuleMatch("save_memory_keywords", MEMORY_SAVE_CAPABILITY, 0.9, "用户明确要求保存偏好或信息。")
-            )
         if self._contains(text, self.memory_keywords):
             matches.append(
                 RuleMatch("memory_reference_keywords", MEMORY_RETRIEVAL_CAPABILITY, 0.9, "用户提到历史上下文，需要检索记忆。")

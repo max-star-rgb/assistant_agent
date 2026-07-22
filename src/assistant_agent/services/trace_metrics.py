@@ -348,6 +348,10 @@ def _memory_metrics(events: list[TraceEvent]) -> dict[str, Any]:
     save_candidate_count = 0
     saved_count = 0
     rejected_count = 0
+    capture_count = 0
+    daily_captured_count = 0
+    core_captured_count = 0
+    capture_error_count = 0
     for event in events:
         canonical = event.canonical_event or ""
         if canonical == "memory.load.finished":
@@ -359,12 +363,21 @@ def _memory_metrics(events: list[TraceEvent]) -> dict[str, Any]:
             )
             saved_count += _event_int(event, "saved_count") or _event_int(event, "memory_promotion_written")
             rejected_count += _event_int(event, "rejected_count") or _event_int(event, "memory_promotion_rejected")
+        if canonical == "memory.capture.finished":
+            capture_count += 1
+            daily_captured_count += _event_int(event, "daily_count") or 0
+            core_captured_count += _event_int(event, "core_count") or 0
+            capture_error_count += _event_int(event, "error_count") or 0
     return {
         "retrieval_count": retrieval_count,
         "save_count": save_count,
         "save_candidate_count": save_candidate_count,
         "saved_count": saved_count,
         "rejected_count": rejected_count,
+        "capture_count": capture_count,
+        "daily_captured_count": daily_captured_count,
+        "core_captured_count": core_captured_count,
+        "capture_error_count": capture_error_count,
     }
 
 

@@ -1,0 +1,200 @@
+"""Stable Mem0 capture and read contracts used by the runtime memory lifecycle."""
+
+from datetime import datetime, timezone
+
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.memory.framework.adapters import Mem0MemoryEngineAdapter
+from assistant_agent.memory.framework.base import FrameworkHttpRequest
+from assistant_agent.memory.framework.ledger import FrameworkGovernanceLedger
+from assistant_agent.memory.framework.store import FrameworkMemoryStore
+from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.schemas.memory_framework import (
+    FrameworkConversationMessage,
+    FrameworkRecallRequest,
+    FrameworkTurnCaptureRequest,
+    MemoryEngineIdentity,
+)
+
+
+def _identity() -> MemoryEngineIdentity:
+    return MemoryEngineIdentity(
+        bank_id="bank_" + "1" * 32,
+        user_id="usr_" + "2" * 32,
+        agent_id="agt_" + "3" * 32,
+        run_id="run_" + "4" * 32,
+        tenant_tag="tenant_" + "5" * 24,
+        user_tag="user_" + "6" * 24,
+        project_tag="project_" + "7" * 24,
+        session_tag="session_" + "8" * 24,
+    )
+
+
+def test_mem0_capture_stores_daily_record_and_infers_core_memory() -> None:
+    requests: list[FrameworkHttpRequest] = []
+
+    def transport(request: FrameworkHttpRequest):
+        requests.append(request)
+        return {"results": [{"id": "daily-1" if len(requests) == 1 else "core-1"}]}
+
+    adapter = Mem0MemoryEngineAdapter(base_url="http://mem0.test", transport=transport)
+    result = adapter.capture_turn(
+        FrameworkTurnCaptureRequest(
+            identity=_identity(),
+            messages=[
+                FrameworkConversationMessage(role="user", content="我想喝牛奶"),
+                FrameworkConversationMessage(role="assistant", content="需要我帮你找商品吗？"),
+            ],
+            daily_text="用户：我想喝牛奶\n助手：需要我帮你找商品吗？",
+            daily_memory_id="daily-turn-1",
+            occurred_at=datetime(2026, 7, 22, tzinfo=timezone.utc),
+            metadata={"source_turn": "opaque-turn"},
+            idempotency_key="capture-1",
+        )
+    )
+
+    assert result.accepted is True
+    assert result.daily_engine_ids == ["daily-1"]
+    assert result.core_engine_ids == ["core-1"]
+    assert result.errors == []
+    assert len(requests) == 2
+
+    daily = requests[0].body
+    core = requests[1].body
+    assert daily is not None and core is not None
+    assert daily["infer"] is False
+    assert daily["messages"] == [
+        {"role": "user", "content": "用户：我想喝牛奶\n助手：需要我帮你找商品吗？"}
+    ]
+    assert daily["metadata"]["record_kind"] == "daily"
+    assert core["infer"] is True
+    assert core["messages"] == [
+        {"role": "user", "content": "我想喝牛奶"},
+        {"role": "assistant", "content": "需要我帮你找商品吗？"},
+    ]
+    assert core["metadata"]["record_kind"] == "core"
+    assert daily["user_id"] == core["user_id"]
+    assert daily["agent_id"] == core["agent_id"]
+    assert "run_id" not in daily and "run_id" not in core
+
+
+def test_mem0_capture_reports_partial_failure_without_dropping_daily_success() -> None:
+    requests: list[FrameworkHttpRequest] = []
+
+    def transport(request: FrameworkHttpRequest):
+        requests.append(request)
+        if len(requests) == 2:
+            raise RuntimeError("core provider unavailable")
+        return {"results": [{"id": "daily-1"}]}
+
+    adapter = Mem0MemoryEngineAdapter(base_url="http://mem0.test", transport=transport)
+    result = adapter.capture_turn(
+        FrameworkTurnCaptureRequest(
+            identity=_identity(),
+            messages=[
+                FrameworkConversationMessage(role="user", content="你好"),
+                FrameworkConversationMessage(role="assistant", content="你好！"),
+            ],
+            daily_text="用户：你好\n助手：你好！",
+            daily_memory_id="daily-turn-2",
+            occurred_at=datetime(2026, 7, 22, tzinfo=timezone.utc),
+            idempotency_key="capture-2",
+        )
+    )
+
+    assert result.accepted is True
+    assert result.daily_engine_ids == ["daily-1"]
+    assert result.core_engine_ids == []
+    assert result.errors == [
+        {"phase": "core", "code": "memory_framework_request_failed"}
+    ]
+
+
+def test_mem0_recall_filters_core_and_daily_records_separately() -> None:
+    requests: list[FrameworkHttpRequest] = []
+
+    def transport(request: FrameworkHttpRequest):
+        requests.append(request)
+        return {"results": []}
+
+    adapter = Mem0MemoryEngineAdapter(base_url="http://mem0.test", transport=transport)
+    adapter.recall(
+        FrameworkRecallRequest(
+            identity=_identity(),
+            query="牛奶",
+            scope="project",
+            record_kinds=["daily"],
+        )
+    )
+
+    body = requests[0].body
+    assert body is not None
+    assert body["filters"] == {
+        "user_id": _identity().user_id,
+        "agent_id": _identity().agent_id,
+        "record_kind": "daily",
+    }
+
+
+def test_completed_runtime_turn_triggers_mem0_capture(tmp_path) -> None:
+    requests: list[FrameworkHttpRequest] = []
+
+    def transport(request: FrameworkHttpRequest):
+        requests.append(request)
+        if request.path == "/search":
+            return {"results": []}
+        if request.method == "GET" and request.path.startswith("/memories/"):
+            return {
+                "id": request.path.rsplit("/", 1)[-1],
+                "memory": "时间：2026-07-22T12:00:00+08:00\n用户：你好\n助手结果：你好！",
+                "metadata": {"record_kind": "daily", "source": "runtime_turn_capture"},
+            }
+        capture_index = sum(1 for item in requests if item.path == "/memories")
+        return {"results": [{"id": f"captured-{capture_index}"}]}
+
+    store = FrameworkMemoryStore(
+        adapter=Mem0MemoryEngineAdapter(
+            base_url="http://mem0.test",
+            transport=transport,
+        ),
+        ledger=FrameworkGovernanceLedger(tmp_path / "framework-ledger.sqlite3"),
+        identity_namespace="tests",
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(langgraph_checkpointer_backend="none"),
+        memory_store=store,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(user_id="capture-user", session_id="capture-session", text="你好")
+    )
+
+    assert state.status == "completed"
+    assert state.request.metadata["memory_context_policy_reason"] == (
+        "framework_core_memory_auto_load"
+    )
+    assert state.request.metadata["memory_capture"] == {
+        "status": "succeeded",
+        "daily_count": 1,
+        "core_count": 1,
+        "error_count": 0,
+    }
+    assert requests[0].path == "/search"
+    assert requests[0].body is not None
+    assert requests[0].body["filters"]["record_kind"] == "core"
+    assert [request.path for request in requests[-2:]] == ["/memories", "/memories"]
+
+    daily_mapping = next(
+        mapping
+        for mapping in store.ledger.list_mappings(user_id="capture-user")
+        if mapping.project_memory_id.startswith("daily:")
+    )
+    daily_item = runtime.memory_manager.get_for_identity(
+        RequestIdentity.from_user_request(state.request),
+        daily_mapping.project_memory_id,
+    )
+    assert daily_item is not None
+    assert daily_item.content["record_kind"] == "daily"

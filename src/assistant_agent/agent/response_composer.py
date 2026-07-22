@@ -1,47 +1,17 @@
 """Compose final agent responses from AgentState."""
 
 from assistant_agent.agent.state import AgentState
-from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.agent.response_templates import (
     compose_contract_response,
     compose_followup_message,
     extract_response_fields,
 )
-from assistant_agent.schemas.capabilities import canonical_intent
-from assistant_agent.schemas.requests import AgentResponse, UserRequest
+from assistant_agent.schemas.requests import AgentResponse
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     MEMORY_SAVE_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
 )
-
-
-def save_demo_memory(request: UserRequest, state: AgentState, tool_executor: ToolExecutor) -> None:
-    """Persist the MVP demo summary for multi-tool tasks."""
-
-    if state.intent is None or canonical_intent(state.intent.intent) != "multi_step_orchestration":
-        return
-    if not request.video_ids:
-        return
-    completed_tools = {result.tool_name for result in state.tool_results if result.success}
-    if not {IMAGE_UNDERSTANDING_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME}.issubset(completed_tools):
-        return
-    if any(result.tool_name == MEMORY_SAVE_TOOL_NAME for result in state.tool_results):
-        return
-    memory_input = {
-        "action": "save",
-        "user_id": request.user_id,
-        "source_intent": "assistant_candidate",
-        "source_reason": "demo flow inferred a completed multi-tool task summary.",
-        "future_use": "future demo runs may reference the task flow if the user confirms it.",
-        "evidence": "video understanding, shopping search, and image generation all succeeded.",
-        "content": {
-            "summary": "完成视频鞋子识别、购物搜索比价和日系海报生成。",
-            "text": request.text,
-        },
-    }
-    tool_executor.run_tool(state, MEMORY_SAVE_TOOL_NAME, MEMORY_SAVE_TOOL_NAME, memory_input)
 
 
 def compose_response(state: AgentState) -> AgentResponse:

@@ -11,7 +11,7 @@ from assistant_agent.agent.assistant_loop_nodes import (
     execute_requested_tool_node,
     route_after_assistant,
 )
-from assistant_agent.agent.graph_nodes import compose_response_node, load_memory_node, save_memory_node
+from assistant_agent.agent.graph_nodes import capture_memory_node, compose_response_node, load_memory_node
 from assistant_agent.agent.graph_runtime import GraphRuntimeContext, bind_runtime_node
 
 
@@ -35,7 +35,7 @@ def build_assistant_loop_graph(
     graph.add_node("execute_tool", bind_runtime_node("execute_tool", execute_requested_tool_node, runtime_context))
     graph.add_node("apply_plan_mode_transition", bind_runtime_node("apply_plan_mode_transition", apply_plan_mode_transition_node, runtime_context))
     graph.add_node("compose_response", bind_runtime_node("compose_response", compose_response_node, runtime_context))
-    graph.add_node("save_memory", bind_runtime_node("save_memory", save_memory_node, runtime_context))
+    graph.add_node("capture_memory", bind_runtime_node("capture_memory", capture_memory_node, runtime_context))
 
     graph.add_edge(START, "load_memory")
     graph.add_edge("load_memory", "assistant")
@@ -52,7 +52,7 @@ def build_assistant_loop_graph(
 
     graph.add_edge("execute_tool", "assistant")
     graph.add_edge("apply_plan_mode_transition", "assistant")
-    graph.add_edge("compose_response", "save_memory")
-    graph.add_edge("save_memory", END)
+    graph.add_edge("compose_response", "capture_memory")
+    graph.add_edge("capture_memory", END)
 
     return graph.compile(checkpointer=checkpointer)

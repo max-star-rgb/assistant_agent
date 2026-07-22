@@ -19,7 +19,7 @@ Last updated: 2026-07-22
 - 预算现状：字符/token 预算只报告、不裁剪；AgentRuntime 不执行 token-aware recent transcript、
   字符预算裁剪或 structured summary。Memory context 仍有独立的
   read policy 与 prompt-safe 注入边界。
-- memory 边界：历史遗留或独立实现产生的 `context_summary` 仍属于 session 状态，不是长期 memory，且 AgentRuntime 不读取或注入；自动长期记忆注入由 `MemoryReadPolicy` gate，LLM 选择的 `memory_retrieval` 走通用工具治理与 `MemoryManager`，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
+- memory 边界：历史遗留或独立实现产生的 `context_summary` 仍属于 session 状态，不是长期 memory，且 AgentRuntime 不读取或注入。local/remote-service 自动注入仍由 `MemoryReadPolicy` gate；framework/Mem0 每轮只自动召回有界 `core` 记忆。主 LLM 仅可通过 `memory_search` / `memory_get` 读取 daily records，不暴露写工具；成功 turn 由 runtime 触发 Mem0 capture，长期记忆正文由 Mem0 LLM 提炼。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
@@ -93,8 +93,8 @@ Last updated: 2026-07-22
 
 ### Memory Context
 
-- `MemoryManager` 是 memory 检索、上下文格式化、显式保存、去重、用户画像更新和 completed-run promotion candidate 的边界。
-- 自动 memory context 注入先走 `MemoryReadPolicy`。普通首次文案、建议、搜索、生成或推荐不自动查长期记忆；明确提到上次、之前、已保存记忆、个人偏好、继续旧任务，或明显是个人风格/偏好定制请求时才查。个人风格/偏好定制触发口径很窄，例如包含 `风格`/`偏好`/`喜好`/`口味` 且同时包含 `推荐`/`方案`/`文案`/`设计`/`搭配`/`回答`/`写`/`生成`/`继续`。
+- `MemoryManager` 是 memory 检索、上下文格式化、可信身份绑定和 runtime capture 编排边界；local/API 兼容路径仍保留显式保存、去重、用户画像和 promotion 方法。
+- local/remote-service 自动 memory context 注入先走 `MemoryReadPolicy`。framework/Mem0 每轮自动检索 `record_kind=core`，再由独立 memory token budget 选择实际注入子集；daily records 不自动注入。
 - memory context 分层为 semantic、session、episodic、artifact、procedural。
 - 默认 `top_k=5`，默认 `max_context_chars=500`。
 - `MemoryContextBuilder` 负责实际注入选择；`MemoryContext.items` 表示已注入的 memory 子集，而不是所有检索候选。
@@ -102,7 +102,7 @@ Last updated: 2026-07-22
 - memory context metadata includes `memory_context_tokens`, `memory_context_budget_tokens`, `memory_context_omitted_count`, `memory_context_rejected_reasons`, `memory_context_retrieval_version`, `memory_context_injected_ids`, `memory_context_skipped`, `memory_context_policy_reason`, `memory_read_policy`, and `memory_trust_policy`.
 - 非空 query 走关键词/中文片段相关性门控；只有明确承接型 query 才允许 recent memory fallback。
 - 显式用户记忆会合并重复项，并更新 compact `user_profile` 记忆。
-- completed-run summary 默认只生成 policy-gated promotion candidate 和审计 metadata，不自动写长期 memory；`allow_auto_write=True` 时才会落库。
+- runtime 图尾统一为 `capture_memory`。仅 framework/Mem0 执行：一条 daily turn record 使用 `infer=false`，原始 user/assistant 消息使用 `infer=true`；其他 store no-op。
 
 ### Boundary With Memory Service
 
@@ -228,7 +228,7 @@ Last updated: 2026-07-22
 - Editable owner context 当前只实现本机 owner-bound `SOUL.md`；没有实现 `USER.md` / `MEMORY.md` projection、skill L1/L2 view、Provider cache hint 或跨进程 last-known-good。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
 - 保留的会话历史压缩实现只增量合并滑出 token-aware recent window 的较早轮次；AgentRuntime 当前不调用该实现。
-- assistant loop 的真实 LLM 路径中，长期记忆写入应由 assistant 通过 `memory_save` 工具显式选择；图尾不会自动写长期 task summary。
+- assistant loop 不向主 LLM 暴露记忆写工具；长期记忆写入由成功 turn 后的 Mem0 capture 生命周期完成，主 LLM 只负责消费 core memory 或按需读取 daily records。
 
 ## Key Files
 

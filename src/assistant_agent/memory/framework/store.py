@@ -30,6 +30,9 @@ from assistant_agent.schemas.memory_framework import (
     FrameworkRecallRequest,
     FrameworkRetainRequest,
     FrameworkRetainResult,
+    FrameworkConversationMessage,
+    FrameworkTurnCaptureRequest,
+    FrameworkTurnCaptureResult,
 )
 
 _MEM0_RECALL_CONSISTENCY_TIMEOUT_SECONDS = 5.0
@@ -101,6 +104,71 @@ class FrameworkMemoryStore:
             )
         return item
 
+    @property
+    def supports_turn_capture(self) -> bool:
+        return self.adapter.name == "mem0"
+
+    @property
+    def always_load_core_memory(self) -> bool:
+        return self.adapter.name == "mem0"
+
+    def capture_turn(
+        self,
+        *,
+        identity: RequestIdentity,
+        user_text: str,
+        assistant_text: str,
+        daily_text: str,
+        daily_memory_id: str,
+        occurred_at: datetime,
+        source_turn: str,
+    ) -> FrameworkTurnCaptureResult | None:
+        """Submit one completed turn to a framework-owned memory lifecycle."""
+
+        if not self.supports_turn_capture:
+            return None
+        engine_identity = bind_engine_identity(identity, namespace=self.identity_namespace)
+        request = FrameworkTurnCaptureRequest(
+            identity=engine_identity,
+            messages=[
+                FrameworkConversationMessage(role="user", content=user_text),
+                FrameworkConversationMessage(role="assistant", content=assistant_text),
+            ],
+            daily_text=daily_text,
+            daily_memory_id=daily_memory_id,
+            occurred_at=occurred_at,
+            metadata={"source_turn": source_turn, "schema_version": "daily_turn_v1"},
+            idempotency_key=f"capture:{self.adapter.name}:{engine_identity.user_id}:{source_turn}",
+        )
+        result = self._call("capture_turn", lambda: self.adapter.capture_turn(request))
+        if not result.accepted:
+            return result
+        for engine_id in result.daily_engine_ids:
+            self.ledger.record_mapping(
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=identity.session_id,
+                scope="project",
+                project_memory_id=daily_memory_id,
+                engine_id=engine_id,
+                engine_name=self.adapter.name,
+                identity=engine_identity,
+            )
+        for engine_id in result.core_engine_ids:
+            self.ledger.record_mapping(
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=identity.session_id,
+                scope="project",
+                project_memory_id=f"core:{engine_id}",
+                engine_id=engine_id,
+                engine_name=self.adapter.name,
+                identity=engine_identity,
+            )
+        return result
+
     def search(self, query: MemoryQuery) -> MemorySearchResult:
         identity = self._identity_for_query(query)
         recall_scopes = self._recall_scopes_for_query(query)
@@ -115,6 +183,7 @@ class FrameworkMemoryStore:
                     memory_types=query.memory_types,
                     since=query.since,
                     max_tokens=max(64, min(8192, query.max_context_chars // 2)),
+                    record_kinds=query.record_kinds,
                 )
                 recalled = self._call("recall", lambda request=recall_request: self.adapter.recall(request))
                 recalled = self._wait_for_mem0_recent_retain_visibility(
@@ -134,6 +203,8 @@ class FrameworkMemoryStore:
         deduped_records: list[tuple[FrameworkMemoryRecord, MemoryScope]] = []
         seen: set[str] = set()
         for record, recall_scope in records_with_scope:
+            if query.record_kinds and record.record_kind not in query.record_kinds:
+                continue
             mapping = mappings_by_engine_id.get(record.engine_id)
             memory_id = record.project_memory_id or (mapping.project_memory_id if mapping else None) or record.engine_id
             if memory_id in seen:
@@ -171,7 +242,45 @@ class FrameworkMemoryStore:
         )
 
     def get(self, user_id: str, memory_id: str) -> MemoryItem | None:
-        return next((item for item in self.list_by_user(user_id) if item.memory_id == memory_id), None)
+        mappings = self.ledger.list_mappings(
+            user_id=user_id,
+            project_memory_id=memory_id,
+        )
+        try:
+            for mapping in mappings:
+                if self.ledger.is_tombstoned(
+                    user_id=user_id,
+                    project_memory_id=mapping.project_memory_id,
+                    engine_id=mapping.engine_id,
+                ):
+                    continue
+                payload = self.adapter.get(
+                    identity=mapping.identity,
+                    engine_id=mapping.engine_id,
+                )
+                if not payload:
+                    continue
+                record = _record_from_payload(
+                    payload,
+                    mapping.engine_id,
+                    mapping.project_memory_id,
+                )
+                return self._item_from_record(
+                    record,
+                    MemoryQuery(
+                        user_id=user_id,
+                        tenant_id=mapping.tenant_id,
+                        project_id=mapping.project_id,
+                        session_id=mapping.session_id,
+                        query="",
+                    ),
+                    mapping=mapping,
+                    recall_scope=mapping.scope or "project",
+                )
+        except Exception:
+            if self.read_fallback is not None:
+                return self.read_fallback.get(user_id, memory_id)
+        return None
 
     def list_by_user(self, user_id: str) -> list[MemoryItem]:
         items: list[MemoryItem] = []
@@ -662,7 +771,14 @@ class FrameworkMemoryStore:
             scope=item_scope,
             memory_type=record.memory_type,
             summary=record.text,
-            content={"framework": self.adapter.name, "engine_id": record.engine_id, "scope": item_scope},
+            content={
+                "framework": self.adapter.name,
+                "engine_id": record.engine_id,
+                "scope": item_scope,
+                "record_kind": record.record_kind,
+                "provenance": record.metadata,
+            },
+            tags=[record.record_kind],
             source=record.source,
             created_at=record.created_at or datetime.now(timezone.utc),
             relevance=record.relevance,
@@ -774,4 +890,10 @@ def _record_from_payload(payload: dict[str, Any], engine_id: str, project_memory
         source=str(metadata.get("source") or "memory_framework"),
         created_at=payload.get("created_at"),
         relevance=payload.get("score"),
+        metadata=dict(metadata),
+        record_kind=(
+            metadata.get("record_kind")
+            if metadata.get("record_kind") in {"core", "daily", "legacy"}
+            else "legacy"
+        ),
     )

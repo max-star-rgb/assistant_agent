@@ -3,7 +3,7 @@
 from time import perf_counter
 
 from assistant_agent.agent.intent import IntentDetector
-from assistant_agent.agent.response_composer import compose_response, save_demo_memory
+from assistant_agent.agent.response_composer import compose_response
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
@@ -70,7 +70,6 @@ class AgentWorkflow:
                 break
 
         if state.status != "failed":
-            save_demo_memory(request, state, self.tool_executor)
             state.set_response(compose_response(state))
 
         if self.run_history is not None:
