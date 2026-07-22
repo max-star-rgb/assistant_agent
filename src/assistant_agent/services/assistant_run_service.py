@@ -27,6 +27,7 @@ from assistant_agent.services.context.compactor import (
 from assistant_agent.services.context.conversation import (
     conversation_context_metadata,
     format_conversation_context,
+    select_full_conversation_history,
     select_conversation_window,
 )
 from assistant_agent.services.context.policy import context_policy_from_request
@@ -49,7 +50,7 @@ from assistant_agent.services.video_context import load_demo_video_frames
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ENV_FILE = REPO_ROOT / ".env"
-DEFAULT_MAX_HISTORY_TURNS = 8
+DEFAULT_MAX_HISTORY_TURNS = 0
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 
 
@@ -181,7 +182,7 @@ class InMemoryConversationStore:
     def append(self, user_id: str, session_id: str, turn: ConversationTurn) -> None:
         key = (user_id, session_id)
         turns = [*self._turns.get(key, []), turn]
-        self._turns[key] = turns[-self.max_turns :]
+        self._turns[key] = turns[-self.max_turns :] if self.max_turns > 0 else turns
 
     def save_summary(
         self,
@@ -219,7 +220,7 @@ class JsonlConversationStore:
             for record in self._read_all()
             if record.user_id == user_id and record.session_id == session_id
         ]
-        return turns[-self.max_turns :]
+        return turns[-self.max_turns :] if self.max_turns > 0 else turns
 
     def get_summary(self, user_id: str, session_id: str) -> ContextSummary | None:
         for record in reversed(self._read_summary_records()):
@@ -484,6 +485,7 @@ def run_assistant_request(
         request,
         conversation_store=resolved_store,
         enable_conversation_history=enable_conversation_history,
+        enable_context_summary=resolved_runtime.context_compactor is not None,
     )
     resolved_request = prepare_realtime_task_state_request(
         resolved_request,
@@ -900,29 +902,48 @@ def _prepare_conversation_request(
     *,
     conversation_store: ConversationStore,
     enable_conversation_history: bool,
+    enable_context_summary: bool,
 ) -> UserRequest:
     if not enable_conversation_history:
         return request
     metadata = dict(request.metadata)
+    if not enable_context_summary:
+        for key in (
+            "context_summary",
+            "session_context_summary",
+            "context_summary_text",
+            "context_summary_present",
+            "context_compactor_type",
+        ):
+            metadata.pop(key, None)
     if metadata.get("reset_conversation") is True:
         conversation_store.clear(request.user_id, request.session_id)
     history = conversation_store.get(request.user_id, request.session_id)
-    summary = conversation_store.get_summary(request.user_id, request.session_id)
+    summary = (
+        conversation_store.get_summary(request.user_id, request.session_id)
+        if enable_context_summary
+        else None
+    )
     policy = context_policy_from_request(request)
     force_minimum_recent = _force_minimum_recent_window(request)
-    recent_selection = select_conversation_window(
-        history,
-        recent_turns=policy.keep_recent_turns,
-        metadata=metadata,
-        context_policy=policy,
-        force_minimum_recent=force_minimum_recent,
+    recent_selection = (
+        select_conversation_window(
+            history,
+            recent_turns=policy.keep_recent_turns,
+            metadata=metadata,
+            context_policy=policy,
+            force_minimum_recent=force_minimum_recent,
+        )
+        if enable_context_summary
+        else select_full_conversation_history(history)
     )
-    summary = _maybe_update_session_summary(
-        request=request,
-        history=history,
-        existing_summary=summary,
-        conversation_store=conversation_store,
-    )
+    if enable_context_summary:
+        summary = _maybe_update_session_summary(
+            request=request,
+            history=history,
+            existing_summary=summary,
+            conversation_store=conversation_store,
+        )
     if not history:
         metadata.setdefault("conversation_history", [])
         if summary is not None:
@@ -957,22 +978,34 @@ def _prepare_conversation_request(
             )
         )
     else:
+        recent_turn_limit = policy.keep_recent_turns if enable_context_summary else len(history)
         metadata["conversation_context_text"] = format_conversation_context(
             history,
-            recent_turns=policy.keep_recent_turns,
+            recent_turns=recent_turn_limit,
             metadata=metadata,
             context_policy=policy,
-            force_minimum_recent=force_minimum_recent,
+            force_minimum_recent=force_minimum_recent and enable_context_summary,
         )
         metadata.update(
             conversation_context_metadata(
                 history,
-                recent_turns=policy.keep_recent_turns,
+                recent_turns=recent_turn_limit,
                 metadata=metadata,
                 context_policy=policy,
-                force_minimum_recent=force_minimum_recent,
+                force_minimum_recent=force_minimum_recent and enable_context_summary,
             )
         )
+        if not enable_context_summary:
+            metadata.update(
+                {
+                    "conversation_context_token_aware": False,
+                    "conversation_context_recent_turns": len(recent_selection.recent_turns),
+                    "conversation_context_recent_tokens": recent_selection.recent_tokens,
+                    "conversation_context_recent_token_budget": 0,
+                    "conversation_context_compacted_turns": 0,
+                    "conversation_context_compacted": False,
+                }
+            )
     metadata["conversation_turn_index"] = len(history) + 1
     return request.model_copy(update={"metadata": metadata}, deep=True)
 
@@ -1172,6 +1205,8 @@ def _trim_session_records(
     session_id: str,
     max_turns: int,
 ) -> list[ConversationHistoryRecord]:
+    if max_turns <= 0:
+        return records
     overflow = sum(
         1 for record in records if record.user_id == user_id and record.session_id == session_id
     ) - max_turns

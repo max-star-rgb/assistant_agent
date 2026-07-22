@@ -179,6 +179,25 @@ def select_conversation_window(
     )
 
 
+def select_full_conversation_history(
+    history: list[ConversationTurnView],
+) -> ConversationWindowSelection:
+    """Select every stored turn verbatim without applying a context window."""
+
+    reporter = TokenBudgetReporter()
+    total_tokens = sum(
+        reporter.estimate(_format_turn(turn, index))
+        for index, turn in enumerate(history, start=1)
+    )
+    return ConversationWindowSelection(
+        compacted_turns=[],
+        recent_turns=list(history),
+        recent_tokens=total_tokens,
+        token_budget=0,
+        token_aware=False,
+    )
+
+
 def _format_turns(history: list[ConversationTurnView], *, start_index: int) -> str:
     lines: list[str] = []
     for index, turn in enumerate(history, start=start_index):

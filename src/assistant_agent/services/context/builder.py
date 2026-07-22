@@ -21,11 +21,13 @@ from assistant_agent.schemas.tools import ToolSpec
 from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.services.context.compactor import (
     ContextCompactor,
-    DeterministicContextCompactor,
     context_summary_from_metadata,
     format_context_summary,
 )
-from assistant_agent.services.context.compaction import compact_observations_for_context
+from assistant_agent.services.context.compaction import (
+    compact_observations_for_context,
+    sanitize_observations_for_context,
+)
 from assistant_agent.services.context.conversation import select_conversation_window
 from assistant_agent.services.context.policy import (
     COMPRESSION_REASON_CONTEXT_BUDGET_TRIMMED,
@@ -36,6 +38,7 @@ from assistant_agent.services.context.policy import (
     COMPRESSION_STAGE_COMPACTED,
     COMPRESSION_STAGE_NONE,
     CONTEXT_BUDGET_METADATA_KEY,
+    CompactionDecision,
     CompactionPolicy,
     context_policy_from_request,
 )
@@ -64,10 +67,11 @@ def build_assistant_context_pack(
     """Collect state and request materials for assistant prompt rendering."""
 
     active_request = request or state.request
+    compaction_enabled = context_compactor is not None
     context_policy = context_policy_from_request(active_request)
     summaries = memory_summaries if memory_summaries is not None else [item.summary for item in state.memory_context]
     conversation_text = _conversation_context_text(active_request)
-    context_summary = _context_summary(active_request)
+    context_summary = _context_summary(active_request) if context_compactor is not None else None
     compactor_type = _metadata_text(active_request, "context_compactor_type") or "none"
     text = (
         memory_text
@@ -81,9 +85,16 @@ def build_assistant_context_pack(
     # prompt block.
     realtime_task_state = None
     realtime_video_context = _realtime_video_context(active_request)
-    durable_task_state, durable_task_state_trimmed = _durable_task_context(active_request)
+    durable_task_state, durable_task_state_trimmed = _durable_task_context(
+        active_request,
+        apply_size_limits=compaction_enabled,
+    )
     active_observations = observations or []
-    context_observations = compact_observations_for_context(active_observations)
+    context_observations = (
+        compact_observations_for_context(active_observations)
+        if compaction_enabled
+        else sanitize_observations_for_context(active_observations)
+    )
     active_tool_specs = tool_specs or []
     tool_catalog = select_prompt_tool_specs(
         active_request,
@@ -127,14 +138,18 @@ def build_assistant_context_pack(
         context_sections=unbudgeted_context_sections,
         max_chars=budget_limit,
     )
-    context_sections, context_section_trimmed = _fit_context_sections_to_budget(
-        unbudgeted_context_sections,
-        available_chars=max(
-            0,
-            budget_limit
-            - (unbudgeted_report.total_chars - unbudgeted_report.owner_persona_chars),
-        ),
-    )
+    if compaction_enabled:
+        context_sections, context_section_trimmed = _fit_context_sections_to_budget(
+            unbudgeted_context_sections,
+            available_chars=max(
+                0,
+                budget_limit
+                - (unbudgeted_report.total_chars - unbudgeted_report.owner_persona_chars),
+            ),
+        )
+    else:
+        context_sections = unbudgeted_context_sections
+        context_section_trimmed = []
     source_counts = _source_counts(
         request=active_request,
         memory_summaries=summaries,
@@ -166,15 +181,18 @@ def build_assistant_context_pack(
     compaction_budget_policy = context_policy.model_copy(
         update={"max_context_chars": budget_limit}
     )
-    compaction_decision = CompactionPolicy().evaluate(
-        request=active_request,
-        budget=initial_budget,
-        observations=context_observations,
-        policy=compaction_budget_policy,
+    compaction_decision = (
+        CompactionPolicy().evaluate(
+            request=active_request,
+            budget=initial_budget,
+            observations=context_observations,
+            policy=compaction_budget_policy,
+        )
+        if compaction_enabled
+        else CompactionDecision(triggered=False, hard=False, reasons=[])
     )
-    if compaction_decision.triggered:
-        compactor = context_compactor or DeterministicContextCompactor()
-        compaction = compactor.compact(
+    if compaction_decision.triggered and context_compactor is not None:
+        compaction = context_compactor.compact(
             conversation=_conversation_turns_to_compact(active_request, context_policy=context_policy),
             current_request=active_request,
             observations=context_observations,
@@ -189,18 +207,28 @@ def build_assistant_context_pack(
         active_request.metadata["context_compactor_type"] = compactor_type
 
     owner_persona_chars = _owner_persona_chars(context_sections)
-    budgeted = _enforce_context_budget(
-        request=active_request,
-        conversation_text=conversation_text,
-        memory_text=text,
-        realtime_task_state=realtime_task_state,
-        realtime_video_context=realtime_video_context,
-        durable_task_state=durable_task_state,
-        observations=context_observations,
-        plan_state=plan_state,
-        tool_specs=prompt_tool_specs,
-        tool_capabilities=tool_capabilities,
-        max_chars=max(0, budget_limit - owner_persona_chars),
+    budgeted = (
+        _enforce_context_budget(
+            request=active_request,
+            conversation_text=conversation_text,
+            memory_text=text,
+            realtime_task_state=realtime_task_state,
+            realtime_video_context=realtime_video_context,
+            durable_task_state=durable_task_state,
+            observations=context_observations,
+            plan_state=plan_state,
+            tool_specs=prompt_tool_specs,
+            tool_capabilities=tool_capabilities,
+            max_chars=max(0, budget_limit - owner_persona_chars),
+        )
+        if compaction_enabled
+        else _BudgetedContext(
+            conversation_text=conversation_text,
+            memory_text=text,
+            observations=context_observations,
+            total_chars=initial_budget.total_chars,
+            trimmed_sections=[],
+        )
     )
     if budgeted.memory_text == "":
         summaries = []
@@ -212,12 +240,16 @@ def build_assistant_context_pack(
         ]
     )
     over_budget = unbudgeted_report.total_chars > budget_limit
-    compression_reasons = _compression_reasons(
-        request=active_request,
-        observations=context_observations,
-        over_budget=over_budget,
-        trimmed_sections=trimmed_sections,
-        extra_reasons=compaction_decision.reasons,
+    compression_reasons = (
+        _compression_reasons(
+            request=active_request,
+            observations=context_observations,
+            over_budget=over_budget,
+            trimmed_sections=trimmed_sections,
+            extra_reasons=compaction_decision.reasons,
+        )
+        if compaction_enabled
+        else []
     )
     final_budget = _budget_report(
         request=active_request,
@@ -233,7 +265,8 @@ def build_assistant_context_pack(
         context_sections=context_sections,
         max_chars=budget_limit,
         over_budget=over_budget,
-        compaction_triggered=compaction_decision.triggered or bool(trimmed_sections),
+        compaction_triggered=compaction_enabled
+        and (compaction_decision.triggered or bool(trimmed_sections)),
         trimmed_chars=max(
             0,
             unbudgeted_report.total_chars
@@ -345,7 +378,11 @@ def _realtime_video_context(request: UserRequest) -> RealtimeVideoContext | None
     return None if context.status == "unavailable" else context
 
 
-def _durable_task_context(request: UserRequest) -> tuple[dict[str, Any] | None, bool]:
+def _durable_task_context(
+    request: UserRequest,
+    *,
+    apply_size_limits: bool = True,
+) -> tuple[dict[str, Any] | None, bool]:
     """Validate and whitelist the worker-owned snapshot before prompt exposure."""
 
     raw_snapshot = request.metadata.get("durable_task_snapshot")
@@ -382,6 +419,8 @@ def _durable_task_context(request: UserRequest) -> tuple[dict[str, Any] | None, 
         ),
         "remaining_budget": dict(snapshot.remaining_budget),
     }
+    if not apply_size_limits:
+        return payload, False
     clipped, trimmed = _clip_durable_prompt_value(payload)
     return clipped, trimmed
 

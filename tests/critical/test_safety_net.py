@@ -255,12 +255,23 @@ def test_interactive_provider_latency_controls_are_explicit() -> None:
 
     assert config.agent_service_text_turn_timeout_seconds == 90.0
     assert config.chat_timeout_seconds == 75.0
-    assert config.context_compactor_mode == "deterministic"
+    assert config.context_compactor_mode == "off"
     assert config.qwen_chat_enable_thinking is False
     assert isinstance(adapter, OpenAICompatibleChatAdapter)
     assert adapter.timeout_seconds == 75.0
     assert adapter.enable_thinking is False
-    assert isinstance(compactor, DeterministicContextCompactor)
+    assert compactor is None
+
+    enabled_config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_CONTEXT_COMPACTOR": "deterministic",
+        }
+    )
+    enabled_compactor = create_context_compactor(
+        enabled_config,
+        create_chat_adapter(enabled_config),
+    )
+    assert isinstance(enabled_compactor, DeterministicContextCompactor)
 
 
 def test_qwen_chat_adapter_disables_thinking_in_provider_payload() -> None:

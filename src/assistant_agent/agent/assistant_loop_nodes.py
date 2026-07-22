@@ -370,7 +370,11 @@ def _decide_with_llm(
     )
     result = _run_chat_turn(graph_state, chat_adapter, request, attempt_kind="primary")
     _record_chat_usage_metadata(state, result)
-    if _is_provider_context_overflow_result(result) and _can_retry_provider_context_overflow(state):
+    if (
+        _is_provider_context_overflow_result(result)
+        and graph_state.get("context_compactor") is not None
+        and _can_retry_provider_context_overflow(state)
+    ):
         stream_buffer.discard()
         _record_provider_context_overflow(state, result)
         retry_context = _rebuild_context_after_provider_overflow(graph_state, context)

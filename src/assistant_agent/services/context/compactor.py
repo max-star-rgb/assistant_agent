@@ -201,9 +201,11 @@ def create_context_compactor(
     chat_adapter: ChatAdapter,
     *,
     fallback: ContextCompactor | None = None,
-) -> ContextCompactor:
+) -> ContextCompactor | None:
     """Create a compactor that honors runtime provider safety boundaries."""
 
+    if config.context_compactor_mode == "off":
+        return None
     deterministic = fallback or DeterministicContextCompactor()
     if (
         config.context_compactor_mode == "llm"

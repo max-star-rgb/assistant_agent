@@ -20,7 +20,7 @@ from assistant_agent.schemas.provider_specs import (
 
 
 AgentGraphMode = Literal["conditional", "assistant_loop"]
-ContextCompactorMode = Literal["deterministic", "llm"]
+ContextCompactorMode = Literal["off", "deterministic", "llm"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
 LocalMemoryBackend = Literal["memory", "jsonl", "sqlite"]
@@ -120,7 +120,7 @@ class ProviderConfig:
     memory_framework_fallback_backend: MemoryFrameworkFallbackBackend = "none"
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
-    max_conversation_history_turns: int = 8
+    max_conversation_history_turns: int = 0
     editable_context_enabled: bool = False
     editable_context_root: str = ".local/context"
     editable_context_user_id: str | None = None
@@ -133,7 +133,7 @@ class ProviderConfig:
     native_provider_streaming: bool = False
     chat_timeout_seconds: float = 75.0
     agent_service_text_turn_timeout_seconds: float = 90.0
-    context_compactor_mode: ContextCompactorMode = "deterministic"
+    context_compactor_mode: ContextCompactorMode = "off"
     qwen_chat_enable_thinking: bool = False
     openai_chat_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
@@ -379,7 +379,7 @@ class ProviderConfig:
             max_conversation_history_turns=_int_env(
                 source.get("MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS")
                 or source.get("MULTIMODAL_AGENT_MAX_CONVERSATION_TURNS"),
-                8,
+                0,
             ),
             editable_context_enabled=_bool_env(
                 source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED"),
@@ -976,7 +976,9 @@ def _agent_graph_mode(value: str | None) -> AgentGraphMode:
 def _context_compactor_mode(value: str | None) -> ContextCompactorMode:
     if value == "llm":
         return "llm"
-    return "deterministic"
+    if value == "deterministic":
+        return "deterministic"
+    return "off"
 
 
 def _chat_stream(source: Mapping[str, str], chat_provider: ChatProviderName) -> bool:

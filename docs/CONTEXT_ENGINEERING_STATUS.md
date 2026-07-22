@@ -12,10 +12,14 @@ Last updated: 2026-07-22
 - 当前权威入口：本文件。
 - 说明：已移除完成态阶段计划，当前以本文件作为上下文工程状态与交接入口。
 - 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md` source、Context Compiler v1 redacted report、session summary、token-aware recent transcript、增量滑动窗口摘要、session handoff v2、仅用于运行时会话治理的 realtime task-state snapshot、独立 `realtime_video_context`、durable task-state snapshot、reusable task artifacts、side-effect records、realtime call-state snapshot、规则触发压缩、tool observation prompt 副本裁剪、字符预算控制、token 报告、provider overflow retry-once、trace/API 上下文摘要、skill-style capability catalog 和 repo-local `skills/<skill_id>/SKILL.md` capability loader。
-- 默认摘要方式：deterministic/local；只有显式设置
-  `MULTIMODAL_AGENT_CONTEXT_COMPACTOR=llm`，并同时处于 real provider mode 且 chat adapter
-  非 mock 时，才启用 `LLMCompactor`。
-- 预算现状：全局压缩控制仍以字符预算为准；recent transcript 选择已使用本地 token 估算；Memory context 有单独 token-aware 注入边界；其余 token 字段仍主要用于报告。
+- session summary 自动生成当前临时默认关闭；默认运行时不做容量压缩、窗口选择或字符预算裁剪，
+  已保存的会话轮次全部以 provider-native 原始消息进入 LLM。compactor 实现仍保留。显式设置
+  `MULTIMODAL_AGENT_CONTEXT_COMPACTOR=deterministic` 可启用本地
+  structured summary；设置为 `llm`，并同时处于 real provider mode 且 chat adapter 非 mock 时，
+  才启用 `LLMCompactor`。
+- 预算现状：默认 `off` 模式下字符/token 预算只报告、不裁剪；显式启用 compactor 后才恢复
+  token-aware recent transcript、字符预算裁剪和 structured summary。Memory context 仍有独立的
+  read policy 与 prompt-safe 注入边界。
 - memory 边界：`context_summary` 是当前 session 状态，不是长期 memory；自动长期记忆注入由 `MemoryReadPolicy` gate，LLM 选择的 `memory_retrieval` 走通用工具治理与 `MemoryManager`，长期写入仍由 `MemoryManager` / `MemoryWritePolicy` 管。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
@@ -50,17 +54,20 @@ Last updated: 2026-07-22
 - Realtime task-state snapshot 只在进入 runtime 前显式启用：`interaction_mode=realtime`、`enable_realtime_task_state=true` 或 entry capability `supports_realtime_task_state=true`。它用于 session/run/interrupt/progress/artifact 生命周期，不渲染进 Provider prompt。普通 `/agent/run` 即使经由 Gateway 生命周期，也不会因为存在 `gateway` metadata 或 `realtime.run_id`/`turn_id` 自动启用。
 - 启用 task state 的普通多轮 follow-up 可通过显式 `UserRequest.runtime_task_update(action/objective/constraints)` 修订目标；该 Pydantic 契约由可信 API/runtime 调用方提供，runtime 在回答提交后归并到 session task store，并在规范目标变化时追加 `IntentRevision`。主模型终态文本不再携带 task update，入口与 catalog 也不读取用户关键词推断目标变化。
 - `MemoryManager` 负责按 read policy 加载或跳过分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
-- Assistant context 已有字符预算兜底；owner persona 超限时先按完整段落收缩 persona，再沿用 memory/conversation 优先压缩、工具 observation 最后压缩的顺序。
+- Assistant context 的字符预算裁剪实现仍保留，但默认 `off` 模式不执行；显式启用 compactor 后，
+  owner persona 超限时先按完整段落收缩 persona，再沿用 memory/conversation、tool observation 的裁剪顺序。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，`keep_recent_turns=2` 是 recent transcript 的最小原文保留 guard。
 - `CompactionPolicy` 统一判断压缩触发：usage 高水位、超预算、大 tool observation、provider context overflow metadata、显式 `/compact` 或 `compact_context=True`。
-- `ContextCompactor` 已抽象为可插拔边界；默认 deterministic/local，不调用真实 LLM。
+- `ContextCompactor` 已抽象为可插拔边界；当前默认 `off`，实现保留供显式 opt-in。
   `LLMCompactor` 必须通过 `MULTIMODAL_AGENT_CONTEXT_COMPACTOR=llm` 显式启用，且只允许在
   real provider mode、chat adapter 非 mock 时运行；输出无效时回退 deterministic。
 - 真实 provider 返回 context overflow 类错误时，assistant loop 会标准化为 `provider_context_overflow`，触发 hard compaction 后重试一次，仍失败则停止并返回可解释最终回答。
 - Context budget 会报告自动压缩阶段和原因，便于 trace/API 判断是否发生 conversation、observation 或 budget 级压缩。
-- `TokenBudgetReporter` 已作为可选报告层接入；recent transcript selector 复用本地 token 估算；默认全局压缩触发仍使用字符预算，metadata 启用估算或提供 provider usage 时才填充全局 token fields。
+- `TokenBudgetReporter` 已作为可选报告层接入；默认 `off` 模式仅报告，不据此选择窗口或裁剪。
 - Memory context now has a separate `MemoryContextBuilder` token-aware injection boundary. It can enforce memory-only token budgets and report injected IDs, token count, omitted count, rejection reasons, and retrieval version without changing global assistant context compaction.
-- Tool observation compaction 会在 prompt 副本中移除 raw provider/file/media payload、inline media data URI 和过大的命令输出；原始 observation 不被修改。
+- 默认 `off` 模式下 tool observation 只移除 secret、raw provider/file/media payload 和 inline media
+  data URI，不限制文本长度、列表条数、嵌套深度或命令输出长度；显式启用 compactor 后才使用原有
+  observation compaction。原始 observation 始终不被修改。
 - Cross-agent delegation now has a separate child-context boundary in `AgentCommunicationService`: child runs receive explicit `context_refs`, child budget metadata, and redacted audit summaries, not parent history, `memory_context_*`, raw provider payloads, secrets, or raw tool results.
 - Trace/API 已暴露 versioned context debug summary，包括 context budget、source counts、tool catalog summary、observation compaction summary 和 memory promotion counters。
 - 离线 Improvement Lab 可把脱敏 trajectory 与显式结构化 eval/test 失败转换为 evidence，确定性聚类后生成 skill/runtime/code 人工评审候选；它不进入 `AgentGraphRuntime`，不放宽 context/trace redaction，也不自动修改 skill、runtime 或代码。
@@ -75,8 +82,10 @@ Last updated: 2026-07-22
 
 - 会话历史有独立 `ConversationStore` 边界，支持 in-memory 和 JSONL。
 - `ConversationStore` 同时保存普通 turn 和 session-scoped `context_summary`；summary 用于当前 session 恢复，不写入长期 memory。
-- 默认每个 user/session 保留最近 8 轮历史，配置项是 `MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS`。
-- prompt 上下文使用 token-aware recent transcript selector：从最新 turn 向前估算渲染 token，短 turn 可保留超过 2 轮原文；`keep_recent_turns=2` 仍作为最小原文保留 guard，至少保留最新 turn。
+- 默认每个 user/session 不限制历史轮数；`MULTIMODAL_AGENT_MAX_CONVERSATION_HISTORY_TURNS`
+  设置为正整数时才限制保留轮数。
+- 默认 prompt 上下文发送全部已保存 turn 原文；显式启用 compactor 后才使用 token-aware recent
+  transcript selector，`keep_recent_turns=2` 作为最小原文保留 guard。
 - recent transcript token budget 的来源顺序是 metadata `conversation_recent_max_tokens` / `conversation_context_recent_max_tokens` override、`context_budget_max_tokens` 的 20%（带小型 min/max clamp）、最后由 `ContextPolicy.max_context_chars` 按本地 chars-per-token 估算。
 - 会话摘要采用增量滑动窗口：每轮进入 runtime 前，只把新滑出 token-aware recent window 且尚未在 summary refs 中出现的 turn 合并进 `context_summary`，避免重复压缩同一 turn；`/compact` / `compact_context=True` 会强制退回最小 recent guard，但不会重摘要 raw recent turns。
 - `ContextSummary` 仍是当前 session 状态，并额外包含可选 `handoff_v2`：`objective`、`active_constraints`、`completed`、`in_progress`、`blocked`、`next_steps`、`evidence_refs`。该字段是 additive schema，不替代旧 summary fields。
@@ -185,11 +194,13 @@ Last updated: 2026-07-22
 
 - `ContextBudgetReport` 统计 request、conversation、memory、realtime video、plan、observations、tool specs、`owner_persona_chars` 和 total chars，并报告 `context_usage_ratio`、`compaction_triggered`；启用本地 token 估算时，最终实际注入的 persona 同时计入 `owner_persona_tokens` 和 `total_tokens`。
 - `ContextBudgetReport` also tracks `tool_capability_chars` so the skill-style capability catalog is visible in budget/debug output. `AssistantContextPack` and `ContextReport` carry prompt-safe `skill_report_v1` fields for loaded, explicit, auto-candidate, selected, skipped, fallback, override, governed-tool, auto-recall reason, and permission issue visibility.
-- 默认动态 context 字符预算是 12000 chars；identity recall 的固定 qualified tool/capability schema 在未显式配置硬预算时使用独立 headroom，不挤占 conversation/memory/observation 的默认预算。测试或特定调用通过 request metadata `context_budget_max_chars` 设置的值仍是包含工具 schema 在内的硬上限。
+- Context budget 仍以默认 12000 chars 生成观测报告；默认 `off` 模式即使超过该值也不裁剪。
+  显式启用 compactor 后，该值才作为 conversation/memory/observation 的裁剪预算。
 - 可选 token budget 字段包括 section token estimates、`total_tokens`、`max_tokens`、`token_usage_ratio`、`token_budget_source` 和 provider usage counters；它们只用于报告，不替代 char budget control path。
 - 本地 token 估算通过 `context_budget_estimate_tokens=True` 或 `context_budget_max_tokens` 启用；provider usage metadata 如 `context_token_usage` / `provider_token_usage` / `last_chat_usage` 优先于估算。
 - assistant loop 会把 `ChatResult.usage` 归一为安全 token counters 写入 request metadata，供下一轮 context budget report 使用；raw provider payload 字段不会写入 metadata/trace。
-- 超过预算时会在 prompt 副本中裁剪 memory、conversation 和 observations，并记录 `over_budget`、`trimmed_chars`、`trimmed_sections`。
+- 默认 `off` 模式超过预算只记录 `over_budget`；显式启用 compactor 后才在 prompt 副本中裁剪
+  memory、conversation 和 observations。
 - `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_usage_high`、`tool_observation_too_large`、`provider_context_overflow`、`explicit_compact`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
 - assistant decision trace 写入 `context_schema_version="context_observability_v1"`、budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数；compaction summary 只暴露 pruning/truncation 计数，不暴露 raw payload；run/trace 查询会合并最终 save-memory 阶段的 redacted promotion counts。
@@ -208,12 +219,15 @@ Last updated: 2026-07-22
 - LLM compactor prompt 会先移除 `raw_provider_payload`、`raw_payload`、`raw_html` 等高风险字段，再交给 provider。
 - Summary 中如引用 `tool_call:` / `tool_call_id:`，必须保留对应 `tool_result:` / `tool_result_id:`，反向亦然，避免压缩时切断工具调用和结果证据链。
 - Provider HTTP 413、`context_length_exceeded`、`context_overflow`、`input_too_large` 和 `request_too_large` 会归一为 `provider_context_overflow`。
-- Context overflow retry 只允许一次；retry 计数和 provider error metadata 只记录安全摘要，不记录原始 provider response。
+- Provider context overflow 只有在显式启用 compactor 时才压缩后重试一次；默认 `off` 模式不以相同
+  未裁剪上下文做无效重试。
 
 ## Current Limitations
 
-- 默认自动压缩仍是 deterministic formatting/summary。LLM semantic compaction 已有受控入口，但默认离线 profile 不启用。
-- 当前全局压缩控制仍是 approximate character budget；recent transcript 和 memory context 已有独立 token-aware 边界，但这不替代 AssistantContextPack 的全局字符预算。
+- session structured summary 当前默认关闭；会话上下文发送全部已保存轮次原文。deterministic 与
+  LLM semantic compactor 实现均保留，仅在显式配置时启用。
+- 当前默认模式不执行全局容量压缩；character/token budget 仅用于报告。显式启用 compactor 后仍使用
+  approximate character budget，recent transcript 和 memory context 有各自的 token-aware 边界。
 - Context Compiler v1 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；token 字段仍依赖现有估算或 provider usage metadata。
 - 显式本地 trace-content + loopback OTLP 模式是独立的 prompt 调试例外：assistant loop
   会在 Provider 调用前把最终 compiled `ChatRequest` 暂存到进程内 store，并作为对应

@@ -102,6 +102,19 @@ _COMMAND_OUTPUT_KEYS = {
     "terminal_output",
 }
 
+_SECRET_PAYLOAD_KEYS = {
+    "access_token",
+    "api_key",
+    "apikey",
+    "authorization",
+    "client_secret",
+    "cookie",
+    "password",
+    "refresh_token",
+    "secret",
+    "secret_token",
+}
+
 _PRODUCT_KEYS = (
     "product_id",
     "provider_item_id",
@@ -176,6 +189,44 @@ def compact_observations_for_context(observations: list[dict[str, Any]]) -> list
     """Return assistant-facing compact observations without mutating originals."""
 
     return [compact_observation_for_context(observation) for observation in observations]
+
+
+def sanitize_observations_for_context(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove unsafe payload fields without applying size or item-count limits."""
+
+    return [_sanitize_observation_for_context(observation) for observation in observations]
+
+
+def _sanitize_observation_for_context(observation: dict[str, Any]) -> dict[str, Any]:
+    pruned_keys: list[str] = []
+
+    def sanitize(value: Any, key_path: tuple[str, ...] = ()) -> Any:
+        if isinstance(value, Mapping):
+            sanitized: dict[str, Any] = {}
+            for key, nested in value.items():
+                if not isinstance(key, str):
+                    continue
+                child_path = (*key_path, key)
+                if _should_prune_payload_key(key, nested):
+                    pruned_keys.append(_format_key_path(child_path))
+                    continue
+                sanitized[key] = sanitize(nested, child_path)
+            return sanitized
+        if isinstance(value, list):
+            return [sanitize(item, (*key_path, f"[{index}]")) for index, item in enumerate(value)]
+        if isinstance(value, str) and _looks_like_inline_media_payload(value):
+            pruned_keys.append(_format_key_path(key_path))
+            return PRUNED_INLINE_MEDIA_PLACEHOLDER
+        return value
+
+    sanitized = sanitize(observation)
+    if pruned_keys:
+        sanitized["redacted"] = True
+        sanitized["sanitization"] = {
+            "pruned_keys": list(dict.fromkeys(pruned_keys)),
+            "size_limits_applied": False,
+        }
+    return sanitized
 
 
 def compact_observation_for_context(observation: dict[str, Any]) -> dict[str, Any]:
@@ -496,6 +547,8 @@ def _record_pruned_payload_keys(
 
 def _should_prune_payload_key(key: str, value: Any) -> bool:
     normalized = _normalize_key(key)
+    if normalized in _SECRET_PAYLOAD_KEYS or normalized.endswith(("_api_key", "_password", "_secret", "_token")):
+        return True
     if normalized in _RAW_PAYLOAD_KEYS:
         return True
     if normalized.startswith("raw_"):
