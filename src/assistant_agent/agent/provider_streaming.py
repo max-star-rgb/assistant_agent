@@ -12,6 +12,8 @@ from assistant_agent.services.chat_adapter import (
     ChatProviderError,
     ChatRequest,
     ChatResult,
+    ProviderProtocolResponse,
+    ProviderProtocolToolCall,
 )
 
 
@@ -36,6 +38,9 @@ class ProviderStreamingTurnRunner:
         model = getattr(adapter, "model", None)
         refusal: str | None = None
         terminal_seen = False
+        token_delta_count = 0
+        tool_call_delta_count = 0
+        reasoning_delta_count = 0
 
         stream_chat = getattr(adapter, "stream_chat")
         async for event in stream_chat(request):
@@ -54,7 +59,12 @@ class ProviderStreamingTurnRunner:
 
             accumulator.apply(event)
             if event.event_type == "token_delta":
+                token_delta_count += 1
                 _emit_token_delta_callback(request, event)
+            elif event.event_type == "tool_call_delta":
+                tool_call_delta_count += 1
+            elif event.event_type == "reasoning_delta":
+                reasoning_delta_count += 1
             elif event.event_type == "completed":
                 terminal_seen = True
                 raw_refusal = event.metadata.get("refusal")
@@ -90,6 +100,30 @@ class ProviderStreamingTurnRunner:
             usage=accumulator.usage,
             latency_ms=_elapsed_ms(started_at),
             output_ref=f"provider://chat/{result_provider}",
+            protocol_response=ProviderProtocolResponse(
+                transport_mode="provider_stream",
+                content=response_text,
+                tool_calls=[
+                    ProviderProtocolToolCall(
+                        id=call.id,
+                        type=str(call.raw.get("type")) if call.raw.get("type") is not None else None,
+                        name=call.name,
+                        arguments_raw=str(
+                            (call.raw.get("function") or {}).get("arguments", "")
+                            if isinstance(call.raw.get("function"), dict)
+                            else ""
+                        ),
+                    )
+                    for call in tool_calls
+                ],
+                refusal=refusal,
+                finish_reason=accumulator.finish_reason,
+                usage=accumulator.usage,
+                token_delta_count=token_delta_count,
+                tool_call_delta_count=tool_call_delta_count,
+                reasoning_delta_count=reasoning_delta_count,
+                terminal_seen=terminal_seen,
+            ),
         )
         if (
             result.tool_calls

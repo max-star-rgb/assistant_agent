@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 import inspect
+import json
 import time
 from typing import Any, Literal, Protocol
 
@@ -28,6 +29,7 @@ from assistant_agent.services.provider_http import without_unsupported_socks_pro
 
 ChatProviderName = Literal["mock", "openai", "qwen", "ark", "deepseek", "local"]
 ChatStreamCallback = Callable[[str, dict[str, Any]], None]
+ProviderTransportMode = Literal["sync", "sdk_stream", "provider_stream"]
 
 
 ProviderChatCapabilities = ProviderCapabilities
@@ -67,6 +69,35 @@ class ChatProviderError(BaseModel):
     recoverable: bool = False
 
 
+class ProviderProtocolToolCall(BaseModel):
+    """Selected Provider protocol fields before native-tool normalization."""
+
+    id: str | None = None
+    type: str | None = None
+    name: str
+    arguments_raw: str
+
+
+class ProviderProtocolResponse(BaseModel):
+    """Local-only semantic snapshot of one Provider protocol response.
+
+    This deliberately excludes SDK envelopes, HTTP headers and hidden reasoning.
+    """
+
+    schema_version: Literal["provider_protocol_response_v1"] = "provider_protocol_response_v1"
+    transport_mode: ProviderTransportMode
+    content: str = ""
+    tool_calls: list[ProviderProtocolToolCall] = Field(default_factory=list)
+    refusal: str | None = None
+    finish_reason: str | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
+    provider_request_id: str | None = None
+    token_delta_count: int = Field(default=0, ge=0)
+    tool_call_delta_count: int = Field(default=0, ge=0)
+    reasoning_delta_count: int = Field(default=0, ge=0)
+    terminal_seen: bool = True
+
+
 class ChatResult(BaseModel):
     """Structured direct chat result."""
 
@@ -81,6 +112,7 @@ class ChatResult(BaseModel):
     latency_ms: int | None = Field(default=None, ge=0)
     errors: list[ChatProviderError] = Field(default_factory=list)
     output_ref: str | None = None
+    protocol_response: ProviderProtocolResponse | None = Field(default=None, exclude=True)
 
     @property
     def success(self) -> bool:
@@ -432,6 +464,7 @@ def _parse_openai_chat_response(
     content = message.get("content") or ""
     if isinstance(content, list):
         content = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+    protocol_tool_calls = _provider_protocol_tool_calls(message.get("tool_calls"))
     tool_calls = _parse_openai_tool_calls(message.get("tool_calls"))
     reasoning_content = message.get("reasoning_content")
     refusal = message.get("refusal") if isinstance(message.get("refusal"), str) else None
@@ -450,6 +483,15 @@ def _parse_openai_chat_response(
         usage=usage if isinstance(usage, dict) else {},
         latency_ms=latency_ms,
         output_ref=f"provider://chat/{provider}",
+        protocol_response=ProviderProtocolResponse(
+            transport_mode="sync",
+            content=content if isinstance(content, str) else "",
+            tool_calls=protocol_tool_calls,
+            refusal=refusal,
+            finish_reason=str(finish_reason) if finish_reason is not None else None,
+            usage=usage if isinstance(usage, dict) else {},
+            provider_request_id=str(data["id"]) if data.get("id") is not None else None,
+        ),
     )
 
 
@@ -464,8 +506,17 @@ def _parse_openai_chat_stream(
     accumulator = LLMEventAccumulator()
     state = _OpenAIStreamState(response_model=model)
     refusal = ""
+    token_delta_count = 0
+    tool_call_delta_count = 0
+    reasoning_delta_count = 0
     for chunk in stream:
         for event in _openai_chat_chunk_events(chunk, provider=provider, state=state):
+            if event.event_type == "token_delta":
+                token_delta_count += 1
+            elif event.event_type == "tool_call_delta":
+                tool_call_delta_count += 1
+            elif event.event_type == "reasoning_delta":
+                reasoning_delta_count += 1
             accumulator.apply(event)
             if event.event_type == "token_delta":
                 _emit_stream_delta(
@@ -498,6 +549,18 @@ def _parse_openai_chat_stream(
         usage=accumulator.usage,
         latency_ms=latency_ms,
         output_ref=f"provider://chat/{provider}",
+        protocol_response=ProviderProtocolResponse(
+            transport_mode="sdk_stream",
+            content=content,
+            tool_calls=_provider_protocol_tool_calls_from_native(tool_calls),
+            refusal=refusal or None,
+            finish_reason=accumulator.finish_reason,
+            usage=accumulator.usage,
+            token_delta_count=token_delta_count,
+            tool_call_delta_count=tool_call_delta_count,
+            reasoning_delta_count=reasoning_delta_count,
+            terminal_seen=True,
+        ),
     )
 
 
@@ -647,6 +710,37 @@ def _parse_openai_tool_calls(value: Any) -> list[NativeToolCall]:
         except ValueError:
             continue
     return calls
+
+
+def _provider_protocol_tool_calls(value: Any) -> list[ProviderProtocolToolCall]:
+    if not isinstance(value, list):
+        return []
+    calls: list[ProviderProtocolToolCall] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function") if isinstance(item.get("function"), dict) else {}
+        name = function.get("name") or item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        raw_arguments = function.get("arguments", item.get("arguments", ""))
+        if not isinstance(raw_arguments, str):
+            raw_arguments = json.dumps(raw_arguments, ensure_ascii=False, separators=(",", ":"))
+        calls.append(
+            ProviderProtocolToolCall(
+                id=str(item["id"]) if item.get("id") is not None else None,
+                type=str(item["type"]) if item.get("type") is not None else None,
+                name=name,
+                arguments_raw=raw_arguments,
+            )
+        )
+    return calls
+
+
+def _provider_protocol_tool_calls_from_native(
+    calls: list[NativeToolCall],
+) -> list[ProviderProtocolToolCall]:
+    return _provider_protocol_tool_calls([call.raw for call in calls])
 
 
 def _openai_tool_call_delta_events(

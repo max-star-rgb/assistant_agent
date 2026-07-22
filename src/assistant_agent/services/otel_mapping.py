@@ -85,9 +85,12 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "provider_latency_ms",
         "response_present",
         "result_run_id",
+        "route_branch",
+        "runtime_action",
         "runtime_call_latency_ms",
         "session_turn",
         "terminal_status",
+        "transport_mode",
         "tool_call_id",
         "tool_count",
         "tool_reported_latency_ms",
@@ -526,9 +529,18 @@ def _event_io_attributes(
         llm_output = _llm_output_for_event(conversation, span_id=event.span_id)
         if llm_output is not None:
             output_payload = {
+                "schema_version": "llm_call_evidence_v1",
                 "attempt_kind": llm_output.attempt_kind,
-                "result_kind": event.attributes.get("result_kind"),
-                "provider_response": dict(llm_output.result),
+                "transport": {
+                    "mode": event.attributes.get("transport_mode"),
+                    "token_delta_count": event.attributes.get("token_delta_count"),
+                    "tool_call_delta_count": event.attributes.get("tool_call_delta_count"),
+                    "reasoning_delta_count": event.attributes.get("reasoning_delta_count"),
+                    "terminal_seen": event.attributes.get("terminal_seen"),
+                },
+                "provider_protocol_response": llm_output.provider_protocol_response,
+                "normalized_result": dict(llm_output.normalized_result),
+                "runtime_route": event.attributes.get("runtime_route"),
             }
             include_output = True
     elif name == "response.final" and conversation is not None:

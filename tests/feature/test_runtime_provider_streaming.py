@@ -99,6 +99,17 @@ def test_native_streaming_chat_emits_llm_span_and_final_answer() -> None:
     assert llm_events[1].attributes["iteration"] == 1
     assert llm_events[1].attributes["wall_latency_ms"] >= 0
     assert llm_events[1].attributes["provider_latency_ms"] >= 0
+    assert llm_events[1].attributes["transport_mode"] == "provider_stream"
+    assert llm_events[1].attributes["token_delta_count"] == 2
+    assert llm_events[1].attributes["tool_call_delta_count"] == 0
+    assert llm_events[1].attributes["terminal_seen"] is True
+    assert llm_events[1].attributes["runtime_route"] == {
+        "schema_version": "runtime_route_v1",
+        "result_kind": "text",
+        "selected_branch": "provider_content",
+        "runtime_action": "final_answer",
+        "tool_call_count": 0,
+    }
     deltas = [event for event in event_sink.events if event.type == "response_delta"]
     assert [event.text for event in deltas] == ["你好，我是你的助理。"]
     assert deltas[0].payload["chunking_strategy"] == "provider_final_text"

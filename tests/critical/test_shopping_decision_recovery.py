@@ -133,12 +133,12 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
         json.loads(span.attributes["langfuse.observation.output"])
         for span in generations
     ]
-    assert [output["result_kind"] for output in generation_outputs] == [
+    assert [output["runtime_route"]["result_kind"] for output in generation_outputs] == [
         "tool_call",
         "text",
     ]
     provider_outputs = [
-        output["provider_response"]["response_text"]
+        output["normalized_result"]["response_text"]
         for output in generation_outputs
     ]
     assert provider_outputs[0] == ""

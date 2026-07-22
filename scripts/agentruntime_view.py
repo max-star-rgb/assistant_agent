@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
 import sys
 from collections.abc import Sequence
 from datetime import datetime
@@ -26,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from assistant_agent.services.assistant_run_service import load_env_file
 from assistant_agent.services.trace_store import TraceEvent, trace_debug_summary
 from assistant_agent.services.turn_evaluator import build_turn_diagnostic
 from assistant_agent.services.turn_summary import (
@@ -101,6 +104,16 @@ def build_parser() -> argparse.ArgumentParser:
             "When set, query the running server for trace detail. "
             "The local JSONL file is still used to resolve latest/follow targets."
         ),
+    )
+    parser.add_argument(
+        "--env-file",
+        default=".env",
+        help="Local env file used only for Langfuse fallback credentials. Defaults to .env.",
+    )
+    parser.add_argument(
+        "--no-env-file",
+        action="store_true",
+        help="Do not load a local env file for Langfuse fallback credentials.",
     )
     parser.add_argument(
         "--trace-path",
@@ -204,6 +217,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("conversation output requires --server")
         if not _is_loopback_server(args.server):
             parser.error("conversation output requires a loopback --server URL")
+        if not args.no_env_file:
+            load_env_file((REPO_ROOT / args.env_file).resolve())
     if args.follow:
         return _follow_local_trace(args, sections)
     if args.server:
@@ -226,10 +241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not isinstance(trace_id, str) or not trace_id:
                 print("trace id is unavailable for conversation lookup", file=sys.stderr)
                 return 1
-            conversation = _get_server_json(
-                args.server,
-                f"/traces/{quote(trace_id, safe='')}/conversation",
-            )
+            conversation = _fetch_conversation(args.server, trace_id)
             if conversation is None:
                 conversation = _conversation_unavailable_payload(trace_id)
             payload["conversation"] = conversation
@@ -538,10 +550,7 @@ def _follow_payload(args: argparse.Namespace, events: list[TraceEvent], sections
         conversation_trace_id = payload.get("trace_id")
         if not isinstance(conversation_trace_id, str) or not conversation_trace_id:
             conversation_trace_id = trace_id
-        conversation = _get_server_json(
-            args.server,
-            f"/traces/{quote(conversation_trace_id, safe='')}/conversation",
-        )
+        conversation = _fetch_conversation(args.server, conversation_trace_id)
         if conversation is None:
             conversation = _conversation_unavailable_payload(conversation_trace_id)
         payload["conversation"] = conversation
@@ -553,8 +562,109 @@ def _conversation_unavailable_payload(trace_id: str) -> dict[str, Any]:
         "schema_version": "trace_conversation_unavailable_v1",
         "trace_id": trace_id,
         "unavailable": True,
-        "reason": "conversation endpoint returned 404",
+        "reason": "conversation is unavailable from both the server and Langfuse",
     }
+
+
+def _fetch_conversation(server: str, trace_id: str) -> dict[str, Any] | None:
+    """Prefer live process memory, then use persisted Langfuse trace content."""
+
+    conversation = _get_server_json(
+        server,
+        f"/traces/{quote(trace_id, safe='')}/conversation",
+    )
+    if conversation is not None:
+        return conversation
+    trace = _get_langfuse_trace(trace_id)
+    if trace is None:
+        return None
+    return _conversation_from_langfuse_trace(trace_id, trace)
+
+
+def _get_langfuse_trace(
+    trace_id: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Read one persisted trace through Langfuse's authenticated Public API."""
+
+    values = os.environ if env is None else env
+    host = values.get("LANGFUSE_HOST", "").rstrip("/")
+    public_key = values.get("LANGFUSE_PUBLIC_KEY", "")
+    secret_key = values.get("LANGFUSE_SECRET_KEY", "")
+    if not host or not public_key or not secret_key:
+        return None
+    credentials = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode("ascii")
+    url = f"{host}/api/public/traces/{quote(trace_id, safe='')}"
+    request = Request(
+        url,
+        headers={"Accept": "application/json", "Authorization": f"Basic {credentials}"},
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8")
+    except (HTTPError, URLError):
+        return None
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _conversation_from_langfuse_trace(
+    trace_id: str,
+    trace: dict[str, Any],
+) -> dict[str, Any]:
+    observations = trace.get("observations")
+    if not isinstance(observations, list):
+        observations = []
+    llm_observations = [
+        item
+        for item in observations
+        if isinstance(item, dict) and str(item.get("name", "")).startswith("llm.chat")
+    ]
+    user_text = _role_content(trace.get("input"), role="user")
+    assistant_text = _role_content(trace.get("output"), role="assistant")
+    return {
+        "schema_version": "trace_conversation_view_v1",
+        "trace_id": trace_id,
+        "source": "langfuse_public_api",
+        "user": _conversation_text(user_text),
+        "assistant": _conversation_text(assistant_text),
+        "llm_inputs": [
+            {"request": _json_object(item.get("input"))}
+            for item in llm_observations
+        ],
+        "llm_outputs": [
+            _json_object(item.get("output"))
+            for item in llm_observations
+        ],
+    }
+
+
+def _conversation_text(text: str) -> dict[str, Any]:
+    return {"text": text, "chars": len(text), "truncated": False}
+
+
+def _role_content(value: Any, *, role: str) -> str:
+    payload = _json_object(value)
+    if payload.get("role") == role and isinstance(payload.get("content"), str):
+        return payload["content"]
+    content = payload.get("content")
+    return content if isinstance(content, str) else ""
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {"content": value}
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+    return {}
 
 
 def _follow_session_id(payload: dict[str, Any], events: list[TraceEvent]) -> str | None:

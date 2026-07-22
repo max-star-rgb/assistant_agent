@@ -6,10 +6,18 @@ from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.chat_adapter import (
+    ChatRequest,
+    ChatResult,
+    ProviderProtocolResponse,
+    _parse_openai_chat_response,
+)
 from assistant_agent.services.otel_mapping import build_text_otel_span_specs
 from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.services.trace_content_policy import LOCAL_TRACE_CONTENT_ENV
+from assistant_agent.services.trace_content_policy import (
+    LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV,
+    LOCAL_TRACE_CONTENT_ENV,
+)
 from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
 
 
@@ -28,11 +36,58 @@ class _NativeTextChatAdapter:
             model=self.model,
             finish_reason="stop",
             response_text=next(self.responses),
+            protocol_response=ProviderProtocolResponse(
+                transport_mode="sync",
+                content="provider native answer",
+                finish_reason="stop",
+                usage={"prompt_tokens": 12, "completion_tokens": 3},
+                provider_request_id="provider-request-1",
+            ),
         )
+
+
+def test_openai_compatible_response_keeps_selected_protocol_semantics() -> None:
+    result = _parse_openai_chat_response(
+        {
+            "id": "provider-response-1",
+            "model": "qwen-test",
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": " 先查一下 ",
+                        "reasoning_content": "不得进入协议快照",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "shopping_search",
+                                    "arguments": '{"query":"牛奶"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        },
+        provider="qwen",
+        model="qwen-test",
+        latency_ms=12,
+    )
+
+    assert result.response_text == "先查一下"
+    assert result.protocol_response is not None
+    assert result.protocol_response.content == " 先查一下 "
+    assert result.protocol_response.tool_calls[0].arguments_raw == '{"query":"牛奶"}'
+    assert result.protocol_response.provider_request_id == "provider-response-1"
+    assert "不得进入协议快照" not in result.protocol_response.model_dump_json()
 
 
 def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
     monkeypatch.setenv(LOCAL_TRACE_CONTENT_ENV, "1")
+    monkeypatch.setenv(LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV, "1")
     adapter = _NativeTextChatAdapter()
     runtime = AgentGraphRuntime(
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
@@ -55,9 +110,23 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
 
     assert conversation is not None
     assert [item.attempt_kind for item in conversation.llm_outputs] == ["primary"]
-    assert [item.result["response_text"] for item in conversation.llm_outputs] == [
+    assert [item.normalized_result["response_text"] for item in conversation.llm_outputs] == [
         "provider native answer"
     ]
+    assert conversation.llm_outputs[0].provider_protocol_response == {
+        "schema_version": "provider_protocol_response_v1",
+        "transport_mode": "sync",
+        "content": "provider native answer",
+        "tool_calls": [],
+        "refusal": None,
+        "finish_reason": "stop",
+        "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+        "provider_request_id": "provider-request-1",
+        "token_delta_count": 0,
+        "tool_call_delta_count": 0,
+        "reasoning_delta_count": 0,
+        "terminal_seen": True,
+    }
     assert [item.span_id for item in conversation.llm_inputs] == [
         item.span_id for item in conversation.llm_outputs
     ]
@@ -75,10 +144,13 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
         for span in generations
     ]
     assert [output["attempt_kind"] for output in outputs] == ["primary"]
-    assert [output["result_kind"] for output in outputs] == ["text"]
-    assert "message_kind" not in outputs[0]["provider_response"]
+    assert outputs[0]["runtime_route"]["result_kind"] == "text"
+    assert outputs[0]["runtime_route"]["selected_branch"] == "provider_content"
+    assert "message_kind" not in outputs[0]["normalized_result"]
     assert [
-        output["provider_response"]["response_text"]
+        output["normalized_result"]["response_text"]
         for output in outputs
     ] == ["provider native answer"]
+    assert outputs[0]["provider_protocol_response"]["content"] == "provider native answer"
+    assert outputs[0]["transport"]["mode"] == "sync"
     assert json.loads(generations[0].attributes["langfuse.observation.input"])["tools"]

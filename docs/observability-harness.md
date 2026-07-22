@@ -90,7 +90,9 @@ The foreground assistant loop must emit one paired `llm.chat.started` /
 metadata、usage 和 latency 使用独立 generation attributes。
 `assistant_agent.result_kind` 是观测层根据归一化 `ChatResult` 即时计算的
 `error | tool_call | refusal | truncated | text | empty`，不属于 Qwen/OpenAI 协议，也不写回
-`ChatResult`；本地 content overlay 在 generation output 中将它作为 `provider_response` 的同级字段导出。
+`ChatResult`。本地 content overlay 将 generation output 拆成
+`provider_protocol_response`、`normalized_result`、`runtime_route` 和 `transport`，分别表示
+Provider 协议语义、adapter 归一化结果、代码实际选择的分支和同步/流式传输证据。
 每个 attempt 另外记录 `attempt_kind`（当前包括 `primary` 和
 `context_overflow_retry`），避免同一 ReAct iteration 内的上下文溢出重试被误读成
 两次独立决策。Provider-native 终态按 `tool_calls`、refusal、`finish_reason=length`、content、empty/error
@@ -550,7 +552,10 @@ runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关�
 `.data/graph_trace.jsonl` 发现当前 session 最新 trace 或变化，再用 `trace_id` 向
 loopback server 拉 `/traces/{trace_id}`；包含 `conversation` 时，再拉
 `/traces/{trace_id}/conversation`。server 查不到 trace 时降级使用本地 summary；
-conversation 查不到时标记 unavailable，仍继续输出 Turn Overview。失败 run
+conversation endpoint 查不到时，查看器会从默认 `.env`（可用 `--env-file` 覆盖或
+`--no-env-file` 禁用）加载 `LANGFUSE_HOST`、
+`LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY` 通过 Langfuse Public API 读取已持久化
+trace；两处均不可用时才标记 unavailable，仍继续输出 Turn Overview。失败 run
 如果有本机 trace-content debug 记录，Conversation 会显示用户输入和“请求失败/已取消”
 摘要；该记录不写入普通 conversation history，不作为未来 prompt 上下文。
 需要强隔离时再加 `--session-id <session>`。
@@ -723,14 +728,18 @@ Trace and monitoring records must not include:
 `localhost`、`127.0.0.1` 或 `::1` 时，Langfuse root observation 和
 `response.final` 可以接收当前轮用户/助手原文；每个 `llm.chat` generation 还可以接收
 实际编译后交给 Chat adapter 的 `ChatRequest`，包括 messages、完整 tool schemas、
-tool choice 和生成参数；还可以在 generation output 的
-`provider_response` 中接收 Chat adapter 返回的归一化 `ChatResult`。它不包含 vendor SDK envelope、
-stream chunk body 或 `reasoning_content`，并按
+tool choice 和生成参数；还可以在 generation output 的 `normalized_result` 中接收 Chat
+adapter 返回的归一化 `ChatResult`。若同时显式设置
+`MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`，`provider_protocol_response` 还保存
+原始 content、原始工具参数字符串、refusal、finish reason、usage、可用时的 Provider request id
+和流式 delta 计数。它不是 vendor SDK 原始响应，不包含 SDK envelope、HTTP header、stream chunk
+body 或 `reasoning_content`，并按
 对应 `llm.chat` 的 `span_id` 配对，不能只按 iteration 取第一条。内容来自独立的进程内
 `TraceConversationStore`，用户/助手单侧
 最多导出 4000 字符；compiled request 保留消息换行和工具 schema，并继续执行 secret
 sanitizer。上一轮 Provider 的 hidden reasoning 字段始终替换为 `[redacted]`，Provider
-SDK 原始请求/响应对象和 stream callback 不进入该 store。上述正文不写入
+SDK 原始请求/响应对象和 stream callback 不进入该 store。`runtime_route` 记录归一化结果触发的
+实际 `fallback | tool_governance | final_answer` 动作。上述正文不写入
 `.data/graph_trace.jsonl`。
 
 同一个 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 也允许本地 ToolHistory 和工具 trace 保存经过
@@ -830,8 +839,10 @@ Regression tests should enforce these invariants:
   请求体或 Provider payload。
 - `llm.chat` generation 默认不设置 `langfuse.observation.output`；Provider/model、finish metadata、
   usage、latency 和 attempt kind 使用独立 observation attributes。只有满足上述 localhost 三重 opt-in
-  时，才从进程内 `TraceConversationStore` 按 span id 投影完整 compiled request 与归一化
-  `provider_response`。该对象是归一化 `ChatResult`，不是 vendor SDK 原始 envelope。
+  时，才从进程内 `TraceConversationStore` 按 span id 投影完整 compiled request 与
+  `normalized_result`。协议语义快照还需要独立设置
+  `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`。JSONL 只保留 route、transport、terminal
+  和 delta count 等安全摘要；这些对象都不是 vendor SDK 原始 envelope。
 - `context.build` 的 output 导出 prompt-safe `context_report_v1`：逐 section 展示
   chars/tokens、item count、included/compacted/trimmed、source，以及总预算、已选工具、
   context source、skill exposure 和 compression 状态；完整 compiled `ChatRequest` 仍只放在

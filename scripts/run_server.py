@@ -59,6 +59,7 @@ from assistant_agent.services.trial_access import (
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
 LOCAL_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"
+LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV = "MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE"
 PROVIDER_MODE_ENV = "MULTIMODAL_AGENT_PROVIDER_MODE"
 
 
@@ -111,6 +112,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-local-trace-content",
         action="store_true",
         help="Allow explicit trace conversation lookup from loopback clients only.",
+    )
+    parser.add_argument(
+        "--allow-local-provider-protocol-capture",
+        action="store_true",
+        help="Capture selected Provider protocol fields for local Langfuse debugging.",
     )
     parser.add_argument("--env-file", default=".env", help="Env file to load before starting.")
     parser.add_argument("--no-env-file", action="store_true", help="Do not load a dotenv file before starting.")
@@ -176,6 +182,8 @@ def _prepare_environment(args: argparse.Namespace) -> dict[str, str]:
         os.environ["MULTIMODAL_AGENT_IMAGE_PROVIDER"] = args.image_provider
     if args.allow_local_trace_content:
         os.environ[LOCAL_TRACE_CONTENT_ENV] = "1"
+    if args.allow_local_provider_protocol_capture:
+        os.environ[LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV] = "1"
     if args.enable_workflow_skills:
         os.environ[WORKFLOW_SKILLS_ENABLED_ENV] = "1"
     os.environ[WORKFLOW_SKILL_MANIFEST_DIR_ENV] = args.workflow_skill_manifest_dir

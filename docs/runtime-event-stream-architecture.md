@@ -89,15 +89,19 @@ Every foreground assistant-loop Provider turn emits a paired
 `llm.chat.started` / `llm.chat.finished` span. The finished event records bounded
 provider/model labels, iteration, a derived `result_kind`, tool-call count, Provider-reported
 latency, wall latency and normalized token usage; it never records prompt or
-response content. `result_kind` is computed at the runtime/observability boundary as
+response content. 它还记录 route、runtime action、transport mode 与 delta count 等安全摘要，
+用于证明代码解析路径。`result_kind` is computed at the runtime/observability boundary as
 `error | tool_call | refusal | truncated | text | empty`; it is not stored in
 `ChatResult` and is not a Provider protocol field. Agent-Service latency summaries use wall latency as the
 critical-path `llm_chat[n]` duration and keep Provider latency as a nested
 diagnostic.
 当 localhost OTLP 与 local trace content 三重 opt-in 同时开启时，进程内 debug overlay 会在
-`llm.chat` span id 下保存归一化 `ChatResult`，并投影到对应 Langfuse generation
-output；默认 trace event 和 `.data/graph_trace.jsonl` 仍只保存上述安全摘要，
-vendor SDK response envelope 与 hidden reasoning 不进入 debug store。
+`llm.chat` span id 下保存归一化 `ChatResult`；额外设置
+`MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1` 后，还保存原始 content、原始工具参数字符串、
+finish reason、usage 与流式事件计数组成的协议语义快照。Langfuse generation output 同时展示
+`provider_protocol_response`、`normalized_result`、`runtime_route` 和 `transport`。默认 trace event
+和 `.data/graph_trace.jsonl` 仍只保存安全摘要，vendor SDK response envelope、HTTP header、stream
+chunk body 与 hidden reasoning 不进入 debug store。
 普通前台调用不设置 `response_format`，系统提示词也不要求终态 JSON；因此一次非工具终态只对应
 一次 `llm.chat`。`answer` 与自然语言追问都作为本轮 `final_answer` 提交；只有 validator、planner
 等运行时组件显式构造 `ask_followup` 时才进入 `waiting_for_user`。session task-state 更新由

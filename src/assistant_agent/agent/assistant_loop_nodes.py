@@ -491,6 +491,7 @@ def _run_chat_turn(
     )
     wall_latency_ms = _elapsed_ms(started_at)
     provider_latency_ms = result.latency_ms
+    runtime_route = _runtime_route_for_chat_result(result)
     append_observability_event(
         graph_state.get("trace_store"),
         trace_id=graph_state.get("trace_id") or state.trace_id,
@@ -507,6 +508,34 @@ def _run_chat_turn(
         attributes={
             "iteration": iteration,
             "result_kind": chat_result_kind(result),
+            "runtime_route": runtime_route,
+            "route_branch": runtime_route["selected_branch"],
+            "runtime_action": runtime_route["runtime_action"],
+            "transport_mode": (
+                result.protocol_response.transport_mode
+                if result.protocol_response is not None
+                else "unknown"
+            ),
+            "token_delta_count": (
+                result.protocol_response.token_delta_count
+                if result.protocol_response is not None
+                else 0
+            ),
+            "tool_call_delta_count": (
+                result.protocol_response.tool_call_delta_count
+                if result.protocol_response is not None
+                else 0
+            ),
+            "reasoning_delta_count": (
+                result.protocol_response.reasoning_delta_count
+                if result.protocol_response is not None
+                else 0
+            ),
+            "terminal_seen": (
+                result.protocol_response.terminal_seen
+                if result.protocol_response is not None
+                else None
+            ),
             "finish_reason": result.finish_reason,
             "tool_call_count": len(result.tool_calls),
             "provider_latency_ms": provider_latency_ms,
@@ -570,7 +599,10 @@ def _record_local_llm_output(
 ) -> None:
     """Capture the normalized Provider result before final-answer validation."""
 
-    from assistant_agent.services.trace_content_policy import local_trace_content_enabled
+    from assistant_agent.services.trace_content_policy import (
+        local_provider_protocol_capture_enabled,
+        local_trace_content_enabled,
+    )
 
     if not local_trace_content_enabled():
         return
@@ -578,6 +610,22 @@ def _record_local_llm_output(
         TraceLlmOutput,
         get_default_trace_conversation_store,
     )
+
+    normalized_result = cast(
+        dict[str, Any],
+        _sanitize_local_llm_value(
+            result.model_dump(
+                mode="json",
+                exclude={"reasoning_content", "protocol_response"},
+            )
+        ),
+    )
+    protocol_response = None
+    if result.protocol_response is not None and local_provider_protocol_capture_enabled():
+        protocol_response = cast(
+            dict[str, Any],
+            _sanitize_local_llm_value(result.protocol_response.model_dump(mode="json")),
+        )
 
     get_default_trace_conversation_store().append_llm_output(
         user_id=state.user_id,
@@ -589,9 +637,31 @@ def _record_local_llm_output(
             attempt_kind=attempt_kind,
             provider=result.provider,
             model=result.model,
-            result=result.model_dump(mode="json", exclude={"reasoning_content"}),
+            normalized_result=normalized_result,
+            provider_protocol_response=protocol_response,
         ),
     )
+
+
+def _runtime_route_for_chat_result(result: ChatResult) -> dict[str, Any]:
+    """Describe the exact runtime branch selected from normalized Provider output."""
+
+    result_kind = chat_result_kind(result)
+    selected_branch, runtime_action = {
+        "error": ("provider_error", "fallback"),
+        "tool_call": ("native_tool_calls", "tool_governance"),
+        "refusal": ("provider_refusal", "final_answer"),
+        "truncated": ("truncated_content", "fallback"),
+        "text": ("provider_content", "final_answer"),
+        "empty": ("empty_content", "fallback"),
+    }[result_kind]
+    return {
+        "schema_version": "runtime_route_v1",
+        "result_kind": result_kind,
+        "selected_branch": selected_branch,
+        "runtime_action": runtime_action,
+        "tool_call_count": len(result.tool_calls),
+    }
 
 
 def _sanitize_local_llm_value(value: Any, *, key: str | None = None) -> Any:

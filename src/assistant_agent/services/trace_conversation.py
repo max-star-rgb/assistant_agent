@@ -32,14 +32,15 @@ class TraceLlmInput(BaseModel):
 
 
 class TraceLlmOutput(BaseModel):
-    """One local-only normalized Provider result captured for debugging."""
+    """Local-only Provider evidence captured at the adapter/runtime boundary."""
 
     iteration: int = Field(ge=1)
     span_id: str
     attempt_kind: str = "primary"
     provider: str | None = None
     model: str | None = None
-    result: dict[str, Any]
+    normalized_result: dict[str, Any]
+    provider_protocol_response: dict[str, Any] | None = None
 
 
 class TraceConversationView(BaseModel):
@@ -142,7 +143,7 @@ class InMemoryTraceConversationStore:
         trace_id: str,
         llm_output: TraceLlmOutput,
     ) -> None:
-        """Append the exact normalized Provider result before runtime validation."""
+        """Append bounded Provider evidence before runtime branch selection."""
 
         with self._lock:
             existing = self._matching_record(
