@@ -192,9 +192,14 @@ def _sdk_session(server: MCPServerConfig):
 
 def _mcp_subprocess_environment(server_env: dict[str, str]) -> dict[str, str] | None:
     """Pass operator proxy settings through the MCP SDK's restricted environment."""
+    has_protocol_proxy = any(
+        os.environ.get(key)
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+    )
     environment = {
         key: value
         for key in _PROXY_ENVIRONMENT_VARIABLES
+        if not (has_protocol_proxy and key in {"ALL_PROXY", "all_proxy"})
         if (value := os.environ.get(key)) is not None
     }
     environment.update(server_env)

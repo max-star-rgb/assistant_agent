@@ -314,8 +314,9 @@ MCP 配置模板或提交。当前 stdio 单机配置使用 `http://localhost:80
 需要 `OAUTHLIB_INSECURE_TRANSPORT=1`；该开关不得用于公开或非 loopback 部署，公开部署必须改用 HTTPS
 并在 Google Cloud 中登记完全一致的 redirect URI。stdio MCP 子进程继承宿主的标准
 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`（含小写形式），同名 server `env` 显式配置
-优先；其他环境变量仍由 MCP SDK 的安全白名单或 server `env` 控制。真实模式还要求主 Chat Provider
-完整配置；MCP 配置不会绕过这个全局边界。
+优先；同时存在 HTTP/HTTPS proxy 与 `ALL_PROXY` 时只传递前者，避免上游客户端误选不兼容的 SOCKS
+scheme。其他环境变量仍由 MCP SDK 的安全白名单或 server `env` 控制。真实模式还要求主 Chat
+Provider 完整配置；MCP 配置不会绕过这个全局边界。
 weather、calendar 和 contacts 只有存在
 对应 `personal_assistant_tools` mapping 时才注册，映射的远端工具还必须同时位于 `allowed_tools`；
 weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
@@ -327,13 +328,13 @@ weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
 - `workspace_mcp_v1` 把稳定 `calendar_search` / `calendar_create` 分别转换为 `get_events` /
   `manage_event`，并注入本地 `calendar_user_email`；创建动作固定为 `action=create`。
 
-`calendar_create` 不应放入 `enabled_tools`；它作为写工具仍需 runtime 的同名结构化确认。配置装配可用
-以下命令做只读检查，不会执行外部工具：
+`calendar_create` 不应放入 `enabled_tools`；它作为写工具仍需 runtime 的同名结构化确认。真实天气与
+日历只读 smoke 只能在用户当次明确要求后，用专用命令行开关执行；该命令会调用外部 Provider 并输出
+真实结果，失败时直接令测试失败：
 
 ```bash
-ASSISTANT_AGENT_RUN_REAL_TOOL_PLUGIN_TESTS=1 \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  tests/tools_plugin/test_personal_assistant_plugin.py
+  -s --run-real-tools-plugin tests/tools_plugin/test_personal_assistant_plugin.py
 ```
 
 本地 `@tool` decorator 直接声明 `category`、`requires_confirmation`、`toolset` 和

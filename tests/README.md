@@ -9,8 +9,7 @@
 tests/
   critical/      # 基础必要测试；裸 pytest 默认收集
   feature/       # 功能开发验证；稳定后仅按需运行
-  tools_plugin/  # 真实 Provider/MCP 配置装配；显式 opt-in
-  evals/         # 离线 eval 数据，不属于 pytest
+  tools_plugin/  # 用户显式触发的真实 Provider/MCP 调用
 ```
 
 `critical` 只保留由真实风险驱动、需要长期守住的默认离线安全网。它不承担覆盖率证明、模块枚举、
@@ -51,22 +50,28 @@ tests/
 可以在后续相关变更中删除；若它保护的是稳定外部契约、具名缺陷或高风险机制，则应移入
 `critical`，而不是长期留在模糊的中间状态。
 
-`tests/evals/eval_cases.json` 是 `scripts/run_evals.py` 的离线评测数据，不属于 pytest。
-真实 Provider、付费 API 和外部服务验证使用显式 operator smoke/pilot 脚本，不进入默认 pytest。
+Agent 行为 eval 数据统一放在根目录 `evals/`，格式、分层和运行方式见 `evals/README.md`，不属于
+pytest。真实 Provider、付费 API 和外部服务验证使用显式 operator eval/smoke/pilot 脚本，不进入默认
+pytest。
 
-`tests/tools_plugin/test_*_plugin.py` 是显式 opt-in 插件装配测试：它们读取真实 Provider/MCP
-配置并构造真实 adapter，但不发起外部调用。默认 pytest 会跳过这些用例；需要验证本机真实配置时运行：
+`tests/tools_plugin/test_*_plugin.py` 只保存用户显式触发的真实 Provider/MCP 调用。这里禁止 mock、
+只装配不调用、用 skip 把未配置能力伪装成通过，或者由程序、agent、CI、定时任务和默认 pytest 自主
+启用。只有用户在当前任务中明确要求运行真实工具测试后，才允许人工执行带专用命令行开关的命令：
 
 ```bash
-ASSISTANT_AGENT_RUN_REAL_TOOL_PLUGIN_TESTS=1 \
-MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  tests/tools_plugin/test_*_plugin.py
+  -s --run-real-tools-plugin tests/tools_plugin
 ```
 
-未配置某项可选能力时，对应插件测试会单独 skip；主 chat Provider 配置不完整则直接失败，避免把
-错误的 mock 配置误报为真实 Provider 验证通过。`tests/feature/test_tool_plugin_runtime.py` 始终使用 mock，
-验证插件 Tool 经 `AgentGraphRuntime` 治理链路完成一次原生 tool-call 闭环。
+仅设置环境变量不能启用该目录；显式指定目录但缺少 `--run-real-tools-plugin` 时测试必须失败。真实工具
+必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`，并把 Provider 的真实结果输出到本次
+测试终端；Provider 未配置、认证失效、超时、限流、响应无效或返回失败时，测试必须明确失败，不能
+skip、回退 mock 或伪造成功。默认先收录无副作用的只读 smoke；任何付费、写入或危险工具都必须有
+独立具名测试、确定性输入和安全清理策略，并由用户在当次任务中明确要求后才能运行。
+
+`tests/feature/test_tool_plugin_runtime.py` 始终使用 mock，验证插件 Tool 经 `AgentGraphRuntime` 治理链路
+完成一次原生 tool-call 闭环；真实 Provider 装配本身由启动 fail-closed 和上述真实调用共同验证，不在
+`tests/tools_plugin` 保留只装配测试。
 
 ## 测试策略
 

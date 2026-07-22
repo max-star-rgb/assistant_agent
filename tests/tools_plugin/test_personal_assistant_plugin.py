@@ -1,26 +1,56 @@
-"""Real-provider construction test for the personal-assistant tool plugin."""
+"""Operator-triggered real weather and calendar tool calls."""
 
-import pytest
+from __future__ import annotations
 
-from assistant_agent.services.personal_assistant_mcp_adapters import (
-    configured_personal_assistant_tools,
+import json
+from datetime import date, datetime, timedelta
+
+from assistant_agent.schemas.tool_ids import (
+    CALENDAR_SEARCH_TOOL_NAME,
+    WEATHER_TOOL_NAME,
 )
-from assistant_agent.tools.plugins.contracts import ToolPluginContext
-from assistant_agent.tools.plugins.personal_assistant.plugin import (
-    PersonalAssistantToolPlugin,
-)
 
 
-def test_personal_assistant_plugin_builds_configured_real_mcp_tools(
-    real_plugin_context: ToolPluginContext,
-) -> None:
-    expected = set(
-        configured_personal_assistant_tools(real_plugin_context.mcp_server_configs)
+def _json_result(result) -> str:
+    return json.dumps(result.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+
+
+def test_weather_returns_real_provider_result(run_real_tool) -> None:
+    result = run_real_tool(
+        WEATHER_TOOL_NAME,
+        {
+            "location": "Beijing",
+            "target_date": date.today().isoformat(),
+            "days": 1,
+            "units": "metric",
+        },
     )
-    if not expected:
-        pytest.skip("no real personal-assistant MCP tool mapping is configured")
 
-    tools = PersonalAssistantToolPlugin().build_tools(real_plugin_context)
+    print("REAL_WEATHER_RESULT=" + _json_result(result))
+    assert result.success, _json_result(result)
+    assert isinstance(result.data, dict), _json_result(result)
+    assert str(result.data.get("provider", "")).startswith("mcp:"), _json_result(result)
+    assert result.data.get("forecast"), _json_result(result)
 
-    assert real_plugin_context.mock_mode is False
-    assert {tool.name for tool in tools} == expected
+
+def test_calendar_search_returns_real_google_result(run_real_tool) -> None:
+    now = datetime.now().astimezone()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    result = run_real_tool(
+        CALENDAR_SEARCH_TOOL_NAME,
+        {
+            "query": "today",
+            "start_time": start.isoformat(),
+            "end_time": end.isoformat(),
+            "limit": 5,
+        },
+    )
+
+    print("REAL_CALENDAR_RESULT=" + _json_result(result))
+    assert result.success, _json_result(result)
+    assert isinstance(result.data, dict), _json_result(result)
+    assert result.data.get("provider") == "mcp:google_workspace.get_events", _json_result(
+        result
+    )
+    assert isinstance(result.data.get("events"), list), _json_result(result)
