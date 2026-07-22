@@ -20,6 +20,7 @@ from assistant_agent.services.agent_service_delivery import (
     AgentServiceDelivery,
     AgentServiceDeliveryRegistry,
 )
+from assistant_agent.services.agent_service_entry import agent_service_tool_visibility
 from assistant_agent.services.agent_service_latency import (
     AgentServiceTurnTiming,
     analyze_agent_service_turn,
@@ -1501,6 +1502,7 @@ def _agent_service_gateway_metadata(
 ) -> dict[str, Any]:
     metadata = {
         "transport": "agent_service_websocket",
+        "tool_visibility": agent_service_tool_visibility(),
         "agent_service": {
             "chat_index": chat_index,
             "user_number": user_number,

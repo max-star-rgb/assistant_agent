@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.context.tool_catalog import select_prompt_tool_specs
+from assistant_agent.services.agent_service_entry import agent_service_tool_visibility
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.plugins.assembly import ToolPluginAssemblyError
 from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
@@ -88,6 +89,51 @@ def test_configured_write_tool_is_not_host_enabled_by_plugin_declaration(
     assert "configured_read" in selection.run_tool_catalog.available_tool_names
     assert "configured_write" not in selection.run_tool_catalog.available_tool_names
     assert selection.summary.registry_generation == registry.generation
+
+
+def test_agent_service_entry_profile_limits_the_runtime_tool_catalog() -> None:
+    registry = create_default_registry()
+    request = UserRequest(
+        user_id="agent-service-user",
+        session_id="agent-service-session",
+        text="帮我处理这个请求",
+        metadata={"tool_visibility": agent_service_tool_visibility()},
+    )
+
+    selection = select_prompt_tool_specs(
+        request,
+        registry.list_specs(),
+        registry_generation=registry.generation,
+        host_configured_tool_names=registry.host_configured_tool_names(),
+    )
+
+    assert selection.run_tool_catalog.available_tool_names == [
+        "memory_retrieval",
+        "memory_save",
+        "shopping_search",
+        "web_search",
+    ]
+    assert selection.run_tool_catalog.excluded_reasons["calendar_search"] == [
+        "entry_profile_not_allowed"
+    ]
+    assert selection.run_tool_catalog.excluded_reasons["vision_understanding"] == [
+        "required_media_not_available"
+    ]
+    assert "entry_profile:agent_service" in selection.run_tool_catalog.selection_reasons
+
+    video_selection = select_prompt_tool_specs(
+        request.model_copy(update={"video_ids": ["live-video-1"]}),
+        registry.list_specs(),
+        registry_generation=registry.generation,
+        host_configured_tool_names=registry.host_configured_tool_names(),
+    )
+    assert video_selection.run_tool_catalog.available_tool_names == [
+        "memory_retrieval",
+        "memory_save",
+        "shopping_search",
+        "vision_understanding",
+        "web_search",
+    ]
 
 
 def test_explicit_invalid_plugin_configuration_fails_closed() -> None:

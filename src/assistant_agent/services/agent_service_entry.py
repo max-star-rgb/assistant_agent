@@ -4,6 +4,15 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 
+AGENT_SERVICE_PROFILE_TOOL_NAMES = (
+    "web_search",
+    "shopping_search",
+    "memory_retrieval",
+    "memory_save",
+    "vision_understanding",
+)
+
+
 class RequestWithMetadata(Protocol):
     """Structural request type accepted by the trust predicate."""
 
@@ -28,3 +37,14 @@ def is_trusted_agent_service_request(
         isinstance(session_config, Mapping)
         and session_config.get("entry_profile") == "agent_service"
     )
+
+
+def agent_service_tool_visibility() -> dict[str, Any]:
+    """Return the trusted, structured tool boundary for Agent-Service turns."""
+
+    names = list(AGENT_SERVICE_PROFILE_TOOL_NAMES)
+    return {
+        "profile": "agent_service",
+        "allowed_tools": names,
+        "configured_tools": names,
+    }

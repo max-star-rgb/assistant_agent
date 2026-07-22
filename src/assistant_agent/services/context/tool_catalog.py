@@ -49,6 +49,8 @@ class ToolVisibilityOverrides:
     explicit_skills: set[str]
     configured_tools: set[str]
     configured_toolsets: set[str]
+    allowed_tools: set[str]
+    profile: str | None
 
 
 def select_prompt_tool_specs(
@@ -78,8 +80,10 @@ def select_prompt_tool_specs(
     )
     registered_names = [spec.name for spec in tool_specs]
     available_names = [spec.name for spec in available_specs]
+    entry_profile = _visibility_overrides(request).profile
     reasons = [
         *(f"explicit_skill_activated:{skill_id}" for skill_id in qualification.active_skill_ids),
+        *([f"entry_profile:{entry_profile}"] if entry_profile else []),
         "recall_identity",
     ]
     run_tool_catalog = RunToolCatalog(
@@ -125,6 +129,9 @@ def qualify_tool_specs(
         "task_plan_submit"
     }
     for spec in tool_specs:
+        if visibility_overrides.allowed_tools and spec.name not in visibility_overrides.allowed_tools:
+            excluded_reasons[spec.name] = ["entry_profile_not_allowed"]
+            continue
         category = tool_exposure_category(spec)
         durable_ready = trusted_durable_execution and spec.name in durable_ready_tool_names
         durable_plan_submission = (
@@ -198,6 +205,8 @@ def _visibility_overrides(request: UserRequest) -> ToolVisibilityOverrides:
         explicit_skills=set(_string_list(payload.get("enabled_skills"))),
         configured_tools=set(_string_list(payload.get("configured_tools"))),
         configured_toolsets=set(_string_list(payload.get("configured_toolsets"))),
+        allowed_tools=set(_string_list(payload.get("allowed_tools"))),
+        profile=_string_value(payload.get("profile")),
     )
 
 
@@ -241,6 +250,12 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _string_value(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def prompt_tool_spec_payload(spec: ToolSpec) -> dict[str, Any]:
