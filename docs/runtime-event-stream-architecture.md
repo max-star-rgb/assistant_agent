@@ -98,8 +98,9 @@ diagnostic.
 当 localhost OTLP 与 local trace content 三重 opt-in 同时开启时，进程内 debug overlay 会在
 `llm.chat` span id 下保存归一化 `ChatResult`；额外设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1` 后，还保存原始 content、原始工具参数字符串、
-finish reason、usage 与流式事件计数组成的协议语义快照。Langfuse generation output 展示
-Provider 的原始语义回复（正文、工具调用或拒绝），generation input 保留 Provider 语义输入的原始
+finish reason、usage 与流式事件计数组成的协议语义快照。Langfuse generation output 使用
+OpenAI-compatible assistant message 展示 Provider 的原始语义回复（正文、工具调用或拒绝），
+generation input 保留 Provider 语义输入的原始
 messages/tools/生成参数结构，不为展示虚构 message role；finish reason 保留在 trace/协议快照，
 usage、route 与 transport 保留在诊断字段，都不拼接到 output 文本。默认 trace event
 和 `.data/graph_trace.jsonl` 仍只保存安全摘要，vendor SDK response envelope、HTTP header、stream

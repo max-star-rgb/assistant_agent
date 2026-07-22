@@ -143,13 +143,16 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
     input_preview = json.loads(generations[0].attributes["langfuse.observation.input"])
     output_preview = json.loads(generations[0].attributes["langfuse.observation.output"])
     assert isinstance(input_preview, dict)
-    assert isinstance(output_preview, str)
+    assert isinstance(output_preview, dict)
     assert input_preview["messages"][0]["role"] == "system"
     assert input_preview["tools"]
     rendered_input = json.dumps(input_preview, ensure_ascii=False)
     assert "raw-user" not in rendered_input
     assert "raw-session" not in rendered_input
-    assert output_preview == "provider native answer"
+    assert output_preview == {
+        "role": "assistant",
+        "content": "provider native answer",
+    }
     assert json.loads(generations[0].attributes["langfuse.observation.usage_details"]) == {
         "input": 12,
         "output": 3,

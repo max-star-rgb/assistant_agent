@@ -550,8 +550,13 @@ def _event_io_attributes(
 
     attributes = {"langfuse.observation.input": _json_value(_drop_none_if_mapping(input_payload))}
     if include_output:
+        serialized_output = (
+            output_payload
+            if name == "llm.chat.finished"
+            else _drop_none_if_mapping(output_payload)
+        )
         attributes["langfuse.observation.output"] = _json_value(
-            _drop_none_if_mapping(output_payload)
+            serialized_output
         )
     return attributes
 
@@ -576,8 +581,8 @@ def _llm_provider_input_preview(
     )
 
 
-def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
-    """Render one complete Provider reply without runtime diagnostic wrappers."""
+def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> dict[str, Any]:
+    """Return one Provider reply as an OpenAI-compatible assistant message."""
 
     protocol = llm_output.provider_protocol_response
     if isinstance(protocol, Mapping):
@@ -593,7 +598,7 @@ def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
             for item in protocol.get("tool_calls", [])
             if isinstance(item, Mapping)
         ]
-        return _format_provider_reply(
+        return _provider_reply_message(
             content=str(protocol.get("content") or ""),
             tool_calls=tool_calls,
             refusal=protocol.get("refusal"),
@@ -622,7 +627,7 @@ def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
                 },
             }
         )
-    return _format_provider_reply(
+    return _provider_reply_message(
         content=str(normalized.get("response_text") or ""),
         tool_calls=tool_calls,
         refusal=normalized.get("refusal"),
@@ -630,36 +635,24 @@ def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> str:
     )
 
 
-def _format_provider_reply(
+def _provider_reply_message(
     *,
     content: str,
     tool_calls: list[dict[str, Any]],
     refusal: Any,
     errors: Any = None,
-) -> str:
-    sections: list[str] = []
-    if content:
-        sections.append(content)
-    for index, call in enumerate(tool_calls, start=1):
-        function = call.get("function")
-        if not isinstance(function, Mapping):
-            function = {}
-        arguments = function.get("arguments", "")
-        sections.append(
-            "\n".join(
-                (
-                    f"【工具调用 {index}：{function.get('name') or '未命名工具'}】",
-                    f"调用 ID：{call.get('id') or '无'}",
-                    "参数：",
-                    str(arguments),
-                )
-            )
-        )
+) -> dict[str, Any]:
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": content or None,
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
     if refusal:
-        sections.append(f"【拒绝】\n{refusal}")
+        message["refusal"] = refusal
     if errors:
-        sections.append(f"【错误】\n{_pretty_json_text(errors)}")
-    return "\n\n".join(sections) if sections else "（Provider 返回空内容）"
+        message["errors"] = errors
+    return message
 
 
 def _pretty_json_text(value: Any) -> str:

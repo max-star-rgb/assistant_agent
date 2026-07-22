@@ -91,7 +91,8 @@ metadata、usage 和 latency 使用独立 generation attributes。
 `assistant_agent.result_kind` 是观测层根据归一化 `ChatResult` 即时计算的
 `error | tool_call | refusal | truncated | text | empty`，不属于 Qwen/OpenAI 协议，也不写回
 `ChatResult`。本地 content overlay 将 `llm.chat` generation preview 固定为两个按顺序展示的
-字段：input 是 Langfuse 可直接格式化的完整消息列表，output 是面向人的完整 Provider 回复。
+字段：input 是 Langfuse 可直接格式化的完整消息列表，output 是保留 `role`、`content`、
+`tool_calls` 和可选 `refusal/errors` 的 OpenAI-compatible assistant message。
 运行时分支和传输模式继续作为 observation metadata，不再包进 output preview。
 每个 attempt 另外记录 `attempt_kind`（当前包括 `primary` 和
 `context_overflow_retry`），避免同一 ReAct iteration 内的上下文溢出重试被误读成
@@ -736,7 +737,8 @@ Trace and monitoring records must not include:
 实际编译后的 Provider 语义输入，包括 model、messages、完整 tool schemas、tool choice、
 response format 和生成参数。preview 保持原始字段与 message role，不把 tools 或生成参数改写为
 虚构的 system/tool message；`user_id`、`session_id`、重复的 `user_query`、iteration 等运行时字段
-不进入 input preview。generation output 仅展示 Provider 的原始语义回复（正文、工具调用、拒绝/错误）；
+不进入 input preview。generation output 以 OpenAI-compatible assistant message 保留 Provider 的
+原始语义回复（正文、工具调用、拒绝/错误），不把结构化 tool call 改写为展示文本；
 finish reason 保留在 trace/协议快照，usage 保留在独立 observation attributes 中，不拼接到 output 文本。
 若同时显式设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`，`provider_protocol_response` 还保存
@@ -851,8 +853,8 @@ Regression tests should enforce these invariants:
   attempt kind 使用独立 observation attributes，finish reason 保留在 trace/协议快照。只有满足上述 localhost 三重 opt-in
   时，才从进程内 `TraceConversationStore` 按 span id 投影完整 Provider 语义输入和回复。两者
   input 保留原始 `model/messages/tools/tool_choice/response_format/temperature/max_tokens` 结构，
-  message role 不做展示性重写。output 使用分段文本展示 Provider 的原始语义回复，不附加
-  finish reason 或 usage，也不展示整块 JSON wrapper。协议语义快照还需要独立设置
+  message role 不做展示性重写。output 使用带 `role/content/tool_calls` 的结构化 assistant message
+  展示 Provider 的原始语义回复，不附加 finish reason 或 usage。协议语义快照还需要独立设置
   `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`。JSONL 只保留 route、transport、terminal
   和 delta count 等安全摘要；这些对象都不是 vendor SDK 原始 envelope。
 - `context.build` 的 output 导出 prompt-safe `context_report_v1`：逐 section 展示
