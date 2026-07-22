@@ -5,11 +5,7 @@ from enum import StrEnum
 import json
 from typing import Any
 
-from assistant_agent.agent.system_prompt_policy import (
-    SystemPromptOptions,
-    SystemPromptProfile,
-    render_system_instruction,
-)
+from assistant_agent.agent.system_prompt_policy import render_system_instruction
 from assistant_agent.schemas.context import AssistantContextPack, RenderedAssistantContext
 from assistant_agent.schemas.tool_spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.schemas.tools import ToolSpec
@@ -32,8 +28,6 @@ class PromptCompileRequest:
     session_id: str
     mode: PromptCompileMode
     user_query_fallback: str
-    profile: SystemPromptProfile
-    options: SystemPromptOptions
     context_pack: AssistantContextPack
     observations: tuple[dict[str, Any], ...]
     native_calls: tuple[dict[str, Any], ...]
@@ -58,8 +52,6 @@ class PromptCompiler:
 
     def compile(self, request: PromptCompileRequest) -> PromptCompileResult:
         system_instruction = render_system_instruction(
-            request.profile,
-            options=request.options,
             agent_personalization=owner_persona_for_pack(request.context_pack),
         )
         rendered_context = _render_context(request)

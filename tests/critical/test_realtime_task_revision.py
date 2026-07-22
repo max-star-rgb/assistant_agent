@@ -84,5 +84,7 @@ def test_ordinary_followup_commits_structured_objective_revision() -> None:
         "source": "runtime_task_update",
         "action": "complete",
     }
+    assert all("实时任务状态" not in str(request.messages) for request in adapter.requests)
+    assert all('"status": "active"' not in str(request.messages) for request in adapter.requests)
     assert "我想麦牛奶" in str(adapter.requests[1].messages)
     assert "我想买牛奶" in str(adapter.requests[1].messages)

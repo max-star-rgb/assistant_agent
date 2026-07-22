@@ -25,7 +25,6 @@ tests/
 
 - 包与默认离线 runtime 可以初始化；
 - 普通文本 run 可以完成并形成终态事件；
-- Agent system prompt 保持通道无关，不混入电话、TTS 或 WebSocket 规则；
 - provider-native tool call 可以经过治理链路并返回最终回答；
 - 主 LLM 超时会形成可终止的重试响应；
 - cancel token 会终止 run；

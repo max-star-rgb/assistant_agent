@@ -6,7 +6,6 @@ from time import perf_counter
 from typing import Any
 
 from assistant_agent.agent.state import AgentState
-from assistant_agent.agent.system_prompt_policy import SystemPromptOptions, SystemPromptProfile
 from assistant_agent.schemas.context import AssistantContextPack
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
@@ -82,8 +81,6 @@ def build_traced_assistant_context_pack(
                 session_id=state.session_id,
                 mode=PromptCompileMode.NATIVE_TOOL,
                 user_query_fallback="native_tools assistant turn",
-                profile=SystemPromptProfile.TEXT_DEFAULT,
-                options=SystemPromptOptions(product_mode=True),
                 context_pack=pack,
                 observations=tuple(pack.observations),
                 native_calls=tuple(native_calls or ()),

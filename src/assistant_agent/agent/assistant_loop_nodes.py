@@ -28,10 +28,6 @@ from assistant_agent.agent.plan_validator import PlanValidationResult, PlanValid
 from assistant_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
-from assistant_agent.agent.system_prompt_policy import (
-    SystemPromptOptions,
-    SystemPromptProfile,
-)
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.schemas.assistant_decision import AssistantDecision, native_tool_call_to_assistant_decision
 from assistant_agent.schemas.capabilities import canonical_intent
@@ -826,8 +822,6 @@ def _compile_native_tool_chat_request(
             session_id=state.session_id,
             mode=PromptCompileMode.NATIVE_TOOL,
             user_query_fallback="native_tools assistant turn",
-            profile=SystemPromptProfile.TEXT_DEFAULT,
-            options=SystemPromptOptions(product_mode=True),
             context_pack=context.context_pack,
             observations=tuple(context.tool_observations),
             native_calls=tuple(_native_tool_calls_from_metadata(state)),

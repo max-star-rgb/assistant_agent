@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -23,7 +22,6 @@ from assistant_agent.tools.registry import tool_contract_fields
 
 REALTIME_TASK_STATE_SCHEMA_VERSION = "realtime_task_state_v1"
 REALTIME_TASK_STATE_METADATA_KEY = "realtime_task_state"
-REALTIME_TASK_STATE_TEXT_METADATA_KEY = "realtime_task_state_text"
 ToolSideEffectLevel = Literal[
     "none",
     "local_read",
@@ -280,7 +278,6 @@ def prepare_realtime_task_state_request(
     metadata = dict(request.metadata)
     snapshot_payload = snapshot.model_dump(mode="json")
     metadata[REALTIME_TASK_STATE_METADATA_KEY] = snapshot_payload
-    metadata[REALTIME_TASK_STATE_TEXT_METADATA_KEY] = format_realtime_task_state_snapshot(snapshot)
     metadata["realtime_task_state_enabled"] = True
     return request.model_copy(update={"metadata": metadata}, deep=True)
 
@@ -633,94 +630,6 @@ def snapshot_from_task_state(state: RealtimeTaskState) -> RealtimeTaskStateSnaps
         barge_in_source=state.barge_in_source,
         last_realtime_event_ids=list(state.last_realtime_event_ids),
     )
-
-
-def realtime_task_state_prompt_projection(snapshot: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Project runtime task state to the semantic fields needed by the main LLM."""
-
-    if not snapshot:
-        return None
-    projection: dict[str, Any] = {
-        "status": snapshot.get("status"),
-        "objective": snapshot.get("objective"),
-    }
-    constraints = snapshot.get("constraints")
-    if isinstance(constraints, list) and constraints:
-        projection["constraints"] = constraints[:12]
-    continuation_strategy = snapshot.get("continuation_strategy")
-    if continuation_strategy:
-        projection["continuation_strategy"] = continuation_strategy
-    latest_revision = snapshot.get("latest_revision")
-    if isinstance(latest_revision, Mapping):
-        revision = {
-            key: latest_revision.get(key)
-            for key in ("user_text", "revision_type", "strategy")
-            if latest_revision.get(key) not in (None, "")
-        }
-        if revision:
-            projection["latest_revision"] = revision
-    for key in ("reusable_artifacts", "side_effects"):
-        items = snapshot.get(key)
-        if isinstance(items, list) and items:
-            projection[key] = items[:6]
-    pending_tool = snapshot.get("pending_tool")
-    if isinstance(pending_tool, Mapping) and pending_tool:
-        projection["pending_tool"] = dict(pending_tool)
-    return {
-        key: value
-        for key, value in projection.items()
-        if value not in (None, "", [])
-    }
-
-
-def format_realtime_task_state_snapshot(snapshot: RealtimeTaskStateSnapshot) -> str:
-    """Render a compact human-readable snapshot for prompt/context debugging."""
-
-    lines = [
-        f"schema_version: {snapshot.schema_version}",
-        f"task_id: {snapshot.task_id}",
-        f"status: {snapshot.status}",
-        f"objective: {snapshot.objective}",
-    ]
-    if snapshot.current_user_text:
-        lines.append(f"current_user_text: {snapshot.current_user_text}")
-    if snapshot.constraints:
-        lines.append("constraints:")
-        lines.extend(f"- {constraint}" for constraint in snapshot.constraints)
-    if snapshot.latest_revision is not None:
-        revision_text = str(snapshot.latest_revision.get("user_text") or "")
-        strategy = str(snapshot.latest_revision.get("strategy") or "")
-        lines.append(f"latest_revision: {revision_text}")
-        lines.append(f"revision_strategy: {strategy}")
-    if snapshot.pending_tool:
-        tool_name = str(snapshot.pending_tool.get("tool_name") or "tool")
-        status = str(snapshot.pending_tool.get("status") or "working")
-        lines.append(f"pending_tool: {tool_name} [{status}]")
-    if snapshot.tts_state != "idle":
-        lines.append(f"tts_state: {snapshot.tts_state}")
-    if snapshot.last_spoken_progress:
-        spoken_text = str(snapshot.last_spoken_progress.get("text") or "")
-        lines.append(f"last_spoken_progress: {spoken_text}")
-    if snapshot.speech_turn_id:
-        lines.append(f"speech_turn_id: {snapshot.speech_turn_id}")
-    if snapshot.barge_in_source:
-        lines.append(f"barge_in_source: {snapshot.barge_in_source}")
-    if snapshot.reusable_artifacts:
-        lines.append("reusable_artifacts:")
-        for artifact in snapshot.reusable_artifacts:
-            tool_name = str(artifact.get("tool_name") or artifact.get("kind") or "artifact")
-            summary = str(artifact.get("summary") or "")
-            lines.append(f"- {tool_name}: {summary}")
-    if snapshot.side_effects:
-        lines.append("side_effects:")
-        for side_effect in snapshot.side_effects:
-            tool_name = str(side_effect.get("tool_name") or "tool")
-            level = str(side_effect.get("effect_level") or "unknown")
-            summary = str(side_effect.get("summary") or "")
-            confirmation_id = str(side_effect.get("confirmation_id") or "")
-            suffix = f", confirmation_id={confirmation_id}" if confirmation_id else ""
-            lines.append(f"- {tool_name} [{level}]{suffix}: {summary}")
-    return "\n".join(lines)
 
 
 def _updated_state_for_request(

@@ -13,13 +13,9 @@ from __future__ import annotations
 
 import argparse
 import os
-import secrets
-import subprocess
 import sys
 from collections.abc import Sequence
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -63,16 +59,7 @@ from assistant_agent.services.trial_access import (
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
 LOCAL_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"
-START_WEB_SEARCH_RELAY_ENV = "MULTIMODAL_AGENT_START_WEB_SEARCH_RELAY"
 PROVIDER_MODE_ENV = "MULTIMODAL_AGENT_PROVIDER_MODE"
-SEARCH_PROVIDER_ENV = "MULTIMODAL_AGENT_SEARCH_PROVIDER"
-WEB_SEARCH_BASE_URL_ENV = "WEB_SEARCH_BASE_URL"
-WEB_SEARCH_API_KEY_ENV = "WEB_SEARCH_API_KEY"
-WEB_SEARCH_RELAY_API_KEY_ENV = "WEB_SEARCH_RELAY_API_KEY"
-TAVILY_API_KEY_ENV = "TAVILY_API_KEY"
-DEFAULT_WEB_SEARCH_RELAY_HOST = "127.0.0.1"
-DEFAULT_WEB_SEARCH_RELAY_PORT = 7005
-DEFAULT_WEB_SEARCH_RELAY_PATH = "/search"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -169,31 +156,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_WORKFLOW_SKILL_RUN_STORE,
         help="JSONL path used to persist workflow skill run records.",
     )
-    parser.add_argument(
-        "--start-web-search-relay",
-        action="store_true",
-        help=(
-            "Start the local Tavily web_search relay as a child process for "
-            "developer runs. Can also be enabled with "
-            f"{START_WEB_SEARCH_RELAY_ENV}=1."
-        ),
-    )
-    parser.add_argument(
-        "--web-search-relay-host",
-        default=DEFAULT_WEB_SEARCH_RELAY_HOST,
-        help="Host for the local web_search relay when --start-web-search-relay is used.",
-    )
-    parser.add_argument(
-        "--web-search-relay-port",
-        type=int,
-        default=DEFAULT_WEB_SEARCH_RELAY_PORT,
-        help="Port for the local web_search relay when --start-web-search-relay is used.",
-    )
-    parser.add_argument(
-        "--web-search-relay-path",
-        default=DEFAULT_WEB_SEARCH_RELAY_PATH,
-        help="Path for the local web_search relay when --start-web-search-relay is used.",
-    )
     return parser
 
 
@@ -220,53 +182,9 @@ def _prepare_environment(args: argparse.Namespace) -> dict[str, str]:
     os.environ[WORKFLOW_SKILL_RUN_STORE_ENV] = args.workflow_skill_run_store
     if args.workflow_skill_tool_module:
         os.environ[WORKFLOW_SKILL_TOOL_MODULES_ENV] = ",".join(args.workflow_skill_tool_module)
-    if _should_start_web_search_relay(args):
-        _prepare_web_search_relay_environment(args)
     os.environ[SERVER_TRACE_ENABLED_ENV] = "1"
     _configure_trial_user_allowlist(args)
     return loaded
-
-
-def _should_start_web_search_relay(args: argparse.Namespace) -> bool:
-    return args.start_web_search_relay or os.environ.get(START_WEB_SEARCH_RELAY_ENV) == "1"
-
-
-def _prepare_web_search_relay_environment(args: argparse.Namespace) -> None:
-    """Configure agent and relay env for explicit local Tavily relay dev runs."""
-
-    if not os.environ.get(TAVILY_API_KEY_ENV):
-        raise RuntimeError(
-            "--start-web-search-relay requires TAVILY_API_KEY in the environment or env file."
-        )
-
-    relay_url = _web_search_relay_url(args)
-    relay_secret = (
-        os.environ.get(WEB_SEARCH_RELAY_API_KEY_ENV)
-        or os.environ.get(WEB_SEARCH_API_KEY_ENV)
-        or _generate_relay_secret()
-    )
-    os.environ[WEB_SEARCH_RELAY_API_KEY_ENV] = relay_secret
-    os.environ[WEB_SEARCH_API_KEY_ENV] = relay_secret
-    os.environ[WEB_SEARCH_BASE_URL_ENV] = relay_url
-    if os.environ.get(PROVIDER_MODE_ENV, "mock") != "real":
-        raise RuntimeError(
-            "web_search relay requires MULTIMODAL_AGENT_PROVIDER_MODE=real"
-        )
-    os.environ[SEARCH_PROVIDER_ENV] = "http"
-
-
-def _generate_relay_secret() -> str:
-    return secrets.token_urlsafe(24)
-
-
-def _web_search_relay_url(args: argparse.Namespace) -> str:
-    path = _normalize_relay_path(args.web_search_relay_path)
-    return f"http://{args.web_search_relay_host}:{args.web_search_relay_port}{path}"
-
-
-def _normalize_relay_path(value: str) -> str:
-    stripped = value.strip() or DEFAULT_WEB_SEARCH_RELAY_PATH
-    return stripped if stripped.startswith("/") else f"/{stripped}"
 
 
 def _allow_real_provider_if_needed(provider: str) -> None:
@@ -301,8 +219,6 @@ def _trial_user_ids_from_args(args: argparse.Namespace) -> list[str]:
 def _print_startup_summary(
     args: argparse.Namespace,
     config: ProviderConfig,
-    *,
-    web_search_relay_started: bool,
 ) -> None:
     ws_base = f"ws://{args.host}:{args.port}"
     model = config.chat_model or "default"
@@ -311,38 +227,6 @@ def _print_startup_summary(
     print(f"Main LLM: {config.chat_provider} / {model}")
     print("Services:")
     print(f"  media_agent: {ws_base}/agent-service/v1")
-    relay = _web_search_relay_url(args) if web_search_relay_started else "disabled"
-    print(f"  web_search_relay: {relay}")
-
-
-@contextmanager
-def _web_search_relay_process(args: argparse.Namespace) -> Iterator[subprocess.Popen[str] | None]:
-    if not _should_start_web_search_relay(args):
-        yield None
-        return
-
-    command = [
-        sys.executable,
-        str(REPO_ROOT / "scripts" / "run_tavily_search_relay.py"),
-        "--host",
-        args.web_search_relay_host,
-        "--port",
-        str(args.web_search_relay_port),
-        "--path",
-        _normalize_relay_path(args.web_search_relay_path),
-        "--quiet",
-    ]
-    process = subprocess.Popen(command, cwd=REPO_ROOT, env=os.environ.copy(), text=True)
-    try:
-        yield process
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
 
 
 def _log_gateway_server_starting(
@@ -394,21 +278,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import uvicorn
 
-    with _web_search_relay_process(args) as relay_process:
-        _print_startup_summary(
-            args,
-            config,
-            web_search_relay_started=relay_process is not None,
-        )
-        uvicorn.run(
-            "assistant_agent.api.app:create_app",
-            factory=True,
-            host=args.host,
-            port=args.port,
-            reload=args.reload,
-            access_log=args.access_log,
-            log_level="info" if args.access_log else "warning",
-        )
+    _print_startup_summary(args, config)
+    uvicorn.run(
+        "assistant_agent.api.app:create_app",
+        factory=True,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        access_log=args.access_log,
+        log_level="info" if args.access_log else "warning",
+    )
     return 0
 
 

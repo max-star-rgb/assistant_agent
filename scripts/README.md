@@ -6,9 +6,7 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 ## Realtime runtime
 
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
-  memory, trace, and tool-governed runtime routes. For local Tavily web search/fetch
-  development, pass `--start-web-search-relay` to start the relay child process
-  and wire `WEB_SEARCH_BASE_URL` for this run.
+  memory, trace, and tool-governed runtime routes.
 - `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
   the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
   one Run process, and stops the containers without deleting data when terminated.
@@ -42,8 +40,6 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Specialized integrations
 
-- `scripts/run_tavily_search_relay.py`: opt-in local HTTP relay that adapts the
-  generic `web_search` and `web_fetch` HTTP protocols to Tavily Search/Extract APIs.
 - `scripts/collect_memory_framework_bakeoff.py` and
   `scripts/run_memory_framework_bakeoff.py`: collect and score explicit
   Hindsight/Mem0 bakeoff evidence.

@@ -18,10 +18,6 @@ from assistant_agent.agent.intent import IntentDetector
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
-from assistant_agent.agent.system_prompt_policy import (
-    SystemPromptOptions,
-    SystemPromptProfile,
-)
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.agent.provider_streaming import ProviderStreamingTurnRunner, supports_async_streaming_chat
 from assistant_agent.memory.factory import create_memory_store
@@ -685,8 +681,6 @@ class AgentGraphRuntime:
                 session_id=state.session_id,
                 mode=PromptCompileMode.NATIVE_TOOL,
                 user_query_fallback="durable task quantum",
-                profile=SystemPromptProfile.TEXT_DEFAULT,
-                options=_system_prompt_options_from_request(request),
                 context_pack=context_pack,
                 observations=(),
                 native_calls=(),
@@ -894,15 +888,6 @@ class _ResponseDeltaTrackingEventSink:
         if event.type == "response_delta":
             self.response_delta_emitted = True
         self.inner.emit(event)
-
-
-def _system_prompt_options_from_request(request: UserRequest) -> SystemPromptOptions:
-    metadata = request.metadata
-    return SystemPromptOptions(
-        product_mode=metadata.get("product_mode") is True,
-        allow_web_search=metadata.get("allow_web_search") is not False,
-        allow_memory_tools=metadata.get("allow_memory_tools") is not False,
-    )
 
 
 def _metadata_text(value: Any) -> str:

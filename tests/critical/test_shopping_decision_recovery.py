@@ -1,4 +1,4 @@
-"""Regression for shopping ToolSpec, task prompt projection, and native tool calls."""
+"""Regression for shopping ToolSpec and native tool calls."""
 
 import json
 
@@ -97,8 +97,11 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     assert len(adapter.requests) == 2
     assert adapter.requests[0].response_format is None
     assert adapter.requests[1].response_format is None
-    rendered_user_context = str(adapter.requests[0].messages[1]["content"])
-    assert '"objective": "购买牛奶"' in rendered_user_context
+    rendered_user_contexts = [str(item.messages[1]["content"]) for item in adapter.requests]
+    assert all("实时任务状态" not in item for item in rendered_user_contexts)
+    assert all('"objective": "购买牛奶"' not in item for item in rendered_user_contexts)
+    assert all('"status": "active"' not in item for item in rendered_user_contexts)
+    rendered_user_context = rendered_user_contexts[0]
     for operational_field in (
         "task-internal-id",
         "turn-internal-id",
