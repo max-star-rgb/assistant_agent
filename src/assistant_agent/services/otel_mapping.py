@@ -19,7 +19,7 @@ from assistant_agent.services.turn_summary import (
 )
 
 if TYPE_CHECKING:
-    from assistant_agent.services.trace_conversation import TraceConversationView
+    from assistant_agent.services.trace_conversation import TraceConversationView, TraceLlmInput
 
 
 OTEL_SPAN_SPEC_SCHEMA_VERSION = "assistant_agent_text_otel_span_spec_v1"
@@ -38,7 +38,18 @@ _SPAN_EVENTS = frozenset(
         "loop_guard.triggered",
         "response.final",
         "memory.save.finished",
-        "agent_service.turn.finished",
+    }
+)
+_ITERATION_CHILD_EVENTS = frozenset(
+    {
+        "context.build.finished",
+        "llm.chat.finished",
+        "react.decision",
+        "action.validation.finished",
+        "tool.finished",
+        "tool.failed",
+        "tool.observation",
+        "loop_guard.triggered",
     }
 )
 _VOICE_ATTRIBUTE_TOKENS = frozenset(
@@ -72,6 +83,7 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "terminal_status",
         "tool_call_id",
         "tool_count",
+        "tool_reported_latency_ms",
         "wall_latency_ms",
     }
 )
@@ -127,7 +139,23 @@ def build_text_otel_span_specs(
     root_span = _root_span(safe_events, conversation=conversation)
     trace_attributes = _trace_attributes(safe_events)
     spans = [root_span]
-    for event in safe_events:
+    runtime_span = _runtime_span(
+        safe_events,
+        root_span_id=root_span.span_id,
+        trace_attributes=trace_attributes,
+    )
+    runtime_parent_id = runtime_span.span_id if runtime_span is not None else root_span.span_id
+    if runtime_span is not None:
+        spans.append(runtime_span)
+    event_iterations = _event_iterations(safe_events)
+    iteration_spans = _iteration_spans(
+        safe_events,
+        event_iterations=event_iterations,
+        parent_span_id=runtime_parent_id,
+        trace_attributes=trace_attributes,
+    )
+    spans.extend(iteration_spans.values())
+    for index, event in enumerate(safe_events):
         canonical_event = _event_name(event)
         if canonical_event not in _SPAN_EVENTS:
             continue
@@ -137,6 +165,12 @@ def build_text_otel_span_specs(
             _operation_span(
                 event,
                 root_span_id=root_span.span_id,
+                runtime_parent_id=runtime_parent_id,
+                iteration_parent_id=(
+                    iteration_spans[event_iterations[index]].span_id
+                    if index in event_iterations and event_iterations[index] in iteration_spans
+                    else None
+                ),
                 trace_attributes=trace_attributes,
                 conversation=conversation,
             )
@@ -164,16 +198,110 @@ def _root_span(
             "langfuse.observation.type": "span",
             **_turn_summary_attributes(events),
             **_text_latency_attributes(events),
+            **_agent_service_latency_attributes(events),
             **build_turn_diagnostic(events).langfuse_trace_metadata(),
             **_root_io_attributes(events, conversation=conversation),
         },
     )
 
 
+def _runtime_span(
+    events: list[TraceEvent],
+    *,
+    root_span_id: str,
+    trace_attributes: dict[str, Any],
+) -> OtelSpanSpec | None:
+    started = next((event for event in events if _event_name(event) == "run.started"), None)
+    if started is None:
+        return None
+    terminal = next(
+        (
+            event
+            for event in reversed(events)
+            if _event_name(event) in {"run.completed", "run.failed", "run.cancelled"}
+        ),
+        None,
+    )
+    end_time = terminal.created_at if terminal is not None else max(event.created_at for event in events)
+    output_payload = {
+        "status": terminal.status if terminal is not None else "unknown",
+        "latency_ms": terminal.latency_ms if terminal is not None else None,
+    }
+    return OtelSpanSpec(
+        trace_id=started.trace_id,
+        span_id=started.span_id or _stable_span_id(started.trace_id, "assistant.runtime"),
+        parent_span_id=root_span_id,
+        name="assistant.runtime",
+        start_time=started.created_at,
+        end_time=end_time,
+        status=_event_status(terminal) if terminal is not None else "unset",
+        attributes={
+            **trace_attributes,
+            "langfuse.observation.type": "span",
+            "assistant_agent.canonical_event": "run",
+            "assistant_agent.node_name": "runtime",
+            "langfuse.observation.input": _json_value({"operation": "assistant.runtime"}),
+            "langfuse.observation.output": _json_value(_drop_none(output_payload)),
+        },
+    )
+
+
+def _event_iterations(events: list[TraceEvent]) -> dict[int, int]:
+    assignments: dict[int, int] = {}
+    current_iteration: int | None = None
+    for index, event in enumerate(events):
+        canonical_event = _event_name(event)
+        explicit_iteration = _mapping_int(event.attributes, "iteration")
+        if explicit_iteration is not None:
+            current_iteration = explicit_iteration
+        if canonical_event in _ITERATION_CHILD_EVENTS and current_iteration is not None:
+            assignments[index] = current_iteration
+    return assignments
+
+
+def _iteration_spans(
+    events: list[TraceEvent],
+    *,
+    event_iterations: dict[int, int],
+    parent_span_id: str,
+    trace_attributes: dict[str, Any],
+) -> dict[int, OtelSpanSpec]:
+    grouped: dict[int, list[TraceEvent]] = {}
+    for index, iteration in event_iterations.items():
+        grouped.setdefault(iteration, []).append(events[index])
+    spans: dict[int, OtelSpanSpec] = {}
+    for iteration, iteration_events in sorted(grouped.items()):
+        statuses = [_event_status(event) for event in iteration_events]
+        status: Literal["ok", "error", "unset"] = (
+            "error" if "error" in statuses else "ok" if "ok" in statuses else "unset"
+        )
+        spans[iteration] = OtelSpanSpec(
+            trace_id=iteration_events[0].trace_id,
+            span_id=_stable_span_id(iteration_events[0].trace_id, f"react.iteration.{iteration}"),
+            parent_span_id=parent_span_id,
+            name="react.iteration",
+            start_time=min(_span_start_time(event) for event in iteration_events),
+            end_time=max(event.created_at for event in iteration_events),
+            status=status,
+            attributes={
+                **trace_attributes,
+                "langfuse.observation.type": "span",
+                "assistant_agent.canonical_event": "react.iteration",
+                "assistant_agent.node_name": "assistant_loop",
+                "assistant_agent.iteration": iteration,
+                "langfuse.observation.input": _json_value({"iteration": iteration}),
+                "langfuse.observation.output": _json_value({"status": status}),
+            },
+        )
+    return spans
+
+
 def _operation_span(
     event: TraceEvent,
     *,
     root_span_id: str,
+    runtime_parent_id: str,
+    iteration_parent_id: str | None,
     trace_attributes: dict[str, Any],
     conversation: "TraceConversationView | None",
 ) -> OtelSpanSpec:
@@ -181,7 +309,12 @@ def _operation_span(
     return OtelSpanSpec(
         trace_id=event.trace_id,
         span_id=span_id,
-        parent_span_id=event.parent_span_id or root_span_id,
+        parent_span_id=(
+            event.parent_span_id
+            or iteration_parent_id
+            or runtime_parent_id
+            or root_span_id
+        ),
         name=_span_name(event),
         start_time=_span_start_time(event),
         end_time=event.created_at,
@@ -213,6 +346,11 @@ def _trace_attributes(events: list[TraceEvent]) -> dict[str, Any]:
         attrs["langfuse.user.id"] = user_id
     if session_id:
         attrs["langfuse.session.id"] = session_id
+        attrs["assistant_agent.agent_session_id"] = session_id
+        attrs["langfuse.trace.metadata.agent_session_id"] = session_id
+    client_type = _string_or_none(summary.get("client_type"))
+    attrs["assistant_agent.session_scope"] = _session_scope(client_type)
+    attrs["langfuse.trace.metadata.session_scope"] = _session_scope(client_type)
     return attrs
 
 
@@ -220,6 +358,10 @@ def _turn_summary_attributes(events: list[TraceEvent]) -> dict[str, Any]:
     summary = _latest_turn_summary(events)
     attrs: dict[str, Any] = {}
     for key in (
+        "assistant_run_id",
+        "gateway_run_id",
+        "turn_id",
+        "session_turn",
         "terminal_status",
         "response_present",
         "tool_count",
@@ -238,6 +380,32 @@ def _text_latency_attributes(events: list[TraceEvent]) -> dict[str, Any]:
         value = _mapping_int(event.attributes, "first_text_latency_ms")
         if value is not None:
             return {"assistant_agent.first_text_latency_ms": value}
+    return {}
+
+
+def _agent_service_latency_attributes(events: list[TraceEvent]) -> dict[str, Any]:
+    for event in reversed(events):
+        if _event_name(event) != "agent_service.turn.finished":
+            continue
+        summary = event.output_summary.get("turn_latency")
+        if not isinstance(summary, Mapping):
+            return {}
+        attrs: dict[str, Any] = {}
+        for key in (
+            "total_ms",
+            "bottleneck",
+            "bottleneck_ms",
+            "bottleneck_share_pct",
+            "unattributed_ms",
+            "ack_status",
+            "first_stream_chunk_latency_ms",
+        ):
+            value = summary.get(key)
+            if not _safe_scalar(value):
+                continue
+            attrs[f"assistant_agent.{key}"] = value
+            attrs[f"langfuse.trace.metadata.{key}"] = value
+        return attrs
     return {}
 
 
@@ -370,11 +538,18 @@ def _event_io_attributes(
             ),
         }
     elif name == "llm.chat.finished":
-        input_payload = _selected_payload(
-            event.attributes,
-            ("iteration", "input_tokens"),
+        llm_input = _llm_input_for_iteration(
+            conversation,
+            iteration=_mapping_int(event.attributes, "iteration"),
         )
-        input_payload.update({"provider": event.provider, "model": event.model})
+        input_payload = (
+            dict(llm_input.request)
+            if llm_input is not None
+            else _selected_payload(event.attributes, ("iteration", "input_tokens"))
+        )
+        input_payload.setdefault("iteration", event.attributes.get("iteration"))
+        input_payload.setdefault("provider", event.provider)
+        input_payload.setdefault("model", event.model)
         output_payload = _selected_payload(
             event.attributes,
             ("finish_reason", "output_tokens", "provider_latency_ms", "wall_latency_ms"),
@@ -400,6 +575,19 @@ def _selected_payload(source: Mapping[str, Any], keys: tuple[str, ...]) -> dict[
         for key in keys
         if key in source and source[key] is not None
     }
+
+
+def _llm_input_for_iteration(
+    conversation: "TraceConversationView | None",
+    *,
+    iteration: int | None,
+) -> "TraceLlmInput | None":
+    if conversation is None or iteration is None:
+        return None
+    return next(
+        (item for item in conversation.llm_inputs if item.iteration == iteration),
+        None,
+    )
 
 
 def _safe_payload_value(value: Any) -> Any:
@@ -466,13 +654,11 @@ def _latest_turn_summary(events: list[TraceEvent]) -> dict[str, Any]:
 
 
 def _root_span_id(events: list[TraceEvent]) -> str:
-    for event in events:
-        if _event_name(event) == "run.started" and event.span_id:
-            return event.span_id
-    for event in events:
-        if event.span_id:
-            return event.span_id
-    return f"{events[0].run_id}:root"
+    return _stable_span_id(events[0].trace_id, "assistant.turn")
+
+
+def _stable_span_id(trace_id: str, name: str) -> str:
+    return sha256(f"{trace_id}:{name}".encode("utf-8")).digest()[:8].hex()
 
 
 def _root_status(events: list[TraceEvent]) -> Literal["ok", "error", "unset"]:
@@ -517,9 +703,12 @@ def _observation_type(event: TraceEvent) -> str:
 
 
 def _span_start_time(event: TraceEvent) -> datetime:
-    if event.latency_ms is None:
+    latency_ms = event.latency_ms
+    if _event_name(event) == "llm.chat.finished":
+        latency_ms = _mapping_int(event.attributes, "wall_latency_ms") or latency_ms
+    if latency_ms is None:
         return event.created_at
-    return event.created_at - timedelta(milliseconds=event.latency_ms)
+    return event.created_at - timedelta(milliseconds=latency_ms)
 
 
 def _event_name(event: TraceEvent) -> str:
@@ -542,3 +731,9 @@ def _safe_scalar(value: Any) -> bool:
 
 def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _session_scope(client_type: str | None) -> str:
+    if client_type in {"media_agent", "run_client"}:
+        return "agent_service_connection"
+    return "logical_conversation"

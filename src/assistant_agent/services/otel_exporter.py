@@ -568,6 +568,7 @@ class TextOtelTraceObserver:
             session_id=str(identity.session_id),
             trace_id=identity.trace_id,
             limit=4000,
+            include_llm_inputs=True,
         )
 
     def _call_exporter_lifecycle(self, method_name: str, *, timeout: float) -> bool:

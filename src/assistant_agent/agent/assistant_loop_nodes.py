@@ -405,6 +405,14 @@ def _run_chat_turn(
     started_at = perf_counter()
     provider = _safe_provider_label(getattr(chat_adapter, "provider", None))
     model = _safe_provider_label(getattr(chat_adapter, "model", None))
+    _record_local_llm_input(
+        state,
+        trace_id=graph_state.get("trace_id") or state.trace_id,
+        iteration=iteration,
+        provider=provider,
+        model=model,
+        request=request,
+    )
     append_observability_event(
         graph_state.get("trace_store"),
         trace_id=graph_state.get("trace_id") or state.trace_id,
@@ -472,6 +480,57 @@ def _run_chat_turn(
         error=_chat_result_trace_error(result),
     )
     return result
+
+
+def _record_local_llm_input(
+    state: AgentState,
+    *,
+    trace_id: str,
+    iteration: int,
+    provider: str | None,
+    model: str | None,
+    request: ChatRequest,
+) -> None:
+    """Capture the compiled provider request only for explicit local debugging."""
+
+    from assistant_agent.services.trace_content_policy import local_trace_content_enabled
+
+    if not local_trace_content_enabled():
+        return
+    from assistant_agent.services.trace_conversation import (
+        TraceLlmInput,
+        get_default_trace_conversation_store,
+    )
+
+    payload = request.model_dump(mode="json", exclude={"stream_callback"})
+    safe_payload = cast(dict[str, Any], _sanitize_local_llm_value(payload))
+    safe_payload["tools"] = payload.get("tools", [])
+    get_default_trace_conversation_store().append_llm_input(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=trace_id,
+        llm_input=TraceLlmInput(
+            iteration=iteration,
+            provider=provider,
+            model=model,
+            request=safe_payload,
+        ),
+    )
+
+
+def _sanitize_local_llm_value(value: Any, *, key: str | None = None) -> Any:
+    if key in {"reasoning_content", "assistant_reasoning_content"}:
+        return "[redacted]"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _sanitize_local_llm_value(item, key=str(item_key))
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_local_llm_value(item) for item in value]
+    if isinstance(value, str):
+        return "\n".join(sanitize_trace_value(line) for line in value.split("\n"))
+    return value
 
 
 def _elapsed_ms(started_at: float) -> int:

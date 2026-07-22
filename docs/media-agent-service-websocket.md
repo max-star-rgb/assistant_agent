@@ -152,6 +152,10 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
 - Agent 使用最新一条非空 `speechContent` 作为本轮 Gateway 输入文本。
 - 只包含 `imageContent` 的内容项可以随请求传入，但当前不单独触发图像理解。
 - `chat` 会进入 `GatewayTurnFacade -> GatewaySessionManager -> GatewayAgentAdapter -> AssistantRuntimeApp -> AgentGraphRuntime`。
+- Langfuse 的 `langfuse.session.id` 使用这个内部 `agent-service-*` AgentSession id，
+  并标记 `session_scope=agent_service_connection`；`langfuse.user.id` 使用
+  `userNumber`。外层 vendor `sessionId`、`chatIndex`、Gateway `turn_id/run_id` 和
+  delivery id 仍是不同的关联标识，不作为 Langfuse Session 分组键。
 - chat run 在独立任务中执行，WebSocket 主循环会继续接收并 ACK 后续媒体消息。
 - 若 WebSocket 在 chat run 执行期间异常断开，Agent 会记录 ERROR 级安全日志，
   并对本轮 Gateway run 发送 `run.cancel`（`source=gateway_disconnect`、

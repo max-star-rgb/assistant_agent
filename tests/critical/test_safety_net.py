@@ -1,6 +1,6 @@
 """Minimal offline safety net for the assistant's stable runtime boundaries."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import importlib
 from types import SimpleNamespace
 from uuid import UUID
@@ -35,7 +35,12 @@ from assistant_agent.services.otel_exporter import TextOtelTraceObserver
 from assistant_agent.services.otel_exporter import OtlpHttpTextExporterConfig
 from assistant_agent.services.otel_mapping import build_text_otel_span_specs, langfuse_trace_id
 from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.services.trace_conversation import TraceConversationText, TraceConversationView
+from assistant_agent.services.trace_conversation import (
+    TraceConversationText,
+    TraceConversationView,
+    TraceLlmInput,
+    get_default_trace_conversation_store,
+)
 from assistant_agent.services.trace_store import TraceEvent
 from scripts.run_client import chat_response_error
 
@@ -392,6 +397,139 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
     assert "北京晴" in by_name["tool.observation"].attributes["langfuse.observation.output"]
 
 
+def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm_input() -> None:
+    created_at = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    common = {
+        "trace_id": "4e40c74a09733d59f1cfa5a9eea45fb3",
+        "run_id": "run-hierarchy",
+        "user_id": "10086",
+        "session_id": "agent-service-session",
+    }
+    events = [
+        TraceEvent(
+            **common,
+            node_name="runtime",
+            event_type="observability",
+            canonical_event="run.started",
+            span_id="1111111111111111",
+            status="started",
+            created_at=created_at,
+        ),
+        TraceEvent(
+            **common,
+            node_name="assistant",
+            event_type="observability",
+            canonical_event="context.build.finished",
+            span_id="2222222222222222",
+            status="succeeded",
+            latency_ms=5,
+            attributes={"iteration": 1},
+            created_at=created_at + timedelta(milliseconds=10),
+        ),
+        TraceEvent(
+            **common,
+            node_name="assistant",
+            event_type="observability",
+            canonical_event="llm.chat.finished",
+            span_id="3333333333333333",
+            status="succeeded",
+            latency_ms=20,
+            provider="qwen",
+            model="qwen-test",
+            attributes={"iteration": 1, "finish_reason": "stop", "wall_latency_ms": 20},
+            created_at=created_at + timedelta(milliseconds=31),
+        ),
+        TraceEvent(
+            **common,
+            node_name="assistant",
+            event_type="assistant_decision",
+            canonical_event="react.decision",
+            status="final_answer",
+            attributes={"iteration": 1, "decision_type": "final_answer"},
+            created_at=created_at + timedelta(milliseconds=32),
+        ),
+        TraceEvent(
+            **common,
+            node_name="runtime",
+            event_type="observability",
+            canonical_event="run.completed",
+            status="completed",
+            latency_ms=40,
+            created_at=created_at + timedelta(milliseconds=40),
+        ),
+        TraceEvent(
+            **common,
+            node_name="agent_service",
+            event_type="observability",
+            canonical_event="agent_service.turn.finished",
+            status="sent",
+            latency_ms=45,
+            created_at=created_at + timedelta(milliseconds=45),
+        ),
+        TraceEvent(
+            **common,
+            node_name="agent_service",
+            event_type="observability",
+            canonical_event="assistant.turn.summary",
+            status="completed",
+            output_summary={
+                "turn_summary": {
+                    "schema_version": "assistant_turn_summary_v1",
+                    "trace_id": common["trace_id"],
+                    "assistant_run_id": common["run_id"],
+                    "gateway_run_id": "gateway-run",
+                    "turn_id": "turn-1",
+                    "user_id": common["user_id"],
+                    "session_id": common["session_id"],
+                    "session_turn": 3,
+                    "client_type": "run_client",
+                    "terminal_status": "completed",
+                    "response_present": True,
+                    "tool_count": 0,
+                    "error_count": 0,
+                }
+            },
+            created_at=created_at + timedelta(milliseconds=46),
+        ),
+    ]
+    conversation = TraceConversationView(
+        trace_id=common["trace_id"],
+        user=TraceConversationText(text="生成图片", chars=4),
+        assistant=TraceConversationText(text="完成", chars=2),
+        llm_inputs=[
+            TraceLlmInput(
+                iteration=1,
+                provider="qwen",
+                model="qwen-test",
+                request={
+                    "messages": [
+                        {"role": "system", "content": "system prompt"},
+                        {"role": "user", "content": "compiled context"},
+                    ],
+                    "tools": [{"type": "function", "function": {"name": "image_generation"}}],
+                },
+            )
+        ],
+    )
+
+    spans = build_text_otel_span_specs(events, conversation=conversation)
+    root = next(span for span in spans if span.name == "assistant.turn")
+    runtime = next(span for span in spans if span.name == "assistant.runtime")
+    iteration = next(span for span in spans if span.name == "react.iteration")
+    context = next(span for span in spans if span.name == "context.build")
+    generation = next(span for span in spans if span.name == "llm.chat")
+
+    assert runtime.parent_span_id == root.span_id
+    assert iteration.parent_span_id == runtime.span_id
+    assert context.parent_span_id == iteration.span_id
+    assert generation.parent_span_id == iteration.span_id
+    assert not any(span.name == "agent_service.turn" for span in spans)
+    assert '"content":"compiled context"' in generation.attributes["langfuse.observation.input"]
+    assert '"name":"image_generation"' in generation.attributes["langfuse.observation.input"]
+    assert root.attributes["assistant_agent.session_scope"] == "agent_service_connection"
+    assert root.attributes["assistant_agent.turn_id"] == "turn-1"
+
+
 def test_plain_text_run_completes() -> None:
     sink = ListEventSink()
     state = AgentGraphRuntime(
@@ -501,6 +639,44 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
     assert "黑色通勤包" in str(runtime.chat_adapter.requests[1].messages)
     assert state.response is not None
     assert state.response.message == "已结合记忆完成推荐。"
+
+
+def test_local_trace_content_captures_compiled_provider_request(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                message_kind="final_answer",
+                response_text="完成。",
+            )
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=_offline_config(),
+        chat_adapter=adapter,
+        memory_store=InMemoryStore(),
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(user_id="local-user", session_id="local-session", text="生成一张图片")
+    )
+    content = get_default_trace_conversation_store().get(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=state.trace_id,
+        limit=4000,
+        include_llm_inputs=True,
+    )
+
+    assert content is not None
+    assert len(content.llm_inputs) == 1
+    request = content.llm_inputs[0].request
+    assert request["messages"] == adapter.requests[0].model_dump(mode="json")["messages"]
+    assert request["tools"] == adapter.requests[0].model_dump(mode="json")["tools"]
 
 
 def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -> None:

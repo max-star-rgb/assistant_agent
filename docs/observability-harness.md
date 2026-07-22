@@ -76,6 +76,12 @@ largest critical-path stage, including positive `unattributed`. ACK latency and
 background video diagnostics are secondary measurements and do not change the
 send-path bottleneck.
 
+Tool stages follow the same rule: `tool.finished` / `tool.failed` 的顶层
+`latency_ms` 必须覆盖 `tool.started` 到 terminal commit 的 executor wall time。
+工具自身返回的 `ToolResult.latency_ms` 只作为
+`tool_reported_latency_ms` 嵌套诊断，不能替代 wall time，否则 Provider
+轮询、adapter 包装或 commit 前等待会被错误计入 `unattributed`。
+
 The foreground assistant loop must emit one paired `llm.chat.started` /
 `llm.chat.finished` span for every Provider attempt. The finished event supplies
 `wall_latency_ms` and `provider_latency_ms`, allowing the turn summary to name
@@ -705,10 +711,13 @@ Trace and monitoring records must not include:
 `ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT=true`、
 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 且 OTLP endpoint host 是
 `localhost`、`127.0.0.1` 或 `::1` 时，Langfuse root observation 和
-`response.final` 可以接收当前轮用户/助手原文。内容来自独立的进程内
-`TraceConversationStore`，单侧最多导出 4000 字符并继续执行 secret sanitizer；它不写入
-`.data/graph_trace.jsonl`，也不允许导出 system prompt、完整 rendered context、memory
-原文、Provider 原始响应或隐藏推理。任一条件不满足时自动回退到结构化摘要。
+`response.final` 可以接收当前轮用户/助手原文；每个 `llm.chat` generation 还可以接收
+实际编译后交给 Chat adapter 的 `ChatRequest`，包括 messages、完整 tool schemas、
+tool choice 和生成参数。内容来自独立的进程内 `TraceConversationStore`，用户/助手单侧
+最多导出 4000 字符；compiled request 保留消息换行和工具 schema，并继续执行 secret
+sanitizer。上一轮 Provider 的 hidden reasoning 字段始终替换为 `[redacted]`，Provider
+原始请求/响应对象和 stream callback 不进入该 store。上述正文不写入
+`.data/graph_trace.jsonl`；任一条件不满足时自动回退到结构化摘要。
 
 同一个 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 也允许本地 ToolHistory 和工具 trace 保存经过
 secret sanitizer 的工具输入输出，便于单机调试；默认关闭，且始终排除 Provider 原始 payload/response
@@ -805,6 +814,15 @@ Regression tests should enforce these invariants:
   root 同时写入 `langfuse.trace.input/output`。工具字段仅使用 prompt-safe 参数摘要、
   decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
   请求体或 Provider payload。
+- Langfuse span hierarchy 固定为 `assistant.turn -> assistant.runtime ->
+  react.iteration[n] -> context/llm/decision/tool`。memory、final response 和
+  runtime postprocess 直接归属 `assistant.runtime`。`agent_service.turn.finished`
+  是入口延迟汇总事实，不再映射成一个与 root 几乎完全重叠的长 Span；其关联 ID、
+  terminal 状态和诊断元数据合并到 root/turn summary。
+- `langfuse.user.id` 继续映射 Runtime `user_id`；`langfuse.session.id` 映射内部
+  AgentSession id。OTLP metadata 同时写入 `agent_session_id` 和 `session_scope`。
+  Agent-Service 当前为 `session_scope=agent_service_connection`，表示该 session 是
+  WebSocket 连接级逻辑会话，不能被解释成 vendor `sessionId` 或跨重连 conversation。
 - 本地原文模式还需显式设置 `ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT=true`，并同时满足
   local trace content 与 loopback endpoint 限制；该开关不能用于远程 OTLP endpoint。
 - Disabled export must not import OpenTelemetry packages. Missing optional

@@ -1208,7 +1208,10 @@ def _safe_steps(value: Any) -> list[dict[str, Any]]:
 
 
 def _offline_env_requested() -> bool:
-    return os.environ.get("MULTIMODAL_AGENT_DISABLE_DOTENV") == "1"
+    return (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or os.environ.get("MULTIMODAL_AGENT_DISABLE_DOTENV") == "1"
+    )
 
 
 def _skip_dotenv_load() -> bool:

@@ -339,7 +339,8 @@ class ToolExecutor:
         invocation: ToolInvocationResult,
     ) -> ToolResult:
         result = invocation.result
-        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
+        reported_latency_ms = result.latency_ms
+        latency_ms = int((perf_counter() - prepared.started_at) * 1000)
         state.complete_tool_call(prepared.call_id, result)
         post_tool_call = build_post_tool_call_summary(
             tool_name=prepared.tool_name,
@@ -384,6 +385,7 @@ class ToolExecutor:
             step_id=prepared.step_id,
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
+            reported_latency_ms=reported_latency_ms,
             retry_count=invocation.retry_count,
             tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             input_summary=_policy_safe_input_summary(prepared.tool_input),
@@ -402,7 +404,8 @@ class ToolExecutor:
         invocation: ToolInvocationResult,
     ) -> ToolResult:
         result = invocation.result
-        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
+        reported_latency_ms = result.latency_ms
+        latency_ms = int((perf_counter() - prepared.started_at) * 1000)
         decision = self.recovery_policy.decide(result, prepared.step)
         result.error = decision.message
         post_tool_call = build_post_tool_call_summary(
@@ -468,6 +471,7 @@ class ToolExecutor:
             step_id=prepared.step_id,
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
+            reported_latency_ms=reported_latency_ms,
             retry_count=invocation.retry_count,
             tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             input_summary=_policy_safe_input_summary(prepared.tool_input),
@@ -490,7 +494,8 @@ class ToolExecutor:
     ) -> ToolResult:
         result = invocation.result
         error_details = invocation.cancellation_metadata or {}
-        latency_ms = result.latency_ms or int((perf_counter() - prepared.started_at) * 1000)
+        reported_latency_ms = result.latency_ms
+        latency_ms = int((perf_counter() - prepared.started_at) * 1000)
         post_tool_call = build_post_tool_call_summary(
             tool_name=prepared.tool_name,
             result=result,
@@ -546,6 +551,7 @@ class ToolExecutor:
             step_id=prepared.step_id,
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
+            reported_latency_ms=reported_latency_ms,
             retry_count=0,
             tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             input_summary=_policy_safe_input_summary(prepared.tool_input),
@@ -678,6 +684,7 @@ def _append_tool_trace_event(
     span_id: str,
     event_type: str = "observability",
     latency_ms: int | None = None,
+    reported_latency_ms: int | None = None,
     retry_count: int | None = None,
     tool_contract: dict[str, Any] | None = None,
     input_summary: dict[str, Any] | None = None,
@@ -721,6 +728,7 @@ def _append_tool_trace_event(
                 step_id=step_id,
                 retry_count=retry_count,
                 tool_contract=tool_contract,
+                reported_latency_ms=reported_latency_ms,
             ),
             error=error,
         )
@@ -733,6 +741,7 @@ def _tool_trace_attributes(
     step_id: str,
     retry_count: int | None,
     tool_contract: dict[str, Any] | None,
+    reported_latency_ms: int | None = None,
 ) -> dict[str, Any]:
     attributes: dict[str, Any] = {
         "tool_call_id": call_id,
@@ -740,6 +749,8 @@ def _tool_trace_attributes(
     }
     if retry_count is not None:
         attributes["retry_count"] = retry_count
+    if reported_latency_ms is not None:
+        attributes["tool_reported_latency_ms"] = reported_latency_ms
     if tool_contract:
         attributes["tool_category"] = tool_contract.get("category")
         attributes["requires_confirmation"] = tool_contract.get(

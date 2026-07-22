@@ -139,7 +139,10 @@ connection, but keeps the vendor `message` / optional `sessionId` / stringified
 `body` envelope. Every WebSocket connection allocates a fresh internal
 Agent/Gateway `session_id`; the vendor `sessionId` remains only the protocol
 correlation value returned to the media side and cannot resume conversation
-history from an older call. Its Gateway session uses the trusted Agent-Service
+history from an older call. Observability/Langfuse therefore uses that internal
+id as `agent_session_id` / `langfuse.session.id` and explicitly labels its scope
+as `agent_service_connection`; it must not present the vendor correlation id as
+a durable conversation id. Its Gateway session uses the trusted Agent-Service
 entry profile and a trusted AgentRuntime tool set: `web_search`, `shopping_search`,
 `memory_retrieval`, `memory_save`, plus dynamically exposed `vision_understanding`
 when active-video state makes it valid. These tools enter the Agent-Service

@@ -1,7 +1,8 @@
 """Explicit, bounded lookup of one trace's persisted conversation turn."""
 
 from dataclasses import dataclass
-from typing import Literal
+from threading import Lock
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -19,6 +20,15 @@ class TraceConversationText(BaseModel):
     truncated: bool = False
 
 
+class TraceLlmInput(BaseModel):
+    """One local-only provider request captured before an LLM call."""
+
+    iteration: int = Field(ge=1)
+    provider: str | None = None
+    model: str | None = None
+    request: dict[str, Any]
+
+
 class TraceConversationView(BaseModel):
     """Current-turn content joined outside the redacted trace store."""
 
@@ -26,6 +36,7 @@ class TraceConversationView(BaseModel):
     trace_id: str
     user: TraceConversationText
     assistant: TraceConversationText
+    llm_inputs: list[TraceLlmInput] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -37,6 +48,7 @@ class TraceConversationRecord:
     trace_id: str
     user_text: str
     assistant_text: str
+    llm_inputs: tuple[TraceLlmInput, ...] = ()
 
 
 class InMemoryTraceConversationStore:
@@ -51,6 +63,7 @@ class InMemoryTraceConversationStore:
             raise ValueError("max_records must be positive")
         self.max_records = max_records
         self._records: list[TraceConversationRecord] = []
+        self._lock = Lock()
 
     def append(
         self,
@@ -61,23 +74,48 @@ class InMemoryTraceConversationStore:
         user_text: str,
         assistant_text: str,
     ) -> None:
-        record = TraceConversationRecord(
-            user_id=user_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            user_text=user_text,
-            assistant_text=assistant_text,
-        )
-        self._records = [
-            existing
-            for existing in self._records
-            if not (
-                existing.user_id == user_id
-                and existing.session_id == session_id
-                and existing.trace_id == trace_id
+        with self._lock:
+            existing = self._matching_record(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
             )
-        ]
-        self._records = [*self._records, record][-self.max_records :]
+            record = TraceConversationRecord(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                llm_inputs=existing.llm_inputs if existing is not None else (),
+            )
+            self._replace_record(record)
+
+    def append_llm_input(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        llm_input: TraceLlmInput,
+    ) -> None:
+        """Append one exact compiled LLM request to the local debug record."""
+
+        with self._lock:
+            existing = self._matching_record(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
+            inputs = (*existing.llm_inputs, llm_input) if existing is not None else (llm_input,)
+            record = TraceConversationRecord(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                user_text=existing.user_text if existing is not None else "",
+                assistant_text=existing.assistant_text if existing is not None else "",
+                llm_inputs=inputs[-16:],
+            )
+            self._replace_record(record)
 
     def get(
         self,
@@ -86,21 +124,54 @@ class InMemoryTraceConversationStore:
         session_id: str,
         trace_id: str,
         limit: int = DEFAULT_TRACE_CONVERSATION_CHAR_LIMIT,
+        include_llm_inputs: bool = False,
     ) -> TraceConversationView | None:
         if limit <= 0:
             raise ValueError("limit must be positive")
-        for record in reversed(self._records):
-            if (
-                record.user_id == user_id
-                and record.session_id == session_id
-                and record.trace_id == trace_id
-            ):
+        with self._lock:
+            record = self._matching_record(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
+            if record is not None:
                 return TraceConversationView(
                     trace_id=trace_id,
                     user=_bounded_text(record.user_text, limit=limit),
                     assistant=_bounded_text(record.assistant_text, limit=limit),
+                    llm_inputs=list(record.llm_inputs) if include_llm_inputs else [],
                 )
         return None
+
+    def _matching_record(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+    ) -> TraceConversationRecord | None:
+        return next(
+            (
+                record
+                for record in reversed(self._records)
+                if record.user_id == user_id
+                and record.session_id == session_id
+                and record.trace_id == trace_id
+            ),
+            None,
+        )
+
+    def _replace_record(self, record: TraceConversationRecord) -> None:
+        self._records = [
+            existing
+            for existing in self._records
+            if not (
+                existing.user_id == record.user_id
+                and existing.session_id == record.session_id
+                and existing.trace_id == record.trace_id
+            )
+        ]
+        self._records = [*self._records, record][-self.max_records :]
 
 
 _DEFAULT_TRACE_CONVERSATION_STORE = InMemoryTraceConversationStore()

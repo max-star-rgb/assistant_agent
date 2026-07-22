@@ -100,6 +100,19 @@ class _ExecutionBoundaryTool(ToolBase):
         return ToolResult(tool_name=self.name, success=True, data=input.model_dump())
 
 
+class _ReportedLatencyTool(_ExecutionBoundaryTool):
+    name = "reported_latency_tool"
+
+    def _run(self, input: _ExecutionBoundaryInput, context: ToolContext) -> ToolResult:
+        self.run_count += 1
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data=input.model_dump(),
+            latency_ms=1,
+        )
+
+
 class _ConfirmationBoundaryTool(_ExecutionBoundaryTool):
     name = "confirmation_boundary_tool"
     category = "write"
@@ -412,6 +425,38 @@ def test_tool_executor_stages_do_not_commit_during_invocation() -> None:
     assert result.success is True
     assert [item.data for item in state.tool_results] == [{"value": "ok"}]
     assert [event.type for event in events.events] == ["tool_started", "tool_finished"]
+
+
+def test_tool_trace_uses_executor_wall_latency_instead_of_tool_reported_latency(monkeypatch) -> None:
+    tool = _ReportedLatencyTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    trace_store = InMemoryTraceStore()
+    clock_values = iter((100.0, 107.45, 107.46))
+    monkeypatch.setattr(
+        "assistant_agent.agent.tool_executor.perf_counter",
+        lambda: next(clock_values),
+    )
+    state = AgentState.from_request(
+        UserRequest(user_id="user-1", session_id="session-1", text="execute")
+    )
+
+    ToolExecutor(registry=registry).run_tool(
+        state,
+        "step-1",
+        tool.name,
+        {"value": "ok"},
+        trace_store=trace_store,
+        trace_id=state.trace_id,
+    )
+
+    terminal = next(
+        event
+        for event in trace_store.list_by_trace(state.trace_id)
+        if event.canonical_event == "tool.finished"
+    )
+    assert terminal.latency_ms >= 7450
+    assert terminal.attributes["tool_reported_latency_ms"] == 1
 
 
 def test_staged_executor_preserves_confirmation_without_invoking_tool() -> None:

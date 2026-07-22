@@ -207,6 +207,10 @@ Last updated: 2026-07-17
 - 默认自动压缩仍是 deterministic formatting/summary。LLM semantic compaction 已有受控入口，但默认离线 profile 不启用。
 - 当前全局压缩控制仍是 approximate character budget；recent transcript 和 memory context 已有独立 token-aware 边界，但这不替代 AssistantContextPack 的全局字符预算。
 - Context Compiler v1 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；token 字段仍依赖现有估算或 provider usage metadata。
+- 显式本地 trace-content + loopback OTLP 模式是独立的 prompt 调试例外：assistant loop
+  会在 Provider 调用前把最终 compiled `ChatRequest` 暂存到进程内 store，并作为对应
+  Langfuse `llm.chat` generation input 导出。该能力不改变 Context Compiler/API 的摘要契约，
+  不写 JSONL，不保存 Provider 原始响应或 hidden reasoning。
 - Editable owner context 当前只实现本机 owner-bound `SOUL.md`；没有实现 `USER.md` / `MEMORY.md` projection、skill L1/L2 view、Provider cache hint 或跨进程 last-known-good。
 - 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
 - 会话历史压缩只增量合并滑出 token-aware recent window 的较早轮次，不做跨轮语义重写、事实抽取、冲突消解或质量反馈调参。
