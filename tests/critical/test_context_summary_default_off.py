@@ -1,4 +1,4 @@
-"""Regression coverage for the temporarily disabled session summary path."""
+"""Regression coverage for the disabled AgentGraphRuntime compaction path."""
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
@@ -11,6 +11,7 @@ from assistant_agent.services.assistant_run_service import (
 )
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.context.compaction import sanitize_observations_for_context
+from assistant_agent.services.context.compactor import DeterministicContextCompactor
 from assistant_agent.services.session_store import InMemorySessionStore
 
 
@@ -104,7 +105,7 @@ def test_unbounded_observation_context_only_removes_unsafe_payloads() -> None:
     assert "raw_provider_response" not in sanitized["structured_output"]
 
 
-def test_explicit_deterministic_mode_keeps_session_summary_wiring_available() -> None:
+def test_runtime_ignores_configured_and_injected_compactors() -> None:
     adapter = _CapturingChatAdapter()
     runtime = AgentGraphRuntime(
         config=ProviderConfig(
@@ -112,6 +113,7 @@ def test_explicit_deterministic_mode_keeps_session_summary_wiring_available() ->
             langgraph_checkpointer_backend="none",
         ),
         chat_adapter=adapter,
+        context_compactor=DeterministicContextCompactor(),
         memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
@@ -139,5 +141,21 @@ def test_explicit_deterministic_mode_keeps_session_summary_wiring_available() ->
         conversation_store=conversation_store,
     )
 
-    assert conversation_store.get_summary("opt-in-user", "opt-in-session") is not None
-    assert "context_summary" in artifacts.state.request.metadata
+    assert runtime.context_compactor is None
+    assert conversation_store.get_summary("opt-in-user", "opt-in-session") is None
+    assert "context_summary" not in artifacts.state.request.metadata
+    messages = adapter.requests[0].messages
+    assert [message["role"] for message in messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert messages[1]["content"] == "历史问题 1"
+    assert messages[-2]["content"] == "历史回答 3"
+    assert messages[-1]["content"].endswith("当前问题")
+    assert "较早对话摘要" not in str(messages)

@@ -44,7 +44,7 @@ from assistant_agent.services.durable_tasks.sqlite_store import SQLiteTaskStore
 from assistant_agent.services.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
 from assistant_agent.services.checkpointer import create_checkpointer
 from assistant_agent.services.context.observability import build_traced_assistant_context_pack
-from assistant_agent.services.context.compactor import ContextCompactor, create_context_compactor
+from assistant_agent.services.context.compactor import ContextCompactor
 from assistant_agent.services.context.prompt_compiler import (
     PromptCompileMode,
     PromptCompileRequest,
@@ -151,7 +151,10 @@ class AgentGraphRuntime:
         self.event_sink = event_sink
         self.trace_store = trace_store or InMemoryTraceStore()
         self.chat_adapter = chat_adapter or create_chat_adapter(self.config)
-        self.context_compactor = context_compactor or create_context_compactor(self.config, self.chat_adapter)
+        # Runtime context compaction is intentionally disabled. Keep accepting the
+        # dependency for constructor compatibility while the compactor
+        # implementations remain available outside AgentGraphRuntime.
+        self.context_compactor: ContextCompactor | None = None
         self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
         self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
             [SoulContextSource()]
