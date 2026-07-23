@@ -239,6 +239,8 @@ def map_exception_to_provider_error(
 
 def _sanitize_detail_value(value: Any, policy: ProviderSafetyPolicy) -> Any:
     if isinstance(value, str):
+        if not value:
+            return ""
         return policy.sanitize_message(value)
     if isinstance(value, dict):
         return {

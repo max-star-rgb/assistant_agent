@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         TraceConversationView,
         TraceLlmInput,
         TraceLlmOutput,
+        TraceMemoryOperation,
         TraceToolObservation,
     )
 
@@ -62,6 +63,7 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "route_branch",
         "runtime_action",
         "runtime_call_latency_ms",
+        "search_error_count",
         "session_turn",
         "terminal_status",
         "transport_mode",
@@ -375,6 +377,13 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
         if canonical_event in {"tool.finished", "tool.failed"}:
             attrs["gen_ai.tool.name"] = event.tool_name
             attrs["gen_ai.tool.type"] = "function"
+    if event.error:
+        error_code = event.error.get("code")
+        error_message = event.error.get("message")
+        if isinstance(error_code, str) and error_code:
+            attrs["assistant_agent.error_code"] = sanitize_trace_value(error_code)
+        if isinstance(error_message, str) and error_message:
+            attrs["langfuse.observation.status_message"] = sanitize_trace_value(error_message)
     attrs.update(_safe_attributes(event.attributes, prefix="assistant_agent"))
     attrs.update(_safe_attributes(event.output_summary, prefix="assistant_agent", allowed_keys=_ALLOWED_OUTPUT_KEYS))
     usage = _usage_details(event.attributes)
@@ -497,15 +506,40 @@ def _event_io_attributes(
                 ),
             }
         )
+    elif name == "memory.load.finished":
+        memory_operation = _memory_operation_for_event(
+            conversation,
+            span_id=event.span_id,
+            operation="load",
+        )
+        if memory_operation is not None:
+            input_payload = dict(memory_operation.input)
+            output_payload = dict(memory_operation.output)
+    elif name == "memory.capture.finished":
+        memory_operation = _memory_operation_for_event(
+            conversation,
+            span_id=event.span_id,
+            operation="capture",
+        )
+        if memory_operation is not None:
+            input_payload = dict(memory_operation.input)
+            output_payload = dict(memory_operation.output)
     elif name == "context.build.finished":
+        context_report = event.output_summary.get("context_report_v1")
         output_payload = {
             "status": event.status or _event_status(event),
             "latency_ms": event.latency_ms,
             "iteration": event.attributes.get("iteration"),
             "context_report_v1": _safe_payload_value(
-                event.output_summary.get("context_report_v1")
+                context_report
             ),
         }
+        memory_injection = _memory_injection_for_context(
+            conversation,
+            context_report=context_report,
+        )
+        if memory_injection is not None:
+            output_payload["memory_injection"] = memory_injection
     elif name == "llm.chat.finished":
         llm_input = _llm_input_for_event(
             conversation,
@@ -714,6 +748,63 @@ def _tool_observation_for_event(
         ),
         None,
     )
+
+
+def _memory_operation_for_event(
+    conversation: "TraceConversationView | None",
+    *,
+    span_id: str | None,
+    operation: Literal["load", "capture"],
+) -> "TraceMemoryOperation | None":
+    if conversation is None:
+        return None
+    if span_id is not None:
+        matched = next(
+            (
+                item
+                for item in conversation.memory_operations
+                if item.span_id == span_id and item.operation == operation
+            ),
+            None,
+        )
+        if matched is not None:
+            return matched
+    return next(
+        (
+            item
+            for item in reversed(conversation.memory_operations)
+            if item.operation == operation
+        ),
+        None,
+    )
+
+
+def _memory_injection_for_context(
+    conversation: "TraceConversationView | None",
+    *,
+    context_report: Any,
+) -> dict[str, Any] | None:
+    if conversation is None or not isinstance(context_report, Mapping):
+        return None
+    sections = context_report.get("sections")
+    memory_section = sections.get("memory") if isinstance(sections, Mapping) else None
+    if not isinstance(memory_section, Mapping):
+        return None
+    memory_operation = _memory_operation_for_event(
+        conversation,
+        span_id=None,
+        operation="load",
+    )
+    rendered_context = (
+        memory_operation.output.get("rendered_context", "")
+        if memory_operation is not None
+        else ""
+    )
+    return {
+        "included": memory_section.get("included") is True,
+        "item_ids": context_report.get("memory_item_ids", []),
+        "rendered_context": rendered_context if memory_section.get("included") is True else "",
+    }
 
 
 def _safe_payload_value(value: Any) -> Any:

@@ -51,6 +51,15 @@ class TraceToolObservation(BaseModel):
     observation: dict[str, Any]
 
 
+class TraceMemoryOperation(BaseModel):
+    """One complete local memory lifecycle operation for Langfuse."""
+
+    operation: Literal["load", "capture"]
+    span_id: str
+    input: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+
+
 class TraceConversationView(BaseModel):
     """Current-turn content joined outside the redacted trace store."""
 
@@ -62,6 +71,7 @@ class TraceConversationView(BaseModel):
     llm_inputs: list[TraceLlmInput] = Field(default_factory=list)
     llm_outputs: list[TraceLlmOutput] = Field(default_factory=list)
     tool_observations: list[TraceToolObservation] = Field(default_factory=list)
+    memory_operations: list[TraceMemoryOperation] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -77,6 +87,7 @@ class TraceConversationRecord:
     llm_inputs: tuple[TraceLlmInput, ...] = ()
     llm_outputs: tuple[TraceLlmOutput, ...] = ()
     tool_observations: tuple[TraceToolObservation, ...] = ()
+    memory_operations: tuple[TraceMemoryOperation, ...] = ()
 
 
 class InMemoryTraceConversationStore:
@@ -120,6 +131,9 @@ class InMemoryTraceConversationStore:
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
                 ),
+                memory_operations=(
+                    existing.memory_operations if existing is not None else ()
+                ),
             )
             self._replace_record(record)
 
@@ -157,6 +171,9 @@ class InMemoryTraceConversationStore:
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
                 ),
+                memory_operations=(
+                    existing.memory_operations if existing is not None else ()
+                ),
             )
             self._replace_record(record)
 
@@ -188,6 +205,9 @@ class InMemoryTraceConversationStore:
                 llm_outputs=outputs[-16:],
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
+                ),
+                memory_operations=(
+                    existing.memory_operations if existing is not None else ()
                 ),
             )
             self._replace_record(record)
@@ -223,6 +243,49 @@ class InMemoryTraceConversationStore:
                 llm_inputs=existing.llm_inputs if existing is not None else (),
                 llm_outputs=existing.llm_outputs if existing is not None else (),
                 tool_observations=observations[-32:],
+                memory_operations=(
+                    existing.memory_operations if existing is not None else ()
+                ),
+            )
+            self._replace_record(record)
+
+    def append_memory_operation(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        memory_operation: TraceMemoryOperation,
+    ) -> None:
+        """Upsert one complete local memory operation by span id."""
+
+        with self._lock:
+            existing = self._matching_record(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
+            existing_operations = (
+                existing.memory_operations if existing is not None else ()
+            )
+            operations = tuple(
+                item
+                for item in existing_operations
+                if item.span_id != memory_operation.span_id
+            ) + (memory_operation,)
+            record = TraceConversationRecord(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                user_text=existing.user_text if existing is not None else "",
+                assistant_text=existing.assistant_text if existing is not None else "",
+                delivered_text=existing.delivered_text if existing is not None else None,
+                llm_inputs=existing.llm_inputs if existing is not None else (),
+                llm_outputs=existing.llm_outputs if existing is not None else (),
+                tool_observations=(
+                    existing.tool_observations if existing is not None else ()
+                ),
+                memory_operations=operations[-16:],
             )
             self._replace_record(record)
 
@@ -255,6 +318,7 @@ class InMemoryTraceConversationStore:
                     llm_inputs=existing.llm_inputs,
                     llm_outputs=existing.llm_outputs,
                     tool_observations=existing.tool_observations,
+                    memory_operations=existing.memory_operations,
                 )
             )
 
@@ -268,6 +332,7 @@ class InMemoryTraceConversationStore:
         include_llm_inputs: bool = False,
         include_llm_outputs: bool = False,
         include_tool_observations: bool = False,
+        include_memory_operations: bool = False,
     ) -> TraceConversationView | None:
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -292,6 +357,11 @@ class InMemoryTraceConversationStore:
                     tool_observations=(
                         list(record.tool_observations)
                         if include_tool_observations
+                        else []
+                    ),
+                    memory_operations=(
+                        list(record.memory_operations)
+                        if include_memory_operations
                         else []
                     ),
                 )

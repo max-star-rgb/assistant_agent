@@ -102,6 +102,7 @@ _SAFE_EXPLICIT_CONTENT_KEYS = {
 class MemoryContext(BaseModel):
     """Structured memory context loaded for one agent run."""
 
+    retrieved_items: list[MemoryItem] = Field(default_factory=list)
     items: list[MemoryItem] = Field(default_factory=list)
     text: str = ""
     summaries: list[str] = Field(default_factory=list)
@@ -449,6 +450,7 @@ class MemoryManager:
         summaries = [item.summary for item in pack.items]
         artifact_refs = [ref for item in pack.items for ref in item.artifact_refs]
         return MemoryContext(
+            retrieved_items=items,
             items=pack.items,
             text=pack.rendered_context,
             summaries=summaries,

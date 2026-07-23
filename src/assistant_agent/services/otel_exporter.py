@@ -573,6 +573,7 @@ class TextOtelTraceObserver:
             include_llm_inputs=True,
             include_llm_outputs=True,
             include_tool_observations=True,
+            include_memory_operations=True,
         )
 
     def _call_exporter_lifecycle(self, method_name: str, *, timeout: float) -> bool:

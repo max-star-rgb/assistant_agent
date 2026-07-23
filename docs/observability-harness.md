@@ -775,6 +775,15 @@ output preview；缺失时从归一化 `ChatResult` 重建完整语义回复。`
 模型上下文投影事实，不表示 Langfuse 页面又隐藏了一层字段。普通 `.data/graph_trace.jsonl` 的
 `tool.observation` 仍保持摘要，完整对象只在进程内与本地 Langfuse 导出链路中传递。
 
+记忆链路也采用同样的本地开发 overlay。`memory.core_recall` 的 input 显示实际 query、capability
+和预算，output 分开显示完整 `retrieved_items`、最终通过预算筛选的 `injected_items`、
+`rendered_context`、拒绝/省略原因以及 `attached_to_runtime_context`。`context.build` 额外显示
+`memory_injection.included/item_ids/rendered_context`，用于确认这段文本是否真正进入编译上下文；
+对应 `llm.chat` generation input 中的完整 `messages` 是它最终进入 Provider 请求的决定性证据。
+显式 `memory_search` / `memory_get` 的结果则沿用完整 `tool.observation`，在下一次 generation
+input 中作为工具观察进入上下文。普通 `.data/graph_trace.jsonl` 和远程 OTLP 仍只保存计数、
+memory ID 与 prompt-safe 摘要，不持久化记忆原文。
+
 同一个 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 也允许本地 ToolHistory 和工具 trace 保存经过
 secret sanitizer 的工具输入输出，便于单机调试；默认关闭，且始终排除 Provider 原始 payload/response
 和内联二进制内容。该开关不得用于真实 Provider smoke/pilot 证据采集。
@@ -887,8 +896,9 @@ Regression tests should enforce these invariants:
   和 delta count 等安全摘要；这些对象都不是 vendor SDK 原始 envelope。
 - `context.build` 的 output 导出 prompt-safe `context_report_v1`：逐 section 展示
   chars/tokens、item count、included/compacted/trimmed、source，以及总预算、已选工具、
-  context source、skill exposure 和 compression 状态；完整 compiled `ChatRequest` 仍只放在
-  对应 `llm.chat` generation input，避免重复且保持 Provider 调用边界明确。
+  context source、skill exposure 和 compression 状态。本地开发 overlay 还附带最终 memory
+  section 的注入状态、ID 和实际渲染文本；完整 compiled `ChatRequest` 仍只放在对应
+  `llm.chat` generation input，作为 Provider 调用边界的最终事实。
 - 未实现 request callback 的自定义 adapter 使用编译后 `ChatRequest` 的语义字段作为 fallback；
   内置 OpenAI-compatible adapter 必须以传给 SDK 的同一 payload 覆盖该 fallback。
 - Langfuse Trace 名称固定为 `assistant.turn`，observation hierarchy 固定为

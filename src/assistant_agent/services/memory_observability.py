@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
 from assistant_agent.agent.state import AgentState
 from assistant_agent.memory.manager import MemoryContext, MemoryManager
@@ -55,6 +55,24 @@ def load_memory_with_trace(
             max_context_tokens=max_context_tokens,
         )
     except Exception as exc:
+        _record_local_memory_operation(
+            state=state,
+            trace_id=trace_id or state.trace_id,
+            span_id=span_id,
+            operation="load",
+            input_payload=_memory_load_input(
+                request=request,
+                capability=capability,
+                top_k=top_k,
+                max_context_chars=max_context_chars,
+                max_context_tokens=max_context_tokens,
+            ),
+            output_payload={
+                "status": "failed",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+            },
+        )
         append_observability_event(
             trace_store,
             trace_id=trace_id or state.trace_id,
@@ -73,6 +91,45 @@ def load_memory_with_trace(
         raise
 
     summary = memory_load_trace_summary(context)
+    _record_local_memory_operation(
+        state=state,
+        trace_id=trace_id or state.trace_id,
+        span_id=span_id,
+        operation="load",
+        input_payload=_memory_load_input(
+            request=request,
+            capability=capability,
+            top_k=top_k,
+            max_context_chars=max_context_chars,
+            max_context_tokens=max_context_tokens,
+        ),
+        output_payload={
+            "status": (
+                "degraded"
+                if summary["search_error_codes"]
+                else "succeeded"
+                if context.read_policy_allowed
+                else "skipped"
+            ),
+            "retrieved_items": [
+                item.model_dump(mode="json") for item in context.retrieved_items
+            ],
+            "injected_items": [
+                item.model_dump(mode="json") for item in context.items
+            ],
+            "rendered_context": context.text,
+            "attached_to_runtime_context": (
+                [item.memory_id for item in state.memory_context]
+                == [item.memory_id for item in context.items]
+                and request.metadata.get("memory_context_text") == context.text
+            ),
+            "omitted_count": context.omitted_count,
+            "rejected_reasons": list(context.rejected_reasons),
+            "read_policy": context.read_policy,
+            "recall_report": context.recall_report,
+        },
+    )
+    search_error_codes = summary["search_error_codes"]
     append_observability_event(
         trace_store,
         trace_id=trace_id or state.trace_id,
@@ -83,7 +140,13 @@ def load_memory_with_trace(
         observation_type="span",
         observation_name="memory.core_recall",
         node_name=node_name,
-        status="succeeded" if context.read_policy_allowed else "skipped",
+        status=(
+            "degraded"
+            if search_error_codes
+            else "succeeded"
+            if context.read_policy_allowed
+            else "skipped"
+        ),
         latency_ms=_elapsed_ms(started_at),
         span_id=span_id,
         attributes={
@@ -94,10 +157,20 @@ def load_memory_with_trace(
             "memory_context_budget_tokens": summary["memory_context_budget_tokens"],
             "omitted_count": summary["omitted_count"],
             "rejected_count": summary["rejected_count"],
+            "search_error_count": len(search_error_codes),
             "retrieval_version": summary["retrieval_version"],
             "read_policy": summary["read_policy"],
         },
         output_summary={"memory": summary},
+        error=(
+            {
+                "code": search_error_codes[0],
+                "message": "memory recall degraded",
+                "detail": {"error_codes": search_error_codes},
+            }
+            if search_error_codes
+            else None
+        ),
     )
     return context
 
@@ -204,6 +277,18 @@ def capture_memory_with_trace(
     try:
         result = manager.capture_completed_turn(state)
     except Exception as exc:
+        _record_local_memory_operation(
+            state=state,
+            trace_id=trace_id or state.trace_id,
+            span_id=span_id,
+            operation="capture",
+            input_payload=_memory_capture_input(state),
+            output_payload={
+                "status": "failed",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+            },
+        )
         append_observability_event(
             trace_store,
             trace_id=trace_id or state.trace_id,
@@ -227,6 +312,7 @@ def capture_memory_with_trace(
     daily_ids = list(getattr(result, "daily_engine_ids", []) or []) if result is not None else []
     core_ids = list(getattr(result, "core_engine_ids", []) or []) if result is not None else []
     errors = list(getattr(result, "errors", []) or []) if result is not None else []
+    safe_errors = _capture_errors(errors)
     accepted = bool(getattr(result, "accepted", False)) if result is not None else False
     if result is None:
         status = "skipped"
@@ -242,6 +328,17 @@ def capture_memory_with_trace(
         "core_count": len(core_ids),
         "error_count": len(errors),
     }
+    _record_local_memory_operation(
+        state=state,
+        trace_id=trace_id or state.trace_id,
+        span_id=span_id,
+        operation="capture",
+        input_payload=_memory_capture_input(state),
+        output_payload={
+            "status": status,
+            "result": _model_dump_or_value(result),
+        },
+    )
     append_observability_event(
         trace_store,
         trace_id=trace_id or state.trace_id,
@@ -258,8 +355,22 @@ def capture_memory_with_trace(
         attributes={
             "daily_count": len(daily_ids),
             "core_count": len(core_ids),
-            "error_count": len(errors),
+            "error_count": len(safe_errors),
         },
+        output_summary={"memory_capture": {"errors": safe_errors}},
+        error=(
+            {
+                "code": (
+                    "memory_framework_capture_partial"
+                    if accepted
+                    else "memory_framework_capture_failed"
+                ),
+                "message": "memory capture completed with framework errors",
+                "detail": {"errors": safe_errors},
+            }
+            if safe_errors
+            else None
+        ),
     )
     return result
 
@@ -269,7 +380,7 @@ def memory_load_trace_summary(context: MemoryContext) -> dict[str, Any]:
 
     return {
         "retrieval_count": 1,
-        "retrieved_item_count": len(context.items) + context.omitted_count,
+        "retrieved_item_count": len(context.retrieved_items),
         "injected_count": len(context.items),
         "injected_memory_ids": [item.memory_id for item in context.items],
         "memory_layers": [block.layer for block in context.blocks],
@@ -277,6 +388,7 @@ def memory_load_trace_summary(context: MemoryContext) -> dict[str, Any]:
         "memory_context_budget_tokens": context.budget_tokens,
         "omitted_count": context.omitted_count,
         "rejected_count": len(context.rejected_reasons),
+        "search_error_codes": _string_list(context.recall_report.get("search_error_codes")),
         "rejected_reasons": context.rejected_reasons[:8],
         "retrieval_version": context.retrieval_version,
         "read_policy": context.read_policy or {
@@ -284,6 +396,87 @@ def memory_load_trace_summary(context: MemoryContext) -> dict[str, Any]:
             "reason": context.read_policy_reason,
         },
     }
+
+
+def _capture_errors(errors: list[Any]) -> list[dict[str, str]]:
+    safe: list[dict[str, str]] = []
+    for error in errors:
+        if not isinstance(error, dict):
+            continue
+        code = error.get("code")
+        phase = error.get("phase")
+        if isinstance(code, str) and code:
+            item = {"code": code}
+            if isinstance(phase, str) and phase:
+                item["phase"] = phase
+            safe.append(item)
+    return safe
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _memory_load_input(
+    *,
+    request: UserRequest,
+    capability: str | None,
+    top_k: int | None,
+    max_context_chars: int | None,
+    max_context_tokens: int | None,
+) -> dict[str, Any]:
+    return {
+        "query": request.text or "",
+        "capability": capability,
+        "top_k": top_k,
+        "max_context_chars": max_context_chars,
+        "max_context_tokens": max_context_tokens,
+    }
+
+
+def _memory_capture_input(state: AgentState) -> dict[str, Any]:
+    return {
+        "user": state.request.text or "",
+        "assistant": state.response.message if state.response is not None else "",
+    }
+
+
+def _model_dump_or_value(value: Any) -> Any:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json")
+    if value is None or isinstance(value, dict | list | str | int | float | bool):
+        return value
+    return vars(value) if hasattr(value, "__dict__") else str(value)
+
+
+def _record_local_memory_operation(
+    *,
+    state: AgentState,
+    trace_id: str,
+    span_id: str,
+    operation: Literal["load", "capture"],
+    input_payload: dict[str, Any],
+    output_payload: dict[str, Any],
+) -> None:
+    from assistant_agent.services.trace_conversation import (
+        TraceMemoryOperation,
+        get_default_trace_conversation_store,
+    )
+
+    get_default_trace_conversation_store().append_memory_operation(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=trace_id,
+        memory_operation=TraceMemoryOperation(
+            operation=operation,
+            span_id=span_id,
+            input=input_payload,
+            output=output_payload,
+        ),
+    )
 
 
 def memory_save_trace_summary(
