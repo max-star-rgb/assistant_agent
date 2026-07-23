@@ -20,6 +20,10 @@ from assistant_agent.services.otel_mapping import (
     build_text_otel_span_specs,
     langfuse_trace_id,
 )
+from assistant_agent.services.langfuse_config import (
+    default_langfuse_trace_endpoint,
+    langfuse_authorization_headers,
+)
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.trace_store import TraceEvent, redact_trace_event
 from assistant_agent.services.turn_summary import ASSISTANT_TURN_SUMMARY_EVENT
@@ -29,7 +33,8 @@ DEFAULT_MAX_BUFFERED_RUNS = 256
 DEFAULT_MAX_EVENTS_PER_RUN = 1024
 DEFAULT_EXPORT_QUEUE_CAPACITY = 1024
 DEFAULT_EXPORT_CLOSE_TIMEOUT_SECONDS = 1.0
-DEFAULT_OTEL_SERVICE_NAME = "assistant_agent"
+DEFAULT_OTEL_EXPORT_TIMEOUT_SECONDS = 5.0
+DEFAULT_OTEL_SERVICE_NAME = "assistant-agent-local"
 DEFAULT_OTEL_TRACER_NAME = "assistant_agent.text_otel"
 ASSISTANT_AGENT_OTEL_EXPORT_ENABLED_ENV = "ASSISTANT_AGENT_OTEL_EXPORT_ENABLED"
 ASSISTANT_AGENT_OTEL_EXPORT_ENDPOINT_ENV = "ASSISTANT_AGENT_OTEL_EXPORT_ENDPOINT"
@@ -59,7 +64,7 @@ class OtlpHttpTextExporterConfig:
     enabled: bool = False
     endpoint: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
-    timeout_seconds: float | None = None
+    timeout_seconds: float | None = DEFAULT_OTEL_EXPORT_TIMEOUT_SECONDS
     service_name: str = DEFAULT_OTEL_SERVICE_NAME
     queue_capacity: int = DEFAULT_EXPORT_QUEUE_CAPACITY
     include_content: bool = False
@@ -68,17 +73,18 @@ class OtlpHttpTextExporterConfig:
     def from_env(cls, env: Mapping[str, str] | None = None) -> "OtlpHttpTextExporterConfig":
         values = os.environ if env is None else env
         endpoint = _trace_endpoint_from_env(values)
+        headers = _parse_otlp_headers(
+            _first_non_empty(
+                values,
+                ASSISTANT_AGENT_OTEL_EXPORT_HEADERS_ENV,
+                OTEL_EXPORTER_OTLP_TRACES_HEADERS_ENV,
+                OTEL_EXPORTER_OTLP_HEADERS_ENV,
+            )
+        ) or langfuse_authorization_headers(values)
         return cls(
             enabled=_truthy_env_value(values.get(ASSISTANT_AGENT_OTEL_EXPORT_ENABLED_ENV)),
             endpoint=endpoint,
-            headers=_parse_otlp_headers(
-                _first_non_empty(
-                    values,
-                    ASSISTANT_AGENT_OTEL_EXPORT_HEADERS_ENV,
-                    OTEL_EXPORTER_OTLP_TRACES_HEADERS_ENV,
-                    OTEL_EXPORTER_OTLP_HEADERS_ENV,
-                )
-            ),
+            headers=headers,
             timeout_seconds=_optional_positive_float(
                 _first_non_empty(
                     values,
@@ -86,7 +92,8 @@ class OtlpHttpTextExporterConfig:
                     OTEL_EXPORTER_OTLP_TRACES_TIMEOUT_ENV,
                     OTEL_EXPORTER_OTLP_TIMEOUT_ENV,
                 )
-            ),
+            )
+            or DEFAULT_OTEL_EXPORT_TIMEOUT_SECONDS,
             service_name=_first_non_empty(
                 values,
                 ASSISTANT_AGENT_OTEL_SERVICE_NAME_ENV,
@@ -630,7 +637,7 @@ def _trace_endpoint_from_env(values: Mapping[str, str]) -> str | None:
         return trace_endpoint
     generic_endpoint = _first_non_empty(values, OTEL_EXPORTER_OTLP_ENDPOINT_ENV)
     if generic_endpoint is None:
-        return None
+        return default_langfuse_trace_endpoint(values)
     if generic_endpoint.rstrip("/").endswith("/v1/traces"):
         return generic_endpoint
     return f"{generic_endpoint.rstrip('/')}/v1/traces"

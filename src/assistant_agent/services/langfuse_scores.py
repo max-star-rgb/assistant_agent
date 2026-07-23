@@ -19,6 +19,10 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, Field
 
 from assistant_agent.services.otel_mapping import langfuse_trace_id
+from assistant_agent.services.langfuse_config import (
+    langfuse_credentials_from_env,
+    langfuse_host_from_env,
+)
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.trace_store import TraceEvent, redact_trace_event
 from assistant_agent.services.turn_evaluator import TurnDiagnostic, build_turn_diagnostic
@@ -34,11 +38,6 @@ ASSISTANT_AGENT_LANGFUSE_SCORE_URL_ENV = "ASSISTANT_AGENT_LANGFUSE_SCORE_URL"
 ASSISTANT_AGENT_LANGFUSE_SCORE_BASE_URL_ENV = "ASSISTANT_AGENT_LANGFUSE_SCORE_BASE_URL"
 ASSISTANT_AGENT_LANGFUSE_SCORE_TIMEOUT_ENV = "ASSISTANT_AGENT_LANGFUSE_SCORE_TIMEOUT"
 ASSISTANT_AGENT_LANGFUSE_SCORE_QUEUE_CAPACITY_ENV = "ASSISTANT_AGENT_LANGFUSE_SCORE_QUEUE_CAPACITY"
-ASSISTANT_AGENT_LANGFUSE_PUBLIC_KEY_ENV = "ASSISTANT_AGENT_LANGFUSE_PUBLIC_KEY"
-ASSISTANT_AGENT_LANGFUSE_SECRET_KEY_ENV = "ASSISTANT_AGENT_LANGFUSE_SECRET_KEY"
-LANGFUSE_HOST_ENV = "LANGFUSE_HOST"
-LANGFUSE_PUBLIC_KEY_ENV = "LANGFUSE_PUBLIC_KEY"
-LANGFUSE_SECRET_KEY_ENV = "LANGFUSE_SECRET_KEY"
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _RAW_CONTENT_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(?:raw_)?(?:prompt|query|input|output|response|content|message)\b\s*[:=]\s*([^\s,;]+)"
@@ -107,19 +106,12 @@ class LangfuseScoreWriterConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "LangfuseScoreWriterConfig":
         values = os.environ if env is None else env
+        public_key, secret_key = langfuse_credentials_from_env(values)
         return cls(
             enabled=_truthy_env_value(values.get(ASSISTANT_AGENT_LANGFUSE_SCORE_ENABLED_ENV)),
             scores_url=_scores_url_from_env(values),
-            public_key=_first_non_empty(
-                values,
-                ASSISTANT_AGENT_LANGFUSE_PUBLIC_KEY_ENV,
-                LANGFUSE_PUBLIC_KEY_ENV,
-            ),
-            secret_key=_first_non_empty(
-                values,
-                ASSISTANT_AGENT_LANGFUSE_SECRET_KEY_ENV,
-                LANGFUSE_SECRET_KEY_ENV,
-            ),
+            public_key=public_key,
+            secret_key=secret_key,
             timeout_seconds=_optional_positive_float(
                 values.get(ASSISTANT_AGENT_LANGFUSE_SCORE_TIMEOUT_ENV)
             )
@@ -666,9 +658,9 @@ def _scores_url_from_env(values: Mapping[str, str]) -> str | None:
     explicit = _first_non_empty(values, ASSISTANT_AGENT_LANGFUSE_SCORE_URL_ENV)
     if explicit is not None:
         return explicit
-    base_url = _first_non_empty(values, ASSISTANT_AGENT_LANGFUSE_SCORE_BASE_URL_ENV, LANGFUSE_HOST_ENV)
+    base_url = _first_non_empty(values, ASSISTANT_AGENT_LANGFUSE_SCORE_BASE_URL_ENV)
     if base_url is None:
-        return None
+        base_url = langfuse_host_from_env(values)
     trimmed = base_url.rstrip("/")
     if trimmed.endswith("/api/public/scores"):
         return trimmed

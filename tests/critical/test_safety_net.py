@@ -30,7 +30,10 @@ from assistant_agent.services.context.compactor import DeterministicContextCompa
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.hooks import HookManager, HookTraceStore
 from assistant_agent.services.identifiers import IdFactory, new_run_id, new_session_id, new_span_id, new_trace_id
-from assistant_agent.services.langfuse_scores import LangfuseScoreTraceObserver
+from assistant_agent.services.langfuse_scores import (
+    LangfuseScoreTraceObserver,
+    LangfuseScoreWriterConfig,
+)
 from assistant_agent.services.otel_exporter import TextOtelTraceObserver
 from assistant_agent.services.otel_exporter import OtlpHttpTextExporterConfig
 from assistant_agent.services.otel_mapping import build_text_otel_span_specs, langfuse_trace_id
@@ -311,11 +314,11 @@ def test_otel_content_export_requires_explicit_local_loopback_configuration() ->
         "ASSISTANT_AGENT_OTEL_EXPORT_ENABLED": "true",
         "ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT": "true",
         "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT": "1",
+        "LANGFUSE_PUBLIC_KEY": "pk-local",
+        "LANGFUSE_SECRET_KEY": "sk-local",
     }
 
-    local = OtlpHttpTextExporterConfig.from_env(
-        {**base, "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:3000/api/public/otel"}
-    )
+    local = OtlpHttpTextExporterConfig.from_env(base)
     remote = OtlpHttpTextExporterConfig.from_env(
         {**base, "OTEL_EXPORTER_OTLP_ENDPOINT": "https://cloud.langfuse.com/api/public/otel"}
     )
@@ -327,9 +330,25 @@ def test_otel_content_export_requires_explicit_local_loopback_configuration() ->
         }
     )
 
+    assert local.endpoint == "http://localhost:3000/api/public/otel/v1/traces"
+    assert local.headers == {"Authorization": "Basic cGstbG9jYWw6c2stbG9jYWw="}
+    assert local.service_name == "assistant-agent-local"
+    assert local.timeout_seconds == 5.0
+    assert local.queue_capacity == 1024
     assert local.include_content is True
     assert remote.include_content is False
     assert missing_local_opt_in.include_content is False
+
+    scores = LangfuseScoreWriterConfig.from_env(
+        {
+            "ASSISTANT_AGENT_LANGFUSE_SCORE_ENABLED": "true",
+            "LANGFUSE_PUBLIC_KEY": "pk-local",
+            "LANGFUSE_SECRET_KEY": "sk-local",
+        }
+    )
+    assert scores.scores_url == "http://localhost:3000/api/public/scores"
+    assert scores.timeout_seconds == 5.0
+    assert scores.queue_capacity == 1024
 
 
 def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:

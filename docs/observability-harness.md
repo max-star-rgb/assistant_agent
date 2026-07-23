@@ -196,7 +196,7 @@ Assistant runtime 不再投影到 operational text log，也不再创建 `.data/
 server `CompositeTraceStore` 默认只保留进程内 primary 与后台 JSONL persistence；
 `.data/graph_trace.jsonl` 和 trace query API 是机器查询与调试重建权威，
 `scripts/agentruntime_view.py last --follow` 是唯一 runtime 开发观察视图。显式设置
-`ASSISTANT_AGENT_OTEL_EXPORT_ENABLED=true` 且提供 OTLP HTTP endpoint 时，server 会追加
+`ASSISTANT_AGENT_OTEL_EXPORT_ENABLED=true` 且提供 Langfuse 凭据时，server 会追加
 一个 optional text OpenTelemetry observer secondary；依赖缺失、endpoint 缺失或导出失败必须
 fail-open，不影响 primary trace store、JSONL persistence 或 turn 响应。
 
@@ -559,8 +559,8 @@ runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关�
 loopback server 拉 `/traces/{trace_id}`；包含 `conversation` 时，再拉
 `/traces/{trace_id}/conversation`。server 查不到 trace 时降级使用本地 summary；
 conversation endpoint 查不到时，查看器会从默认 `.env`（可用 `--env-file` 覆盖或
-`--no-env-file` 禁用）加载 `LANGFUSE_HOST`、
-`LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY` 通过 Langfuse Public API 读取已持久化
+`--no-env-file` 禁用）加载 `LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY`，默认通过本机
+`http://localhost:3000` 的 Langfuse Public API 读取已持久化
 trace；两处均不可用时才标记 unavailable，仍继续输出 Turn Overview。失败 run
 如果有本机 trace-content debug 记录，Conversation 会显示用户输入和“请求失败/已取消”
 摘要；该记录不写入普通 conversation history，不作为未来 prompt 上下文。
@@ -836,12 +836,13 @@ Regression tests should enforce these invariants:
 - The Python packages live behind the `observability` extra:
   `assistant_agent[observability]` installs `opentelemetry-api`,
   `opentelemetry-sdk`, and `opentelemetry-exporter-otlp-proto-http`.
-- Runtime OTLP export is opt-in through environment variables only:
-  `ASSISTANT_AGENT_OTEL_EXPORT_ENABLED=true`,
-  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=<endpoint>/v1/traces`,
-  `OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Basic ...`, optional
-  `OTEL_SERVICE_NAME`, and optional
-  `ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY`. If only generic
+- Runtime OTLP export is opt-in through environment variables only. 本地 Langfuse 只需
+  `ASSISTANT_AGENT_OTEL_EXPORT_ENABLED=true`、`LANGFUSE_PUBLIC_KEY` 和
+  `LANGFUSE_SECRET_KEY`；代码默认使用 `http://localhost:3000/api/public/otel/v1/traces`、
+  由凭据生成 Basic auth header、`assistant-agent-local` service name、5 秒 timeout 和 1024
+  queue capacity。特殊部署仍可使用 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`、
+  `OTEL_EXPORTER_OTLP_TRACES_HEADERS`、`OTEL_SERVICE_NAME` 和
+  `ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY` 覆盖。If only generic
   `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the text trace exporter derives the
   trace endpoint by appending `/v1/traces`.
 - Root、`react.decision`、`llm.chat`、`tool.execute`、`tool.observation` 和
@@ -903,11 +904,11 @@ Supported built-in score names are:
 - `assistant_agent.clarification_too_late`;
 - `assistant_agent.unnecessary_tool_calls`.
 
-Score writing is disabled by default. Enable it with environment variables only:
-`ASSISTANT_AGENT_LANGFUSE_SCORE_ENABLED=true`,
-`LANGFUSE_HOST=http://localhost:3000` or
-`ASSISTANT_AGENT_LANGFUSE_SCORE_URL=<host>/api/public/scores`,
-`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, optional
+Score writing is disabled by default. 本地启用只需
+`ASSISTANT_AGENT_LANGFUSE_SCORE_ENABLED=true`、`LANGFUSE_PUBLIC_KEY` 和
+`LANGFUSE_SECRET_KEY`；host 默认是 `http://localhost:3000`，timeout 和 queue capacity
+分别默认 5 秒和 1024。特殊部署可使用 `LANGFUSE_HOST` 或
+`ASSISTANT_AGENT_LANGFUSE_SCORE_URL=<host>/api/public/scores`，以及 optional
 `ASSISTANT_AGENT_LANGFUSE_SCORE_TIMEOUT`, and optional
 `ASSISTANT_AGENT_LANGFUSE_SCORE_QUEUE_CAPACITY`. Missing credentials, missing
 URL, full queues, HTTP failures, or writer exceptions are observability failures

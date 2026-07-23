@@ -46,6 +46,7 @@ def test_langfuse_trace_fallback_restores_persisted_conversation(monkeypatch) ->
 
     def fake_urlopen(request, timeout):
         assert timeout == 10
+        assert request.full_url == "http://localhost:3000/api/public/traces/trace-persisted"
         captured_authorization.append(request.get_header("Authorization"))
         return _JsonResponse(
             {
@@ -65,7 +66,6 @@ def test_langfuse_trace_fallback_restores_persisted_conversation(monkeypatch) ->
     trace = agentruntime_view._get_langfuse_trace(
         "trace-persisted",
         env={
-            "LANGFUSE_HOST": "http://localhost:3000",
             "LANGFUSE_PUBLIC_KEY": "pk-local",
             "LANGFUSE_SECRET_KEY": "sk-local",
         },

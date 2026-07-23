@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import sys
@@ -29,6 +28,10 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from assistant_agent.services.assistant_run_service import load_env_file
+from assistant_agent.services.langfuse_config import (
+    langfuse_authorization_headers,
+    langfuse_host_from_env,
+)
 from assistant_agent.services.trace_store import TraceEvent, trace_debug_summary
 from assistant_agent.services.turn_evaluator import build_turn_diagnostic
 from assistant_agent.services.turn_summary import (
@@ -589,16 +592,14 @@ def _get_langfuse_trace(
     """Read one persisted trace through Langfuse's authenticated Public API."""
 
     values = os.environ if env is None else env
-    host = values.get("LANGFUSE_HOST", "").rstrip("/")
-    public_key = values.get("LANGFUSE_PUBLIC_KEY", "")
-    secret_key = values.get("LANGFUSE_SECRET_KEY", "")
-    if not host or not public_key or not secret_key:
+    host = langfuse_host_from_env(values).rstrip("/")
+    authorization_headers = langfuse_authorization_headers(values)
+    if not authorization_headers:
         return None
-    credentials = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode("ascii")
     url = f"{host}/api/public/traces/{quote(trace_id, safe='')}"
     request = Request(
         url,
-        headers={"Accept": "application/json", "Authorization": f"Basic {credentials}"},
+        headers={"Accept": "application/json", **authorization_headers},
     )
     try:
         with urlopen(request, timeout=10) as response:
