@@ -62,11 +62,17 @@ class AgentState(BaseModel):
     status: AgentStatus = "created"
 
     @classmethod
-    def from_request(cls, request: UserRequest, run_id: str | None = None) -> "AgentState":
+    def from_request(
+        cls,
+        request: UserRequest,
+        run_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> "AgentState":
         """Create state from a normalized user request."""
 
         return cls(
             run_id=run_id or new_run_id(),
+            trace_id=trace_id or new_trace_id(),
             user_id=request.user_id,
             session_id=request.session_id,
             request=request,

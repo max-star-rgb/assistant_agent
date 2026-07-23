@@ -36,7 +36,12 @@ from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_GENERATION_TOOL_NAME,
 )
-from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
+from assistant_agent.services.trace_store import (
+    TraceEvent,
+    TraceStore,
+    new_span_id,
+    sanitize_trace_value,
+)
 from assistant_agent.services.trace_content_policy import local_trace_content_enabled
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.input_binding import bind_runtime_tool_input
@@ -192,7 +197,7 @@ class ToolExecutor:
         call = state.add_tool_call(tool_name, bound_input)
         capability = _capability_name(tool_name, step)
         started_at = perf_counter()
-        tool_span_id = f"span_{call.call_id}"
+        tool_span_id = new_span_id()
         _append_tool_trace_event(
             trace_store,
             trace_id=trace_id,

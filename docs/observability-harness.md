@@ -1,12 +1,13 @@
 # Observability Harness
 
-Last updated: 2026-07-22
+Last updated: 2026-07-23
 
 This document is the current entry for assistant run status, logs, monitoring,
 trace, and ReAct checkpoint observability. It defines the developer-facing
-harness contract for understanding one run end to end without exposing raw
-provider payloads, full prompts, memory content, secrets, media bodies, or hidden
-reasoning.
+harness contract for understanding one run end to end. Trace content capture is
+enabled by default and preserves evaluation evidence including requests,
+responses, model messages, tool observations, and memory operations. Credentials,
+authorization material, hidden reasoning, and inline binary media remain excluded.
 
 ## Agent-Service Delivery Audit
 
@@ -328,14 +329,15 @@ require an external APM stack for normal development.
 | --- | --- | --- |
 | `AgentState` | runtime | In-memory fact record for one run: status, tool calls, results, errors, and response. |
 | `AgentEvent` / `EventSink` | runtime and entry layers | Real-time event stream for WebSocket, Gateway, realtime, CLI, and tests. |
-| `TraceStore` / `TraceQueryService` | services | Redacted run and trace summaries for `/runs/{run_id}`, `/traces/{trace_id}`, and tool-call debug views. |
+| `TraceStore` / `TraceQueryService` | services | Canonical full-content run trace plus bounded query summaries for `/runs/{run_id}`, `/traces/{trace_id}`, and tool-call debug views. |
 | Operational text logs | services / gateway | Combined console plus isolated rotating Gateway lifecycle logs; runtime development uses `agentruntime_view.py last --follow` over canonical trace JSONL. |
 | `react_steps` / `decision_trace` | API response metadata | Compact per-response ReAct timeline for developer UI and CLI output. |
 | `RunHistoryStore` / `SessionStore` | services | Local JSONL/session indexes and lifecycle ledgers. Tool-call history queries are derived from the canonical trace timeline. |
 | Gateway frames | gateway | Realtime wire lifecycle: `run.started`, `event.progress`, `stream.chunk`, `run.end`, `run.cancel`, call hangup, and config updates. |
 
 These surfaces may expose the same fact at different fidelity. The canonical
-source for debug reconstruction should be the redacted trace timeline. API
+source for debug reconstruction and trace-driven evaluation is the full trace
+timeline. API
 response fields and realtime events are projections of that timeline or live
 runtime lifecycle events.
 
@@ -513,10 +515,9 @@ operation 时，只需在事件生产处声明 observation 语义，不需要修
 未声明 `observation_type` 的 timeline、summary 和 bookkeeping 事件仍保留在本地 trace，
 但不会被误导出成 observation。
 
-`attributes` must be prompt-safe and redacted. It can include tool names,
-provider names, model names, token counts, latency, retry count, budget summary,
-risk gate summary, side-effect level, confirmation state, output references,
-context budget summaries, and compact error codes.
+`attributes` may contain full evaluation evidence. Low-cardinality operational
+metrics should still use dedicated structured attributes rather than raw content
+as metric labels.
 
 ## Developer UX
 
@@ -574,7 +575,9 @@ Agent-Service 入口失败会立即追加 `agent_service.turn.finished`，因此
 并在 Turn latency 中列出 `gateway_turn_timeout` 与未闭合的 `active_stage`。
 
 server 参数和 AgentRuntime viewer 参数分开理解：`scripts/run_server.py` 的参数负责启动
-runtime、mock provider、日志和 `--allow-local-trace-content` 内容开关；
+runtime、mock provider 和日志；trace content 默认开启，旧
+`--allow-local-trace-content` 只作为兼容参数保留，显式设置
+`MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=0` 才关闭内容采集；
 `scripts/agentruntime_view.py` 的 `--trace-path`、`--server`、`--sections`、`--follow`、
 `--session-id`、`--follow-all-sessions` 和 `--show-session-banner` 只负责查询与展示。`--follow --server` 的数据流是：本地
 `.data/graph_trace.jsonl` 发现当前 session 最新 trace 或变化，再用 `trace_id` 向
@@ -589,19 +592,20 @@ trace；两处均不可用时才标记 unavailable，仍继续输出 Turn Overvi
 需要强隔离时再加 `--session-id <session>`。
 
 `--sections` 控制输出层级：默认是 `overview`。`conversation` 需要 `--server` 且
-server 已用 `--allow-local-trace-content` 启动；`decision` 按 ReAct iteration
+trace content 未被显式关闭；`decision` 按 ReAct iteration
 聚合决策和工具结果；`timeline` 展示 Raw events。`react` 和 `--react-detail` 仍作为
 兼容输入接受，并映射到 `decision`。server-backed view 在 Overview 中聚合
 `turn_latency`、LLM wall/provider 差值、tool latency、Context peak、ACK state 和
 缺失的实时用户感知指标；需要在 `Turn latency` 中展开旧版 stage rows 时再加
-`--latency-stages` 并显式请求 `timeline`。Conversation text 不会写入 trace events 或 JSONL。
+`--latency-stages` 并显式请求 `timeline`。Conversation、LLM、Tool 和 Memory 证据写入
+每个 run 的 `trace.content` 事件并持久化到 JSONL。
 
 推荐 PyCharm 本地流程：
 
 1. 运行 `.run/Mem0.run.xml`，等待控制台输出 `Mem0 ready`。该配置随后结束，但记忆服务继续运行。
 2. 运行 `.run/Langfuse.run.xml`，等待控制台输出 `Langfuse ready`；需要持续保留该 Run 进程。
-3. 运行 `.run/Assistant Server.run.xml`。共享配置已带 `--allow-local-trace-content`，
-   并持续写 `.data/gateway_events.jsonl`；如果个人配置移除了内容开关，Conversation 层会不可用。
+3. 运行 `.run/Assistant Server.run.xml`。Trace content 默认开启，并持续写
+   `.data/gateway_events.jsonl`；只有显式设置内容环境变量为 `0` 时 Conversation 层不可用。
 4. 运行 `.run/Gateway.run.xml`，它常驻输出 Gateway server、session、queue、
    run、cancel 和 interrupt lifecycle。
 5. 运行 `.run/AgentRuntime.run.xml`，它全局常驻输出
@@ -698,7 +702,7 @@ The local metrics command currently exposes this first layer:
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/trace_metrics.py
 ```
 
-It reads the redacted JSONL trace store, supports optional `--user-id` and
+It reads the full-content JSONL trace store, supports optional `--user-id` and
 `--session-id` filters, and prints either a paste-friendly text summary or a
 machine-readable `--json` summary. API/debug endpoint exposure should be added
 only after the local metrics shape is stable. Tool metrics prefer terminal
@@ -741,77 +745,77 @@ evaluated skill/runtime/code proposals for human review. It does not run from
 mutation. Semantic skill proposals require structured eval evidence; sparse
 trajectory timelines remain suitable only for operational failure signals.
 
-## Redaction Rules
+## Content Capture Rules
 
-Trace and monitoring records must not include:
+Trace content is retained by default. The following transport secrets and
+non-evaluation payloads remain excluded:
 
 - API keys, tokens, Authorization headers, cookies, or secret-like strings.
-- Raw provider payloads or raw provider responses.
-- Full prompts, system messages, or rendered context bodies.
+- Vendor SDK envelopes and raw HTTP request/response bodies.
 - Hidden chain-of-thought or internal reasoning fields.
-- Raw memory content beyond redacted summaries and counters.
-- Base64, inline media payloads, full command outputs, or large binary/text blobs.
-- Real user data dumps.
+- Base64, inline media payloads, and binary audio/video/image bodies.
 
-默认 OTLP export 同样遵守上述边界。仅本地开发例外：启用 OTLP export 且 endpoint host 是
-`localhost`、`127.0.0.1` 或 `::1` 时，每个 `llm.chat` generation input 自动接收
+`TraceStore` 不再执行写入时兜底脱敏；上述排除责任位于 Provider、Tool 和事件生产边界。
+自定义 Runtime/事件生产者若把凭据放入 `TraceEvent`，内容会被原样持久化和导出。
+
+默认 OTLP export 对本地和远程 endpoint 都保留内容。启用 OTLP export 时，每个
+`llm.chat` generation input 自动接收
 Provider adapter 传给 `chat.completions.create(**payload)` 的完整 payload。该对象不经过字段挑选、
-摘要、裁剪或 secret sanitizer，因而会原样保留实际的 `model`、`messages`、完整 tool schemas、
+摘要或裁剪，因而会原样保留实际的 `model`、`messages`、完整 tool schemas、
 `tool_choice`、实际 token 参数名、`stream`、`stream_options` 和 Provider 特有的 `extra_body`。
 它是 SDK 调用参数，不是序列化后的 HTTP 字节流，也不包括 Authorization header。
 
-`MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 继续控制 Langfuse root observation、
-`response.final`、`response.delivered` 和 generation output 的本地原文 overlay。generation output
+`MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT` 默认开启；显式设为 `0` 才关闭内容采集。它控制
+Langfuse root observation、`response.final`、`response.delivered`、generation output 和
+`trace.content` 持久化事件。generation output
 以 OpenAI-compatible assistant message 保留 Provider 的
 原始语义回复（正文、工具调用、拒绝/错误），不把结构化 tool call 改写为展示文本；
 finish reason 保留在 trace/协议快照，usage 保留在独立 observation attributes 中，不拼接到 output 文本。
-若同时显式设置
-`MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`，`provider_protocol_response` 还保存
+`MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE` 同样默认开启，显式设为 `0` 才关闭。
+开启时 `provider_protocol_response` 还保存
 原始 content、原始工具参数字符串、refusal、finish reason、usage、可用时的 Provider request id
 和流式 delta 计数。它不是 vendor SDK 原始响应，不包含 SDK envelope、HTTP header、stream chunk
 body 或 `reasoning_content`，并按
 对应 `llm.chat` 的 `span_id` 配对，不能只按 iteration 取第一条。内容来自独立的进程内
 `TraceConversationStore`，用户/助手单侧
-最多导出 4000 字符。上一轮 Provider 的 hidden reasoning 字段始终替换为 `[redacted]`；
+OTel 单侧最多导出 4000 字符；`trace.content` 使用更高的持久化上限。上一轮 Provider 的 hidden reasoning 字段始终替换为 `[redacted]`；
 stream callback 不进入该 store。protocol snapshot 优先用于生成精确
 output preview；缺失时从归一化 `ChatResult` 重建完整语义回复。`runtime_route` 记录归一化结果触发的
-实际 `fallback | tool_governance | final_answer` 动作并留在 metadata。上述正文不写入
-`.data/graph_trace.jsonl`。
+实际 `fallback | tool_governance | final_answer` 动作并留在 metadata。上述正文同时进入
+`.data/graph_trace.jsonl` 的 `trace.content` 事件。
 
-本地 Langfuse 的工具链同样使用完整开发视图：`tool.execute` 直接显示执行 trace event 当前持有的
+Langfuse 的工具链同样使用完整视图：`tool.execute` 直接显示执行 trace event 当前持有的
 完整 input/output summary，不再只挑 field count、result count 和 output ref，也不在 OTLP observer
 或 mapping 层再次执行 sanitizer；每个
 `tool.observation` 还会在独立的进程内 store 保存完整 `ToolObservation`，Langfuse 按
 `observation_index` 投影该对象，原样展示 `status`、`structured_output`、error 字段、
 `next_step_hint`、`redacted`、`truncated` 和 `original_chars`。因此它与 assistant loop 产生的模型观察
 是同一对象，而不是观测层再次生成的摘要。`redacted=true` 若存在，是 `ToolObservation` 自身记录的
-模型上下文投影事实，不表示 Langfuse 页面又隐藏了一层字段。普通 `.data/graph_trace.jsonl` 的
-`tool.observation` 仍保持摘要，完整对象只在进程内与本地 Langfuse 导出链路中传递。
+模型上下文投影事实，不表示 Langfuse 页面又隐藏了一层字段。完整对象也进入
+`.data/graph_trace.jsonl` 的 `trace.content` 事件。
 
-记忆链路也采用同样的本地开发 overlay。`memory.core_recall` 的 input 显示实际 query、capability
-和预算，output 分开显示完整 `retrieved_items`、最终通过预算筛选的 `injected_items`、
-`rendered_context`、拒绝/省略原因以及 `attached_to_runtime_context`。`context.build` 额外显示
-`memory_injection.included/item_ids/rendered_context`，用于确认这段文本是否真正进入编译上下文；
-对应 `llm.chat` generation input 中的完整 `messages` 是它最终进入 Provider 请求的决定性证据。
-显式 `memory_search` / `memory_get` 的结果则沿用完整 `tool.observation`，在下一次 generation
-input 中作为工具观察进入上下文。普通 `.data/graph_trace.jsonl` 和远程 OTLP 仍只保存计数、
-memory ID 与 prompt-safe 摘要，不持久化记忆原文。
+记忆链路也采用同样的本地开发 overlay。session 创建阶段的 `memory.core_recall` 只显示
+状态、数量、memory ID 和错误码；turn 内只出现 `memory.session_snapshot`，证明没有再次访问 Mem0。
+最终 `llm.chat` generation input 可用于确认冻结文本已进入 Provider 请求。回复提交后的
+`memory.turn_capture` 独立记录后台 Mem0 add 的结果，不存在 memory tool observation。
 
-同一个 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 也允许本地 ToolHistory 和工具 trace 保存经过
-secret sanitizer 的工具输入输出，便于单机调试；默认关闭，且始终排除 Provider 原始 payload/response
-和内联二进制内容。该开关不得用于真实 Provider smoke/pilot 证据采集。
+默认内容策略也允许 ToolHistory 和工具 trace 保存工具输入输出，并适用于真实 Provider
+smoke/pilot 证据采集；仍排除 Authorization、API key、hidden reasoning、vendor SDK envelope
+和内联二进制内容。
 
-Safe trace data includes:
+Trace data includes:
 
 - IDs, statuses, event names, error codes, recoverability, and component names.
-- Tool names and prompt-safe input/output summaries.
+- User requests, assistant responses, model messages, and tool input/output.
+- Memory lifecycle evidence and captured operations.
 - Provider/model names when not secret.
 - Latency, token counts, retry count, budget summaries, side-effect/risk gate summaries.
 - Output references and artifact IDs.
-- Redacted context budget and compaction summaries.
+- Context budget and compaction summaries.
 
-Redaction is part of the harness contract. Tests should fail if trace/API output
-contains obvious secret or raw payload keys.
+Full-content persistence is part of the harness contract. Tests should fail if
+trace output loses evaluation evidence, or contains credentials, hidden reasoning,
+vendor SDK envelopes, or inline binary media.
 
 ## Harness Invariants
 
@@ -874,7 +878,8 @@ Regression tests should enforce these invariants:
 
 - Add optional OpenTelemetry-compatible export only after local harness semantics
   are stable.
-- Export should be disabled by default and must use the same redaction boundary.
+- Export should be disabled by default; once enabled it exports full trace
+  content under the same credential/hidden-reasoning/binary exclusions.
 - The Python packages live behind the `observability` extra:
   `assistant_agent[observability]` installs `opentelemetry-api`,
   `opentelemetry-sdk`, and `opentelemetry-exporter-otlp-proto-http`.
@@ -889,9 +894,8 @@ Regression tests should enforce these invariants:
   trace endpoint by appending `/v1/traces`.
 - Root、`react.decision`、`llm.chat`、`tool.execute`、`tool.observation` 和
   `response.final` 使用 Langfuse 的 `langfuse.observation.input/output` 映射结构化 JSON；
-  root 同时写入 `langfuse.trace.input/output`。远程或无 content overlay 时工具字段仍使用
-  prompt-safe 参数摘要、结果计数、output ref 和 bounded observation summary；本地 Langfuse
-  则显示完整 tool execution summary 与 assistant-facing `ToolObservation`。
+  root 同时写入 `langfuse.trace.input/output`。默认显示完整 tool execution summary 与
+  assistant-facing `ToolObservation`；显式关闭 content capture 时才退化为摘要。
 - Observation 导出由 `TraceEvent.observation_type/name/scope` 驱动，iteration 父子关系由
   scope 与 `attributes.iteration` 驱动；Langfuse/OTel 映射层不枚举 canonical event。新增工具沿用
   `ToolExecutor` 的统一 lifecycle 即自动获得 `tool.execute` span，新增 memory operation
@@ -962,6 +966,26 @@ Score writing is disabled by default. 本地启用只需
 URL, full queues, HTTP failures, or writer exceptions are observability failures
 only; they must not block OTLP export, local trace persistence, or assistant
 turn delivery.
+
+### Langfuse Agent Experiments
+
+有 ground truth 的离线 Agent 评测使用独立 optional dependency
+`assistant_agent[eval]` 和 `scripts/run_langfuse_agent_evals.py`，不复用生产
+`TurnDiagnostic` score。版本控制中的 Dataset 源先同步到 Langfuse Dataset，再由原生
+Experiment SDK 创建 Dataset Run、item `Evaluation` 和 run-level `Evaluation`。
+
+Experiment task 从 Langfuse 当前 observation 读取 W3C trace ID 和 parent span ID，通过
+`RuntimeTraceContext` 传入 `AgentGraphRuntime.run_state()`。Runtime 仍产生自己的 canonical
+TraceEvent；显式 Experiment 在 task 内把这批事件同步映射并导出为
+`experiment-item-task -> assistant.runtime -> react.iteration/tool/llm/...`。因此
+DatasetRunItem、Runtime observations 和 `agent.*` item scores 位于同一条 trace。普通 API、
+Gateway、CLI 未传 `RuntimeTraceContext` 时仍自行生成 trace ID，行为不变。
+
+显式 Experiment 的目标是生成完整 Dataset、Trace 和 Score，因此 Dataset 同步、认证、Runtime
+OTLP export 或 Score 失败必须 fail-fast。它与普通 server observability 的 fail-open 语义不同。
+当前基础设施实验固定使用 scripted mock，Dataset 覆盖 Calendar 写入、`no_tool` 和 Calendar
+只读查询。能力类型由版本化 `evaluator_version` 显式分派，三个案例共享同一组 `agent.*`
+item scores 和 run-level 聚合；真实 Provider 实验仍需独立显式入口。
 
 ### Phase 5: Trajectory Debug Gate
 

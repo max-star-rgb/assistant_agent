@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+eval = ["langfuse>=4.10,<5"]
 observability = [
     "opentelemetry-api>=1.25,<2",
     "opentelemetry-sdk>=1.25,<2",

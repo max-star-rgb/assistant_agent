@@ -1,4 +1,4 @@
-"""Shared opt-in policy for local trace and tool-history content."""
+"""Shared policy for trace, provider, and tool-history content."""
 
 from __future__ import annotations
 
@@ -11,17 +11,22 @@ LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV = "MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_
 
 
 def local_trace_content_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """Return whether explicit local trace-content recording is enabled."""
+    """Return whether trace-content recording is enabled.
+
+    Content capture is enabled by default for this local-first project. Set the
+    environment value to ``0`` to request the reduced-content compatibility
+    mode.
+    """
 
     values = os.environ if env is None else env
-    return values.get(LOCAL_TRACE_CONTENT_ENV) == "1"
+    return values.get(LOCAL_TRACE_CONTENT_ENV) != "0"
 
 
 def local_provider_protocol_capture_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """Return whether local semantic Provider response capture is enabled."""
+    """Return whether semantic Provider response capture is enabled."""
 
     values = os.environ if env is None else env
     return (
         local_trace_content_enabled(values)
-        and values.get(LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV) == "1"
+        and values.get(LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV) != "0"
     )

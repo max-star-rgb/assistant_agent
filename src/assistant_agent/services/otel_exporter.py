@@ -65,7 +65,7 @@ class OtlpHttpTextExporterConfig:
     timeout_seconds: float | None = DEFAULT_OTEL_EXPORT_TIMEOUT_SECONDS
     service_name: str = DEFAULT_OTEL_SERVICE_NAME
     queue_capacity: int = DEFAULT_EXPORT_QUEUE_CAPACITY
-    include_content: bool = False
+    include_content: bool = True
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "OtlpHttpTextExporterConfig":
@@ -103,7 +103,7 @@ class OtlpHttpTextExporterConfig:
                 values.get(ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY_ENV)
             )
             or DEFAULT_EXPORT_QUEUE_CAPACITY,
-            include_content=enabled and _is_loopback_endpoint(endpoint),
+            include_content=enabled,
         )
 
 
@@ -248,6 +248,7 @@ class _OtelSdkSpanBridge:
                 parent_context = _otel_trace_parent_context(
                     self._trace_module,
                     trace_id=langfuse_trace_id(spec.trace_id),
+                    parent_span_id=spec.parent_span_id,
                 )
             else:
                 parent_context = contexts_by_span_id.get(
@@ -714,10 +715,15 @@ def _set_otel_status(trace_module: Any, span: Any, status: str) -> None:
     span.set_status(status_class(code))
 
 
-def _otel_trace_parent_context(trace_module: Any, *, trace_id: str) -> Any:
+def _otel_trace_parent_context(
+    trace_module: Any,
+    *,
+    trace_id: str,
+    parent_span_id: str | None = None,
+) -> Any:
     span_context = trace_module.SpanContext(
         trace_id=int(trace_id, 16),
-        span_id=1,
+        span_id=int(parent_span_id, 16) if parent_span_id else 1,
         is_remote=True,
         trace_flags=trace_module.TraceFlags(1),
         trace_state=trace_module.TraceState(),

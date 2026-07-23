@@ -1,0 +1,155 @@
+{
+  "dataset_name": "assistant-agent-calendar-closed-loop-v1",
+  "description": "assistant_agent 基于 Trace、Policy、工具结果与最终状态的多能力闭环评测。",
+  "metadata": {
+    "suite": "agent_closed_loop",
+    "fixture_version": "calendar_capabilities_v1",
+    "evaluator_versions": [
+      "calendar_closed_loop_v1",
+      "no_tool_closed_loop_v1",
+      "calendar_read_closed_loop_v1"
+    ]
+  },
+  "items": [
+    {
+      "id": "daily_simple_015_create_dentist_event",
+      "input": {
+        "user_request": {
+          "user_id": "eval-calendar-user",
+          "session_id": "eval-calendar-session",
+          "text": "我确认要把“洗牙”加入日历：2026-07-25 15:00 到 16:00，地点是静安牙科诊所，并备注提前十分钟到。创建后复述时间和地点。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": [
+                "calendar_create"
+              ]
+            },
+            "tool_confirmation": {
+              "confirmed": true,
+              "tool_name": "calendar_create"
+            }
+          }
+        }
+      },
+      "expected_output": {
+        "required_event": {
+          "title": "洗牙",
+          "start_time": "2026-07-25T15:00:00+08:00",
+          "end_time": "2026-07-25T16:00:00+08:00",
+          "location": "静安牙科诊所",
+          "notes": "提前十分钟到"
+        },
+        "response_facts": [
+          "2026-07-25T15:00:00+08:00",
+          "静安牙科诊所"
+        ]
+      },
+      "metadata": {
+        "suite": "agent_closed_loop",
+        "capability": "write_with_confirmation",
+        "domain": "personal_productivity",
+        "fixture": "calendar_dentist_v1",
+        "required_tools": [
+          "calendar_create"
+        ],
+        "forbidden_tools": [
+          "calendar_search",
+          "web_search"
+        ],
+        "required_confirmation": [
+          "calendar_create"
+        ],
+        "forbidden_state_changes": [
+          "existing_calendar_events"
+        ],
+        "evaluator_version": "calendar_closed_loop_v1"
+      }
+    },
+    {
+      "id": "daily_simple_017_polite_message_no_tool",
+      "input": {
+        "user_request": {
+          "user_id": "eval-no-tool-user",
+          "session_id": "eval-no-tool-session",
+          "text": "请只回复“已收到”，不要查询或修改任何外部信息。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": [
+                "calendar_search",
+                "calendar_create"
+              ]
+            }
+          }
+        }
+      },
+      "expected_output": {
+        "response_facts": [
+          "已收到"
+        ]
+      },
+      "metadata": {
+        "suite": "agent_closed_loop",
+        "capability": "no_tool",
+        "domain": "conversation",
+        "fixture": "calendar_baseline_v1",
+        "forbidden_tools": [
+          "calendar_search",
+          "calendar_create"
+        ],
+        "forbidden_state_changes": [
+          "calendar_events"
+        ],
+        "evaluator_version": "no_tool_closed_loop_v1"
+      }
+    },
+    {
+      "id": "daily_simple_002_calendar_read_team_sync",
+      "input": {
+        "user_request": {
+          "user_id": "eval-calendar-read-user",
+          "session_id": "eval-calendar-read-session",
+          "text": "查询日历中的团队同步安排，并告诉我时间和地点，不要创建或修改事件。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": [
+                "calendar_search"
+              ]
+            }
+          }
+        }
+      },
+      "expected_output": {
+        "query": "团队同步",
+        "expected_events": [
+          {
+            "title": "团队同步",
+            "start_time": "2026-07-25T10:00:00+08:00",
+            "end_time": "2026-07-25T10:30:00+08:00",
+            "location": "线上"
+          }
+        ],
+        "response_facts": [
+          "团队同步",
+          "2026-07-25T10:00:00+08:00",
+          "线上"
+        ]
+      },
+      "metadata": {
+        "suite": "agent_closed_loop",
+        "capability": "read_only_tool",
+        "domain": "personal_productivity",
+        "fixture": "calendar_team_sync_v1",
+        "required_tools": [
+          "calendar_search"
+        ],
+        "forbidden_tools": [
+          "calendar_create"
+        ],
+        "forbidden_state_changes": [
+          "calendar_events"
+        ],
+        "evaluator_version": "calendar_read_closed_loop_v1"
+      }
+    }
+  ]
+}

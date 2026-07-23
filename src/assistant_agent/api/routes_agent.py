@@ -71,6 +71,7 @@ from assistant_agent.services.trace_conversation import (
     find_trace_conversation,
     get_default_trace_conversation_store,
 )
+from assistant_agent.services.trace_content_policy import local_trace_content_enabled
 from assistant_agent.services.trial_access import (
     TrialAccessGate,
     TrialAccessStatus,
@@ -85,7 +86,6 @@ _FEEDBACK_STORE: BetaFeedbackStore | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
 SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
-LOCAL_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"
 
 
 def get_agent_runtime() -> Any:
@@ -388,7 +388,7 @@ def get_trace_summary(trace_id: str) -> TraceSummary:
 
 @router.get("/traces/{trace_id}/conversation", response_model=TraceConversationView)
 def get_trace_conversation(trace_id: str, request: Request) -> TraceConversationView:
-    if os.environ.get(LOCAL_TRACE_CONTENT_ENV) != "1":
+    if not local_trace_content_enabled():
         raise HTTPException(status_code=404, detail="trace conversation not found")
     if not _is_loopback_client(request):
         raise HTTPException(status_code=403, detail="trace conversation is available only on loopback")

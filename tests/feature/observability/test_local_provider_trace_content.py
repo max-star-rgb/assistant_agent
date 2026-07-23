@@ -18,6 +18,7 @@ from assistant_agent.services.trace_content_policy import (
     LOCAL_TRACE_CONTENT_ENV,
 )
 from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
+from assistant_agent.services.trace_store import JsonlTraceStore, TraceEvent
 
 
 class _NativeTextChatAdapter:
@@ -54,6 +55,29 @@ class _NativeTextChatAdapter:
                 provider_request_id="provider-request-1",
             ),
         )
+
+
+def test_jsonl_trace_store_preserves_full_event_content(tmp_path) -> None:
+    store = JsonlTraceStore(tmp_path / "trace.jsonl")
+    event = TraceEvent(
+        trace_id="trace-content",
+        run_id="run-content",
+        node_name="runtime",
+        event_type="observability",
+        canonical_event="trace.content",
+        input_summary={
+            "prompt": "persist-this-prompt",
+            "messages": [{"role": "user", "content": "persist-this-message"}],
+        },
+        output_summary={"response": "persist-this-response"},
+    )
+
+    store.append(event)
+
+    loaded = store.list_by_trace("trace-content")
+    assert loaded == [event]
+    assert loaded[0].input_summary["prompt"] == "persist-this-prompt"
+    assert loaded[0].output_summary["response"] == "persist-this-response"
 
 
 def test_openai_compatible_response_keeps_selected_protocol_semantics() -> None:
@@ -96,8 +120,8 @@ def test_openai_compatible_response_keeps_selected_protocol_semantics() -> None:
 
 
 def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
-    monkeypatch.setenv(LOCAL_TRACE_CONTENT_ENV, "1")
-    monkeypatch.setenv(LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV, "1")
+    monkeypatch.delenv(LOCAL_TRACE_CONTENT_ENV, raising=False)
+    monkeypatch.delenv(LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV, raising=False)
     adapter = _NativeTextChatAdapter()
     runtime = AgentGraphRuntime(
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
@@ -144,6 +168,18 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
     assert len(set(item.span_id for item in conversation.llm_outputs)) == 1
 
     events = runtime.trace_store.list_by_run(state.run_id)
+    content_events = [
+        event for event in events if event.canonical_event == "trace.content"
+    ]
+    assert len(content_events) == 1
+    assert content_events[0].input_summary["request"]["text"] == "测试原始响应"
+    assert content_events[0].input_summary["llm_inputs"][0]["request"]["messages"] == [
+        {"role": "user", "content": "exact provider body"}
+    ]
+    assert content_events[0].output_summary["response"]["message"] == "provider native answer"
+    assert content_events[0].output_summary["conversation"]["llm_outputs"][0][
+        "provider_protocol_response"
+    ]["content"] == "provider native answer"
     generations = [
         span
         for span in build_text_otel_span_specs(events, conversation=conversation)

@@ -1,6 +1,7 @@
 # Langfuse 原生 Agent 闭环评测设计
 
-状态：方向已确认，待实施。
+状态：Phase 1 至 Phase 4 已完成并通过本机 Langfuse Experiment 验证；Phase 5 已完成
+`no_tool` 与 `read_only_tool`，其余能力按失败证据逐项扩展。
 
 日期：2026-07-23。
 
@@ -615,17 +616,14 @@ agent.response_grounding
 
 ### 12.1 依赖
 
-当前项目没有直接依赖 Langfuse Python SDK。实施前需要：
-
-1. 核对当前 Langfuse 服务版本和 Python SDK 兼容版本；
-2. 由用户显式允许安装依赖；
-3. 新增独立 optional extra，建议名称：
+项目通过独立 optional extra 使用 Langfuse Python SDK：
 
 ```text
 assistant_agent[eval]
 ```
 
-4. 不把 Langfuse SDK 放进默认 runtime dependencies。
+当前约束为 `langfuse>=4.10,<5`，本轮验证使用 SDK `4.14.1` 与本机 Langfuse
+`3.221.1`。SDK 不属于默认 runtime dependencies。
 
 ### 12.2 运行模式
 
@@ -686,6 +684,7 @@ src/assistant_agent/eval/
   evaluators/
     __init__.py
     calendar_closed_loop.py
+    capability_closed_loop.py
   fixtures/
     __init__.py
     calendar.py
@@ -699,6 +698,7 @@ scripts/
 
 tests/feature/eval/
   test_calendar_closed_loop_evaluator.py
+  test_capability_closed_loop_evaluators.py
   test_langfuse_experiment_adapter.py
   test_runtime_trace_context.py
 ```
@@ -778,8 +778,8 @@ tests/feature/eval/
 按能力而不是按工具数量扩展：
 
 ```text
-no_tool
-read_only_tool
+no_tool                    # 已完成
+read_only_tool             # 已完成
 write_with_confirmation
 multi_tool_dependency
 insufficient_information
@@ -790,6 +790,11 @@ forbidden_side_effect
 ```
 
 每增加一种能力，先证明 fixture 和 evaluator 能检测对应失败，再增加案例数量。
+
+当前 `no_tool` 会检测不必要调用、禁止调用和状态污染；`read_only_tool` 会检测错误查询参数、
+错误工具序列、写 Tool 越界、状态变化以及回答无法由 Tool 结果支撑。两者与 Calendar 创建案例
+复用同一组稳定 `agent.*` item scores 和 Dataset Run 聚合 Score，由 Dataset item 的
+`evaluator_version` 显式分派，不根据用户文本推断案例类型。
 
 ### Phase 6：真实 Provider 实验
 

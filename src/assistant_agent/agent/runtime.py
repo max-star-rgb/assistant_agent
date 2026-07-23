@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter, time
@@ -37,6 +36,7 @@ from assistant_agent.schemas.requests import (
     UserRequest,
     normalize_task_execution_mode,
 )
+from assistant_agent.schemas.trace_context import RuntimeTraceContext
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.event_sink import EventSink
@@ -241,6 +241,7 @@ class AgentGraphRuntime:
         request: UserRequest,
         event_sink: EventSink | None = None,
         cancel_token: Any | None = None,
+        trace_context: RuntimeTraceContext | None = None,
     ) -> AgentState:
         """Run the graph and return the full state for compatibility callers.
 
@@ -270,7 +271,10 @@ class AgentGraphRuntime:
             },
             cancel_token=cancel_token,
         )
-        state = AgentState.from_request(request)
+        state = AgentState.from_request(
+            request,
+            trace_id=trace_context.trace_id if trace_context is not None else None,
+        )
         state.context_source_result = self.context_source_coordinator.load_once(
             ContextSourceRequest(
                 user_id=state.user_id,
@@ -317,6 +321,11 @@ class AgentGraphRuntime:
             state,
             canonical_event="run.started",
             status="started",
+            parent_span_id=(
+                trace_context.parent_span_id
+                if trace_context is not None
+                else None
+            ),
             attributes={
                 "execution_strategy": state.execution_strategy,
                 "execution_engine": "langgraph_assistant_loop",
@@ -437,6 +446,7 @@ class AgentGraphRuntime:
             error=_latest_state_error(state),
         )
         _record_local_trace_conversation(state)
+        _append_trace_content_event(self.trace_store, state)
         append_runtime_turn_summary(self.trace_store, state=state)
         if state.status == "failed":
             self._emit(
@@ -901,6 +911,7 @@ class AgentGraphRuntime:
         provider: str | None = None,
         model: str | None = None,
         latency_ms: int | None = None,
+        parent_span_id: str | None = None,
         attributes: dict[str, Any] | None = None,
         output_summary: dict[str, Any] | None = None,
         error: dict[str, Any] | None = None,
@@ -918,6 +929,7 @@ class AgentGraphRuntime:
             provider=provider,
             model=model,
             latency_ms=latency_ms,
+            parent_span_id=parent_span_id,
             attributes=attributes,
             output_summary=output_summary,
             error=error,
@@ -962,7 +974,9 @@ def _metadata_text(value: Any) -> str:
 
 
 def _record_local_trace_conversation(state: AgentState) -> None:
-    if os.environ.get("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT") != "1":
+    from assistant_agent.services.trace_content_policy import local_trace_content_enabled
+
+    if not local_trace_content_enabled():
         return
     user_text = (state.request.text or "").strip()
     assistant_text = (state.response.message if state.response is not None else "").strip()
@@ -978,6 +992,69 @@ def _record_local_trace_conversation(state: AgentState) -> None:
         trace_id=state.trace_id,
         user_text=user_text,
         assistant_text=assistant_text,
+    )
+
+
+def _append_trace_content_event(trace_store: TraceStore | None, state: AgentState) -> None:
+    """Persist complete run evidence for later trace-driven evaluation."""
+
+    from assistant_agent.services.trace_content_policy import local_trace_content_enabled
+
+    if trace_store is None or not local_trace_content_enabled():
+        return
+    from assistant_agent.services.trace_conversation import (
+        get_default_trace_conversation_store,
+    )
+
+    conversation = get_default_trace_conversation_store().get(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=state.trace_id,
+        limit=1_000_000,
+        include_llm_inputs=True,
+        include_llm_outputs=True,
+        include_tool_observations=True,
+        include_memory_operations=True,
+    )
+    conversation_payload = (
+        conversation.model_dump(mode="json") if conversation is not None else {}
+    )
+    append_observability_event(
+        trace_store,
+        trace_id=state.trace_id,
+        run_id=state.run_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+        canonical_event="trace.content",
+        observation_type="event",
+        observation_name="trace.content",
+        node_name="runtime",
+        status=state.status,
+        input_summary={
+            "request": state.request.model_dump(mode="json"),
+            "llm_inputs": conversation_payload.get("llm_inputs", []),
+        },
+        output_summary={
+            "response": (
+                state.response.model_dump(mode="json")
+                if state.response is not None
+                else None
+            ),
+            "conversation": {
+                key: value
+                for key, value in conversation_payload.items()
+                if key
+                in {
+                    "user",
+                    "assistant",
+                    "delivered",
+                    "llm_outputs",
+                    "tool_observations",
+                    "memory_operations",
+                }
+            },
+        },
+        attributes={"content_capture": "full"},
     )
 
 

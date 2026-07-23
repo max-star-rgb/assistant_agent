@@ -21,7 +21,7 @@ OBSERVATION_TOOL_EVENTS = {"tool.observation"}
 
 
 def load_trace_events(path: Path | str) -> list[TraceEvent]:
-    """Load trace events from a redacted JSONL trace store."""
+    """Load trace events from the canonical full-content JSONL trace store."""
 
     trace_path = Path(path)
     if not trace_path.exists():

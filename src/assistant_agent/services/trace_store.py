@@ -89,7 +89,7 @@ class InMemoryTraceStore:
         self.events: list[TraceEvent] = []
 
     def append(self, event: TraceEvent) -> None:
-        self.events.append(redact_trace_event(event))
+        self.events.append(event)
 
     def list_by_run(self, run_id: str) -> list[TraceEvent]:
         return [event for event in self.events if event.run_id == run_id]
@@ -117,7 +117,6 @@ class JsonlTraceStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def append(self, event: TraceEvent) -> None:
-        event = redact_trace_event(event)
         with self.path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n")
 
@@ -316,10 +315,11 @@ def append_observability_event(
     span_id: str | None = None,
     parent_span_id: str | None = None,
     attributes: dict[str, Any] | None = None,
+    input_summary: dict[str, Any] | None = None,
     output_summary: dict[str, Any] | None = None,
     error: dict[str, Any] | None = None,
 ) -> None:
-    """Append one prompt-safe canonical observability event."""
+    """Append one canonical observability event."""
 
     if trace_store is None:
         return
@@ -342,6 +342,7 @@ def append_observability_event(
             provider=provider,
             model=model,
             latency_ms=latency_ms,
+            input_summary=input_summary or {},
             attributes=attributes or {},
             output_summary=output_summary or {},
             error=error,

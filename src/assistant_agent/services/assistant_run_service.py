@@ -1042,7 +1042,9 @@ def _record_conversation_turn(
 
 
 def _record_trace_conversation_turn(state: AgentState) -> None:
-    if os.environ.get("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT") != "1":
+    from assistant_agent.services.trace_content_policy import local_trace_content_enabled
+
+    if not local_trace_content_enabled():
         return
     if state.status not in {"failed", "cancelled"}:
         return

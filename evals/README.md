@@ -82,3 +82,121 @@ DEEPSEEK_CHAT_API_KEY=... \
 
 建议先按 category 或显式 `--case-id` 小批运行。当前 CLI 支持 suite、case id 和数量过滤，不直接支持
 category 过滤；需要按难度批量运行时，可先从 JSON 生成临时 case 文件，或后续单独扩展 CLI。
+
+## Langfuse 原生闭环评测
+
+`evals/langfuse/calendar_closed_loop_v1.json` 是首个闭环评测 Dataset 源文件；文件名为首期
+Calendar 历史名称，Dataset 已扩展为多能力集合。当前闭环包括：
+
+- `AgentEvalEvidence` 汇总 Runtime 终态、完整 Trace、环境初始/最终状态和 state diff；
+- stateful Calendar fixture 保存时间、地点、备注和幂等键，而不是只记录标题；
+- `no_tool` 验证有候选 Tool 时仍能克制调用，并检查状态零污染；
+- `read_only_tool` 验证查询参数、返回事件、回答依据和只读状态不变；
+- 确定性 evaluator 返回 Langfuse 原生 `Evaluation`，形成 `agent.*` item scores；
+- scripted mock chat adapter 实际驱动 `AgentGraphRuntime`，工具仍经过完整治理链；
+- 正确创建与故意错误变体均在离线 feature tests 中验证，包括不必要调用、错误查询和写越界；
+- Dataset Run evaluator 写入成功率、违规率、平均调用次数和延迟分位数；
+- Langfuse Experiment task 把当前 W3C trace/span identity 传入 Runtime，Runtime observations、
+  item scores 和 Dataset Run 属于同一条 Experiment trace。
+
+安装独立 optional dependency：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pip install -e '.[eval]'
+```
+
+定向验证：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/feature/eval
+```
+
+只校验 Dataset 源文件，不连接 Langfuse：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py --dry-run
+```
+
+同步 Dataset 并运行本地 scripted Experiment：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --run-name calendar-closed-loop-local-v1
+```
+
+命令默认从未跟踪的 `.env` 加载 Langfuse 凭据和 host；可用 `--env-file` 覆盖或
+`--no-env-file` 禁用。显式 Experiment 对 Dataset、Score 和 Runtime OTLP trace 采用 fail-fast；
+这与普通生产观测的 fail-open 不同。当前命令固定使用 scripted mock，不调用真实 Provider。
+普通 runtime 和默认 pytest 继续保持本地、mock、离线。
+
+### 第一次亲手跑通
+
+下面的流程不会调用真实模型或真实 Calendar，适合第一次体验完整闭环。
+
+1. 进入项目目录，并确认 Python 环境：
+
+   ```bash
+   cd /home/lenovo1/pycharm_project/assistant_agent
+   /home/lenovo1/miniconda3/envs/hello_agent/bin/python --version
+   ```
+
+2. 确认 Langfuse 已启动：
+
+   ```bash
+   curl --noproxy '*' http://localhost:3000/api/public/health
+   ```
+
+   看到 `"status":"OK"` 即可继续。如果连接失败，先在 PyCharm 运行
+   `.run/Langfuse.run.xml`。
+
+3. 只检查案例文件，不连接 Langfuse：
+
+   ```bash
+   /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+     scripts/run_langfuse_agent_evals.py --dry-run
+   ```
+
+   应看到三个 `item_ids`，分别覆盖写入、无需 Tool 和只读 Tool。
+
+4. 运行离线 evaluator 测试：
+
+   ```bash
+   /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+     tests/feature/eval
+   ```
+
+   看到 `23 passed` 表示 fixture、故意失败变体、Runtime 串联和 Langfuse adapter
+   都通过；这一步仍然不会连接 Langfuse。
+
+5. 运行一次真正写入本地 Langfuse 的 Experiment。每次换一个 `run-name`，便于横向比较：
+
+   ```bash
+   /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+     scripts/run_langfuse_agent_evals.py \
+     --run-name my-first-agent-eval
+   ```
+
+   成功输出应包含 `item_count: 3`、`strict_pass_rate: 1.0` 和
+   `dataset_run_url`。复制该 URL 到浏览器。
+
+6. 在 Langfuse 页面依次查看：
+
+   - Dataset Run 顶部的 8 个聚合分数；
+   - 三个 Dataset item 的 8 个 `agent.*` 分数；
+   - 点击一个 item 进入 Trace；
+   - 展开 `experiment-item-task -> assistant.runtime`；
+   - 写入案例应出现 `calendar_create`，只读案例应出现 `calendar_search`，
+     `no_tool` 案例不应出现 Tool observation。
+
+7. 想重复体验时，只需换一个名字再次执行第 5 步，例如：
+
+   ```bash
+   /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+     scripts/run_langfuse_agent_evals.py \
+     --run-name my-second-agent-eval
+   ```
+
+   两次 Dataset Run 会并存，不会主动删除旧 Trace，可在 Langfuse 中直接比较。

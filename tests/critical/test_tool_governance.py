@@ -512,48 +512,48 @@ def test_validated_tool_input_is_reused_by_executor() -> None:
     assert _SingleValidationInput.validation_count == 1
 
 
-def test_tool_trace_content_requires_explicit_local_opt_in(
+def test_tool_trace_content_is_enabled_by_default_with_explicit_opt_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = ToolRegistry()
     registry.register(_ExecutionBoundaryTool())
 
     monkeypatch.delenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", raising=False)
-    safe_trace = InMemoryTraceStore()
-    safe_state = AgentState.from_request(
+    content_trace = InMemoryTraceStore()
+    content_state = AgentState.from_request(
         UserRequest(user_id="user-1", session_id="session-1", text="execute")
     )
     ToolExecutor(registry=registry).run_tool(
-        safe_state,
-        "safe-step",
+        content_state,
+        "content-step",
         _ExecutionBoundaryTool.name,
         {"value": "private-value"},
-        trace_store=safe_trace,
-        trace_id=safe_state.trace_id,
+        trace_store=content_trace,
+        trace_id=content_state.trace_id,
     )
 
-    safe_events = safe_trace.list_by_run(safe_state.run_id)
-    assert safe_events[0].input_summary["redacted"] is True
-    assert safe_events[0].attributes["tool_call_id"] == safe_state.tool_calls[0].call_id
-    assert "private-value" not in str(safe_events)
+    content_events = content_trace.list_by_run(content_state.run_id)
+    assert content_events[0].input_summary == {"value": "private-value"}
+    assert content_events[0].attributes["tool_call_id"] == content_state.tool_calls[0].call_id
+    assert content_events[1].output_summary["data"] == {"value": "private-value"}
 
-    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
-    local_trace = InMemoryTraceStore()
-    local_state = AgentState.from_request(
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "0")
+    reduced_trace = InMemoryTraceStore()
+    reduced_state = AgentState.from_request(
         UserRequest(user_id="user-1", session_id="session-1", text="execute")
     )
     ToolExecutor(registry=registry).run_tool(
-        local_state,
-        "local-step",
+        reduced_state,
+        "reduced-step",
         _ExecutionBoundaryTool.name,
         {"value": "visible-value"},
-        trace_store=local_trace,
-        trace_id=local_state.trace_id,
+        trace_store=reduced_trace,
+        trace_id=reduced_state.trace_id,
     )
 
-    local_events = local_trace.list_by_run(local_state.run_id)
-    assert local_events[0].input_summary == {"value": "visible-value"}
-    assert local_events[1].output_summary["data"] == {"value": "visible-value"}
+    reduced_events = reduced_trace.list_by_run(reduced_state.run_id)
+    assert reduced_events[0].input_summary["redacted"] is True
+    assert "visible-value" not in str(reduced_events)
 
 
 def test_available_catalog_is_the_execution_boundary() -> None:

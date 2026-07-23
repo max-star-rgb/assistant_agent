@@ -172,6 +172,7 @@ def _root_span(
     return OtelSpanSpec(
         trace_id=events[0].trace_id,
         span_id=_root_span_id(events),
+        parent_span_id=_external_parent_span_id(events),
         name="assistant.runtime",
         start_time=started_at,
         end_time=finished_at,
@@ -187,6 +188,20 @@ def _root_span(
             **build_turn_diagnostic(events).langfuse_trace_metadata(),
             **_root_io_attributes(events, conversation=conversation),
         },
+    )
+
+
+def _external_parent_span_id(events: list[TraceEvent]) -> str | None:
+    """Return the parent supplied by an enclosing experiment/task context."""
+
+    root_span_id = _root_span_id(events)
+    return next(
+        (
+            event.parent_span_id
+            for event in events
+            if event.parent_span_id and event.parent_span_id != root_span_id
+        ),
+        None,
     )
 
 

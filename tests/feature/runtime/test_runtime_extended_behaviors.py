@@ -311,7 +311,7 @@ def test_media_client_surfaces_top_level_chat_failure() -> None:
     )
 
 
-def test_local_otel_export_includes_original_content_without_extra_switches() -> None:
+def test_otel_export_includes_original_content_without_extra_switches() -> None:
     base = {
         "ASSISTANT_AGENT_OTEL_EXPORT_ENABLED": "true",
         "LANGFUSE_PUBLIC_KEY": "pk-local",
@@ -332,7 +332,7 @@ def test_local_otel_export_includes_original_content_without_extra_switches() ->
     assert local.timeout_seconds == 5.0
     assert local.queue_capacity == 1024
     assert local.include_content is True
-    assert remote.include_content is False
+    assert remote.include_content is True
     assert disabled.include_content is False
 
     scores = LangfuseScoreWriterConfig.from_env(
