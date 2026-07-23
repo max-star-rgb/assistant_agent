@@ -220,6 +220,9 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
     )
     decision = _apply_memory_tool_selection_policy(graph_state, decision, context)
     decision = _apply_decision_guards(graph_state, decision, context)
+    pending_decisions = graph_state.get("pending_tool_decisions")
+    if isinstance(pending_decisions, list) and pending_decisions:
+        pending_decisions[0] = decision
     _record_react_decision(graph_state, decision, iterations, context=context)
     _apply_terminal_decision(graph_state, decision, context)
 
@@ -249,9 +252,14 @@ def _build_decision_context(
 ) -> AssistantDecisionContext:
     _project_request_context(graph_state, request)
     tool_calls_used = int(graph_state.get("tool_calls_used", len(tool_observations)))
-    if tool_calls_used >= max_iterations:
+    answer_only_reason = request.metadata.pop("assistant_answer_only_next_turn", None)
+    answer_only = isinstance(answer_only_reason, str) and bool(answer_only_reason)
+    if tool_calls_used >= max_iterations or answer_only:
         tool_specs = []
-        request.metadata["tool_call_budget_exhausted"] = True
+        if tool_calls_used >= max_iterations:
+            request.metadata["tool_call_budget_exhausted"] = True
+        if answer_only:
+            request.metadata["assistant_answer_only_reason"] = answer_only_reason
     else:
         try:
             tool_specs = _list_tool_specs(graph_state["tool_executor"].registry)
@@ -981,6 +989,27 @@ def _apply_decision_guards(
             reason=guard.message,
             safety_notes=[guard.code],
         )
+    if (
+        decision.type == "tool_call"
+        and decision.tool_name
+        and not _is_plan_mode_active(state)
+        and LoopGuard(state.request.metadata).failed_call_already_seen(
+            tool_name=decision.tool_name,
+            tool_input=decision.tool_input or {},
+        )
+    ):
+        guard = LoopGuardDecision(
+            True,
+            "duplicate_failed_tool_call",
+            f"An identical failed {decision.tool_name} call was blocked before execution.",
+        )
+        _record_loop_guard(graph_state, guard)
+        return decision.model_copy(
+            update={
+                "reason": guard.message,
+                "safety_notes": [*decision.safety_notes, guard.code],
+            }
+        )
     return decision
 
 
@@ -1229,6 +1258,9 @@ def _set_assistant_final_answer_response(
         }
         for error in state.errors
     ]
+    handled_tool_failures = sum(
+        1 for error in state.errors if "call_id" in error.details
+    )
     state.set_response(
         AgentResponse(
             message=decision.message or "已处理请求。",
@@ -1243,6 +1275,8 @@ def _set_assistant_final_answer_response(
                 "contracts": contracts,
                 "output_refs": output_refs,
                 "errors": failures,
+                "degraded": bool(failures),
+                "handled_tool_failures": handled_tool_failures,
                 "plan_status": state.plan_status,
                 "current_step_id": state.current_step_id,
                 "plan_revision_count": state.plan_revision_count,
@@ -1505,6 +1539,24 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
 
     tool_name = decision.tool_name
     tool_input = decision.tool_input or {}
+    if "duplicate_failed_tool_call" in decision.safety_notes:
+        observation = rejected_observation(
+            tool_name=tool_name or "unknown",
+            error_code="duplicate_failed_tool_call",
+            error_message="An identical failed tool call was blocked before execution.",
+            next_step_hint="Answer from the existing observations without repeating the same tool call.",
+        )
+        state.request.metadata["assistant_answer_only_next_turn"] = (
+            "duplicate_failed_tool_call"
+        )
+        return {
+            **graph_state,
+            "tool_observations": _record_react_observation(
+                graph_state,
+                tool_observations,
+                observation,
+            ),
+        }
     step, plan_rejection = _current_plan_step(state, decision, graph_state["outputs_by_step"])
     if plan_rejection is not None:
         state.errors.append(
@@ -1583,6 +1635,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             trace_id=graph_state.get("trace_id"),
             node_name=graph_state.get("current_node_name", "execute_tool"),
             validated_input=validation.validated_input,
+            failure_mode="continue_to_model",
         )
 
         observation = observation_from_tool_result(
@@ -1590,31 +1643,30 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             request_text=graph_state["request"].text,
             prior_observations=tool_observations,
         )
-        if _is_plan_mode_active(state) and not result.success and state.status == "failed":
-            state.status = "running"
+        if _is_plan_mode_active(state) and not result.success:
             _mark_plan_mode_status(state, "replanning")
+        tool_spec = tool_executor.registry.get_spec(tool_name)
+        if not result.success and tool_spec.category in {"write", "dangerous"}:
+            state.request.metadata["assistant_answer_only_next_turn"] = (
+                "failed_side_effect_tool"
+            )
         if result.success:
             LoopGuard(state.request.metadata).record_terminal_tool_success(tool_name)
         guard = (
             LoopGuardDecision(False, "ok", "Guard not triggered for optional step.")
             if step is not None and step.optional
-            else LoopGuard(state.request.metadata).record_tool_result(tool_name=tool_name, success=result.success)
+            else LoopGuard(state.request.metadata).record_tool_result(
+                tool_name=tool_name,
+                tool_input=tool_input,
+                success=result.success,
+            )
         )
         if guard.triggered:
             _record_loop_guard(graph_state, guard)
             if _is_plan_mode_active(state):
                 pass
-            elif state.status != "failed":
-                state.set_response(
-                    AgentResponse(
-                        message=f"{tool_name} 执行失败，我已停止重复调用并保留当前结果。",
-                        data={
-                            "intent": state.intent.intent if state.intent else None,
-                            "assistant_decision": "final_answer",
-                            "loop_guard": guard.__dict__,
-                        },
-                    )
-                )
+            else:
+                state.request.metadata["assistant_answer_only_next_turn"] = guard.code
 
         outputs_by_step = {
             **graph_state["outputs_by_step"],

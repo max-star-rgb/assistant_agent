@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Any
 
 from assistant_agent.schemas.tool_ids import IMAGE_GENERATION_TOOL_NAME
@@ -21,7 +22,6 @@ class LoopGuardDecision:
 class LoopGuard:
     """Small counter-based guard against invalid or repetitive actions."""
 
-    same_tool_failure_limit = 1
     unknown_tool_limit = 1
     invalid_tool_input_limit = 1
     empty_decision_limit = 1
@@ -67,23 +67,46 @@ class LoopGuard:
             return self._increment("invalid_tool_input_count", self.invalid_tool_input_limit, "invalid_tool_input_limit")
         return LoopGuardDecision(False, "ok", "Guard not triggered.")
 
-    def record_tool_result(self, *, tool_name: str, success: bool) -> LoopGuardDecision:
+    def failed_call_already_seen(self, *, tool_name: str, tool_input: dict[str, Any]) -> bool:
+        """Return whether the same normalized invocation already failed."""
+
+        signatures = self.state.get("failed_tool_call_signatures", [])
+        return (
+            isinstance(signatures, list)
+            and self._tool_call_signature(tool_name, tool_input) in signatures
+        )
+
+    def record_tool_result(
+        self,
+        *,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        success: bool,
+    ) -> LoopGuardDecision:
+        signature = self._tool_call_signature(tool_name, tool_input)
+        signatures = self.state.get("failed_tool_call_signatures", [])
+        if not isinstance(signatures, list):
+            signatures = []
         if success:
-            failures = Counter(self.state.get("same_tool_failures", {}))
-            if tool_name in failures:
-                failures.pop(tool_name, None)
-            self.state["same_tool_failures"] = dict(failures)
+            self.state["failed_tool_call_signatures"] = [
+                item for item in signatures if item != signature
+            ]
             return LoopGuardDecision(False, "ok", "Guard not triggered.")
-        failures = Counter(self.state.get("same_tool_failures", {}))
-        failures[tool_name] += 1
-        self.state["same_tool_failures"] = dict(failures)
-        if failures[tool_name] >= self.same_tool_failure_limit:
-            return LoopGuardDecision(
-                True,
-                "same_tool_failure_limit",
-                f"{tool_name} failed repeatedly; stopping further tool calls.",
-            )
+        if signature not in signatures:
+            signatures.append(signature)
+            self.state["failed_tool_call_signatures"] = signatures
         return LoopGuardDecision(False, "ok", "Guard not triggered.")
+
+    @staticmethod
+    def _tool_call_signature(tool_name: str, tool_input: dict[str, Any]) -> str:
+        payload = json.dumps(
+            {"tool_name": tool_name, "tool_input": tool_input},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _increment(self, key: str, limit: int, code: str) -> LoopGuardDecision:
         value = int(self.state.get(key, 0)) + 1

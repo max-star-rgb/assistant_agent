@@ -40,6 +40,9 @@ def compose_response(state: AgentState) -> AgentResponse:
         }
         for error in state.errors
     ]
+    handled_tool_failures = sum(
+        1 for error in state.errors if "call_id" in error.details
+    )
     if state.plan is not None and state.plan.requires_followup:
         return AgentResponse(
             message=compose_followup_message(state.plan.followup_question),
@@ -99,6 +102,8 @@ def compose_response(state: AgentState) -> AgentResponse:
             "memory_context_summaries": memory_summaries,
             "memory_context_text": memory_context_text,
             "errors": failures,
+            "degraded": bool(failures),
+            "handled_tool_failures": handled_tool_failures,
             "partial_success": bool(successful_results and failures),
             "contracts": contracts,
         },

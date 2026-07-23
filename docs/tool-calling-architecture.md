@@ -280,6 +280,20 @@ event 和 trace 的提交顺序，不代表存在独立 scheduler 或并发 poli
 - invoke：只执行工具主体，不修改共享 `AgentState`；
 - commit：写回 state/event/trace。
 
+`ToolResult.success=false` 只表示一次工具执行失败，不天然等于整个 Agent run 失败。Executor 通过通用、
+结构化的 `failure_mode` 接收编排层决策：普通 foreground ReAct 使用 `continue_to_model`，把失败结果作为
+observation 交回主 LLM，由模型修改参数、选择其他工具、追问或诚实解释失败；传统计划、durable task 和
+其他未显式选择恢复模式的入口默认仍使用 `stop_run`。取消始终走独立 cancellation 终态，不能作为普通
+工具失败恢复。该状态机不得按 Tool name 分支。
+
+foreground ReAct 的重复保护使用 `tool_name + canonical tool_input` 的摘要签名。相同工具使用不同参数
+属于可修正调用，可以继续执行；完全相同且已经失败的调用在执行前被阻止，并增加结构化 rejected
+observation，随后用不暴露工具的 answer-only LLM 轮次形成最终回答。这样既允许修正输入，也不会用
+相同参数反复请求 Provider。成功、失败和拒绝事件继续进入 trace；LLM 已处理工具失败并返回最终文本时，
+run 终态为 `completed`，响应通过 `degraded` 和 `handled_tool_failures` 保留诊断事实。
+`write` / `dangerous` 工具失败后可能存在副作用结果不确定性，因此 foreground ReAct 不允许沿用原确认
+自动修正或重试；下一轮直接进入 answer-only，由 LLM 解释失败或要求用户重新发起并重新确认。
+
 幂等语义不再由通用 ToolSpec 治理。具体 provider 若需要 idempotency key，应在领域 schema/adapter 或
 durable task 协议中处理；通用 executor 不维护进程内重复调用 ledger。
 
@@ -344,7 +358,10 @@ weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
 两个已支持 profile 都是显式配置，不根据工具名猜测 Provider：
 
 - `mcp_weather_server_v1` 把稳定 `weather` 输入转换为 `get_weather_byDateTimeRange`，再把小时数据聚合为
-  每日 forecast；该上游目前要求英文城市名。
+  每日 forecast；该上游目前要求英文城市名。这个要求由 adapter 的结构化输入能力声明进入实例级
+  Weather ToolSpec，提示 LLM 在构造工具参数时把本地化地点名翻译为规范英文名，同时保持最终回答使用
+  用户语言；不得在 Gateway、catalog 或 adapter 中维护城市名映射表。上游无法解析地点时归一化为
+  `provider_unsupported_input` observation，只有参数发生变化后才允许再次调用。
 - `workspace_mcp_v1` 把稳定 `calendar_search` / `calendar_create` 分别转换为 `get_events` /
   `manage_event`，并注入本地 `calendar_user_email`；创建动作固定为 `action=create`。
 
@@ -389,3 +406,5 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - 工具级确认只读可信 request metadata，不信任模型输入；
 - Memory、MCP、durable task、workflow、CLI 和 Gateway 不绕过统一工具边界；
 - 默认测试与 eval 保持 mock/local/offline，真实 provider 必须显式启用。
+- 任何普通工具执行失败都先是 ToolResult/observation；只有编排恢复策略、取消或 Runtime 自身失败可以决定
+  Agent run 的 terminal status，Gateway 不按工具名或 Provider 错误码改写终态。

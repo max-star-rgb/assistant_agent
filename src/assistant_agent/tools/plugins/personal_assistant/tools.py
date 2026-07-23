@@ -49,6 +49,12 @@ class WeatherTool(ToolBase):
 
     def __init__(self, adapter: WeatherAdapter | None = None) -> None:
         self.adapter = adapter or MockWeatherAdapter()
+        if getattr(self.adapter, "location_input_language", "any") == "en":
+            self.description = (
+                f"{type(self).description} The configured provider requires canonical English "
+                "location names; translate localized place names before calling the tool, "
+                "while keeping the final answer in the user's language."
+            )
 
     def _run(self, input: WeatherRequest, context: ToolContext) -> ToolResult:
         result = self.adapter.lookup(input)

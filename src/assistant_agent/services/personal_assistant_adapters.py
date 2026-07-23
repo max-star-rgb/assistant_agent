@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import re
-from typing import Protocol
+from typing import Literal, Protocol
 
 from assistant_agent.schemas.personal_assistant import (
     CalendarCreateRequest,
@@ -21,8 +21,13 @@ from assistant_agent.schemas.personal_assistant import (
 )
 
 
+WeatherLocationInputLanguage = Literal["any", "en"]
+
+
 class WeatherAdapter(Protocol):
     """Weather provider boundary."""
+
+    location_input_language: WeatherLocationInputLanguage
 
     def lookup(self, request: WeatherRequest) -> WeatherResult:
         """Return weather for one location."""
@@ -49,6 +54,7 @@ class MockWeatherAdapter:
     """Deterministic weather adapter for offline tests and local demos."""
 
     provider = "mock"
+    location_input_language: WeatherLocationInputLanguage = "any"
 
     def lookup(self, request: WeatherRequest) -> WeatherResult:
         location = request.location.strip()

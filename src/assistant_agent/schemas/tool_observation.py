@@ -218,6 +218,16 @@ def _next_step_hint(
     prior_observations: Sequence[Mapping[str, Any]],
 ) -> str:
     if status != "succeeded":
+        errors = data.get("errors")
+        first_error = errors[0] if isinstance(errors, list) and errors else None
+        if (
+            isinstance(first_error, dict)
+            and first_error.get("code") == "provider_unsupported_input"
+        ):
+            return (
+                "Correct the tool input using the provider requirements and retry only with "
+                "changed arguments; otherwise explain the failure without inventing a result."
+            )
         if _has_prior_successful_observation(prior_observations, tool_name):
             return (
                 f"A previous {tool_name} call already succeeded. Use that earlier observation, "

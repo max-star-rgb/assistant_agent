@@ -17,7 +17,7 @@ from assistant_agent.agent.legacy_tool_mapping import (
     canonical_capability_for_tool,
 )
 from assistant_agent.agent.state import AgentState
-from assistant_agent.agent.recovery import RecoveryPolicy, classify_error
+from assistant_agent.agent.recovery import RecoveryPolicy, ToolFailureMode, classify_error
 from assistant_agent.schemas.api import api_error
 from assistant_agent.schemas.capability_output import contract_summary
 from assistant_agent.schemas.events import AgentEvent
@@ -68,6 +68,7 @@ class PreparedToolCall:
     trace_store: TraceStore | None
     trace_id: str | None
     node_name: str
+    failure_mode: ToolFailureMode
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,7 @@ class ToolExecutor:
         trace_id: str | None = None,
         node_name: str | None = None,
         validated_input: BaseModel | None = None,
+        failure_mode: ToolFailureMode = "stop_run",
     ) -> ToolResult:
         """Run one governed tool through serial prepare/invoke/commit stages."""
 
@@ -123,6 +125,7 @@ class ToolExecutor:
             trace_id=trace_id,
             node_name=node_name,
             validated_input=validated_input,
+            failure_mode=failure_mode,
         )
         invocation = self.invoke_tool(prepared)
         return self.commit_tool_result(state, prepared, invocation)
@@ -138,6 +141,7 @@ class ToolExecutor:
         trace_id: str | None = None,
         node_name: str | None = None,
         validated_input: BaseModel | None = None,
+        failure_mode: ToolFailureMode = "stop_run",
     ) -> PreparedToolCall:
         """Prepare governance and lifecycle state in serial order."""
 
@@ -270,6 +274,7 @@ class ToolExecutor:
             trace_store=trace_store,
             trace_id=trace_id,
             node_name=effective_node_name,
+            failure_mode=failure_mode,
         )
 
     def invoke_tool(self, prepared: PreparedToolCall) -> ToolInvocationResult:
@@ -410,7 +415,11 @@ class ToolExecutor:
         result = invocation.result
         reported_latency_ms = result.latency_ms
         latency_ms = int((perf_counter() - prepared.started_at) * 1000)
-        decision = self.recovery_policy.decide(result, prepared.step)
+        decision = self.recovery_policy.decide(
+            result,
+            prepared.step,
+            failure_mode=prepared.failure_mode,
+        )
         result.error = decision.message
         post_tool_call = build_post_tool_call_summary(
             tool_name=prepared.tool_name,

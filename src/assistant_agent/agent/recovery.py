@@ -17,7 +17,9 @@ RecoveryAction = Literal[
     "fallback_to_text_response",
     "stop_with_error",
     "continue_with_partial_result",
+    "continue_to_model",
 ]
+ToolFailureMode = Literal["stop_run", "continue_to_model"]
 
 
 class RecoveryDecision(BaseModel):
@@ -39,7 +41,13 @@ class RecoveryPolicy(BaseModel):
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
     fallback_policy: FallbackPolicy = Field(default_factory=FallbackPolicy)
 
-    def decide(self, result: ToolResult, step: TaskStep | None = None) -> RecoveryDecision:
+    def decide(
+        self,
+        result: ToolResult,
+        step: TaskStep | None = None,
+        *,
+        failure_mode: ToolFailureMode = "stop_run",
+    ) -> RecoveryDecision:
         """Return a recovery decision for a failed tool result."""
 
         optional_step = bool(step.optional) if step is not None else False
@@ -47,6 +55,15 @@ class RecoveryPolicy(BaseModel):
         error_code = classify_error(error)
         sanitized = sanitize_error_message(error)
         retryable = self.retry_policy.is_retryable(error_code)
+
+        if failure_mode == "continue_to_model":
+            return RecoveryDecision(
+                error_code=error_code,
+                message=sanitized,
+                action="continue_to_model",
+                optional_step=optional_step,
+                retryable=retryable,
+            )
 
         if optional_step and self.allow_skip_optional_steps and self.allow_partial_response:
             return RecoveryDecision(

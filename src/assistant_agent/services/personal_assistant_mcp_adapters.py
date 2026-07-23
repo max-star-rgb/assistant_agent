@@ -32,6 +32,7 @@ from assistant_agent.services.personal_assistant_adapters import (
     ContactsAdapter,
     MockWeatherAdapter,
     WeatherAdapter,
+    WeatherLocationInputLanguage,
 )
 from assistant_agent.schemas.tool_ids import (
     CALENDAR_CREATE_TOOL_NAME,
@@ -78,6 +79,7 @@ class UnconfiguredMCPPersonalAssistantAdapter:
     """Structured failure adapter for missing MCP personal assistant mappings."""
 
     provider = "mcp"
+    location_input_language: WeatherLocationInputLanguage = "any"
 
     def __init__(self, missing: str) -> None:
         self.missing = missing
@@ -140,6 +142,10 @@ class MCPPersonalAssistantWeatherAdapter:
     def __init__(self, *, binding: MCPPersonalAssistantToolBinding, runner: MCPToolRunner) -> None:
         self.binding = binding
         self.runner = runner
+
+    @property
+    def location_input_language(self) -> WeatherLocationInputLanguage:
+        return "en" if self.binding.profile == "mcp_weather_server_v1" else "any"
 
     def lookup(self, request: WeatherRequest) -> WeatherResult:
         started = time.monotonic()
@@ -655,6 +661,8 @@ def _weather_response_error_code(message: str) -> str:
         return "provider_unavailable" if "status 429" not in normalized else "provider_rate_limited"
     if "network error" in normalized or "timed out" in normalized:
         return "provider_network_error"
+    if "no coordinates found" in normalized or "city was not found" in normalized:
+        return "provider_unsupported_input"
     return "provider_bad_response"
 
 

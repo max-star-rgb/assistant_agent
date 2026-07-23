@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-21
+Last updated: 2026-07-23
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes. Media-Agent `/agent-service/v1` wire-field details, examples, and H.264 payload constraints live in `docs/media-agent-service-websocket.md`.
 
@@ -250,6 +250,10 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - For cancelled turns, include prompt-safe cancel metadata in `run.end.payload.cancel` (`source`, optional `reason`, `phase`, `best_effort`, and `deadline_ms` when applicable). If Gateway ends the turn before a backend trace is available, include `run.end.payload.trace.status=not_available` with reason `cancelled_before_backend_result` instead of inventing a trace id.
 - Convert realtime backend events into Gateway wire frames.
 - Convert backend failures into protocol-level `run.end` or `error` frames.
+- Do not promote an individual handled `tool.failed` event into a Gateway run failure. Tool execution outcomes are
+  governed by the generic assistant-loop recovery state machine; when the LLM consumes the failure observation and
+  returns a final answer, Gateway emits the ordinary completed lifecycle while trace/response diagnostics retain the
+  degraded tool result. Gateway reports failure only when the backend's final run status is actually failed.
 - Queue ordinary same-session user messages behind the active run; apply per-session and process-wide limits; cancel either queued or active runs on explicit `run.cancel`, disconnect, deadline expiry, explicit same-session interrupt, or queue-wait expiry.
 - On `call.hangup`, cancel queued/active work, stop outbound relay, return `call.hangup_ack(payload.session_closed=true)`, and immediately destroy the logical AgentSession. The same transport may later send a new `call.incoming` and receive a fresh session endpoint.
 - Treat cancel/interrupt as a first-class realtime turn outcome. After cancel, old run output is not speakable or user-visible; late backend/tool results may be retained only as trace or stale artifacts.
