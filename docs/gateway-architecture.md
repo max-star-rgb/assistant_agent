@@ -379,8 +379,11 @@ message.user -> per-session FIFO -> process-wide admission -> backend run
   closes every pooled runtime and drains its shared bounded post-response memory
   capture dispatcher within the configured memory shutdown bound. Pooled
   runtimes also share the application-owned `SessionMemoryContextStore`, so a
-  later turn may reuse the session's first-turn long-term-memory snapshot even
-  when Gateway checks out a different runtime instance.
+  Gateway session start can prewarm one long-term-memory snapshot before any
+  turn, and every turn can reuse it even when Gateway checks out a different
+  runtime instance. `call.incoming`, `session.open`, the Media-Agent
+  `assistantControl` handshake, and request/response facades enter this
+  initialization boundary; the first runtime turn never performs core recall.
 - `run.cancel` can target a queued `run_id`. Queue timeout and pre-run cancel
   end with `run.end(reason=cancelled)` plus prompt-safe cancellation metadata
   with `phase=before_llm`; neither path calls the backend.

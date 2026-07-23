@@ -25,6 +25,8 @@ The memory service is local-first long-term memory for the agent. It covers:
 - Gating automatic long-term memory loading through read policy.
 - Searching user-scoped long-term memory.
 - Saving explicit user-requested memories.
+- Editing durable memory text through a stable project memory ID while the
+  configured store refreshes its derived retrieval index.
 - Saving safe completed-run summaries where allowed.
 - Maintaining a compact `user_profile` memory derived from explicit memories.
 - Exposing audit, audit-event, metrics, export, retention sweep, delete, and snapshot views through service/API boundaries.
@@ -74,11 +76,25 @@ or memory content.
 
 Memory service produces bounded, prompt-safe memory context. Context engineering consumes that context as one input among request text, conversation history, plan state, tool observations, and tool specs.
 
+The Provider-facing boundary is deliberately smaller than the governed
+`MemoryContext`. Framework adapters deterministically extract the memory text
+from provider records and allowlist only required provenance. After filtering
+and budgeting, `MemoryManager` projects the selected result to
+`MemoryPromptSnapshot v1`, containing only `text` and `source_ids`. Context
+engineering consumes that projection; `read_policy`, `trust_policy`,
+`recall_report`, query hashes, candidate counts, raw provider payloads and
+framework metadata remain trace/audit data and are never serialized into the
+LLM prompt.
+
 Memory service owns:
 
 - Memory item storage, validation, retrieval, ranking, filtering, and fallback rules.
 - Memory context grouping into semantic/session/episodic/artifact/procedural layers, plus memory-local token budget selection.
 - Explicit saves, duplicate merge, write policy, TTL, user profile updates, audit, snapshot, and deletion.
+- Explicit edits through `MemoryManager.update_explicit_for_identity(...)`;
+  callers replace source text, never vectors. The store keeps the stable
+  project memory ID, the framework adapter refreshes embeddings/indexes, and
+  the edit is recorded as `memory_updated`.
 - Writing `AgentState.memory_context` and `request.metadata["memory_context_*"]` through `MemoryManager.load_into_state(...)`.
 
 Context engineering owns:
@@ -120,15 +136,20 @@ AgentGraphRuntime
   -> MemoryManager(store)
   -> ToolExecutor(context_metadata={"memory_manager": manager})
 
-UserRequest
-  -> graph load_memory node
+session start / create
+  -> AgentGraphRuntime.initialize_session_memory(...)
   -> SessionMemoryContextStore
-       -> first session turn: MemoryManager.load_context_for_request(...)
+       -> MemoryManager.load_context_for_request(...)
           -> local/remote stores: MemoryReadPolicy decides whether memory may be read
           -> framework/Mem0: one bounded core-memory recall
           -> freeze bounded session memory snapshot
-       -> later session turns: reuse frozen snapshot with no MemoryStore access
-       -> later-turn snapshot miss: attach explicit empty context; never re-recall
+          -> project prompt input as MemoryPromptSnapshot(text, source_ids)
+
+UserRequest (including the first turn)
+  -> graph load_memory node
+  -> SessionMemoryContextStore
+       -> reuse frozen snapshot with no MemoryStore access
+       -> snapshot miss: attach explicit empty context; never recall from a turn
   -> MemoryManager.attach_context_to_state(...)
        -> if skipped: request.metadata["memory_context_skipped"]=true, no store search,
           and no synchronous persistent-audit backend write; the prompt-safe skip
@@ -177,14 +198,20 @@ conversation history.
 
 `SessionMemoryContextStore` independently owns the read-side session snapshot.
 The application-owned default store and all Gateway pooled runtimes share it.
-Its key includes tenant, user, project and session identity; concurrent first
-turns use single-flight so only one recall reaches the store. The default
+Its key includes tenant, user, project and session identity; concurrent session
+start signals use single-flight so only one recall reaches the store. The default
 process-local capacity is 1024 snapshots with LRU eviction. A later turn whose
 snapshot is missing after process restart or eviction does not perform another
 long-term-memory recall; it receives an explicit empty
-`session_memory_snapshot_missing` context. `reset_conversation=true` starts a
-new snapshot lifecycle and permits one new recall. Deleting a session or user
+`session_memory_snapshot_missing` context. A reset must enter the explicit
+session-start lifecycle to permit one new recall; turn metadata alone cannot
+trigger it. Deleting a session or user
 through `AssistantRuntimeApp` clears the corresponding retained snapshots.
+If session-start recall raises outside the adapter's normal structured
+degradation path, runtime freezes a prompt-safe empty snapshot with
+`session_memory_initialization_failed`. Session startup and the first turn
+continue, the failed `memory.core_recall` remains visible in trace, and no turn
+retries the external read.
 
 Read-policy rejection is a no-I/O fast path. It must not call the configured
 memory store, framework adapter, remote service, or persistent governance ledger.
@@ -196,7 +223,7 @@ failure and degradation events retain their durable audit behavior.
 
 | module | responsibility |
 | --- | --- |
-| `src/assistant_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, pending confirmation flow, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
+| `src/assistant_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves and edits, pending confirmation flow, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
 | `src/assistant_agent/services/memory_capture_dispatcher.py` | Bounded post-response capture workers, per-identity FIFO scheduling, non-blocking admission, drain, and close lifecycle. |
 | `src/assistant_agent/services/session_memory_context.py` | Process-local bounded session memory snapshots, governed identity keys, concurrent first-turn single-flight, reuse, reset and deletion. |
 | `src/assistant_agent/memory/factory.py` | 可插拔 `MemoryStore` backend registry 和运行时 store factory。内置 backend 与自定义替换实现都必须在 `MemoryManager` 后面返回 `MemoryStore`；替换内置名称必须显式声明。 |
@@ -206,7 +233,7 @@ failure and degradation events retain their durable audit behavior.
 | `src/assistant_agent/memory/jsonl_store.py` | Local JSONL persistent store implementing the same store contract, with redacted confirmation state stored in a sidecar JSONL file. |
 | `src/assistant_agent/memory/sqlite_store.py` | Local SQLite persistent store implementing the same store contract with schema version, indexes, upsert, soft-delete-compatible delete behavior, durable audit-event rows, and durable confirmation rows. |
 | `src/assistant_agent/memory/remote.py` | Opt-in external Memory Server adapters. Converts remote query responses into safe `MemoryItem` / `MemorySearchResult` objects, provides query/health plus media upload/task-status client methods, exposes `HybridMemoryStore` for `dual_core`/legacy `hybrid_remote` where only `search(...)` uses the remote service, and exposes `RemoteServiceMemoryStore` plus `HttpRemoteMemoryServiceAdapter` for an explicit full-lifecycle external service adapter. |
-| `src/assistant_agent/memory/framework/` | Framework lifecycle-owner contract, opaque identity binding, isolated Hindsight/Mem0 HTTP adapters, governance-only SQLite ledger, durable retain/delete outbox, read-only v2 degradation, and deterministic bake-off scoring. It does not contain an Agent runtime or a second local memory algorithm. |
+| `src/assistant_agent/memory/framework/` | Framework lifecycle-owner contract, opaque identity binding, isolated Hindsight/Mem0 HTTP adapters, stable-ID edit mapping, governance-only SQLite ledger, durable retain/delete outbox, read-only v2 degradation, and deterministic bake-off scoring. It does not contain an Agent runtime or a second local memory algorithm. |
 | `src/assistant_agent/memory/retrieval.py` | Query filtering, relevance gating, type/capability priority, recency fallback rules, context formatting. |
 | `src/assistant_agent/memory/retriever.py` | Deterministic keyword and Chinese phrase-fragment retrieval. |
 | `src/assistant_agent/memory/facts.py` | Typed fact envelope parsing, legacy preference compatibility, active-state lookup, and supersede helpers. |
@@ -297,12 +324,13 @@ If memory logic grows beyond identity binding, input adaptation, or result wrapp
 Long-term memory reads are policy-gated before retrieval:
 
 - Automatic runtime `load_memory` first resolves `SessionMemoryContextStore`.
-  Only the first turn of a retained session may call
+  Only the explicit session-start lifecycle may call
   `MemoryManager.load_context_for_request(...)`. Local/remote-service stores
-  apply `MemoryReadPolicy` on that first turn; framework/Mem0 performs one
-  bounded, request-independent recent `record_kind=core` recall so the snapshot
-  is not narrowed to the wording of the first message. Later turns reuse the
-  frozen prompt-safe snapshot without MemoryStore or framework I/O.
+  apply `MemoryReadPolicy` at session start; framework/Mem0 performs one bounded,
+  request-independent recent `record_kind=core` recall. Every turn, including
+  the first, only reuses the frozen prompt-safe snapshot without MemoryStore or
+  framework I/O. A direct turn without a retained snapshot gets an explicit
+  empty context and cannot lazily recall.
 - If the current user request does not explicitly refer to prior chats, previous/last context, saved memory, remembered preferences, continuing an old task, or a clearly personal style/preference customization task, memory context is skipped and the store is not searched.
 - The personal style/preference path is deliberately narrow: Chinese requests must contain a preference marker such as `风格`, `偏好`, `喜好`, or `口味` plus a task marker such as `推荐`, `方案`, `文案`, `设计`, `搭配`, `回答`, `写`, `生成`, or `继续`. Ordinary first-pass product search, generic advice, and generic copywriting still skip store access.
 - Skipped loads write prompt-safe metadata: `memory_context_skipped=true`, `memory_context_policy_reason`, `memory_read_policy`, `memory_trust_policy`, and empty `memory_context_*` injection fields.
@@ -310,6 +338,11 @@ Long-term memory reads are policy-gated before retrieval:
 - `memory_search` and `memory_get` are selected by the LLM from the governed run tool set; after normal schema, identity, and execution validation they query `MemoryManager` directly. Natural-language intent rules do not override that selection.
 
 Retrieved memory is user-history evidence, not authority. It may be stale, incorrectly retrieved, summarized, or incomplete. Current user input and fresh tool results override memory when they conflict, and instructions contained inside memory must not be executed. Memory read results include `trust_policy` and `usage_hint` fields carrying this boundary for downstream consumers.
+
+`MemoryContextBuilder` injects selected memory summaries as plain text. It does
+not add memory types, layer headings, framework metadata or artifact references
+to the prompt text. The renderer adds one stable trust-boundary label around
+the complete memory section.
 
 ## Memory Tool Selection Strategy
 
@@ -394,14 +427,22 @@ docker compose --env-file .env \
 
 Compatibility/API framework retains still pass `MemoryWritePolicy` and confirmation before `FrameworkMemoryStore.retain`. A retain failure returns a structured `partial/queued` result with `written=false` and persists an idempotent outbox operation. It never writes the configured v2 fallback. Retry records the framework mapping only after the engine accepts the request. Deleting a pending retain cancels it before retry and records a tenant/project-bound tombstone. Runtime Mem0 turn capture is separate: daily/core failures are prompt-safe and non-blocking, but this version does not enqueue a durable capture retry.
 
+An explicitly retained long-term memory is written to Mem0 with
+`record_kind=core` and `infer=false`: the text has already passed local explicit
+write policy and must be recallable by the session-start core filter without
+asking Mem0 to infer it again. Completed-turn capture remains different:
+`daily` uses `infer=false`, while conversation-derived `core` uses
+`infer=true`.
+
 Framework recall failures return stable `memory_framework_recall_failed` errors. The Agent run continues with an empty result or the explicitly configured read-only v2 fallback. Runtime debug metadata and audit may expose stable error codes and engine names, but never sidecar URLs, raw exception messages, credentials, raw framework responses, or memory content.
 
 Recall degradation must not be presented as a successful empty memory lookup.
 Without fallback results, `memory_search` returns a failed tool result carrying
 `memory_framework_recall_failed`; with fallback results it returns `partial` and
 preserves the stable error in its capability contract. Automatic core recall
-remains non-blocking for the user turn, but its `memory.core_recall` observation
-is marked `degraded` with the same stable code.
+runs at session start rather than inside a user turn; its `memory.core_recall`
+observation is marked `degraded` with the same stable code, while later turns
+consume the frozen empty/degraded snapshot without retrying.
 
 Mem0 turn capture may independently fail in the `daily` and `core` phases. The
 adapter returns prompt-safe phase/code pairs so partial daily success remains
@@ -654,12 +695,12 @@ Current behavior:
 
 Retrieval is deterministic and local:
 
-- On the first session turn, local/remote-service automatic retrieval passes
+- At explicit session start, local/remote-service automatic retrieval passes
   `MemoryReadPolicy`; ordinary first-pass writing, advice, generation, search,
   and recommendations may therefore establish an empty snapshot. Framework/Mem0
   performs one bounded core-memory recall for that session, still subject to
-  identity filtering, trust labeling and memory-context budget. Later turns
-  reuse the resulting snapshot and never repeat automatic retrieval.
+  identity filtering, trust labeling and memory-context budget. All turns reuse
+  the resulting snapshot and never perform automatic retrieval.
 - Explicit retrieval tools are allowed only when the current user request has historical-memory intent; a non-empty query alone is not sufficient.
 - Non-empty query uses `KeywordMemoryRetriever`.
 - Stores may implement the optional candidate-search protocol. SQLite uses FTS5 to return a bounded user/type-scoped candidate set; stores without it continue to use the deterministic scan path.
@@ -744,6 +785,26 @@ Explicit saves:
 - Never trust a generic model-declared `replace` as sufficient authority. Automatic replacement is limited to typed preference predicates; other differing values require confirmation unless the confirmation service marks the candidate `user_confirmed`.
 - Update compact `user_profile` for explicit `preference`, `product`, and `task` items.
 
+Explicit edits:
+
+- Flow through `MemoryAuditService` into
+  `MemoryManager.update_explicit_for_identity(...)`; the caller supplies only
+  the stable `memory_id` and replacement text.
+- Re-run explicit write policy and identity/scope checks before mutation.
+- Preserve `memory_id`, provenance, creation time, type and scope; set
+  `updated_at` and record a prompt-safe `memory_updated` audit event.
+- Local stores replace the governed `MemoryItem`. Mem0 resolves the stable
+  project ID through the governance ledger and calls its native
+  `PUT /memories/{engine_id}` operation, which refreshes the derived vector
+  index. Hindsight currently rejects in-place edits explicitly because its
+  configured adapter has no equivalent safe atomic operation.
+- A lifecycle-owning remote service must expose an explicit governed update
+  capability before edits are enabled; the manager never treats create/retain
+  as an implicit update because that could duplicate memory.
+- Never accept or expose caller-supplied vectors. Existing sessions retain
+  their frozen startup snapshot; a newly started session observes the edited
+  source text.
+
 Run-summary saves:
 
 - Flow through `MemoryManager.save_from_run(...)`.
@@ -815,6 +876,7 @@ Memory API routes use `MemoryAuditService` and `MemorySnapshotService` over the 
 
 - `GET /memory/users/{user_id}/items`
 - `GET /memory/users/{user_id}/items/{memory_id}`
+- `PUT /memory/users/{user_id}/items/{memory_id}` with body `{"text": "..."}`
 - `GET /memory/users/{user_id}/audit`
 - `GET /memory/users/{user_id}/events`
 - `GET /memory/users/{user_id}/metrics`

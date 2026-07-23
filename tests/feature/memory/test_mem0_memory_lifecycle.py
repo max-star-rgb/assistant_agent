@@ -18,6 +18,7 @@ from assistant_agent.services.trace_store import sanitize_trace_value
 from assistant_agent.schemas.memory_framework import (
     FrameworkConversationMessage,
     FrameworkRecallRequest,
+    FrameworkRetainRequest,
     FrameworkTurnCaptureRequest,
     MemoryEngineIdentity,
 )
@@ -68,6 +69,130 @@ def test_mem0_sidecar_resolves_repo_dotenv_qwen_settings() -> None:
         "embedding_api_key": "test-qwen-key",
         "embedding_base_url": "https://qwen.test/v1",
     }
+
+
+def test_mem0_explicit_retain_is_recallable_as_core_memory() -> None:
+    requests: list[FrameworkHttpRequest] = []
+
+    def transport(request: FrameworkHttpRequest):
+        requests.append(request)
+        return {"results": [{"id": "explicit-core-1"}]}
+
+    adapter = Mem0MemoryEngineAdapter(
+        base_url="http://mem0.test",
+        transport=transport,
+    )
+    result = adapter.retain(
+        FrameworkRetainRequest(
+            identity=_identity(),
+            project_memory_id="project-memory-1",
+            text="stable-memory-sentinel",
+            memory_type="preference",
+            scope="project",
+            source="explicit_user_request",
+            created_at=datetime(2026, 7, 23, tzinfo=timezone.utc),
+            idempotency_key="retain-1",
+        )
+    )
+
+    assert result.accepted is True
+    assert requests[0].body is not None
+    assert requests[0].body["infer"] is False
+    assert requests[0].body["metadata"]["record_kind"] == "core"
+
+
+def test_mem0_update_replaces_source_text_through_native_put() -> None:
+    requests: list[FrameworkHttpRequest] = []
+
+    def transport(request: FrameworkHttpRequest):
+        requests.append(request)
+        return {"id": "engine-memory-1", "memory": "edited-memory-sentinel"}
+
+    adapter = Mem0MemoryEngineAdapter(
+        base_url="http://mem0.test",
+        transport=transport,
+    )
+
+    updated = adapter.update(
+        identity=_identity(),
+        engine_id="engine-memory-1",
+        text="edited-memory-sentinel",
+    )
+
+    assert updated is True
+    assert requests == [
+        FrameworkHttpRequest(
+            method="PUT",
+            path="/memories/engine-memory-1",
+            body={"memory": "edited-memory-sentinel"},
+            headers=None,
+        )
+    ]
+
+
+def test_governed_mem0_edit_keeps_project_memory_id(tmp_path) -> None:
+    requests: list[FrameworkHttpRequest] = []
+    engine_text = {"value": "original-memory-sentinel"}
+
+    def transport(request: FrameworkHttpRequest):
+        requests.append(request)
+        if request.method == "POST":
+            return {"results": [{"id": "engine-memory-1"}]}
+        if request.method == "PUT":
+            assert request.body is not None
+            engine_text["value"] = str(request.body["memory"])
+            return {"id": "engine-memory-1", "memory": engine_text["value"]}
+        return {
+            "id": "engine-memory-1",
+            "memory": engine_text["value"],
+            "metadata": {
+                "project_memory_id": "stable-project-memory-1",
+                "memory_type": "preference",
+                "scope": "project",
+                "source": "explicit_user_request",
+                "record_kind": "core",
+            },
+        }
+
+    store = FrameworkMemoryStore(
+        adapter=Mem0MemoryEngineAdapter(
+            base_url="http://mem0.test",
+            transport=transport,
+        ),
+        ledger=FrameworkGovernanceLedger(tmp_path / "framework-ledger.sqlite3"),
+        identity_namespace="tests",
+    )
+    manager = MemoryManager(store)
+    identity = RequestIdentity.for_user(
+        user_id="owner-user",
+        project_id="owner-project",
+        session_id="editing-session",
+    )
+    saved = manager.save_explicit_for_identity(
+        identity,
+        memory_id="stable-project-memory-1",
+        text="original-memory-sentinel",
+        content={"summary": "original-memory-sentinel"},
+        scope="project",
+    )
+
+    updated = manager.update_explicit_for_identity(
+        identity,
+        memory_id="stable-project-memory-1",
+        text="edited-memory-sentinel",
+    )
+
+    assert updated is not None
+    assert updated.memory_id == saved.memory_id == "stable-project-memory-1"
+    assert updated.summary == "edited-memory-sentinel"
+    put_request = next(request for request in requests if request.method == "PUT")
+    assert put_request.path == "/memories/engine-memory-1"
+    assert put_request.body == {"memory": "edited-memory-sentinel"}
+    mappings = store.ledger.list_mappings(
+        user_id="owner-user",
+        project_memory_id="stable-project-memory-1",
+    )
+    assert [mapping.engine_id for mapping in mappings] == ["engine-memory-1"]
 
 
 def test_mem0_capture_stores_daily_record_and_infers_core_memory() -> None:
@@ -209,6 +334,12 @@ def test_mem0_unavailable_runtime_records_recall_and_capture_failures(tmp_path) 
         session_store=InMemorySessionStore(),
     )
 
+    initialized = runtime.initialize_session_memory(
+        RequestIdentity.for_user(
+            user_id="capture-user",
+            session_id="capture-session",
+        )
+    )
     state = runtime.run_state(
         UserRequest(user_id="capture-user", session_id="capture-session", text="你好")
     )
@@ -216,8 +347,12 @@ def test_mem0_unavailable_runtime_records_recall_and_capture_failures(tmp_path) 
     assert state.status == "completed"
     assert state.request.metadata["memory_capture"]["status"] == "queued"
     assert runtime.drain_memory_captures(timeout=10.0) is True
+    recall = next(
+        event
+        for event in runtime.trace_store.list_by_run(initialized.run_id)
+        if event.canonical_event == "memory.load.finished"
+    )
     events = runtime.trace_store.list_by_run(state.run_id)
-    recall = next(event for event in events if event.canonical_event == "memory.load.finished")
     capture = next(
         event for event in events if event.canonical_event == "memory.capture.finished"
     )
@@ -291,6 +426,12 @@ def test_completed_runtime_turn_triggers_mem0_capture(tmp_path) -> None:
         session_store=InMemorySessionStore(),
     )
 
+    runtime.initialize_session_memory(
+        RequestIdentity.for_user(
+            user_id="capture-user",
+            session_id="capture-session",
+        )
+    )
     state = runtime.run_state(
         UserRequest(user_id="capture-user", session_id="capture-session", text="你好")
     )

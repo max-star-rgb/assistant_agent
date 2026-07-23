@@ -11,6 +11,8 @@ from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryItem, MemoryQuery, MemorySearchResult
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.sessions import SessionCreate
+from assistant_agent.services.assistant_runtime_app import AssistantRuntimeApp
 from assistant_agent.services.session_memory_context import SessionMemoryContextStore
 from assistant_agent.services.session_store import InMemorySessionStore
 from assistant_agent.services.trace_metrics import build_trace_metrics
@@ -52,6 +54,14 @@ class _CountingCoreMemoryStore(InMemoryStore):
         )
 
 
+class _FailingCoreMemoryStore(_CountingCoreMemoryStore):
+    def search(self, query: MemoryQuery) -> MemorySearchResult:
+        with self._count_lock:
+            self.search_count += 1
+            self.queries.append(query.query)
+        raise RuntimeError("unavailable")
+
+
 def _runtime(
     store: _CountingCoreMemoryStore,
     *,
@@ -79,25 +89,52 @@ def _request(*, session_id: str, turn_index: int, reset: bool = False) -> UserRe
     )
 
 
-def test_runtime_recalls_once_then_reuses_memory_snapshot_for_session() -> None:
+def _identity(session_id: str) -> RequestIdentity:
+    return RequestIdentity.for_user(
+        user_id="snapshot-user",
+        session_id=session_id,
+    )
+
+
+def test_session_start_recalls_once_before_turns_reuse_memory_snapshot() -> None:
     store = _CountingCoreMemoryStore()
     runtime = _runtime(store)
     try:
+        initialized = runtime.initialize_session_memory(_identity("session-a"))
         first = runtime.run_state(_request(session_id="session-a", turn_index=1))
         second = runtime.run_state(_request(session_id="session-a", turn_index=2))
 
         assert store.search_count == 1
         assert store.queries == [""]
+        assert initialized.request.metadata["memory_session_snapshot_status"] == "loaded"
+        assert initialized.request.metadata["memory_context_source"] == "long_term_recall"
         assert [item.memory_id for item in first.memory_context] == [
             "core-snapshot-user"
         ]
         assert [item.memory_id for item in second.memory_context] == [
             "core-snapshot-user"
         ]
-        assert first.request.metadata["memory_session_snapshot_status"] == "loaded"
-        assert first.request.metadata["memory_context_source"] == "long_term_recall"
+        assert first.request.metadata["memory_session_snapshot_status"] == "reused"
+        assert first.request.metadata["memory_context_source"] == "session_snapshot"
         assert second.request.metadata["memory_session_snapshot_status"] == "reused"
         assert second.request.metadata["memory_context_source"] == "session_snapshot"
+
+        initialization_load = next(
+            event
+            for event in runtime.trace_store.list_by_run(initialized.run_id)
+            if event.canonical_event == "memory.load.finished"
+        )
+        assert initialization_load.node_name == "session_start"
+        assert initialization_load.observation_name == "memory.core_recall"
+        assert initialization_load.attributes["retrieval_count"] == 1
+
+        first_load = next(
+            event
+            for event in runtime.trace_store.list_by_run(first.run_id)
+            if event.canonical_event == "memory.load.finished"
+        )
+        assert first_load.observation_name == "memory.session_snapshot"
+        assert first_load.attributes["retrieval_count"] == 0
 
         second_load = next(
             event
@@ -113,14 +150,108 @@ def test_runtime_recalls_once_then_reuses_memory_snapshot_for_session() -> None:
         runtime.close()
 
 
-def test_new_session_or_explicit_reset_creates_new_memory_snapshot() -> None:
+def test_first_turn_without_session_start_never_triggers_recall() -> None:
     store = _CountingCoreMemoryStore()
     runtime = _runtime(store)
     try:
-        runtime.run_state(_request(session_id="session-a", turn_index=1))
-        runtime.run_state(_request(session_id="session-b", turn_index=1))
-        reset = runtime.run_state(
-            _request(session_id="session-a", turn_index=1, reset=True)
+        state = runtime.run_state(_request(session_id="session-not-started", turn_index=1))
+
+        assert store.search_count == 0
+        assert state.memory_context == []
+        assert state.request.metadata["memory_session_snapshot_status"] == "missing"
+        load = next(
+            event
+            for event in runtime.trace_store.list_by_run(state.run_id)
+            if event.canonical_event == "memory.load.finished"
+        )
+        assert load.observation_name == "memory.session_snapshot"
+        assert load.attributes["retrieval_count"] == 0
+    finally:
+        runtime.close()
+
+
+def test_session_start_recall_failure_freezes_empty_snapshot_and_turn_continues() -> None:
+    store = _FailingCoreMemoryStore()
+    runtime = _runtime(store)
+    try:
+        initialized = runtime.initialize_session_memory(_identity("session-failed"))
+        state = runtime.run_state(
+            _request(session_id="session-failed", turn_index=1)
+        )
+
+        assert store.search_count == 1
+        assert initialized.request.metadata["memory_context_source"] == (
+            "session_start_fallback"
+        )
+        assert initialized.request.metadata["memory_context_policy_reason"] == (
+            "session_memory_initialization_failed"
+        )
+        assert state.status == "completed"
+        assert state.request.metadata["memory_session_snapshot_status"] == "reused"
+        assert state.request.metadata["memory_context_policy_reason"] == (
+            "session_memory_initialization_failed"
+        )
+        assert store.search_count == 1
+
+        initialization_load = next(
+            event
+            for event in runtime.trace_store.list_by_run(initialized.run_id)
+            if event.canonical_event == "memory.load.finished"
+        )
+        assert initialization_load.status == "failed"
+        turn_load = next(
+            event
+            for event in runtime.trace_store.list_by_run(state.run_id)
+            if event.canonical_event == "memory.load.finished"
+        )
+        assert turn_load.observation_name == "memory.session_snapshot"
+        assert turn_load.status == "degraded"
+    finally:
+        runtime.close()
+
+
+def test_application_session_creation_recalls_before_first_turn() -> None:
+    store = _CountingCoreMemoryStore()
+    runtime = _runtime(store)
+    app = AssistantRuntimeApp(runtime_factory=lambda: runtime)
+    try:
+        session = app.create_session(SessionCreate(user_id="snapshot-user"))
+
+        assert store.search_count == 1
+        initialization_load = next(
+            event
+            for event in runtime.trace_store.list_by_user("snapshot-user")
+            if event.canonical_event == "memory.load.finished"
+        )
+        assert initialization_load.session_id == session.session_id
+        assert initialization_load.node_name == "session_start"
+        assert initialization_load.observation_name == "memory.core_recall"
+
+        first = runtime.run_state(
+            _request(session_id=session.session_id, turn_index=1)
+        )
+
+        assert store.search_count == 1
+        first_load = next(
+            event
+            for event in runtime.trace_store.list_by_run(first.run_id)
+            if event.canonical_event == "memory.load.finished"
+        )
+        assert first_load.observation_name == "memory.session_snapshot"
+        assert first_load.attributes["retrieval_count"] == 0
+    finally:
+        runtime.close()
+
+
+def test_new_session_start_or_explicit_session_reset_creates_new_snapshot() -> None:
+    store = _CountingCoreMemoryStore()
+    runtime = _runtime(store)
+    try:
+        runtime.initialize_session_memory(_identity("session-a"))
+        runtime.initialize_session_memory(_identity("session-b"))
+        reset = runtime.initialize_session_memory(
+            _identity("session-a"),
+            reset=True,
         )
 
         assert store.search_count == 3
@@ -149,8 +280,8 @@ def test_evicted_later_turn_does_not_repeat_long_term_memory_recall() -> None:
     store = _CountingCoreMemoryStore()
     runtime = _runtime(store, snapshot_max_entries=1)
     try:
-        runtime.run_state(_request(session_id="session-a", turn_index=1))
-        runtime.run_state(_request(session_id="session-b", turn_index=1))
+        runtime.initialize_session_memory(_identity("session-a"))
+        runtime.initialize_session_memory(_identity("session-b"))
         evicted = runtime.run_state(_request(session_id="session-a", turn_index=2))
 
         assert store.search_count == 2

@@ -22,6 +22,7 @@ from assistant_agent.gateway import (
 )
 from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
 from assistant_agent.schemas.api import AgentRunResponse
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade
 from assistant_agent.services.identifiers import new_prefixed_uuid7
 from assistant_agent.services.operational_logging import record_gateway_lifecycle
@@ -224,11 +225,47 @@ def create_gateway_session_manager(
         backend_factory=resolved_backend_factory,
         queue_policy=queue_policy,
         turn_arbitration_controller=resolved_turn_arbitration_controller,
+        session_initializer=lambda user_id, session_id, config: (
+            _initialize_gateway_session_memory(
+                runtime_pool,
+                user_id=user_id,
+                session_id=session_id,
+                config=config,
+            )
+            if backend_factory is None
+            else _noop_session_initializer()
+        ),
         lifecycle_sink=record_gateway_lifecycle,
         start_reaper=_bool_env(source, GATEWAY_START_REAPER_ENV, default=True)
         if start_reaper is None
         else start_reaper,
     )
+
+
+async def _initialize_gateway_session_memory(
+    runtime_pool: GatewayRuntimePool,
+    *,
+    user_id: str,
+    session_id: str,
+    config: Mapping[str, Any],
+) -> None:
+    identity = RequestIdentity.for_user(
+        user_id=user_id,
+        session_id=session_id,
+        tenant_id=_optional_config_string(config, "tenant_id"),
+        project_id=_optional_config_string(config, "project_id"),
+    )
+    await asyncio.to_thread(runtime_pool.initialize_session_memory, identity)
+
+
+async def _noop_session_initializer() -> None:
+    return None
+
+
+def _optional_config_string(config: Mapping[str, Any], key: str) -> str | None:
+    value = config.get(key)
+    text = str(value).strip() if value is not None else ""
+    return text or None
 
 
 def _gateway_connection_policy(source: Mapping[str, str]) -> GatewayConnectionPolicy:

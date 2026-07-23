@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from assistant_agent.agent_routing import AgentRouteRequest, AgentRouter, create_default_agent_router
 from assistant_agent.api import gateway_runtime
 from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
+from assistant_agent.memory.remote import MemoryServiceOperationError
 from assistant_agent.schemas.agent_control_plane import (
     AgentAuditEvent,
     AgentAuditEventList,
@@ -35,6 +36,7 @@ from assistant_agent.schemas.memory_audit import (
     MemoryMetricsReport,
     MemoryProfileRepairResult,
     MemoryRetentionSweepResult,
+    MemoryUpdateRequest,
 )
 from assistant_agent.schemas.memory_snapshot import MemorySnapshot, MemoryStorageSnapshot
 from assistant_agent.schemas.requests import UserRequest
@@ -317,8 +319,14 @@ def create_session(
     session: SessionCreate,
     auth_context: AuthContext = Depends(get_auth_context),
 ) -> SessionRecord:
-    _require_trial_access_for_identity(_identity_from_user_id(session.user_id, source="request_body", auth_context=auth_context))
-    return get_assistant_runtime_app().create_session(session)
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(
+            session.user_id,
+            source="request_body",
+            auth_context=auth_context,
+        )
+    )
+    return get_assistant_runtime_app().create_session(session, identity=identity)
 
 
 @router.get("/sessions", response_model=SessionList)
@@ -617,6 +625,40 @@ def get_memory_item(
             "include_content": include_content,
             "content_included": include_content,
         },
+    )
+    return item
+
+
+@router.put("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryAuditItem)
+def update_memory_item(
+    user_id: str,
+    memory_id: str,
+    request: MemoryUpdateRequest,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> MemoryAuditItem:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(user_id, source="path", auth_context=auth_context)
+    )
+    try:
+        item = _memory_audit_service().update_item_for_identity(
+            identity,
+            memory_id=memory_id,
+            text=request.text,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except MemoryServiceOperationError as exc:
+        raise HTTPException(
+            status_code=503 if exc.recoverable else 409,
+            detail="memory update is temporarily unavailable" if exc.recoverable else str(exc),
+        ) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory item not found")
+    _record_memory_control_plane_event(
+        identity,
+        action="update_memory_item",
+        event_type="memory_update",
+        detail={"memory_id": memory_id},
     )
     return item
 

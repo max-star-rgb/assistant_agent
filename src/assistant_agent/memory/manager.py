@@ -38,6 +38,7 @@ from assistant_agent.memory.write_policy import (
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import (
     MemoryItem,
+    MemoryPromptSnapshot,
     MemoryQuery,
     MemoryScope,
     MemorySearchResult,
@@ -257,6 +258,21 @@ class MemoryManager:
                 trust_policy=trust_policy_metadata(),
                 usage_hint=memory_usage_hint(),
             )
+        elif session_initial:
+            identity = RequestIdentity.from_user_request(request)
+            decision = MemoryReadDecision(
+                mode="auto_load",
+                allowed=True,
+                reason="session_start_memory_auto_load",
+                trigger="session:start",
+                top_k=top_k or self.default_top_k,
+                max_context_chars=max_context_chars or self.default_max_context_chars,
+                max_context_tokens=token_budget,
+                allowed_scopes=_allowed_memory_scopes(identity),
+                injection_strategy="inject_as_evidence",
+                trust_policy=trust_policy_metadata(),
+                usage_hint=memory_usage_hint(),
+            )
         else:
             decision = self.read_policy.decide_auto_load(
                 request_text=request.text or "",
@@ -288,7 +304,7 @@ class MemoryManager:
             return context
         return self.load_context_for_identity(
             RequestIdentity.from_user_request(request),
-            query_text="" if session_initial and always_load_core else request.text or "",
+            query_text="" if session_initial else request.text or "",
             capability=capability,
             top_k=decision.top_k,
             max_context_chars=decision.max_context_chars,
@@ -469,8 +485,16 @@ class MemoryManager:
     def attach_context_to_state(self, state: Any, context: MemoryContext) -> None:
         """Attach a recalled or session-cached context to the current run."""
 
+        source_ids = [item.memory_id for item in context.items]
+        prompt_snapshot = MemoryPromptSnapshot(
+            text=context.text,
+            source_ids=source_ids,
+        )
         state.memory_context = context.items
-        state.request.metadata["memory_context_text"] = context.text
+        state.request.metadata["memory_prompt_snapshot"] = prompt_snapshot.model_dump(
+            mode="json"
+        )
+        state.request.metadata["memory_context_text"] = prompt_snapshot.text
         state.request.metadata["memory_context_summaries"] = context.summaries
         state.request.metadata["memory_context_refs"] = context.artifact_refs
         state.request.metadata["memory_context_blocks"] = [
@@ -481,7 +505,7 @@ class MemoryManager:
         state.request.metadata["memory_context_omitted_count"] = context.omitted_count
         state.request.metadata["memory_context_rejected_reasons"] = context.rejected_reasons
         state.request.metadata["memory_context_retrieval_version"] = context.retrieval_version
-        state.request.metadata["memory_context_injected_ids"] = [item.memory_id for item in context.items]
+        state.request.metadata["memory_context_injected_ids"] = source_ids
         state.request.metadata["memory_context_skipped"] = context.read_policy_allowed is False
         state.request.metadata["memory_context_policy_reason"] = context.read_policy_reason
         state.request.metadata["memory_read_policy"] = context.read_policy
@@ -511,6 +535,32 @@ class MemoryManager:
                 "read_policy_allowed": False,
                 "read_policy_reason": reason,
                 "search_error_codes": [],
+                "injected_memory_ids": [],
+            },
+        )
+
+    def failed_session_snapshot_context(self) -> MemoryContext:
+        """Return a prompt-safe empty snapshot after session-start recall fails."""
+
+        reason = "session_memory_initialization_failed"
+        return MemoryContext(
+            read_policy_allowed=False,
+            read_policy_reason=reason,
+            read_policy={
+                "mode": "session_snapshot",
+                "allowed": False,
+                "reason": reason,
+                "trigger": "session:start",
+                "injection_strategy": "inject_as_evidence",
+                "trust_policy": trust_policy_metadata(),
+                "usage_hint": memory_usage_hint(),
+            },
+            trust_policy=trust_policy_metadata(),
+            usage_hint=memory_usage_hint(),
+            recall_report={
+                "read_policy_allowed": False,
+                "read_policy_reason": reason,
+                "search_error_codes": [reason],
                 "injected_memory_ids": [],
             },
         )
@@ -862,6 +912,90 @@ class MemoryManager:
 
     def get(self, user_id: str, memory_id: str) -> MemoryItem | None:
         return self.get_for_identity(RequestIdentity.for_user(user_id=user_id), memory_id)
+
+    def update_explicit_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        memory_id: str,
+        text: str,
+    ) -> MemoryItem | None:
+        """Replace editable memory text through policy and the governed store."""
+
+        existing = self.get_for_identity(identity, memory_id)
+        if existing is None:
+            return None
+        decision = self.write_policy.evaluate_explicit_save(
+            text=text,
+            content={"summary": text},
+            scope=memory_scope_for_item(existing),
+        )
+        if not decision.allowed:
+            self.record_audit_event(
+                "memory_updated",
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=identity.session_id,
+                memory_id=memory_id,
+                outcome="rejected",
+                summary="memory update rejected",
+                counts={"attempted": 1, "updated": 0, "rejected": 1},
+                metadata=promotion_decision_audit_record(decision),
+            )
+            raise ValueError(decision.reason)
+        now = datetime.now(timezone.utc)
+        content = dict(existing.content)
+        if "summary" in content:
+            content["summary"] = text.strip()
+        updated_item = existing.model_copy(
+            update={
+                "summary": text.strip(),
+                "content": content,
+                "updated_at": now,
+            }
+        )
+        update_for_identity = getattr(self.store, "update_for_identity", None)
+        try:
+            if callable(update_for_identity):
+                updated = update_for_identity(identity, updated_item)
+            elif bool(getattr(self.store, "external_lifecycle_owner", False)):
+                raise MemoryServiceOperationError(
+                    "update",
+                    "configured memory service does not expose governed in-place updates",
+                    recoverable=False,
+                )
+            else:
+                updated = self.store.save(updated_item)
+        except MemoryServiceOperationError as exc:
+            self._record_remote_lifecycle_failure(
+                user_id=identity.user_id,
+                tenant_id=identity.tenant_id,
+                project_id=identity.project_id,
+                session_id=identity.session_id,
+                operation=exc.operation,
+                recoverable=exc.recoverable,
+            )
+            raise
+        if updated is None:
+            return None
+        self._upsert_user_profile(updated)
+        self.record_audit_event(
+            "memory_updated",
+            user_id=identity.user_id,
+            tenant_id=identity.tenant_id,
+            project_id=identity.project_id,
+            session_id=updated.session_id,
+            memory_id=memory_id,
+            summary="memory updated",
+            counts={"attempted": 1, "updated": 1, "rejected": 0},
+            metadata={
+                "memory_type": updated.memory_type,
+                "scope": memory_scope_for_item(updated),
+                "revision_source": "user_explicit_edit",
+            },
+        )
+        return updated
 
     def get_for_identity(self, identity: RequestIdentity, memory_id: str) -> MemoryItem | None:
         item = self.store.get(identity.user_id, memory_id)

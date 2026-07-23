@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1733,6 +1733,9 @@ class GatewaySessionManager:
         queue_policy: GatewayQueuePolicy | None = None,
         admission_controller: GatewayRunAdmissionController | None = None,
         turn_arbitration_controller: GatewayTurnArbitrationController | None = None,
+        session_initializer: (
+            Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None
+        ) = None,
     ) -> None:
         self.max_sessions = max_sessions
         self.idle_timeout_s = idle_timeout_s
@@ -1748,11 +1751,60 @@ class GatewaySessionManager:
         self.turn_arbitration_controller = (
             turn_arbitration_controller or GatewayTurnArbitrationController()
         )
+        self.session_initializer = session_initializer
         self._entries: dict[str, _GatewaySessionEntry] = {}
         self._deferred_config: dict[str, dict[str, Any]] = {}
+        self._initialized_sessions: set[tuple[str, str]] = set()
+        self._session_initializations: dict[
+            tuple[str, str], asyncio.Task[None]
+        ] = {}
         self._lock = asyncio.Lock()
         self._reaper_task: asyncio.Task[None] | None = None
         self._start_reaper = start_reaper
+
+    async def initialize_session(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        config: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Initialize one logical session before its first turn is dispatched."""
+
+        key = (user_id, session_id)
+        async with self._lock:
+            if key in self._initialized_sessions:
+                return
+            task = self._session_initializations.get(key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._initialize_session(
+                        user_id=user_id,
+                        session_id=session_id,
+                        config=dict(config or {}),
+                    ),
+                    name="gateway-session-initialize",
+                )
+                self._session_initializations[key] = task
+        try:
+            await task
+        except BaseException:
+            async with self._lock:
+                self._session_initializations.pop(key, None)
+            raise
+        async with self._lock:
+            self._session_initializations.pop(key, None)
+            self._initialized_sessions.add(key)
+
+    async def _initialize_session(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        config: Mapping[str, Any],
+    ) -> None:
+        if self.session_initializer is not None:
+            await self.session_initializer(user_id, session_id, config)
 
     async def get_or_create(
         self,
@@ -1849,6 +1901,18 @@ class GatewaySessionManager:
     async def destroy(self, user_id: str) -> bool:
         async with self._lock:
             entry = self._entries.pop(user_id, None)
+            self._initialized_sessions = {
+                key for key in self._initialized_sessions if key[0] != user_id
+            }
+            initialization_tasks = [
+                self._session_initializations.pop(key)
+                for key in list(self._session_initializations)
+                if key[0] == user_id
+            ]
+        for task in initialization_tasks:
+            task.cancel()
+        if initialization_tasks:
+            await asyncio.gather(*initialization_tasks, return_exceptions=True)
         if entry is None:
             return False
         await entry.service.close(source="gateway_disconnect")

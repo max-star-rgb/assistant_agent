@@ -15,6 +15,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from assistant_agent.gateway import AGENT_SERVICE_ENTRY_CAPABILITIES, GatewaySessionManager
 from assistant_agent.realtime import GatewayAgentAdapter
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.agent_service_delivery import (
     AgentServiceDelivery,
@@ -196,9 +197,18 @@ class AssistantControlStartHandler(BaseHandler):
         body: dict[str, Any],
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
-        self.required_text(body, "userInfo.number")
+        number = self.required_text(body, "userInfo.number")
         self.required_text(body, "agentInfo.agentNumber")
         state.assistant_control_start = dict(body)
+        if state.gateway_manager is not None and state.runtime_session_id:
+            await state.gateway_manager.initialize_session(
+                user_id=number,
+                session_id=state.runtime_session_id,
+                config={
+                    "channel": "realtime_phone",
+                    "entry_profile": "agent_service",
+                },
+            )
         return _response_envelope(
             message=self.response_message,
             session_id=state.response_session_id,
@@ -226,6 +236,15 @@ class AssistantControlHandler(BaseHandler):
         state.assistant_control_start = dict(body)
         state.client_capabilities = _delivery_capabilities(body.get("clientCapabilities"))
         state.client_info = _client_info(body.get("clientInfo"))
+        if state.gateway_manager is not None and state.runtime_session_id:
+            await state.gateway_manager.initialize_session(
+                user_id=number,
+                session_id=state.runtime_session_id,
+                config={
+                    "channel": "realtime_phone",
+                    "entry_profile": "agent_service",
+                },
+            )
         return _response_envelope(
             message=self.response_message,
             session_id=state.response_session_id,
@@ -1211,8 +1230,24 @@ def _create_agent_service_gateway_manager() -> GatewaySessionManager:
             run_request=_run_assistant_request_for_agent_service,
             load_env=False,
         ),
+        session_initializer=_initialize_agent_service_session_memory,
         lifecycle_sink=record_gateway_lifecycle,
         start_reaper=False,
+    )
+
+
+async def _initialize_agent_service_session_memory(
+    user_id: str,
+    session_id: str,
+    config: Any,
+) -> None:
+    _ = config
+    from assistant_agent.api import routes_agent
+
+    runtime = routes_agent.get_assistant_runtime_app().runtime
+    await asyncio.to_thread(
+        runtime.initialize_session_memory,
+        RequestIdentity.for_user(user_id=user_id, session_id=session_id),
     )
 
 

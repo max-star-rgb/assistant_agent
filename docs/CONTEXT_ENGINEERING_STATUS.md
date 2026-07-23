@@ -19,7 +19,8 @@ Last updated: 2026-07-23
 - 预算现状：字符/token 预算只报告、不裁剪；AgentRuntime 不执行 token-aware recent transcript、
   字符预算裁剪或 structured summary。Memory context 仍有独立的
   read policy 与 prompt-safe 注入边界。
-- memory 边界：历史遗留或独立实现产生的 `context_summary` 仍属于 session 状态，不是长期 memory，且 AgentRuntime 不读取或注入。长期记忆只在 session 首轮建立一次有界 snapshot：local/remote-service 先过 `MemoryReadPolicy`，framework/Mem0 只召回一次 `core`；后续 turn 复用 snapshot，不再访问 MemoryStore。主 LLM 仅可通过 `memory_search` / `memory_get` 读取 daily records，不暴露写工具；成功 turn 由 runtime 触发后台 Mem0 capture，长期记忆正文由 Mem0 LLM 提炼。
+- memory 边界：历史遗留或独立实现产生的 `context_summary` 仍属于 session 状态，不是长期 memory，且 AgentRuntime 不读取或注入。长期记忆只在显式 session start 建立一次有界 snapshot：local/remote-service 先过 `MemoryReadPolicy`，framework/Mem0 只召回一次 `core`；包括首轮在内的所有 turn 都只复用 snapshot，不再访问 MemoryStore。主 LLM 仅可通过 `memory_search` / `memory_get` 读取 daily records，不暴露写工具；成功 turn 由 runtime 触发后台 Mem0 capture，长期记忆正文由 Mem0 LLM 提炼。
+- LLM memory 输入使用 `MemoryPromptSnapshot v1`，只包含经过筛选和预算后的长期记忆纯文本与 `source_ids`。`read_policy`、`trust_policy`、`recall_report`、query hash、候选数、framework metadata 和 Provider 原始响应只留在 trace/audit，不进入 prompt。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
@@ -96,11 +97,12 @@ Last updated: 2026-07-23
 ### Memory Context
 
 - `MemoryManager` 是 memory 检索、上下文格式化、可信身份绑定和 runtime capture 编排边界；local/API 兼容路径仍保留显式保存、去重、用户画像和 promotion 方法。
-- session 首轮由 `SessionMemoryContextStore` 建立一次 prompt-safe memory
+- session start 由 `SessionMemoryContextStore` 建立一次 prompt-safe memory
   snapshot：local/remote-service 先走 `MemoryReadPolicy`，framework/Mem0
   自动检索一次 `record_kind=core`，再由独立 memory token budget 选择快照
-  子集。后续 turn 只把该 snapshot 重新挂入当前 context，不访问
-  MemoryStore；daily records 不自动注入。
+  子集。包括首轮在内的所有 turn 只把该 snapshot 重新挂入当前 context，
+  不访问 MemoryStore；snapshot 缺失时也不从 turn 懒加载，daily records
+  不自动注入。
 - memory context 分层为 semantic、session、episodic、artifact、procedural。
 - 默认 `top_k=5`，默认 `max_context_chars=500`。
 - `MemoryContextBuilder` 负责实际注入选择；`MemoryContext.items` 表示已注入的 memory 子集，而不是所有检索候选。
@@ -119,6 +121,7 @@ Last updated: 2026-07-23
 
 - Memory service 负责 memory item 的存储、检索、排序、分层、写入、去重、用户画像、TTL、审计和删除。
 - `MemoryManager` 可以把检索结果格式化为 `MemoryContext`，并写入 `request.metadata["memory_context_*"]`。
+- `MemoryManager` 另外生成最小 `request.metadata["memory_prompt_snapshot"]`；Context Builder 优先消费该投影，不把完整 `MemoryContext` 序列化给 Provider。
 - Context engineering 负责把 request、conversation、memory context、plan state、tool observations 和 tool specs 组装成 `AssistantContextPack`。
 - Context engineering 负责 prompt/native rendering、tool observation compaction、全局 context budget、source counts 和 trace/debug 摘要。
 - Context engineering 不应重新实现 memory 检索、ranking、fallback、write policy、profile merge 或 store 选择。

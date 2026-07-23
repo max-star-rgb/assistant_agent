@@ -31,6 +31,7 @@ from assistant_agent.schemas.durable_tasks import (
     TaskCheckpoint,
     TrustedTaskBinding,
 )
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.requests import (
     AgentResponse,
     UserRequest,
@@ -193,6 +194,48 @@ class AgentGraphRuntime:
         self._conditional_graph = build_conditional_agent_graph()
         self._react_graph = build_assistant_loop_graph()
         self._graph = self._react_graph if self.config.agent_graph_mode == "assistant_loop" else self._conditional_graph
+
+    def initialize_session_memory(
+        self,
+        identity: RequestIdentity,
+        *,
+        reset: bool = False,
+    ) -> AgentState:
+        """Recall and freeze long-term memory before any turn starts."""
+
+        if not identity.session_id:
+            raise ValueError("session_id is required to initialize session memory")
+        metadata: dict[str, Any] = {
+            "memory_session_lifecycle": "start",
+            **({"tenant_id": identity.tenant_id} if identity.tenant_id else {}),
+            **({"project_id": identity.project_id} if identity.project_id else {}),
+            **({"reset_conversation": True} if reset else {}),
+        }
+        request = UserRequest(
+            user_id=identity.user_id,
+            session_id=identity.session_id,
+            text="",
+            metadata=metadata,
+        )
+        state = AgentState.from_request(request)
+        try:
+            load_memory_with_trace(
+                manager=self.memory_manager,
+                trace_store=self.trace_store,
+                trace_id=state.trace_id,
+                node_name="session_start",
+                state=state,
+                request=request,
+                session_context_store=self.session_memory_context_store,
+                session_start=True,
+            )
+        except Exception:  # noqa: BLE001 - session startup must fail open.
+            context = self.memory_manager.failed_session_snapshot_context()
+            self.session_memory_context_store.put(identity, context)
+            self.memory_manager.attach_context_to_state(state, context)
+            request.metadata["memory_context_source"] = "session_start_fallback"
+            request.metadata["memory_session_snapshot_status"] = "loaded"
+        return state
 
     def run_state(
         self,

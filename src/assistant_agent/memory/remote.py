@@ -581,6 +581,8 @@ class HybridMemoryStore:
 class RemoteServiceMemoryStore:
     """Memory store whose lifecycle operations are owned by an external service."""
 
+    external_lifecycle_owner = True
+
     def __init__(self, *, adapter: ExternalMemoryServiceAdapter) -> None:
         self.adapter = adapter
 

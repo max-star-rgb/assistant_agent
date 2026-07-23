@@ -606,6 +606,17 @@ class GatewayBridge:
                 _optional_string(uid),
                 _config_from_payload(payload),
             )
+            if (
+                endpoint is not None
+                and self._session_manager is not None
+                and uid
+                and session_id
+            ):
+                await self._session_manager.initialize_session(
+                    user_id=str(uid),
+                    session_id=str(session_id),
+                    config=_config_from_payload(payload),
+                )
             if await self._client_cancelled(client_id):
                 return None
             async with self._lock:
@@ -695,6 +706,16 @@ class GatewayBridge:
                 )
                 return None
             sid = payload.get("session_id") or incoming.get("session_id")
+            if (
+                self._session_manager is not None
+                and uid
+                and sid
+                and frame_type == "session.open"
+            ):
+                await self._session_manager.initialize_session(
+                    user_id=str(uid),
+                    session_id=str(sid),
+                )
             async with self._lock:
                 self._clients[client_id].session_id = _optional_string(sid)
                 relay = self._relays_by_user.get(str(uid or user_id or "default"))
@@ -743,8 +764,13 @@ class GatewayBridge:
             enriched = dict(incoming)
             if uid:
                 enriched["user_id"] = str(uid)
-            await endpoint.send(enriched)  # type: ignore[arg-type]
             sid = incoming.get("session_id") or payload.get("session_id")
+            if self._session_manager is not None and uid and sid:
+                await self._session_manager.initialize_session(
+                    user_id=str(uid),
+                    session_id=str(sid),
+                )
+            await endpoint.send(enriched)  # type: ignore[arg-type]
             async with self._lock:
                 conn = self._clients.get(client_id)
                 if conn:

@@ -323,6 +323,55 @@ class FrameworkMemoryStore:
     def delete(self, user_id: str, memory_id: str) -> bool:
         return self._delete(user_id=user_id, memory_id=memory_id, identity=None)
 
+    def update_for_identity(self, identity: RequestIdentity, item: MemoryItem) -> MemoryItem | None:
+        """Update mapped framework records without changing the stable project memory ID."""
+
+        bound = bind_engine_identity(identity, namespace=self.identity_namespace)
+        mappings = [
+            mapping
+            for mapping in self.ledger.list_mappings(
+                user_id=identity.user_id,
+                project_memory_id=item.memory_id,
+            )
+            if _mapping_matches_identity_scope(mapping, bound)
+            and not self.ledger.is_tombstoned(
+                user_id=identity.user_id,
+                project_memory_id=item.memory_id,
+                engine_id=mapping.engine_id,
+            )
+        ]
+        if not mappings:
+            return None
+        for mapping in mappings:
+            updated = self._call(
+                "update",
+                lambda mapping=mapping: self.adapter.update(
+                    identity=mapping.identity,
+                    engine_id=mapping.engine_id,
+                    text=item.summary,
+                ),
+            )
+            if not updated:
+                raise MemoryServiceOperationError(
+                    "update",
+                    "memory framework rejected update",
+                )
+        for mapping in mappings:
+            self._drop_recent_retain(
+                user_id=identity.user_id,
+                project_memory_id=item.memory_id,
+                identity=mapping.identity,
+                scope=mapping.scope,
+            )
+        self._mark_recent_retain(
+            user_id=identity.user_id,
+            tenant_id=item.tenant_id,
+            project_id=item.project_id,
+            session_id=item.session_id,
+            request=self._retain_request(item),
+        )
+        return item
+
     def delete_for_identity(self, identity: RequestIdentity, memory_id: str) -> bool:
         bound = bind_engine_identity(identity, namespace=self.identity_namespace)
         return self._delete(user_id=identity.user_id, memory_id=memory_id, identity=bound)

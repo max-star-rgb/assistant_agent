@@ -337,6 +337,7 @@ class AssistantContextPack(BaseModel):
     conversation_text: str = ""
     memory_summaries: list[str] = Field(default_factory=list)
     memory_text: str = ""
+    memory_source_ids: list[str] = Field(default_factory=list)
     memory_blocks: list[dict[str, Any]] = Field(default_factory=list)
     realtime_task_state: dict[str, Any] | None = None
     realtime_video_context: RealtimeVideoContext | None = None

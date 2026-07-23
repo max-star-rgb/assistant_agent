@@ -29,6 +29,7 @@ def load_memory_with_trace(
     max_context_chars: int | None = None,
     max_context_tokens: int | None = None,
     session_context_store: SessionMemoryContextStore | None = None,
+    session_start: bool = False,
 ) -> MemoryContext:
     """Load memory context and emit prompt-safe lifecycle trace events."""
 
@@ -63,7 +64,6 @@ def load_memory_with_trace(
                 max_context_tokens=max_context_tokens,
             )
         else:
-            turn_index = _conversation_turn_index(request)
             resolution = session_context_store.resolve(
                 RequestIdentity.from_user_request(request),
                 loader=lambda: manager.load_context_for_request(
@@ -74,8 +74,9 @@ def load_memory_with_trace(
                     max_context_tokens=max_context_tokens,
                     session_initial=True,
                 ),
-                allow_load=turn_index in {None, 1},
-                reset=request.metadata.get("reset_conversation") is True,
+                allow_load=session_start,
+                reset=session_start
+                and request.metadata.get("reset_conversation") is True,
             )
             snapshot_status = resolution.status
             retrieval_count = 1 if resolution.status == "loaded" else 0
@@ -605,13 +606,6 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
-
-
-def _conversation_turn_index(request: UserRequest) -> int | None:
-    value = request.metadata.get("conversation_turn_index")
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        return None
-    return value
 
 
 def _memory_load_input(

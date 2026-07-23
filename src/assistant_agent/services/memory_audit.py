@@ -89,6 +89,22 @@ class MemoryAuditService:
         deleted = 1 if self.memory_manager.delete_for_identity(identity, memory_id) else 0
         return MemoryDeleteResult(user_id=identity.user_id, deleted={"memory_items": deleted})
 
+    def update_item_for_identity(
+        self,
+        identity: RequestIdentity,
+        *,
+        memory_id: str,
+        text: str,
+    ) -> MemoryAuditItem | None:
+        updated = self.memory_manager.update_explicit_for_identity(
+            identity,
+            memory_id=memory_id,
+            text=text,
+        )
+        if updated is None:
+            return None
+        return MemoryAuditItem.from_memory(updated, include_content=True)
+
     def delete_session(self, *, user_id: str, session_id: str) -> MemoryDeleteResult:
         return self.delete_session_for_identity(
             RequestIdentity.for_user(user_id=user_id, session_id=session_id),
@@ -451,6 +467,9 @@ def _metrics_counters(events: list[MemoryAuditEvent]) -> dict[str, int]:
             counters["memory.write.rejected.count"] += event.counts.get("rejected", 0)
             if event.metadata.get("require_user_confirmation") is True:
                 counters["memory.write.needs_confirmation.count"] += 1
+        elif event.event_type == "memory_updated":
+            counters["memory.update.count"] += event.counts.get("updated", 0)
+            counters["memory.update.rejected.count"] += event.counts.get("rejected", 0)
         elif event.event_type == "memory_promotion_decided":
             counters["memory.write.allowed.count"] += event.counts.get("written", 0)
             counters["memory.write.rejected.count"] += event.counts.get("rejected", 0)

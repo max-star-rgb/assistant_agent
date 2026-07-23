@@ -113,15 +113,13 @@ class MemoryContextBuilder:
         budget_tokens: int,
         max_chars: int,
     ) -> tuple[list[MemoryItem], list[str], list[str]]:
-        lines = ["相关历史："]
+        lines: list[str] = []
         selected: list[MemoryItem] = []
         omitted_reasons: list[str] = []
 
         for block in group_by_layer(items):
-            title_added = False
             for item in block.items:
-                additions = [block.title] if not title_added else []
-                additions.append(_format_item_line(item))
+                additions = [_format_item_line(item)]
                 candidate_lines = [*lines, *additions]
                 candidate_text = "\n".join(candidate_lines)
                 if max_chars > 0 and len(candidate_text) > max_chars:
@@ -132,7 +130,6 @@ class MemoryContextBuilder:
                     continue
                 lines.extend(additions)
                 selected.append(item)
-                title_added = True
 
         return selected, lines, omitted_reasons
 
@@ -175,8 +172,7 @@ def group_by_layer(items: list[MemoryItem]) -> list[MemoryContextBlock]:
 
 
 def _format_item_line(item: MemoryItem) -> str:
-    ref_text = f" 引用：{item.artifact_refs[0]}" if item.artifact_refs else ""
-    return f"- [{item.memory_type}] {item.summary}{ref_text}"
+    return item.summary.strip()
 
 
 def _layer_for(item: MemoryItem) -> MemoryLayer:

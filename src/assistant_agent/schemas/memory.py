@@ -60,6 +60,16 @@ _RAW_PAYLOAD_KEYS = {
 }
 
 
+class MemoryPromptSnapshot(BaseModel):
+    """Minimal long-term-memory projection allowed into an LLM prompt."""
+
+    schema_version: Literal["memory_prompt_snapshot_v1"] = (
+        "memory_prompt_snapshot_v1"
+    )
+    text: str = ""
+    source_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
 class MemoryItem(BaseModel):
     """A retrievable memory item with an explainable match score."""
 

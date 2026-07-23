@@ -7,6 +7,7 @@ from typing import Any
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory_snapshot import MemoryStorageSnapshot
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.sessions import SessionCreate, SessionList, SessionRecord
@@ -89,8 +90,24 @@ class AssistantRuntimeApp:
             config=runtime.config,
         )
 
-    def create_session(self, session: SessionCreate) -> SessionRecord:
-        return self.runtime.session_store.create(session)
+    def create_session(
+        self,
+        session: SessionCreate,
+        *,
+        identity: RequestIdentity | None = None,
+    ) -> SessionRecord:
+        runtime = self.runtime
+        record = runtime.session_store.create(session)
+        resolved = identity or RequestIdentity.for_user(user_id=record.user_id)
+        runtime.initialize_session_memory(
+            resolved.model_copy(
+                update={
+                    "user_id": record.user_id,
+                    "session_id": record.session_id,
+                }
+            )
+        )
+        return record
 
     def list_sessions(self, user_id: str) -> SessionList:
         sessions = self.runtime.session_store.list_by_user(user_id)

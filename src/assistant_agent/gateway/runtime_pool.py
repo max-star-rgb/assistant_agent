@@ -7,6 +7,7 @@ from threading import Condition
 from typing import Any
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.assistant_run_service import (
     AssistantRunArtifacts,
@@ -59,6 +60,15 @@ class GatewayRuntimePool:
         runtime = self._checkout()
         try:
             return self._run_request(request, runtime=runtime, **kwargs)
+        finally:
+            self._checkin(runtime)
+
+    def initialize_session_memory(self, identity: RequestIdentity) -> None:
+        """Warm one session snapshot outside the first turn lifecycle."""
+
+        runtime = self._checkout()
+        try:
+            runtime.initialize_session_memory(identity)
         finally:
             self._checkin(runtime)
 

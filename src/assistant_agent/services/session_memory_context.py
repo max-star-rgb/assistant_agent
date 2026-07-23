@@ -98,6 +98,17 @@ class SessionMemoryContextStore:
         with self._condition:
             return self._entries.pop(_session_memory_key(identity), None) is not None
 
+    def put(self, identity: RequestIdentity, context: MemoryContext) -> None:
+        """Freeze an already-governed context for one session."""
+
+        key = _session_memory_key(identity)
+        with self._condition:
+            self._entries[key] = context.model_copy(deep=True)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self.max_entries:
+                self._entries.popitem(last=False)
+            self._condition.notify_all()
+
     def clear_session(self, *, user_id: str, session_id: str) -> int:
         """Remove retained snapshots matching one public user/session."""
 

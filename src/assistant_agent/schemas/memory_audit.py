@@ -12,6 +12,7 @@ from assistant_agent.schemas.memory_core import MemoryCoreStatus
 MemoryAuditEventType = Literal[
     "memory_context_loaded",
     "memory_explicit_saved",
+    "memory_updated",
     "memory_confirmation_created",
     "memory_confirmation_decided",
     "memory_promotion_decided",
@@ -112,6 +113,12 @@ class MemoryDeleteResult(BaseModel):
     protocol_version: str = PROTOCOL_VERSION
     user_id: str
     deleted: dict[str, int] = Field(default_factory=dict)
+
+
+class MemoryUpdateRequest(BaseModel):
+    """User-authored replacement text for one durable memory."""
+
+    text: str = Field(min_length=1, max_length=4000)
 
 
 class MemoryExport(BaseModel):

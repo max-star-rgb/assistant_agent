@@ -171,6 +171,13 @@ class GatewayTurnFacade:
             user_id=request.user_id,
             config=request.config,
         )
+        initialize_session = getattr(self._manager, "initialize_session", None)
+        if callable(initialize_session):
+            await initialize_session(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                config=request.config,
+            )
         turn_id = new_turn_id()
         run_id = new_prefixed_uuid7("gateway_run")
         dispatcher = await self._dispatcher_for(request.user_id, handle.endpoint)

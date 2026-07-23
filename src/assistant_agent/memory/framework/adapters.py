@@ -86,6 +86,7 @@ class UnavailableMemoryEngineAdapter:
     def get(self, **kwargs): return self._raise("get")
     def list(self, **kwargs): return self._raise("list")
     def history(self, **kwargs): return self._raise("history")
+    def update(self, **kwargs): return self._raise("update")
     def delete(self, **kwargs): return self._raise("delete")
     def clear(self, **kwargs): return self._raise("clear")
     def export(self, **kwargs): return self._raise("export")
@@ -185,6 +186,13 @@ class HindsightMemoryEngineAdapter(_HttpEngineAdapter):
         if isinstance(payload, list):
             return _mapping_list(payload)
         raise MemoryServiceOperationError(path, "memory framework returned invalid response")
+
+    def update(self, *, identity: MemoryEngineIdentity, engine_id: str, text: str) -> bool:
+        raise MemoryServiceOperationError(
+            "update",
+            "configured memory framework does not support in-place updates",
+            recoverable=False,
+        )
 
     def delete(self, *, identity: MemoryEngineIdentity, engine_id: str, project_memory_id: str | None = None) -> bool:
         document_id = project_memory_id or engine_id
@@ -317,6 +325,15 @@ class Mem0MemoryEngineAdapter(_HttpEngineAdapter):
         payload = self._request("GET", f"/memories/{quote(engine_id, safe='')}/history", headers=self._headers)
         return _mapping_list(payload.get("history") or payload.get("results"))
 
+    def update(self, *, identity: MemoryEngineIdentity, engine_id: str, text: str) -> bool:
+        self._request(
+            "PUT",
+            f"/memories/{quote(engine_id, safe='')}",
+            body={"memory": text},
+            headers=self._headers,
+        )
+        return True
+
     def delete(self, *, identity: MemoryEngineIdentity, engine_id: str, project_memory_id: str | None = None) -> bool:
         payload = self._request("DELETE", f"/memories/{quote(engine_id, safe='')}", headers=self._headers)
         return bool(payload.get("success", True))
@@ -339,6 +356,7 @@ def _safe_metadata(metadata: Mapping[str, Any], request: FrameworkRetainRequest)
         "memory_type": request.memory_type,
         "scope": request.scope,
         "source": request.source,
+        "record_kind": "core",
         "idempotency_key": request.idempotency_key,
     }
 

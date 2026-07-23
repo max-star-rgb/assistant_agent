@@ -6,6 +6,7 @@ import json
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
@@ -55,6 +56,12 @@ def test_local_langfuse_shows_recalled_memory_and_prompt_injection() -> None:
         session_store=InMemorySessionStore(),
     )
 
+    initialized = runtime.initialize_session_memory(
+        RequestIdentity.for_user(
+            user_id="memory-user",
+            session_id="memory-session",
+        )
+    )
     state = runtime.run_state(
         UserRequest(
             user_id="memory-user",
@@ -80,16 +87,43 @@ def test_local_langfuse_shows_recalled_memory_and_prompt_injection() -> None:
     assert recall.output["injected_items"][0]["memory_id"] == "memory-preference-1"
     assert recall.output["attached_to_runtime_context"] is True
     assert "用户偏好黑色通勤包" in recall.output["rendered_context"]
+    assert state.request.metadata["memory_prompt_snapshot"] == {
+        "schema_version": "memory_prompt_snapshot_v1",
+        "text": "用户偏好黑色通勤包。",
+        "source_ids": ["memory-preference-1"],
+    }
 
     provider_input = conversation.llm_inputs[0].request
-    assert "用户偏好黑色通勤包" in json.dumps(provider_input, ensure_ascii=False)
+    serialized_provider_input = json.dumps(provider_input, ensure_ascii=False)
+    assert "用户偏好黑色通勤包" in serialized_provider_input
+    assert "read_policy" not in serialized_provider_input
+    assert "trust_policy" not in serialized_provider_input
+    assert "recall_report" not in serialized_provider_input
+    assert "query_hash" not in serialized_provider_input
 
-    spans = build_text_otel_span_specs(
+    initialization_conversation = get_default_trace_conversation_store().get(
+        user_id=initialized.user_id,
+        session_id=initialized.session_id,
+        trace_id=initialized.trace_id,
+        limit=4000,
+        include_memory_operations=True,
+    )
+    assert initialization_conversation is not None
+    initialization_spans = build_text_otel_span_specs(
+        runtime.trace_store.list_by_run(initialized.run_id),
+        conversation=initialization_conversation,
+    )
+    turn_spans = build_text_otel_span_specs(
         runtime.trace_store.list_by_run(state.run_id),
         conversation=conversation,
     )
-    memory_span = next(span for span in spans if span.name == "memory.core_recall")
-    context_span = next(span for span in spans if span.name == "context.build")
+    memory_span = next(
+        span for span in initialization_spans if span.name == "memory.core_recall"
+    )
+    snapshot_span = next(
+        span for span in turn_spans if span.name == "memory.session_snapshot"
+    )
+    context_span = next(span for span in turn_spans if span.name == "context.build")
     memory_output = json.loads(
         memory_span.attributes["langfuse.observation.output"]
     )
@@ -98,6 +132,10 @@ def test_local_langfuse_shows_recalled_memory_and_prompt_injection() -> None:
     )
     assert memory_output["retrieved_items"][0]["summary"] == "用户偏好黑色通勤包。"
     assert memory_output["injected_items"][0]["summary"] == "用户偏好黑色通勤包。"
+    snapshot_output = json.loads(
+        snapshot_span.attributes["langfuse.observation.output"]
+    )
+    assert snapshot_output["retrieval_count"] == 0
     assert context_output["memory_injection"] == {
         "included": True,
         "item_ids": ["memory-preference-1"],

@@ -15,6 +15,7 @@ from assistant_agent.schemas.context import (
     RealtimeVideoContext,
     ToolCapabilityDescriptor,
 )
+from assistant_agent.schemas.memory import MemoryPromptSnapshot
 from assistant_agent.schemas.durable_tasks import DurableTaskSnapshot
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
@@ -70,15 +71,26 @@ def build_assistant_context_pack(
     compaction_enabled = context_compactor is not None
     context_policy = context_policy_from_request(active_request)
     summaries = memory_summaries if memory_summaries is not None else [item.summary for item in state.memory_context]
+    prompt_snapshot = _memory_prompt_snapshot(active_request)
     conversation_text = _conversation_context_text(active_request)
     context_summary = _context_summary(active_request) if context_compactor is not None else None
     compactor_type = _metadata_text(active_request, "context_compactor_type") or "none"
-    text = (
-        memory_text
-        if memory_text is not None
-        else _metadata_text(active_request, "memory_context_text") or "\n".join(summary for summary in summaries if summary)
-    )
-    memory_blocks = _metadata_dict_list(active_request, "memory_context_blocks")
+    if prompt_snapshot is not None:
+        text = prompt_snapshot.text
+        memory_source_ids = list(prompt_snapshot.source_ids)
+        memory_blocks: list[dict[str, Any]] = []
+    else:
+        text = (
+            memory_text
+            if memory_text is not None
+            else _metadata_text(active_request, "memory_context_text")
+            or "\n".join(summary for summary in summaries if summary)
+        )
+        memory_source_ids = _metadata_string_list(
+            active_request,
+            "memory_context_injected_ids",
+        )
+        memory_blocks = _metadata_dict_list(active_request, "memory_context_blocks")
     # Realtime task state remains runtime/session data. It is intentionally not
     # projected into the model context: the current request and conversation
     # history already carry the user-visible intent without an extra task-status
@@ -152,7 +164,9 @@ def build_assistant_context_pack(
         context_section_trimmed = []
     source_counts = _source_counts(
         request=active_request,
-        memory_summaries=summaries,
+        memory_item_count=(
+            len(memory_source_ids) if memory_source_ids else len(summaries)
+        ),
         memory_blocks=memory_blocks,
         realtime_task_state=realtime_task_state,
         realtime_video_context=realtime_video_context,
@@ -286,6 +300,7 @@ def build_assistant_context_pack(
         conversation_text=budgeted.conversation_text,
         memory_summaries=summaries,
         memory_text=budgeted.memory_text,
+        memory_source_ids=memory_source_ids,
         memory_blocks=memory_blocks,
         realtime_task_state=realtime_task_state,
         realtime_video_context=realtime_video_context,
@@ -363,6 +378,23 @@ def _metadata_dict_list(request: UserRequest, key: str) -> list[dict[str, Any]]:
 def _metadata_dict(request: UserRequest, key: str) -> dict[str, Any] | None:
     value = request.metadata.get(key)
     return dict(value) if isinstance(value, dict) else None
+
+
+def _metadata_string_list(request: UserRequest, key: str) -> list[str]:
+    value = request.metadata.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _memory_prompt_snapshot(request: UserRequest) -> MemoryPromptSnapshot | None:
+    value = request.metadata.get("memory_prompt_snapshot")
+    if not isinstance(value, dict):
+        return None
+    try:
+        return MemoryPromptSnapshot.model_validate(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _realtime_video_context(request: UserRequest) -> RealtimeVideoContext | None:
@@ -449,7 +481,7 @@ def _clip_durable_prompt_value(value: Any) -> tuple[Any, bool]:
 def _source_counts(
     *,
     request: UserRequest,
-    memory_summaries: list[str],
+    memory_item_count: int,
     memory_blocks: list[dict[str, Any]],
     realtime_task_state: dict[str, Any] | None,
     realtime_video_context: RealtimeVideoContext | None,
@@ -467,7 +499,7 @@ def _source_counts(
         "conversation_turns": len(conversation_history) if isinstance(conversation_history, list) else 0,
         "conversation_recent_turns": _metadata_int(request, "conversation_context_recent_turns"),
         "conversation_compacted_turns": _metadata_int(request, "conversation_context_compacted_turns"),
-        "memory_items": len(memory_summaries),
+        "memory_items": memory_item_count,
         "memory_blocks": len(memory_blocks),
         "realtime_task_state": 1 if realtime_task_state is not None else 0,
         "realtime_video_context": 1 if realtime_video_context is not None else 0,
