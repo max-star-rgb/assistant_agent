@@ -53,13 +53,20 @@ def _provider_schema(value: Any, *, root: bool = False) -> Any:
         return [_provider_schema(item) for item in value]
     if not isinstance(value, dict):
         return value
-    normalized = {
-        key: _provider_schema(item)
-        for key, item in value.items()
-        if key != "title"
-        and key != "default"
-        and not (root and key == "description")
-    }
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if (
+            key in {"title", "default", "additionalProperties"}
+            or (root and key == "description")
+        ):
+            continue
+        if key == "properties" and isinstance(item, dict):
+            normalized[key] = {
+                name: _provider_schema(field_schema)
+                for name, field_schema in item.items()
+            }
+            continue
+        normalized[key] = _provider_schema(item)
     any_of = normalized.get("anyOf")
     if isinstance(any_of, list) and len(any_of) == 2:
         concrete = [item for item in any_of if item != {"type": "null"}]
@@ -70,4 +77,13 @@ def _provider_schema(value: Any, *, root: bool = False) -> Any:
             }
     if normalized.get("required") == []:
         normalized.pop("required", None)
+    if root:
+        required = set(normalized.get("required", []))
+        properties = normalized.get("properties")
+        if isinstance(properties, dict):
+            normalized["properties"] = {
+                name: field_schema
+                for name, field_schema in properties.items()
+                if name in required
+            }
     return normalized

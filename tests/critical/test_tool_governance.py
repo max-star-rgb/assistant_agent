@@ -215,7 +215,6 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
         "type": "object",
         "properties": {"query": {"type": "string", "minLength": 1}},
         "required": ["query"],
-        "additionalProperties": False,
     }
 
     get = tool_spec_to_openai_tool(registry.get_spec("memory_get"))["function"]
@@ -223,17 +222,11 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
         "type": "object",
         "properties": {"memory_id": {"type": "string", "minLength": 1}},
         "required": ["memory_id"],
-        "additionalProperties": False,
     }
     assert "memory_save" not in registry.list()
 
     shopping = tool_spec_to_openai_tool(registry.get_spec(SHOPPING_SEARCH_TOOL_NAME))["function"]
-    assert set(shopping["parameters"]["properties"]) == {
-        "query",
-        "budget_min",
-        "budget_max",
-        "platforms",
-    }
+    assert set(shopping["parameters"]["properties"]) == {"query"}
     assert shopping["parameters"]["required"] == ["query"]
     assert "description" not in shopping["parameters"]
     assert "anyOf" not in json.dumps(shopping["parameters"], ensure_ascii=False)
@@ -242,11 +235,20 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     vision = tool_spec_to_openai_tool(
         registry.get_spec(IMAGE_UNDERSTANDING_TOOL_NAME)
     )["function"]
-    assert set(vision["parameters"]["properties"]) == {"question"}
+    assert vision["parameters"]["properties"] == {}
 
     web_fetch = tool_spec_to_openai_tool(registry.get_spec("web_fetch"))["function"]
     assert set(web_fetch["parameters"]["properties"]) == {"url"}
     assert web_fetch["parameters"]["required"] == ["url"]
+
+    calendar_create = tool_spec_to_openai_tool(
+        registry.get_spec("calendar_create")
+    )["function"]
+    assert set(calendar_create["parameters"]["properties"]) == {
+        "title",
+        "start_time",
+    }
+    assert calendar_create["parameters"]["required"] == ["title", "start_time"]
 
     calendar_create = tool_spec_to_openai_tool(
         registry.get_spec("calendar_create")
@@ -403,7 +405,6 @@ def test_mcp_tool_spec_preserves_canonical_json_schema() -> None:
             }
         },
         "required": ["status"],
-        "additionalProperties": False,
     }
     adapter = MCPToolAdapter(
         MCPToolAdapterConfig(
@@ -422,8 +423,14 @@ def test_mcp_tool_spec_preserves_canonical_json_schema() -> None:
     )
 
     assert spec is not None
-    assert spec.input_schema == input_schema
-    assert tool_spec_to_mcp_tool(spec)["inputSchema"] == input_schema
+    expected_schema = {
+        "type": "object",
+        "properties": input_schema["properties"],
+        "required": ["status"],
+    }
+    assert spec.input_schema == expected_schema
+    assert tool_spec_to_mcp_tool(spec)["inputSchema"] == expected_schema
+    assert tool_spec_to_openai_tool(spec)["function"]["parameters"] == expected_schema
 
 
 def test_offline_mcp_server_lists_standard_json_schemas() -> None:
@@ -465,10 +472,8 @@ def test_weather_declares_location_and_normalized_target_date() -> None:
     assert '"title"' not in json.dumps(parameters, ensure_ascii=False)
     assert mcp_tool["inputSchema"] == spec.input_schema
     assert parameters["required"] == ["location"]
-    assert set(parameters["properties"]) == {"location", "target_date", "days"}
-    assert parameters["properties"]["target_date"]["format"] == "date"
-    assert parameters["properties"]["target_date"]["type"] == "string"
-    assert "anyOf" not in parameters["properties"]["target_date"]
+    assert set(parameters["properties"]) == {"location"}
+    assert "additionalProperties" not in parameters
     assert '"default"' not in json.dumps(parameters, ensure_ascii=False)
     assert result.accepted is False
     assert result.code == "invalid_tool_input"

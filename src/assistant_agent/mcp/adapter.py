@@ -176,5 +176,5 @@ def _canonical_input_schema(input_schema: dict[str, Any]) -> dict[str, Any]:
     schema.setdefault("type", "object")
     schema.setdefault("properties", {})
     schema["required"] = _required_inputs(schema)
-    schema.setdefault("additionalProperties", False)
+    schema.pop("additionalProperties", None)
     return schema

@@ -16,7 +16,6 @@ def _empty_tool_input_schema() -> dict[str, Any]:
         "type": "object",
         "properties": {},
         "required": [],
-        "additionalProperties": False,
     }
 
 

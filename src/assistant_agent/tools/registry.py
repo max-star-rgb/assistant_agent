@@ -206,7 +206,7 @@ class ToolRegistry:
 
 
 def _schema_to_dict(schema_type, *, hidden_fields: Iterable[str] = ()):
-    """Convert a Pydantic model to a safe schema description."""
+    """Convert a Pydantic model to the model-visible required-input schema."""
     try:
         schema = schema_type.model_json_schema()
         definitions = schema.get("$defs", {})
@@ -219,15 +219,18 @@ def _schema_to_dict(schema_type, *, hidden_fields: Iterable[str] = ()):
             if field_name in hidden:
                 properties.pop(field_name, None)
                 required = [item for item in required if item != field_name]
-        normalized["properties"] = properties
+        normalized["properties"] = {
+            field_name: properties[field_name]
+            for field_name in required
+            if field_name in properties
+        }
         normalized["required"] = required
-        return _close_object_schemas(normalized)
+        return normalized
     except Exception:
         return {
             "type": "object",
             "properties": {},
             "required": [],
-            "additionalProperties": False,
         }
 
 
@@ -247,17 +250,6 @@ def _inline_local_schema_refs(value: Any, definitions: dict[str, Any]) -> Any:
         for key, item in value.items()
         if key != "$defs"
     }
-
-
-def _close_object_schemas(value: Any) -> Any:
-    if isinstance(value, list):
-        return [_close_object_schemas(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    normalized = {key: _close_object_schemas(item) for key, item in value.items()}
-    if normalized.get("type") == "object" or "properties" in normalized:
-        normalized["additionalProperties"] = False
-    return normalized
 
 
 def _declared_contract(tool: Tool) -> dict[str, Any]:

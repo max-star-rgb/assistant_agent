@@ -29,7 +29,7 @@ run-scoped 可用集合，不再另建 executable allowlist。
 
 ```text
 name / description
-input_schema（完整、规范化的 JSON Schema）
+input_schema（只包含模型必须填写字段的 JSON Schema）
 category: read | generate | write | dangerous
 toolset
 requires_confirmation
@@ -58,7 +58,8 @@ tool observation，下一轮 LLM 消费商品、报价、链接和展示模板�
 Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入。旧 planner/intent 所需的 action、alias
 与 capability 映射隔离在 `agent/legacy_tool_mapping.py`，不能作为新增 Tool 的登记入口。
 
-`input_schema` 是工具输入描述的唯一事实源，必填字段只由标准 JSON Schema 的 `required` 表达。
+工具类的 Pydantic `input_schema` 是执行期完整输入和校验的事实源；Registry 生成的
+`ToolSpec.input_schema` 只保留模型必须填写的字段，必填字段由标准 JSON Schema 的 `required` 表达。
 `ToolSpec` 不再维护独立的 `required_inputs` 或自定义 `fields` 视图；prompt 若需要压缩，只在渲染时
 临时移除 title、截短 description，不改变原始 schema。工具通过 `input_bindings` 声明
 runtime-owned 输入；绑定字段不进入
@@ -107,10 +108,9 @@ excluded_reasons
 - 跨字段或领域安全规则由工具自己的 `validate_call()` 表达；
 - 缺少前置信息时，模型应先向用户询问，而不是用空值或猜测值调用工具。
 
-例如 `weather.location` 是必填且去除首尾空白后必须非空。用户明确说“明天”或某个日期时，LLM
-必须结合 runtime 当前日期生成标准化的 `target_date=YYYY-MM-DD`；用户没有指定日期时才省略，由
-adapter 使用运行时当天。`web_fetch.url` 的 URL 格式和访问安全分别由其 schema 与工具/adapter 的
-URL 安全边界负责。
+例如 `weather.location` 是必填且去除首尾空白后必须非空。`target_date` 和 `days` 不进入模型工具
+Schema，adapter 在未收到可信执行期覆盖时使用运行时当天和一天预报。`web_fetch.url` 的 URL 格式和
+访问安全分别由其 schema 与工具/adapter 的 URL 安全边界负责。
 
 模型输入遵循最小语义参数原则：
 
@@ -215,10 +215,10 @@ LLM 决定是否调用、调用哪个已暴露工具以及参数内容。categor
 ## 4. Provider schema 转换
 
 `schemas/tool_spec_adapters.py` 只给 provider-neutral `ToolSpec.input_schema` 包装协议外壳。当前以
-Qwen/OpenAI-compatible Function Calling 为主：发送前递归移除 Pydantic 自动生成的
-`title`、所有执行期 `default`、根 schema `description` 和空 `required`，并把“可省略字段的
-`anyOf(T, null)`”收敛为 `T`。字段是否可省略仍由 `required` 表达；有决策价值的字段描述、
-类型/范围约束和 `additionalProperties=false` 继续保留，不合并另一套字段描述：
+Qwen/OpenAI-compatible Function Calling 为主：发送前再次按根 schema 的 `required` 过滤
+`properties`，并递归移除 Pydantic 自动生成的 `title`、所有执行期 `default`、根 schema
+`description`、`additionalProperties` 和空 `required`。保留下来的必填字段继续携带类型、范围和
+必要的字段描述：
 
 ```json
 {
@@ -234,15 +234,15 @@ Qwen/OpenAI-compatible Function Calling 为主：发送前递归移除 Pydantic 
 category、确认、profile、env 等系统字段不会发送给模型，也不需要靠“截断系统信息”从
 一份混合 JSON 中剥离。adapter 只挑选 provider 协议需要的 name、description 和 input schema。
 
-当前常见工具的模型可见输入保持窄契约：`memory_search` 只接收必填 `query`；
+所有工具的模型可见输入只包含必填参数。当前常见工具中，`memory_search` 只接收必填 `query`；
 `memory_get` 只接收必填 `memory_id`；`memory_save` 不注册，也不会进入 Provider payload；
 Agent-Service 默认 profile 只直接暴露 `memory_search`，因为其 observation 已返回完整匹配记录，
 不再为同一读取流程额外支付 `memory_get` schema；`memory_get` 仍保留在 Registry 供其他显式 profile 使用。
-`shopping_search` 只向模型暴露 `query`、`budget_min`、`budget_max` 和 `platforms`，固定候选数量
-`top_k`、身份、memory context 和前序视觉结果由 runtime binding 补齐；`weather` 只暴露
-`location`、`target_date` 和 `days`，固定公制 `units` 不进入模型 schema。`vision_understanding`
-只暴露可选 `question`，本轮图片/视频引用、用户原始请求、身份、采样参数和 rolling context 均来自
-runtime；`web_fetch` 只暴露必填 `url`，读取上限和内容格式由 Tool 静态默认值分配。
+`shopping_search` 只向模型暴露必填 `query`；预算、平台、固定候选数量、身份、memory context 和
+前序视觉结果均使用执行期默认值或 runtime binding。`weather` 只暴露必填 `location`，日期、预报天数
+和公制单位使用执行期默认值。没有必填参数的工具向模型发送空 `properties`；本轮图片/视频引用、
+用户原始请求、身份、采样参数和 rolling context 均来自 runtime。`web_fetch` 只暴露必填 `url`，
+读取上限和内容格式由 Tool 静态默认值分配。
 
 当前 Agent-Service 目录规模很小，继续直接发送治理后的完整 ToolSpec。只有未来 eligible schema
 达到明显上下文占比时，才考虑类似 OpenClaw/Hermes 的 `search -> describe -> call` 渐进披露；

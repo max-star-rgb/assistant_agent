@@ -38,7 +38,7 @@ class WeatherTool(ToolBase):
     """Look up weather through the configured personal weather adapter."""
 
     name = WEATHER_TOOL_NAME
-    description = "查询指定地点的当前或短期天气；用户指定日期时传 YYYY-MM-DD。"
+    description = "查询指定地点的当前或短期天气。"
     input_schema = WeatherRequest
     output_schema = WeatherResult
     category = "read"
