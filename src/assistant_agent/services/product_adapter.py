@@ -12,7 +12,6 @@ from assistant_agent.schemas.products import (
     PriceCompareRequest,
     ProductProviderError,
     ProductResult,
-    ProductSearchInput,
     ProductSearchRequest,
     ProductSearchResult,
     RankingReason,

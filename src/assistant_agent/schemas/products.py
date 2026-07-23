@@ -122,9 +122,6 @@ class ProductSearchRequest(BaseModel):
     session_id: str | None = None
     memory_context: list[str] = Field(default_factory=list)
 
-ProductSearchInput = ProductSearchRequest
-
-
 class PriceOffer(BaseModel):
     """A normalized offer used by price comparison."""
 
