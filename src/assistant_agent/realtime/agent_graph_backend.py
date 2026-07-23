@@ -317,6 +317,7 @@ def _append_response_delivered_event(
         user_id=state.user_id,
         session_id=state.session_id,
         canonical_event="response.delivered",
+        observation_type="span",
         node_name="realtime_backend",
         status="succeeded",
         attributes={

@@ -493,6 +493,16 @@ attributes
 error
 ```
 
+`TraceEvent.observation_type` 是 trace 到 OpenTelemetry/Langfuse 的通用导出契约，取值为
+`span`、`generation` 或 `event`；可选 `observation_name` 用于覆盖由 canonical event
+推导出的展示名称；`observation_scope` 声明它直属 `runtime` 还是当前 `iteration`。
+业务埋点决定一个事件是否构成 observation，并通过 `span_id`、`parent_span_id`、scope 和
+`attributes.iteration` 声明层级。OTel mapper 只消费这些结构化字段，
+不得维护 tool、memory 或其他业务事件名 allowlist。新增 `memory.daily.append.finished` 一类
+operation 时，只需在事件生产处声明 observation 语义，不需要修改 Langfuse exporter。
+未声明 `observation_type` 的 timeline、summary 和 bookkeeping 事件仍保留在本地 trace，
+但不会被误导出成 observation。
+
 `attributes` must be prompt-safe and redacted. It can include tool names,
 provider names, model names, token counts, latency, retry count, budget summary,
 risk gate summary, side-effect level, confirmation state, output references,
@@ -851,6 +861,12 @@ Regression tests should enforce these invariants:
   root 同时写入 `langfuse.trace.input/output`。工具字段仅使用 prompt-safe 参数摘要、
   decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
   请求体或 Provider payload。
+- Observation 导出由 `TraceEvent.observation_type/name/scope` 驱动，iteration 父子关系由
+  scope 与 `attributes.iteration` 驱动；Langfuse/OTel 映射层不枚举 canonical event。新增工具沿用
+  `ToolExecutor` 的统一 lifecycle 即自动获得 `tool.execute` span，新增 memory operation
+  只需在其 trace helper 声明 observation 契约。现有 `memory.load.finished` 与
+  `memory.capture.finished` 在 Langfuse 中分别展示为 `memory.core_recall` 和
+  `memory.turn_capture`，canonical timeline 名称不因展示层命名而改变。
 - `llm.chat` generation 默认不设置 `langfuse.observation.output`；Provider/model、usage、latency 和
   attempt kind 使用独立 observation attributes，finish reason 保留在 trace/协议快照。本地 OTLP
   export 自动从进程内 `TraceConversationStore` 按 span id 投影 adapter 捕获的完整 SDK 调用参数；

@@ -726,6 +726,8 @@ def _append_tool_trace_event(
             node_name=node_name,
             event_type=event_type,
             canonical_event=canonical_event,
+            observation_type="span" if canonical_event != "tool.started" else None,
+            observation_scope="iteration",
             span_id=span_id,
             capability=capability,
             tool_name=tool_name,

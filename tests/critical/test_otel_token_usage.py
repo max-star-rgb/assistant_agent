@@ -16,6 +16,8 @@ def test_nested_normalized_provider_usage_reaches_langfuse_generation() -> None:
         node_name="assistant",
         event_type="observability",
         canonical_event="llm.chat.finished",
+        observation_type="generation",
+        observation_scope="iteration",
         status="succeeded",
         provider="qwen",
         model="qwen3.6-flash",

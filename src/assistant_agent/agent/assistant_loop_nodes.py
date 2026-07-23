@@ -59,6 +59,8 @@ from assistant_agent.services.context.report import build_context_report
 from assistant_agent.services.context.token_budget import normalize_provider_token_usage
 from assistant_agent.services.trace_store import (
     TraceEvent,
+    TraceObservationScope,
+    TraceObservationType,
     append_observability_event,
     new_span_id,
     sanitize_trace_value,
@@ -503,6 +505,8 @@ def _run_chat_turn(
             user_id=state.user_id,
             session_id=state.session_id,
             canonical_event="llm.chat.finished",
+            observation_type="generation",
+            observation_scope="iteration",
             node_name=graph_state.get("current_node_name", "assistant_loop"),
             status="failed",
             provider=provider,
@@ -531,6 +535,8 @@ def _run_chat_turn(
         user_id=state.user_id,
         session_id=state.session_id,
         canonical_event="llm.chat.finished",
+        observation_type="generation",
+        observation_scope="iteration",
         node_name=graph_state.get("current_node_name", "assistant_loop"),
         status="succeeded" if result.success else "failed",
         provider=result.provider,
@@ -1621,6 +1627,8 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
         graph_state,
         event_type="observability",
         canonical_event="action.validation.finished",
+        observation_type="span",
+        observation_scope="iteration",
         status="accepted" if validation.accepted else "rejected",
         tool_name=tool_name,
         output_summary={"validator_result": validation.model_dump(mode="json")},
@@ -2335,6 +2343,8 @@ def _append_trace(
     *,
     event_type: str,
     canonical_event: str | None = None,
+    observation_type: TraceObservationType | None = None,
+    observation_scope: TraceObservationScope | None = None,
     status: str | None = None,
     tool_name: str | None = None,
     output_summary: dict[str, Any] | None = None,
@@ -2355,6 +2365,8 @@ def _append_trace(
             node_name=graph_state.get("current_node_name", "assistant_loop"),
             event_type=cast(Any, event_type),
             canonical_event=canonical_event,
+            observation_type=observation_type or _point_observation_type(event_type),
+            observation_scope=observation_scope or _point_observation_scope(event_type),
             tool_name=tool_name,
             status=status,
             output_summary=output_summary or {},
@@ -2367,6 +2379,18 @@ def _append_trace(
             else None,
         )
     )
+
+
+def _point_observation_type(event_type: str) -> TraceObservationType | None:
+    if event_type in {"assistant_decision", "tool_observation", "loop_guard_triggered"}:
+        return "event"
+    return None
+
+
+def _point_observation_scope(event_type: str) -> TraceObservationScope:
+    if _point_observation_type(event_type) is not None:
+        return "iteration"
+    return "runtime"
 
 
 def _get_max_tool_iterations() -> int:

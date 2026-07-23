@@ -29,35 +29,6 @@ if TYPE_CHECKING:
 OTEL_SPAN_SPEC_SCHEMA_VERSION = "assistant_agent_text_otel_span_spec_v1"
 TEXT_MODALITY = "text"
 
-_SPAN_EVENTS = frozenset(
-    {
-        "memory.load.finished",
-        "context.build.finished",
-        "llm.chat.finished",
-        "react.decision",
-        "action.validation.finished",
-        "tool.finished",
-        "tool.failed",
-        "tool.observation",
-        "loop_guard.triggered",
-        "response.final",
-        "response.delivered",
-        "memory.save.finished",
-        "memory.capture.finished",
-    }
-)
-_ITERATION_CHILD_EVENTS = frozenset(
-    {
-        "context.build.finished",
-        "llm.chat.finished",
-        "react.decision",
-        "action.validation.finished",
-        "tool.finished",
-        "tool.failed",
-        "tool.observation",
-        "loop_guard.triggered",
-    }
-)
 _VOICE_ATTRIBUTE_TOKENS = frozenset(
     {
         "audio",
@@ -162,8 +133,7 @@ def build_text_otel_span_specs(
     )
     spans.extend(iteration_spans.values())
     for index, event in enumerate(safe_events):
-        canonical_event = _event_name(event)
-        if canonical_event not in _SPAN_EVENTS:
+        if event.observation_type is None:
             continue
         if event.span_id == root_span.span_id:
             continue
@@ -217,11 +187,14 @@ def _event_iterations(events: list[TraceEvent]) -> dict[int, int]:
     assignments: dict[int, int] = {}
     current_iteration: int | None = None
     for index, event in enumerate(events):
-        canonical_event = _event_name(event)
         explicit_iteration = _mapping_int(event.attributes, "iteration")
         if explicit_iteration is not None:
             current_iteration = explicit_iteration
-        if canonical_event in _ITERATION_CHILD_EVENTS and current_iteration is not None:
+        if (
+            event.observation_type is not None
+            and event.observation_scope == "iteration"
+            and current_iteration is not None
+        ):
             assignments[index] = current_iteration
     return assignments
 
@@ -801,6 +774,8 @@ def _event_status(event: TraceEvent) -> Literal["ok", "error", "unset"]:
 
 
 def _span_name(event: TraceEvent) -> str:
+    if event.observation_name:
+        return event.observation_name
     canonical_event = _event_name(event)
     if canonical_event in {"tool.finished", "tool.failed"}:
         return "tool.execute"
@@ -816,15 +791,7 @@ def _span_name(event: TraceEvent) -> str:
 
 
 def _observation_type(event: TraceEvent) -> str:
-    if _event_name(event) == "llm.chat.finished" or event.model:
-        return "generation"
-    if _event_name(event) in {
-        "react.decision",
-        "tool.observation",
-        "loop_guard.triggered",
-    }:
-        return "event"
-    return "span"
+    return event.observation_type or "span"
 
 
 def _span_start_time(event: TraceEvent) -> datetime:

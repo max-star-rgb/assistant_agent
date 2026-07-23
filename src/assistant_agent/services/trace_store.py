@@ -24,6 +24,8 @@ TraceEventType = Literal[
     "tool_observation",
     "loop_guard_triggered",
 ]
+TraceObservationType = Literal["span", "generation", "event"]
+TraceObservationScope = Literal["runtime", "iteration"]
 GraphStateT = TypeVar("GraphStateT", bound=dict[str, Any])
 
 
@@ -48,6 +50,9 @@ class TraceEvent(BaseModel):
     input_summary: dict[str, Any] = Field(default_factory=dict)
     output_summary: dict[str, Any] = Field(default_factory=dict)
     canonical_event: str | None = None
+    observation_type: TraceObservationType | None = None
+    observation_name: str | None = None
+    observation_scope: TraceObservationScope = "runtime"
     span_id: str | None = None
     parent_span_id: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
@@ -298,6 +303,9 @@ def append_observability_event(
     user_id: str | None = None,
     session_id: str | None = None,
     canonical_event: str,
+    observation_type: TraceObservationType | None = None,
+    observation_name: str | None = None,
+    observation_scope: TraceObservationScope = "runtime",
     node_name: str = "runtime",
     event_type: TraceEventType = "observability",
     status: str | None = None,
@@ -324,6 +332,9 @@ def append_observability_event(
             node_name=node_name,
             event_type=event_type,
             canonical_event=canonical_event,
+            observation_type=observation_type,
+            observation_name=observation_name,
+            observation_scope=observation_scope,
             span_id=span_id or new_span_id(),
             parent_span_id=parent_span_id,
             status=status,
@@ -479,6 +490,7 @@ def redact_trace_event(event: TraceEvent) -> TraceEvent:
         "capability",
         "node_name",
         "canonical_event",
+        "observation_name",
         "span_id",
         "parent_span_id",
     ):
@@ -534,6 +546,9 @@ def trace_event_summary(event: TraceEvent) -> dict[str, Any]:
         "node_name": event.node_name,
         "event_type": event.event_type,
         "canonical_event": event.canonical_event,
+        "observation_type": event.observation_type,
+        "observation_name": event.observation_name,
+        "observation_scope": event.observation_scope,
         "span_id": event.span_id,
         "parent_span_id": event.parent_span_id,
         "capability": event.capability,

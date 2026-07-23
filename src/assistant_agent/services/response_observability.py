@@ -30,6 +30,7 @@ def append_response_final_event(
         user_id=state.user_id,
         session_id=state.session_id,
         canonical_event="response.final",
+        observation_type="span",
         node_name=node_name,
         status=_response_status(state.status),
         latency_ms=latency_ms,

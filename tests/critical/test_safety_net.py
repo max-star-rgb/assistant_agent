@@ -377,6 +377,8 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
             node_name="assistant",
             event_type="assistant_decision",
             canonical_event="react.decision",
+            observation_type="event",
+            observation_scope="iteration",
             status="tool_call",
             tool_name="weather",
             attributes={"iteration": 1, "decision_type": "tool_call"},
@@ -387,6 +389,8 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
             node_name="tool_executor",
             event_type="observability",
             canonical_event="tool.finished",
+            observation_type="span",
+            observation_scope="iteration",
             status="succeeded",
             tool_name="weather",
             latency_ms=12,
@@ -398,6 +402,8 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
             node_name="assistant",
             event_type="tool_observation",
             canonical_event="tool.observation",
+            observation_type="event",
+            observation_scope="iteration",
             status="succeeded",
             tool_name="weather",
             output_summary={"summary": "北京晴，最高温 30 摄氏度。", "output_ref": "weather://beijing"},
@@ -441,6 +447,7 @@ def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final()
             node_name="compose_response",
             event_type="observability",
             canonical_event="response.final",
+            observation_type="span",
             status="succeeded",
         ),
         TraceEvent(
@@ -448,6 +455,7 @@ def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final()
             node_name="realtime_backend",
             event_type="observability",
             canonical_event="response.delivered",
+            observation_type="span",
             status="succeeded",
             attributes={"source": "shopping_detail_v1"},
         ),
@@ -497,6 +505,8 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
             node_name="assistant",
             event_type="observability",
             canonical_event="context.build.finished",
+            observation_type="span",
+            observation_scope="iteration",
             span_id="2222222222222222",
             status="succeeded",
             latency_ms=5,
@@ -523,6 +533,8 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
             node_name="assistant",
             event_type="observability",
             canonical_event="llm.chat.finished",
+            observation_type="generation",
+            observation_scope="iteration",
             span_id="3333333333333333",
             status="succeeded",
             latency_ms=20,
@@ -536,9 +548,22 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
             node_name="assistant",
             event_type="assistant_decision",
             canonical_event="react.decision",
+            observation_type="event",
+            observation_scope="iteration",
             status="final_answer",
             attributes={"iteration": 1, "decision_type": "final_answer"},
             created_at=created_at + timedelta(milliseconds=32),
+        ),
+        TraceEvent(
+            **common,
+            node_name="memory",
+            event_type="observability",
+            canonical_event="memory.capture.finished",
+            observation_type="span",
+            observation_name="memory.turn_capture",
+            span_id="4444444444444444",
+            status="succeeded",
+            created_at=created_at + timedelta(milliseconds=33),
         ),
         TraceEvent(
             **common,
@@ -609,12 +634,14 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     iteration = next(span for span in spans if span.name == "react.iteration")
     context = next(span for span in spans if span.name == "context.build")
     generation = next(span for span in spans if span.name == "llm.chat")
+    memory_capture = next(span for span in spans if span.name == "memory.turn_capture")
 
     assert runtime.parent_span_id is None
     assert not any(span.name == "assistant.turn" for span in spans)
     assert iteration.parent_span_id == runtime.span_id
     assert context.parent_span_id == iteration.span_id
     assert generation.parent_span_id == iteration.span_id
+    assert memory_capture.parent_span_id == runtime.span_id
     assert not any(span.name == "agent_service.turn" for span in spans)
     generation_input = json.loads(generation.attributes["langfuse.observation.input"])
     assert isinstance(generation_input, dict)
@@ -628,6 +655,28 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     ]
     assert runtime.attributes["assistant_agent.session_scope"] == "agent_service_connection"
     assert runtime.attributes["assistant_agent.turn_id"] == "turn-1"
+
+
+def test_langfuse_mapping_uses_declared_observation_contract_without_event_allowlist() -> None:
+    event = TraceEvent(
+        trace_id="1234567890abcdef1234567890abcdef",
+        run_id="run-memory-contract",
+        node_name="memory",
+        event_type="observability",
+        canonical_event="memory.daily.append.finished",
+        observation_type="span",
+        observation_name="memory.daily.append",
+        status="succeeded",
+        span_id="0123456789abcdef",
+    )
+
+    spans = build_text_otel_span_specs([event])
+
+    observation = next(span for span in spans if span.name == "memory.daily.append")
+    assert observation.attributes["langfuse.observation.type"] == "span"
+    assert observation.attributes["assistant_agent.canonical_event"] == (
+        "memory.daily.append.finished"
+    )
 
 
 def test_plain_text_run_completes() -> None:
