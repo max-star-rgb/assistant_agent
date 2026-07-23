@@ -813,6 +813,17 @@ class FrameworkMemoryStore:
                 error_code=f"memory_framework_{operation}_failed",
             )
             raise
+        result_errors = getattr(value, "errors", None)
+        if isinstance(result_errors, list) and result_errors:
+            accepted = bool(getattr(value, "accepted", False))
+            first_error = result_errors[0] if isinstance(result_errors[0], dict) else {}
+            self.ledger.record_call(
+                operation=operation,
+                status="partial" if accepted else "error",
+                latency_ms=(time.perf_counter() - started) * 1000,
+                error_code=str(first_error.get("code") or f"memory_framework_{operation}_failed"),
+            )
+            return value
         self.ledger.record_call(
             operation=operation,
             status="ok",

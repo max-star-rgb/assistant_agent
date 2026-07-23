@@ -333,6 +333,20 @@ Compatibility/API framework retains still pass `MemoryWritePolicy` and confirmat
 
 Framework recall failures return stable `memory_framework_recall_failed` errors. The Agent run continues with an empty result or the explicitly configured read-only v2 fallback. Runtime debug metadata and audit may expose stable error codes and engine names, but never sidecar URLs, raw exception messages, credentials, raw framework responses, or memory content.
 
+Recall degradation must not be presented as a successful empty memory lookup.
+Without fallback results, `memory_search` returns a failed tool result carrying
+`memory_framework_recall_failed`; with fallback results it returns `partial` and
+preserves the stable error in its capability contract. Automatic core recall
+remains non-blocking for the user turn, but its `memory.core_recall` observation
+is marked `degraded` with the same stable code.
+
+Mem0 turn capture may independently fail in the `daily` and `core` phases. The
+adapter returns prompt-safe phase/code pairs so partial daily success remains
+usable. The framework ledger records `partial` or `error` when those returned
+errors are present, and the `memory.turn_capture` observation exports the
+bounded phase errors instead of only an aggregate count. Raw exception text,
+sidecar URLs, credentials and memory content remain excluded.
+
 Framework recall 是分层的。`FrameworkMemoryStore` 先查当前 session
 layer，再查当前 project/task layer，最后查 user-profile layer，并在返回
 `top_k` 前去重。

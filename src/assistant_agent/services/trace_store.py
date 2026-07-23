@@ -464,6 +464,8 @@ def latest_error_summary(graph_state: dict[str, Any]) -> dict[str, Any] | None:
 def sanitize_trace_value(value: str) -> str:
     """Remove obvious secret material and cap trace text size."""
 
+    if value == "":
+        return ""
     return sanitize_error_message(value)
 
 

@@ -10,15 +10,19 @@ from assistant_agent.memory.framework.adapters import Mem0MemoryEngineAdapter
 from assistant_agent.memory.framework.base import FrameworkHttpRequest
 from assistant_agent.memory.framework.ledger import FrameworkGovernanceLedger
 from assistant_agent.memory.framework.store import FrameworkMemoryStore
+from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.services.trace_store import sanitize_trace_value
 from assistant_agent.schemas.memory_framework import (
     FrameworkConversationMessage,
     FrameworkRecallRequest,
     FrameworkTurnCaptureRequest,
     MemoryEngineIdentity,
 )
+from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.plugins.memory.tools import MemorySearchTool
 
 
 def _identity() -> MemoryEngineIdentity:
@@ -144,6 +148,94 @@ def test_mem0_capture_reports_partial_failure_without_dropping_daily_success() -
     assert result.errors == [
         {"phase": "core", "code": "memory_framework_request_failed"}
     ]
+
+
+def test_mem0_unavailable_recall_is_a_failed_memory_tool_result(tmp_path) -> None:
+    def unavailable_transport(request: FrameworkHttpRequest):
+        raise RuntimeError(f"{request.path} unavailable")
+
+    store = FrameworkMemoryStore(
+        adapter=Mem0MemoryEngineAdapter(
+            base_url="http://mem0.test",
+            transport=unavailable_transport,
+        ),
+        ledger=FrameworkGovernanceLedger(tmp_path / "framework-ledger.sqlite3"),
+        identity_namespace="tests",
+    )
+    manager = MemoryManager(store)
+    identity = RequestIdentity.for_user(
+        user_id="memory-user",
+        session_id="memory-session",
+    )
+
+    result = MemorySearchTool().run(
+        {"query": "昨天喝了什么"},
+        ToolContext(
+            user_id=identity.user_id,
+            session_id=identity.session_id,
+            metadata={
+                "memory_manager": manager,
+                "request_identity": identity.model_dump(mode="json"),
+            },
+        ),
+    )
+
+    assert result.success is False
+    assert result.error == "memory service is temporarily unavailable"
+    assert result.contract is not None
+    assert result.contract.status == "failed"
+    assert [error.code for error in result.contract.errors] == [
+        "memory_framework_recall_failed"
+    ]
+    assert result.model_observation is not None
+    assert result.model_observation["status"] == "failed"
+
+
+def test_mem0_unavailable_runtime_records_recall_and_capture_failures(tmp_path) -> None:
+    def unavailable_transport(request: FrameworkHttpRequest):
+        raise RuntimeError(f"{request.path} unavailable")
+
+    store = FrameworkMemoryStore(
+        adapter=Mem0MemoryEngineAdapter(
+            base_url="http://mem0.test",
+            transport=unavailable_transport,
+        ),
+        ledger=FrameworkGovernanceLedger(tmp_path / "framework-ledger.sqlite3"),
+        identity_namespace="tests",
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(langgraph_checkpointer_backend="none"),
+        memory_store=store,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(user_id="capture-user", session_id="capture-session", text="你好")
+    )
+
+    assert state.status == "completed"
+    assert state.request.metadata["memory_capture"] == {
+        "status": "failed",
+        "daily_count": 0,
+        "core_count": 0,
+        "error_count": 2,
+    }
+    events = runtime.trace_store.list_by_run(state.run_id)
+    recall = next(event for event in events if event.canonical_event == "memory.load.finished")
+    capture = next(
+        event for event in events if event.canonical_event == "memory.capture.finished"
+    )
+    assert recall.status == "degraded"
+    assert recall.error is not None
+    assert recall.error["code"] == "memory_framework_recall_failed"
+    assert capture.status == "failed"
+    assert capture.error is not None
+    assert capture.error["code"] == "memory_framework_capture_failed"
+    assert capture.error["detail"]["errors"] == [
+        {"phase": "daily", "code": "memory_framework_request_failed"},
+        {"phase": "core", "code": "memory_framework_request_failed"},
+    ]
+    assert sanitize_trace_value("") == ""
 
 
 def test_mem0_recall_filters_core_and_daily_records_separately() -> None:

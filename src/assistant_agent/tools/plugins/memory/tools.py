@@ -65,7 +65,12 @@ class MemorySearchTool(ToolBase):
                 record_kinds=["daily"],
             ),
         )
-        return _search_result(self.name, result.items, result.memory_context)
+        return _search_result(
+            self.name,
+            result.items,
+            result.memory_context,
+            errors=result.errors,
+        )
 
 
 class MemoryGetTool(ToolBase):
@@ -125,23 +130,41 @@ def _is_daily(item: MemoryItem) -> bool:
     return item.content.get("record_kind") == "daily" or "daily" in item.tags
 
 
-def _search_result(tool_name: str, items: list[MemoryItem], memory_context: str) -> ToolResult:
+def _search_result(
+    tool_name: str,
+    items: list[MemoryItem],
+    memory_context: str,
+    *,
+    errors: list[dict[str, Any]] | None = None,
+) -> ToolResult:
+    safe_errors = _safe_memory_errors(errors or [])
+    if safe_errors and not items:
+        first = safe_errors[0]
+        return _memory_error(
+            tool_name,
+            "memory service is temporarily unavailable",
+            str(first["code"]),
+            errors=safe_errors,
+        )
     trust_policy = trust_policy_metadata()
     usage_hint = memory_usage_hint()
+    result_status = "partial" if safe_errors else "succeeded"
     data: dict[str, Any] = {
-        "status": "succeeded" if items else "empty",
+        "status": "partial" if safe_errors else ("succeeded" if items else "empty"),
         "items": [item.model_dump(mode="json") for item in items],
         "memory_context": memory_context,
         "total": len(items),
+        "errors": safe_errors,
         "trust_policy": trust_policy,
         "usage_hint": usage_hint,
     }
     output_ref = f"memory://daily/{items[0].memory_id}" if items else None
     contract = build_capability_output_contract(
         capability=MEMORY_RETRIEVAL_CAPABILITY,
-        status="succeeded",
+        status=result_status,
         output_ref=output_ref,
         data=data,
+        errors=safe_errors,
         metadata={"source": "memory_manager", "record_kind": "daily"},
     )
     observation = {
@@ -156,6 +179,7 @@ def _search_result(tool_name: str, items: list[MemoryItem], memory_context: str)
             for payload in data["items"]
         ],
         "total": len(items),
+        "errors": safe_errors,
         "trust_policy": trust_policy,
         "usage_hint": usage_hint,
     }
@@ -169,14 +193,51 @@ def _search_result(tool_name: str, items: list[MemoryItem], memory_context: str)
     )
 
 
-def _memory_error(tool_name: str, message: str, code: str) -> ToolResult:
+def _memory_error(
+    tool_name: str,
+    message: str,
+    code: str,
+    *,
+    errors: list[dict[str, Any]] | None = None,
+) -> ToolResult:
+    safe_errors = errors or [{"code": code, "message": message, "recoverable": True}]
+    contract = build_capability_output_contract(
+        capability=MEMORY_RETRIEVAL_CAPABILITY,
+        status="failed",
+        errors=safe_errors,
+        metadata={"source": "memory_manager", "record_kind": "daily"},
+    )
     return ToolResult(
         tool_name=tool_name,
         success=False,
         error=message,
+        data={
+            "status": "failed",
+            "errors": safe_errors,
+            "contract": contract.model_dump(mode="json"),
+        },
         model_observation={
             "status": "failed",
             "summary": message,
-            "errors": [{"code": code, "message": message, "recoverable": True}],
+            "errors": safe_errors,
         },
+        contract=contract,
     )
+
+
+def _safe_memory_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe: list[dict[str, Any]] = []
+    for error in errors:
+        code = error.get("code") if isinstance(error, dict) else None
+        if not isinstance(code, str) or not code:
+            continue
+        item: dict[str, Any] = {
+            "code": code,
+            "message": str(error.get("message") or "memory service operation failed"),
+            "recoverable": bool(error.get("recoverable", True)),
+        }
+        phase = error.get("phase")
+        if isinstance(phase, str) and phase:
+            item["detail"] = {"phase": phase}
+        safe.append(item)
+    return safe
